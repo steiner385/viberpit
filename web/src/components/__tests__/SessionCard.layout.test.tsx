@@ -6,11 +6,19 @@ import { SessionCard } from '../SessionCard'
 import type { Session } from '@/api/types'
 import { account as accountFixture, anthropicUsage, pullRequest, session } from '@/test/factories'
 
-// Dense two-line card contract. The card lives in a drag-resizable sidebar, so
+// Dense three-line card contract. The card lives in a drag-resizable sidebar, so
 // its layout must be deterministic at every width and for every session shape:
-// exactly two fixed rows — line 1 (identity: status dot, title, marker cluster,
-// PRs, usage, account, actions) and line 2 (context narrative: repo · host ·
-// status phrase · last-active) — plus a colored status rail on the left edge.
+// exactly three fixed rows — line 1 (identity: status dot, title, actions), line
+// 2 (context narrative: repo · host · status phrase · last-active) and line 3
+// (meta: marker cluster, PRs, usage, model, account) — plus a colored status
+// rail on the left edge.
+//
+// Line 1 exists to carry the TITLE. It was a single flex row where every child
+// was flex-shrink-0 except the title, so the title absorbed 100% of the width
+// deficit and rendered as "I…" on a ~500px card. The fix is structural: nothing
+// that can grow shares the title's row. The guard below is what keeps it that
+// way — a chip added back to line 1 fails it.
+//
 // Every optional element has ONE fixed slot; nothing floats between rows based
 // on content. These tests lock that skeleton so a future tweak can't regress to
 // the old grab-bag badge footer / floating status pill.
@@ -62,13 +70,35 @@ const rich: Session = {
   ],
 }
 
-describe('SessionCard two-line skeleton', () => {
-  it('renders exactly the two fixed rows — no telemetry row, no badge footer', () => {
+// Everything the `rich` fixture puts on the meta row. (`card-engine` /
+// `card-effort` are Codex-only and covered in SessionCard.model.test.)
+const META_CHIPS = [
+  'card-goal', 'card-provenance', 'card-prs', 'card-usage',
+  'card-model', 'card-account',
+] as const
+
+// The only testid'd elements allowed on line 1. An allowlist rather than a list
+// of known chips: the bug was a row that accumulated growable children, so the
+// guard has to fail for a chip nobody has written yet.
+const LINE_1_ALLOWED = new Set(['card-status-dot', 'card-autopilot-active'])
+
+describe('SessionCard three-line skeleton', () => {
+  it('renders exactly the three fixed rows — no telemetry row, no badge footer', () => {
     renderCard(rich)
     expect(screen.getByTestId('card-identity')).toBeInTheDocument()
     expect(screen.getByTestId('card-context')).toBeInTheDocument()
+    expect(screen.getByTestId('card-meta')).toBeInTheDocument()
     expect(screen.queryByTestId('card-telemetry')).not.toBeInTheDocument()
     expect(screen.queryByTestId('card-badges')).not.toBeInTheDocument()
+  })
+
+  it('the meta row renders even when the session carries no chips but the account', () => {
+    // A fixed slot, not a content-dependent one: a row that sometimes exists is
+    // the vertical-jitter bug the "ONE fixed slot" rule above guards against.
+    renderCard(base)
+    const meta = screen.getByTestId('card-meta')
+    expect(within(meta).getByTestId('card-account')).toBeInTheDocument()
+    expect(within(meta).queryByTestId('card-model')).not.toBeInTheDocument()
   })
 
   it('truncates the title inside the open button so the right cluster stays pinned', () => {
@@ -79,11 +109,14 @@ describe('SessionCard two-line skeleton', () => {
     expect(open).toHaveClass('flex-1', 'min-w-0')
   })
 
-  it('caps and truncates the account chip so a long email cannot starve the title', () => {
+  it('caps and truncates the account chip on the meta row', () => {
+    // The old 30% cap existed only to stop a long email starving the title. On
+    // its own row there is no title to protect, and 30% clipped an ordinary
+    // gmail address — so the cap widens but stays, for genuinely long values.
     renderCard({ ...base, accountName: 'tonystein85@gmail.com' })
-    const identity = screen.getByTestId('card-identity')
-    const chip = within(identity).getByText('tonystein85@gmail.com')
-    expect(chip).toHaveClass('truncate', 'max-w-[30%]')
+    const meta = screen.getByTestId('card-meta')
+    const chip = within(meta).getByText('tonystein85@gmail.com')
+    expect(chip).toHaveClass('truncate', 'max-w-[50%]')
   })
 
   it('line 2 carries repo, host, status phrase and last-active — in the context row', () => {
@@ -101,19 +134,60 @@ describe('SessionCard two-line skeleton', () => {
     expect(phrase.className).toMatch(/warning/)
   })
 
-  it('marker cluster, PRs, usage and model live in line 1, not line 2', () => {
+  it('marker cluster, PRs, usage, model and account live in the meta row', () => {
     renderCard(rich, {
       account: accountFixture({ name: 'work', nickname: null, usage: anthropicUsage(74, 20) }),
     })
-    const identity = screen.getByTestId('card-identity')
-    expect(identity).toContainElement(screen.getByTestId('card-goal'))
-    expect(identity).toContainElement(screen.getByTestId('card-provenance'))
-    expect(identity).toContainElement(screen.getByTestId('card-prs'))
-    expect(identity).toContainElement(screen.getByTestId('card-usage'))
-    expect(identity).toContainElement(screen.getByTestId('card-model'))
+    const meta = screen.getByTestId('card-meta')
     const context = screen.getByTestId('card-context')
-    expect(context).not.toContainElement(screen.getByTestId('card-goal'))
-    expect(context).not.toContainElement(screen.getByTestId('card-prs'))
+    for (const id of META_CHIPS) {
+      expect(meta, id).toContainElement(screen.getByTestId(id))
+      expect(context, id).not.toContainElement(screen.getByTestId(id))
+    }
+  })
+
+  // The mirror of the guard below: line 3 must not repeat line 1's bug in
+  // reverse. Every child fixed-width means a full chip set overflows the card
+  // instead of yielding, so exactly one child absorbs the deficit.
+  it('the account chip is the meta row’s one yielding child', () => {
+    renderCard(rich, {
+      account: accountFixture({ name: 'work', nickname: null, usage: anthropicUsage(74, 20) }),
+      prAutofixMode: 'propose',
+    })
+    const meta = screen.getByTestId('card-meta')
+    const account = screen.getByTestId('card-account')
+    expect(account).toHaveClass('min-w-0', 'truncate')
+    expect(account).not.toHaveClass('flex-shrink-0')
+    for (const child of meta.children) {
+      if (child === account) continue
+      expect(child.className, child.getAttribute('data-testid') ?? '').toMatch(/flex-shrink-0/)
+    }
+    // Clipping is NOT the alternative: PrList opens an `absolute z-20` popover
+    // out of this row, so overflow-hidden here would cut it off.
+    expect(meta.className).not.toMatch(/overflow-hidden/)
+  })
+
+  // THE regression guard for the barely-visible-title bug. Line 1 holds the
+  // status dot, the autopilot marker, the title and the two action buttons —
+  // all fixed-width but the title. Any chip added back here re-starves it.
+  it('line 1 carries nothing that competes with the title for width', () => {
+    renderCard(rich, {
+      account: accountFixture({ name: 'work', nickname: null, usage: anthropicUsage(74, 20) }),
+      prAutofixMode: 'propose',
+    })
+    const identity = screen.getByTestId('card-identity')
+    const strays = [...identity.querySelectorAll('[data-testid]')]
+      .map((el) => el.getAttribute('data-testid')!)
+      .filter((id) => !LINE_1_ALLOWED.has(id))
+    expect(strays).toEqual([])
+    // Only the open control flexes; every other line-1 child is fixed-width, so
+    // the title receives the row's whole remainder instead of its deficit.
+    const open = screen.getByRole('button', { name: /open session/i })
+    expect(open).toHaveClass('flex-1', 'min-w-0')
+    for (const child of identity.children) {
+      if (child === open) continue
+      expect(child.className, child.outerHTML.slice(0, 120)).toMatch(/flex-shrink-0/)
+    }
   })
 })
 
@@ -163,7 +237,7 @@ describe('SessionCard narrow-card declutter contract', () => {
   it('keeps the essentials (title, account chip, status phrase) ungated', () => {
     renderCard(rich)
     expect(within(screen.getByTestId('card-identity')).getByText('Fix login bug')).not.toHaveClass('hidden')
-    expect(within(screen.getByTestId('card-identity')).getByText('work')).not.toHaveClass('hidden')
+    expect(within(screen.getByTestId('card-meta')).getByText('work')).not.toHaveClass('hidden')
     expect(screen.getByLabelText(/^Status:/)).not.toHaveClass('hidden')
   })
 })
