@@ -12,3 +12,11 @@ def test_permission_request_always_allowed_on_wire():
                             always_allowed=False)
     assert ev.to_wire()["alwaysAllowed"] is False
     assert PermissionRequest("p", "t", "Bash", ToolKind.BASH, {}).to_wire()["alwaysAllowed"] is True
+
+
+def test_permission_request_wire_has_items():
+    p = PermissionRequest("p", "t", "mcp__ccswitch__archive_sessions", ToolKind.APP_ACTION, {},
+                          items=["A", "B"])
+    assert p.to_wire()["items"] == ["A", "B"]
+    # None for a tool with no items (the common case).
+    assert PermissionRequest("p", "t", "Bash", ToolKind.BASH, {}).to_wire()["items"] is None
