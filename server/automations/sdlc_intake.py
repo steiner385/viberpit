@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from ccswitch.engines import AgentEngine
 from server.sdlc import engine
 from server.sdlc.prompts import artifact_path, build_intent_prompt
 
@@ -62,10 +63,20 @@ class SdlcIntake:
         "Turns a brainstorm/triage trigger into a proposed intent.md PR — the "
         "front of the AI-native SDLC loop. Propose-only: a human advance is the gate.")
     modes: tuple[str, ...] = ("off", "propose", "auto")
-    # Audited engine ceiling (Phase 7, Task 7.1). This origin has no Codex
-    # acceptance evidence, so it launches Claude only. Widening it is a
-    # reviewable one-line change gated on its acceptance suite passing.
-    engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
+    # Audited engine ceiling (Phase 7, Task 7.3; widened by #1265). This origin
+    # passed its Codex acceptance suite on both halves:
+    # `server/tests/test_sdlc_codex_acceptance.py` (propose-only gates, the
+    # artifact prompt/trailer contract, permission-tier mapping, and that a
+    # refused launch records no artifact) and
+    # `server/tests/test_sdlc_codex_live_artifact.py` (an intent → spec → plan
+    # chain on the real binary, opt-in so CI never spends OpenAI quota).
+    #
+    # `codex_allowed` grants the option, not the traffic: `default_engine` still
+    # answers Claude, and both the `CCSWITCH_CODEX_AUTOMATIONS_ENABLED` kill
+    # switch and #1263's network-egress opt-in ship off, so three further
+    # deliberate operator steps stand between this line and an unattended Codex
+    # intent session.
+    engine_policy: EnginePolicy = EnginePolicy.CODEX_ALLOWED
     config_schema = [
         ConfigField("enabled_repos", "Repositories", "repo-multiselect", [],
                     help="Repositories this intake automation may open intent PRs in."),
@@ -98,7 +109,11 @@ ReadTriggers = Callable[[], Awaitable[list[Trigger]]]
 EnsureInitiative = Callable[[Trigger], Awaitable[tuple[engine.InitiativeView,
                                                        list[engine.ArtifactView]]]]
 RecordIntent = Callable[[str, str, str | None], Awaitable[None]]
-Spawn = Callable[[Trigger, str], Awaitable[Any]]
+#: ``(trigger, prompt, engine)`` — the engine travels with the prompt it shaped.
+#: The loop resolves it once (the seed prompt states a commit trailer), so the
+#: spawn seam must be *told* which engine that was rather than resolving the
+#: origin's config a second time and risking a different answer.
+Spawn = Callable[[Trigger, str, AgentEngine], Awaitable[Any]]
 
 
 class SdlcIntakeLoop:
@@ -176,7 +191,13 @@ class SdlcIntakeLoop:
         launch_engine, _config = plan
         prompt = build_intent_prompt(trigger.text, slug=trigger.slug, repo=trigger.repo,
                                      engine=launch_engine)
-        session = await self._spawn(trigger, prompt)
+        # The engine travels WITH the prompt it shaped. Letting the spawn path
+        # resolve it again would read this origin's config a second time, and the
+        # two reads are separated by ``ensure_clone`` — a full git clone on first
+        # use of a repo, not a microsecond. An operator flipping the engine inside
+        # that window would launch Codex on a prompt that tells it to co-author its
+        # commits as Claude, which is exactly what resolving early exists to prevent.
+        session = await self._spawn(trigger, prompt, launch_engine)
         if session is None:
             # The spawn declined (engine policy, an engine/permission-mode pair
             # that could not open the artifact PR, or no account with headroom).

@@ -1155,17 +1155,22 @@ hosts but contains no account ids, tokens, prompts, commands, patches, or raw na
   implicit, derived from the sandbox rather than restated.)
 - [x] Test propose-only human gates, artifact PR creation, restart/resume, approval waits, failure
   counters, loop guards, build handoff to backlog runner, and a mixed-engine initiative chain.
-- [ ] Run one opt-in initiative through at least intent → design → plan using Codex, keeping every
-  human gate intact. Record sanitized acceptance evidence.
-- [ ] Mark only the audited SDLC origins `codex_allowed`, enable
-  `CCSWITCH_CODEX_AUTOMATIONS_ENABLED`, update the feature state to include automation parity, and
-  close the epic only when Project #26 dependencies show both interactive v1 and these fast-follow
-  tasks complete.
+- [x] Run one opt-in initiative through at least intent → design → plan using Codex, keeping every
+  human gate intact. Record sanitized acceptance evidence. (#1265/#1266 — the harness is committed
+  as `server/tests/test_sdlc_codex_live_artifact.py`, opt-in via `CCSWITCH_TEST_CODEX_LIVE=1`, and
+  drives the real stage prompts on `codex-cli 0.153.2` in a throwaway repo with a local bare
+  `origin`. Evidence recorded in `docs/product/features/openai-codex-integration.md`.)
+- [x] Mark only the audited SDLC origins `codex_allowed` (#1265/#1266). `CCSWITCH_CODEX_AUTOMATIONS_ENABLED`
+  is deliberately **not** enabled by that change: the ceiling grants the option, and turning on the
+  kill switch is a deployment decision the operator makes per environment. Close the epic only when
+  Project #26 dependencies show both interactive v1 and these fast-follow tasks complete.
 
-The same two items stay open here as in Task 7.2, and for the same reason: they are live-boundary
-work (constitution III), and finding 1 above means a Codex automation cannot open the artifact PR
-the stage exists to produce until the authority question is answered. Everything decidable offline
-is covered by `server/tests/test_sdlc_codex_acceptance.py`.
+Finding 1 above (the sandbox-egress blocker) was answered by #1263's owner-authorized network
+opt-in, which is what made the live run possible. What the live run does **not** cover is
+`gh pr create` — it needs GitHub, and it is the one step of the artifact contract that is plain
+shell and identical on either engine; the non-draft / no-auto-merge PR attributes therefore stay
+prompt-level guarantees in `server/tests/test_sdlc_codex_acceptance.py`. Everything decidable
+offline is covered by that same suite.
 
 ---
 

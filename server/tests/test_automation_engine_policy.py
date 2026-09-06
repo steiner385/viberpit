@@ -32,9 +32,14 @@ from server.automations.registry import registry
 # Codex: widening any origin shows up here as a one-line diff.
 # --------------------------------------------------------------------------- #
 
-def test_every_registered_origin_declares_a_policy_and_all_are_claude_only():
-    """No implicit "any": every origin declares a policy, and as of Phase 7 Task
-    7.1 none has passed its Codex acceptance suite, so all are ``claude_only``."""
+def test_every_registered_origin_declares_its_audited_policy():
+    """No implicit "any": every origin declares a policy, and this map is the
+    reviewable record of which ones passed a Codex acceptance suite.
+
+    The two SDLC origins were widened to ``codex_allowed`` by #1265/#1266 — the
+    *option*, not the traffic (``default_engine`` still answers Claude, and both
+    the automations kill switch and the network opt-in ship off). Everything else
+    is still ``claude_only``: widening one is a one-line diff here."""
     audited = audited_policy_map()
     assert set(audited) == {a.id for a in registry.all()}
     assert audited == {
@@ -43,8 +48,8 @@ def test_every_registered_origin_declares_a_policy_and_all_are_claude_only():
         "autopilot": EnginePolicy.CLAUDE_ONLY,
         "cicd-doctor": EnginePolicy.CLAUDE_ONLY,
         "archive-audit": EnginePolicy.CLAUDE_ONLY,
-        "sdlc-intake": EnginePolicy.CLAUDE_ONLY,
-        "sdlc-synthesizer": EnginePolicy.CLAUDE_ONLY,
+        "sdlc-intake": EnginePolicy.CODEX_ALLOWED,
+        "sdlc-synthesizer": EnginePolicy.CODEX_ALLOWED,
         "pm-sync": EnginePolicy.CLAUDE_ONLY,
         "gh-reconcile": EnginePolicy.CLAUDE_ONLY,
     }

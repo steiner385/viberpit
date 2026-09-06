@@ -161,13 +161,26 @@ def _client():
                 yield c
 
 
-def test_the_api_publishes_no_engine_selector_for_an_unaudited_origin():
+def test_the_api_publishes_the_engine_selector_only_where_the_ceiling_admits_one():
+    """The absence of the field IS the enforcement (``validate_config`` rejects
+    unknown keys), so both directions have to stay pinned: a ``claude_only``
+    origin must publish no ``engine`` field, and an audited one must publish it.
+
+    Asserted over whatever the registry declares rather than a hardcoded list, so
+    widening an origin (#1265/#1266 widened the two SDLC ones) moves a row from
+    one branch to the other instead of quietly weakening the check."""
     with _client() as c:
         rows = c.get("/api/automations", headers=H).json()
         assert rows, "expected the registered automations"
+        audited = 0
         for row in rows:
-            assert row["enginePolicy"] == "claude_only"
-            assert not any(f["key"] == "engine" for f in row["configSchema"])
+            has_selector = any(f["key"] == "engine" for f in row["configSchema"])
+            if row["enginePolicy"] == "claude_only":
+                assert not has_selector, f"{row['id']} offers an engine it cannot run"
+            else:
+                assert has_selector, f"{row['id']} is audited but offers no selector"
+                audited += 1
+        assert audited, "expected at least one audited origin (sdlc-intake/-synthesizer)"
 
 
 def test_the_api_rejects_an_engine_key_on_an_unaudited_origin():

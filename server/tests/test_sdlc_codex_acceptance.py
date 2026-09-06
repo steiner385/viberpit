@@ -7,13 +7,17 @@ from the backlog runner in one way that matters here — their output is a
 the human gates survive an engine switch, and that a refused launch cannot
 record an artifact for a session that was never created.
 
-The remaining gate items (an opt-in initiative driven intent → design → plan on a
-real Codex session, plus the sanitized evidence record) are live-boundary work,
-so the SDLC ceilings stay ``claude_only`` — asserted at the end of this file.
+Section 5 is the enablement gate for #1265/#1266. Both ceilings are now
+``codex_allowed``, and the tests there pin what that does and does not grant:
+the engine becomes *selectable* on these origins, while three further gates —
+the policy default, ``CCSWITCH_CODEX_AUTOMATIONS_ENABLED``, and the
+network-egress opt-in from #1263 — all still ship off, so nothing runs on Codex
+until an operator turns each of them on deliberately.
 """
 from __future__ import annotations
 
 import asyncio
+import inspect
 
 import pytest
 
@@ -175,7 +179,7 @@ def test_a_refused_intake_launch_records_no_artifact_and_wedges_nothing():
     recorded: list = []
     ctx = _Ctx(plan=(AgentEngine.CODEX, {}))
 
-    async def refusing_spawn(_trigger, _prompt):
+    async def refusing_spawn(_trigger, _prompt, _engine):
         return None
 
     loop = _intake_loop(ctx, spawn=refusing_spawn, recorded=recorded)
@@ -193,7 +197,7 @@ def test_a_successful_intake_launch_still_records_the_artifact():
     class Rec:
         id = "sess-1"
 
-    async def ok_spawn(_trigger, _prompt):
+    async def ok_spawn(_trigger, _prompt, _engine):
         return Rec()
 
     loop = _intake_loop(ctx, spawn=ok_spawn, recorded=recorded)
@@ -211,7 +215,7 @@ def test_an_out_of_policy_intake_launch_never_reaches_the_spawn():
     ctx = _Ctx(plan=None)
     calls: list = []
 
-    async def spy_spawn(trigger, prompt):
+    async def spy_spawn(trigger, prompt, engine):
         calls.append(trigger)
         return object()
 
@@ -285,18 +289,360 @@ def test_an_automation_account_is_selected_for_the_engine_that_will_run(
 
 
 # --------------------------------------------------------------------------- #
+# 4b. One engine decision per launch, from the prompt to the account pool.      #
+# --------------------------------------------------------------------------- #
+
+def _bare_orchestrator(monkeypatch):
+    """A ``SessionOrchestrator`` with no ``__init__`` run — the spawn helpers are
+    self-contained enough to exercise against monkeypatched seams, and building a
+    real one would drag in a driver registry, a DB and a PR poller."""
+    from server.sessions import orchestrator as orch_mod
+
+    return orch_mod, orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
+
+
+def test_the_intake_loop_hands_its_resolved_engine_to_the_spawn_seam():
+    """The loop resolves the engine so it can state the right commit trailer, and
+    that answer has to travel with the prompt it shaped.
+
+    Dropping it means the spawn path resolves a *second* time, off a second read
+    of the origin's config. The two reads straddle a DB round-trip, so an
+    operator flipping this origin's engine between them lands exactly on the
+    outcome ``launch_plan``'s own docstring forbids: a Codex session seeded with a
+    prompt telling it to co-author its commits as Claude."""
+    seen: list = []
+    ctx = _Ctx(plan=(AgentEngine.CODEX, {}))
+
+    async def spawn(_trigger, prompt, engine):
+        seen.append((engine, commit_trailer(AgentEngine.CODEX) in prompt))
+        return type("Rec", (), {"id": "sess-1"})()
+
+    loop = _intake_loop(ctx, spawn=spawn, recorded=[])
+    asyncio.run(loop.tick())
+
+    assert seen == [(AgentEngine.CODEX, True)]
+
+
+def test_the_intake_spawn_forwards_that_engine_to_the_session_and_the_account_gate(
+        monkeypatch):
+    """Same decision, one layer down: the intent session is created FOR that
+    engine, and the account it runs on is picked from that engine's pool.
+
+    Selecting from the Claude pool and launching Codex is the failure
+    ``_backlog_healthy_account`` documents — ``sanitize_launch_for_engine`` drops
+    the Anthropic account, so the Codex session runs with none, and the
+    "no healthy account, pause spawns" call is made against the wrong quota."""
+    _orch_mod, orch = _bare_orchestrator(monkeypatch)
+    captured: dict = {}
+
+    class Ctx:
+        async def spawn_session(self, **kwargs):
+            captured["spawn"] = kwargs
+            return type("Rec", (), {"id": "sess-1"})()
+
+    async def probe(_ctx, _origin_ref, *, engine=None):
+        captured["account_engine"] = engine
+        return "openai-acct"
+
+    monkeypatch.setattr(orch, "_sdlc_intake_ctx", Ctx(), raising=False)
+    monkeypatch.setattr(orch, "_automation_account_for", probe, raising=False)
+
+    # repo="" keeps ensure_clone (network + disk) out of the unit entirely.
+    trigger = Trigger(slug="widget", text="t")
+    asyncio.run(orch._sdlc_intake_spawn(trigger, "seed prompt", AgentEngine.CODEX))
+
+    assert captured["account_engine"] is AgentEngine.CODEX
+    assert captured["spawn"]["engine"] is AgentEngine.CODEX
+    assert captured["spawn"]["detail"]["engine"] == "codex", (
+        "the activity feed must say which engine an intent session ran on")
+
+
+def test_a_refused_synth_launch_pays_for_no_clone_probe_or_remote_read(monkeypatch):
+    """A refusal has to cost nothing — and for the synthesizer it cost a lot.
+
+    ``_backlog_spawn`` already moved its policy check ahead of the clone for this
+    exact reason. The synthesizer still probed an account, ran ``ensure_clone``
+    (a full git clone on first use) and listed the remote's branches BEFORE
+    asking whether the launch was allowed at all. Every tick of an out-of-policy
+    origin repeated all three."""
+    orch_mod, orch = _bare_orchestrator(monkeypatch)
+    touched: list[str] = []
+
+    class Ctx:
+        async def launch_plan_or_refuse(self, _origin_ref):
+            return None                       # out of policy — the ctx recorded why
+
+        async def spawn_session(self, **_kwargs):  # pragma: no cover — must not run
+            touched.append("spawn")
+
+    async def probe(*_a, **_kw):
+        touched.append("account")
+        return "acct"
+
+    async def read_config():
+        touched.append("config")
+        return "auto", {}
+
+    async def repo_root():
+        return "/tmp"
+
+    def ensure_clone(*_a, **_kw):
+        touched.append("clone")
+        return "/tmp/clone"
+
+    async def default_branch(_repo):
+        touched.append("remote-branches")
+        return "master"
+
+    monkeypatch.setattr(orch, "_sdlc_synth_ctx", Ctx(), raising=False)
+    monkeypatch.setattr(orch, "_automation_account_for", probe, raising=False)
+    monkeypatch.setattr(orch, "_sdlc_synth_read_config", read_config, raising=False)
+    monkeypatch.setattr(orch, "_effective_repo_root", repo_root, raising=False)
+    monkeypatch.setattr(orch, "_sdlc_default_branch", default_branch, raising=False)
+    monkeypatch.setattr(orch_mod.gitrepos, "ensure_clone", ensure_clone)
+
+    ini = {"id": "ini-1", "slug": "widget", "repo": "o/r"}
+    assert asyncio.run(orch._sdlc_spawn_synth(ini, "spec")) is None
+    assert touched == [], f"a refused launch did work first: {touched}"
+
+
+def test_the_synth_account_gate_is_asked_for_the_engine_that_was_resolved(monkeypatch):
+    """Once the plan is resolved first, the account probe must reuse it rather
+    than resolving the origin's engine a third time."""
+    orch_mod, orch = _bare_orchestrator(monkeypatch)
+    captured: dict = {}
+
+    class Ctx:
+        async def launch_plan_or_refuse(self, _origin_ref):
+            return AgentEngine.CODEX, {}
+
+        async def spawn_session(self, **kwargs):
+            captured["spawn"] = kwargs
+            return type("Rec", (), {"id": "sess-1"})()
+
+    async def probe(_ctx, _origin_ref, *, engine=None):
+        captured["account_engine"] = engine
+        return "openai-acct"
+
+    async def read_config():
+        return "auto", {}
+
+    async def repo_root():
+        return "/tmp"
+
+    async def default_branch(_repo):
+        return "trunk"
+
+    async def auto_effort(_account, _config, _summary):
+        return None, None
+
+    monkeypatch.setattr(orch, "_sdlc_synth_ctx", Ctx(), raising=False)
+    monkeypatch.setattr(orch, "_automation_account_for", probe, raising=False)
+    monkeypatch.setattr(orch, "_sdlc_synth_read_config", read_config, raising=False)
+    monkeypatch.setattr(orch, "_effective_repo_root", repo_root, raising=False)
+    monkeypatch.setattr(orch, "_sdlc_default_branch", default_branch, raising=False)
+    monkeypatch.setattr(orch, "_resolve_codex_auto_effort", auto_effort, raising=False)
+    monkeypatch.setattr(orch_mod.gitrepos, "ensure_clone", lambda *a, **k: "/tmp/clone")
+    monkeypatch.setattr(orch_mod.SessionOrchestrator, "_sdlc_show_committed_file",
+                        staticmethod(lambda *a, **k: "intent body"))
+
+    ini = {"id": "ini-1", "slug": "widget", "repo": "o/r"}
+    assert asyncio.run(orch._sdlc_spawn_synth(ini, "spec")) is not None
+
+    assert captured["account_engine"] is AgentEngine.CODEX
+    assert captured["spawn"]["engine"] is AgentEngine.CODEX
+    assert commit_trailer(AgentEngine.CODEX) in captured["spawn"]["initial_prompt"]
+
+
+# --------------------------------------------------------------------------- #
+# 4c. Artifact durability: PR association, dedupe and the build handoff.        #
+# --------------------------------------------------------------------------- #
+
+def test_artifact_pr_association_is_derived_from_git_not_from_the_engine(monkeypatch):
+    """#1265's "PR association" criterion. An artifact row is linked to its PR
+    through the session's *branches* — a git fact the session's engine cannot
+    change — and then through the PR poller cache. Nothing on that path reads an
+    engine, so a Codex-produced artifact enriches exactly like a Claude one."""
+    _orch_mod, orch = _bare_orchestrator(monkeypatch)
+
+    class Rec:
+        repo = "o/r"
+        branch = "sdlc/widget-spec"
+        authored_branches = ["sdlc/widget-spec"]
+        engine = AgentEngine.CODEX      # present, and deliberately never consulted
+
+    class Info:
+        number, url, state, merged, merge_commit_sha = 7, "u", "open", False, None
+
+    class Poller:
+        def cached(self, repo, branch):
+            assert (repo, branch) == ("o/r", "sdlc/widget-spec")
+            return Info()
+
+    monkeypatch.setattr(orch, "_records", {"sess-1": Rec()}, raising=False)
+    monkeypatch.setattr(orch, "_pr_poller", Poller(), raising=False)
+
+    info = asyncio.run(orch._sdlc_pr_lookup({"id": "a1", "session_id": "sess-1"}))
+    assert info == {"number": 7, "url": "u", "state": "open", "sha": None}
+
+
+def test_stage_dedupe_is_engine_blind_so_flipping_the_engine_cannot_double_propose(
+        tmp_path):
+    """#1265's dedupe criterion, in its Codex-specific form.
+
+    If dedupe were engine-scoped, an operator flipping this origin from Claude to
+    Codex while an intent session was still running would get a SECOND session
+    writing the same ``intent.md`` on a second branch, and the initiative would
+    end up with two competing artifact PRs for one stage.
+
+    It cannot happen, and the reason is stronger than "the query ignores the
+    engine": the duplicate check runs *before* ``launch_plan_or_refuse``, so at
+    the moment the decision is made the engine has not been resolved at all.
+    Asserted by asking for a Codex spawn over a live Claude-era session."""
+    from server.automations.context import AutomationContext
+    from server.db.models import Session as DbSession
+
+    created: list = []
+
+    async def never(**kwargs):  # pragma: no cover — reaching it is the failure
+        created.append(kwargs)
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'dedupe.db'}")
+        async with db_session() as db:
+            db.add(DbSession(id="sess-live", name="sdlc intake widget",
+                             account_name="claude-acct", cwd="/tmp", status="working",
+                             origin="sdlc-intake", origin_ref="widget:intent"))
+        ctx = AutomationContext("sdlc-intake", create_session=never)
+        rec = await ctx.spawn_session(origin_ref="widget:intent",
+                                      dedupe_key="widget:intent",
+                                      engine=AgentEngine.CODEX, name="second try")
+        assert rec is not None and rec.id == "sess-live"
+        assert created == [], "a second artifact session was created for one stage"
+        events = await ctx.list_events()
+        assert any(e["kind"] == "skipped_duplicate" for e in events)
+
+    asyncio.run(run())
+
+
+def test_the_build_handoff_crosses_engines_because_it_is_an_issue_not_a_session():
+    """#1266's "mixed-engine build handoff" criterion.
+
+    The front chain can run on Codex while ``backlog-runner`` is still
+    ``claude_only``, and that is not a mismatch to reconcile: the Build stage
+    hands over the initiative's underlying GitHub *issue*, so the receiving
+    origin resolves its own engine under its own ceiling. Nothing about the
+    handoff carries the producing session or its engine."""
+    from server.automations.registry import registry
+    from server.sdlc.engine import HandoffToBuild, InitiativeView, next_action
+
+    action = next_action(
+        InitiativeView(slug="w", stage="build", status="active", repo="o/r",
+                       issue="o/r#42"),
+        [], "auto", {})
+    assert action == HandoffToBuild("o/r#42")
+    # The receiving origin's ceiling is independent of the SDLC ones.
+    assert registry.get("backlog-runner").engine_policy is EnginePolicy.CLAUDE_ONLY
+
+
+def test_a_proposed_artifact_survives_a_restart_without_re_proposing():
+    """#1266's "restart/failure counters" criterion, at the layer that decides.
+
+    The loops keep no durable spawn memory — the ``InitiativeArtifact`` row *is*
+    the memory (``_spawns_today`` is only a rate cap and is expected to reset).
+    So the guard against a restart, or a crashed artifact session, re-proposing a
+    stage is the pure engine answering ``AwaitApproval`` for any stage whose
+    artifact row exists but has not merged.
+
+    Its engine-independence is structural rather than parametrizable: this is the
+    whole decision, and it has no engine input to vary — ``next_action`` takes
+    the initiative, its artifacts, the mode and the config, and nothing else."""
+    from server.sdlc.engine import ArtifactView, AwaitApproval, InitiativeView, next_action
+
+    state = InitiativeView(slug="w", stage="design", status="active", repo="o/r")
+    proposed = [ArtifactView(kind="spec", commit_sha=None)]
+    assert next_action(state, proposed, "auto", {}) == AwaitApproval("spec")
+    assert "engine" not in inspect.signature(next_action).parameters
+
+
+# --------------------------------------------------------------------------- #
 # 5. The gate itself.                                                          #
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("origin", ["sdlc-intake", "sdlc-synthesizer"])
-def test_the_sdlc_ceilings_are_still_claude_only(origin):
-    """Task 7.3 widens these only after an opt-in initiative runs intent → design
-    → plan on a real Codex session with every human gate intact, and the
-    sanitized evidence is recorded. That is live-boundary work (constitution III)
-    and is not something this suite can certify."""
+def test_the_sdlc_ceilings_admit_codex_as_an_operator_option(origin):
+    """#1265/#1266: both SDLC origins are audited for Codex and widened to
+    ``codex_allowed`` — the *option*, not the traffic.
+
+    ``codex_allowed`` still defaults to Claude (:func:`default_engine`), so
+    widening moves nothing on its own; it makes the engine selector exist in
+    this origin's config schema. Three further gates, all shipping off, stand
+    between that and an unattended Codex session — asserted individually
+    below."""
     from server.automations.registry import registry
 
-    assert registry.get(origin).engine_policy is EnginePolicy.CLAUDE_ONLY
+    assert registry.get(origin).engine_policy is EnginePolicy.CODEX_ALLOWED
+
+
+@pytest.mark.parametrize("origin", ["sdlc-intake", "sdlc-synthesizer"])
+def test_widening_the_ceiling_moves_no_traffic_by_itself(origin):
+    """Gate 1 of 3: an origin whose config says nothing still launches Claude."""
+    from server.automations.engine_policy import default_engine, resolve_engine
+    from server.automations.registry import registry
+
+    policy = registry.get(origin).engine_policy
+    assert default_engine(policy) is AgentEngine.CLAUDE_CODE
+    assert resolve_engine(policy, {}, automations_enabled=True) is AgentEngine.CLAUDE_CODE
+
+
+@pytest.mark.parametrize("origin", ["sdlc-intake", "sdlc-synthesizer"])
+def test_the_kill_switch_clamps_an_opted_in_sdlc_origin_back_to_claude(origin):
+    """Gate 2 of 3: even an explicit ``{"engine": "codex"}`` config resolves to
+    Claude while ``CCSWITCH_CODEX_AUTOMATIONS_ENABLED`` is off. ``codex_allowed``
+    (unlike ``codex_only``) has Claude acceptance evidence to fall back on, so
+    the switch downgrades rather than refusing."""
+    from server.automations.engine_policy import resolve_engine
+    from server.automations.registry import registry
+
+    policy = registry.get(origin).engine_policy
+    assert resolve_engine(policy, {"engine": "codex"},
+                          automations_enabled=False) is AgentEngine.CLAUDE_CODE
+    assert resolve_engine(policy, {"engine": "codex"},
+                          automations_enabled=True) is AgentEngine.CODEX
+
+
+@pytest.mark.parametrize("origin", ["sdlc-intake", "sdlc-synthesizer"])
+def test_an_opted_in_codex_sdlc_launch_is_still_refused_without_the_network_opt_in(
+        origin):
+    """Gate 3 of 3: past the ceiling and past the kill switch, an unattended
+    Codex artifact session is refused because its sandbox could not push the
+    branch the stage exists to produce (#1263). The escalation that lifts this
+    is owner-authorized and ships off — see the test below."""
+    from server.automations.engine_policy import escalate_for_codex_network_opt_in
+    from server.automations.registry import registry
+
+    assert registry.get(origin).engine_policy is EnginePolicy.CODEX_ALLOWED
+    mode, note = escalate_for_codex_network_opt_in(
+        AgentEngine.CODEX, "full-auto", network_opt_in=False)
+    assert note is None and mode == "full-auto"
+    assert unattended_launch_blocker(AgentEngine.CODEX, mode) is not None
+
+
+@pytest.mark.parametrize("origin", ["sdlc-intake", "sdlc-synthesizer"])
+def test_the_widened_ceiling_publishes_the_codex_launch_controls(origin):
+    """What widening actually buys the operator: the engine selector and the
+    Codex model/effort fields become part of this origin's published schema, so
+    ``validate_config`` stops rejecting ``{"engine": "codex"}`` with a 422."""
+    from server.automations.engine_policy import (
+        CODEX_EFFORT_CONFIG_KEY,
+        CODEX_MODEL_CONFIG_KEY,
+        ENGINE_CONFIG_KEY,
+        effective_config_schema,
+    )
+    from server.automations.registry import registry
+
+    keys = {f.key for f in effective_config_schema(registry.get(origin))}
+    assert {ENGINE_CONFIG_KEY, CODEX_MODEL_CONFIG_KEY, CODEX_EFFORT_CONFIG_KEY} <= keys
 
 
 def test_the_codex_automation_kill_switch_still_ships_off():
