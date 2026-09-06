@@ -604,6 +604,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
                 pct={w.pct}
                 label={w.label}
                 resetsAt={w.resetsAt}
+                staleAsOf={account?.usage?.staleAsOf}
               />
             </span>
           ) : null

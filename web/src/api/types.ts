@@ -42,6 +42,11 @@ export interface AccountUsage {
   // Anthropic console. Distinct from `allowExtraUsage` below, which is this
   // app's opt-in. Optional: older payloads predate the field.
   extraUsageEnabled?: boolean
+  // Set when the fresh fetch (local cache, then the daemon RPC) failed and
+  // this reading is the last-known ledger value served as a fallback instead
+  // of "unavailable" — the ISO fetch time of THAT reading, so the UI can label
+  // it. `null` when the value came from a fresh read.
+  staleAsOf: string | null
 }
 
 export interface LiveSessionCounts {

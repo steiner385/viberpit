@@ -262,7 +262,7 @@ async def test_safe_usage_does_not_orphan_daemon_sockets(blackhole, blackhole_tl
     client = blackhole.client(blackhole_tls)
     orch = RemoteOrchestrator(client)
     try:
-        assert await acct_api._safe_usage(orch, "acct", _DEADLINE) is None
+        assert await acct_api._safe_usage(orch, "acct", _DEADLINE) == (None, None)
         await blackhole.settle()
         blackhole.assert_no_orphans()
     finally:
