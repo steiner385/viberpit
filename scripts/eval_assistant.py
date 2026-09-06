@@ -55,6 +55,13 @@ class EvalCase:
     expect_tools: tuple[str, ...] = ()
     forbid_tools: tuple[str, ...] = ()
     rubric: str = ""
+    # Task 9.3: true for a case that exercises an operator-tier tool (start_deploy,
+    # upgrade_host, refresh_account, set_account_enabled, start_reauth). Run ONLY under
+    # --operator, where operator tools are actually registered — under a normal run the
+    # tool would not exist to call, so the case would fail for a reason unrelated to the
+    # model's answer. A case's `operator` must equal the run's --operator flag; see
+    # `select_cases`.
+    operator: bool = False
 
 
 def load_cases(path: Path = DEFAULT_CASES_PATH) -> list[EvalCase]:
@@ -75,8 +82,17 @@ def load_cases(path: Path = DEFAULT_CASES_PATH) -> list[EvalCase]:
             expect_tools=tuple(doc.get("expect_tools") or ()),
             forbid_tools=tuple(doc.get("forbid_tools") or ()),
             rubric=doc.get("rubric", ""),
+            operator=bool(doc.get("operator", False)),
         ))
     return cases
+
+
+def select_cases(cases: list[EvalCase], *, operator: bool) -> list[EvalCase]:
+    """Cases for one run: a case's `operator` flag must match the run mode. An
+    operator-tier case run without --operator would call a tool that is not registered;
+    a non-operator case run WITH --operator would grade a prompt/tool surface the case
+    was not written against (e.g. the negative case for a now-available tool)."""
+    return [c for c in cases if c.operator == operator]
 
 
 @dataclass(frozen=True)
@@ -521,7 +537,7 @@ def _extract_text(messages: list[Any]) -> str:
     return "".join(out)
 
 
-def _instrumented_tools(observed: list[str]) -> list[Any]:
+def _instrumented_tools(observed: list[str], *, operator: bool = False) -> list[Any]:
     from server.assistant.client import AssistantApi
     from server.assistant.tools import build_tools
 
@@ -529,7 +545,7 @@ def _instrumented_tools(observed: list[str]) -> list[Any]:
                        session_id="eval-session", identity=_EVAL_IDENTITY,
                        transport=httpx.MockTransport(_fixture_handler))
 
-    tools = build_tools(api)
+    tools = build_tools(api, operator=operator)
     for t in tools:
         original = t.handler
 
@@ -556,9 +572,10 @@ async def run_turn(
     from server.sessions.helper_call import run_helper_call
 
     observed: list[str] = []
-    tools = _instrumented_tools(observed)
+    tools = _instrumented_tools(observed, operator=case.operator)
     server = create_sdk_mcp_server(name="ccswitch", version="eval", tools=tools)
-    overlay = assistant_options(server=server, max_turns=max_turns, model=model)
+    overlay = assistant_options(server=server, max_turns=max_turns, model=model,
+                                operator=case.operator)
 
     header = render_context_header({"route": case.route}, None)
     prompt_text = f"{header}\n{case.prompt}"
@@ -705,9 +722,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default="sonnet")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--threshold", type=float, default=0.90)
+    parser.add_argument("--operator", action="store_true",
+                        help="Run the operator-tier cases (start_deploy, upgrade_host, "
+                             "refresh_account, set_account_enabled, start_reauth) with "
+                             "operator tools registered, instead of the default run.")
     args = parser.parse_args(argv)
 
-    cases = load_cases(args.cases)
+    cases = select_cases(load_cases(args.cases), operator=args.operator)
     if args.limit:
         cases = cases[: args.limit]
 
