@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-from server.auth.identity import host_is_loopback, verify_identity
+from server.auth.identity import client_node_name, host_is_loopback, verify_identity
 from server.config import get_settings
 from server.db.models import AppSession
 
@@ -407,6 +407,16 @@ def current_identity(request: Request) -> str:
             detail={"code": "UNAUTHORIZED", "message": "No valid identity"},
         )
     return identity
+
+
+def current_client_node(request: Request) -> str | None:
+    """FastAPI dependency — the tailnet node the caller's browser is on, or None.
+
+    Soft: it never rejects a request. Only the session-create route asks for it (an
+    extra whois subprocess per create, not per request), so it is a dependency
+    rather than middleware state.
+    """
+    return client_node_name(request)
 
 
 async def require_ws_identity(websocket: WebSocket) -> str:
