@@ -305,6 +305,15 @@ def test_the_codex_automation_kill_switch_still_ships_off():
     assert getattr(get_settings(), "codex_automations_enabled", False) is False
 
 
+def test_the_codex_network_opt_in_still_ships_off():
+    """#1263's network-egress escalation is owner-authorized, not a default: an
+    unattended Codex automation must still be refused, not silently granted
+    danger-full-access, absent an explicit operator opt-in."""
+    from server.config import get_settings
+
+    assert getattr(get_settings(), "codex_unattended_network_opt_in", False) is False
+
+
 def test_the_db_is_untouched_by_this_suite(tmp_path):
     """Guard rail: these are pure/loop-level tests; if one starts needing a DB the
     fixture belongs here explicitly rather than leaking a global."""

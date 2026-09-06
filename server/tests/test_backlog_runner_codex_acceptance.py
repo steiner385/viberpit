@@ -25,7 +25,9 @@ from ccswitch.engines import AgentEngine
 from server.automations.backlog_prompt import build_implement_prompt
 from server.automations.backlog_selection import Batch
 from server.automations.engine_policy import (
+    CODEX_NETWORK_OPT_IN_MODE,
     EnginePolicy,
+    escalate_for_codex_network_opt_in,
     unattended_launch_blocker,
 )
 from server.db import db_session, init_db
@@ -122,6 +124,48 @@ def test_an_unmappable_mode_is_refused_rather_than_assumed_fine():
 
 
 # --------------------------------------------------------------------------- #
+# 2b. The owner-authorized network opt-in (#1263) — narrow by construction.    #
+# --------------------------------------------------------------------------- #
+
+def test_the_opt_in_is_a_no_op_when_unset():
+    mode, note = escalate_for_codex_network_opt_in(
+        AgentEngine.CODEX, "full-auto", network_opt_in=False)
+    assert (mode, note) == ("full-auto", None)
+    assert unattended_launch_blocker(AgentEngine.CODEX, mode) is not None
+
+
+def test_the_opt_in_escalates_only_the_full_auto_fallback():
+    mode, note = escalate_for_codex_network_opt_in(
+        AgentEngine.CODEX, "full-auto", network_opt_in=True)
+    assert mode == CODEX_NETWORK_OPT_IN_MODE
+    assert note is not None and "full-auto" in note
+    assert unattended_launch_blocker(AgentEngine.CODEX, mode) is None
+
+
+@pytest.mark.parametrize("mode", ["interactive", "acceptEdits", "auto",
+                                  "allowlist", "plan"])
+def test_the_opt_in_never_overrides_an_explicit_or_pinned_mode(mode):
+    """An operator who pinned or explicitly chose a restrictive mode is making a
+    deliberate choice; the opt-in only rescues the automation's OWN unattended
+    fallback, it must never read as license to override a human's pick."""
+    escalated, note = escalate_for_codex_network_opt_in(
+        AgentEngine.CODEX, mode, network_opt_in=True)
+    assert (escalated, note) == (mode, None)
+
+
+def test_the_opt_in_does_not_touch_an_already_egress_capable_mode():
+    escalated, note = escalate_for_codex_network_opt_in(
+        AgentEngine.CODEX, "bypassPermissions", network_opt_in=True)
+    assert (escalated, note) == ("bypassPermissions", None)
+
+
+def test_the_opt_in_is_codex_only():
+    escalated, note = escalate_for_codex_network_opt_in(
+        AgentEngine.CLAUDE_CODE, "full-auto", network_opt_in=True)
+    assert (escalated, note) == ("full-auto", None)
+
+
+# --------------------------------------------------------------------------- #
 # 3. The spawn path: a refused launch must cost nothing and claim nothing.     #
 # --------------------------------------------------------------------------- #
 
@@ -174,6 +218,43 @@ def test_a_codex_spawn_with_an_egress_capable_mode_proceeds(tmp_path, monkeypatc
         assert rec is not None
         assert rec.launch_kwargs["engine"] is AgentEngine.CODEX
         assert rec.launch_kwargs["permission_mode"] == "bypassPermissions"
+
+    asyncio.run(run())
+
+
+def test_a_codex_spawn_under_the_network_opt_in_escalates_and_proceeds(
+        tmp_path, monkeypatch):
+    """With CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN set, the automation's own
+    full-auto fallback is escalated rather than refused, and the escalation is
+    recorded — not silent."""
+
+    async def run():
+        ctx = await _codex_runner_ctx(tmp_path, "cx_e.db", monkeypatch)
+        monkeypatch.setenv("CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN", "true")
+        rec = await ctx.spawn_session(origin_ref="o/r#1", name="backlog o/r#1")
+        assert rec is not None
+        assert rec.launch_kwargs["permission_mode"] == "bypassPermissions"
+        kinds = [e["kind"] for e in await ctx.list_events()]
+        assert "engine_network_opt_in_escalated" in kinds
+        assert "engine_launch_refused" not in kinds
+
+    asyncio.run(run())
+
+
+def test_a_codex_spawn_pinned_to_a_restrictive_mode_stays_refused_under_opt_in(
+        tmp_path, monkeypatch):
+    """The opt-in must not read as license to override an operator's own pinned
+    account default — only the automation's full-auto fallback is in scope."""
+
+    async def run():
+        ctx = await _codex_runner_ctx(tmp_path, "cx_f.db", monkeypatch)
+        monkeypatch.setenv("CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN", "true")
+        rec = await ctx.spawn_session(origin_ref="o/r#1", name="backlog o/r#1",
+                                      permission_mode="acceptEdits")
+        assert rec is None
+        kinds = [e["kind"] for e in await ctx.list_events()]
+        assert "engine_launch_refused" in kinds
+        assert "engine_network_opt_in_escalated" not in kinds
 
     asyncio.run(run())
 

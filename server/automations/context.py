@@ -255,7 +255,11 @@ class AutomationContext:
         # Engine BEFORE permission mode and before any create_session work: the
         # engine decides which of the caller's launch inputs survive, and a
         # refusal must cost nothing.
-        from .engine_policy import sanitize_launch_for_engine, unattended_launch_blocker
+        from .engine_policy import (
+            escalate_for_codex_network_opt_in,
+            sanitize_launch_for_engine,
+            unattended_launch_blocker,
+        )
         plan = await self.launch_plan_or_refuse(origin_ref)
         if plan is None:
             return None
@@ -278,7 +282,21 @@ class AutomationContext:
         # as the automation default: a Backlog Runner's core work is shell (git, gh,
         # pytest), which acceptEdits still gates — so it would stall just the same.
         mode = resolve_permission_mode(create_kwargs)
+        # Owner-authorized escalation (#1263): a no-op unless
+        # CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN is set, in which case an
+        # otherwise-doomed `full-auto` Codex fallback is promoted to the one
+        # profile whose sandbox permits network egress, so the automation's own
+        # push/PR contract can complete instead of being refused below.
+        from server.config import get_settings
+        network_opt_in = bool(getattr(get_settings(), "codex_unattended_network_opt_in", False))
+        mode, escalation_note = escalate_for_codex_network_opt_in(
+            engine, mode, network_opt_in=network_opt_in)
         create_kwargs["permission_mode"] = mode
+        if escalation_note:
+            # Visible, not silent — same rule as the dropped-input notice above.
+            await self.emit("warn", escalation_note, kind="engine_network_opt_in_escalated",
+                            target=origin_ref,
+                            detail={"engine": engine.value, "permissionMode": mode})
         # Last gate before the session exists: the engine/mode pair has to be able
         # to produce the one output an automation has (a pushed branch and a PR).
         # Refusing here costs nothing; discovering it at `git push` costs the whole

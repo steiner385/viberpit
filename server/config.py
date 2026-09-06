@@ -152,6 +152,18 @@ try:
         # having to unwind each origin's config (server/automations/engine_policy.py).
         codex_automations_enabled: bool = Field(
             default=False, alias="CCSWITCH_CODEX_AUTOMATIONS_ENABLED")
+        # Off by default, and separate from `codex_automations_enabled`: that flag
+        # only lets an origin RUN Codex unattended, it says nothing about the
+        # sandbox. Codex's pinned app-server schema exposes no settable network
+        # knob short of `danger-full-access` (server/codex/permissions.py), so an
+        # operator who wants an unattended origin's own contract — push a branch,
+        # open a PR — to actually complete must opt in to that sandbox explicitly
+        # (#1263). Flipping this does not by itself widen anything: it only takes
+        # effect where `unattended_launch_blocker` would otherwise refuse the
+        # launch, and only escalates the automation's own `full-auto` fallback,
+        # never an operator's explicit or account-pinned mode.
+        codex_unattended_network_opt_in: bool = Field(
+            default=False, alias="CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN")
         codex_bin: str = Field(default="codex", alias="CCSWITCH_CODEX_BIN")
         # Comma list of `codex --version` strings an operator has verified beyond
         # the pin in server/codex/schema.py. It WIDENS the pinned set; it can never
@@ -407,6 +419,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         codex_automations_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_CODEX_AUTOMATIONS_ENABLED", "false").lower() in ("1","true","yes","on")
+        )
+        codex_unattended_network_opt_in: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN", "false").lower() in ("1","true","yes","on")
         )
         codex_bin: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_CODEX_BIN", "codex")

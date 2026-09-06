@@ -184,6 +184,7 @@ export interface AgentCapabilities {
   subagents: boolean
   attachments: boolean
   accountRotation: boolean
+  accountSwitchNewThread: boolean
 }
 
 /**

@@ -150,7 +150,7 @@ describe('SessionBody — model switch confirmation on busy sessions', () => {
     const capabilities: AgentCapabilities = {
       models: true, reasoningEffort: true, steer: true, interrupt: true, approvals: true,
       questions: false, fork: false, adopt: false, selfModelSwitch: false, subagents: false,
-      attachments: true, accountRotation: false,
+      attachments: true, accountRotation: false, accountSwitchNewThread: true,
     }
     const offer: EngineOffer = {
       engine: 'codex', available: true, hosts: ['dobby'], unavailableReasons: {}, capabilities,

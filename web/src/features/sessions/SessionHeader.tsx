@@ -111,10 +111,15 @@ export function SessionHeader({
   const agent = engineBadge(record?.engine)
   // "Next best account" recomposes the target account's config dir and syncs
   // credentials back — machinery that only exists for engines declaring
-  // `accountRotation`. An engine without it is REFUSED by the rotation path
-  // server-side, so offering the action would offer a guaranteed error.
+  // `accountRotation`. An engine that can't preserve the live thread but CAN start
+  // a fresh one on the target account (`accountSwitchNewThread`, e.g. Codex) still
+  // offers the action — the server reports which happened via the `rotated`
+  // event's `newThread` flag rather than silently claiming continuity. An engine
+  // with NEITHER capability is REFUSED by the rotation path server-side, so
+  // offering the action there would offer a guaranteed error.
   const caps = useEngineCapabilities(record?.engine)
   const canRotate = canUseEngine(caps, 'accountRotation')
+    || canUseEngine(caps, 'accountSwitchNewThread')
 
   // Both chevrons render as a pair: useSessionNeighbors returns prevId/nextId
   // both-null (single/unknown session) or both-set (wraparound), never one null.

@@ -299,7 +299,7 @@ const caps = (over: Partial<AgentCapabilities> = {}): AgentCapabilities => ({
   models: false, reasoningEffort: false, steer: false, interrupt: false,
   approvals: false, questions: false, fork: false, adopt: false,
   selfModelSwitch: false, subagents: false, attachments: false,
-  accountRotation: false, ...over,
+  accountRotation: false, accountSwitchNewThread: false, ...over,
 })
 
 const offer = (engine: 'claude_code' | 'codex', capabilities: AgentCapabilities): EngineOffer => ({
@@ -320,17 +320,31 @@ describe('SessionHeader — account rotation is capability-gated', () => {
     expect(screen.getByRole('menuitem', { name: /next best account/i })).toBeInTheDocument()
   })
 
-  it('hides it for an engine that does not', async () => {
+  it('hides it for an engine that declares neither capability', async () => {
     // Rotation recomposes the target account's config dir and syncs credentials
-    // back; the server REFUSES an engine without the capability, so offering the
-    // action would offer a guaranteed error.
+    // back; the server REFUSES an engine without either capability, so offering
+    // the action would offer a guaranteed error.
     renderHeader({
       props: { onRotate: vi.fn() },
       sessions: [session({ id: 'sess-1', engine: 'codex' })],
-      engines: [offer('codex', caps({ accountRotation: false }))],
+      engines: [offer('codex', caps({ accountRotation: false, accountSwitchNewThread: false }))],
     })
     await openActions()
     expect(screen.queryByRole('menuitem', { name: /next best account/i })).toBeNull()
+  })
+
+  it('offers it for an engine that can only start a fresh thread on switch', async () => {
+    // Codex can't preserve a live thread across accounts but CAN start a new one
+    // on the target account — accountRotation stays false, but the action is
+    // still safe to offer (the server reports the loss via the rotated event's
+    // newThread flag rather than silently claiming continuity).
+    renderHeader({
+      props: { onRotate: vi.fn() },
+      sessions: [session({ id: 'sess-1', engine: 'codex' })],
+      engines: [offer('codex', caps({ accountRotation: false, accountSwitchNewThread: true }))],
+    })
+    await openActions()
+    expect(screen.getByRole('menuitem', { name: /next best account/i })).toBeInTheDocument()
   })
 
   it('keeps offering it while /api/config has not answered', async () => {

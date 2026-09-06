@@ -28,7 +28,7 @@ def test_capability_set_covers_every_declared_field():
     assert declared == {
         "models", "reasoning_effort", "steer", "interrupt", "approvals",
         "questions", "fork", "adopt", "self_model_switch", "subagents", "attachments",
-        "account_rotation",
+        "account_rotation", "account_switch_new_thread",
     }
 
 
@@ -53,6 +53,9 @@ def test_codex_advertises_the_planned_controls():
     # target account's CLAUDE config dir — a Codex session is refused by that path.
     assert not CODEX_CAPABILITIES.questions
     assert not CODEX_CAPABILITIES.account_rotation
+    # ...but a fresh thread on the target account's OWN app-server needs none of
+    # that Claude-specific machinery, so the honest fallback is available (#1275).
+    assert CODEX_CAPABILITIES.account_switch_new_thread
 
 
 def test_no_capabilities_is_all_false():
