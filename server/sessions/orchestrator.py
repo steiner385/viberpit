@@ -2024,7 +2024,18 @@ class SessionOrchestrator:
         # shared `params` JSON blob below (mixed-daemon-version TypeError hazard,
         # see the comment on that blob) or a restart, so this is the only place a
         # queued session's native-vs-virtual choice can be captured durably.
-        display_mode = self._resolve_display_mode_for(display, client_node)
+        #
+        # Same _prior precedence as _spawn_session: an approve-at-capacity re-enqueue
+        # (resolve_model_approval's approve branch, when the fleet is back at the cap)
+        # calls this with the SAME session_id a _hold_for_approval already decided —
+        # its placeholder row is gone by the time we get here (the approve path
+        # deletes it before calling _enqueue_session/_spawn_session to avoid a
+        # duplicate-PK insert), but the in-memory record survives on purpose (see
+        # resolve_model_approval's comment on why), so its persisted display_mode
+        # must win over a fresh re-resolution with client_node=None.
+        _prior = self._records.get(session_id)
+        display_mode = (getattr(_prior, "display_mode", None)
+                        or self._resolve_display_mode_for(display, client_node))
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",

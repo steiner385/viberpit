@@ -311,3 +311,56 @@ async def test_held_native_request_persists_and_promotes_native(spawn_env):
         assert orch._display_env(out.id) == {"DISPLAY": ":0"}
     finally:
         await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_approve_at_capacity_reenqueues_as_native(spawn_env):
+    """Round-2 review finding: approving a native hold when the fleet is back at the
+    cap takes resolve_model_approval's re-ENQUEUE branch, not the direct spawn one.
+    _enqueue_session used to resolve display_mode fresh with client_node=None (the
+    approve call site never had it), discarding the "native" decision _hold_for_approval
+    already made — even though the in-memory record for this session_id (kept alive on
+    purpose across the approve, see resolve_model_approval's comment) still carried it.
+    _enqueue_session must prefer that surviving record, exactly like _spawn_session's
+    `_prior` precedence, before ever falling back to a fresh resolution."""
+    x11, native = FakeX11(), FakeNative()
+    orch = await _orch(spawn_env, x11, native, max_active_sessions=1)
+    try:
+        # Fill the one capacity slot with a live session — pending_approval holds are
+        # capacity-exempt, so this doesn't block the create_session below from parking.
+        a = await orch.create_session("one", account="acct")
+        assert a.status == "idle"
+
+        rec = await orch.create_session(
+            "n", account="acct", client_node="dobby", model="fable")
+        assert rec.status == "pending_approval"
+        assert rec.display_mode == "native"
+
+        # Approve while still at the cap: resolve_model_approval must take its
+        # re-enqueue branch, not spawn directly.
+        out = await orch.resolve_model_approval(rec.id, "approve", identity="user@x")
+        assert out.status == "queued"
+        assert out.display_mode == "native"
+
+        from server.db import db_session
+        from server.db.models import Session as DbSession
+        async with db_session() as db:
+            row = await db.get(DbSession, out.id)
+        assert row.display_mode == "native"
+
+        # The queue params blob must still carry neither client_node nor display.
+        from server.sessions import session_queue as sq
+        entry = await sq.next_entry()
+        assert "client_node" not in entry.params and "display" not in entry.params
+
+        # Free the slot and drain: the promoted session must be native, with no
+        # Xvfb lease and the host desktop injected.
+        await orch.close_session(a.id)
+        started = await orch._maybe_start_queued()
+        assert started == 1
+        promoted = orch._records[out.id]
+        assert promoted.display_mode == "native"
+        assert out.id not in x11.started
+        assert orch._display_env(out.id) == {"DISPLAY": ":0"}
+    finally:
+        await orch.stop()
