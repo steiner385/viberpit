@@ -20,6 +20,7 @@ from server.stt.engine import WhisperEngine, is_available as stt_available
 from server.stt.ws import build_stt_ws_router
 from server.db import init_db
 from server.ipc.client import DaemonUnavailable, DaemonError
+from ccswitch import brand
 from server.reauth import REAUTH_DISPLAY_KEY, ReauthManager
 from server.sessions.orchestrator import SessionOrchestrator
 from server.version import running_git_sha
@@ -617,7 +618,7 @@ def create_app(
     orchestrator: SessionOrchestrator | None = None,
     reauth_manager: ReauthManager | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="ccswitch", version="0.1.0", lifespan=_lifespan)
+    app = FastAPI(title=brand.NAME, version="0.1.0", lifespan=_lifespan)
 
     # Attach the session facade. CCSWITCH_SESSIOND_ENDPOINT (https/unix URL) or the
     # legacy CCSWITCH_SESSIOND_SOCKET selects remote mode: the edge drives an

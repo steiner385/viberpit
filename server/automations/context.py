@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from sqlalchemy import delete, select
 
+from ccswitch import brand
 from server.db import db_session
 from server.db.models import AutomationEvent, AutomationTargetState
 
@@ -105,7 +106,7 @@ class AutomationContext:
                 from server.sessions import push as push_mod
                 await push_mod.notify_event(
                     "automation_error" if level == "error" else "automation_warn",
-                    f"ccswitch — {self.automation_id}", summary,
+                    f"{brand.NAME} — {self.automation_id}", summary,
                     automation=self.automation_id, fanout_when_unconfigured=False)
             except Exception:
                 log.debug("automation notify_event failed", exc_info=True)

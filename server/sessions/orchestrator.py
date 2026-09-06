@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from server.sessions.replay import EngineReplay
 
 from ccswitch import accounts as ccswitch_accounts
+from ccswitch import brand
 from ccswitch import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
 from ccswitch.accounts import provider_or_none as _provider_of
 from ccswitch.account_names import (
@@ -4045,7 +4046,7 @@ class SessionOrchestrator:
                 rec = self._records.get(session_id)
                 name = rec.name if rec else session_id
                 await push_mod.notify_event(
-                    "needs_input", "ccswitch — needs you", f"{name}: {status}",
+                    "needs_input", f"{brand.NAME} — needs you", f"{name}: {status}",
                     repo=getattr(rec, "repo", None),
                     account=getattr(rec, "account_name", None),
                     url=f"/session/{session_id}", orch=self)
@@ -7235,7 +7236,7 @@ class SessionOrchestrator:
             return
         self._pushed_pr.add(key)
         await push_mod.notify_event(
-            "pr_broke", "ccswitch — PR broke", f"{rec.name}: {repo} CI failing",
+            "pr_broke", f"{brand.NAME} — PR broke", f"{rec.name}: {repo} CI failing",
             repo=repo, account=getattr(rec, "account_name", None),
             url=f"/session/{rec.id}", orch=self,
         )
