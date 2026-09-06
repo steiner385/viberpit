@@ -299,6 +299,33 @@ class AuditEvent(Base):
     via: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
 
+class AssistantToken(Base):
+    """A user-scoped external bearer token (`ccas2:`, v2 spec §5/§7, Pack O/X, Task 9.5).
+
+    Unlike the loopback-only `ccas1:` assistant token, this is minted from the browser
+    for use by an external client (e.g. `ccswitch mcp`) reaching the edge over the
+    tailnet. Only a hash of the signed token is stored — the token itself is shown once
+    at mint time and never persisted — so this table stays consistent with the module
+    docstring's "secrets and tokens are never stored here" even though it is, in effect,
+    a revocation list keyed by token identity.
+    """
+
+    __tablename__ = "assistant_tokens"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    identity: Mapped[str] = mapped_column(String, nullable=False)
+    scope: Mapped[str] = mapped_column(String, nullable=False)  # "read" | "act"
+    token_hash: Mapped[str] = mapped_column(String, nullable=False)  # sha256 hex digest
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None)
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None)
+    label: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+
+
 class PushSubscription(Base):
     """A browser Web Push subscription. endpoint is the natural unique key."""
 
