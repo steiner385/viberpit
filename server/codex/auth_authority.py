@@ -369,7 +369,13 @@ class CredentialAuthority:
             await cancel_and_reap(
                 state.task, phase=f"codex-auth-login:{account}", timeout=5.0
             )
-        state.snapshot = LoginSnapshot(state=LOGIN_FAILED, error="cancelled")
+        # The task may have completed successfully during the cancel/reap above
+        # (or between the caller's own status check and this call). A login that
+        # already succeeded must never be relabelled failed-and-discardable: that
+        # would hand the add-flow cancel route a false "safe to delete" signal for
+        # an account that now holds a real credential.
+        if state.snapshot.state != LOGIN_AUTHORIZED:
+            state.snapshot = LoginSnapshot(state=LOGIN_FAILED, error="cancelled")
         return state.snapshot
 
     async def _run_login(self, account: str, home: Path) -> None:

@@ -1,4 +1,5 @@
 [
+  "advance_initiative",
   "answer_question",
   "archive_session",
   "cancel_queued_session",
@@ -9,6 +10,7 @@
   "fix_pr",
   "get_automation_events",
   "get_deploy_status",
+  "get_initiative",
   "get_pipeline_health",
   "get_quiet_hours",
   "get_session",
@@ -18,6 +20,7 @@
   "list_archived_sessions",
   "list_automations",
   "list_hosts",
+  "list_initiatives",
   "list_notification_channels",
   "list_notification_rules",
   "list_prs",
