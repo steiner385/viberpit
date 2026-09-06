@@ -52,6 +52,10 @@ def test_codex_advertises_the_planned_controls():
     assert not CODEX_CAPABILITIES.fork
     assert not CODEX_CAPABILITIES.adopt
     assert not CODEX_CAPABILITIES.self_model_switch
+    # `subAgentActivity`/`collabAgentToolCall` are real (#1274) and already
+    # normalized to `Task` events, but multi-call identity collapsing and
+    # transcript drill-down are unverified against a live binary — stays
+    # gated per "keep unavailable capabilities visibly gated until verified".
     assert not CODEX_CAPABILITIES.subagents
     # Rotation composes the target account's CLAUDE config dir — a Codex
     # session is refused by that path.
