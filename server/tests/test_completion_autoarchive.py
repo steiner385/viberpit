@@ -454,6 +454,19 @@ def _stub_intent(monkeypatch, verdict):
     return calls
 
 
+async def _settle(pred, timeout: float = 5.0) -> None:
+    """Wait until *pred()* holds instead of counting loop ticks. The claim-verification
+    path awaits more than ``_drain``'s fixed budget — ``_autopilot_resolve_pr_intent``
+    persists a confirmed verdict through ``db_session()``, a real round-trip whenever
+    another test file in the same xdist worker already initialised a DB — so a
+    tick-counting wait raced it (one local failure on 2026-09-06; green in CI)."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not pred():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("completion gate did not settle in time")
+        await asyncio.sleep(0.005)
+
+
 def test_global_disable_still_nudges_unmet_bar():
     """Auto-archive OFF gates the archive step ONLY: a completed session that is not
     actually done (open-unarmed PR) is still nudged toward the remaining work."""
@@ -502,7 +515,7 @@ def test_self_declared_no_pr_on_code_goal_is_nudged_when_unverified(monkeypatch)
         orch, archived, nudged = _orch({"s1": rec}, pr_info=None)
         calls = _stub_intent(monkeypatch, PrIntentVerdict(False, "", "high"))
         orch._maybe_autoarchive_completed("s1", "complete", rec)
-        await _drain()
+        await _settle(lambda: bool(nudged or archived))
         assert calls == [_CODE_GOAL], "the claim must be verified by the classifier"
         assert archived == [], "an unverified self-declared no-PR is not the finished state"
         assert nudged and "ask" in nudged[0].lower()
@@ -520,7 +533,7 @@ def test_self_declared_no_pr_on_code_goal_archives_when_classifier_confirms(monk
         orch, archived, nudged = _orch({"s1": rec}, pr_info=None)
         _stub_intent(monkeypatch, PrIntentVerdict(True, "not-needed", "high"))
         orch._maybe_autoarchive_completed("s1", "complete", rec)
-        await _drain()
+        await _settle(lambda: bool(archived or nudged))
         assert [a["session_id"] for a in archived] == ["s1"]
         assert nudged == []
         assert rec.pr_resolution_source == "classifier"

@@ -599,6 +599,8 @@ def _fixture_handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(404, json={"error": {"code": "NOT_FOUND", "message": path}})
         if path.startswith("/api/sessions/") and path.endswith("/transcript"):
             return httpx.Response(200, json=_transcript(path.split("/")[3]))
+        if path == "/api/sessions/adoptable":
+            return httpx.Response(200, json={"candidates": []})
         if path.startswith("/api/sessions/"):
             sid = path.split("/")[3]
             row = next((r for r in _sessions() if r["id"] == sid), None)

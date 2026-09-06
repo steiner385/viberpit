@@ -266,7 +266,8 @@ _ALL_OPTIONAL_TOOLS = ("list_sessions", "list_prs", "list_accounts", "list_hosts
                        "list_notification_channels", "list_notification_rules",
                        "get_quiet_hours", "test_notification", "set_quiet_hours",
                        "list_initiatives", "list_backlog_candidates", "get_backlog_groups",
-                       "get_cicd_findings", "get_pr_doctor_consolidation", "list_watches")
+                       "get_cicd_findings", "get_pr_doctor_consolidation", "list_watches",
+                       "list_adoptable_sessions")
 
 
 @pytest.mark.asyncio
@@ -334,6 +335,18 @@ _MUTATION_CALLS = [
      "POST", f"/api/sessions/{_SID}/fix-pr", {"number": 42}),
     ("set_automation_enabled", {"id": "autopilot", "enabled": False},
      "PATCH", "/api/automations/autopilot", {"enabled": False}),
+    ("rename_session", {"id": _SID, "name": "  Refactor billing  "},
+     "PATCH", f"/api/sessions/{_SID}", {"name": "Refactor billing"}),
+    ("move_in_queue", {"id": _SID, "op": "top"},
+     "POST", f"/api/sessions/{_SID}/queue-move", {"op": "top", "position": None}),
+    ("move_in_queue", {"id": _SID, "op": "position", "position": 2},
+     "POST", f"/api/sessions/{_SID}/queue-move", {"op": "position", "position": 2}),
+    ("pin_account", {"id": _SID, "pinned": True},
+     "POST", f"/api/sessions/{_SID}/account-pin", {"pinned": True}),
+    ("rotate_session", {"id": _SID}, "POST", f"/api/sessions/{_SID}/rotate", None),
+    ("reload_session", {"id": _SID}, "POST", f"/api/sessions/{_SID}/reload", None),
+    ("adopt_session", {"claude_session_id": "ext-123"},
+     "POST", "/api/sessions/adopt", {"claudeSessionId": "ext-123"}),
     ("advance_initiative", {"slug": "foo-bar"},
      "POST", "/api/sdlc/initiatives/foo-bar/advance", None),
     ("delete_session", {"id": _SID}, "DELETE", f"/api/sessions/{_SID}/permanent", None),
@@ -408,6 +421,63 @@ async def test_resolve_permission_rejects_always_before_any_http_call():
     assert out["is_error"] is True
     assert "allow" in out["content"][0]["text"] and "deny" in out["content"][0]["text"]
     assert calls == [], "the tool must reject 'always' without touching the API"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["", "   ", "x" * 121])
+async def test_rename_session_rejects_bad_names_before_any_http_call(name):
+    calls = []
+
+    def handler(req):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), "rename_session").handler(
+        {"id": _SID, "name": name})
+    assert out["is_error"] is True
+    assert calls == [], "the tool must reject a bad name without touching the API"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args", [
+    {"id": _SID, "op": "sideways"},
+    {"id": _SID, "op": "position"},
+])
+async def test_move_in_queue_rejects_bad_args_before_any_http_call(args):
+    calls = []
+
+    def handler(req):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), "move_in_queue").handler(args)
+    assert out["is_error"] is True
+    assert calls == [], "the tool must reject bad args without touching the API"
+
+
+@pytest.mark.asyncio
+async def test_list_adoptable_sessions_hits_the_read_route():
+    def handler(req):
+        assert req.method == "GET"
+        assert req.url.path == "/api/sessions/adoptable"
+        return httpx.Response(200, json={"candidates": [{"claudeSessionId": "ext-1"}]})
+
+    out = await _tool(build_tools(_api(handler)), "list_adoptable_sessions").handler({})
+    assert "is_error" not in out
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert data == {"candidates": [{"claudeSessionId": "ext-1"}]}
+
+
+@pytest.mark.asyncio
+async def test_suggest_next_prompt_is_a_read_shaped_post():
+    def handler(req):
+        assert req.method == "POST"
+        assert req.url.path == f"/api/sessions/{_SID}/suggest"
+        return httpx.Response(200, json={"suggestions": ["Add a test for the edge case"]})
+
+    out = await _tool(build_tools(_api(handler)), "suggest_next_prompt").handler({"id": _SID})
+    assert "is_error" not in out
+    assert TOOL_SPECS["suggest_next_prompt"].tool_class is ToolClass.READ
 
 
 def test_mutation_and_destructive_annotations():

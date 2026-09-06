@@ -7,7 +7,7 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from . import accounts, assistant_mcp, configdir
+from . import accounts, assistant_ask, assistant_mcp, configdir
 from .config import load_config
 from .selector import AllAccountsBusy
 
@@ -378,6 +378,25 @@ def main(argv: list[str] | None = None) -> int:
     p_mcp.add_argument("--allow-mutations", action="store_true",
                        help="also serve mutating tools; they run with no ccswitch "
                             "confirmation, so the calling client is the only gate")
+    p_ask = sub.add_parser(
+        "ask", help="one-shot prompt to the ccswitch assistant thread")
+    p_ask.add_argument("prompt", help="the question to ask the assistant")
+    p_ask.add_argument("--url", default=assistant_ask.DEFAULT_URL,
+                       help=f"ccswitch edge base URL (default: {assistant_ask.DEFAULT_URL})")
+    p_ask.add_argument("--token-env", default=assistant_ask.DEFAULT_TOKEN_ENV,
+                       help="env var holding the ccas2: assistant token "
+                            f"(default: {assistant_ask.DEFAULT_TOKEN_ENV})")
+    p_ask.add_argument("--json", action="store_true",
+                       help="print the final text and tool calls as one JSON object "
+                            "instead of streaming to stdout")
+    p_ask.add_argument("--fresh", action="store_true",
+                       help="start a new assistant thread instead of resuming")
+    p_ask_answer = p_ask.add_mutually_exclusive_group()
+    p_ask_answer.add_argument("--yes", action="store_true",
+                              help="answer every permission card with allow")
+    p_ask_answer.add_argument("--no-input", action="store_true",
+                              help="answer every permission card with deny "
+                                   "(never prompt the TTY)")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     cfg = load_config()
 
@@ -429,4 +448,6 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_clones(args)
     if args.cmd == "mcp":
         return assistant_mcp.run(args)
+    if args.cmd == "ask":
+        return assistant_ask.run(args)
     return 1
