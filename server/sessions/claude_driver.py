@@ -26,7 +26,7 @@ from .translator import Translator
 from .permissions import PermissionRegistry, to_sdk_permission_mode
 from .questions import QuestionRegistry
 from .sdk_contract import is_turn_message
-from .status import StatusSignals, derive_status
+from .status import SEEDABLE_STATUSES, StatusSignals, derive_status
 from .transcript_repair import repair_resumed_transcript
 from .types import ASSISTANT_KIND, is_assistant_kind
 
@@ -243,6 +243,10 @@ class ClaudeAgentDriver:
         self._condensing: bool = False
         self._turns_completed: int = 0
         self._last_turn_outcome: str = "success"
+        # (base, effective) pair from the last on_status overlay (or seed_status):
+        # current_status() reports `effective` while the raw derivation still equals
+        # `base`, keeping the attach snapshot in step with the session list.
+        self._status_overlay: tuple[str, str] | None = None
         self._last_pr_resolution: str | None = None
         self._last_model_request: dict | None = None
         self._suggester = suggester
@@ -354,8 +358,35 @@ class ClaudeAgentDriver:
             self._last_progress_at = self._clock()
 
     def current_status(self) -> str:
-        """The rich derived status right now (no side effects). Used on WS attach."""
-        return derive_status(self._dash_signals())
+        """The rich derived status right now (no side effects). Used on WS attach
+        (and, via the daemon RPC snapshot, by remote-mode attaches).
+
+        Honors the last ``on_status`` overlay / persisted seed while the raw
+        derivation still equals the base that produced it — so an attach after a
+        parked "Answer needed" turn reports waiting_question, not the raw ``done``.
+        Any real signal advance (a new turn, condensing, …) changes the raw
+        derivation away from the base and supersedes the overlay automatically."""
+        status = derive_status(self._dash_signals())
+        if self._status_overlay is not None and self._status_overlay[0] == status:
+            return self._status_overlay[1]
+        return status
+
+    def seed_status(self, persisted: str) -> None:
+        """Adopt the orchestrator's persisted status as this driver's snapshot.
+
+        A rebuilt driver (daemon restart, completion release → lazy reopen) starts
+        with zeroed signals, so ``current_status`` derives ``idle`` and the attach
+        snapshot contradicts the session card (an "Answer needed" card opened to a
+        "Ready" session). Only resting hand-back statuses are adopted: mid-turn
+        statuses can't be true on a fresh driver, and structured-pending ones
+        (waiting_input / ready_review) advertise permission/plan cards that no
+        longer exist to render. The seed rides the same (base, effective) overlay
+        as ``_emit_status``, so the first real emit supersedes it."""
+        if persisted not in SEEDABLE_STATUSES:
+            return
+        base = derive_status(self._dash_signals())
+        if base != persisted:
+            self._status_overlay = (base, persisted)
 
     def pending_foreground_prompt(self) -> str | None:
         """The active foreground prompt iff a turn is live and has produced no durable
@@ -403,12 +434,20 @@ class ClaudeAgentDriver:
         self._emit(e)   # forward so the UI clears the bar
 
     async def _emit_status(self, count: int | None = None) -> None:
-        """Single status emitter — rich vocabulary to BOTH consumers.
+        """Single status emitter — ONE truth to BOTH consumers.
 
-        Emits a live Status event (for the in-session StatusBar) AND notifies the
-        orchestrator (which persists it for the session LIST). `count` is the queue
-        depth shown in the busy label; defaults to the live queue length.
-        Best-effort on the callback: a failure must never break the session loop.
+        Derives the raw dashboard status, lets the orchestrator's ``on_status``
+        callback apply its transcript-level overlays (parked ``done`` →
+        waiting_external / waiting_question, the terminal ``ended`` guard) by
+        RETURNING the final status, then broadcasts that same final value as the
+        live Status event (the in-session StatusBar). Emitting the raw status
+        BEFORE the callback was the list/session mismatch: the card read
+        "Answer needed" (overlaid waiting_question) while the open session read
+        "Your turn" (raw ``done``). The overlay is remembered as a
+        (base, effective) pair so ``current_status`` reports it too — see there.
+        `count` is the queue depth shown in the busy label; defaults to the live
+        queue length. Best-effort on the callback: a failure must never break
+        the session loop (the raw status is emitted instead).
         """
         sig = self._dash_signals()
         status = derive_status(sig)
@@ -429,12 +468,18 @@ class ClaudeAgentDriver:
                 sig.pending_plan, self.awaiting_user_input,
                 self._clock() - self._last_progress_at, n,
             )
-        self._emit(ev.Status(state=status, count=n))
+        final = status
         if self._on_status is not None:
             try:
-                await self._on_status(self.session_id, status)
+                # isinstance guard: legacy callbacks (and test stubs) return None —
+                # anything that isn't a status string means "no overlay".
+                ret = await self._on_status(self.session_id, status)
+                if isinstance(ret, str) and ret:
+                    final = ret
             except Exception:
                 log.warning("driver.on_status failed session=%s", self.session_id, exc_info=True)
+        self._status_overlay = (status, final) if final != status else None
+        self._emit(ev.Status(state=final, count=n))
 
     @staticmethod
     def _normalize_option(opt) -> dict:

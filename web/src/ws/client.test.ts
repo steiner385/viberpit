@@ -511,10 +511,15 @@ describe('SessionSocket._onRawMessage', () => {
   it('logs a downstream handler throw under its own label, and keeps the socket alive', () => {
     const sock = new SessionSocket('/ws')
     const warn = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
-    // A listener that throws makes the HANDLING stage fail on a perfectly valid
-    // frame — labelling that 'parse_error' would send the next debugger hunting a
-    // server encoding bug that does not exist.
-    sock.on('error', () => { throw new Error('listener boom') })
+    // A throw from the HANDLING stage on a perfectly valid frame — labelling that
+    // 'parse_error' would send the next debugger hunting a server encoding bug that
+    // does not exist.
+    // Driven by stubbing _handleInbound rather than by a throwing listener: since
+    // #1313 `_emit` isolates listeners, so a listener throw reports itself as
+    // ws.listener.handler_error and never reaches this catch at all.
+    ;(sock as unknown as { _handleInbound: () => void })._handleInbound = () => {
+      throw new Error('handler boom')
+    }
 
     expect(() => {
       ;(sock as unknown as Raw)._onRawMessage(
@@ -603,8 +608,11 @@ describe('SessionSocket batch liveness bookkeeping', () => {
       { type: 'textDelta', sessionId: 's1', turnId: 't1', text: 'c' },
     ] })
 
-    expect(seen).toBe(2)                                  // the loop did abort…
-    expect(probe._lastSessionFrameAt).toBe(Date.now())    // …but the evidence landed
+    // Since #1313 `_emit` isolates listeners, so the throw no longer aborts the loop
+    // and all three still dispatch. The bookkeeping below is asserted independently of
+    // that: it is evidence about the WIRE, and must land however the loop ends.
+    expect(seen).toBe(3)
+    expect(probe._lastSessionFrameAt).toBe(Date.now())
     expect(probe._syncedRevAt).toBe(T2)
     expect(probe._fruitlessProbeHeals).toBe(0)
     // …so no spurious detach+attach heal on the probe's next ticks.

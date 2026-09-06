@@ -89,7 +89,7 @@ from server.sessions.engine import (
     AgentEngine,
 )
 from server.sessions.permissions import PermissionRegistry
-from server.sessions.status import StatusSignals, derive_status
+from server.sessions.status import SEEDABLE_STATUSES, StatusSignals, derive_status
 
 logger = logging.getLogger(__name__)
 
@@ -335,6 +335,11 @@ class CodexAgentDriver:
         self._turns_completed = 0
         self._last_turn_outcome = "success"
         self._condensing = False
+        # (base, effective) pair from the last on_status overlay (or seed_status):
+        # current_status() reports `effective` while the raw derivation still equals
+        # `base`, keeping the attach snapshot in step with the session list. Same
+        # contract as ClaudeAgentDriver's overlay.
+        self._status_overlay: tuple[str, str] | None = None
         self._titled = False
         self._last_progress_at: float = self._clock()
         self._context_usage: dict = {}
@@ -1344,19 +1349,41 @@ class CodexAgentDriver:
         )
 
     def current_status(self) -> str:
-        return derive_status(self._dash_signals())
+        """The rich derived status right now (no side effects). Used on WS attach.
+
+        Honors the last ``on_status`` overlay / persisted seed while the raw
+        derivation still equals the base that produced it — see
+        ``ClaudeAgentDriver.current_status`` for the shared rationale."""
+        status = derive_status(self._dash_signals())
+        if self._status_overlay is not None and self._status_overlay[0] == status:
+            return self._status_overlay[1]
+        return status
+
+    def seed_status(self, persisted: str) -> None:
+        """Adopt the orchestrator's persisted status as this driver's snapshot.
+
+        Mirrors ``ClaudeAgentDriver.seed_status`` — see there for the rationale.
+        Only resting hand-back statuses (``SEEDABLE_STATUSES``) are adopted."""
+        if persisted not in SEEDABLE_STATUSES:
+            return
+        base = derive_status(self._dash_signals())
+        if base != persisted:
+            self._status_overlay = (base, persisted)
 
     async def _emit_status(self, count: int | None = None) -> None:
         status = derive_status(self._dash_signals())
+        final = status
+        if self._on_status is not None:
+            try:
+                ret = await self._on_status(self.session_id, status)
+                if isinstance(ret, str) and ret:
+                    final = ret
+            except Exception:  # noqa: BLE001 -- a status sink must not break the session
+                logger.debug("codex: status callback failed", exc_info=True)
+        self._status_overlay = (status, final) if final != status else None
         self._emit(
-            ev.Status(status, count=len(self._queue) if count is None else count)
+            ev.Status(final, count=len(self._queue) if count is None else count)
         )
-        if self._on_status is None:
-            return
-        try:
-            await self._on_status(self.session_id, status)
-        except Exception:  # noqa: BLE001 -- a status sink must not break the session
-            logger.debug("codex: status callback failed", exc_info=True)
 
     def open_stream(self) -> DriverStream:
         """Open an attach stream ATOMICALLY — no await anywhere in this method,

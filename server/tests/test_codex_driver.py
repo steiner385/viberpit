@@ -358,6 +358,47 @@ async def test_a_prompt_starts_a_turn_and_streams_its_answer(harness):
 
 
 @pytest.mark.asyncio
+async def test_codex_emit_status_broadcasts_overlaid_on_status_result(harness):
+    """The live Status event carries the value on_status RETURNS (the orchestrator's
+    overlay), mirroring ClaudeAgentDriver — so the in-session StatusBar and the
+    session list can never disagree, on either engine."""
+    driver = await harness.boot()
+
+    async def on_status(session_id, status):
+        return "waiting_question" if status == "done" else status
+
+    driver._on_status = on_status
+    await harness.run_turn("write a haiku")
+    harness.notify_text("cherry blossoms fall")
+    harness.notify_turn_completed()
+    await harness.settle()
+
+    assert driver.current_status() == "waiting_question"
+    assert harness.of(ev.Status)[-1].state == "waiting_question"
+
+
+@pytest.mark.asyncio
+async def test_codex_seed_status_adopts_persisted_resting_status(harness):
+    """A rebuilt driver (daemon restart / completion release) derives `idle` from its
+    fresh signals; seeding the persisted status keeps the attach snapshot consistent
+    with the session card instead of flashing a false "Ready"."""
+    driver = await harness.boot(start=False)
+    driver.seed_status("waiting_question")
+    assert driver.current_status() == "waiting_question"
+    driver._turn_active = True   # first real turn supersedes the seed
+    assert driver.current_status() == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_codex_seed_status_ignores_transient_statuses(harness):
+    """Mid-turn statuses can't be resurrected on a fresh driver — never seed them."""
+    driver = await harness.boot(start=False)
+    for transient in ("in_progress", "condensing", "retrying", "queued", ""):
+        driver.seed_status(transient)
+        assert driver.current_status() == "idle"
+
+
+@pytest.mark.asyncio
 async def test_the_native_user_message_item_does_not_double_the_echo(harness):
     """The driver's own echo is the one that carries attachments and the route
     chip; forwarding the app-server's `userMessage` item too shows every prompt

@@ -37,6 +37,7 @@
   "list_stage_models",
   "list_triage",
   "ready_merge_pr",
+  "refresh_account",
   "report_gap",
   "request_product_sync",
   "resolve_model_approval",
@@ -44,11 +45,15 @@
   "resolve_triage",
   "search_sessions",
   "send_prompt",
+  "set_account_enabled",
   "set_automation_enabled",
   "set_autopilot_paused",
   "set_model",
   "set_permission_mode",
   "set_quiet_hours",
+  "start_deploy",
+  "start_reauth",
   "test_notification",
-  "unarchive_session"
+  "unarchive_session",
+  "upgrade_host"
 ]

@@ -234,6 +234,56 @@ def test_persist_status_waiting_external_broadcasts_overlaid_status(tmp_path):
     assert "updatedAt" in event  # live-push now carries the authoritative freshness timestamp
 
 
+def test_persist_status_returns_overlaid_status(tmp_path):
+    """_persist_status returns the FINAL effective status so the driver's emitter can
+    broadcast the same value to the live in-session stream — the fix for the session
+    list saying "Answer needed" while the open session says "Your turn"."""
+    async def run():
+        orch = await _build_orch(tmp_path, name_is_auto=False)
+        orch.transcript_path = lambda sid: str(_parked_asking_transcript(tmp_path))
+        return await orch._persist_status("s1", "done")
+    assert asyncio.run(run()) == "waiting_question"
+
+
+def test_persist_status_returns_raw_status_when_no_overlay(tmp_path):
+    async def run():
+        orch = await _build_orch(tmp_path)
+        return await orch._persist_status("s1", "waiting_input")
+    assert asyncio.run(run()) == "waiting_input"
+
+
+def test_persist_status_returns_ended_when_terminal(tmp_path):
+    """The never-downgrade guard reports the terminal truth back to the caller."""
+    async def run():
+        orch = await _build_orch(tmp_path)
+        await orch._persist_status("s1", "ended")
+        return await orch._persist_status("s1", "in_progress")
+    assert asyncio.run(run()) == "ended"
+
+
+def test_ensure_driver_seeds_persisted_status(tmp_path):
+    """Re-attaching a detached session must not contradict the card: the rebuilt
+    driver's attach snapshot reports the persisted overlay status (e.g. an
+    "Answer needed" card stays "Answer needed" in the open session), not a freshly
+    derived `idle` ("Ready"). The scenario is the completion question-hold: the
+    driver was released on `complete`, then the hold flipped the record to
+    waiting_question — opening the session rebuilds the driver via ensure_driver."""
+    from unittest.mock import patch
+
+    async def run():
+        orch = await _build_orch(tmp_path, status="done", cwd=str(tmp_path))
+        orch.record("s1").status = "waiting_question"  # question-hold after release
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        with patch("server.sessions.orchestrator.compose", return_value=cfg_dir), \
+             patch("server.sessions.orchestrator.configdir"):
+            driver = await orch.ensure_driver("s1")
+        status = driver.current_status()
+        await orch.stop()
+        return status
+    assert asyncio.run(run()) == "waiting_question"
+
+
 def test_rename_pins_name_is_auto_false(tmp_path):
     async def run():
         orch = await _build_orch(tmp_path)

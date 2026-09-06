@@ -1162,8 +1162,8 @@ class SessionOrchestrator:
             overlays = self._assistant_overlays = {}
         overlays[session_id] = overlay
 
-    def _setup_assistant_overlay(self, session_id: str, *, identity: str,
-                                 model: str | None) -> "AssistantApi":
+    async def _setup_assistant_overlay(self, session_id: str, *, identity: str,
+                                       model: str | None) -> "AssistantApi":
         """Everything that makes one session an ASSISTANT rather than a coding agent:
         mint its loopback bearer token, build the in-process ``ccswitch`` MCP server on
         top of it, and register the resulting ``ClaudeAgentOptions`` overlay. Returns
@@ -1194,15 +1194,19 @@ class SessionOrchestrator:
         """
         from server.assistant.client import AssistantApi
         from server.assistant.options import assistant_options
+        from server.assistant.policy import operator_tools_enabled
         from server.assistant.server import build_server
         from server.assistant.token import mint_token
         from server.config import get_settings
+        from server.db import db_session
         cfg = get_settings()
         api = AssistantApi(base_url=f"http://127.0.0.1:{cfg.port}",
                            token=mint_token(identity, session_id), session_id=session_id,
                            identity=identity)
+        async with db_session() as db:
+            operator = await operator_tools_enabled(db)
         self.register_assistant_overlay(session_id, assistant_options(
-            server=build_server(api), max_turns=cfg.assistant_max_turns,
+            server=build_server(api, operator=operator), max_turns=cfg.assistant_max_turns,
             model=model or cfg.assistant_model))
         return api
 
@@ -2878,7 +2882,7 @@ class SessionOrchestrator:
             # driver.start() below.
             assistant_api = None
             if is_assistant_kind(kind):
-                assistant_api = self._setup_assistant_overlay(
+                assistant_api = await self._setup_assistant_overlay(
                     session_id, identity=identity, model=model)
 
             driver = self._create_driver(
@@ -3422,17 +3426,23 @@ class SessionOrchestrator:
                 .values(name=name, name_is_auto=False)
             )
 
-    async def _persist_status(self, session_id: str, status: str) -> None:
+    async def _persist_status(self, session_id: str, status: str) -> str:
         """Driver ``on_status`` callback: persist the derived dashboard status.
 
         Updates the in-memory record (which the dashboard's 5s poll reads) and the DB
         row. Never downgrades a terminal ``ended`` status. When a turn finishes
         (``done``), opportunistically refresh the auto-name from Claude's title.
+
+        Returns the FINAL effective status — after the parked/prose overlays below
+        and the ``ended`` guard — so the driver's ``_emit_status`` broadcasts the
+        same value on the live in-session stream. Persisting one status while the
+        driver emitted another was the "card says Answer needed, open session says
+        Your turn" mismatch.
         """
         from server.sessions.status import ACTIVITY_STATUSES
         rec = self._records.get(session_id)
         if rec is not None and rec.status == "ended":
-            return
+            return "ended"
         # A "switch after this turn" model change is in force once the turn is over.
         self._settle_model_pending(session_id, status)
         self._maybe_handle_model_request(session_id, status)
@@ -3444,7 +3454,7 @@ class SessionOrchestrator:
         # (ended) and every other status still persist during shutdown.
         if status == "needs_attention" and self._shutting_down:
             log.info("persist.skip_needs_attention_during_shutdown session=%s", session_id)
-            return
+            return status
         # Overlay: a turn that finished (`done`) but left the agent parked on an external
         # event — an open background task or an armed self-scheduled wakeup — is "Waiting…",
         # not "Your turn". Computed here (not in the pure `derive_status`) because it needs
@@ -3620,6 +3630,7 @@ class SessionOrchestrator:
         # (WS-attach-reentrant).
         if status in CAPACITY_EXEMPT_STATUSES and status != "queued":
             self._spawn(self._maybe_start_queued(), name="queue-drain-on-status")
+        return status
 
     def _maybe_autoarchive_completed(self, session_id: str, status: str, rec) -> None:
         """Schedule a completion auto-archive for ANY session that self-declares done.
@@ -9485,12 +9496,12 @@ class SessionOrchestrator:
             # driver, and with it the first AssistantApi — also gets a live one.
             built_assistant_apis: list[AssistantApi] = []
 
-            def _build(resume_arg):
+            async def _build(resume_arg):
                 assistant_api = None
                 if is_assistant(rec):
                     # Must run before _create_driver: the SDK factory reads
                     # self._assistant_overlays[session_id] when it builds the client.
-                    assistant_api = self._setup_assistant_overlay(
+                    assistant_api = await self._setup_assistant_overlay(
                         session_id, identity=identity, model=rec.model)
                     built_assistant_apis.append(assistant_api)
                 return self._create_driver(
@@ -9516,7 +9527,7 @@ class SessionOrchestrator:
             swap_done: asyncio.Future = asyncio.get_running_loop().create_future()
             self._swapping[session_id] = swap_done
             try:
-                driver = _build(resume)
+                driver = await _build(resume)
                 try:
                     await driver.start()
                 except Exception:
@@ -9573,7 +9584,7 @@ class SessionOrchestrator:
                     log.warning("session.resume id=%s could not resume claude_sid=%s "
                                 "(no transcript on disk); starting fresh",
                                 session_id, resume, exc_info=True)
-                    driver = _build(None)
+                    driver = await _build(None)
                     await driver.start()
                 self._drivers[session_id] = driver
                 # Re-claim the account's Codex app-server, paired with the driver
@@ -9640,6 +9651,13 @@ class SessionOrchestrator:
             # the existing accounting is simply true again (one source of truth).
             if rec.status == "complete":
                 await self._exit_complete_on_resume(session_id, rec)
+            # Seed the rebuilt driver's status snapshot from the persisted record so
+            # the WS-attach status frame agrees with the session card (an "Answer
+            # needed" card must not open to a freshly-derived "Ready"). After the
+            # complete→done landing above so the seed matches what the card now
+            # shows. seed_status ignores statuses that can't be true on a fresh
+            # driver, and the first real emit supersedes it.
+            driver.seed_status(rec.status)
             await self._maybe_rearm_on_attach(session_id)
             log.info("session.resume id=%s resume=%s", session_id, resume or "<fresh>")
             return driver
@@ -11798,7 +11816,7 @@ class SessionOrchestrator:
             # _setup_assistant_overlay the spawn and the resume use (#1125).
             assistant_api = None
             if is_assistant_kind(getattr(record, "kind", None)):
-                assistant_api = self._setup_assistant_overlay(
+                assistant_api = await self._setup_assistant_overlay(
                     record.id, identity=identity, model=record.model)
             new_driver = self._create_driver(
                 engine=record.engine,

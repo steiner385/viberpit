@@ -137,6 +137,11 @@ export class SessionSocket {
   private _srcGapCounts: Map<string, number> = new Map()
   private _srcGapLastLogAt: Map<string, number> = new Map()
   private static readonly SRC_GAP_LOG_INTERVAL_MS = 10_000
+  // Thrown-listener telemetry (#1310), aggregated per event type on the same
+  // first-immediately-then-throttled schedule as the srcSeq gaps above.
+  private _listenerErrCounts: Map<keyof EventMap, number> = new Map()
+  private _listenerErrLastLogAt: Map<keyof EventMap, number> = new Map()
+  private static readonly LISTENER_ERR_LOG_INTERVAL_MS = 10_000
 
   constructor(url: string = '/ws') {
     this.url = url
@@ -574,11 +579,25 @@ export class SessionSocket {
     }, delay)
   }
 
+  /** Fan an event out to its listeners, isolating each one (#1310).
+   *
+   *  A throwing listener used to abort the whole dispatch loop, and for the `batch`
+   *  case that loses the rest of the batch SILENTLY AND UNHEALABLY: handleLiveBatch
+   *  advances the seq bookkeeping for every event before dispatch runs, so the
+   *  gap-heal — which fires only on seq holes — sees a contiguous stream and has
+   *  nothing to detect. The throw also escaped `_handleInbound` entirely, skipping
+   *  the post-dispatch heal and the TanStack cache patches, and was then swallowed
+   *  by `ws.onmessage`'s catch. No listener relies on a throw propagating out of
+   *  `_emit` (nothing here inspects or forwards one), so containment is safe. */
   private _emit<K extends keyof EventMap>(event: K, ...args: Parameters<EventMap[K]>) {
     const set = this._listeners[event] as Set<EventMap[K]> | undefined
     if (!set) return
     for (const cb of set) {
-      ;(cb as (...a: unknown[]) => void)(...(args as unknown[]))
+      try {
+        ;(cb as (...a: unknown[]) => void)(...(args as unknown[]))
+      } catch (err) {
+        this._noteListenerError(event, err)
+      }
     }
   }
 
@@ -620,8 +639,9 @@ export class SessionSocket {
       this._handleInbound(msg)
     } catch (e) {
       // Deliberately NOT redacted like the parse leg above, and the asymmetry is the
-      // point: this exception is raised by OUR code (reducer, listeners, cache patches),
-      // not built out of the wire bytes. Nothing between here and the listeners parses or
+      // point: this exception is raised by OUR code (the reducer, cache patches — since
+      // #1313 `_emit` isolates listeners, so their throws report themselves and never
+      // reach here), not built out of the wire bytes. Nothing on this path parses or
       // interpolates frame content into a thrown message — no nested JSON.parse, no
       // `throw new Error(\`…${event}\`)` — so the message carries no payload, while being
       // the only thing that localizes the fault. Revisit the moment either appears in the
@@ -632,6 +652,29 @@ export class SessionSocket {
         stack: e instanceof Error ? (e.stack ?? String(e)) : String(e),
       })
     }
+  }
+
+  /** Report a thrown listener to the obs sink, aggregated per event type.
+   *
+   *  A listener that throws once throws on every event after it, and clientLogger's
+   *  ring is bounded at 200 entries (drop-oldest) — one unthrottled batch would evict
+   *  every other diagnostic in the buffer. Same shape as the srcSeq gap aggregation
+   *  above: the first throw logs immediately, further throws inside the interval only
+   *  bump a cumulative count that rides the next flush ("total=N"). */
+  private _noteListenerError(event: keyof EventMap, err: unknown) {
+    const total = (this._listenerErrCounts.get(event) ?? 0) + 1
+    this._listenerErrCounts.set(event, total)
+    const lastLog = this._listenerErrLastLogAt.get(event)
+    const now = Date.now()
+    if (lastLog !== undefined && now - lastLog < SessionSocket.LISTENER_ERR_LOG_INTERVAL_MS) return
+    this._listenerErrLastLogAt.set(event, now)
+    clientLogger.error(
+      `ws.listener.handler_error event=${event} total=${total} ${
+        err instanceof Error ? err.message : String(err)}`,
+      {
+        sessionId: this._activeSessionId ?? undefined,
+        stack: err instanceof Error ? err.stack : undefined,
+      })
   }
 
   private _handleInbound(msg: WsInboundMsg) {
@@ -666,15 +709,15 @@ export class SessionSocket {
           activeSessionId: this._activeSessionId,
           state: this._gap,
         })
-        // `finally`, because _emit does not isolate listeners: one throwing
-        // `sessionEvent` listener aborts the loop, and the bookkeeping below is
-        // evidence about the WIRE, not about the listeners. Frames demonstrably
-        // arrived, so recording the stream as live is correct even when a listener
-        // blew up partway — otherwise the watermark stays stale and the liveness
-        // probe fires a spurious full-replay heal seconds later. The throw still
-        // propagates (to _onRawMessage's handler_error leg); what does not happen is
-        // silently losing the liveness evidence on the way out. Making the REST of the
-        // batch dispatch anyway is a separate, broader bug and is tracked on its own.
+        // `finally`, because the bookkeeping below is evidence about the WIRE, not
+        // about the listeners: frames demonstrably arrived, so recording the stream as
+        // live is correct however this loop ends. Losing that evidence is not a silent
+        // cost — the watermark stays stale and the liveness probe fires a spurious
+        // full-replay heal seconds later.
+        // #1313 has since made `_emit` isolate listeners, so the loop can no longer be
+        // aborted by one throwing listener — the case this `finally` was added for.
+        // It stays: the two facts are worth keeping independent rather than resting the
+        // probe's correctness on another method's error handling.
         try {
           for (const e of dispatch) this._emit('sessionEvent', e)
         } finally {

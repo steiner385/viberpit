@@ -311,6 +311,30 @@ def cached_usage(led: dict, name: str, cfg, now: datetime) -> QuotaSnapshot | No
         return None
 
 
+def stale_usage(led: dict, name: str, now: datetime,
+                 max_age_sec: float) -> tuple[QuotaSnapshot, datetime] | None:
+    """Last-known usage past the normal TTL, capped at ``max_age_sec``.
+
+    Display fallback only: callers consult this after BOTH the fresh cached
+    read (``cached_usage``, TTL ``usage_cache_ttl_sec``) and the daemon RPC
+    have already failed, so a minutes-old reading can still beat "unavailable".
+    Returns ``(snapshot, fetched_at)`` when an entry exists and is younger than
+    ``max_age_sec``, else ``None`` (missing, or too old to be trustworthy).
+    """
+    blob = _acct(led, name).get("usage")
+    if not blob:
+        return None
+    fetched = datetime.fromisoformat(blob["fetched_at"])
+    if (now - fetched).total_seconds() > max_age_sec:
+        return None
+    try:
+        return usage_from_blob(name, blob), fetched
+    except (KeyError, TypeError, ValueError):
+        log.warning("ledger: unreadable stale usage for %s — treating as unknown",
+                    name, exc_info=True)
+        return None
+
+
 def set_status(led: dict, name: str, status: str) -> None:
     _acct(led, name)["status"] = status
 

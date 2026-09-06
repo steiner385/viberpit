@@ -14,6 +14,10 @@ export interface AssistantStatus {
   enabled: boolean
   sessionId: string | null
   model: string
+  /** Whether the operator tier (deploy, host upgrade, account refresh/enable/reauth)
+   * is on — server/assistant/policy.py:operator_tools_enabled, mirrored regardless of
+   * whether an assistant session exists yet. */
+  operatorTools: boolean
 }
 
 export interface AssistantSessionInput {

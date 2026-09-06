@@ -3,9 +3,11 @@ import {
   AlertTriangle,
   WifiOff,
   CircleAlert,
+  Clock,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatResetTime } from '@/lib/formatReset'
+import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import type { AccountStatus, SessionStatus } from '@/api/types'
 import { statusPresentation, TIER_TONE } from '@/session/statusTier'
 import { StatusPill as Pill } from '@/ui/StatusPill'
@@ -27,15 +29,24 @@ interface UsageBadgeProps {
    *  label still names the window in the tooltip/aria-label). */
   compact?: boolean
   className?: string
+  /** ISO fetch time of THIS reading when it is a labelled-stale fallback (the
+   *  fresh fetch failed and the last-known ledger value is shown instead), or
+   *  null/undefined for a fresh read. Never inferred from `resetsAt` — the
+   *  server already applied its own staleness cap, so the client only labels
+   *  what it is told. */
+  staleAsOf?: string | null
 }
 
-export function UsageBadge({ pct, label, resetsAt, markerPct, compact, className }: UsageBadgeProps) {
+export function UsageBadge({ pct, label, resetsAt, markerPct, compact, className, staleAsOf }: UsageBadgeProps) {
   const clampedPct = Math.min(100, Math.max(0, pct))
   // Color classes supplementary only — text carries the info
   const barColor =
     clampedPct >= 90 ? 'bg-danger' :
     clampedPct >= 70 ? 'bg-warning' :
     'bg-success'
+
+  const isStale = isValidTimestamp(staleAsOf)
+  const stalePhrase = isStale ? `stale, fetched ${relTime(staleAsOf)}` : null
 
   const ariaLabel = label
     ? `${label} usage: ${clampedPct}%`
@@ -46,18 +57,19 @@ export function UsageBadge({ pct, label, resetsAt, markerPct, compact, className
   const windowName = label ? `${label} limit` : 'Usage limit'
   const resetText = formatResetTime(resetsAt)
   const resetPhrase = resetText ? `resets ${resetText}` : 'no active window'
-  const title = `${windowName} · ${resetPhrase}`
+  const title = stalePhrase ? `${windowName} · ${resetPhrase} · ${stalePhrase}` : `${windowName} · ${resetPhrase}`
+  const fullAriaLabel = stalePhrase ? `${ariaLabel} — ${resetPhrase} — ${stalePhrase}` : `${ariaLabel} — ${resetPhrase}`
 
   if (compact) {
     return (
       <span
         className={cn('items-center gap-1', className)}
         title={title}
-        aria-label={`${ariaLabel} — ${resetPhrase}`}
+        aria-label={fullAriaLabel}
       >
         <span className="relative h-1 w-10 rounded-full bg-surface-raised overflow-hidden">
           <span
-            className={cn('h-full block rounded-full', barColor)}
+            className={cn('h-full block rounded-full', barColor, isStale && 'opacity-60')}
             style={{ width: `${clampedPct}%` }}
             aria-hidden="true"
           />
@@ -65,6 +77,7 @@ export function UsageBadge({ pct, label, resetsAt, markerPct, compact, className
         <span className="text-[10px] font-medium tabular-nums text-ink-muted">
           {clampedPct}%
         </span>
+        {isStale && <Clock size={10} className="text-ink-muted" aria-hidden="true" />}
       </span>
     )
   }
@@ -73,7 +86,7 @@ export function UsageBadge({ pct, label, resetsAt, markerPct, compact, className
     <span
       className={cn('inline-flex flex-col gap-0.5', className)}
       title={title}
-      aria-label={`${ariaLabel} — ${resetPhrase}`}
+      aria-label={fullAriaLabel}
     >
       <span className="flex items-baseline gap-1 leading-none">
         {label && (
@@ -84,10 +97,11 @@ export function UsageBadge({ pct, label, resetsAt, markerPct, compact, className
         <span className="text-xs font-medium tabular-nums text-ink">
           {clampedPct}%
         </span>
+        {isStale && <Clock size={10} className="text-ink-muted" aria-hidden="true" />}
       </span>
       <span className="relative h-1 w-12 rounded-full bg-surface-raised overflow-hidden">
         <span
-          className={cn('h-full block rounded-full transition-all', barColor)}
+          className={cn('h-full block rounded-full transition-all', barColor, isStale && 'opacity-60')}
           style={{ width: `${clampedPct}%` }}
           aria-hidden="true"
         />

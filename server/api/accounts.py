@@ -83,6 +83,14 @@ def _validate_env_overrides(overrides: dict | None) -> None:
 # 2026-07-02). Overridable for tests / tuning.
 USAGE_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_USAGE_FETCH_TIMEOUT", "3.0"))
 
+# How old a ledger entry may be and still be served as a LABELLED stale
+# fallback when the fresh path fails (RPC deadline, daemon down, or the fetch
+# simply came back empty). Measured 2026-08-30: 888 usage-RPC failures/day on
+# this deployment, each one rendering "unavailable" while minutes-old usage
+# sat in ledger.json. Past this cap the data is old enough to mislead — serve
+# None instead. Overridable for tests / tuning.
+STALE_USAGE_MAX_AGE_SEC = float(os.environ.get("CCSWITCH_USAGE_STALE_MAX_AGE_SEC", "3600"))
+
 
 def _local_cached_usage(name: str):
     """Usage from the SHARED ledger, read locally. None when stale or absent.
@@ -109,18 +117,59 @@ def _local_cached_usage(name: str):
         return ledger.cached_usage(led, name, load_config(), datetime.now(timezone.utc))
 
 
-async def _safe_usage(orch, name: str, timeout: float):
-    """Fetch one account's usage, degrading to None on timeout or any error.
+def _local_stale_usage(name: str):
+    """Last-known usage from the SHARED ledger, past the normal TTL.
 
-    Tries the local shared ledger first (cheap), then the daemon RPC. Isolates a
+    Returns ``(QuotaSnapshot, fetched_at)`` when an entry younger than
+    ``STALE_USAGE_MAX_AGE_SEC`` exists, else ``None``. Display fallback only —
+    the fresh path (``_local_cached_usage``, then the daemon RPC) must already
+    have failed before this is consulted.
+    """
+    from ccswitch import ledger
+
+    with ledger.locked_ledger() as led:
+        return ledger.stale_usage(led, name, datetime.now(timezone.utc),
+                                   max_age_sec=STALE_USAGE_MAX_AGE_SEC)
+
+
+def _stale_fallback(name: str):
+    """``(usage, stale_as_of)`` from the stale ledger read, or ``(None, None)``.
+
+    Never raises: this runs after every fresh path already failed, so the only
+    remaining choices are labelled-stale data or "unavailable".
+    """
+    try:
+        got = _local_stale_usage(name)
+    except Exception:  # noqa: BLE001 — a bad ledger must degrade, never 500
+        log.warning("stale usage read for %s failed — degrading to None",
+                    name, exc_info=True)
+        return None, None
+    if got is None:
+        return None, None
+    usage, fetched_at = got
+    log.info("serving stale usage for %s (fetched %s) — fresh fetch unavailable",
+              name, fetched_at.isoformat())
+    return usage, fetched_at
+
+
+async def _safe_usage(orch, name: str, timeout: float):
+    """Fetch one account's usage as ``(usage, stale_as_of)``, never raising.
+
+    Tries the local shared ledger first (cheap), then the daemon RPC. When both
+    yield nothing — timeout, error, or a clean-but-empty RPC result — serves the
+    last-known ledger reading labelled with its fetch time (``stale_as_of``)
+    rather than emptying the dashboard: the 3s RPC deadline regularly loses to
+    the daemon's real fetch latency, and a daemon-side 429 cooldown answers None
+    for up to 30s (incident 2026-08-30: 888 empty renders a day).
+    ``stale_as_of`` is None whenever usage came from a fresh read; ``(None,
+    None)`` means no ledger reading young enough to show either. Isolates a
     single slow/failing account so it can neither stall the other accounts'
-    fetches nor turn GET /api/accounts into a 500. ``usage=None`` is already the
-    wire contract for "unknown/failed fetch" (_usage_to_dict).
+    fetches nor turn GET /api/accounts into a 500.
     """
     try:
         local = _local_cached_usage(name)
         if local is not None:
-            return local
+            return local, None
     except Exception:  # noqa: BLE001 — a bad ledger must fall back, never 500
         log.warning("local usage read for %s failed — falling back to the daemon",
                     name, exc_info=True)
@@ -131,18 +180,20 @@ async def _safe_usage(orch, name: str, timeout: float):
         # the socket and strands its pool slot ACTIVE forever (issue #734). It also
         # collapses the old nested pair of deadlines (this one and remote's
         # USAGE_RPC_TIMEOUT) into a single, unambiguous one.
-        return await call_with_deadline(orch.usage, name, timeout=timeout)
+        fresh = await call_with_deadline(orch.usage, name, timeout=timeout)
+        if fresh is not None:
+            return fresh, None
     except (asyncio.TimeoutError, DaemonTimeout):
-        log.warning("usage fetch for %s timed out after %.1fs — degrading to None",
+        log.warning("usage fetch for %s timed out after %.1fs — trying stale ledger",
                     name, timeout)
-        return None
     except Exception:  # noqa: BLE001 — one account must never fail the whole list
-        log.warning("usage fetch for %s failed — degrading to None", name, exc_info=True)
-        return None
+        log.warning("usage fetch for %s failed — trying stale ledger",
+                    name, exc_info=True)
+    return _stale_fallback(name)
 
 
 async def _gather_usages(orch, names: list[str], timeout: float) -> dict[str, Any]:
-    """Fetch usage for many accounts concurrently, each isolated (None on failure).
+    """Fetch ``(usage, stale_as_of)`` for many accounts concurrently, isolated.
 
     Concurrent (not serial) so total latency is the slowest single account, not
     the sum — and one hung account no longer blocks the rest behind it.
@@ -156,7 +207,7 @@ async def _gather_usages(orch, names: list[str], timeout: float) -> dict[str, An
 # ---------------------------------------------------------------------------
 
 
-def _usage_to_dict(usage) -> dict[str, Any] | None:
+def _usage_to_dict(usage, stale_as_of: datetime | None = None) -> dict[str, Any] | None:
     """Convert a ``ccswitch.quota.QuotaSnapshot`` to the wire-format dict.
 
     ``windows`` is a LIST, not two named dimensions: a provider reports the
@@ -165,8 +216,10 @@ def _usage_to_dict(usage) -> dict[str, Any] | None:
     sent the same number twice under two labels). The browser renders whatever
     arrives.
 
-    Returns None if usage is None (unknown/failed fetch). Never includes token
-    material.
+    ``stale_as_of`` is the fetch time of a stale-served value (surfaced as
+    ``staleAsOf``, an ISO string) so the UI can label it, or None when the value
+    came from a fresh read. Returns None if usage is None (unknown/failed
+    fetch). Never includes token material.
     """
     if usage is None:
         return None
@@ -176,6 +229,7 @@ def _usage_to_dict(usage) -> dict[str, Any] | None:
         # "available" | "unknown" | "auth_error" — how much the windows can be
         # trusted. A failed read is expressed HERE, never as a fabricated window.
         "availability": usage.availability,
+        "staleAsOf": iso_utc(stale_as_of),
         "windows": [
             {
                 "key": w.key,
@@ -208,6 +262,7 @@ def _account_response(
     enabled: bool = True,
     allow_extra_usage: bool = False,
     codex: dict | None = None,
+    stale_as_of: datetime | None = None,
 ) -> dict[str, Any]:
     """Build the account wire format — never includes tokens."""
     entry = None
@@ -223,7 +278,7 @@ def _account_response(
     return {
         "name": name,
         "status": status_str,
-        "usage": _usage_to_dict(usage),
+        "usage": _usage_to_dict(usage, stale_as_of),
         "nickname": nickname,
         "provider": provider,
         # Identity facts straight off the manifest. `engine` is nullable there and
@@ -495,7 +550,9 @@ async def get_accounts(
         orch, [acct["name"] for acct in accounts_info], USAGE_FETCH_TIMEOUT)
     for name, details in codex_by_name.items():
         if details.get("_usage") is not None:
-            usages[name] = details["_usage"]
+            # Codex quota already carries its own degrade path (unknown_snapshot
+            # on failure) — it is never stale-served through this fallback.
+            usages[name] = (details["_usage"], None)
 
     # Live session counts (display) + weighted load (ranking input).
     counts = await orch.live_session_counts()
@@ -515,7 +572,8 @@ async def get_accounts(
     disabled = frozenset(
         a["name"] for a in accounts_info if not a.get("enabled", True))
     ranked, _earliest = rank_accounts(
-        usages, reserved=frozenset(), cfg=load_config(),
+        {n: u for n, (u, _) in usages.items()}, reserved=frozenset(),
+        cfg=load_config(),
         now=datetime.now(timezone.utc), load=load,
         reserves=reserves, exclude=disabled,
         extra_usage_allowed=extra_allowed,
@@ -525,12 +583,14 @@ async def get_accounts(
     for acct in accounts_info:
         name = acct["name"]
         rank, reason = rank_by_name.get(name, (None, None))
+        usage, stale_as_of = usages[name]
         result.append(_account_response_from_info(
             acct,
-            usages[name],
+            usage,
             live_sessions=counts.get(name) or {"active": 0, "idle": 0},
             rank=rank,
             rank_reason=reason,
+            stale_as_of=stale_as_of,
             codex=(
                 None
                 if name not in codex_by_name
@@ -559,14 +619,16 @@ async def refresh_account(
     orch = _get_orchestrator(request)
 
     codex = None
+    stale_as_of = None
     if _provider_or_none(name) == account_registry.PROVIDER_OPENAI:
         details = (await _codex_details(request, [name])).get(name, {})
         usage = details.get("_usage")
         codex = {key: value for key, value in details.items() if key != "_usage"}
     else:
         # Force a fresh fetch (bypasses cache by going through the poller lock).
-        # Bounded + isolated: a wedged daemon degrades this to None rather than 500.
-        usage = await _safe_usage(orch, name, USAGE_FETCH_TIMEOUT)
+        # Bounded + isolated: a wedged daemon degrades this to stale-or-None,
+        # not 500.
+        usage, stale_as_of = await _safe_usage(orch, name, USAGE_FETCH_TIMEOUT)
 
     # Ledger-backed fields (status, nickname, reserve, defaults, toggles).
     acct = next((a for a in list_accounts() if a["name"] == name), None)
@@ -575,10 +637,11 @@ async def refresh_account(
     live = counts.get(name) or {"active": 0, "idle": 0}
     if acct is None:
         return _account_response(
-            name, "unknown", usage, live_sessions=live, codex=codex
+            name, "unknown", usage, live_sessions=live, codex=codex,
+            stale_as_of=stale_as_of,
         )
     return _account_response_from_info(
-        acct, usage, live_sessions=live, codex=codex
+        acct, usage, live_sessions=live, codex=codex, stale_as_of=stale_as_of,
     )
 
 

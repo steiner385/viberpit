@@ -13,6 +13,7 @@ describe('usageWindows', () => {
   it('treats an unavailable read as no windows, never as 0% used', () => {
     const failed: AccountUsage = {
       provider: 'anthropic', fetchedAt: null, availability: 'auth_error', windows: [],
+      staleAsOf: null,
     }
     expect(usageWindows(failed)).toEqual([])
     expect(usageKnown(failed)).toBe(false)

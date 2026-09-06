@@ -94,7 +94,22 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("delete_session", ToolClass.DESTRUCTIVE, "Permanently delete session"),
     ToolSpec("cancel_queued_session", ToolClass.DESTRUCTIVE, "Cancel queued session"),
     ToolSpec("ready_merge_pr", ToolClass.DESTRUCTIVE, "Ready + auto-merge PR"),
+    # Operator tier (spec v2 §7, Pack O) — only registered and route-allowlisted when
+    # `operator_tools_enabled(db)` is true (Task 9.2). See OPERATOR_TOOLS below.
+    ToolSpec("start_deploy", ToolClass.DESTRUCTIVE, "Start deploy"),
+    ToolSpec("upgrade_host", ToolClass.DESTRUCTIVE, "Upgrade host"),
+    ToolSpec("refresh_account", ToolClass.MUTATION, "Refresh account"),
+    ToolSpec("set_account_enabled", ToolClass.MUTATION, "Enable/disable account"),
+    ToolSpec("start_reauth", ToolClass.MUTATION, "Start account re-auth"),
 ]}
+
+# Operator-tier tool names (spec v2 §7, Task 9.2): omitted from `build_tools()` and
+# rejected by `route_allowed()` unless `operator_tools_enabled(db)` is true. Kept as a
+# frozenset (not derived from tool_class) because DESTRUCTIVE/MUTATION also covers
+# tools that are NOT operator-gated (e.g. delete_session, ready_merge_pr).
+OPERATOR_TOOLS: frozenset[str] = frozenset({
+    "start_deploy", "upgrade_host", "refresh_account", "set_account_enabled", "start_reauth",
+})
 
 
 class ToolArgError(ValueError):
@@ -269,15 +284,17 @@ async def _audit_tool_call(api: AssistantApi, spec: ToolSpec, ok: bool, ms: floa
     try:
         from server.audit import record_audit
         from server.db import db_session
+        detail: dict[str, Any] = {"tool": spec.name, "class": spec.tool_class.value,
+                                  "ok": ok, "ms": round(ms)}
+        if spec.name in OPERATOR_TOOLS:
+            detail["operatorTier"] = True
         async with db_session() as db:
-            await record_audit(db, "assistant.tool_call", api.identity,
-                               {"tool": spec.name, "class": spec.tool_class.value,
-                                "ok": ok, "ms": round(ms)}, via="assistant")
+            await record_audit(db, "assistant.tool_call", api.identity, detail, via="assistant")
     except Exception:  # noqa: BLE001 - an audit failure must never fail the tool
         log.warning("assistant.tool_call audit failed tool=%s", spec.name, exc_info=True)
 
 
-def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
+def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool[Any]]:
     def guarded(fn: Any) -> Any:
         # Looked up eagerly: a handler with no ToolSpec is a build-time error here
         # rather than a tool the permission layer silently treats as unannotated.
@@ -821,7 +838,53 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
         return await api.post("/api/pipeline/pr/ready-merge",
                               {"repo": args["repo"], "number": int(args["number"])})
 
-    return [list_sessions, get_session, get_session_transcript, get_tool_result,
+    # -- Operator tier (spec v2 §7, Pack O, class D/M) ---------------------------------
+    # Registered only when `operator=True` (Task 9.2). Each is still a thin adapter
+    # over ONE endpoint; the route allowlist independently requires `operator=True` too
+    # (server/assistant/policy.py), so a disabled setting is enforced at both layers.
+
+    @spec_tool("start_deploy",
+               "Starts a production deploy of the given ref (or the current tip if "
+               "omitted); there is no undo once it begins.",
+               _schema(ref=str))
+    @guarded
+    async def start_deploy(args: dict[str, Any]) -> Any:
+        body = {"targetSha": args["ref"]} if args.get("ref") else None
+        return await api.post("/api/deploy/start", body)
+
+    @spec_tool("upgrade_host",
+               "Upgrades and restarts the ccswitch daemon on the named fleet host — this "
+               "drains or kills every session currently live on that host.",
+               {"name": str})
+    @guarded
+    async def upgrade_host(args: dict[str, Any]) -> Any:
+        return await api.post(f"/api/fleet/hosts/{args['name']}/upgrade")
+
+    @spec_tool("refresh_account",
+               "Force a fresh usage/status fetch for one account, bypassing the cache.",
+               {"name": str})
+    @guarded
+    async def refresh_account(args: dict[str, Any]) -> Any:
+        return await api.post(f"/api/accounts/{args['name']}/refresh")
+
+    @spec_tool("set_account_enabled",
+               "Enable or disable an account. A disabled account is blocked everywhere — "
+               "never auto-selected, never a rotation target — but its credentials stay "
+               "intact and the toggle is fully reversible.",
+               {"name": str, "enabled": bool})
+    @guarded
+    async def set_account_enabled(args: dict[str, Any]) -> Any:
+        return await api.patch(f"/api/accounts/{args['name']}/enabled",
+                               {"enabled": bool(args["enabled"])})
+
+    @spec_tool("start_reauth",
+               "Start a re-authentication flow for an existing account so its credentials "
+               "can be refreshed.", {"name": str})
+    @guarded
+    async def start_reauth(args: dict[str, Any]) -> Any:
+        return await api.post(f"/api/accounts/{args['name']}/reauth")
+
+    base_tools = [list_sessions, get_session, get_session_transcript, get_tool_result,
             export_session, search_sessions,
             list_archived_sessions, list_accounts, list_hosts, list_prs, get_pipeline_health,
             list_automations, get_automation_events, get_deploy_status,
@@ -837,3 +900,6 @@ def build_tools(api: AssistantApi) -> list[SdkMcpTool[Any]]:
             set_automation_enabled, create_notification_rule, delete_notification_rule,
             set_quiet_hours, advance_initiative, resolve_triage, request_product_sync,
             delete_session, cancel_queued_session, ready_merge_pr]
+    operator_tools = [start_deploy, upgrade_host, refresh_account, set_account_enabled,
+                      start_reauth]
+    return base_tools + (operator_tools if operator else [])
