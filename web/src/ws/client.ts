@@ -601,18 +601,31 @@ export class SessionSocket {
     try {
       msg = JSON.parse(data) as WsInboundMsg
     } catch (e) {
-      // Frame length, not the frame: the payload may carry transcript text, and this
-      // sink is shipped to the server. (clientLogger's `extra` is a fixed
-      // Partial<ClientLogEntry> envelope, so the detail rides in the message.)
-      clientLogger.warn(`ws.message.parse_error dataLen=${data?.length ?? 0}`, {
-        sessionId: this._activeSessionId ?? undefined,
-        stack: String(e),
-      })
+      // Frame length and error KIND, never the frame or the error's MESSAGE: the payload
+      // may carry transcript text, and this sink is shipped to the server. V8 builds the
+      // SyntaxError message out of the offending input — `String(e)` on a corrupted
+      // transcript frame yields `Unexpected token ']', ..."S3CR3T"},]}" is not valid JSON`,
+      // i.e. verbatim payload bytes — and `stack` would ride through ClientLogger.push
+      // untruncated (only `msg` is capped). The label says which stage threw and dataLen
+      // gives the size, so the error's name is the whole remaining diagnostic.
+      // (clientLogger's `extra` is a fixed Partial<ClientLogEntry> envelope, so the
+      // detail rides in the message.)
+      clientLogger.warn(
+        `ws.message.parse_error dataLen=${data?.length ?? 0} kind=${e instanceof Error ? e.name : 'unknown'}`,
+        { sessionId: this._activeSessionId ?? undefined },
+      )
       return
     }
     try {
       this._handleInbound(msg)
     } catch (e) {
+      // Deliberately NOT redacted like the parse leg above, and the asymmetry is the
+      // point: this exception is raised by OUR code (reducer, listeners, cache patches),
+      // not built out of the wire bytes. Nothing between here and the listeners parses or
+      // interpolates frame content into a thrown message — no nested JSON.parse, no
+      // `throw new Error(\`…${event}\`)` — so the message carries no payload, while being
+      // the only thing that localizes the fault. Revisit the moment either appears in the
+      // dispatch path: then this leg leaks exactly the way the parse leg did.
       const frame = msg as { type?: string; sessionId?: string } | null
       clientLogger.warn(`ws.message.handler_error type=${frame?.type ?? 'unknown'}`, {
         sessionId: frame?.sessionId ?? this._activeSessionId ?? undefined,
@@ -653,15 +666,27 @@ export class SessionSocket {
           activeSessionId: this._activeSessionId,
           state: this._gap,
         })
-        for (const e of dispatch) this._emit('sessionEvent', e)
-        if (dispatch.length > 0) {
-          // Frames for the active session arrived → the stream is live; adopt the
-          // cache's current rev as synced so the liveness probe stays quiet, and give
-          // the probe its fruitless-heal budget back (a heal that DID deliver frames,
-          // or an unaided recovery, both land here).
-          this._lastSessionFrameAt = Date.now()
-          this._syncedRevAt = this._cachedRevAt(this._activeSessionId) ?? this._syncedRevAt
-          this._fruitlessProbeHeals = 0
+        // `finally`, because _emit does not isolate listeners: one throwing
+        // `sessionEvent` listener aborts the loop, and the bookkeeping below is
+        // evidence about the WIRE, not about the listeners. Frames demonstrably
+        // arrived, so recording the stream as live is correct even when a listener
+        // blew up partway — otherwise the watermark stays stale and the liveness
+        // probe fires a spurious full-replay heal seconds later. The throw still
+        // propagates (to _onRawMessage's handler_error leg); what does not happen is
+        // silently losing the liveness evidence on the way out. Making the REST of the
+        // batch dispatch anyway is a separate, broader bug and is tracked on its own.
+        try {
+          for (const e of dispatch) this._emit('sessionEvent', e)
+        } finally {
+          if (dispatch.length > 0) {
+            // Frames for the active session arrived → the stream is live; adopt the
+            // cache's current rev as synced so the liveness probe stays quiet, and give
+            // the probe its fruitless-heal budget back (a heal that DID deliver frames,
+            // or an unaided recovery, both land here).
+            this._lastSessionFrameAt = Date.now()
+            this._syncedRevAt = this._cachedRevAt(this._activeSessionId) ?? this._syncedRevAt
+            this._fruitlessProbeHeals = 0
+          }
         }
         // srcSeq loss telemetry (audit W2.3): record daemon→edge→browser holes to the
         // obs sink WITHOUT healing — this is diagnostic only, the foundation for the

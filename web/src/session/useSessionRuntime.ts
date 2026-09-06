@@ -154,9 +154,13 @@ export function useSessionRuntime(
     // The session-scope rule for frames whose `sessionId` is OPTIONAL: a frame tagged
     // for a different session is dropped, an untagged one passes through. Untagged
     // means connection-level (or a legacy server) — there is no other view it could
-    // belong to, so applying it here is the only sane reading. One helper, not one
-    // copy per handler: this predicate has to mean the same thing for every optional-id
-    // frame, and it previously drifted (`error` frames were not scoped at all).
+    // belong to, so applying it here is the only sane reading. One helper for THIS
+    // hook's handlers, not one copy per handler: the predicate has to mean the same
+    // thing for every optional-id frame reaching this view's reducer, and it previously
+    // drifted (`error` frames were not scoped at all). It is deliberately not shared
+    // with ws/liveBatch.ts's same-shaped check — that one is socket-level (against the
+    // socket's `activeSessionId`, and a no-op while that is null), a different scope
+    // with a different null rule, so merging them would broaden one of the two.
     // Handlers below whose frame type REQUIRES a sessionId keep the strict `!==` form.
     const isForOtherSession = (frameSessionId: string | undefined): boolean =>
       Boolean(frameSessionId) && frameSessionId !== sessionId

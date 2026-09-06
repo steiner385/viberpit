@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { QueryClient } from '@tanstack/react-query'
 import { SessionSocket } from './client'
 import { QK } from '@/api/hooks'
+import type { Session } from '@/api/types'
 import { clientLogger } from '@/obs/logger'
 
 // ── WebSocket mock ────────────────────────────────────────────────────────────
@@ -529,6 +530,87 @@ describe('SessionSocket._onRawMessage', () => {
       expect.stringContaining('parse_error'),
       expect.anything(),
     )
+    warn.mockRestore()
+  })
+
+  it('never ships the frame body to the log sink when a frame fails to parse', () => {
+    const sock = new SessionSocket('/ws') as unknown as Raw
+    const warn = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+    // Stand-in for transcript text: a mid-frame corruption (here a trailing comma, the
+    // shape an encoding bug produces) makes V8 build its SyntaxError message out of the
+    // offending input — it quotes the bytes AROUND the error offset, which in a
+    // transcript frame IS transcript text. clientLogger POSTs to /api/client-logs and
+    // the server persists it, so nothing derived from the payload may go in.
+    const SECRET = 'S3CR3T'
+    sock._onRawMessage(`{"type":"batch","events":[{"text":"${SECRET}"},]}`)
+
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0][0]).toContain('ws.message.parse_error')
+    // Everything handed to the sink — message AND the extra envelope (`stack` rides
+    // through ClientLogger.push untruncated; only `msg` is capped at 4000).
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(SECRET)
+    // The error KIND survives: the label says which stage threw, dataLen the size.
+    expect(warn.mock.calls[0][0]).toContain('kind=SyntaxError')
+    warn.mockRestore()
+  })
+})
+
+// ── Liveness bookkeeping is evidence about the wire, not about the listeners ──
+
+describe('SessionSocket batch liveness bookkeeping', () => {
+  const T1 = '2026-08-29T12:00:00+00:00'
+  const T2 = '2026-08-29T12:00:30+00:00'
+
+  type Probe = {
+    _syncedRevAt: string | null
+    _lastSessionFrameAt: number
+    _fruitlessProbeHeals: number
+  }
+
+  beforeEach(() => { MockWebSocket.instances = []; vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('records the stream as live even when a sessionEvent listener throws mid-batch', () => {
+    const qc = new QueryClient()
+    const setRow = (revAt: string) => qc.setQueryData<Session[]>(QK.sessions, [
+      { id: 's1', status: 'in_progress', accountName: 'a', revAt } as Session,
+    ])
+    setRow(T1)
+    const sock = new SessionSocket('/ws')
+    sock.setQueryClient(qc)
+    sock.connect()
+    const ws = lastSock()
+    ws.simulateOpen()
+    sock.attach('s1')
+
+    const probe = sock as unknown as Probe
+    // A stream that has been silent long enough for the probe to be watching, and a rev
+    // that has since advanced over the independent poll — the exact evidence pair the
+    // liveness probe heals on.
+    probe._lastSessionFrameAt = Date.now() - 60_000
+    probe._syncedRevAt = T1
+    probe._fruitlessProbeHeals = 2
+    setRow(T2)
+
+    const warn = vi.spyOn(clientLogger, 'warn').mockImplementation(() => {})
+    let seen = 0
+    sock.on('sessionEvent', () => { if (++seen === 2) throw new Error('listener boom') })
+
+    // Frames DID arrive; that a listener blew up on event 2 says nothing about the wire.
+    ws.simulateMessage({ type: 'batch', events: [
+      { type: 'textDelta', sessionId: 's1', turnId: 't1', text: 'a' },
+      { type: 'textDelta', sessionId: 's1', turnId: 't1', text: 'b' },
+      { type: 'textDelta', sessionId: 's1', turnId: 't1', text: 'c' },
+    ] })
+
+    expect(seen).toBe(2)                                  // the loop did abort…
+    expect(probe._lastSessionFrameAt).toBe(Date.now())    // …but the evidence landed
+    expect(probe._syncedRevAt).toBe(T2)
+    expect(probe._fruitlessProbeHeals).toBe(0)
+    // …so no spurious detach+attach heal on the probe's next ticks.
+    const before = ws.sent.length
+    vi.advanceTimersByTime(20_000)
+    expect(ws.sent.slice(before)).toEqual([])
     warn.mockRestore()
   })
 })
