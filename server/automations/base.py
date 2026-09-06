@@ -120,11 +120,27 @@ def validate_config(schema: ConfigSchema, config: dict) -> dict:
     return out
 
 
+def operator_triggered(automation: Any) -> bool:
+    """Whether *automation* has no control loop — see ``Automation.modes``.
+
+    One accessor rather than an ``if not a.modes`` spelled out at each reader, so
+    the API's refusal, the list payload and the UI cannot drift on what "no
+    modes" means.
+    """
+    return not tuple(getattr(automation, "modes", ()) or ())
+
+
 @runtime_checkable
 class Automation(Protocol):
     id: str
     name: str
     description: str
+    #: The active modes this origin's control loop may run in. **Empty means the
+    #: origin has no control loop** — it spawns only when an operator (or another
+    #: automation) calls its seam, so there is nothing to enable and nothing to
+    #: schedule. ``operator_triggered`` below is the accessor; the API refuses an
+    #: enabled/mode PATCH for such an origin and the card renders no toggle,
+    #: rather than showing a switch whose position means nothing.
     modes: tuple[str, ...]
     config_schema: ConfigSchema
     #: The audited agent-engine ceiling for this origin (Phase 7, Task 7.1).

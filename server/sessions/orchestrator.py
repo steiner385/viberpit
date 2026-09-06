@@ -5559,17 +5559,6 @@ class SessionOrchestrator:
                 WorkItem.state != "open"))).scalar_one()
             project_id = proj.id
         repo = resolved_repo
-        account = await self._backlog_healthy_account()
-        if account is None:
-            return None
-        url = f"https://github.com/{repo}.git"
-        cwd = await asyncio.to_thread(
-            gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
-        default_branch = await self._sdlc_default_branch(repo)
-        prompt = build_map_synthesis_prompt(
-            slug=slug, repo=repo, default_branch=default_branch,
-            open_count=int(open_count), closed_count=int(closed_count),
-            scope=scope, suggestion=suggestion, item_numbers=item_numbers)
         if scope == "diff":
             origin_ref = f"{slug}:map-diff:{suggestion}"
             name = f"pm map-diff {slug}"
@@ -5580,10 +5569,33 @@ class SessionOrchestrator:
             origin_ref = f"{slug}:feature-map"
             name = f"pm map {slug}"
             detail = {"slug": slug, "kind": "feature-map"}
+        # Engine FIRST, before any account, network or disk work — the same
+        # ordering `_backlog_spawn` and (since #1265) `_sdlc_spawn_synth` use,
+        # for the same two reasons: the seed prompt states a commit trailer, the
+        # one engine-specific line in it, and a refusal must COST nothing rather
+        # than pay for an account probe plus a full `ensure_clone` on every tap.
+        plan = await self._pm_onboard_ctx.launch_plan_or_refuse(origin_ref)
+        if plan is None:
+            return None
+        engine, _launch_config = plan
+        account = await self._automation_account_for(
+            self._pm_onboard_ctx, origin_ref, engine=engine)
+        if account is None:
+            return None
+        url = f"https://github.com/{repo}.git"
+        cwd = await asyncio.to_thread(
+            gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
+        default_branch = await self._sdlc_default_branch(repo)
+        prompt = build_map_synthesis_prompt(
+            slug=slug, repo=repo, default_branch=default_branch,
+            open_count=int(open_count), closed_count=int(closed_count),
+            scope=scope, suggestion=suggestion, item_numbers=item_numbers,
+            engine=engine)
+        detail["engine"] = engine.value
         rec = await self._pm_onboard_ctx.spawn_session(
             origin_ref=origin_ref,
             dedupe_key=origin_ref,
-            repo=repo, cwd=cwd, account=account,
+            repo=repo, cwd=cwd, account=account, engine=engine,
             name=name, initial_prompt=prompt, detail=detail)
         if rec is not None and scope == "initial":
             async with db_session() as db:
@@ -5605,7 +5617,16 @@ class SessionOrchestrator:
         reached by the request layer, so it stays private (no facade/RPC forward).
         Propose-only: augments the SAME PR, never opens a new one."""
         from server.pm.classification import build_coverage_critic_prompt
-        account = await self._backlog_healthy_account()
+        origin_ref = f"{slug}:feature-map-critic"
+        # Engine before the account and the clone — see `pm_onboard_spawn_map`.
+        # The critic commits and pushes to the map branch, so its prompt carries
+        # the same attribution trailer the synthesis prompt does.
+        plan = await self._pm_onboard_ctx.launch_plan_or_refuse(origin_ref)
+        if plan is None:
+            return None
+        engine, _launch_config = plan
+        account = await self._automation_account_for(
+            self._pm_onboard_ctx, origin_ref, engine=engine)
         if account is None:
             return None
         url = f"https://github.com/{repo}.git"
@@ -5614,12 +5635,13 @@ class SessionOrchestrator:
         default_branch = await self._sdlc_default_branch(repo)
         prompt = build_coverage_critic_prompt(
             slug=slug, repo=repo, default_branch=default_branch, branch=branch,
-            open_count=0, closed_count=0)
-        origin_ref = f"{slug}:feature-map-critic"
+            open_count=0, closed_count=0, engine=engine)
         return await self._pm_onboard_ctx.spawn_session(
             origin_ref=origin_ref, dedupe_key=origin_ref, repo=repo, cwd=cwd,
-            account=account, name=f"pm map-critic {slug}", initial_prompt=prompt,
-            detail={"slug": slug, "kind": "feature-map-critic", "branch": branch})
+            account=account, engine=engine, name=f"pm map-critic {slug}",
+            initial_prompt=prompt,
+            detail={"slug": slug, "kind": "feature-map-critic", "branch": branch,
+                    "engine": engine.value})
 
     async def _pm_onboard_chain_critic(self, slug: str, repo: str, branch: str, *,
                                        attempts: int = 30, delay: float = 30.0):
@@ -5697,7 +5719,25 @@ class SessionOrchestrator:
                 summary=f.summary or "") for f in features]
             repo = (primary.repo if primary else repo_names[0]) if repo_names else ""
             project_id = proj.id
-        account = await self._backlog_healthy_account()
+        import hashlib as _hashlib
+        # The dedupe key is the chunk's identity, not the launch's: a re-tap that
+        # would classify the same items collides whichever engine it resolves to.
+        _chunk_key = _hashlib.sha1(
+            ",".join(f"{w.repo}#{w.number}" for w in sorted(
+                chunk, key=lambda w: (w.repo or "", w.number or 0))
+            ).encode()).hexdigest()[:12]
+        origin_ref = f"{slug}:classify:{_chunk_key}"
+        # Engine before the account gate and the clone — see
+        # `pm_onboard_spawn_map`. A classify session commits nothing, so its
+        # prompt is engine-neutral, but the account pool is not: probing without
+        # an engine hands a Codex launch an Anthropic account that
+        # `sanitize_launch_for_engine` then drops, leaving the session with none.
+        plan = await self._pm_classify_ctx.launch_plan_or_refuse(origin_ref)
+        if plan is None:
+            return 0
+        engine, _launch_config = plan
+        account = await self._automation_account_for(
+            self._pm_classify_ctx, origin_ref, engine=engine)
         if account is None:
             return 0
         prompt = build_classification_prompt(items=briefs, features=feat_briefs)
@@ -5706,17 +5746,13 @@ class SessionOrchestrator:
             url = f"https://github.com/{repo}.git"
             cwd = await asyncio.to_thread(
                 gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
-        import hashlib as _hashlib
-        _chunk_key = _hashlib.sha1(
-            ",".join(f"{w.repo}#{w.number}" for w in sorted(
-                chunk, key=lambda w: (w.repo or "", w.number or 0))
-            ).encode()).hexdigest()[:12]
         rec = await self._pm_classify_ctx.spawn_session(
-            origin_ref=f"{slug}:classify:{_chunk_key}",
-            dedupe_key=f"{slug}:classify:{_chunk_key}",
-            repo=repo or None, cwd=cwd, account=account,
+            origin_ref=origin_ref,
+            dedupe_key=origin_ref,
+            repo=repo or None, cwd=cwd, account=account, engine=engine,
             name=f"pm classify {slug}", initial_prompt=prompt,
-            detail={"slug": slug, "kind": "classify", "count": len(chunk)})
+            detail={"slug": slug, "kind": "classify", "count": len(chunk),
+                    "engine": engine.value})
         if rec is None:
             return 0
         async with db_session() as db:

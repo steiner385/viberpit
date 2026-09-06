@@ -36,10 +36,11 @@ def test_every_registered_origin_declares_its_audited_policy():
     """No implicit "any": every origin declares a policy, and this map is the
     reviewable record of which ones passed a Codex acceptance suite.
 
-    The two SDLC origins were widened to ``codex_allowed`` by #1265/#1266 — the
-    *option*, not the traffic (``default_engine`` still answers Claude, and both
-    the automations kill switch and the network opt-in ship off). Everything else
-    is still ``claude_only``: widening one is a one-line diff here."""
+    The two SDLC origins were widened to ``codex_allowed`` by #1265/#1266, and
+    the two PM session origins by #1268/#1269 — the *option*, not the traffic
+    (``default_engine`` still answers Claude, and both the automations kill
+    switch and the network opt-in ship off). Everything else is still
+    ``claude_only``: widening one is a one-line diff here."""
     audited = audited_policy_map()
     assert set(audited) == {a.id for a in registry.all()}
     assert audited == {
@@ -52,6 +53,8 @@ def test_every_registered_origin_declares_its_audited_policy():
         "sdlc-synthesizer": EnginePolicy.CODEX_ALLOWED,
         "pm-sync": EnginePolicy.CLAUDE_ONLY,
         "pm-triage": EnginePolicy.CLAUDE_ONLY,
+        "pm-onboard": EnginePolicy.CODEX_ALLOWED,
+        "pm-classify": EnginePolicy.CODEX_ALLOWED,
         "gh-reconcile": EnginePolicy.CLAUDE_ONLY,
     }
 

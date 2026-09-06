@@ -257,4 +257,42 @@ describe('AutomationCard', () => {
       expect(screen.queryByText('Configuration')).not.toBeInTheDocument()
     })
   })
+  describe('operator-triggered origins', () => {
+    // An origin with no control loop (`modes: []`): registered for its audited
+    // engine ceiling and its config row, spawned only when something calls its
+    // seam. A toggle here would be a switch that switches nothing (#1268/#1269).
+    const PM_CLASSIFY: Automation = {
+      id: 'pm-classify', name: 'PM Classification', description: 'triage proposals',
+      enabled: false, mode: null, modes: [], operatorTriggered: true,
+      status: { text: 'operator-triggered', level: 'idle', counts: null },
+      enginePolicy: 'codex_allowed',
+      configSchema: [
+        { key: 'engine', label: 'Agent engine', type: 'enum', default: 'claude_code', help: '', choices: ['claude_code', 'codex'] },
+      ],
+      config: {}, lastActiveAt: null, activeSessions: 0,
+    }
+
+    it('renders no enable toggle', () => {
+      mockBasicHooks()
+      render(<MemoryRouter><AutomationCard automation={PM_CLASSIFY} /></MemoryRouter>)
+      expect(screen.getByText('PM Classification')).toBeInTheDocument()
+      expect(screen.queryByRole('switch')).not.toBeInTheDocument()
+      expect(screen.getByText(/triggered/i)).toBeInTheDocument()
+    })
+
+    it('still exposes the engine selector its ceiling admits', () => {
+      const mutate = vi.fn()
+      mockBasicHooks(mutate)
+      render(<MemoryRouter><AutomationCard automation={PM_CLASSIFY} /></MemoryRouter>)
+      fireEvent.click(screen.getByRole('button', { name: /expand/i }))
+      expect(screen.getByLabelText('Agent engine')).toBeInTheDocument()
+    })
+
+    it('offers no schedule editor for an origin that never ticks', () => {
+      mockBasicHooks()
+      render(<MemoryRouter><AutomationCard automation={PM_CLASSIFY} /></MemoryRouter>)
+      fireEvent.click(screen.getByRole('button', { name: /expand/i }))
+      expect(screen.queryByText('Schedule')).not.toBeInTheDocument()
+    })
+  })
 })

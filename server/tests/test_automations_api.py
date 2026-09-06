@@ -180,3 +180,56 @@ def test_list_reports_active_spawned_session_count():
         assert all(a["activeSessions"] == 0 for a in others if a["id"] != "backlog-runner")
         br = next(a for a in automations if a["id"] == "backlog-runner")
         assert br["activeSessions"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Operator-triggered origins (#1268, #1269): registered for their engine        #
+# ceiling and their config row, but with no control loop behind them.          #
+# --------------------------------------------------------------------------- #
+
+def test_the_pm_origins_offer_an_engine_selector_and_no_enable_toggle():
+    """`pm-onboard` / `pm-classify` spawn sessions but are not ticked. They are
+    registered so their audited ceiling is declared and an operator has somewhere
+    to opt in — which means an `engine` field in the schema, and `operatorTriggered`
+    so the card renders config without a switch that switches nothing."""
+    with _client() as c:
+        automations = {a["id"]: a for a in c.get("/api/automations", headers=H).json()}
+        for origin in ("pm-onboard", "pm-classify"):
+            a = automations[origin]
+            assert a["operatorTriggered"] is True
+            assert a["modes"] == []
+            assert a["enginePolicy"] == "codex_allowed"
+            engine_field = next(f for f in a["configSchema"] if f["key"] == "engine")
+            assert engine_field["choices"] == ["claude_code", "codex"]
+            assert engine_field["default"] == "claude_code"
+
+
+def test_a_looped_automation_is_not_marked_operator_triggered():
+    with _client() as c:
+        automations = {a["id"]: a for a in c.get("/api/automations", headers=H).json()}
+        assert automations["pr-doctor"]["operatorTriggered"] is False
+        assert automations["backlog-runner"]["operatorTriggered"] is False
+
+
+def test_patching_enabled_on_an_operator_triggered_origin_is_422():
+    """There is no loop to enable, so persisting `enabled` would record a state
+    no reader consults — refused rather than silently accepted."""
+    with _client() as c:
+        r = c.patch("/api/automations/pm-classify", json={"enabled": True}, headers=H)
+        assert r.status_code == 422
+        assert "no control loop" in r.json()["detail"]
+        assert c.patch("/api/automations/pm-classify",
+                       json={"schedule": {"kind": "every", "minutes": 30}},
+                       headers=H).status_code == 422
+
+
+def test_patching_the_engine_on_an_operator_triggered_origin_persists():
+    """The half that DOES apply: the ceiling's own config field."""
+    with _client() as c:
+        r = c.patch("/api/automations/pm-onboard",
+                    json={"config": {"engine": "codex"}}, headers=H)
+        assert r.status_code == 200, r.text
+        assert r.json()["config"]["engine"] == "codex"
+        assert c.patch("/api/automations/pm-onboard",
+                       json={"config": {"engine": "gemini"}},
+                       headers=H).status_code == 422

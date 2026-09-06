@@ -12,8 +12,9 @@ links:
 > **State.** Phases 1–6 and Phase 7 Tasks 7.1–7.3 have landed behind fail-closed flags:
 > `CCSWITCH_CODEX_ENABLED` and `CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED` are both
 > `false` everywhere, and `CCSWITCH_CODEX_AUTOMATIONS_ENABLED` stays false. The two
-> SDLC origins are now `codex_allowed` on live-boundary evidence (#1265/#1266);
-> every other automation origin is still `claude_only`. This becomes `live` only when Part 2
+> SDLC origins and the two PM session origins are now `codex_allowed` on
+> live-boundary evidence (#1265/#1266, #1268/#1269); every other automation
+> origin is still `claude_only`. This becomes `live` only when Part 2
 > of the acceptance record —
 > the real-boundary runs on dobby and rocky — passes and the owner enables the
 > flags. Operator procedures: `docs/runbooks/codex-credential-authority.md`.
@@ -94,10 +95,14 @@ compatibility audit; API-key authentication in v1.
   (default `false`) is the global kill switch — it forces every `codex_allowed` origin back to
   Claude without an operator unwinding each config, and it is separate from `CCSWITCH_CODEX_ENABLED`
   so enabling Codex for humans does not enable it for control loops. **The two SDLC origins
-  (`sdlc-intake`, `sdlc-synthesizer`) are `codex_allowed`; every other origin is still
+  (`sdlc-intake`, `sdlc-synthesizer`) and the two PM session origins (`pm-onboard`,
+  `pm-classify`) are `codex_allowed`; every other origin is still
   `claude_only`** — widening one is gated on that origin's Codex acceptance suite passing
   (Tasks 7.2 and 7.3), and the current map is asserted whole in
-  `server/tests/test_automation_engine_policy.py`.
+  `server/tests/test_automation_engine_policy.py`. A ceiling is only half the mechanism: the
+  operator's opt-in is a key in the origin's ordinary automation config row, so an origin that is
+  not in the registry has nowhere to store one and is `claude_only` by *default* rather than by
+  decision. That is why the PM origins had to be registered before they could be widened (#1268).
 - **Automation parity was blocked on the Codex sandbox, not on the prompt contract (Phase 7, Tasks
   7.2/7.3).** The offline half of both acceptance gates passes — the backlog and SDLC seed prompts
   carry their whole contract with no Claude-only syntax, the loops handle a refused launch without
@@ -144,6 +149,35 @@ compatibility audit; API-key authentication in v1.
   and without `CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN` the launch is refused by
   `unattended_launch_blocker`. Each is pinned by its own test in section 5 of
   `server/tests/test_sdlc_codex_acceptance.py`.
+- **PM origins enabled (#1268 onboarding/critic, #1269 classification).** `pm-onboard` and
+  `pm-classify` spawn unattended sessions but are *operator-triggered* — the Projects workspace and
+  the pm-triage drift path call their seams; nothing ticks them. They were not in the automation
+  registry at all, so `AutomationContext.launch_plan` swallowed the `KeyError`, answered
+  `claude_only`, and no `engine` config field existed to opt in with; their activity-event and
+  spawned-session endpoints 404'd for the same reason. Registering them fixes both. An origin with
+  no control loop declares `modes = ()` (`automations.base.operator_triggered`): its config —
+  including the engine fields its ceiling admits — is patchable, while an `enabled`/`mode`/`schedule`
+  PATCH is refused 422 and the card renders no toggle, rather than showing an operator a switch that
+  switches nothing.
+
+  The widening also fixed three engine-routing defects, the same shapes #1265/#1266 found: all three
+  PM spawn sites probed the *Claude* account pool (`_backlog_healthy_account` with no engine), so a
+  Codex launch's Anthropic account was dropped by `sanitize_launch_for_engine` and the session had
+  none; `pm_onboard_spawn_map` never passed its engine to `build_map_synthesis_prompt`, which would
+  have told a Codex session to co-author its commits as Claude; and the policy check sat *after* an
+  account probe and a full `ensure_clone`, so a refused launch paid for a git clone on every tap.
+  The critic prompt carried no attribution trailer at all even though it commits and pushes.
+
+  Live evidence: `server/tests/test_pm_codex_live.py`, opt-in via `CCSWITCH_TEST_CODEX_LIVE=1`. It
+  runs a bounded classification batch through the real `codex` binary in `read-only` (a classify
+  session has no write to do) and checks the ingest parser `_pm_classify_ingest` uses yields exactly
+  one row per listed item, no invented features, and a usable `no_fit` escape hatch; then it runs
+  the diff-scoped map-synthesis prompt and its critic in `danger-full-access` against a throwaway
+  repo whose `origin` is a local bare repo, and checks the property the chain exists for — **review
+  separation**: synthesis pushes ONE branch, the critic augments THAT branch instead of opening a
+  second, the default branch is never touched, both commits carry the Codex trailer and never
+  Claude's, and neither writes outside `docs/product/features/`. The same three gates as the SDLC
+  origins still ship off in front of any of it.
 - Users explicitly select Claude Code or Codex. V1 Codex controls are model, reasoning effort, and
   permission profile. The data model supports multiple named OpenAI accounts immediately, while
   automatic OpenAI-account rotation is deferred.

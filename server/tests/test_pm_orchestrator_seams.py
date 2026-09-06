@@ -11,15 +11,28 @@ from unittest.mock import patch
 
 import pytest
 
+from ccswitch.engines import AgentEngine
 from server.db import db_session, init_db
 from server.db.models import (
     Feature, Project, ProjectRepo, TriageProposal, WorkItem)
 
 
 class _SpawnRec:
-    """Fake AutomationContext capturing spawn_session calls."""
+    """Fake AutomationContext capturing spawn_session calls.
+
+    Models BOTH calls a PM spawn site makes: the engine resolution (#1268/#1269
+    moved it ahead of the account probe and the clone, so a refusal costs
+    nothing) and the spawn itself. Answers Claude — these tests are the
+    engine-neutral behavior; the Codex half lives in
+    ``test_pm_codex_acceptance.py``.
+    """
     def __init__(self):
         self.calls = []
+        self.plans = []
+
+    async def launch_plan_or_refuse(self, origin_ref):
+        self.plans.append(origin_ref)
+        return AgentEngine.CLAUDE_CODE, {}
 
     async def spawn_session(self, **kw):
         self.calls.append(kw)

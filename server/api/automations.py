@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from server.auth.middleware import current_identity
-from server.automations.base import validate_config
+from server.automations.base import operator_triggered, validate_config
 from server.automations.context import AutomationContext
 from server.automations.engine_policy import policy_for
 from server.automations.registry import registry
@@ -93,6 +93,11 @@ async def list_automations(request: Request, _identity: str = Depends(current_id
             # the server would reject.
             "configSchema": [f.to_dict() for f in registry.schema_for(a.id)],
             "enginePolicy": policy_for(a).value,
+            # No control loop: the card renders its config (an engine ceiling
+            # still applies) but no enable toggle, because there is nothing to
+            # enable. Published rather than re-derived in the browser so the
+            # rule lives only in ``automations.base.operator_triggered``.
+            "operatorTriggered": operator_triggered(a),
             "config": row.config or {},
             "schedule": row.schedule or None,
             "lastActiveAt": row.last_active_at.isoformat() if row.last_active_at else None,
@@ -144,6 +149,17 @@ async def patch_automation(automation_id: str, body: PatchBody,
                            _identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
     automation = _automation_or_404(automation_id)
     row = await _row(db, automation_id)
+    if operator_triggered(automation) and (body.enabled is not None
+                                           or body.mode is not None
+                                           or body.schedule):
+        # An origin with no control loop has nothing to enable, run in a mode, or
+        # schedule; accepting the write would persist a state no reader consults
+        # and show the operator a switch that does not switch anything. Its
+        # config (including the engine ceiling's fields) is still patchable.
+        raise HTTPException(
+            status_code=422,
+            detail=f"{automation_id} has no control loop: it spawns only when "
+                   "triggered, so it cannot be enabled, moded or scheduled")
     if body.mode is not None:
         if body.mode not in automation.modes:
             raise HTTPException(status_code=422, detail=f"invalid mode {body.mode!r}")
