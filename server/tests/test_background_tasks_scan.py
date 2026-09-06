@@ -2,8 +2,22 @@ import json
 from datetime import datetime, timezone
 from server.sessions.background_tasks import (
     scan_open_background_tasks, scan_pending_wakeup, is_parked, build_rearm_prompt,
-    last_turn_awaits_user, OpenBgTask,
+    last_assistant_text, text_awaits_user, OpenBgTask,
 )
+
+
+def last_turn_awaits_user(jsonl_path):
+    """The composition ``_persist_status`` performs for a CLAUDE session.
+
+    Was a single ``background_tasks`` helper until #1284 made the prose source
+    engine-neutral: the orchestrator now reads the last assistant message through
+    ``_last_assistant_prose`` (transcript for Claude, driver turn buffer for Codex)
+    and judges it with ``text_awaits_user``. Composing the two here keeps these cases
+    pinned on the Claude path they were written for.
+    """
+    if not jsonl_path:
+        return False
+    return text_awaits_user(last_assistant_text(jsonl_path))
 
 
 def _notif(tuid, status):

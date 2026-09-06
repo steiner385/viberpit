@@ -156,6 +156,14 @@ _STALLED_STATUSES = frozenset({"needs_attention", "limited"})
 # strand identically, so they belong here even though they're absent above.
 _RESTART_TRANSIENT_STATUSES = _ACTIVE_STATUSES | frozenset({"waiting_question", "ready_review"})
 
+# Wall-clock ceiling on one engine read of a session's open background work
+# (`_open_background_work`). Deliberately far below the Codex client's own
+# per-request timeout times its page cap: the read sits on the turn-end status write
+# and on the deploy drain, and neither may be held open by a slow app-server for the
+# sake of a "Waiting…" overlay. Exceeding it degrades to "nothing open", which the
+# next turn-end re-asks.
+_BG_WORK_READ_TIMEOUT_S = 15.0
+
 # Message surfaced to the user when auto-recovery gives up on a repeatedly-dropped turn.
 _TURN_DROPPED_GIVEUP = ("Auto-recovery gave up after repeated empty turns — the context "
                         "may be full. Send a message to retry, or /compact to free space.")
@@ -3516,21 +3524,21 @@ class SessionOrchestrator:
         # Overlay: a turn that finished (`done`) but left the agent parked on an external
         # event — an open background task or an armed self-scheduled wakeup — is "Waiting…",
         # not "Your turn". Computed here (not in the pure `derive_status`) because it needs
-        # the transcript, like the `limited`/`ended` overlays. Scan only on `done` so the
+        # per-engine state, like the `limited`/`ended` overlays. Scan only on `done` so the
         # per-emit cost is paid once per turn-end. `waiting_external` is NOT in
         # ACTIVITY_STATUSES, so parking does NOT bump the "active … ago" clock below — the
         # card shows time since the last real turn, not a reset on every re-arm.
         completed_turn = status == "done"
         if completed_turn:
-            from .background_tasks import is_parked, last_turn_awaits_user
-            tpath = self.transcript_path(session_id)
-            if is_parked(tpath):
+            from .background_tasks import text_awaits_user
+            if await self._session_is_parked(session_id):
                 # A parked `done` turn normally reads "Waiting…". But if the turn handed
                 # a question/decision back to the user in prose (no structured
                 # `pending_question`, which would already win in derive_status), it needs
                 # the user — not a timer/process — so surface "Answer needed" instead of
                 # masking it as waiting_external.
-                status = ("waiting_question" if last_turn_awaits_user(tpath)
+                status = ("waiting_question"
+                          if text_awaits_user(self._last_assistant_prose(session_id))
                           else "waiting_external")
         # Advance the "active … ago" clock ONLY when the assistant hands output back —
         # a finished or user-paused turn (ACTIVITY_STATUSES). Bumping it on every status
@@ -3896,13 +3904,8 @@ class SessionOrchestrator:
         LLM classifier (heuristic degrade) AFTER stripping the completion markers —
         the marker trails the message, so it masks a closing "?" from any tail check.
 
-        The prose text is read differently per engine: ``transcript_path`` only ever
-        resolves for Claude (Codex keeps no JSONL — see its docstring), so a Codex
-        session falls back to the driver's in-memory turn buffer, extracted the same
-        way ``suggestions.last_turn_context`` does for idle-suggestion seeding. Both
-        feed the SAME classifier below. Without this fallback, Codex's structurally
-        false ``pending_question`` (no AskUserQuestion equivalent) combined with a
-        None transcript path left it with NO prose safeguard at all.
+        The prose text comes from ``_last_assistant_prose`` (per-engine, one reader),
+        stripped of the completion markers before the classifier sees it.
         Raises only to the caller's best-effort catch (reads as 'no question')."""
         driver = getattr(self, "_drivers", {}).get(session_id)
         if driver is not None:
@@ -3915,20 +3918,91 @@ class SessionOrchestrator:
                           session_id, exc_info=True)
         from .completion import strip_markers
         from .open_question import completion_awaits_user
-        tpath = self.transcript_path(session_id)
-        if tpath:
-            from .background_tasks import last_assistant_text
-            text = strip_markers(last_assistant_text(tpath))
-        elif driver is not None:
-            from .suggestions import last_turn_context
-            _, assistant_text = last_turn_context(list(getattr(driver, "_turn_buffer", [])))
-            text = strip_markers(assistant_text)
-        else:
-            return False
+        text = strip_markers(self._last_assistant_prose(session_id))
         if not text:
             return False
         rec = self._records.get(session_id)
         return await completion_awaits_user(text, cwd=getattr(rec, "cwd", None))
+
+    def _last_assistant_prose(self, session_id: str) -> str:
+        """The last assistant message's prose, whichever engine produced it.
+
+        THE per-engine reader — both the completion classifier above and the parked
+        overlay in ``_persist_status`` ask this same question, and a second copy of
+        the branch is how one of them silently keeps working for only one engine.
+
+        ``transcript_path`` resolves for Claude only (Codex keeps no JSONL — see its
+        docstring), so a Codex session falls back to the driver's in-memory turn
+        buffer, extracted the same way ``suggestions.last_turn_context`` does for
+        idle-suggestion seeding. Empty when neither source is available — a detached
+        Codex session has no buffer to read, and inventing prose for it would be worse
+        than admitting we cannot see the message.
+        """
+        tpath = self.transcript_path(session_id)
+        if tpath:
+            from .background_tasks import last_assistant_text
+            return last_assistant_text(tpath)
+        driver = getattr(self, "_drivers", {}).get(session_id)
+        if driver is None:
+            return ""
+        from .suggestions import last_turn_context
+        _, assistant_text = last_turn_context(list(getattr(driver, "_turn_buffer", [])))
+        return assistant_text
+
+    async def _session_is_parked(self, session_id: str) -> bool:
+        """True iff this session is waiting on work of its own rather than the user.
+
+        Engine-neutral by dispatch, because the two engines keep the answer in
+        genuinely different places and neither can be made to speak the other's:
+
+        * **Claude** — scanned out of the transcript ``.jsonl``: open ``Monitor`` /
+          ``run_in_background`` tool calls, or an armed ``ScheduleWakeup``. Needs no
+          driver, so it answers for a detached session too.
+        * **Codex** — a live `thread/backgroundTerminals/list` read through the
+          driver. No driver means no app-server, and no app-server means the
+          background terminals it owned are already dead — so **False** is the
+          correct answer for a detached Codex session, not a degraded one. That is
+          what un-parks a Codex session across a daemon restart (see
+          ``server/codex/background.py``). Codex has no wakeup half at all: its
+          ``clock.sleep`` blocks inside a turn, so a sleeping session is
+          ``in_progress`` and was never parked.
+
+        Never raises. A failed read reports "not parked": leaving a session pinned on
+        "Waiting…" because one RPC timed out is the worse failure — the next turn-end
+        asks again, while a stuck overlay needs a restart to clear.
+        """
+        if self._engine_of(session_id) is AgentEngine.CLAUDE_CODE:
+            from .background_tasks import is_parked
+            return await asyncio.to_thread(is_parked, self.transcript_path(session_id))
+        tasks = await self._open_background_work(session_id)
+        return bool(tasks)
+
+    async def _open_background_work(self, session_id: str) -> list[OpenBgTask]:
+        """This session's open background work, in the engine-neutral vocabulary.
+
+        The snapshot half of ``_session_is_parked`` — same two sources, but it hands
+        back the entries themselves so a drain can persist them. Returns ``[]`` on any
+        failure: a snapshot that cannot be taken must degrade to "nothing to report",
+        never to a partial one the restart would present as complete.
+        """
+        if self._engine_of(session_id) is AgentEngine.CLAUDE_CODE:
+            path = self.transcript_path(session_id)
+            if not path:
+                return []
+            return await asyncio.to_thread(scan_open_background_tasks, path)
+        driver = self._drivers.get(session_id)
+        reader = getattr(driver, "open_background_work", None)
+        if reader is None:
+            return []
+        try:
+            # Bounded independently of the engine client's own per-request timeout:
+            # this runs on the turn-end status write and on the deploy drain, and a
+            # paginated read of N pages inherits N times that timeout. A status
+            # overlay is not worth holding either path open for minutes.
+            return list(await asyncio.wait_for(reader(), _BG_WORK_READ_TIMEOUT_S))
+        except Exception:
+            log.debug("bg_work.read_failed sid=%s", session_id, exc_info=True)
+            return []
 
     async def _persist_context_usage(self, session_id: str, used_tokens: int, max_tokens: int) -> None:
         """Driver ``on_context_usage`` callback: persist the exact context-window occupancy.
@@ -8074,7 +8148,6 @@ class SessionOrchestrator:
                     "(%d with host=NULL -> primary)", me, len(foreign),
                     sum(1 for r in foreign if r.host is None))
             rows = [r for r in rows if r.host == me]
-        from .background_tasks import is_parked
         added = 0
         backfilled: dict[str, str] = {}
         healed: dict[str, str] = {}
@@ -8130,10 +8203,15 @@ class SessionOrchestrator:
             # longer parked — e.g. its background pollers were killed by a deploy and are
             # now dead, or a self-scheduled wakeup was lost — its true status is `done`.
             # Restore it so the card stops showing "Waiting…" forever. Cheap: only the
-            # (few) waiting_external rows hit the transcript scan.
+            # (few) waiting_external rows are asked at all.
+            #
+            # `_session_is_parked` answers per engine. A Codex row ALWAYS un-parks here
+            # and that is the correct answer rather than a shortcut: its background
+            # terminals were grandchildren of an app-server this daemon has not started
+            # yet, and the boot sweep reaps any that outlived the last one
+            # (server/codex/background.py).
             if status == "waiting_external":
-                path = self.transcript_path(row.id)
-                if not await asyncio.to_thread(is_parked, path):
+                if not await self._session_is_parked(row.id):
                     self._records[row.id].status = "done"
                     healed[row.id] = "done"
                     log_event(log, logging.INFO, "session.unpark",
@@ -9133,19 +9211,26 @@ class SessionOrchestrator:
             q.put_nowait(event)
 
     async def _snapshot_open_tasks(self) -> None:
-        """At drain, persist each live session's open background tasks so the post-restart
-        daemon can relaunch them. Only sessions with a live driver can have live tasks."""
+        """At drain, persist each live session's open background work so the post-restart
+        daemon can act on it. Only sessions with a live driver can have live work.
+
+        "Act on it" is engine-dependent and the snapshot says which: Claude tasks come
+        back ``replayable`` and are relaunched, while Codex background terminals come
+        back ``replayable=False`` and are only reported, because they died with the
+        app-server and re-running their command lines would duplicate whatever they did
+        (#1284). ``build_rearm_prompt`` is where that distinction is honoured."""
         from sqlalchemy import update as sa_update
         session_ids = list(self._drivers.keys())
         if not session_ids:
             return
 
         async def _scan(sid: str):
-            path = self.transcript_path(sid)
-            if not path:
-                return sid, []
-            tasks = await asyncio.to_thread(scan_open_background_tasks, path)
-            log_event(log, logging.INFO, "bg_task_rescan", session_id=sid, open=len(tasks))
+            tasks = await self._open_background_work(sid)
+            # Emitted even at zero: "we asked and found nothing" and "we never asked"
+            # are different forensic answers, and only the breadcrumb tells them apart.
+            log_event(log, logging.INFO, "bg_task_rescan", session_id=sid,
+                      open=len(tasks),
+                      replayable=sum(1 for t in tasks if t.replayable))
             return sid, [t.to_dict() for t in tasks]
 
         results = await asyncio.gather(*(_scan(s) for s in session_ids),

@@ -196,6 +196,29 @@ compatibility audit; API-key authentication in v1.
   AND path — never by writing `/name` into the prompt, which the app-server does not parse and would
   hand the model as literal text. Listing and invoking skills is not the "plugin/skill management"
   named in Non-goals: nothing here installs, edits, enables, or scopes a skill.
+- **Background work: observed, never restored (#1284).** A Codex session that leaves a long-running
+  process behind now parks on `waiting_external` ("Waiting…") at turn end exactly like a Claude
+  session parked on a `Monitor`, read from the pinned `thread/backgroundTerminals/list`
+  (`server/codex/background.py`). Codex is *better* than Claude here, not merely at parity: Claude's
+  answer is inferred by replaying a transcript, while Codex's is a live register kept by the process
+  that owns the terminals. The prose safeguard that keeps a parked turn holding a real question from
+  reading "Waiting…" instead of "Answer needed" is engine-neutral too — one reader
+  (`SessionOrchestrator._last_assistant_prose`) resolves it from the transcript for Claude and the
+  driver's turn buffer for Codex.
+
+  **There is no restore half, and that is a verified boundary rather than an unfinished one.** A
+  background terminal is a grandchild of the `codex app-server` child; daemon shutdown drains that
+  child and the boot sweep reaps any survivor by process *tree*, so none can outlive a restart. The
+  app-server publishes `list`, `terminate` and `clean` for them — three ways to observe or end one,
+  none to start one (asserted against the generated method inventory in
+  `server/tests/test_codex_background_work.py`, so a future release that adds one fails the test
+  rather than leaving this note stale). ccswitch therefore snapshots lost terminals at drain with
+  `replayable=False` and, after the restart, **names them to the session and stops** — the command
+  lines are the agent's own, and re-issuing one unasked is how a deploy runs a push, a migration, or
+  an install a second time. Claude's snapshot still carries the relaunch instruction it always did;
+  `build_rearm_prompt` keeps the two halves in separate sections. Codex has no wakeup half to lose
+  either: its `clock.sleep` blocks *inside* a turn, so a sleeping session is `in_progress` and was
+  never parked.
 - The owner accepted the version-pinned experimental external-token dependency with the design's
   mandatory compatibility, redaction, live-test, kill-switch, and fail-closed safeguards.
 - PR #1088 configures Codex as a repository development agent; it does not implement this feature.

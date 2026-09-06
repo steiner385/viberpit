@@ -1,9 +1,18 @@
-"""Scan a Claude transcript for *open* background tasks (Monitors / backgrounded
-Bash|Task) and build the turn that relaunches them after a deploy restart.
+"""The engine-neutral vocabulary for a session's *open* background work, the Claude
+scanner that derives it from a transcript, and the turn that follows a restart.
 
-Pure + side-effect-free: the transcript .jsonl is the durable source of truth for
-both launches (assistant tool_use) and terminations (task-notification), so no live
-observer or mirror table is needed (constitution Principle VI)."""
+Two engines feed the same :class:`OpenBgTask` vocabulary from very different places:
+
+* **Claude** — scanned out of the transcript ``.jsonl`` here. Pure +
+  side-effect-free: the transcript is the durable source of truth for both launches
+  (assistant ``tool_use``) and terminations (``task-notification``), so no live
+  observer or mirror table is needed (constitution Principle VI).
+* **Codex** — read live from the app-server's own register of background terminals
+  (``server/codex/background.py``). No transcript exists to scan, and none is needed:
+  the vendor tracks the processes itself.
+
+They also differ in what a restart can do about it, which is what ``replayable``
+records — see that field and :func:`build_rearm_prompt`."""
 from __future__ import annotations
 
 import json
@@ -30,24 +39,49 @@ _GUARD = ("This task was interrupted by a server restart and may have partially 
           "what already exists) and continue from where it left off rather than "
           "restarting blindly.")
 
+# The non-replayable half. Deliberately phrased as a notification with no imperative:
+# ccswitch is telling the session what it lost, not handing it a script to re-run.
+_LOST_HEADER = ("The daemon was restarted (deploy). These background processes you "
+                "had left running were stopped with it and were NOT restarted:")
+_LOST_GUARD = ("They cannot be restored automatically — the command lines are yours, "
+               "not something this restart is willing to re-issue on your behalf. If "
+               "any of them still matters, check the current state first (what the "
+               "process had already done, whether its output is still needed) and "
+               "decide for yourself whether to start it again. If none does, carry on.")
+
 
 @dataclass
 class OpenBgTask:
     tool_use_id: str
-    kind: str          # "monitor" | "task"
-    name: str          # originating tool name (Monitor / Bash / Task)
-    input: dict        # verbatim tool_use input — replayed to relaunch faithfully
+    kind: str          # "monitor" | "task" | "terminal"
+    name: str          # originating tool name (Monitor / Bash / Task / BackgroundTerminal)
+    input: dict        # verbatim launch input
     description: str
+    #: Can a restart put this work back by re-issuing ``input``?
+    #:
+    #: True for Claude's ``Monitor`` / ``run_in_background`` tools: the input IS a
+    #: tool call, the agent owns re-issuing it, and the harness itself decides what
+    #: running it means. False for a Codex background terminal, whose ``input`` is a
+    #: raw shell command line — re-running one blindly is how a restart duplicates a
+    #: side effect (a push, a migration, an install), and Codex publishes no
+    #: relaunch primitive to do it safely. ``build_rearm_prompt`` therefore *reports*
+    #: a non-replayable entry instead of asking for it back.
+    #:
+    #: Defaults True so a ``pending_rearm`` snapshot written by an older daemon —
+    #: which could only ever hold Claude tasks — round-trips unchanged.
+    replayable: bool = True
 
     def to_dict(self) -> dict:
         return {"tool_use_id": self.tool_use_id, "kind": self.kind,
-                "name": self.name, "input": self.input, "description": self.description}
+                "name": self.name, "input": self.input, "description": self.description,
+                "replayable": self.replayable}
 
     @classmethod
     def from_dict(cls, d: dict) -> "OpenBgTask":
         return cls(tool_use_id=d.get("tool_use_id", ""), kind=d.get("kind", "task"),
                    name=d.get("name", ""), input=d.get("input") or {},
-                   description=d.get("description", ""))
+                   description=d.get("description", ""),
+                   replayable=d.get("replayable", True) is not False)
 
 
 def _is_background_launch(name: str, inp: dict) -> bool:
@@ -211,9 +245,15 @@ def scan_pending_wakeup(jsonl_path: str, *, now: datetime | None = None) -> bool
 
 
 def is_parked(jsonl_path: str | None) -> bool:
-    """True iff the session is waiting on an external event rather than the user: it has
-    an open background task (Monitor / ``run_in_background``) or an armed self-scheduled
-    wakeup. Drives the dashboard's ``waiting_external`` ("Waiting…") status overlay."""
+    """True iff a CLAUDE session is waiting on an external event rather than the user:
+    it has an open background task (Monitor / ``run_in_background``) or an armed
+    self-scheduled wakeup.
+
+    The Claude half of ``SessionOrchestrator._session_is_parked``, which is what drives
+    the dashboard's ``waiting_external`` ("Waiting…") overlay for every engine. Codex
+    answers the same question from a live app-server read and has no wakeup half at all
+    (``server/codex/background.py``); routing it through here would only ever glob a
+    Claude projects tree for a thread id that is not in it."""
     if not jsonl_path:
         return False
     return (bool(scan_open_background_tasks(jsonl_path, treat_killed_as_open=False))
@@ -240,8 +280,12 @@ _ASK_PHRASES: tuple[str, ...] = (
 def text_awaits_user(text: str) -> bool:
     """Heuristic: does this assistant prose hand a question/decision back to the user?
 
-    Public: also the degrade path of ``open_question.completion_awaits_user`` when
-    the LLM helper lane is unavailable — one phrase list, no parallel copies."""
+    Public, and asked of prose from EITHER engine — ``_persist_status`` uses it to keep
+    the ``waiting_external`` overlay from masking a parked turn that actually needs the
+    user ("Answer needed" rather than "Waiting…"), reading the prose itself through
+    ``SessionOrchestrator._last_assistant_prose``. It is also the degrade path of
+    ``open_question.completion_awaits_user`` when the LLM helper lane is unavailable —
+    one phrase list, no parallel copies."""
     t = text.rstrip()
     if not t:
         return False
@@ -274,24 +318,38 @@ def last_assistant_text(jsonl_path: str) -> str:
     return last
 
 
-def last_turn_awaits_user(jsonl_path: str | None) -> bool:
-    """True iff the assistant's most recent message handed a question/decision back to
-    the user in prose (no structured ``AskUserQuestion``, which already maps to
-    ``waiting_question``). Lets ``_persist_status`` keep the ``waiting_external``
-    overlay from masking a parked turn that actually needs the user — surfacing
-    "Answer needed" instead of "Waiting…"."""
-    if not jsonl_path:
-        return False
-    return text_awaits_user(last_assistant_text(jsonl_path))
-
-
 def build_rearm_prompt(tasks: list[OpenBgTask]) -> str:
-    lines = ["The daemon was restarted (deploy) and these background tasks were "
-             "stopped. Relaunch each one with exactly the parameters shown."]
-    if any(t.kind != "monitor" for t in tasks):
-        lines.append(_GUARD)
-    for t in tasks:
-        label = t.description or t.name
-        lines.append(f"- [{t.kind}] {label}: relaunch the {t.name} tool with input "
-                     f"{json.dumps(t.input)}")
+    """The turn delivered after a restart that stopped this session's background work.
+
+    Two sections, because the two halves of the snapshot license different actions.
+    Replayable entries are *instructions* — relaunch this tool with these inputs.
+    Non-replayable ones are a *report*: named so the agent knows what stopped and can
+    judge whether it still matters, with no instruction to re-run anything. That split
+    is the whole point (#1284) — a Codex background terminal's ``input`` is a shell
+    command line the agent chose, and a restart that re-issues one unasked is a
+    restart that duplicates whatever it did.
+    """
+    replayable = [t for t in tasks if t.replayable]
+    reported = [t for t in tasks if not t.replayable]
+    lines: list[str] = []
+    if replayable:
+        lines.append("The daemon was restarted (deploy) and these background tasks "
+                     "were stopped. Relaunch each one with exactly the parameters "
+                     "shown.")
+        if any(t.kind != "monitor" for t in replayable):
+            lines.append(_GUARD)
+        for t in replayable:
+            label = t.description or t.name
+            lines.append(f"- [{t.kind}] {label}: relaunch the {t.name} tool with input "
+                         f"{json.dumps(t.input)}")
+    if reported:
+        if lines:
+            lines.append("")
+        lines.append(_LOST_HEADER)
+        for t in reported:
+            label = t.description or t.name
+            cwd = t.input.get("cwd")
+            where = f" (in {cwd})" if cwd else ""
+            lines.append(f"- [{t.kind}] {label}{where}")
+        lines.append(_LOST_GUARD)
     return "\n".join(lines)
