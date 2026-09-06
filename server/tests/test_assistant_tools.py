@@ -265,7 +265,8 @@ _ALL_OPTIONAL_TOOLS = ("list_sessions", "list_prs", "list_accounts", "list_hosts
                        "list_automations", "get_deploy_status", "list_archived_sessions",
                        "list_notification_channels", "list_notification_rules",
                        "get_quiet_hours", "test_notification", "set_quiet_hours",
-                       "list_initiatives")
+                       "list_initiatives", "list_backlog_candidates", "get_backlog_groups",
+                       "get_cicd_findings", "get_pr_doctor_consolidation")
 
 
 @pytest.mark.asyncio
@@ -882,3 +883,141 @@ def test_product_tool_classes():
     for name in ("resolve_triage", "request_product_sync"):
         assert TOOL_SPECS[name].tool_class is ToolClass.MUTATION
         assert annotation_for(f"mcp__ccswitch__{name}").tool_class is ToolClass.MUTATION
+
+
+# --- Automation read tools (plan Task 6.3, Pack A) -----------------------------------
+
+_JOB = "prd-1a2b3c4d"
+
+
+# `payload` is the SHAPE the real route returns (a bare list for the two list routes, an
+# object for the rest) — a one-size-fits-all `{}` would let a handler that mishandles its
+# own payload still pass the path assertion.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,args,path,payload", [
+    ("get_automation_actionable", {"id": "pr-doctor"},
+     "/api/automations/pr-doctor/actionable", []),
+    ("list_automation_sessions", {"id": "autopilot"},
+     "/api/automations/autopilot/sessions", []),
+    ("list_backlog_candidates", {}, "/api/automations/backlog-runner/candidates",
+     {"candidates": []}),
+    ("get_backlog_groups", {}, "/api/automations/backlog-runner/groups",
+     {"generation": 3, "groups": []}),
+    ("get_cicd_findings", {}, "/api/automations/cicd-doctor/findings", []),
+    ("get_pr_doctor_consolidation", {}, "/api/automations/pr-doctor/consolidation",
+     {"repos": {}, "clusters": []}),
+    ("get_pr_doctor_job", {"job_id": _JOB}, f"/api/automations/pr-doctor/jobs/{_JOB}",
+     {"job_id": _JOB, "status": "running", "phase": "cloning"}),
+])
+async def test_automation_read_tools_paths(name, args, path, payload):
+    seen: list[tuple[str, str]] = []
+
+    def handler(req: httpx.Request):
+        seen.append((req.method, req.url.path))
+        return httpx.Response(200, json=payload)
+
+    out = await _tool(build_tools(_api(handler)), name).handler(args)
+    assert "is_error" not in out
+    assert seen == [("GET", path)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["get_automation_actionable", "list_automation_sessions"])
+async def test_automation_read_tools_reject_a_bad_id_locally(name):
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), name).handler({"id": "../../sessions"})
+    assert out["is_error"] is True
+    assert calls == [], "a locally-rejected automation id must never reach the API"
+
+
+@pytest.mark.asyncio
+async def test_get_pr_doctor_job_rejects_a_bad_job_id_locally():
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), "get_pr_doctor_job").handler(
+        {"job_id": "../consolidation"})
+    assert out["is_error"] is True
+    assert calls == [], "a locally-rejected job id must never reach the API"
+
+
+@pytest.mark.asyncio
+async def test_get_cicd_findings_forwards_filters_and_caps_the_list():
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["params"] = dict(req.url.params)
+        return httpx.Response(200, json=[
+            {"id": f"f{i}", "repo": "acme/billing", "kind": "flaky", "title": f"t{i}",
+             "status": "open"} for i in range(60)])
+
+    out = await _tool(build_tools(_api(handler)), "get_cicd_findings").handler(
+        {"status": "all", "repo": "acme/billing"})
+    assert seen["params"] == {"status": "all", "repo": "acme/billing"}
+    body = json.loads(out["content"][0]["text"])
+    assert len(body["data"]) == 50
+    assert body["truncated"] == 10
+
+
+@pytest.mark.asyncio
+async def test_get_cicd_findings_omits_unset_filters():
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["params"] = dict(req.url.params)
+        return httpx.Response(200, json=[])
+
+    await _tool(build_tools(_api(handler)), "get_cicd_findings").handler({})
+    assert seen["params"] == {}, "unset filters must let the server defaults apply"
+
+
+@pytest.mark.asyncio
+async def test_list_backlog_candidates_caps_the_list_and_reports_the_drop():
+    def handler(req: httpx.Request):
+        return httpx.Response(200, json={
+            "candidates": [{"ref": f"acme/billing#{i}"} for i in range(60)]})
+
+    out = await _tool(build_tools(_api(handler)), "list_backlog_candidates").handler({})
+    body = json.loads(out["content"][0]["text"])
+    assert len(body["data"]["candidates"]) == 50
+    assert body["truncated"] == 10
+
+
+@pytest.mark.asyncio
+async def test_preview_schedule_posts_the_endpoints_body_field():
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["method"] = req.method
+        seen["path"] = req.url.path
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"nextRuns": [], "presets": {}})
+
+    schedule = {"cron": "0 8 * * *"}
+    out = await _tool(build_tools(_api(handler)), "preview_schedule").handler(
+        {"schedule": schedule})
+    assert "is_error" not in out
+    assert seen == {"method": "POST", "path": "/api/automations/schedule/preview",
+                    "body": {"schedule": schedule}}
+
+
+def test_automation_read_tool_classes_and_the_read_post_escape_hatch():
+    """All eight are READ — a MUTATION class would put a permission card in front of a
+    plain look. `preview_schedule` is the one that reaches a POST, so it must be named
+    in READ_POSTS or the conformance gate (rightly) rejects it."""
+    from server.assistant.policy import READ_POSTS
+
+    for name in ("get_automation_actionable", "list_automation_sessions",
+                 "list_backlog_candidates", "get_backlog_groups", "get_cicd_findings",
+                 "get_pr_doctor_consolidation", "get_pr_doctor_job", "preview_schedule"):
+        assert TOOL_SPECS[name].tool_class is ToolClass.READ
+        assert annotation_for(f"mcp__ccswitch__{name}").tool_class is ToolClass.READ
+    assert "preview_schedule" in READ_POSTS
