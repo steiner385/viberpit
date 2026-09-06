@@ -154,12 +154,15 @@ describe('useUpdateOverlay', () => {
     mocked.updateOverlay.mockRejectedValueOnce(new Error('boom'))
 
     const { result } = renderHook(() => useUpdateOverlay(), { wrapper: makeWrapper(qc) })
+    // A REAL triage state (`unclassified|proposed|classified|needs_human`): the
+    // fetcher is mocked here, so a made-up one would pin a body the endpoint
+    // 422s and the test would still be green.
     await act(async () => {
-      result.current.mutate({ itemId: 'w1', edit: { triageState: 'accepted' } })
+      result.current.mutate({ itemId: 'w1', edit: { triageState: 'classified' } })
     })
 
     await waitFor(() => expect(result.current.isError).toBe(true))
-    expect(mocked.updateOverlay).toHaveBeenCalledWith('w1', { triageState: 'accepted' })
+    expect(mocked.updateOverlay).toHaveBeenCalledWith('w1', { triageState: 'classified' })
     expect(toast.error).toHaveBeenCalledTimes(1)
   })
 })
