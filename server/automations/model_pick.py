@@ -15,11 +15,23 @@ aliases (the binary's own `/model` picker list, single source of truth) with
 Fail-open invariant: the assessor can only ever REFINE a spawn, never block or
 fail one. Any exception, empty reply, or out-of-pool reply resolves to the
 account default.
+
+``resolve_model``/``assess_model`` answer in Claude catalog aliases, so they
+apply ONLY to a Claude-engine spawn — handing a Codex runner ``"opus"`` is a
+mis-route ``sanitize_launch_for_engine`` has to drop downstream. For a Codex
+spawn, ``resolve_codex_model``/``assess_codex_effort`` reuse the SAME Haiku
+complexity judgment (deciding how hard a job is does not depend on which
+engine will run it) but map the picked tier onto the account's live Codex
+model/effort catalog instead — reasoning effort is Codex's own
+complexity/cost dial, the direct counterpart of a Claude tier alias. Neither
+function ever returns a value the caller did not hand it in ``efforts``, so a
+Claude alias structurally cannot reach a Codex dispatch through this module.
 """
 from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Sequence
 
 from server.sessions.account_auth import helper_env
 from server.sessions.claude_bin import cli_path_kwargs
@@ -180,3 +192,66 @@ async def resolve_model(
             return None, None
         return picked, "auto"
     return value, "pinned"
+
+
+async def assess_codex_effort(
+    task_summary: str,
+    efforts: Sequence[str],
+    *,
+    _assess=None,
+) -> str | None:
+    """Map *task_summary* to one of *efforts* — an explicit, caller-supplied
+    slice of an OpenAI account's live ``model/list`` catalog for the model a
+    Codex spawn will actually dispatch with, ordered cheapest-first the way
+    the app-server returns them.
+
+    Reuses ``assess_model``'s Haiku complexity classifier: judging how hard a
+    job is does not depend on which engine will run it, only the OUTPUT does —
+    the picked ``AUTO_MODEL_POOL`` tier is mapped ordinally onto *efforts*
+    rather than returned as a Claude alias, so the result is always a value
+    the live catalog actually offers (issue #1289: no Claude alias may reach a
+    Codex dispatch).
+
+    Fails open like ``assess_model``: ``None`` when *efforts* is empty (nothing
+    to map onto — the model has a fixed effort, or the catalog could not be
+    read) or the assessment itself fails, so the caller falls back to the
+    account/engine default rather than blocking the spawn.
+    """
+    if not efforts:
+        return None
+    assess = _assess or assess_model
+    tier = await assess(task_summary)
+    if tier is None:
+        return None
+    tier_idx = AUTO_MODEL_POOL.index(tier)
+    scaled = min(len(efforts) - 1, (tier_idx * len(efforts)) // len(AUTO_MODEL_POOL))
+    return efforts[scaled]
+
+
+async def resolve_codex_model(
+    config: dict,
+    task_summary: str,
+    efforts: Sequence[str],
+    *,
+    _assess=None,
+) -> tuple[str | None, str | None]:
+    """Codex counterpart to ``resolve_model``: maps ``default_model`` to a
+    ``(reasoning_effort, source)`` pair for a Codex spawn.
+
+    Only ``"auto"`` does anything here. A pinned Claude alias (``"opus"`` etc.)
+    or ``"default"`` means Codex has nothing to apply — an operator pins a
+    Codex model/effort directly via that engine's own ``codex_model`` /
+    ``codex_reasoning_effort`` config fields (applied downstream by
+    ``sanitize_launch_for_engine``), never through this Claude-alias field.
+    Both resolve to ``(None, None)`` — the engine/account default — so a Claude
+    alias can never reach this function's return value.
+    """
+    value = config.get("default_model")
+    value = value if isinstance(value, str) else "default"
+    if value != "auto":
+        return None, None
+    assess = _assess or assess_codex_effort
+    effort = await assess(task_summary, efforts)
+    if effort is None:
+        return None, None
+    return effort, "auto"

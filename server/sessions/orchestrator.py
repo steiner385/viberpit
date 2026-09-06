@@ -4201,15 +4201,24 @@ class SessionOrchestrator:
             gitrepos.ensure_clone, await self._effective_repo_root(), batch.repo, url)
         _mode, config = await self._backlog_read_config()
         detail: dict = {"issues": batch.issues, "engine": engine.value}
-        model = model_source = None
+        model = model_source = reasoning_effort = None
+        summary = "\n".join(
+            f"{ref}  {batch.titles.get(ref) or '(no title)'}" for ref in batch.issues)
         if engine is AgentEngine.CLAUDE_CODE:
             # `resolve_model` is a Claude complexity assessor returning Claude
             # catalog aliases. Skipping it for another engine is the audit Task
             # 7.1 asks for: not a wasted Haiku call whose answer is then dropped.
-            model, model_source = await resolve_model(config, "\n".join(
-                f"{ref}  {batch.titles.get(ref) or '(no title)'}" for ref in batch.issues))
+            model, model_source = await resolve_model(config, summary)
             if model is not None:
                 detail.update(model=model, model_source=model_source)
+        elif engine is AgentEngine.CODEX:
+            # Codex-aware counterpart (issue #1289): the same complexity
+            # judgment, mapped onto the account's live model/effort catalog
+            # instead of a Claude alias.
+            reasoning_effort, model_source = await self._resolve_codex_auto_effort(
+                account, config, summary)
+            if reasoning_effort is not None:
+                detail.update(reasoning_effort=reasoning_effort, model_source=model_source)
         return await self._backlog_ctx.spawn_session(
             origin_ref=batch.primary,
             dedupe_key=batch.primary,
@@ -4220,6 +4229,7 @@ class SessionOrchestrator:
             name=f"backlog {batch.primary}",
             initial_prompt=build_implement_prompt(batch, default_branch, engine=engine),
             model=model,
+            reasoning_effort=reasoning_effort,
             detail=detail,
         )
 
@@ -5519,14 +5529,21 @@ class SessionOrchestrator:
 
         prompt = await asyncio.to_thread(build, cwd, default_branch)
         detail: dict = {"initiative": slug, "kind": kind, "engine": engine.value}
-        model = model_source = None
+        model = model_source = reasoning_effort = None
+        summary = f"{ini.get('title') or slug}  ({kind})"
         if engine is AgentEngine.CLAUDE_CODE:
             # Claude-only complexity assessor picking Claude catalog aliases —
             # not consulted for another engine (Task 7.1 helper-call audit).
-            model, model_source = await resolve_model(
-                config, f"{ini.get('title') or slug}  ({kind})")
+            model, model_source = await resolve_model(config, summary)
             if model is not None:
                 detail.update(model=model, model_source=model_source)
+        elif engine is AgentEngine.CODEX:
+            # Codex-aware counterpart (issue #1289): same complexity judgment,
+            # mapped onto the account's live model/effort catalog.
+            reasoning_effort, model_source = await self._resolve_codex_auto_effort(
+                account, config, summary)
+            if reasoning_effort is not None:
+                detail.update(reasoning_effort=reasoning_effort, model_source=model_source)
         return await self._sdlc_synth_ctx.spawn_session(
             origin_ref=f"{slug}:{kind}",
             dedupe_key=f"{slug}:{kind}",
@@ -5537,6 +5554,7 @@ class SessionOrchestrator:
             name=f"sdlc {kind} {slug}",
             initial_prompt=prompt,
             model=model,
+            reasoning_effort=reasoning_effort,
             detail=detail,
         )
 
@@ -8902,6 +8920,53 @@ class SessionOrchestrator:
             )
             self._codex_model_catalog = catalog
         return catalog
+
+    async def _resolve_codex_auto_effort(
+        self, account: str, config: dict, task_summary: str,
+    ) -> "tuple[str | None, str | None]":
+        """Codex counterpart to the inline ``resolve_model`` calls at the
+        Claude-engine spawn sites: maps an ``auto`` ``default_model`` to a
+        reasoning-effort value from *account*'s live Codex catalog — never a
+        Claude alias (issue #1289).
+
+        Resolves the model the spawn will actually dispatch with (the
+        origin's pinned ``codex_model`` config, or the catalog's own default)
+        and maps the complexity tier onto THAT model's own
+        ``reasoning_efforts``, since a Codex model's accepted efforts vary.
+
+        Fail-open like ``resolve_model``: any missing app-server, catalog
+        read failure, or assessment failure resolves to ``(None, None)`` so
+        the spawn proceeds on the engine's/config's own default — this can
+        only refine a Codex spawn, never block or fail one.
+        """
+        if config.get("default_model") != "auto":
+            return None, None
+        codex = self._codex
+        if codex is None or not codex.available:
+            return None, None
+        from server.automations.engine_policy import CODEX_MODEL_CONFIG_KEY
+        from server.automations.model_pick import resolve_codex_model
+        from server.codex.catalog import ModelCatalogError
+        try:
+            await codex.ensure(account)
+            client = codex.client_for(account)
+            models = await self._codex_catalog().models(
+                account, client=client,
+                cli_version=codex.availability.cli_version or "")
+            if not models:
+                return None, None
+            pinned = str(config.get(CODEX_MODEL_CONFIG_KEY) or "").strip()
+            option = next((m for m in models if m.id == pinned), None) if pinned else None
+            if option is None:
+                option = next((m for m in models if m.default), models[0])
+            return await resolve_codex_model(
+                config, task_summary, option.reasoning_efforts)
+        except ModelCatalogError as exc:
+            log.warning("codex auto-effort assessment degraded for %s: %s", account, exc)
+            return None, None
+        except Exception:  # noqa: BLE001 — the assessor must never fail a spawn
+            log.warning("codex auto-effort assessment failed for %s", account, exc_info=True)
+            return None, None
 
     def _codex_quota_reader(self):
         reader = getattr(self, "_codex_quota_cache", None)
