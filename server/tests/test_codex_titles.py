@@ -45,6 +45,17 @@ def test_strips_whitespace_and_quotes():
     assert codex_fallback_title(['  "add dark mode support"  ']) == "add dark mode support"
 
 
+def test_redacts_a_credential_shaped_secret_out_of_the_title():
+    """The title gets persisted, exported, and pushed to every attached client —
+    it must go through the same credential-shape redactor as the rest of the
+    Codex transcript export, or a prompt containing a live secret becomes a
+    session NAME that leaks it everywhere the name is shown."""
+    title = codex_fallback_title(["token is sk-livesecrettoken123456", "noted"])
+    assert title is not None
+    assert "sk-livesecrettoken123456" not in title
+    assert "[REDACTED]" in title
+
+
 def test_only_considers_the_first_thirty_prompts():
     """Mirrors generate_title()'s own _MAX_PROMPTS window: the session's stated
     topic comes from its earliest prompts, not a very late one."""

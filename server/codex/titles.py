@@ -13,6 +13,7 @@ RPC, never Codex's private rollout files).
 """
 from __future__ import annotations
 
+from server.codex.redaction import scrub_secret_shapes
 from server.sessions.title_generator import sanitize_title
 
 # Mirrors generate_title()'s own selection window: Claude's fallback title
@@ -42,6 +43,14 @@ def _is_substantive(prompt: str) -> bool:
 def codex_fallback_title(prompts: list[str]) -> str | None:
     """Return a title synthesized from *prompts*, or ``None`` if there are none.
 
+    Unlike the Claude Haiku path, this echoes prompt text verbatim into a value
+    that gets persisted, exported, and pushed to every attached client — so a
+    prompt reading "token is sk-live..." must not turn into a session named
+    that. Every candidate is run through ``scrub_secret_shapes`` (the same
+    credential-shape redactor the Codex transcript export uses) BEFORE
+    whitespace/length cleanup, so a secret is caught at full length rather than
+    after clamping may have already truncated it.
+
     Never raises: a candidate that fails to sanitize (all-whitespace) is
     skipped in favor of the next one. An all-acknowledgement conversation still
     gets titled from its very first prompt rather than staying nameless.
@@ -51,7 +60,7 @@ def codex_fallback_title(prompts: list[str]) -> str | None:
     for prompt in prompts[:_MAX_PROMPTS]:
         if not _is_substantive(prompt):
             continue
-        title = sanitize_title(prompt)
+        title = sanitize_title(scrub_secret_shapes(prompt))
         if title:
             return title
-    return sanitize_title(prompts[0])
+    return sanitize_title(scrub_secret_shapes(prompts[0]))
