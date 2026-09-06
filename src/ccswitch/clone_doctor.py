@@ -324,7 +324,7 @@ def repair(
     *,
     dry_run: bool = False,
     base_ref: str | None = None,
-    url_for: "Callable[[str], str] | None" = None,
+    clone_url_for: "Callable[[str], str] | None" = None,
 ) -> list[dict]:
     """Recover every clone that worktrees still depend on but that is missing.
 
@@ -334,10 +334,10 @@ def repair(
 
     ``dry_run`` reports what would happen and changes nothing.
 
-    ``url_for`` maps ``<owner>/<name>`` to the URL to re-clone from, defaulting
-    to :func:`default_clone_url`. It is the seam for a repo whose remote is not
-    the public GitHub HTTPS URL — a self-hosted remote, or a test fixture —
-    without which recovery would be hard-wired to github.com.
+    ``clone_url_for`` maps ``<owner>/<name>`` to the URL to re-clone from,
+    defaulting to :func:`default_clone_url`. It is the seam for a repo whose
+    remote is not the public GitHub HTTPS URL — a self-hosted remote, or a
+    test fixture — without which recovery would be hard-wired to github.com.
     """
     from ccswitch import gitrepos  # deferred: gitrepos calls back into this module
 
@@ -362,7 +362,7 @@ def repair(
                 entry["error"] = "clone path is outside the ccswitch clones base"
                 out.append(entry)
                 continue
-            url = (url_for or default_clone_url)(report.name_with_owner)
+            url = (clone_url_for or default_clone_url)(report.name_with_owner)
             try:
                 gitrepos.ensure_clone(repo_root, report.name_with_owner, url)
             except gitrepos.CloneError as exc:

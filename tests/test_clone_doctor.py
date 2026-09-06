@@ -113,7 +113,7 @@ class CloneDoctorTests(unittest.TestCase):
         self.assertNotEqual(broken.returncode, 0)
 
         results = clone_doctor.repair(
-            str(self.root), base_ref="origin/main", url_for=self._url_for)
+            str(self.root), base_ref="origin/main", clone_url_for=self._url_for)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["action"], "repaired")
         self.assertEqual(results[0]["results"], {str(wt): "repaired"})
@@ -131,7 +131,7 @@ class CloneDoctorTests(unittest.TestCase):
     def test_repair_relocks_recovered_worktree(self) -> None:
         wt = self._add_worktree()
         _rmtree(self.clone)
-        clone_doctor.repair(str(self.root), base_ref="origin/main", url_for=self._url_for)
+        clone_doctor.repair(str(self.root), base_ref="origin/main", clone_url_for=self._url_for)
         listing = _git("worktree", "list", "--porcelain", cwd=str(self.clone)).stdout
         self.assertIn("locked", listing)
         self.assertIn(str(wt), listing)
@@ -139,8 +139,8 @@ class CloneDoctorTests(unittest.TestCase):
     def test_repair_is_idempotent(self) -> None:
         self._add_worktree()
         _rmtree(self.clone)
-        clone_doctor.repair(str(self.root), base_ref="origin/main", url_for=self._url_for)
-        self.assertEqual(clone_doctor.repair(str(self.root), url_for=self._url_for), [])
+        clone_doctor.repair(str(self.root), base_ref="origin/main", clone_url_for=self._url_for)
+        self.assertEqual(clone_doctor.repair(str(self.root), clone_url_for=self._url_for), [])
 
     def test_repair_dry_run_changes_nothing(self) -> None:
         wt = self._add_worktree()
@@ -159,7 +159,7 @@ class CloneDoctorTests(unittest.TestCase):
         wt = self._add_worktree()
         _rmtree(self.clone)
         results = clone_doctor.repair(
-            str(self.root), url_for=lambda repo: str(self.base / "no-such-remote.git"))
+            str(self.root), clone_url_for=lambda repo: str(self.base / "no-such-remote.git"))
         self.assertEqual(results[0]["action"], "failed")
         self.assertIn("git clone failed", results[0]["error"])
         self.assertTrue(wt.exists())
