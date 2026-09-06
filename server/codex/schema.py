@@ -1604,12 +1604,33 @@ class SubAgentActivityItem:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class CollabAgentState:
+    """One target agent's last-known status, as reported on a collab tool call."""
+
+    status: str
+    message: str | None = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class CollabAgentToolCallItem:
-    """A collab tool call. The upstream item carries `prompt`; it is not read."""
+    """A collab tool call. The upstream item carries `prompt`; it is not read.
+
+    ``sender_thread_id``/``receiver_thread_ids`` are the real parent/child
+    identity for Codex's multi-agent collaboration mode: a `spawnAgent` call's
+    receiver is the newly spawned agent's own thread, while `wait`/`sendInput`/
+    `interruptAgent`/etc. address an agent spawned by an earlier call. Neither
+    id is a secret (`thread/read` takes a plain `threadId`, and
+    `ThreadReadParams.thread_id` is not `Redacted`); they were simply unread
+    before #1274 needed them to correlate a collaborator's calls with each
+    other and with its `subAgentActivity` lifecycle items.
+    """
 
     id: str
     tool: str
     status: str
+    sender_thread_id: str
+    receiver_thread_ids: tuple[str, ...]
+    agents_states: Mapping[str, CollabAgentState]
     model: str | None = None
 
 
@@ -1664,6 +1685,30 @@ def _parse_file_change(payload: Any, what: str) -> FileChange:
     else:
         raise CodexSchemaError(f"{what} field 'kind' must be an object or a string")
     return FileChange(path=_require_str(body, "path", what), kind=kind_name)
+
+
+def _parse_collab_agents_states(
+    body: Mapping[str, Any], what: str
+) -> dict[str, CollabAgentState]:
+    """Parse `agentsStates`: thread id -> last-known status/message.
+
+    Required by the pinned schema but tolerated absent (rather than raising)
+    so a future app-server that stops populating it on some `collabAgentToolCall`
+    variant degrades to "no known state" instead of ending the session.
+    """
+    raw = body.get("agentsStates")
+    if raw is None:
+        return {}
+    mapping = _as_mapping(raw, f"{what} field 'agentsStates'")
+    states: dict[str, CollabAgentState] = {}
+    for thread_id, entry in mapping.items():
+        entry_what = f"{what} field 'agentsStates' entry {thread_id!r}"
+        entry_body = _as_mapping(entry, entry_what)
+        states[thread_id] = CollabAgentState(
+            status=_require_str(entry_body, "status", entry_what),
+            message=_optional_str(entry_body, "message", entry_what),
+        )
+    return states
 
 
 def parse_thread_item(payload: Any) -> ThreadItem:
@@ -1766,6 +1811,9 @@ def parse_thread_item(payload: Any) -> ThreadItem:
             id=_require_str(body, "id", what),
             tool=_require_str(body, "tool", what),
             status=_require_str(body, "status", what),
+            sender_thread_id=_require_str(body, "senderThreadId", what),
+            receiver_thread_ids=_string_tuple(body, "receiverThreadIds", what),
+            agents_states=_parse_collab_agents_states(body, what),
             model=_optional_str(body, "model", what),
         )
     if variant == "imageView":

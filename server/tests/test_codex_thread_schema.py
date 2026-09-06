@@ -566,6 +566,54 @@ def test_collab_agent_tool_call_item_drops_the_prompt() -> None:
     assert "secret prompt text" not in repr(item)
 
 
+def test_collab_agent_tool_call_item_captures_parent_child_identity() -> None:
+    """#1274: `senderThreadId`/`receiverThreadIds`/`agentsStates` used to be
+
+    silently dropped, even though the pinned schema requires all three — they
+    are the real parent/child correlation for Codex's collaboration mode.
+    """
+    item = schema.parse_thread_item(
+        {
+            "type": "collabAgentToolCall",
+            "id": "i1",
+            "tool": "spawnAgent",
+            "status": "completed",
+            "senderThreadId": "th_parent",
+            "receiverThreadIds": ["th_child"],
+            "agentsStates": {
+                "th_child": {"status": "running", "message": "reviewing diff"}
+            },
+        }
+    )
+    assert isinstance(item, schema.CollabAgentToolCallItem)
+    assert item.sender_thread_id == "th_parent"
+    assert item.receiver_thread_ids == ("th_child",)
+    assert item.agents_states == {
+        "th_child": schema.CollabAgentState(status="running", message="reviewing diff")
+    }
+
+
+def test_collab_agent_tool_call_item_tolerates_a_missing_agents_states() -> None:
+    """`agentsStates` is required by the pin, but a future variant that omits it
+
+    must degrade to "no known state" rather than end the session (the same
+    forward-compat rule every other collection field in this parser follows).
+    """
+    item = schema.parse_thread_item(
+        {
+            "type": "collabAgentToolCall",
+            "id": "i1",
+            "tool": "wait",
+            "status": "completed",
+            "senderThreadId": "th_parent",
+            "receiverThreadIds": [],
+        }
+    )
+    assert isinstance(item, schema.CollabAgentToolCallItem)
+    assert item.agents_states == {}
+    assert item.receiver_thread_ids == ()
+
+
 def test_dynamic_tool_call_item() -> None:
     item = schema.parse_thread_item(
         {

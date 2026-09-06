@@ -61,9 +61,35 @@ CODEX_ENGINE: Final = AgentEngine.CODEX
 #: stays declared-but-unsupported: no MCP server is wired up for a Codex thread
 #: yet, so no live session can ever raise it.
 #:
-#: The ``False`` entries are equally deliberate: ccswitch's fork, adopt,
-#: self-directed model switching and subagent surfaces are all implemented against
-#: the Claude CLI's private state and have no app-server equivalent in v1.
+#: ``subagents`` stays False too, but — like ``questions`` before #1271 closed
+#: it — this was found declared-but-unwired, not absent (#1274). The app-server
+#: has two real collaboration events: `subAgentActivity` (`agentPath`,
+#: `agentThreadId`, a `kind` lifecycle of started/interacted/interrupted/
+#: completed) and `collabAgentToolCall` (`tool` — spawnAgent/sendInput/wait/
+#: interruptAgent/etc. — plus `senderThreadId`, `receiverThreadIds` and an
+#: `agentsStates` map of each collaborator's own status/message). Both are
+#: already normalized into ordinary `Task` `ToolCall`/`ToolResult` events
+#: (`server/codex/translator.py`), which `server/sessions/subagents.py`
+#: already recognizes by tool name — so a Codex session's collaboration
+#: activity already renders as generic Task cards and would already populate
+#: the dashboard's sub-agent summary once this flag is on. What is NOT yet
+#: verified against a live binary, and so keeps this False per the "keep
+#: unavailable capabilities visibly gated until verified" rule: whether a real
+#: multi-call collab sequence (spawn → sendInput/wait → close) collapses into
+#: one dashboard entry or fans out into several unrelated-looking ones (there
+#: is no shared "agent id" in the wire payload to key on — `receiverThreadIds`/
+#: `agentsStates` carry the real identity but their values are native thread
+#: ids, which per `test_sub_agent_activity_never_carries_the_native_agent_thread_id`
+#: must not ride in a generic wire payload), and there is no transcript-drill-down
+#: for a child agent's own conversation (no fetch-by-thread-id surface exists
+#: yet, though `CodexThreadReplay` over the already-wired `thread/read` RPC is
+#: the natural mechanism once that is designed). Flipping this flag is
+#: therefore the next step, not this one.
+#:
+#: The remaining ``False`` entries are equally deliberate: ccswitch's fork,
+#: adopt and self-directed model switching surfaces are all implemented
+#: against the Claude CLI's private state and have no app-server equivalent in
+#: v1.
 #: ``account_rotation`` is False because rotation composes the target account's
 #: Claude config dir and syncs Claude credentials back; a Codex session is refused
 #: by that path rather than rebuilt as some other engine's driver. That refusal is
