@@ -1199,6 +1199,10 @@ async def test_archive_archives_the_thread_then_closes(harness):
 
 @pytest.mark.asyncio
 async def test_surfaces_codex_does_not_have_answer_honestly(harness):
+    """server_info() genuinely has nothing to report here (no skills registered
+    on the fake app-server). seed_idle_suggestions is a deliberate no-op at the
+    driver level (#1281) — Codex suggestions are generated centrally by
+    SessionOrchestrator instead, see server/tests/test_suggestions_codex.py."""
     driver = await harness.boot()
     assert await driver.server_info() is None
     assert driver.seed_idle_suggestions("u", "a") is None

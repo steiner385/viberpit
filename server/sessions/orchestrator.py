@@ -88,7 +88,9 @@ from server.sessions import session_actions
 from server.sessions.claude_sdk_factory import real_sdk_factory, real_suggestion_factory, real_summary_factory
 from server.sessions.replay import replay_events
 from server.sessions import status as _status_mod
-from server.sessions.suggestions import SuggestionService, last_turn_context
+from server.sessions.suggestions import (
+    SuggestionService, build_codex_suggest_prompt, last_turn_context, parse_suggestions,
+)
 from server.sessions.summaries import SummaryService, should_regenerate
 from server.sessions.recovery import (
     RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, QUARANTINE_MAX,
@@ -226,6 +228,12 @@ _ISSUE_TTL_S: float = 300.0
 # attempted, so it doesn't fit that call shape. Same 60s window as the
 # breaker's cooldown for consistency, not because they share state.
 _SUGGEST_AUTH_FAIL_BACKOFF_S: float = 60.0
+
+# Timeout for generate_suggestions_codex's one-shot Codex thread. Mirrors
+# refine_prompt_codex's REFINE_TIMEOUT_S: never unbounded, since a wedged
+# turn must not hold the helper thread (and the app-server slot it occupies)
+# open forever.
+_SUGGEST_CODEX_TIMEOUT_S: float = float(os.environ.get("CCSWITCH_SUGGEST_CODEX_TIMEOUT_S", "20"))
 
 # Rate-limit window for _default_title_fn's give-up WARNING (see below). Same account-keyed
 # monotonic-deadline shape as _SUGGEST_AUTH_FAIL_BACKOFF_S above, but scoped to the log line
@@ -636,11 +644,14 @@ class SessionOrchestrator:
             "rehydrated": None, "rehydrateError": None,
             "rearmed": None, "rearmError": None,
         }
-        # Detached-session next-prompt suggestions: session_id -> (transcript mtime, items).
+        # Detached-session next-prompt suggestions: session_id -> (signature, items).
         # Generated from the on-disk transcript without resuming the driver (see
         # latest_suggestions / _generate_detached_suggestions). Cached even when empty so
-        # the same transcript state is not re-generated on every /sessions poll.
-        self._detached_suggestions: dict[str, tuple[float, list[str]]] = {}
+        # the same transcript state is not re-generated on every /sessions poll. Claude's
+        # signature is the transcript's mtime (float); Codex has no file to stat, so
+        # _latest_suggestions_codex / _generate_suggestions_now_codex key it by a hash of
+        # the extracted turn context (str) instead — see generate_suggestions_codex (#1281).
+        self._detached_suggestions: dict[str, tuple[float | str, list[str]]] = {}
         self._suggest_inflight: set[str] = set()
         # Backoff after a give-up-for-no-auth attempt: account -> monotonic deadline before
         # which a re-spawn is skipped. Keyed by account (not session_id): "this account has
@@ -3177,6 +3188,65 @@ class SessionOrchestrator:
         except Exception:
             log.warning("refine_prompt_codex: failed account=%s", account, exc_info=True)
             return None
+        finally:
+            if driver is not None:
+                with contextlib.suppress(Exception):
+                    await driver.archive()
+            if attached:
+                with contextlib.suppress(Exception):
+                    self._codex.detach(session_id)
+
+    async def generate_suggestions_codex(self, account: str, context: str) -> list[str]:
+        """Native-Codex next-prompt suggestions from *context* (#1281).
+
+        Claude's suggestion path (``SuggestionService.generate``) spins up a
+        throwaway Anthropic SDK client; Codex has no such client, so this drives a
+        real, throwaway Codex thread through the SAME canonical driver/manager
+        contract every real Codex session uses (``self._engine_registry`` +
+        ``CodexRunnerManager``) — no separate subprocess/protocol code, no
+        parallel orchestration stack. Shape mirrors ``refine_prompt_codex``
+        exactly: plan-mode sandbox, auto-denied approvals, fail-open, always torn
+        down. Unlike ``refine_prompt_codex`` (which borrows ANY enabled OpenAI
+        account for a Claude-side dispatch), *account* here is always the
+        session's own account — this generates suggestions FOR that session.
+
+        Gated on ``CCSWITCH_CODEX_SUGGEST_ENABLED`` (default off): unlike the
+        Claude path, this has not been verified against a live ``codex``
+        binary/account, and constitution Principle III forbids claiming vendor
+        parity from assumptions. Flip the flag once verified end-to-end.
+        """
+        if self._codex is None:
+            return []
+        if os.environ.get("CCSWITCH_CODEX_SUGGEST_ENABLED", "false").lower() not in (
+            "1", "true", "yes",
+        ):
+            return []
+        if not context.strip():
+            return []
+        session_id = f"helper-suggest-{uuid.uuid4().hex}"
+        attached = False
+        driver: CodexAgentDriver | None = None
+        try:
+            await self._ensure_codex_runner(AgentEngine.CODEX, account)
+            driver = cast("CodexAgentDriver", self._engine_registry.create(AgentEngine.CODEX, AgentDriverConfig(
+                session_id=session_id,
+                account=account,
+                cwd=os.getcwd(),
+                config_dir="",
+                mode="plan",
+                identity=SYSTEM_IDENTITY,
+            )))
+            await driver.start()
+            # Attach only AFTER start() succeeds — see refine_prompt_codex's
+            # identical ordering note.
+            self._codex.attach(account, session_id)
+            attached = True
+            await driver.send_prompt(build_codex_suggest_prompt(context))
+            reply = await self._collect_codex_reply(driver, timeout=_SUGGEST_CODEX_TIMEOUT_S)
+            return parse_suggestions(reply) if reply else []
+        except Exception:
+            log.warning("generate_suggestions_codex: failed account=%s", account, exc_info=True)
+            return []
         finally:
             if driver is not None:
                 with contextlib.suppress(Exception):
@@ -10533,7 +10603,14 @@ class SessionOrchestrator:
         For done/idle detached sessions, the top open GitHub issue proposal is
         prepended as the first item when available (lazy TTL cache via
         _dispatch_proposal / _refresh_issue_proposal).
+
+        Codex sessions (live-idle AND detached) are dispatched to
+        _latest_suggestions_codex instead: Codex has no in-driver suggester loop
+        and no on-disk transcript file, so neither branch below applies (#1281).
         """
+        if self._engine_of(session_id) is AgentEngine.CODEX:
+            return await self._latest_suggestions_codex(session_id)
+
         d = self._drivers.get(session_id)
         if d is not None:
             return list(getattr(d, "_last_suggestions", []) or [])
@@ -10640,6 +10717,74 @@ class SessionOrchestrator:
         finally:
             self._suggest_inflight.discard(session_id)
 
+    async def _latest_suggestions_codex(self, session_id: str) -> list[str]:
+        """Codex sibling of the block above in ``latest_suggestions`` (#1281).
+
+        Covers BOTH a live-idle attached Codex session (its driver never
+        populates ``_last_suggestions`` — see ``CodexAgentDriver.seed_idle_suggestions``)
+        and a fully detached one, uniformly: Codex has no on-disk transcript
+        file, so both read through the same engine-neutral ``transcript_events``
+        facade the review page already uses (``CodexThreadReplay``), instead of
+        the Claude-only ``resolve_transcript_path``/``replay_events`` pair.
+
+        Cost guards mirror the Claude path: a hash of the extracted turn context
+        stands in for the Claude path's transcript-mtime signature (Codex has no
+        file to stat), so an unchanged transcript is served from cache rather
+        than re-spawning a Codex thread; ``_suggest_inflight`` dedups concurrent
+        callers exactly as it does for Claude.
+        """
+        d = self._drivers.get(session_id)
+        if d is not None and d.turn_active:
+            return []  # mid-turn: nothing to suggest yet
+
+        rec = self._records.get(session_id)
+        if rec is None:
+            return []
+        if is_assistant(rec):
+            return []
+        if d is None and rec.status not in ("done", "idle"):
+            return []
+
+        proposal = self._dispatch_proposal(rec)
+
+        try:
+            events = await self.transcript_events(session_id, max_turns=5)
+        except Exception:
+            return _prepend_proposal(proposal, [])
+        user_text, assistant_text = last_turn_context(events)
+        context = f"User: {user_text}\n\nAssistant: {assistant_text}"
+        signature = hashlib.sha1(context.encode()).hexdigest()
+
+        cached = self._detached_suggestions.get(session_id)
+        if cached is not None and cached[0] == signature:
+            return _prepend_proposal(proposal, list(cached[1]))
+
+        if self._codex is not None and session_id not in self._suggest_inflight:
+            self._suggest_inflight.add(session_id)
+            self._spawn(
+                self._generate_suggestions_codex_bg(session_id, rec, context, signature),
+                name=f"codex-suggestions-{session_id}",
+            )
+        return _prepend_proposal(proposal, [])
+
+    async def _generate_suggestions_codex_bg(
+        self, session_id: str, rec: SessionRecord, context: str, signature: str,
+    ) -> None:
+        """Background half of ``_latest_suggestions_codex`` — mirrors
+        ``_generate_detached_suggestions``'s cache-then-clear-inflight shape,
+        without the Anthropic-only auth pre-check (``generate_suggestions_codex``
+        fails open on its own when the flag is off or no Codex manager is wired,
+        and that empty result is itself worth caching so an unchanged transcript
+        does not re-spawn a thread on every poll)."""
+        try:
+            items = await self.generate_suggestions_codex(rec.account, context)
+            self._detached_suggestions[session_id] = (signature, list(items or []))
+        except Exception:
+            log.warning("codex suggestion generation failed id=%s", session_id, exc_info=True)
+            self._detached_suggestions[session_id] = (signature, [])
+        finally:
+            self._suggest_inflight.discard(session_id)
+
     async def generate_suggestions_now(self, session_id: str) -> list[str]:
         """Generate next-prompt suggestions on demand and return them.
 
@@ -10650,7 +10795,13 @@ class SessionOrchestrator:
         merely to suggest). Best-effort: returns [] when no suggester is configured,
         the session is unknown/not idle, or generation yields nothing — the caller
         must never silently fall back to a hard-coded prompt.
+
+        Codex sessions dispatch to _generate_suggestions_now_codex instead, for
+        the same reasons as latest_suggestions (#1281).
         """
+        if self._engine_of(session_id) is AgentEngine.CODEX:
+            return await self._generate_suggestions_now_codex(session_id)
+
         if self._suggester is None:
             return []
 
@@ -10691,6 +10842,40 @@ class SessionOrchestrator:
             return items
         except Exception:
             log.warning("on-demand detached suggestion generation failed id=%s", session_id,
+                        exc_info=True)
+            return []
+
+    async def _generate_suggestions_now_codex(self, session_id: str) -> list[str]:
+        """Codex sibling of ``generate_suggestions_now`` (#1281).
+
+        Same normalized-transcript input as ``_latest_suggestions_codex``, but —
+        matching the on-demand contract above — always regenerates rather than
+        serving a cache hit, and refreshes that cache afterwards so the next
+        passive poll agrees.
+        """
+        d = self._drivers.get(session_id)
+        if d is not None and d.turn_active:
+            return []
+
+        rec = self._records.get(session_id)
+        if rec is None:
+            return []
+        if d is None and rec.status not in ("done", "idle"):
+            return []
+        try:
+            events = await self.transcript_events(session_id, max_turns=5)
+            user_text, assistant_text = last_turn_context(events)
+            context = f"User: {user_text}\n\nAssistant: {assistant_text}"
+            items = list(await self.generate_suggestions_codex(rec.account, context) or [])
+            try:
+                self._detached_suggestions[session_id] = (
+                    hashlib.sha1(context.encode()).hexdigest(), items,
+                )
+            except Exception:
+                pass
+            return items
+        except Exception:
+            log.warning("on-demand codex suggestion generation failed id=%s", session_id,
                         exc_info=True)
             return []
 
