@@ -120,25 +120,34 @@ export const REGION_VISIBILITY: Record<RegionId, (c: RegionContext) => boolean> 
 }
 
 /**
- * The `D` cell of §4.2's matrix, as a function: kiosk keeps `app.banners`
- * MOUNTED and narrows what goes in it to `tone === 'danger'`.
+ * The `D` cell of §4.2's matrix, as a function. Two rules, both keeping
+ * `app.banners` MOUNTED and narrowing what goes in it.
  *
- * A wall display has nobody in front of it, so an advisory ("a new version is
- * available", "messages are held") is noise that occupies the top of a screen
- * read from ten feet away, possibly for days. Only the two things a passer-by
- * must act on — the daemon being down and every account being rate-limited,
- * both `danger` in `useAppBanners` — earn that space.
+ * **Kiosk narrows by tone.** A wall display has nobody in front of it, so an
+ * advisory ("a new version is available", "messages are held") is noise that
+ * occupies the top of a screen read from ten feet away, possibly for days. Only
+ * the two things a passer-by must act on — the daemon being down and every
+ * account being rate-limited, both `danger` in `useAppBanners` — earn that
+ * space.
  *
  * An item with no `tone` is documented as "treated as 'info'" by
  * `BannerStackItem`, and `!== 'danger'` gives it exactly that treatment: a new
  * banner declared without a tone is filtered OUT of kiosk rather than defaulting
  * onto a wall display unreviewed.
  *
- * Exported so the filter can be asserted as a rule, the same way
+ * **Every mode narrows by `hideOn`.** A banner names the modes where it costs
+ * more room than it earns; today only `deploy` does, naming `'phone'`, because
+ * it is the tallest item in the stack and has a full home at Settings › Deploy.
+ * The two rules COMPOSE — kiosk keeps a `danger` banner that also lists
+ * `'phone'`, since hiding it is a phone-sized-screen judgement, not a
+ * wall-display one.
+ *
+ * Exported so both filters can be asserted as rules, the same way
  * `REGION_VISIBILITY` is.
  */
 export function bannersForMode(items: BannerStackItem[], mode: LayoutMode): BannerStackItem[] {
-  return mode === 'kiosk' ? items.filter((i) => i.tone === 'danger') : items
+  const shown = mode === 'kiosk' ? items.filter((i) => i.tone === 'danger') : items
+  return shown.filter((i) => !i.hideOn?.includes(mode))
 }
 
 /**
@@ -161,7 +170,7 @@ export function AppShell() {
     <ViewportProvider kiosk={kiosk}>
       <InteractionProvider interactive={!kiosk.enabled}>
         {/* `Overlays` throws without this provider (it hosts `DeployOverlay`),
-            and `DeployPanel` — mounted from the Settings page — must share the
+            and `DeploySection` — mounted from the Settings page — must share the
             same controller instance, so it wraps the whole shell. */}
         <DeployControllerProvider>
           {/* The bridge the open session publishes its keyboard gestures through
