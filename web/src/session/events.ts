@@ -50,12 +50,17 @@ export interface EvCondensing    { type: 'condensing';    active: boolean; expec
 // as the `/context` command). Drives the persistent ctx% readout — see contextWindow.ts.
 export interface EvContextUsage  { type: 'contextUsage';  usedTokens: number; maxTokens: number; percentage: number; model?: string | null }
 export interface EvRecovering    { type: 'recovering';    turnId: string; message: string; ts?: number }
+// A proactive notice fired by a watch (a NotificationRule whose channel is the caller's
+// own assistant thread — spec v2 §4.7 Pack N, Task 8.4/8.5). Mirrors `Notice.to_wire()`
+// (server/sessions/events.py). `kind` is the watched domain ("session"|"pr"|"account"|
+// "automation"), not a UI variant.
+export interface EvNotice        { type: 'notice';        kind: string; title: string; body: string; url?: string | null; watchId?: string | null; ts?: number | null }
 
 export type SessionEvent =
   | EvUser | EvTurnStart | EvTurnEnd | EvTextDelta | EvThinkingDelta
   | EvToolCall | EvToolResult | EvPermissionRequest | EvPermissionResolved | EvQuestion | EvQuestionResolved
   | EvSessionMeta | EvTurnModel | EvTitle | EvStatus | EvReplayReset | EvReplayComplete | EvError | EvQueueUpdate
-  | EvSuggestions | EvCondensing | EvContextUsage | EvRecovering
+  | EvSuggestions | EvCondensing | EvContextUsage | EvRecovering | EvNotice
 
 export interface Command {
   name: string
