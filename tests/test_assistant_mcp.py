@@ -6,10 +6,12 @@ so what is asserted is the wire surface an external agent sees (tool list, schem
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import httpx
@@ -131,6 +133,20 @@ def test_cli_reads_the_named_token_env_var(monkeypatch, capsys):
     assert "MY_TOKEN" in capsys.readouterr().err
 
 
+def _reply(lines: list[str], id_: int) -> dict | None:
+    """The JSON-RPC reply carrying `id_`, if one has arrived. Unparseable lines are
+    skipped here and asserted on by line below, so a stray `print()` on stdout fails
+    the test with the offending text rather than as a missing reply."""
+    for line in lines:
+        try:
+            frame = json.loads(line)
+        except ValueError:
+            continue
+        if frame.get("id") == id_:
+            return frame
+    return None
+
+
 def test_stdio_subprocess_serves_a_real_jsonrpc_session():
     """Spec §9's live-smoke row for this task: a real MCP client speaking JSON-RPC to a
     real `ccswitch mcp` PROCESS over pipes.
@@ -139,36 +155,74 @@ def test_stdio_subprocess_serves_a_real_jsonrpc_session():
     `print()` on stdout corrupting the protocol stream, which is invisible until a
     client tries to parse it. `tools/list` needs no edge, so the unreachable `--url`
     never matters.
+
+    stdin is held OPEN until the replies are read, the way a real client holds the pipe
+    for the life of the session. Writing every request and closing stdin up front races
+    the server instead: `stdio_server`'s reader closes the read stream at EOF, ending
+    the session loop, which cancels a request it has dispatched but not yet answered.
     """
     src_root = str(Path(ccswitch.__file__).resolve().parents[1])
     repo_root = str(Path(__file__).resolve().parents[1])   # `server` package lives here
     env = {**os.environ,
            "PYTHONPATH": os.pathsep.join([src_root, repo_root]),
            "CCSWITCH_ASSISTANT_TOKEN": "ccas2:smoke"}
-    # Every request is written up front and stdin closed, so there is no interleaved
-    # read to deadlock on: the server answers in order, then exits on EOF.
-    stdin = "\n".join(json.dumps(m) for m in [
+    requests = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
             "protocolVersion": "2025-06-18", "capabilities": {},
             "clientInfo": {"name": "ccswitch-smoke", "version": "0"}}},
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-    ]) + "\n"
+    ]
 
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         [sys.executable, "-c", "import sys; from ccswitch.cli import main; sys.exit(main())",
          "mcp", "--url", "http://127.0.0.1:1"],
-        input=stdin, capture_output=True, text=True, env=env, timeout=120)
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=env)
+    # The reads below block, and the core suite runs without a pytest timeout, so a
+    # server that answers nothing must not wedge the job: killing it closes stdout,
+    # which turns the blocking readline into an EOF and fails the assertions instead.
+    watchdog = threading.Timer(120, proc.kill)
+    watchdog.start()
+    lines: list[str] = []
+    try:
+        with contextlib.suppress(BrokenPipeError):   # a server that died on import:
+            proc.stdin.write("".join(json.dumps(m) + "\n" for m in requests))
+            proc.stdin.flush()                       # its stderr says why, below
+        while _reply(lines, 2) is None:
+            line = proc.stdout.readline()
+            if not line:                       # the server exited or was killed
+                break
+            if line.strip():
+                lines.append(line)
+    finally:
+        with contextlib.suppress(BrokenPipeError):
+            proc.stdin.close()                 # EOF: the server shuts down
+        # Drain the REST of stdout too. `print()` to a pipe is block-buffered, so a
+        # stray write can sit unflushed until exit and land after the replies read
+        # above — the purity assertion has to see the whole stream, not a prefix.
+        lines += [ln for ln in proc.stdout.read().splitlines() if ln.strip()]
+        stderr = proc.stderr.read()
+        watchdog.cancel()
+        proc.stderr.close()
+        proc.stdout.close()
+        returncode = proc.wait(timeout=60)
 
-    assert proc.returncode == 0, proc.stderr
-    frames = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+    assert returncode == 0, stderr
+    frames = []
+    for line in lines:
+        try:
+            frames.append(json.loads(line))
+        except ValueError as exc:
+            pytest.fail(f"non-JSON line on the JSON-RPC stream: {line!r} ({exc})")
     by_id = {f.get("id"): f for f in frames}
+    assert 2 in by_id, f"no tools/list reply. stdout={lines!r} stderr={stderr}"
     assert by_id[1]["result"]["serverInfo"]["name"] == "ccswitch"
     tools = {t["name"]: t for t in by_id[2]["result"]["tools"]}
     assert "list_sessions" in tools and "archive_session" not in tools
     assert tools["get_session"]["inputSchema"]["properties"] == {"id": {"type": "string"}}
     assert tools["get_session"]["annotations"]["readOnlyHint"] is True
-    assert "ccswitch mcp: serving read-only tools" in proc.stderr
+    assert "ccswitch mcp: serving read-only tools" in stderr
 
 
 def test_cli_serves_and_banners_on_stderr(monkeypatch, capsys):
