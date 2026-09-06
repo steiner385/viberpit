@@ -23,7 +23,7 @@ links:
     - web/src/features/assistant/StarterChips.tsx
     - web/src/features/assistant/starters.ts
     - web/src/api/assistant.ts
-  prs: [1044, 1087, 1091, 1099, 1104, 1110, 1118, 1119, 1123, 1126, 1128, 1158, 1160, 1162, 1165, 1169, 1175, 1185, 1186, 1192]
+  prs: [1044, 1087, 1091, 1099, 1104, 1110, 1118, 1119, 1123, 1126, 1128, 1158, 1160, 1162, 1165, 1169, 1175, 1185, 1186, 1192, 1329]
 ---
 
 # AI Assistant (drawer)
