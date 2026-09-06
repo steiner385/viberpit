@@ -236,6 +236,14 @@ try:
         # are parked for a human instead. Bounds a session driving itself in circles.
         self_model_switch_cap: int = Field(
             default=3, alias="CCSWITCH_SELF_MODEL_SWITCH_CAP")
+        # Per-session ccswitch MCP surface for coding sessions (session tools spec §3).
+        # Off = no in-process server is mounted and no instruction is appended.
+        session_tools_enabled: bool = Field(
+            default=True, alias="CCSWITCH_SESSION_TOOLS_ENABLED")
+        # How many report_feedback rows one session may file (spec §4). Further reports
+        # are recorded as "capped": visible, never filed.
+        session_feedback_cap: int = Field(
+            default=3, alias="CCSWITCH_SESSION_FEEDBACK_CAP")
         # Reconciler kill switch (spec 003 Phase B): whether the reconciler is
         # allowed to write back to GitHub (project moves, addBlockedBy, etc.).
         # Defaults off — Phase B lands the schema/read-side before any write path.
@@ -512,6 +520,12 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         self_model_switch_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_SELF_MODEL_SWITCH_CAP", "")) and v.isdigit() else 3
+        )
+        session_tools_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_SESSION_TOOLS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        session_feedback_cap: int = dataclasses.field(
+            default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_SESSION_FEEDBACK_CAP", "")) and v.isdigit() else 3
         )
         gh_reconcile_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_GH_RECONCILE_ENABLED", "false").lower() in ("1", "true", "yes", "on")
