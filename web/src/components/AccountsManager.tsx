@@ -613,6 +613,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               pct={w.pct}
               label={w.label}
               resetsAt={w.resetsAt}
+              staleAsOf={account.usage?.staleAsOf}
               markerPct={
                 w.key === reserveWindow(account.usage)?.key
                   ? account.weeklyReservePct ?? null

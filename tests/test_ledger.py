@@ -30,6 +30,39 @@ class TestLedger(unittest.TestCase):
             with ledger.locked_ledger() as led:
                 self.assertIsNone(ledger.cached_usage(led, "alpha", cfg, later))
 
+    def test_stale_usage_returns_snapshot_and_fetch_time_within_cap(self):
+        with temp_env():
+            from ccswitch import ledger
+            now = datetime.now(timezone.utc)
+            with ledger.locked_ledger() as led:
+                ledger.record_usage(led, "alpha", usage(session=42.0), now)
+            from datetime import timedelta
+            later = now + timedelta(seconds=3600)
+            with ledger.locked_ledger() as led:
+                got = ledger.stale_usage(led, "alpha", later, max_age_sec=7200)
+            self.assertIsNotNone(got)
+            snapshot, fetched_at = got
+            self.assertEqual(snapshot.window("session").used_pct, 42.0)
+            self.assertEqual(fetched_at, now)
+
+    def test_stale_usage_none_past_the_cap(self):
+        with temp_env():
+            from ccswitch import ledger
+            now = datetime.now(timezone.utc)
+            with ledger.locked_ledger() as led:
+                ledger.record_usage(led, "alpha", usage(), now)
+            from datetime import timedelta
+            later = now + timedelta(seconds=7201)
+            with ledger.locked_ledger() as led:
+                self.assertIsNone(ledger.stale_usage(led, "alpha", later, max_age_sec=7200))
+
+    def test_stale_usage_none_when_absent(self):
+        with temp_env():
+            from ccswitch import ledger
+            now = datetime.now(timezone.utc)
+            with ledger.locked_ledger() as led:
+                self.assertIsNone(ledger.stale_usage(led, "nobody", now, max_age_sec=3600))
+
     def test_reservation_lifecycle(self):
         with temp_env():
             from ccswitch import ledger

@@ -42,7 +42,8 @@ class _FakeOrch:
         return _fake_usage(name)
 
 
-def test_gather_usages_isolates_hang_and_error_and_is_concurrent():
+def test_gather_usages_isolates_hang_and_error_and_is_concurrent(monkeypatch, tmp_path):
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
     orch = _FakeOrch({"ok": "ok", "slow": "hang", "bad": "raise"})
 
     async def go():
@@ -53,10 +54,13 @@ def test_gather_usages_isolates_hang_and_error_and_is_concurrent():
 
     result, elapsed = asyncio.run(go())
 
-    # Healthy account resolves; hung and raising accounts degrade to None.
-    assert isinstance(result["ok"], QuotaSnapshot)
-    assert result["slow"] is None
-    assert result["bad"] is None
+    # Healthy account resolves; hung and raising accounts degrade to (None,
+    # None) — no ledger reading exists for them here, so there is nothing to
+    # serve stale either.
+    assert isinstance(result["ok"][0], QuotaSnapshot)
+    assert result["ok"][1] is None
+    assert result["slow"] == (None, None)
+    assert result["bad"] == (None, None)
     # Concurrent: total ~= the single timeout (0.2s), not 3x. Generous ceiling
     # to stay non-flaky on a loaded CI box, but well under a serial 3x0.2.
     assert elapsed < 0.5
@@ -64,11 +68,14 @@ def test_gather_usages_isolates_hang_and_error_and_is_concurrent():
 
 def test_safe_usage_returns_value_on_success():
     orch = _FakeOrch({"ok": "ok"})
-    got = asyncio.run(accounts_api._safe_usage(orch, "ok", timeout=1.0))
+    got, stale_as_of = asyncio.run(accounts_api._safe_usage(orch, "ok", timeout=1.0))
     assert isinstance(got, QuotaSnapshot)
+    assert stale_as_of is None
 
 
-def test_safe_usage_timeout_returns_none():
+def test_safe_usage_timeout_returns_none(monkeypatch, tmp_path):
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
     orch = _FakeOrch({"slow": "hang"})
-    got = asyncio.run(accounts_api._safe_usage(orch, "slow", timeout=0.05))
+    got, stale_as_of = asyncio.run(accounts_api._safe_usage(orch, "slow", timeout=0.05))
     assert got is None
+    assert stale_as_of is None

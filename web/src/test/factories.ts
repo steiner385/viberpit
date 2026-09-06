@@ -65,6 +65,7 @@ export function anthropicUsage(
     provider: 'anthropic',
     fetchedAt: '2026-06-19T10:00:00Z',
     availability: 'available',
+    staleAsOf: null,
     windows: [
       { key: 'session', label: 'session', pct: sessionPct, resetsAt: null, durationSeconds: 18000, scope: 'account', appliesToModels: [] },
       { key: 'weekly', label: 'weekly', pct: weeklyPct, resetsAt: null, durationSeconds: 604800, scope: 'account', appliesToModels: [] },
@@ -79,6 +80,7 @@ export function copilotUsage(pct = 10, over: Partial<AccountUsage> = {}): Accoun
     provider: 'copilot',
     fetchedAt: '2026-06-19T10:00:00Z',
     availability: 'available',
+    staleAsOf: null,
     windows: [
       { key: 'premium', label: 'premium-req', pct, resetsAt: null, scope: 'account', appliesToModels: [] },
     ],
@@ -93,6 +95,7 @@ export function codexUsage(pct = 10, over: Partial<AccountUsage> = {}): AccountU
     provider: 'openai',
     fetchedAt: '2026-06-19T10:00:00Z',
     availability: 'available',
+    staleAsOf: null,
     windows: [
       { key: 'premium', label: 'premium', pct, resetsAt: null, durationSeconds: 18000, scope: 'account', appliesToModels: [] },
     ],
