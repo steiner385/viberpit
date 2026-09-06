@@ -7806,26 +7806,39 @@ class SessionOrchestrator:
     async def _generate_codex_fallback_title(
         self, session_id: str, rec: SessionRecord,
     ) -> str | None:
-        """Codex's analogue of ``_generate_fallback_title``: no Claude Haiku query.
+        """Codex's analogue of ``_generate_fallback_title``.
 
-        A Codex account has no Claude credential slot for ``_title_fn`` to spend
-        (see ``server/codex/titles.py`` for why routing there would be wrong),
-        so this reads the thread's own prompts over the supported app-server RPC
-        (``_codex_replay`` -> ``CodexThreadReplay.user_prompts``) and picks a
-        title straight out of them. Shares ``_last_title_sig`` with the Claude
-        path's dedup gate — same purpose (skip recomputation when nothing new
-        was said), same dict, keyed by session id so the two engines never
-        collide.
+        A Codex account has no Claude credential slot of its own for ``_title_fn``
+        to spend (``rec.account`` names an OpenAI-scoped identity, not an
+        Anthropic one), so this cannot reuse it directly. It reads the thread's
+        own prompts over the supported app-server RPC (``_codex_replay`` ->
+        ``CodexThreadReplay.user_prompts``) and, for the actual summarization,
+        borrows the SAME cross-engine helper-account pattern
+        ``_autopilot_helper_config_dir`` already established for autopilot's
+        decider/composer (and, since, session summaries): pick the first live,
+        enabled ANTHROPIC account and spend a Haiku query under ITS credentials —
+        never the Codex session's own. When no Anthropic account is available at
+        all (a Codex-only install), this degrades to
+        ``server/codex/titles.py``'s local, LLM-free heuristic rather than
+        leaving the session nameless.
 
-        Cost guard: only runs when the account's app-server is ALREADY live
-        (``client_for`` is a pure lookup, never a spawn). ``_codex_replay`` would
-        happily call ``codex.ensure(account)`` to start one — appropriate for a
-        user re-attaching to see history, wrong for a background sweep that would
-        otherwise wake (and keep alive) an idle account's runner, on a timer,
-        purely to see whether its title needs a refresh. The common case — a
-        session mid-conversation — always has a live client already, since this
-        also fires on every turn-completion (``_set_status``'s ``completed_turn``
-        call). Best-effort: any miss leaves the name unchanged.
+        Shares ``_last_title_sig`` with the Claude path's dedup gate — same
+        purpose (skip recomputation when nothing new was said), same dict, keyed
+        by session id so the two engines never collide.
+
+        Cost guard: the app-server READ only runs when the account's app-server
+        is ALREADY live (``client_for`` is a pure lookup, never a spawn).
+        ``_codex_replay`` would happily call ``codex.ensure(account)`` to start
+        one — appropriate for a user re-attaching to see history, wrong for a
+        background sweep that would otherwise wake (and keep alive) an idle
+        account's runner, on a timer, purely to see whether its title needs a
+        refresh. The common case — a session mid-conversation — always has a
+        live client already, since this also fires on every turn-completion
+        (``_set_status``'s ``completed_turn`` call). The Haiku query itself is
+        protected the same way every other cross-engine helper call is: shared
+        backoff/circuit-breaker in ``run_helper_call``, keyed by config_dir — no
+        separate ceiling check, matching ``model_pick``/``prompt_refiner``.
+        Best-effort throughout: any miss leaves the name unchanged.
         """
         if self._codex is None or self._codex.client_for(rec.account) is None:
             return None
@@ -7838,10 +7851,35 @@ class SessionOrchestrator:
         sig = hashlib.sha1("\n".join(prompts).encode("utf-8", "surrogatepass")).hexdigest()
         if sig == self._last_title_sig.get(rec.id):
             return None
-        from server.codex.titles import codex_fallback_title
-        title = codex_fallback_title(prompts)
+        # Recorded now, once generation is actually attempted (regardless of
+        # outcome) — mirrors the Claude path: a genuinely new prompt still gets
+        # a fresh attempt next sweep, but a failed attempt against unchanged
+        # prompts does not retry every 15s.
         self._last_title_sig[rec.id] = sig
-        return title
+        title = await self._codex_semantic_title(prompts, rec)
+        if title:
+            return title
+        from server.codex.titles import codex_fallback_title
+        return codex_fallback_title(prompts)
+
+    async def _codex_semantic_title(
+        self, prompts: list[str], rec: SessionRecord,
+    ) -> str | None:
+        """Best-effort Haiku title for a Codex session's *prompts*, or ``None``.
+
+        Same working directory as every other borrowed-account helper call on
+        this session (``rec.cwd``, the Codex session's own) — the query is
+        stateless and tool-free (``generate_title`` sets ``allowed_tools=[]``),
+        so it never needs to belong to the account whose credentials answer it.
+        ``None`` covers both "no Anthropic account available" and "the query
+        ran but failed" — the caller treats them identically (fall back to the
+        local heuristic).
+        """
+        from server.sessions.helper_call import pick_helper_config_dir
+        config_dir = pick_helper_config_dir()
+        if config_dir is None:
+            return None
+        return await generate_title(prompts, config_dir=config_dir, cwd=rec.cwd)
 
     async def _maybe_apply_auto_name(self, session_id: str) -> None:
         """If the session name is still auto, adopt a title for it.

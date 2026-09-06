@@ -6,14 +6,18 @@ has no Claude-shaped transcript file — see ``transcript_path``'s own docstring
 so the function returned immediately and a Codex session's name never moved past
 whatever ``CodexAgentDriver.send_prompt`` set on the very first prompt. These
 tests cover the routing fix (Codex sessions take a different path, never touch
-``transcript_path``) and the new path's own guards (dedup, graceful skip with no
-Codex runner).
+``transcript_path``), the semantic-title path (a borrowed Anthropic account's
+Haiku query, same cross-engine pattern ``_autopilot_helper_config_dir`` already
+established), its fallback to the local LLM-free heuristic when no Anthropic
+account is available or the query fails, and the new path's own guards (dedup,
+graceful skip with no Codex runner).
 """
 from __future__ import annotations
 
 import asyncio
 from unittest.mock import AsyncMock
 
+import server.sessions.orchestrator as orch_mod
 from server.db import init_db
 from server.sessions.engine import AgentEngine
 from server.sessions.orchestrator import SessionOrchestrator
@@ -161,11 +165,67 @@ def test_generate_codex_fallback_title_returns_none_when_thread_has_no_prompts()
     assert asyncio.run(run()) is None
 
 
-def test_generate_codex_fallback_title_uses_the_thread_prompts():
+def test_generate_codex_fallback_title_uses_the_heuristic_with_no_anthropic_account(monkeypatch):
+    """No live Anthropic account anywhere (a Codex-only install) -> the local,
+    LLM-free heuristic still names the session rather than leaving it blank."""
+    monkeypatch.setattr("server.sessions.helper_call.pick_helper_config_dir", lambda: None)
+
     async def run():
         orch = _with_live_codex(_new_orch())
         orch._codex_replay = AsyncMock(
             return_value=_FakeReplay(["ok", "refactor the payment retry loop"]))
+        rec = _codex_record()
+        return await orch._generate_codex_fallback_title(rec.id, rec)
+
+    assert asyncio.run(run()) == "refactor the payment retry loop"
+
+
+def test_generate_codex_fallback_title_prefers_the_semantic_llm_title(monkeypatch):
+    """With a live Anthropic account available, the borrowed Haiku query wins
+    over the local heuristic — real semantic parity with Claude's own ai-title,
+    not just a verbatim echo of the first substantive prompt."""
+    monkeypatch.setattr(
+        "server.sessions.helper_call.pick_helper_config_dir", lambda: "/cfg/borrowed-acct")
+
+    called_with = {}
+
+    async def fake_generate_title(prompts, *, config_dir, cwd):
+        called_with["prompts"] = prompts
+        called_with["config_dir"] = config_dir
+        called_with["cwd"] = cwd
+        return "Refactor the payment retry loop"
+
+    monkeypatch.setattr(orch_mod, "generate_title", fake_generate_title)
+
+    async def run():
+        orch = _with_live_codex(_new_orch())
+        orch._codex_replay = AsyncMock(
+            return_value=_FakeReplay(["refactor the payment retry loop"]))
+        rec = _codex_record()
+        return await orch._generate_codex_fallback_title(rec.id, rec)
+
+    assert asyncio.run(run()) == "Refactor the payment retry loop"
+    assert called_with["config_dir"] == "/cfg/borrowed-acct"
+    assert called_with["cwd"] == "/repo/s1"
+    assert called_with["prompts"] == ["refactor the payment retry loop"]
+
+
+def test_generate_codex_fallback_title_falls_back_when_the_llm_query_fails(monkeypatch):
+    """A live Anthropic account exists but the query itself yields nothing (rate
+    limit, auth failure, empty response) -> fall back to the heuristic rather
+    than leaving the session with no title update at all."""
+    monkeypatch.setattr(
+        "server.sessions.helper_call.pick_helper_config_dir", lambda: "/cfg/borrowed-acct")
+
+    async def fake_generate_title(prompts, *, config_dir, cwd):
+        return None
+
+    monkeypatch.setattr(orch_mod, "generate_title", fake_generate_title)
+
+    async def run():
+        orch = _with_live_codex(_new_orch())
+        orch._codex_replay = AsyncMock(
+            return_value=_FakeReplay(["refactor the payment retry loop"]))
         rec = _codex_record()
         return await orch._generate_codex_fallback_title(rec.id, rec)
 
