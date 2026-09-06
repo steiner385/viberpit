@@ -93,6 +93,8 @@ class CreateSessionRequest(BaseModel):
     # Optional runner preference. None → auto-rank; a name → that host first, still
     # failing over. Forwarded to FleetOrchestrator.create_session as prefer=.
     host: str | None = None
+    presetId: str | None = None
+    permissionProfileId: str | None = None
 
 
 class RenameSessionRequest(BaseModel):
@@ -587,6 +589,45 @@ async def create_session(
     name_is_auto = not (body.name and body.name.strip())
     name = body.name or "New Session"
 
+    # Preset / permission-profile resolution (Task 7.4, #1228). A preset only
+    # fills fields the caller left unset — it never overwrites an explicit
+    # value. `tool_allowlist` is NOT threaded through orch.create_session (see
+    # brief's binding ruling): it is a dormant column with zero in-memory
+    # consumers, so it's applied as a direct DB write after the session record
+    # exists, below.
+    from server.db.models import SessionPreset, PermissionProfile, Session as _DbSession
+
+    _resolved_tool_allowlist: list[str] | None = None
+    if body.presetId is not None:
+        preset = await db.get(SessionPreset, body.presetId)
+        if preset is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "not_found", "message": f"Preset {body.presetId!r} not found"},
+            )
+        if body.repo is None:
+            body.repo = preset.repo
+        if body.account is None:
+            body.account = preset.account
+        if body.model is None:
+            body.model = preset.model
+        if body.permissionMode is None:
+            body.permissionMode = preset.permission_mode
+        if body.initialPrompt is None:
+            body.initialPrompt = preset.initial_prompt
+        if body.permissionProfileId is None:
+            body.permissionProfileId = preset.permission_profile_id
+
+    if body.permissionProfileId is not None:
+        profile = await db.get(PermissionProfile, body.permissionProfileId)
+        if profile is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "not_found", "message": f"Permission profile {body.permissionProfileId!r} not found"},
+            )
+        if profile.patterns:
+            _resolved_tool_allowlist = list(profile.patterns)
+
     # Validate repo format (nameWithOwner) before using it in URLs or filesystem paths.
     if body.repo is not None and not _REPO_RE.match(body.repo):
         return JSONResponse(
@@ -788,6 +829,19 @@ async def create_session(
                 "earliestReset": reset_iso,
             },
         )
+
+    if _resolved_tool_allowlist is not None:
+        # Recorded, not enforced: this column has zero readers today (see the
+        # resolution block above), so this write only persists the profile's
+        # patterns on the row — it does not restrict which tools the session
+        # can use.
+        from sqlalchemy import update as sa_update
+
+        await db.execute(
+            sa_update(_DbSession).where(_DbSession.id == record.id).values(
+                tool_allowlist=_resolved_tool_allowlist)
+        )
+        await db.commit()
 
     # Audit: session.create
     await record_audit(

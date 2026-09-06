@@ -865,8 +865,8 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                               {"schedule": args["schedule"]})
 
     # -- Session-start conveniences (spec v2 §4.5, Pack C) ------------------------------
-    # Presets, templates and permission profiles a session can be started from. This
-    # task only reads them; Task 7.4 wires preset/profile/branch into create_session.
+    # Presets, templates and permission profiles a session can be started from.
+    # create_session (Task 7.4) wires preset/profile/branch into POST /api/sessions.
 
     @spec_tool("list_presets",
                "Saved session-start presets: repo, account, model, permission mode, "
@@ -911,15 +911,19 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     @spec_tool("create_session",
                "Start a NEW coding session on a repo with an initial prompt, and return its id "
                "and the URL to open it. Use only when the user wants new work started; to add "
-               "to work already running use send_prompt instead.",
+               "to work already running use send_prompt instead. preset and permission_profile "
+               "ids can be discovered via list_presets / list_permission_profiles. Note: "
+               "permission_profile's patterns are recorded on the session but not yet "
+               "enforced — no tool restriction happens today.",
                _schema(("prompt",), prompt=str, repo=str, model=str, permission_mode=str,
-                       account=str))
+                       account=str, branch=str, preset=str, permission_profile=str))
     @guarded
     async def create_session(args: dict[str, Any]) -> Any:
         rec = await api.post("/api/sessions", {
             "name": None, "initialPrompt": args["prompt"], "repo": args.get("repo"),
             "model": args.get("model"), "permissionMode": args.get("permission_mode"),
-            "account": args.get("account")})
+            "account": args.get("account"), "branch": args.get("branch"),
+            "presetId": args.get("preset"), "permissionProfileId": args.get("permission_profile")})
         return {"id": rec["id"], "url": f"/sessions/{rec['id']}"}
 
     @spec_tool("send_prompt",
