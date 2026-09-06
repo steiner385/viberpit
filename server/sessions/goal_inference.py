@@ -8,6 +8,7 @@ middle tier of effective_goal()."""
 from __future__ import annotations
 
 import logging
+import os
 
 from .account_auth import helper_env
 from .claude_bin import cli_path_kwargs
@@ -17,6 +18,11 @@ log = logging.getLogger(__name__)
 
 _MAX_TAIL_ENTRIES = 12
 _MAX_GOAL_CHARS = 200
+
+# Mirrors prompt_refiner.REFINE_TIMEOUT_S — bounds the native-Codex one-shot turn
+# (SessionOrchestrator.infer_goal_codex) so a wedged thread cannot hold the goal
+# sweep open forever.
+GOAL_INFER_TIMEOUT_S: float = float(os.environ.get("CCSWITCH_GOAL_INFER_TIMEOUT_S", "20"))
 
 _SYSTEM_PROMPT = (
     "You distill coding sessions into goal statements. Given a session's title and a "
@@ -42,6 +48,41 @@ def _default_query_fn():
     return query
 
 
+def _format_tail_body(name: str, transcript_tail: list[dict]) -> str:
+    """Compose the session-title + transcript-excerpt body shared by both providers."""
+    tail_lines = "\n".join(
+        f"[{e.get('role', '?')}] {e.get('text', '')}"
+        for e in transcript_tail[-_MAX_TAIL_ENTRIES:]
+    )
+    return (f"Session title: {name}\n\nTranscript excerpt:\n---\n{tail_lines}\n---\n\n"
+            f"{_INSTRUCTION}")
+
+
+def normalize_goal_text(text: str | None) -> str | None:
+    """Collapse whitespace, strip wrapping quotes, and cap length — or ``None`` if empty.
+
+    The single normalization both providers funnel their raw reply through, so a
+    Codex-inferred goal (``SessionOrchestrator.infer_goal_codex``) reads exactly like
+    a Claude-inferred one wherever ``Session.inferred_goal`` is displayed.
+    """
+    if not text:
+        return None
+    goal = " ".join(text.split()).strip().strip('"')
+    return goal[:_MAX_GOAL_CHARS] if goal else None
+
+
+def build_codex_goal_prompt(name: str, transcript_tail: list[dict]) -> str:
+    """Compose the one-shot Codex turn text for goal inference.
+
+    Codex threads have no separate system-prompt slot a one-shot caller can set
+    (``CodexAgentDriver.start()`` bakes its own fixed developer instructions) — see
+    ``server.sessions.orchestrator.SessionOrchestrator.infer_goal_codex`` — so
+    ``_SYSTEM_PROMPT`` is folded into the turn text instead, exactly like
+    ``prompt_refiner.build_codex_refine_prompt`` does for prompt refinement.
+    """
+    return f"{_SYSTEM_PROMPT}\n\n{_format_tail_body(name, transcript_tail)}"
+
+
 async def infer_goal(
     name: str,
     transcript_tail: list[dict],
@@ -55,12 +96,7 @@ async def infer_goal(
 
     Returns the goal text, or ``None`` on empty output or any failure. Never raises.
     """
-    tail_lines = "\n".join(
-        f"[{e.get('role', '?')}] {e.get('text', '')}"
-        for e in transcript_tail[-_MAX_TAIL_ENTRIES:]
-    )
-    body = (f"Session title: {name}\n\nTranscript excerpt:\n---\n{tail_lines}\n---\n\n"
-            f"{_INSTRUCTION}")
+    body = _format_tail_body(name, transcript_tail)
     try:
         # Lazy options: construct SDK options ONLY on the real-model path, so an
         # injected query_fn (tests) never touches the SDK (same pattern as
@@ -93,7 +129,4 @@ async def infer_goal(
                 t = getattr(block, "text", None)
                 if isinstance(t, str):
                     parts.append(t)
-    goal = " ".join("".join(parts).split()).strip().strip('"')
-    if not goal:
-        return None
-    return goal[:_MAX_GOAL_CHARS]
+    return normalize_goal_text("".join(parts))

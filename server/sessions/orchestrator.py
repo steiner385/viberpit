@@ -8142,14 +8142,94 @@ class SessionOrchestrator:
             await asyncio.sleep(self._titling_interval)
 
     async def _infer_goal_for(self, session_id: str) -> "str | None":
-        """One-shot inferred-goal generation for a session (LLM; None on failure)."""
-        from server.sessions.goal_inference import infer_goal
+        """One-shot inferred-goal generation for a session (LLM; None on failure).
+
+        Routed by ``rec.engine`` (#1280): a Codex-engine session's account has no
+        Claude credential material, so it must never reach ``compose()`` — which
+        builds an Anthropic ``CLAUDE_CONFIG_DIR`` — or the Claude Agent SDK.
+        ``AgentEngine`` has exactly two members (``ccswitch.engines.AgentEngine``:
+        CLAUDE_CODE, CODEX) and Copilot sessions run the CLAUDE_CODE engine (the
+        proxy translates underneath), so this if/elif is exhaustive today; a new
+        engine value falls through to ``None`` rather than guessing a path for it.
+        """
         rec = self._records.get(session_id)
         if rec is None:
             return None
         tail = await self._autopilot_transcript_tail(session_id)
-        return await infer_goal(rec.name, tail,
-                                config_dir=str(compose(rec.account)), cwd=rec.cwd)
+        if rec.engine is AgentEngine.CODEX:
+            return await self.infer_goal_codex(rec.account, rec.name, tail)
+        if rec.engine is AgentEngine.CLAUDE_CODE:
+            from server.sessions.goal_inference import infer_goal
+            return await infer_goal(rec.name, tail,
+                                    config_dir=str(compose(rec.account)), cwd=rec.cwd)
+        return None
+
+    async def infer_goal_codex(
+        self, account: str, name: str, transcript_tail: list[dict], *, timeout_s: float | None = None,
+    ) -> str | None:
+        """One-shot, tool-less Codex thread that infers a session's goal statement.
+
+        The native-Codex sibling of ``server/sessions/goal_inference.py:infer_goal``
+        (#1280), built the same way ``refine_prompt_codex`` (#1288) was: a real,
+        throwaway Codex thread through the SAME canonical driver/manager contract
+        every real Codex session uses (``self._engine_registry`` +
+        ``CodexRunnerManager``) — no separate subprocess/protocol code, no parallel
+        orchestration stack.
+
+        Gated on ``CCSWITCH_CODEX_GOAL_ENABLED`` (default off): unlike the Claude
+        path, this has not been verified against a live ``codex`` binary/account, and
+        constitution Principle III forbids claiming vendor parity from assumptions.
+        Flip the flag once verified end-to-end.
+
+        Runs in ``mode="plan"`` (read-only sandbox, no network egress) with any
+        approval auto-denied, matching ``refine_prompt_codex``'s contract exactly:
+        nothing persisted, fail-open on any error.
+        """
+        if self._codex is None:
+            return None
+        if os.environ.get("CCSWITCH_CODEX_GOAL_ENABLED", "false").lower() not in (
+            "1", "true", "yes",
+        ):
+            return None
+        from server.sessions.goal_inference import (
+            GOAL_INFER_TIMEOUT_S,
+            build_codex_goal_prompt,
+            normalize_goal_text,
+        )
+        if timeout_s is None:
+            timeout_s = GOAL_INFER_TIMEOUT_S
+        session_id = f"helper-goal-{uuid.uuid4().hex}"
+        attached = False
+        driver: CodexAgentDriver | None = None
+        try:
+            await self._ensure_codex_runner(AgentEngine.CODEX, account)
+            driver = cast("CodexAgentDriver", self._engine_registry.create(AgentEngine.CODEX, AgentDriverConfig(
+                session_id=session_id,
+                account=account,
+                cwd=os.getcwd(),
+                config_dir="",
+                mode="plan",
+                identity=SYSTEM_IDENTITY,
+            )))
+            await driver.start()
+            # Attach only AFTER start() succeeds, matching create_session's ordering:
+            # attaching earlier would leak a runner claim whenever start() fails (a
+            # runner nobody attached to is idle-reaped by the manager either way).
+            self._codex.attach(account, session_id)
+            attached = True
+            await driver.send_prompt(build_codex_goal_prompt(name, transcript_tail))
+            reply = await self._collect_codex_reply(driver, timeout=timeout_s)
+            return normalize_goal_text(reply)
+        except Exception:
+            log.warning("infer_goal_codex: failed account=%s", account, exc_info=True)
+            return None
+        finally:
+            if driver is not None:
+                with contextlib.suppress(Exception):
+                    await driver.archive()
+            if attached:
+                with contextlib.suppress(Exception):
+                    self._codex.detach(session_id)
 
     async def _goal_sweep(self) -> None:
         """One inferred-goal pass: refresh Session.inferred_goal for every active
