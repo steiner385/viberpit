@@ -334,12 +334,68 @@ async def test_rotation_still_runs_for_claude(tmp_path: Path) -> None:
     orch._records["s1"] = record
     seen: list[str] = []
 
-    async def _locked(rec, new_account, *, reason, replay_last_prompt=True):
+    async def _locked(rec, new_account, *, reason, replay_last_prompt=True,
+                      new_thread=False):
         seen.append(new_account)
+        return True
 
     orch._reassign_locked = _locked  # type: ignore[method-assign]
     await orch._reassign(record, "acct-b", reason="usage_limit")
     assert seen == ["acct-b"]
+
+
+@pytest.mark.asyncio
+async def test_rotation_falls_back_to_a_new_thread_when_only_that_capability_is_declared(
+        tmp_path: Path) -> None:
+    """account_switch_new_thread (#1275) is the honest middle ground: an engine
+    that can't preserve the live thread (account_rotation=False) but CAN start a
+    fresh one on the target account still moves — _reassign_locked must be told
+    so it drops the resume handle, not run the thread-preserving path."""
+    registry = _registry(codex_factory=_RecFactory(
+        AgentEngine.CODEX, capabilities=AgentCapabilities(account_switch_new_thread=True)))
+    orch = _orch(tmp_path, codex=_FakeCodexManager(), registry=registry)
+    record = _record("s1", tmp_path, engine=AgentEngine.CODEX)
+    orch._records["s1"] = record
+    seen: list[tuple] = []
+
+    async def _locked(rec, new_account, *, reason, replay_last_prompt=True,
+                      new_thread=False):
+        seen.append((new_account, new_thread))
+        return True
+
+    orch._reassign_locked = _locked  # type: ignore[method-assign]
+    result = await orch._reassign(record, "openai-other", reason="usage_limit")
+    assert seen == [("openai-other", True)]
+    assert result == "rotated_new_thread"
+
+
+@pytest.mark.asyncio
+async def test_new_thread_switch_drops_the_old_thread_id_and_reports_the_loss(
+        tmp_path: Path, isolated_db) -> None:
+    """End-to-end through the real _reassign_locked: the new driver must NOT
+    receive the old thread id as its resume handle (there is nothing to resume it
+    on under a different account), and the rotated event must say so via
+    newThread — the whole point of #1275 being "expose it honestly" rather than
+    silently claiming a continued conversation."""
+    codex_factory = _RecFactory(
+        AgentEngine.CODEX, capabilities=AgentCapabilities(account_switch_new_thread=True))
+    orch = _orch(tmp_path, codex=_FakeCodexManager(),
+                 registry=_registry(codex_factory=codex_factory))
+    record = _record("s1", tmp_path, engine=AgentEngine.CODEX, thread_id="thread-old")
+    orch._records["s1"] = record
+    events: list[dict] = []
+    orch._publish_event = events.append  # type: ignore[assignment]
+
+    result = await orch._reassign(record, "openai-other", reason="usage_limit")
+
+    assert result == "rotated_new_thread"
+    new_driver = codex_factory.created[-1]
+    assert new_driver.engine is AgentEngine.CODEX
+    assert new_driver.resume is None, "a fresh thread must not resume the old id"
+    assert record.account == "openai-other"
+    rotated = [e for e in events if e["type"] == "rotated"]
+    assert rotated and rotated[0]["newThread"] is True
+    assert rotated[0]["toAccount"] == "openai-other"
 
 
 @pytest.mark.asyncio

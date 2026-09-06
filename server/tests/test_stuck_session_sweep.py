@@ -80,6 +80,37 @@ async def test_sweep_skips_ended_session():
 
 
 @pytest.mark.asyncio
+async def test_sweep_never_retries_a_session_the_engine_can_never_rotate():
+    """engine_rotation_unsupported (#1275) is unlike every other needs_attention
+    cause this sweep exists to retry: no account freeing up makes an engine that
+    declares neither account_rotation nor account_switch_new_thread suddenly
+    capable. Retrying anyway just re-parks the session on the identical capability
+    check every sweep tick, forever — a silent no-op loop, not a recovery attempt."""
+    o = _make_orch()
+    rec = _rec(o, status="needs_attention")
+    rec.paused_reason = "engine_rotation_unsupported"
+
+    await o._sweep_needs_attention()
+    await asyncio.sleep(0)
+
+    assert o.calls == []
+
+
+@pytest.mark.asyncio
+async def test_sweep_still_retries_other_needs_attention_reasons():
+    """The skip above must be specific to engine_rotation_unsupported, not a
+    blanket change to what the sweep retries."""
+    o = _make_orch()
+    rec = _rec(o, status="needs_attention")
+    rec.paused_reason = "all_accounts_busy"
+
+    await o._sweep_needs_attention()
+    await asyncio.sleep(0)
+
+    assert ("rotate", "s1", "stuck_session_sweep") in o.calls
+
+
+@pytest.mark.asyncio
 async def test_sweep_handles_multiple_sessions():
     """Every needs_attention session in _records gets its own rotation attempt."""
     o = _make_orch()

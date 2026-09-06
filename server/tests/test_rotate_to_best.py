@@ -46,6 +46,7 @@ def _orch(monkeypatch, rec, *, pick="b", with_driver=True):
         record.account = new
         if with_driver:
             o._drivers[record.id] = _Driver()
+        return "rotated"
 
     async def _persist_pin(sid, pinned): o.calls.append(("pin", pinned))
 
@@ -129,3 +130,38 @@ async def test_all_busy_on_healthy_session_touches_nothing(monkeypatch):
 async def test_no_driver_after_failed_rebuild(monkeypatch):
     o = _orch(monkeypatch, _rec(status="needs_attention"), with_driver=False)
     assert await o.rotate_to_best("s1") == "no_driver"
+
+
+@pytest.mark.asyncio
+async def test_passes_through_a_new_thread_switch_as_success(monkeypatch):
+    """account_switch_new_thread (#1275): the session DID move, just without
+    thread continuity — the caller (the API route, the batch endpoint) must treat
+    this as success, not fall through to the driver-presence check as if nothing
+    had happened."""
+    rec = _rec(status="needs_attention")
+    o = _orch(monkeypatch, rec)
+
+    async def _reassign(record, new, *, reason, replay_last_prompt=True):
+        record.account = new
+        o._drivers[record.id] = _Driver()
+        return "rotated_new_thread"
+
+    o._reassign = _reassign
+    assert await o.rotate_to_best("s1") == "rotated_new_thread"
+
+
+@pytest.mark.asyncio
+async def test_refusal_is_never_reported_as_rotated(monkeypatch):
+    """_reassign refuses WITHOUT touching the driver when the engine can rotate
+    neither in place nor via a fresh thread — the untouched old driver is still
+    live, so the pre-existing `driver is None` check alone would misreport this
+    refusal as "rotated". The result must short-circuit before that check."""
+    rec = _rec(status="needs_attention")
+    o = _orch(monkeypatch, rec)  # with_driver=True: the ORIGINAL (untouched) driver
+
+    async def _reassign(record, new, *, reason, replay_last_prompt=True):
+        return "unsupported"  # refused; record.account and _drivers untouched
+
+    o._reassign = _reassign
+    assert await o.rotate_to_best("s1") == "skipped:unsupported"
+    assert rec.account == "a"  # never moved

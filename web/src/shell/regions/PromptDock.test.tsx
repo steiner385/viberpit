@@ -255,6 +255,7 @@ function engineOffer(over: Partial<EngineOffer> = {}): EngineOffer {
       models: true, reasoningEffort: false, steer: true, interrupt: true,
       approvals: true, questions: true, fork: true, adopt: true,
       selfModelSwitch: true, subagents: true, attachments: true, accountRotation: true,
+      accountSwitchNewThread: true,
     },
     ...over,
   }

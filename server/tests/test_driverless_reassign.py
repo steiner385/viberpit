@@ -264,6 +264,7 @@ async def test_run_command_account_works_without_driver(monkeypatch):
 
     async def spy_reassign(self, record, new_account, *, reason):
         reassigned.append((record.id, new_account, reason))
+        return "rotated"
 
     async def spy_persist_pin(self, sid, pinned):
         pass
