@@ -111,8 +111,9 @@ sharing, voice, or proactive/unsolicited messages — the assistant only speaks 
 - **Eval lives at** `docs/superpowers/evals/assistant/` (`cases.jsonl` + dated `results-*.md`), run
   via `scripts/eval_assistant.py` against a dev server with a fixture orchestrator; tool-expectation
   grading is deterministic, the rubric is graded by a one-shot Haiku judge.
-- **Use from other agents** — see the section below: `ccswitch mcp` serves the same tool table to
-  any MCP client over stdio, authenticated by a user-scoped `ccas2:` token.
+- **Use from other agents** — see the sections below: `ccswitch mcp` serves the same tool table to
+  any MCP client over stdio, and `ccswitch ask` sends one prompt from a shell — both authenticated
+  by a user-scoped `ccas2:` token.
 - Delivered across Phases 0–4 of `docs/superpowers/plans/2026-09-04-ai-assistant.md`: Phase 0
   verified the SDK tool-restriction + in-process MCP approach against the real binary (#1087)
   before any product code landed (constitution III); Phase 1 built the backend (schema, tools,
@@ -159,3 +160,28 @@ re-declaring one. The bridge runs wherever the client runs and talks to the edge
 - **Needs the `[server]` extra** (`pip install 'ccswitch[server]'`) — the tool table lives in
   `server/assistant/`; without it the command exits 3 with that instruction. Diagnostics and the
   startup banner go to **stderr**: stdout is the JSON-RPC channel.
+
+## Use from scripts
+
+`ccswitch ask "<prompt>"` (`src/ccswitch/assistant_ask.py`) sends one prompt to the assistant thread
+and prints the answer — a one-shot alternative to `mcp` for a shell script or a cron job that just
+wants a text answer, not a live tool connection.
+
+```
+CCSWITCH_ASSISTANT_TOKEN=ccas2:… ccswitch ask "Which sessions need my attention?"
+```
+
+It creates or resumes the caller's assistant thread (`POST /api/assistant/session`), attaches over
+`/ws`, and streams the reply to stdout; `--json` prints `{"text", "tools", "error"?}` instead.
+Every prompt carries `context.route="/cli"`, so the model's own read of "what page are you looking
+at" reflects a shell rather than a stale browser route. A tool call that needs a permission decision
+prints the card to stderr and answers it: `--yes` always allows, `--no-input` always denies, and
+with neither it prompts the TTY. `--fresh` starts a new thread instead of resuming the existing one.
+
+- **Authentication** — the same `ccas2:` token `ccswitch mcp` uses, but `/ws` (unlike an HTTP route)
+  has no per-message-type allowlist to gate a `read`-scope token against, so `require_ws_identity`
+  refuses one outright: `ccswitch ask` needs a token minted with `"scope": "act"`. Permission answers
+  sent over this socket are audited `via="cli"`, distinguishing a shell answer from one clicked in
+  the drawer.
+- **Needs the `[server]` extra** — same reasoning as `ccswitch mcp`: httpx and websockets live behind
+  it, and the command exits 3 with instructions when it's missing.

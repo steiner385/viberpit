@@ -6895,17 +6895,18 @@ class SessionOrchestrator:
             log.debug("autopilot.mark_assisted_failed sid=%s", session_id, exc_info=True)
 
     def _autopilot_helper_config_dir(self, account: str) -> str | None:
-        """Config dir for the decider/composer's OWN Claude/Haiku helper call.
+        """Config dir for a Claude/Haiku one-shot helper call made on *account*'s behalf.
 
-        Autopilot governs sessions of ANY engine (it only approves/denies/answers/
-        nudges through the generic driver seams), but its decider and nudge composer
-        are Claude-only helper calls (``helper_env``'s nine call sites). Composing
-        *account*'s config dir unconditionally would, for a Codex or Copilot governed
-        session, write that account's own credentials into a file shaped for Claude
-        OAuth — silently handing OpenAI credentials to a Claude SDK call. Only an
-        Anthropic account's own dir is used directly; every other account falls back
-        to :func:`pick_helper_config_dir`, the same engine-safe helper identity
-        ``model_pick`` already uses for its Haiku complexity assessor.
+        Named for its first caller, but the problem is not autopilot-specific: several
+        subsystems govern or describe sessions of ANY engine while their own helper
+        call (decider, nudge composer, ``_generate_summary``) is Claude-only
+        (``helper_env``'s call sites). Composing *account*'s config dir unconditionally
+        would, for a Codex or Copilot governed session, write that account's own
+        credentials into a file shaped for Claude OAuth — silently handing OpenAI
+        credentials to a Claude SDK call. Only an Anthropic account's own dir is used
+        directly; every other account falls back to :func:`pick_helper_config_dir`, the
+        same engine-safe helper identity ``model_pick`` already uses for its Haiku
+        complexity assessor.
         """
         from ccswitch import accounts as _accts
         from server.sessions.helper_call import pick_helper_config_dir
@@ -10882,10 +10883,15 @@ class SessionOrchestrator:
     async def latest_summary(self, session_id: str, *, viewing: bool) -> str:
         """Latest cached one-line status summary for a session.
 
-        Mirrors latest_suggestions: lazy, mtime-keyed, non-blocking. Schedules a
+        Mirrors latest_suggestions: lazy, signature-keyed, non-blocking. Schedules a
         background regeneration only when should_regenerate() allows (viewer present,
         active status, transcript changed, >=60s since last gen). Returns the cached
         text (or "") immediately — never blocks the /sessions GET. Never raises.
+
+        The freshness signature is engine-neutral (see _summary_signature): cheap for
+        Claude, but Codex's has no free equivalent, so it is only computed while
+        ``viewing`` — should_regenerate refuses regardless of signature when nobody's
+        looking, so an unwatched Codex session never pays that read.
         """
         rec = self._records.get(session_id)
         if rec is None:
@@ -10898,22 +10904,52 @@ class SessionOrchestrator:
         if _provider_of(rec.account) == _copilot_mod.PROVIDER:
             return ""
         cached = self._summaries.get(session_id)
+        if not viewing:
+            return cached[2] if cached else ""
         try:
-            path = await self.resolve_transcript_path(session_id)
-            signature = os.path.getmtime(path) if path else 0.0
+            signature = await self._summary_signature(session_id)
         except Exception:
+            return cached[2] if cached else ""
+        if signature is None:
             return cached[2] if cached else ""
         now = time.monotonic()
         if (
-            path
-            and self._summarizer is not None
+            self._summarizer is not None
             and session_id not in self._summary_inflight
             and should_regenerate(viewing, cached, signature, now, rec.status)
         ):
             self._summary_inflight.add(session_id)
-            self._spawn(self._generate_summary(session_id, rec, path, signature),
+            self._spawn(self._generate_summary(session_id, rec, signature),
                         name=f"generate-summary-{session_id}")
         return cached[2] if cached else ""
+
+    async def _summary_signature(self, session_id: str) -> float | None:
+        """Engine-neutral freshness key for latest_summary's regen gate, or None if
+        the session has no readable history yet.
+
+        Claude keeps the existing free path: resolve_transcript_path + mtime, a stat
+        syscall. Codex has no transcript file (its history lives behind the app-server
+        — see _codex_replay), so its signature is the completed-turn count from an
+        engine-neutral replay window. That is coarser than mtime (it only advances once
+        a turn completes, not mid-stream), but the summary's own 60s-minimum cadence
+        already operates at that granularity, and this reuses the same _engine_replay()
+        routing every other engine-neutral transcript read goes through rather than
+        inventing a second one.
+        """
+        path = await self.resolve_transcript_path(session_id)
+        if path:
+            try:
+                return os.path.getmtime(path)
+            except OSError:
+                return None
+        replay = await self._engine_replay(session_id)
+        if replay is None:
+            return None
+        try:
+            window = await replay.window(limit=1)
+        except Exception:
+            return None
+        return float(window.total_turns)
 
     async def latest_suggestions_many(self, session_ids: list[str]) -> dict[str, list[str]]:
         """Batched :meth:`latest_suggestions`, isolated per session (see prs_for_many)."""
@@ -10949,21 +10985,37 @@ class SessionOrchestrator:
                 out[sid] = r
         return out
 
-    async def _generate_summary(self, session_id, rec, path, signature) -> None:
+    async def _generate_summary(self, session_id, rec, signature) -> None:
         """Generate a summary from the session's transcript (best-effort).
 
         Caches (signature, generated_at, text) even when text is "", so the same
         transcript state isn't re-generated until it changes AND 60s passes. Always
         clears the in-flight flag.
+
+        Reads history through transcript_events (normalized, engine-neutral) rather
+        than parsing a Claude-specific JSONL directly, so this works the same for a
+        Codex session. The summarizer itself is always a throwaway Claude/Haiku call
+        (SummaryService wraps a one-shot claude_agent_sdk client) regardless of the
+        session's own engine, so its config dir goes through
+        _autopilot_helper_config_dir: the session's own dir when *rec.account* IS an
+        Anthropic account, else the first live enabled one — the same engine-safe
+        helper identity autopilot's decider/composer use, so a Codex or Copilot
+        account never hands its own (non-Claude) credentials to this call. account is
+        deliberately left for helper_env to reverse-map from that config dir, since an
+        explicit rec.account would be wrong whenever the fallback account was used.
         """
         try:
             if self._summarizer is None:
                 self._summaries[session_id] = (signature, time.monotonic(), "")
                 return
-            events = await replay_events(path)
+            events = await self.transcript_events(session_id, max_turns=20)
             user_text, assistant_text = last_turn_context(events)
             context = f"User: {user_text}\n\nAssistant: {assistant_text}"
-            text = await self._summarizer.generate(rec.cwd, str(compose(rec.account)), context, rec.account)
+            cfg_dir = self._autopilot_helper_config_dir(rec.account)
+            if cfg_dir is None:
+                self._summaries[session_id] = (signature, time.monotonic(), "")
+                return
+            text = await self._summarizer.generate(rec.cwd, cfg_dir, context)
             self._summaries[session_id] = (signature, time.monotonic(), text or "")
         except Exception:
             log.warning("summary generation failed id=%s", session_id, exc_info=True)
