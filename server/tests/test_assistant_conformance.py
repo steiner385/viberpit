@@ -38,6 +38,8 @@ ARGS: dict[str, dict] = {
     "delete_notification_rule": {"id": "rule-1"}, "set_quiet_hours": {"start": "22:00"},
     "delete_session": {"id": UUID}, "cancel_queued_session": {"id": UUID},
     "ready_merge_pr": {"repo": "o/n", "number": 1},
+    "list_initiatives": {"status": "build"}, "get_initiative": {"slug": "a"},
+    "advance_initiative": {"slug": "a"},
 }
 
 
@@ -79,8 +81,6 @@ def test_every_tool_has_an_eval_case():
 # a genuinely NEW gap (an added chip with no case, or one of these regaining a case without
 # the set being updated) while it stays green until those tasks land.
 KNOWN_STARTER_GAPS: frozenset[str] = frozenset({
-    "Which initiatives have no active session?",
-    "Summarize initiative progress",
     "Which project has the most open work?",
     "What is blocked by a dependency?",
     "What regressed in CI recently?",

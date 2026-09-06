@@ -5,12 +5,10 @@ import { STARTERS } from './starters'
 // Mirror of server/tests/test_assistant_conformance.py::test_every_starter_has_an_eval_case,
 // so a chip added on the web side fails the web gate too, not only the server gate.
 //
-// Five chips have no backing tool yet (spec v2 G1, tracked in the server test's
+// Three chips have no backing tool yet (spec v2 G1, tracked in the server test's
 // KNOWN_STARTER_GAPS) — asserted here by exact equality so this test still catches a
-// genuinely NEW gap while it stays green until Tasks 5.3/6.5 land the tools that back them.
+// genuinely NEW gap while it stays green until Task 5.3/6.5 land the tools that back them.
 const KNOWN_STARTER_GAPS = [
-  'Which initiatives have no active session?',
-  'Summarize initiative progress',
   'Which project has the most open work?',
   'What is blocked by a dependency?',
   'What regressed in CI recently?',
