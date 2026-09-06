@@ -22,7 +22,7 @@ import { useMediaQuery } from '@/lib/useMediaQuery'
 import { useNow } from '@/hooks/useNow'
 import type { Session, Account } from '@/api/types'
 
-// Line-1 marker: a 12px icon with the full text demoted to tooltip + sr-only.
+// Meta-row marker: a 12px icon with the full text demoted to tooltip + sr-only.
 // Wide-card only (`hidden @md:inline-flex`), same declutter gate the old chips
 // used — narrow cards keep the triage essentials and nothing else.
 const markerBase = 'hidden @md:inline-flex items-center flex-shrink-0'
@@ -52,9 +52,9 @@ function modelTitle(s: Pick<Session, 'model' | 'modelPending' | 'pendingModel' |
   return label
 }
 
-// Neutral chip shell shared by the identity chips on line 1 (engine, reasoning
-// effort, model). Each caps its own width and truncates so no single long value
-// can starve the session title.
+// Neutral chip shell shared by the identity chips on the meta row (engine,
+// reasoning effort, model). Each caps its own width and truncates so no single
+// long value can push the rest of the row off the card.
 const identityChip = 'text-xs px-1.5 py-0.5 rounded truncate'
 
 interface SessionCardProps {
@@ -208,13 +208,22 @@ export function SessionCard({ session, account, selected = false, listMode = fal
     )
   }
 
-  // The dense two-line skeleton: every element has ONE fixed slot, so a vertical
-  // scan reads the same on every card regardless of which optional signals a
-  // session carries.
-  //   Line 1 (identity): dot · title · markers · PRs · usage · account · ✦ · ⋯
+  // The dense three-line skeleton: every element has ONE fixed slot, so a
+  // vertical scan reads the same on every card regardless of which optional
+  // signals a session carries.
+  //   Line 1 (identity): dot · title · ✦ · ⋯
   //   Line 2 (context):  repo · host · status phrase — summary · last-active
+  //   Line 3 (meta):     markers · PRs · usage · engine · model · account
+  //
+  // Line 1 is a flex row whose only growable child is the title, so the title
+  // takes the row's whole remainder. It used to share the row with the chip
+  // cluster — all of it flex-shrink-0 — which meant the title absorbed 100% of
+  // the width deficit and rendered as "I…" on a ~500px card. Nothing that can
+  // grow may move back onto it (SessionCard.layout.test.tsx pins this).
+  //
   // `identity` is the passive content INSIDE the open button; every interactive
-  // chip is a `trailing` sibling, so there are no nested-interactive violations.
+  // chip is a `trailing` sibling or lives on line 3, so there are no
+  // nested-interactive violations.
   return (
     <CardFrame
       id={session.id}
@@ -301,192 +310,6 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               {subAgents.length} {subAgents.length === 1 ? 'agent' : 'agents'}
             </span>
           )}
-
-          {/* Marker cluster — secondary state demoted to quiet 12px icons. Each
-              keeps its old testid and full text (tooltip + sr-only), so nothing
-              is lost, it just stops shouting. */}
-          {session.activeGoal && (
-            <span
-              data-testid="card-goal"
-              className={cn(markerBase, 'text-indigo-600 dark:text-indigo-400')}
-              title={`Goal: ${session.activeGoal}`}
-            >
-              <Target size={12} aria-hidden="true" />
-              <span className="sr-only">Goal</span>
-            </span>
-          )}
-          {!session.activeGoal && session.goalSource === 'inferred' && session.effectiveGoal && (
-            /* Subdued variant: the goal is LLM-inferred, not user-set. */
-            <span
-              data-testid="card-goal-inferred"
-              className={cn(markerBase, 'text-indigo-400 dark:text-indigo-500')}
-              title={`Goal (inferred): ${session.effectiveGoal}`}
-            >
-              <Target size={12} aria-hidden="true" />
-              <span className="sr-only">Goal</span>
-            </span>
-          )}
-          {session.autopilotPaused && (
-            <span
-              data-testid="card-autopilot-badge"
-              className={cn(markerBase, 'text-slate-400 dark:text-slate-500')}
-              title="Autopilot paused — this session is on manual"
-            >
-              <Bot size={12} aria-hidden="true" />
-              <span className="sr-only">Manual</span>
-            </span>
-          )}
-          {showCooldown && (
-            <span
-              data-testid="card-cooldown-badge"
-              className={cn(markerBase, 'text-amber-600 dark:text-amber-400')}
-              title={`Autopilot is standing down while you steer this session${cooldownMinsLeft ? ` (${cooldownMinsLeft}m left)` : ''}`}
-            >
-              <Bot size={12} aria-hidden="true" />
-              <span className="sr-only">
-                Autopilot paused — you're steering{cooldownMinsLeft ? ` (${cooldownMinsLeft}m left)` : ''}
-              </span>
-            </span>
-          )}
-          {session.autoArchiveOptOut && (
-            /* Passive indicator: this session was manually unarchived, so
-               autopilot will never auto-archive it again. */
-            <span
-              data-testid="card-no-autoarchive-badge"
-              className={cn(markerBase, 'text-amber-600 dark:text-amber-400')}
-              title="Auto-archive off — you unarchived this session, so autopilot won't archive it again"
-            >
-              <Archive size={12} aria-hidden="true" />
-              <span className="sr-only">Auto-archive off</span>
-            </span>
-          )}
-          {(session.origin || session.assistedBy) && (
-            /* Provenance: one marker for any automation involvement.
-               Spawned-by (origin) outranks assisted-by when both apply. */
-            <Link
-              to="/automation"
-              data-testid="card-provenance"
-              className={cn(
-                markerBase,
-                'rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-                // Emerald when autopilot is actively guiding (matches the title
-                // marker); generic violet for created-by/other automation, and
-                // for an autopilot session that's paused.
-                guidedByAutopilot && !session.origin
-                  ? 'text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300'
-                  : 'text-violet-500 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300',
-              )}
-              title={session.origin
-                ? `Created by automation: ${session.origin}`
-                : `Assisted by automation: ${session.assistedBy}`}
-            >
-              <Bot size={12} aria-hidden="true" />
-              <span className="sr-only">
-                {session.origin
-                  ? `Created by ${automationLabel(session.origin)}`
-                  : `Assisted by ${automationLabel(session.assistedBy!)}`}
-              </span>
-            </Link>
-          )}
-          {(session.prs?.length ?? 0) > 0 && (
-            <span data-testid="card-prs" className="hidden @md:inline-flex items-center flex-shrink-0">
-              <PrList prs={session.prs!} />
-            </span>
-          )}
-          {showFix && failingPr && (
-            <button
-              type="button"
-              data-testid="card-fix-pr"
-              onClick={() => onFixPr?.(session.id, failingPr.number)}
-              aria-label={`Fix PR #${failingPr.number}`}
-              className="hidden @md:inline-flex items-center gap-1 flex-shrink-0 text-xs font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-            >
-              <Wrench size={11} aria-hidden />
-              <span>Fix</span>
-            </button>
-          )}
-          {/* The card has room for ONE number, so show the window that actually
-              binds this account (the most-used one) rather than assuming a
-              dimension named "session" that a single-allowance provider does not
-              have. */}
-          {(() => {
-            const w = bindingWindow(account?.usage)
-            return w ? (
-              <span data-testid="card-usage" className="hidden @md:inline-flex items-center flex-shrink-0">
-                <UsageBadge
-                  compact
-                  className="inline-flex"
-                  pct={w.pct}
-                  label={w.label}
-                  resetsAt={w.resetsAt}
-                />
-              </span>
-            ) : null
-          })()}
-          {/* Agent chip — WHICH engine runs this session. Only rendered when it
-              is not the default Claude Code engine (`engineBadge` owns that
-              rule): a deployment that runs only Claude must not grow a chip on
-              every card. Wide-card only, like every other secondary signal. */}
-          {engineBadge(session.engine) && (
-            <span
-              data-testid="card-engine"
-              className={cn(
-                markerBase, identityChip, 'max-w-[6rem]',
-                'bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300',
-              )}
-              title={`Agent: ${engineBadge(session.engine)}`}
-            >
-              {engineBadge(session.engine)}
-            </span>
-          )}
-          {/* Reasoning effort — the engine-native depth choice (Codex). Absent
-              means "the model's own default", the unremarkable case. It sits
-              BEFORE the model chip because the model chip must stay adjacent to
-              the account chip (see the comment below). */}
-          {session.reasoningEffort && (
-            <span
-              data-testid="card-effort"
-              className={cn(
-                markerBase, identityChip, 'max-w-[6rem]',
-                'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
-              )}
-              title={`Reasoning effort: ${session.reasoningEffort}`}
-            >
-              {session.reasoningEffort}
-            </span>
-          )}
-          {/* Model chip — which model the session is running, right before the
-              account chip so the pair reads together ("Opus · tony@…"). Only
-              shown when the record pins a model; null means the account/binary
-              default, which is the unremarkable case and would just be noise on
-              most cards. Wide-card only, like every other secondary signal. The
-              gated tier is tinted so an expensive session stands out on a scan
-              — never for a non-Claude engine, whose ids no tier gate matches. */}
-          {session.model && (
-            <span
-              data-testid="card-model"
-              className={cn(
-                markerBase, identityChip, 'max-w-[8rem]',
-                isGatedTier(session.model, session.engine)
-                  ? 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300'
-                  : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
-              )}
-              title={modelTitle(session)}
-            >
-              {tierLabel(session.model, session.engine)}
-            </span>
-          )}
-          {/* The chip yields before the title does: capped at 30% of the row and
-              truncating, so a long account email can't starve the session name.
-              (Line 1 now also hosts the action buttons, so the old 45% cap left
-              starved one-word titles.) `title` keeps the full value reachable. */}
-          <span
-            data-testid="card-account"
-            className="flex-shrink-0 max-w-[30%] truncate text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded"
-            title={account?.nickname || session.accountName}
-          >
-            {account?.nickname || session.accountName}
-          </span>
 
           {/* Actions — two permanent slots, identical on every device: Resume (✦)
               and the unified ⋯ menu. Nothing appears or disappears on hover, so
@@ -657,6 +480,209 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             active {relTime(session.updatedAt, now || undefined)}
           </span>
         )}
+      </div>
+
+      {/* Line 3 — meta: every chip that can grow, off the title's row. The
+          @md declutter gates are unchanged; only the row they sit on is. All
+          passive except the provenance link and Fix, so a click elsewhere
+          falls through to the article's open-session handler. */}
+      <div data-testid="card-meta" className="mt-1 flex items-center gap-1.5 min-w-0">
+        {/* Marker cluster — secondary state demoted to quiet 12px icons. Each
+            keeps its old testid and full text (tooltip + sr-only), so nothing
+            is lost, it just stops shouting. */}
+        {session.activeGoal && (
+          <span
+            data-testid="card-goal"
+            className={cn(markerBase, 'text-indigo-600 dark:text-indigo-400')}
+            title={`Goal: ${session.activeGoal}`}
+          >
+            <Target size={12} aria-hidden="true" />
+            <span className="sr-only">Goal</span>
+          </span>
+        )}
+        {!session.activeGoal && session.goalSource === 'inferred' && session.effectiveGoal && (
+          /* Subdued variant: the goal is LLM-inferred, not user-set. */
+          <span
+            data-testid="card-goal-inferred"
+            className={cn(markerBase, 'text-indigo-400 dark:text-indigo-500')}
+            title={`Goal (inferred): ${session.effectiveGoal}`}
+          >
+            <Target size={12} aria-hidden="true" />
+            <span className="sr-only">Goal</span>
+          </span>
+        )}
+        {session.autopilotPaused && (
+          <span
+            data-testid="card-autopilot-badge"
+            className={cn(markerBase, 'text-slate-400 dark:text-slate-500')}
+            title="Autopilot paused — this session is on manual"
+          >
+            <Bot size={12} aria-hidden="true" />
+            <span className="sr-only">Manual</span>
+          </span>
+        )}
+        {showCooldown && (
+          <span
+            data-testid="card-cooldown-badge"
+            className={cn(markerBase, 'text-amber-600 dark:text-amber-400')}
+            title={`Autopilot is standing down while you steer this session${cooldownMinsLeft ? ` (${cooldownMinsLeft}m left)` : ''}`}
+          >
+            <Bot size={12} aria-hidden="true" />
+            <span className="sr-only">
+              Autopilot paused — you're steering{cooldownMinsLeft ? ` (${cooldownMinsLeft}m left)` : ''}
+            </span>
+          </span>
+        )}
+        {session.autoArchiveOptOut && (
+          /* Passive indicator: this session was manually unarchived, so
+             autopilot will never auto-archive it again. */
+          <span
+            data-testid="card-no-autoarchive-badge"
+            className={cn(markerBase, 'text-amber-600 dark:text-amber-400')}
+            title="Auto-archive off — you unarchived this session, so autopilot won't archive it again"
+          >
+            <Archive size={12} aria-hidden="true" />
+            <span className="sr-only">Auto-archive off</span>
+          </span>
+        )}
+        {(session.origin || session.assistedBy) && (
+          /* Provenance: one marker for any automation involvement.
+             Spawned-by (origin) outranks assisted-by when both apply. */
+          <Link
+            to="/automation"
+            data-testid="card-provenance"
+            className={cn(
+              markerBase,
+              'rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+              // Emerald when autopilot is actively guiding (matches the title
+              // marker); generic violet for created-by/other automation, and
+              // for an autopilot session that's paused.
+              guidedByAutopilot && !session.origin
+                ? 'text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300'
+                : 'text-violet-500 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300',
+            )}
+            title={session.origin
+              ? `Created by automation: ${session.origin}`
+              : `Assisted by automation: ${session.assistedBy}`}
+          >
+            <Bot size={12} aria-hidden="true" />
+            <span className="sr-only">
+              {session.origin
+                ? `Created by ${automationLabel(session.origin)}`
+                : `Assisted by ${automationLabel(session.assistedBy!)}`}
+            </span>
+          </Link>
+        )}
+        {(session.prs?.length ?? 0) > 0 && (
+          <span data-testid="card-prs" className="hidden @md:inline-flex items-center flex-shrink-0">
+            <PrList prs={session.prs!} />
+          </span>
+        )}
+        {showFix && failingPr && (
+          <button
+            type="button"
+            data-testid="card-fix-pr"
+            onClick={() => onFixPr?.(session.id, failingPr.number)}
+            aria-label={`Fix PR #${failingPr.number}`}
+            className="hidden @md:inline-flex items-center gap-1 flex-shrink-0 text-xs font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+          >
+            <Wrench size={11} aria-hidden />
+            <span>Fix</span>
+          </button>
+        )}
+        {/* The card has room for ONE number, so show the window that actually
+            binds this account (the most-used one) rather than assuming a
+            dimension named "session" that a single-allowance provider does not
+            have. */}
+        {(() => {
+          const w = bindingWindow(account?.usage)
+          return w ? (
+            <span data-testid="card-usage" className="hidden @md:inline-flex items-center flex-shrink-0">
+              <UsageBadge
+                compact
+                className="inline-flex"
+                pct={w.pct}
+                label={w.label}
+                resetsAt={w.resetsAt}
+              />
+            </span>
+          ) : null
+        })()}
+        {/* Agent chip — WHICH engine runs this session. Only rendered when it
+            is not the default Claude Code engine (`engineBadge` owns that
+            rule): a deployment that runs only Claude must not grow a chip on
+            every card. Wide-card only, like every other secondary signal. */}
+        {engineBadge(session.engine) && (
+          <span
+            data-testid="card-engine"
+            className={cn(
+              markerBase, identityChip, 'max-w-[6rem]',
+              'bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300',
+            )}
+            title={`Agent: ${engineBadge(session.engine)}`}
+          >
+            {engineBadge(session.engine)}
+          </span>
+        )}
+        {/* Reasoning effort — the engine-native depth choice (Codex). Absent
+            means "the model's own default", the unremarkable case. It sits
+            BEFORE the model chip because the model chip must stay adjacent to
+            the account chip (see the comment below). */}
+        {session.reasoningEffort && (
+          <span
+            data-testid="card-effort"
+            className={cn(
+              markerBase, identityChip, 'max-w-[6rem]',
+              'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+            )}
+            title={`Reasoning effort: ${session.reasoningEffort}`}
+          >
+            {session.reasoningEffort}
+          </span>
+        )}
+        {/* Model chip — which model the session is running, right before the
+            account chip so the pair reads together ("Opus · tony@…"). Only
+            shown when the record pins a model; null means the account/binary
+            default, which is the unremarkable case and would just be noise on
+            most cards. Wide-card only, like every other secondary signal. The
+            gated tier is tinted so an expensive session stands out on a scan
+            — never for a non-Claude engine, whose ids no tier gate matches. */}
+        {session.model && (
+          <span
+            data-testid="card-model"
+            className={cn(
+              markerBase, identityChip, 'max-w-[8rem]',
+              isGatedTier(session.model, session.engine)
+                ? 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300'
+                : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+            )}
+            title={modelTitle(session)}
+          >
+            {tierLabel(session.model, session.engine)}
+          </span>
+        )}
+        {/* The 30% cap existed solely to stop a long account email starving the
+            session name. There is no title on this row to protect, and 30%
+            clipped an ordinary gmail address — so the cap widens to 50%. It
+            stays capped and truncating for genuinely long aliases, and `title`
+            keeps the full value reachable either way.
+
+            It is also the ONE shrinkable child of this row (`min-w-0`, no
+            `flex-shrink-0`), which is what stops line 3 repeating line 1's bug
+            in reverse: with every child fixed-width, a full chip set would
+            overflow the card instead of yielding. The account chip is the right
+            one to yield — it is identical on every card of a single-account
+            deployment, so it is the least discriminating thing on the row. The
+            row must NOT take `overflow-hidden` instead: PrList opens an
+            `absolute z-20` popover out of it (same trap CardFrame records for
+            the ⋯ menu). */}
+        <span
+          data-testid="card-account"
+          className="min-w-0 max-w-[50%] truncate text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded"
+          title={account?.nickname || session.accountName}
+        >
+          {account?.nickname || session.accountName}
+        </span>
       </div>
 
       {hasSubAgents && expanded && <SubAgentRows sessionId={session.id} subAgents={subAgents} />}
