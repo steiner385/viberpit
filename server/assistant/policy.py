@@ -75,10 +75,10 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/github/branches"),
         ("GET", r"/api/automations"),
         ("GET", r"/api/automations/[A-Za-z0-9_-]+/events"),
-        # Automations control, read half (spec v2 §4.3, Pack A). Every row is anchored, so
-        # the two `{id}` rows admit only those two literal sub-routes — the mutating
-        # siblings (`POST …/trigger`, `POST …/backlog-runner/dispatch`,
-        # `POST …/pr-doctor/consolidate`) each need their own row and get one in Task 6.4.
+        # Automations control (spec v2 §4.3, Pack A). Every row is anchored, so the
+        # `{id}` rows admit only the literal sub-route each names — the read rows below
+        # cannot be stretched to reach the three fan-out POSTs, which is why those get
+        # their own rows rather than sharing a looser pattern.
         ("GET", r"/api/automations/[A-Za-z0-9_-]+/actionable"),
         ("GET", r"/api/automations/[A-Za-z0-9_-]+/sessions"),
         ("GET", r"/api/automations/backlog-runner/candidates"),
@@ -87,6 +87,10 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/automations/pr-doctor/consolidation"),
         ("GET", r"/api/automations/pr-doctor/jobs/[A-Za-z0-9-]+"),
         ("POST", r"/api/automations/schedule/preview"),
+        # Fan-out half (Task 6.4), each DESTRUCTIVE: they start unattended sessions.
+        ("POST", r"/api/automations/[A-Za-z0-9_-]+/trigger"),
+        ("POST", r"/api/automations/backlog-runner/dispatch"),
+        ("POST", r"/api/automations/pr-doctor/consolidate"),
         ("GET", r"/api/deploy/status"),
         ("GET", r"/api/auth/me"),
         ("GET", r"/api/sdlc/initiatives"),

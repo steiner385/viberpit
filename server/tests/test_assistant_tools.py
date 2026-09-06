@@ -1021,3 +1021,140 @@ def test_automation_read_tool_classes_and_the_read_post_escape_hatch():
         assert TOOL_SPECS[name].tool_class is ToolClass.READ
         assert annotation_for(f"mcp__ccswitch__{name}").tool_class is ToolClass.READ
     assert "preview_schedule" in READ_POSTS
+
+
+# --- Automation fan-out tools (plan Task 6.4, Pack A) --------------------------------
+# The half of Pack A that STARTS unattended work: each of these spawns a coding session
+# that acts on its own. Every test here is about that fact — the class, the card, and
+# the local arg checks that stop a malformed fan-out before it reaches the API.
+
+_FAN_OUT_TOOLS = ("trigger_automation_action", "dispatch_backlog", "consolidate_prs")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,args,path,body", [
+    ("trigger_automation_action",
+     {"id": "pr-doctor", "item_id": "acme/checkout#10", "kind": "failing_ci"},
+     "/api/automations/pr-doctor/trigger",
+     {"item_id": "acme/checkout#10", "kind": "failing_ci"}),
+    ("dispatch_backlog", {"refs": ["acme/billing#18", "acme/billing#20"]},
+     "/api/automations/backlog-runner/dispatch",
+     {"refs": ["acme/billing#18", "acme/billing#20"]}),
+    ("consolidate_prs", {"repo": "acme/billing", "numbers": [42, 43]},
+     "/api/automations/pr-doctor/consolidate",
+     {"repo": "acme/billing", "numbers": [42, 43]}),
+])
+async def test_fan_out_tools_post_the_endpoints_body(name, args, path, body):
+    seen: dict[str, object] = {}
+
+    def handler(req: httpx.Request):
+        seen["method"] = req.method
+        seen["path"] = req.url.path
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"status": "spawned", "session_id": "s1"})
+
+    out = await _tool(build_tools(_api(handler)), name).handler(args)
+    assert "is_error" not in out
+    assert seen == {"method": "POST", "path": path, "body": body}
+
+
+def test_fan_out_tools_are_destructive():
+    """DESTRUCTIVE is what gets these a permission card in EVERY mode (including
+    full-auto) with no "Always allow" — see server/sessions/permissions.py, which reads
+    the class off `annotation_for`, so both lookups have to agree."""
+    for name in _FAN_OUT_TOOLS:
+        assert TOOL_SPECS[name].tool_class is ToolClass.DESTRUCTIVE
+        assert annotation_for(f"mcp__ccswitch__{name}").tool_class is ToolClass.DESTRUCTIVE
+
+
+def test_fan_out_tool_descriptions_say_the_work_is_unattended():
+    """The model's only warning that a call is irreversible is the description it reads
+    before choosing the tool, so the wording is load-bearing, not decoration."""
+    tools = build_tools(_api(lambda r: httpx.Response(200, json={})))
+    for name in _FAN_OUT_TOOLS:
+        text = _tool(tools, name).description.lower()
+        assert "on its own" in text and "no undo" in text, f"{name}: {text}"
+
+
+@pytest.mark.asyncio
+async def test_trigger_automation_action_rejects_a_bad_id_locally():
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), "trigger_automation_action").handler(
+        {"id": "../../sessions", "item_id": "acme/checkout#10", "kind": "failing_ci"})
+    assert out["is_error"] is True
+    assert calls == [], "a locally-rejected automation id must never reach the API"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args", [
+    {"id": "pr-doctor", "item_id": "", "kind": "failing_ci"},
+    {"id": "pr-doctor", "item_id": "acme/checkout#10", "kind": ""},
+])
+async def test_trigger_automation_action_requires_item_and_kind(args):
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), "trigger_automation_action").handler(args)
+    assert out["is_error"] is True
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refs", [[], ["acme/billing#18", ""], "acme/billing#18"])
+async def test_dispatch_backlog_rejects_a_bad_ref_list_locally(refs):
+    """An empty list is a 400 from the endpoint and a bare string would be a 422; both
+    are opaque to the model, so they are rejected here as a corrective message instead."""
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), "dispatch_backlog").handler({"refs": refs})
+    assert out["is_error"] is True
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_consolidate_prs_coerces_numbers_and_rejects_non_numeric():
+    seen: dict[str, object] = {}
+
+    def handler(req: httpx.Request):
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"status": "spawned"})
+
+    tools = build_tools(_api(handler))
+    # The endpoint's body model is `numbers: list[int]`; a JSON-schema "integer" array
+    # still reaches the handler as whatever the model emitted, so coerce rather than 422.
+    await _tool(tools, "consolidate_prs").handler({"repo": "acme/billing", "numbers": ["42", 43]})
+    assert seen["body"] == {"repo": "acme/billing", "numbers": [42, 43]}
+
+    # Rejected rather than silently read as 42 / 1 — a PR number that arrived as a
+    # fraction or a boolean means the model got the argument wrong, and consolidating
+    # the WRONG PR is not a mistake a permission card can catch.
+    for bad in (["forty-two"], [42.7], [True]):
+        out = await _tool(tools, "consolidate_prs").handler(
+            {"repo": "acme/billing", "numbers": bad})
+        assert out["is_error"] is True, bad
+
+
+@pytest.mark.asyncio
+async def test_consolidate_prs_rejects_an_empty_number_list_locally():
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), "consolidate_prs").handler(
+        {"repo": "acme/billing", "numbers": []})
+    assert out["is_error"] is True
+    assert calls == []
