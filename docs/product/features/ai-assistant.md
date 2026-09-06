@@ -96,13 +96,23 @@ sharing, voice, or proactive/unsolicited messages — the assistant only speaks 
   session power tools, GitHub, proactive notices, opt-in operator tier, external MCP/CLI access) are
   in `docs/superpowers/specs/2026-09-05-ai-assistant-capabilities-v2-design.md`; plan:
   `docs/superpowers/plans/2026-09-05-ai-assistant-capabilities-v2.md`.
-- **Tool surface (v2)** — 68 tools registered in `server/assistant/tools.py` as of plan Task 6.5:
-  35 base (v1) tools, Pack F — fixes & foundations (6: repos/branches/stage-models listing, tool-result
-  drill-in, session export, gap reporting), Pack P — product & delivery (11: SDLC initiatives, PM
-  products/queue/triage/onboarding), Pack A — automations control (11: actionable items, backlog
-  candidates, CI/CD findings, PR-doctor consolidation, plus the three destructive
-  trigger/dispatch/consolidate tools), and Pack O — operator tier (5: deploy/host/account
-  administration, flag-gated off by default). Packs S, C, G, N and X are not yet built.
+- **Tool surface (v2)** — 84 tools are registered in `server/assistant/tools.py`; 79 are exposed by
+  default, Pack O's operator tools registering only once the operator tier is enabled. Packs C, G
+  and X are not yet built.
+
+  | Pack | Tools | Surface |
+  |---|---|---|
+  | Base (v1) | 28 | sessions, accounts, hosts, PRs, pipeline health, automations, deploy status |
+  | F — fixes & foundations | 6 | repos/branches/stage-models listing, tool-result drill-in, session export, gap reporting |
+  | P — product & delivery | 11 | SDLC initiatives, PM products/queue/triage/onboarding |
+  | A — automations control | 11 | actionable items, backlog candidates, CI/CD findings, PR-doctor consolidation, plus the three destructive trigger/dispatch/consolidate tools |
+  | S — session power | 13 | rename, queue-move, account pin, rotate, reload, suggest, adopt, and the five batch tools with an enumerating card |
+  | N — proactive notices | 10 | notification channels/rules, watches, quiet hours, test notification |
+  | O — operator tier | 5 | deploy/host/account administration, flag-gated off by default |
+
+  These counts are pinned by `test_feature_doc_tool_counts_match_the_registry` — a new tool fails
+  CI until this table places it in a pack, because the numbers above went stale within a day of
+  first being written by hand.
 - **Token is loopback-only** — `server/assistant/token.py` mints an identity- and session-bound,
   HMAC-signed `ccas1:` bearer token, never persisted, accepted only from loopback by
   `IdentityMiddleware` (spec §4.3). It cannot authenticate a request that didn't originate from the
