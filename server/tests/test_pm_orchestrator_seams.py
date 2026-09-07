@@ -225,9 +225,11 @@ async def test_apply_feature_plan_map_proposed_advances_to_map_merged(db_env):
         upserts=(FeatureUpsert(
             slug="core", title="Core", state="live",
             summary="Core feature.", repo_path="docs/product/features/core.md",
+            parent_slug=None, links=(),
         ),),
         orphan_slugs=(),
         revive_slugs=(),
+        warnings=(),
     )
     await orch._pm_sync_apply_feature_plan(project_id, plan, {})
 
@@ -258,9 +260,11 @@ async def test_apply_feature_plan_non_map_proposed_state_unchanged(db_env):
         upserts=(FeatureUpsert(
             slug="feature-a", title="A", state="live",
             summary="A feature.", repo_path="docs/product/features/a.md",
+            parent_slug=None, links=(),
         ),),
         orphan_slugs=(),
         revive_slugs=(),
+        warnings=(),
     )
     await orch._pm_sync_apply_feature_plan(project_id, plan, {})
 
@@ -286,7 +290,7 @@ async def test_apply_feature_plan_map_proposed_no_upserts_stays(db_env):
     orch = _bare_orch()
 
     from server.pm.feature_index import FeatureIndexPlan
-    plan = FeatureIndexPlan(upserts=[], orphan_slugs=(), revive_slugs=())
+    plan = FeatureIndexPlan(upserts=[], orphan_slugs=(), revive_slugs=(), warnings=())
     await orch._pm_sync_apply_feature_plan(project_id, plan, {})
 
     async with db_session() as db:
