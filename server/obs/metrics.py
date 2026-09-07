@@ -230,6 +230,9 @@ session_tool_calls_total = Counter(
 session_feedback_total = Counter(
     "session_feedback_total", "Feedback reports coding sessions made about ccswitch",
     labelnames=("category",))
+error_sink_dropped_total = Counter(
+    "error_sink_dropped_total",
+    "Log records the error sink dropped because its per-flush fingerprint map was full")
 
 # Codex boundary metrics (plan Task 6.1: "engine/provider/host/version/method
 # latency, active threads/turns, restarts, auth generation/health, quota age, and

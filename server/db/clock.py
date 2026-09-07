@@ -55,3 +55,15 @@ def db_utc_now() -> _DbUtcNow:
     SELECT scalar (``select(db_utc_now())`` → naive ``datetime`` on every dialect).
     """
     return _DbUtcNow()
+
+
+def naive_utc_now() -> "datetime":
+    """Python-side "now" in the schema's convention: naive UTC.
+
+    The writer-side twin of :func:`db_utc_now`. Use it for any timestamp you
+    compute in Python and compare against or store in a schema column, instead
+    of re-spelling ``datetime.now(timezone.utc).replace(tzinfo=None)`` at each
+    call site.
+    """
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).replace(tzinfo=None)

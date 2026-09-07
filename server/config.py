@@ -266,6 +266,10 @@ try:
         # are recorded as "capped": visible, never filed.
         session_feedback_cap: int = Field(
             default=3, alias="CCSWITCH_SESSION_FEEDBACK_CAP")
+        # Error-triage capture (spec 2026-09-07): install the WARNING+ log sink that
+        # feeds error_signatures. Off = configure_logging() installs no handler.
+        error_sink_enabled: bool = Field(
+            default=True, alias="CCSWITCH_ERROR_SINK_ENABLED")
         # Verification-phase test-run slot cap (#822): max sessions per host that
         # may simultaneously hold a "running the full server suite" slot. Keeps a
         # Backlog Runner burst from piling up N concurrent full pytest runs (the
@@ -560,6 +564,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         session_feedback_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_SESSION_FEEDBACK_CAP", "")) and v.isdigit() else 3
+        )
+        error_sink_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_ERROR_SINK_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         test_slot_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_TEST_SLOT_CAP", "")) and v.isdigit() else 1
