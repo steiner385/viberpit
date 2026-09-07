@@ -168,8 +168,9 @@ dataclass branch cannot be forgotten.
 - `Session.display_mode: Mapped[str | None]` — nullable String, `None` = created before this
   feature (treated as virtual everywhere). Nullable so `init_db`'s reconcile ALTER-ADDs it on
   both dialects; no `_REQUIRED_EXTRAS`/`RECONCILE_EXEMPT` entry needed.
-- Migration `0029_session_display_mode.py`, `down_revision = "0028_assistant_tokens"`
-  (reviewable record only, per the repo rule).
+- Migration `0030_session_display_mode.py`, `down_revision = "0029_notification_rule_scope_session"`
+  (reviewable record only, per the repo rule). Renumbered from `0029_` after `origin/master`
+  landed its own `0029_notification_rule_scope_session`, which claimed that slot.
 - `SessionRecord.display_mode: str | None = None`; `to_dict`/`from_dict` key `displayMode`;
   `_record_from_row` maps it; the API serializer in `server/api/sessions.py` emits
   `displayMode`.

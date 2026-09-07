@@ -741,3 +741,24 @@ async def test_non_fleet_client_node_does_not_nudge(monkeypatch):
     monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
     await fo.create_session(client_node="laptop")          # not a fleet host
     assert got == [None]
+
+
+@pytest.mark.asyncio
+async def test_client_node_match_is_case_insensitive(monkeypatch):
+    """The tailnet node name and the runner-registry name are one host spelled by
+    two independent sources, so the nudge must match the way resolve_display_mode
+    does — case-insensitively. Otherwise a "Dobby" client is routed native by the
+    policy and placed on some other host by the router, and the window opens on a
+    desktop nobody is sitting at. `prefer` must carry the REGISTRY's spelling,
+    since that is the key FleetRouter.get() looks up."""
+    rocky, dobby = _FakeOrch("rocky"), _FakeOrch("dobby")
+    async def create_session(self, **kw): return _Rec("s")
+    _FakeOrch.create_session = create_session
+    router = _FakeRouter({"rocky": rocky, "dobby": dobby}); got = []
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        got.append(prefer); return ["dobby", "rocky"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
+    await fo.create_session(client_node="Dobby")
+    assert got == ["dobby"]

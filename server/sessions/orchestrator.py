@@ -2400,6 +2400,12 @@ class SessionOrchestrator:
         stands — this is recovery, not a new decision). Any failure here is swallowed
         so it cannot mask the original spawn exception the caller re-raises."""
         from datetime import datetime
+        # The display decision was made once, at _hold_for_approval time, and is not
+        # re-derivable here: `kwargs` carries no `display`/`client_node` (the approve
+        # path strips them), so a re-resolution would silently fall back to virtual.
+        # The failed _spawn_session leaves its pre-record in _records, which still
+        # carries the held mode — same _prior precedence as _enqueue_session.
+        prior_mode = getattr(self._records.get(session_id), "display_mode", None)
         try:
             async with db_session() as db:
                 # The failed spawn may or may not have INSERTed a row before raising;
@@ -2426,7 +2432,8 @@ class SessionOrchestrator:
                     pending_model_requested_at=requested_at,
                     initial_prompt=kwargs.get("initial_prompt"), host=host,
                     kind=kwargs.get("kind"),
-                    owner_identity=kwargs.get("owner_identity")))
+                    owner_identity=kwargs.get("owner_identity"),
+                    display_mode=prior_mode))
             restored = dict(kwargs)
             restored["model"] = model
             self._pending_approvals[session_id] = restored
@@ -2443,7 +2450,8 @@ class SessionOrchestrator:
                 model=None, reasoning_effort=kwargs.get("reasoning_effort"),
                 pending_model=model, host=host,
                 kind=kwargs.get("kind"),
-                owner_identity=kwargs.get("owner_identity"))
+                owner_identity=kwargs.get("owner_identity"),
+                display_mode=prior_mode)
         except Exception:
             # Never let the recovery path mask the real spawn error.
             log.exception("session.model_approval_hold_restore_failed id=%s",

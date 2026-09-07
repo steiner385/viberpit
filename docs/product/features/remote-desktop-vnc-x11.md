@@ -87,4 +87,11 @@ accept `SI:localuser:<user>` (GDM's default; otherwise `xhost +SI:localuser:<use
 session startup). No `XAUTHORITY` is set. `CCSWITCH_NATIVE_DISPLAY` must not fall inside
 the Xvfb pool range or native routing disables itself with a warning (the orphan sweep
 reaps that range). Behind `tailscale serve` (no `X-Real-IP`) locality resolves to unknown →
-virtual. Kill switch: `CCSWITCH_NATIVE_DISPLAY_ENABLED=false`.
+virtual. Native routing is effectively **Claude-only** today: only
+`ClaudeAgentDriverFactory` is built from the orchestrator's `_session_factory`, the one seam
+that injects `DISPLAY`, so a Codex session resolved native takes no Xvfb lease *and* gets no
+`DISPLAY` — pass `display: "virtual"` (or use the kill switch) for Codex sessions launched
+from a runner's own desktop. In fleet mode an explicit `display: "native"` from a *remote*
+requester skips the locality proof but not placement, so under auto placement its windows
+land on whichever desktop-capable host ranks first, not necessarily the one the requester
+expected — pin `host` to be sure. Kill switch: `CCSWITCH_NATIVE_DISPLAY_ENABLED=false`.

@@ -46,5 +46,6 @@ def test_api_serializer_emits_display_mode():
 
 def test_migration_chain():
     import importlib
-    m = importlib.import_module("server.db.migrations.versions.0029_session_display_mode")
-    assert m.down_revision == "0028_assistant_tokens"
+    m = importlib.import_module("server.db.migrations.versions.0030_session_display_mode")
+    assert m.revision == "0030_session_display_mode"
+    assert m.down_revision == "0029_notification_rule_scope_session"

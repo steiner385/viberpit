@@ -61,7 +61,12 @@ def register_x11(app, x11, orchestrator=None) -> None:
 
     async def x11_open_browser(params: dict) -> dict:
         session_id = params["session_id"]
-        if orchestrator is not None and hasattr(orchestrator, "open_browser"):
+        # An orchestrator is present ⇒ it owns the native/virtual branch. The
+        # hasattr() guard this replaced was dead weight that could only ever hide a
+        # real regression: SessionOrchestrator.open_browser is part of the contract,
+        # so a missing attribute means a broken build, not a legacy shape to fall
+        # back from. The x11-only path below is for a daemon with no orchestrator.
+        if orchestrator is not None:
             return await orchestrator.open_browser(session_id, params.get("url"))
         if x11 is None or x11.display_for(session_id) is None:
             return {"ok": False, "reason": "no_display"}

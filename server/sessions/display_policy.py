@@ -28,6 +28,13 @@ def resolve_display_mode(
     requesting client's tailnet node IS the runner host. Anything unrecognised in
     ``requested`` (the API validates it, but daemons can be behind) reads as auto.
     """
+    # Normalise first, so the rules below only ever see one of the three constants.
+    # None and anything this daemon does not recognise — a newer edge may send a
+    # mode this build predates — collapse to DISPLAY_AUTO, "decide for me", which
+    # is exactly the locality rule at the bottom. Behaviour is unchanged; this only
+    # binds the request-only constant to the branch that consumes it.
+    if requested not in (DISPLAY_NATIVE, DISPLAY_VIRTUAL):
+        requested = DISPLAY_AUTO
     if requested == DISPLAY_VIRTUAL:
         return DISPLAY_VIRTUAL
     if not native_available:

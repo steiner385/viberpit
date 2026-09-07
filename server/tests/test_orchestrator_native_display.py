@@ -364,3 +364,50 @@ async def test_approve_at_capacity_reenqueues_as_native(spawn_env):
         assert orch._display_env(out.id) == {"DISPLAY": ":0"}
     finally:
         await orch.stop()
+
+
+@pytest.mark.asyncio
+async def test_failed_approve_restore_keeps_native_display(spawn_env):
+    """Round-3 review finding: when the launch-time spawn raises, the approve path
+    has already deleted the placeholder row, so _restore_hold_after_failed_approve
+    re-INSERTs it. That rebuild carried no display_mode, silently demoting a native
+    hold to NULL (== virtual everywhere) — and it is not re-derivable at that point,
+    because the approve kwargs carry neither `display` nor `client_node`. The restore
+    must read the held mode off the surviving in-memory record instead.
+
+    Mirrors test_approve_launch_spawn_failure_keeps_session_recoverable in
+    server/tests/test_orchestrator_model_gate.py.
+    """
+    x11, native = FakeX11(), FakeNative()
+    orch = await _orch(spawn_env, x11, native)
+    try:
+        rec = await orch.create_session(
+            "n", account="acct", client_node="dobby", model="fable")
+        assert rec.status == "pending_approval"
+        assert rec.display_mode == "native"
+
+        async def _boom(*a, **k):
+            raise RuntimeError("spawn exploded")
+        orch._spawn_session = _boom  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError):
+            await orch.resolve_model_approval(rec.id, "approve", identity="user@x")
+
+        # The hold is restored, still native — in memory and on the rebuilt row.
+        mem = orch._records.get(rec.id)
+        assert mem is not None
+        assert mem.status == "pending_approval"
+        assert mem.display_mode == "native"
+
+        from server.db import db_session
+        from server.db.models import Session as DbSession
+        async with db_session() as db:
+            row = await db.get(DbSession, rec.id)
+        assert row is not None
+        assert row.status == "pending_approval"
+        assert row.display_mode == "native"
+
+        # A failed approve must not have leased an Xvfb display either.
+        assert x11.started == []
+    finally:
+        await orch.stop()
