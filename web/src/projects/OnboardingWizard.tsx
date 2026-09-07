@@ -7,12 +7,7 @@
 import { useClassify, useOnboarding, useProposeMap } from '@/api/hooks'
 import type { OnboardingAction } from '@/api/pm'
 import { extractMutationErrorMessage } from '@/api/queryClient'
-
-const STATE_LABEL: Record<string, string> = {
-  registered: 'Registered', syncing: 'Syncing backlog',
-  map_proposed: 'Feature map proposed', map_merged: 'Feature map merged',
-  classifying: 'Classifying backlog', live: 'Live',
-}
+import { onboardingStateLabel } from '@/features/products/vocab'
 
 function ActionButton({ action, slug }: { action: OnboardingAction; slug: string }) {
   const proposeMap = useProposeMap()
@@ -70,7 +65,7 @@ export function OnboardingWizard({ slug }: { slug: string }) {
   return (
     <div className="pm-wizard">
       <div className="pm-wizard-head">
-        <span className="pm-wizard-state">{STATE_LABEL[data.state] ?? data.state}</span>
+        <span className="pm-wizard-state">{onboardingStateLabel(data.state)}</span>
         <span className="pm-muted">
           {data.counts.featureCount} features · {data.counts.openUnclassifiedCount} open items ·{' '}
           {data.counts.pendingProposalCount} awaiting triage

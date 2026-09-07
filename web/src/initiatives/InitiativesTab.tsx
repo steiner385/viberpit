@@ -9,6 +9,7 @@ import { extractMutationErrorMessage } from '@/api/queryClient'
 import { useSessionSocket } from '@/ws/client'
 import { INITIATIVE_STAGES, type Initiative, type InitiativeArtifact } from '@/api/sdlc'
 import { fileUrl, commitUrl, prUrl } from '@/lib/githubUrl'
+import { initiativeStatusLabel, stageLabel } from '@/features/products/vocab'
 import { InitiativeTrack } from './InitiativeTrack'
 import { IncidentQueue } from './IncidentQueue'
 import '../pipeline/plotroom.css'
@@ -33,11 +34,6 @@ function useInitiativesLive() {
     on('status', nudge)
     return () => off('status', nudge)
   }, [on, off, qc])
-}
-
-const STATUS_LABEL: Record<string, string> = {
-  proposed: 'Proposed', active: 'Active', awaiting_human: 'Awaiting human',
-  blocked: 'Blocked', done: 'Done',
 }
 
 function nextStage(stage: string | null): string | null {
@@ -81,7 +77,7 @@ function InitiativeRow({ init }: { init: Initiative }) {
             <span className="init-slug">{init.slug}</span>
             {init.repo && <span className="init-repo">{init.repo}</span>}
             <span className={`init-status init-status-${init.status}`}>
-              {STATUS_LABEL[init.status ?? ''] ?? init.status}
+              {initiativeStatusLabel(init.status)}
             </span>
           </div>
         </div>
@@ -90,9 +86,9 @@ function InitiativeRow({ init }: { init: Initiative }) {
           className="btn-ghost init-advance"
           disabled={!nxt || advance.isPending}
           onClick={() => advance.mutate(init.slug)}
-          title={nxt ? `Advance the gate to “${nxt}”` : 'Already at the final stage'}
+          title={nxt ? `Advance the gate to ${stageLabel(nxt)}` : 'Already at the final stage'}
         >
-          {nxt ? `Advance → ${nxt}` : 'Complete'}
+          {nxt ? `Advance → ${stageLabel(nxt)}` : 'Complete'}
         </button>
       </header>
       {advance.isError && (
