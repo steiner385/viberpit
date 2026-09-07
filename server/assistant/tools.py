@@ -1,4 +1,4 @@
-"""The `ccswitch` MCP tool surface (spec §4.2). Each tool is a thin adapter over ONE API
+"""The app's own MCP tool surface (spec §4.2). Each tool is a thin adapter over ONE API
 endpoint: validate args, call, trim, frame as untrusted data. No business logic here."""
 from __future__ import annotations
 
@@ -233,9 +233,16 @@ def _int_list(v: Any, *, field: str) -> list[int]:
 
 
 def annotation_for(mcp_name: str) -> ToolSpec | None:
-    if not mcp_name.startswith(MCP_PREFIX):
-        return None
-    return TOOL_SPECS.get(mcp_name[len(MCP_PREFIX):])
+    """The spec for *mcp_name* under EITHER brand prefix, or None if it is not ours.
+
+    Accepting the pre-rebrand prefix is load-bearing, not cosmetic: this is what
+    the permission registry consults to decide whether a tool auto-allows, offers
+    a rememberable card, or always prompts. A resumed thread or a replayed
+    transcript still carries `mcp__ccswitch__*` names, and a None here downgrades
+    a DESTRUCTIVE tool to the mutation branch — a card that offers "Always allow".
+    """
+    stem = brand.mcp_tool_stem(mcp_name)
+    return None if stem is None else TOOL_SPECS.get(stem)
 
 
 # Batch tools (spec v2 B4): each takes `ids` + `titles` (equal length, capped) and acts
@@ -306,7 +313,7 @@ class Trimmed:
 
 def wrap_untrusted(data: Any, *, truncated: int = 0) -> str:
     env: dict[str, Any] = {
-        "source": "ccswitch-api", "trust": "untrusted-data",
+        "source": f"{brand.SLUG}-api", "trust": "untrusted-data",
         # B6: the model's ONLY clock. The system prompt is a frozen cache prefix with
         # no timestamp, and tool results are never part of that prefix, so stamping
         # every result costs no cache hit and is what makes "in the last hour" or
@@ -438,10 +445,10 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                 return _err(str(e))
             except AssistantApiError as e:
                 ok = False
-                return _err(f"ccswitch API error {e.message}")
+                return _err(f"{brand.NAME} API error {e.message}")
             except Exception as e:  # noqa: BLE001 - never let a tool crash the SDK loop
                 ok = False
-                return _err(f"ccswitch tool error: {e.__class__.__name__}")
+                return _err(f"{brand.NAME} tool error: {e.__class__.__name__}")
             finally:
                 assistant_tool_calls_total.labels(
                     spec.name, spec.tool_class.value, "ok" if ok else "error").inc()
@@ -571,7 +578,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
 
     @spec_tool("get_pr",
                "One pull request's detail: check runs with conclusions and urls, review "
-               "state per reviewer, live mergeability, and the ccswitch session that "
+               f"state per reviewer, live mergeability, and the {brand.NAME} session that "
                "authored it (if any). Use after list_prs to drill into one PR — repo is "
                "'owner/name'.", {"repo": str, "number": int})
     @guarded
@@ -633,7 +640,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.get("/api/deploy/status")
 
     @spec_tool("list_adoptable_sessions",
-               "Discover live claude sessions running outside ccswitch that could be adopted "
+               f"Discover live claude sessions running outside {brand.NAME} that could be adopted "
                "(force-taken-over) into tracking. Each candidate is flagged with a skipReason "
                "when it is not actually adoptable.", {})
     @guarded
@@ -1131,7 +1138,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
 
     @spec_tool("adopt_session",
                "Force-take-over an untracked live claude session found by "
-               "list_adoptable_sessions: terminate it and resume it under ccswitch tracking.",
+               f"list_adoptable_sessions: terminate it and resume it under {brand.NAME} tracking.",
                {"claude_session_id": str})
     @guarded
     async def adopt_session(args: dict[str, Any]) -> Any:
@@ -1332,7 +1339,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.post("/api/deploy/start", body)
 
     @spec_tool("upgrade_host",
-               "Upgrades and restarts the ccswitch daemon on the named fleet host — this "
+               f"Upgrades and restarts the {brand.NAME} daemon on the named fleet host — this "
                "drains or kills every session currently live on that host.",
                {"name": str})
     @guarded

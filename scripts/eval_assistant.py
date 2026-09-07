@@ -3,7 +3,7 @@
 
 Loads cases from ``docs/superpowers/evals/assistant/cases.jsonl``, runs each one as a real
 one-shot assistant turn — the actual ``claude_agent_sdk`` query loop against the real
-``mcp__ccswitch__*`` tools (``server.assistant.tools.build_tools``) — but backed by an
+``mcp__viberpit__*`` tools (``server.assistant.tools.build_tools``) — but backed by an
 in-memory fixture instead of a live ccswitch API, so the run needs no edge/daemon/DB. Each
 tool call is recorded as it happens (the in-process equivalent of the `assistant.tool_call`
 audit trail a live turn writes) and graded against the case's ``expect_tools``/

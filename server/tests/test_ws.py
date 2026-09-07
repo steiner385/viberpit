@@ -1314,7 +1314,7 @@ def test_prompt_context_honored_for_assistant_ignored_for_coding(ws_env):
 
     assistant_sdk = orch._drivers[assistant.id]._client
     coder_sdk = orch._drivers[coder.id]._client
-    assert assistant_sdk.sent[0].startswith('<ccswitch-context route="/pipeline"'), \
+    assert assistant_sdk.sent[0].startswith('<viberpit-context route="/pipeline"'), \
         assistant_sdk.sent
     assert coder_sdk.sent == ["hi"], coder_sdk.sent
 

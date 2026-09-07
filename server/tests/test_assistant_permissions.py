@@ -1,7 +1,12 @@
-"""Annotation-gated permission cards for `mcp__ccswitch__*` tools (spec §4.4,
+"""Annotation-gated permission cards for our own MCP tools (spec §4.4,
 plan Task 3.2, issue #1073).
 
-``server.assistant.tools.annotation_for`` classifies a ccswitch MCP tool as
+Tool names are built from ``brand.MCP_TOOL_PREFIX`` rather than typed out, so these
+cover the CURRENT wire name — the dual-accept of the pre-rebrand prefix has its own
+tests in test_brand_dual_accept.py. Typed literals here would have left the primary
+path untested while the suite stayed green.
+
+``server.assistant.tools.annotation_for`` classifies one of these tools as
 READ / MUTATION / DESTRUCTIVE; ``PermissionRegistry.request`` uses that
 classification — not session mode — to decide whether the tool auto-allows,
 honours the grant cache, or must always surface a card:
@@ -20,6 +25,8 @@ ones), so these tests inject temporary fake specs via monkeypatch.
 import asyncio
 
 import pytest
+
+from ccswitch.brand import MCP_TOOL_PREFIX as MCP_PREFIX
 
 from server.assistant.tools import ToolClass, ToolSpec, TOOL_SPECS
 from server.sessions.permissions import PermissionRegistry
@@ -50,7 +57,7 @@ def test_read_ccswitch_tool_auto_allowed_no_card_in_interactive():
 
     async def run():
         return await reg.request(
-            "s1", "t1", "mcp__ccswitch__list_sessions", {},
+            "s1", "t1", MCP_PREFIX + "list_sessions", {},
             mode="interactive", denylist=PermissionRegistry.DANGEROUS,
             allowlist=True, identity="me")
 
@@ -69,7 +76,7 @@ def test_mutation_ccswitch_tool_prompts_then_grant_is_honoured_in_interactive(fa
 
     async def run():
         pid, fut, always_allowed = await reg.request(
-            "s1", "t1", "mcp__ccswitch__archive_session", {"id": "s9"},
+            "s1", "t1", MCP_PREFIX + "archive_session", {"id": "s9"},
             mode="interactive", denylist=PermissionRegistry.DANGEROUS,
             allowlist=True, identity="me")
         assert pid is not None, "an injected MUTATION tool must prompt"
@@ -78,7 +85,7 @@ def test_mutation_ccswitch_tool_prompts_then_grant_is_honoured_in_interactive(fa
         assert await fut is True
 
         pid2, fut2, _ = await reg.request(
-            "s1", "t2", "mcp__ccswitch__archive_session", {"id": "s9"},
+            "s1", "t2", MCP_PREFIX + "archive_session", {"id": "s9"},
             mode="interactive", denylist=PermissionRegistry.DANGEROUS,
             allowlist=True, identity="me")
         assert pid2 is None, ("a granted ccswitch mutation tool must auto-allow even in "
@@ -99,7 +106,7 @@ def test_destructive_ccswitch_tool_always_prompts_even_in_full_auto(fake_specs):
 
     async def run():
         return await reg.request(
-            "s1", "t1", "mcp__ccswitch__delete_session", {"id": "s9"},
+            "s1", "t1", MCP_PREFIX + "delete_session", {"id": "s9"},
             mode="full-auto", denylist=frozenset(),
             allowlist=True, identity="me")
 
@@ -113,7 +120,7 @@ def test_destructive_ccswitch_tool_always_decision_does_not_grant(fake_specs):
 
     async def run():
         pid, fut, always_allowed = await reg.request(
-            "s1", "t1", "mcp__ccswitch__delete_session", {"id": "s9"},
+            "s1", "t1", MCP_PREFIX + "delete_session", {"id": "s9"},
             mode="interactive", denylist=PermissionRegistry.DANGEROUS,
             allowlist=True, identity="me")
         assert always_allowed is False
@@ -121,7 +128,7 @@ def test_destructive_ccswitch_tool_always_decision_does_not_grant(fake_specs):
         assert await fut is True, "the ONE call resolved 'always' must still be allowed"
 
         pid2, fut2, always_allowed2 = await reg.request(
-            "s1", "t2", "mcp__ccswitch__delete_session", {"id": "s9"},
+            "s1", "t2", MCP_PREFIX + "delete_session", {"id": "s9"},
             mode="interactive", denylist=PermissionRegistry.DANGEROUS,
             allowlist=True, identity="me")
         assert pid2 is not None, "a destructive tool must ask again — 'always' never grants it"
@@ -143,7 +150,7 @@ def test_automation_fan_out_tools_prompt_in_full_auto_with_the_real_specs(name):
 
     async def run():
         return await reg.request(
-            "s1", "t1", f"mcp__ccswitch__{name}", {},
+            "s1", "t1", f"{MCP_PREFIX}{name}", {},
             mode="full-auto", denylist=frozenset(), allowlist=True, identity="me")
 
     pid, _fut, always_allowed = _run(run())
@@ -162,7 +169,7 @@ def test_unknown_ccswitch_tool_treated_as_mutation_like():
 
     async def run():
         return await reg.request(
-            "s1", "t1", "mcp__ccswitch__not_yet_registered", {},
+            "s1", "t1", MCP_PREFIX + "not_yet_registered", {},
             mode="full-auto", denylist=frozenset(),
             allowlist=True, identity="me")
 
@@ -265,7 +272,7 @@ def test_assistant_session_allows_ccswitch_mcp_tool_through_to_registry():
 
     async def run():
         from claude_agent_sdk import PermissionResultAllow
-        result = await d._can_use_tool("mcp__ccswitch__list_sessions", {})
+        result = await d._can_use_tool(MCP_PREFIX + "list_sessions", {})
         assert isinstance(result, PermissionResultAllow)
 
     _run(run())
@@ -286,7 +293,7 @@ def test_batch_tool_card_carries_items():
         out_q: asyncio.Queue = asyncio.Queue()
         d._subscribers.add(out_q)
         callback_task = asyncio.create_task(d._can_use_tool(
-            "mcp__ccswitch__archive_sessions",
+            MCP_PREFIX + "archive_sessions",
             {"ids": ["a", "b"], "titles": ["Fix auth", "CSV importer"]}))
         await asyncio.sleep(0)
         await asyncio.sleep(0)

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
+from ccswitch import brand
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
@@ -294,7 +295,7 @@ async def draft_skill(
         )
 
     system = (
-        "You are a ccswitch skill author. Generate a complete SKILL.md file.\n"
+        f"You are a {brand.NAME} skill author. Generate a complete SKILL.md file.\n"
         "The format is:\n"
         "---\n"
         "name: <kebab-case-slug>\n"

@@ -101,7 +101,7 @@ def _is_code_goal(goal: str) -> bool:
 
 
 # The ``pr_resolution_source`` under which a stored resolution is the session's OWN
-# ``<!-- ccswitch:no-pr -->`` marker (see ``SessionOrchestrator._persist_status``).
+# ``<!-- viberpit:no-pr -->`` marker (see ``SessionOrchestrator._persist_status``).
 # Every other source has already been judged (``classifier``) or is not a completion
 # claim at all (``queue-drain``: the session never ran).
 SELF_CERTIFIED_SOURCE = "marker"

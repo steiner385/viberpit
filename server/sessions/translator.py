@@ -4,7 +4,7 @@ from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, User
                               ResultMessage, ToolUseBlock, ToolResultBlock, TextBlock,
                               RateLimitEvent)
 from . import events as ev
-from .completion import COMPLETION_MARKER, resolution_from_text
+from .completion import has_completion_marker, resolution_from_text
 from .model_request import parse_model_request
 
 
@@ -159,7 +159,7 @@ class Translator:
             model_request = self._turn_end_model_request()
             if msg.subtype != "success" or bool(getattr(msg, "is_error", False)):
                 outcome = "failed"
-            elif COMPLETION_MARKER in self._turn_text or pr_resolution is not None:
+            elif has_completion_marker(self._turn_text) or pr_resolution is not None:
                 outcome = "complete"
             else:
                 outcome = "success"
