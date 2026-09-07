@@ -24,9 +24,19 @@ from typing import cast
 from .transcript_entries import is_tool_result_entry
 
 _TUID = re.compile(r"<tool-use-id>(.*?)</tool-use-id>")
+_TASK_ID = re.compile(r"<task-id>(.*?)</task-id>")
 _STATUS = re.compile(r"<status>(.*?)</status>")
-# completed/failed = the task finished on its own; killed = interrupted (we re-arm it).
-_TERMINAL = {"completed", "failed"}
+# completed/failed = the task finished on its own. stopped = the CLI's own notice, written
+# on resume, that a background agent has no completion record (it died with the previous
+# CLI process) — the agent is gone AND the model has already been told, so it is terminal
+# for both scans. killed = interrupted (we re-arm it).
+_TERMINAL = {"completed", "failed", "stopped"}
+
+# Tools whose background work is a whole model-driven sub-task rather than a process the
+# harness runs on the agent's behalf. ``Agent``/``Task`` launch one; ``SendMessage`` to a
+# finished agent resumes it under the SendMessage's own tool-use id (the next
+# task-notification names that id).
+_AGENT_TOOLS = frozenset({"Agent", "Task", "SendMessage"})
 
 # Grace past a wakeup's scheduled fire time before we treat it as lost. A wakeup is
 # an in-process timer with NO cross-restart re-arm: if the daemon was down when it
@@ -45,8 +55,9 @@ _GUARD = ("This task was interrupted by a server restart and may have partially 
 # ccswitch is telling the session what it lost, not handing it a script to re-run.
 _LOST_HEADER = ("The daemon was restarted (deploy). These background processes you "
                 "had left running were stopped with it and were NOT restarted:")
-_LOST_GUARD = ("They cannot be restored automatically — the command lines are yours, "
-               "not something this restart is willing to re-issue on your behalf. If "
+_LOST_GUARD = ("They cannot be restored automatically — the command lines and agent "
+               "briefs are yours, not something this restart is willing to re-issue on "
+               "your behalf. If "
                "any of them still matters, check the current state first (what the "
                "process had already done, whether its output is still needed) and "
                "decide for yourself whether to start it again. If none does, carry on.")
@@ -55,8 +66,8 @@ _LOST_GUARD = ("They cannot be restored automatically — the command lines are 
 @dataclass
 class OpenBgTask:
     tool_use_id: str
-    kind: str          # "monitor" | "task" | "terminal"
-    name: str          # originating tool name (Monitor / Bash / Task / BackgroundTerminal)
+    kind: str          # "monitor" | "task" | "agent" | "terminal"
+    name: str          # originating tool name (Monitor / Bash / Agent / SendMessage / BackgroundTerminal)
     input: dict        # verbatim launch input
     description: str
     #: Can a restart put this work back by re-issuing ``input``?
@@ -66,8 +77,12 @@ class OpenBgTask:
     #: running it means. False for a Codex background terminal, whose ``input`` is a
     #: raw shell command line — re-running one blindly is how a restart duplicates a
     #: side effect (a push, a migration, an install), and Codex publishes no
-    #: relaunch primitive to do it safely. ``build_rearm_prompt`` therefore *reports*
-    #: a non-replayable entry instead of asking for it back.
+    #: relaunch primitive to do it safely. False too for a background *agent*
+    #: (``kind == "agent"``): its input is a whole brief that commits, pushes and
+    #: opens PRs, so re-issuing it is the same duplicated side effect at larger
+    #: scale — and the parent still holds the brief if it decides the work is worth
+    #: restarting. ``build_rearm_prompt`` therefore *reports* a non-replayable entry
+    #: instead of asking for it back.
     #:
     #: Defaults True so a ``pending_rearm`` snapshot written by an older daemon —
     #: which could only ever hold Claude tasks — round-trips unchanged.
@@ -87,13 +102,87 @@ class OpenBgTask:
 
 
 def _is_background_launch(name: str, inp: dict) -> bool:
+    """Background by the tool INPUT alone: ``Monitor``, or an explicit
+    ``run_in_background``. Sufficient for those two; NOT for an ``Agent``, whose
+    background mode is the default and leaves no trace in the input — see
+    :func:`_background_ack_task_id`."""
     return name == "Monitor" or bool(inp.get("run_in_background"))
+
+
+def _background_ack_task_id(entry: dict) -> str | None:
+    """The CLI's own verdict on a tool result: is the tool still running in the
+    background? Returns the task-id the CLI assigned (``""`` when async but unnamed),
+    or ``None`` for a result that IS the tool's finished output.
+
+    The CLI journals every tool result as a ``type:"user"`` entry whose top-level
+    ``toolUseResult`` is its structured record of what happened. Observed shapes
+    (dobby, 2026-09-07):
+
+    * ``Agent`` in the background → ``{"isAsync": true, "status": "async_launched",
+      "agentId": <task-id>, …}``. The same tool in the foreground →
+      ``{"status": "completed", …}`` plus the report. The launch INPUT is identical
+      in both cases (background is the default, so no ``run_in_background`` key is
+      written), which is why the input can never tell them apart.
+    * ``Bash`` with ``run_in_background`` → ``{"backgroundTaskId": <task-id>, …}``.
+    * ``SendMessage`` to a finished agent → ``{"resumedAgentId": <task-id>, …}``: the
+      agent runs again, and its next notification names the SendMessage's tool-use id.
+    """
+    tur = entry.get("toolUseResult")
+    if not isinstance(tur, dict):
+        return None
+    if tur.get("isAsync") or tur.get("status") == "async_launched":
+        return str(tur.get("agentId") or "")
+    for key in ("backgroundTaskId", "resumedAgentId"):
+        if tur.get(key):
+            return str(tur[key])
+    return None
+
+
+def _tool_result_ids(entry: dict) -> list[str]:
+    """tool_use ids this ``type:"user"`` entry carries results for."""
+    content = (entry.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return []
+    return [str(b["tool_use_id"]) for b in content
+            if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id")]
+
+
+def _launch(tid: str, name: str, inp: dict) -> OpenBgTask:
+    if name == "Monitor":
+        kind = "monitor"
+    elif name in _AGENT_TOOLS:
+        kind = "agent"
+    else:
+        kind = "task"
+    # SendMessage carries its one-line label as ``summary``, not ``description``.
+    return OpenBgTask(tool_use_id=tid, kind=kind, name=name, input=inp,
+                      description=str(inp.get("description") or inp.get("summary") or ""),
+                      replayable=name not in _AGENT_TOOLS)
+
+
+def _notification_text(entry: dict) -> str | None:
+    """The ``<task-notification>`` text of an entry, from either place the CLI writes
+    it: the ``queue-operation`` enqueue (top-level ``content``) or the user-turn
+    delivery (``message.content`` as a plain string)."""
+    for content in (entry.get("content"), (entry.get("message") or {}).get("content")):
+        if isinstance(content, str) and "<task-notification>" in content:
+            return content
+    return None
 
 
 def scan_open_background_tasks(
     jsonl_path: str, *, treat_killed_as_open: bool = True
 ) -> list[OpenBgTask]:
     """Open background tasks (launched, not yet terminated) in a transcript.
+
+    A launch is recognised two ways: from its INPUT (``Monitor``, explicit
+    ``run_in_background``) or from the CLI's ACK of its result saying the tool is
+    still running (:func:`_background_ack_task_id`) — the only signal there is for a
+    background ``Agent``. A launch is terminated by a ``<task-notification>`` naming
+    its tool-use id, or naming only the task-id the ack assigned it (the CLI's
+    post-restart ``stopped`` notice carries no tool-use id). A notification closes
+    every dispatch under its task-id: it means "this agent stopped", whichever
+    ``Agent``/``SendMessage`` call last set it going.
 
     ``treat_killed_as_open`` distinguishes the two callers. Re-arm (the default)
     keeps a ``killed`` task "open" so it can be relaunched. ``is_parked`` passes
@@ -104,6 +193,10 @@ def scan_open_background_tasks(
     """
     terminal = _TERMINAL if treat_killed_as_open else _TERMINAL | {"killed"}
     launches: dict[str, OpenBgTask] = {}
+    # tool_use blocks whose result has not been journaled yet (popped on the ack, so
+    # this holds only the in-flight calls of the current turn, never the whole file).
+    pending: dict[str, tuple[str, dict]] = {}
+    by_task: dict[str, set[str]] = {}   # CLI task-id → tool-use ids dispatched under it
     terminated: set[str] = set()
     try:
         f = open(jsonl_path, errors="ignore")
@@ -129,19 +222,33 @@ def scan_open_background_tasks(
                         name = b.get("name") or ""
                         inp: dict = cast(dict, b.get("input")) if isinstance(b.get("input"), dict) else {}
                         tid = b.get("id")
-                        if tid and _is_background_launch(name, inp):
-                            launches[tid] = OpenBgTask(
-                                tool_use_id=tid,
-                                kind="monitor" if name == "Monitor" else "task",
-                                name=name, input=inp,
-                                description=str(inp.get("description") or ""))
+                        if not tid:
+                            continue
+                        if _is_background_launch(name, inp):
+                            launches[tid] = _launch(tid, name, inp)
+                        else:
+                            pending[tid] = (name, inp)
+            elif o.get("type") == "user":
+                task_id = _background_ack_task_id(o)
+                for tid in _tool_result_ids(o):
+                    call = pending.pop(tid, None)
+                    if task_id is None:
+                        continue
+                    if tid not in launches and call is not None:
+                        launches[tid] = _launch(tid, *call)
+                    if task_id and tid in launches:
+                        by_task.setdefault(task_id, set()).add(tid)
             # Terminations: any entry whose content carries a task-notification with a
-            # completed/failed status (queue-operation enqueue or the user delivery).
-            content = o.get("content")
-            if isinstance(content, str) and "<task-notification>" in content:
-                ms, mt = _STATUS.search(content), _TUID.search(content)
-                if ms and mt and ms.group(1) in terminal:
-                    terminated.add(mt.group(1))
+            # terminal status (queue-operation enqueue or the user delivery).
+            notif = _notification_text(o)
+            if notif is not None:
+                ms = _STATUS.search(notif)
+                if ms and ms.group(1) in terminal:
+                    mt, mtask = _TUID.search(notif), _TASK_ID.search(notif)
+                    if mt:
+                        terminated.add(mt.group(1))
+                    if mtask:
+                        terminated |= by_task.get(mtask.group(1), set())
     open_tasks = [t for tid, t in launches.items() if tid not in terminated]
     open_tasks.reverse()   # newest-first (dict preserves file order)
     return open_tasks

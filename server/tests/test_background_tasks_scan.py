@@ -57,10 +57,166 @@ def _tool_result(tid, text="ok"):
                                      "content": text}]}}
 
 
+def _ack(tid, tool_use_result, text="ok"):
+    """The CLI's journal entry for a tool result whose top-level ``toolUseResult`` is
+    the CLI's own STRUCTURED record of what the tool did (a dict), as observed for the
+    Agent / SendMessage / backgrounded-Bash tools on dobby, 2026-09-07."""
+    return {"type": "user", "toolUseResult": tool_use_result,
+            "message": {"role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": tid,
+                                     "content": [{"type": "text", "text": text}]}]}}
+
+
+# The CLI's ack for an Agent launched in the background (observed shape). The launch
+# input carries NO ``run_in_background`` key — background is the tool's default — so
+# the ack, not the input, is what says the agent is still running.
+_ASYNC_ACK = {"isAsync": True, "status": "async_launched", "agentId": "a44a48abd0bd2ac9c",
+              "description": "Map surfaces", "resolvedModel": "claude-opus-5"}
+# Same tool, run in the foreground: the ack IS the agent's report.
+_SYNC_ACK = {"status": "completed", "prompt": "…", "totalDurationMs": 240000}
+
+
+def _task_notif(task_id, status, tuid=None):
+    """A ``<task-notification>`` keyed by task-id, with or without a tool-use-id. The
+    CLI's post-restart "no completion record" notice (``stopped``) carries only the
+    task-id."""
+    tu = f"<tool-use-id>{tuid}</tool-use-id>\n" if tuid else ""
+    content = (f"<task-notification>\n<task-id>{task_id}</task-id>\n{tu}"
+               f"<output-file>/tmp/x.output</output-file>\n<status>{status}</status>\n"
+               f"<summary>s</summary>\n</task-notification>")
+    return {"type": "user", "message": {"role": "user", "content": content}}
+
+
 def _write(tmp_path, lines):
     p = tmp_path / "t.jsonl"
     p.write_text("\n".join(json.dumps(o) for o in lines) + "\n")
     return str(p)
+
+
+def test_background_agent_is_open_work_when_its_ack_says_async_launched(tmp_path):
+    # The real 2026-09-07 shape (sessions 263e890f, 535694fe, 86b5b092, ea021e6c):
+    # Agent launched with no run_in_background key, the CLI acks "async_launched",
+    # the parent closes its turn with "I'll draft the design once that report lands."
+    # Those sessions sat on "Your turn" while several subagents were visibly working.
+    path = _write(tmp_path, [
+        _user("design the monitor"),
+        _assistant_tool("toolu_ag", "Agent",
+                        {"subagent_type": "Explore", "description": "Map surfaces",
+                         "prompt": "Map the error surfaces"}),
+        _ack("toolu_ag", _ASYNC_ACK, "Async agent launched successfully."),
+        _assistant_text("I'll draft the design once that report lands."),
+    ])
+    tasks = scan_open_background_tasks(path)
+    assert [t.tool_use_id for t in tasks] == ["toolu_ag"]
+    assert tasks[0].kind == "agent"
+    assert tasks[0].description == "Map surfaces"
+    assert is_parked(path) is True
+
+
+def test_foreground_agent_ack_is_its_report_not_open_work(tmp_path):
+    # run_in_background absent AND the ack is the finished report → nothing is open.
+    # (An older CLI whose Agent defaulted to foreground journals exactly this.)
+    path = _write(tmp_path, [
+        _assistant_tool("toolu_fg", "Agent",
+                        {"subagent_type": "general-purpose", "description": "d", "prompt": "p"}),
+        _ack("toolu_fg", _SYNC_ACK, "- **Status:** DONE"),
+        _assistant_tool("toolu_fg2", "Agent",
+                        {"subagent_type": "general-purpose", "description": "d", "prompt": "p",
+                         "run_in_background": False}),
+        _ack("toolu_fg2", _SYNC_ACK, "- **Status:** DONE"),
+    ])
+    assert scan_open_background_tasks(path) == []
+    assert is_parked(path) is False
+
+
+def test_agent_with_no_ack_yet_is_not_open_work(tmp_path):
+    # Mid-turn: the tool_use is journaled before its result. Without the ack we do
+    # not know it is background — and the turn is still active anyway, so the
+    # dashboard is in_progress regardless. Never guess "parked" from the input.
+    path = _write(tmp_path, [
+        _assistant_tool("toolu_ag", "Agent", {"subagent_type": "Explore", "prompt": "p"}),
+    ])
+    assert scan_open_background_tasks(path) == []
+
+
+def test_background_agent_closed_by_its_completion_notification(tmp_path):
+    path = _write(tmp_path, [
+        _assistant_tool("toolu_ag", "Agent", {"subagent_type": "Explore", "prompt": "p"}),
+        _ack("toolu_ag", _ASYNC_ACK),
+        _assistant_text("Waiting for its report."),
+        _task_notif("a44a48abd0bd2ac9c", "completed", tuid="toolu_ag"),
+    ])
+    assert scan_open_background_tasks(path) == []
+    assert is_parked(path) is False
+
+
+def test_stopped_notification_keyed_by_task_id_only_closes_the_agent(tmp_path):
+    # Observed after a daemon restart (86b5b092, 12:08): the CLI journals a
+    # ``stopped`` notice for a background agent with no completion record, carrying
+    # ONLY the task-id (the agentId from the launch ack). That agent is gone; it must
+    # close in BOTH scans, or the session pins on "Waiting…" and the re-arm prompt
+    # reports a task the CLI already told the model about.
+    path = _write(tmp_path, [
+        _assistant_tool("toolu_ag", "Agent", {"subagent_type": "Explore", "prompt": "p"}),
+        _ack("toolu_ag", _ASYNC_ACK),
+        _task_notif("a44a48abd0bd2ac9c", "stopped"),
+    ])
+    assert scan_open_background_tasks(path) == []
+    assert scan_open_background_tasks(path, treat_killed_as_open=False) == []
+
+
+def test_send_message_to_finished_agent_reopens_it_until_it_notifies_again(tmp_path):
+    # 86b5b092 11:58: agent completed, parent re-dispatched it with SendMessage (ack
+    # carries resumedAgentId), then closed its turn waiting. The next notification
+    # names the SendMessage's own tool-use-id (and the same task-id).
+    path = _write(tmp_path, [
+        _assistant_tool("toolu_ag", "Agent", {"subagent_type": "general-purpose", "prompt": "p",
+                                              "description": "Implement Task 1"}),
+        _ack("toolu_ag", _ASYNC_ACK | {"agentId": "a2a352f"}),
+        _task_notif("a2a352f", "completed", tuid="toolu_ag"),
+        _assistant_tool("toolu_sm", "SendMessage",
+                        {"to": "a2a352f", "summary": "Finish Task 1", "message": "collect it"}),
+        _ack("toolu_sm", {"success": True, "message": "Resuming agent a2a352f",
+                          "resumedAgentId": "a2a352f"}),
+        _assistant_text("Nothing else is independent of that report, so I'm waiting for it."),
+    ])
+    tasks = scan_open_background_tasks(path)
+    assert [t.tool_use_id for t in tasks] == ["toolu_sm"]
+    assert tasks[0].kind == "agent"
+    assert tasks[0].description == "Finish Task 1"
+    assert is_parked(path) is True
+    with open(path, "a") as f:
+        f.write(json.dumps(_task_notif("a2a352f", "completed", tuid="toolu_sm")) + "\n")
+    assert is_parked(path) is False
+
+
+def test_background_bash_closes_on_task_id_only_notification(tmp_path):
+    # A backgrounded Bash acks with ``backgroundTaskId``; a notification that names
+    # only that task-id must still close it.
+    path = _write(tmp_path, [
+        _assistant_tool("toolu_bg", "Bash", {"command": "sleep 600", "run_in_background": True}),
+        _ack("toolu_bg", {"stdout": "", "stderr": "", "backgroundTaskId": "b2k6gko2f"},
+             "Command running in background with ID: b2k6gko2f."),
+        _task_notif("b2k6gko2f", "completed"),
+    ])
+    assert scan_open_background_tasks(path) == []
+
+
+def test_agents_are_reported_lost_on_rearm_never_relaunched(tmp_path):
+    # A subagent's brief is a whole model-driven task that commits, pushes, opens
+    # PRs — re-issuing one blindly after a restart duplicates all of that. Report it
+    # like a Codex terminal; the parent still holds the brief if it wants it back.
+    path = _write(tmp_path, [
+        _assistant_tool("toolu_ag", "Agent", {"subagent_type": "general-purpose", "prompt": "p",
+                                              "description": "Implement Task 3"}),
+        _ack("toolu_ag", _ASYNC_ACK),
+    ])
+    [task] = scan_open_background_tasks(path)
+    assert task.replayable is False
+    prompt = build_rearm_prompt([task])
+    assert "NOT restarted" in prompt and "Implement Task 3" in prompt
+    assert "relaunch the Agent tool" not in prompt
+    assert OpenBgTask.from_dict(task.to_dict()).replayable is False
 
 
 def test_detects_monitor_and_background_bash_ignores_foreground(tmp_path):
