@@ -96,6 +96,12 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/prs"),
         # PR detail (spec v2 §4.6, Pack G, Task 7.5).
         ("GET", r"/api/prs/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/\d+"),
+        # GitHub writes (spec v2 §4.6, Pack G, Task 7.6). These are the assistant's only
+        # PUBLIC side effects — everything else it can reach mutates ccswitch's own
+        # state — so both are MUTATION-class (a permission card) and both carry an
+        # authorship trailer on the way out.
+        ("POST", r"/api/prs/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/\d+/comments"),
+        ("POST", r"/api/github/issues"),
         ("GET", r"/api/pipeline/insights/checks"),
         ("GET", r"/api/pipeline/repos"),
         ("GET", r"/api/github/repos"),

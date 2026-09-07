@@ -43,6 +43,8 @@ ARGS: dict[str, dict] = {
     "rotate_sessions": {"ids": [UUID], "titles": ["A"]},
     "delete_sessions": {"ids": [UUID], "titles": ["A"]},
     "set_autopilot_paused": {"id": UUID, "paused": True}, "fix_pr": {"id": UUID, "number": 1},
+    "comment_on_pr": {"repo": "o/n", "number": 1, "body": "b"},
+    "create_issue": {"repo": "o/n", "title": "t", "body": "b"},
     "set_automation_enabled": {"id": "autopilot", "enabled": False},
     "create_notification_rule": {"event_class": "session.done", "action": "push"},
     "delete_notification_rule": {"id": "rule-1"},

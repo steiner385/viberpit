@@ -45,6 +45,8 @@ _MANAGED: tuple[tuple[str, str, str], ...] = (
     ("enable_xvfb", "CCSWITCH_ENABLE_XVFB", "Virtual displays for browser-using sessions"),
     ("self_model_switch_enabled", "CCSWITCH_SELF_MODEL_SWITCH_ENABLED", "Sessions may request a model change"),
     ("self_model_switch_cap", "CCSWITCH_SELF_MODEL_SWITCH_CAP", "Auto-applied model switches per session before parking for approval"),
+    ("session_tools_enabled", "CCSWITCH_SESSION_TOOLS_ENABLED", "Coding sessions get the ccswitch MCP tools (session_context, report_feedback)"),
+    ("session_feedback_cap", "CCSWITCH_SESSION_FEEDBACK_CAP", "Feedback reports one session may file before further ones are capped"),
     ("gh_reconcile_enabled", "CCSWITCH_GH_RECONCILE_ENABLED", "GitHub Projects reconciler may write back"),
     ("log_level", "CCSWITCH_LOG_LEVEL", "Server log level"),
     ("client_log_level", "CCSWITCH_CLIENT_LOG_LEVEL", "Browser log level"),

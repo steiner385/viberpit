@@ -103,3 +103,14 @@ describe('SessionCard collapsed sub-agent count', () => {
     expect(screen.queryByText(/agent/)).not.toBeInTheDocument()
   })
 })
+
+describe('SessionCard desktop badge', () => {
+  it('shows a desktop badge for a native-display session', () => {
+    renderCard({ ...base, displayMode: 'native', host: 'dobby' })
+    expect(screen.getByTitle(/windows open on the host's desktop/i)).toBeInTheDocument()
+  })
+  it('shows no badge for virtual or legacy sessions', () => {
+    renderCard({ ...base, displayMode: 'virtual' })
+    expect(screen.queryByTitle(/windows open on the host's desktop/i)).toBeNull()
+  })
+})

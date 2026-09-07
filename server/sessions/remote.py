@@ -533,7 +533,14 @@ class RemoteOrchestrator:
         r = await self._client.call("find_assistant", owner_identity=owner_identity)
         return SessionRecord.from_dict(r["session"]) if r["session"] is not None else None
 
-    async def create_session(self, **kwargs) -> SessionRecord:
+    async def _call_create_session(self, kwargs: dict) -> dict:
+        """RPC ``create_session`` call plus the in-process error reconstruction.
+
+        Isolated so the SAME reconstruction runs whether *kwargs* is the
+        original request or the stripped rolling-upgrade retry — a DaemonError
+        surfacing from the retry (e.g. a genuine AllAccountsBusy from the old
+        daemon) must not skip this and propagate raw.
+        """
         # Faithfully reconstruct the in-process error contract across the RPC
         # boundary: the edge's create handler renders a clear "all accounts at
         # limit, resets <date>" message only if it catches AllAccountsBusy by
@@ -548,6 +555,21 @@ class RemoteOrchestrator:
         # AllAccountsBusy these carry no structured ``error_data`` payload —
         # the message alone is the whole contract — so reconstruction only
         # needs the type name.
+        try:
+            return await self._client.call("create_session", **kwargs)
+        except DaemonError as exc:
+            if exc.err_type == "AllAccountsBusy":
+                data = exc.data or {}
+                reset = data.get("earliest_reset")
+                earliest = datetime.fromisoformat(reset) if reset else None
+                raise AllAccountsBusy(earliest, data.get("kind", "at_ceiling")) from exc
+            if exc.err_type in ("CloneError", "GhError"):
+                from ccswitch import gitrepos
+                exc_cls = gitrepos.CloneError if exc.err_type == "CloneError" else gitrepos.GhError
+                raise exc_cls(exc.message) from exc
+            raise
+
+    async def create_session(self, **kwargs) -> SessionRecord:
         if "engine" in kwargs:
             engine = parse_agent_engine(kwargs["engine"])
             if engine is AgentEngine.CLAUDE_CODE:
@@ -562,18 +584,25 @@ class RemoteOrchestrator:
                 # this — the branch above returns before the round trip.
                 await self._require_engine(engine)
         try:
-            r = await self._client.call("create_session", **kwargs)
+            r = await self._call_create_session(kwargs)
         except DaemonError as exc:
-            if exc.err_type == "AllAccountsBusy":
-                data = exc.data or {}
-                reset = data.get("earliest_reset")
-                earliest = datetime.fromisoformat(reset) if reset else None
-                raise AllAccountsBusy(earliest, data.get("kind", "at_ceiling")) from exc
-            if exc.err_type in ("CloneError", "GhError"):
-                from ccswitch import gitrepos
-                exc_cls = gitrepos.CloneError if exc.err_type == "CloneError" else gitrepos.GhError
-                raise exc_cls(exc.message) from exc
-            raise
+            if (exc.err_type == "TypeError"
+                    and ("'client_node'" in exc.message or "'display'" in exc.message)
+                    and ("client_node" in kwargs or "display" in kwargs)):
+                # Rolling upgrade: this daemon predates display routing and rejects
+                # the additive kwargs at call binding, before any work. Retry without
+                # them — the session is virtual there, which is what it would have
+                # been anyway. Same posture as the protocol-v1 `engine` pop above.
+                # Routed through _call_create_session again so a genuine error from
+                # the retry (AllAccountsBusy/CloneError/GhError) still reconstructs
+                # instead of propagating as a raw DaemonError.
+                log.warning("daemon predates display routing; creating without "
+                            "client_node/display (session will use a virtual display)")
+                stripped = {k: v for k, v in kwargs.items()
+                            if k not in ("client_node", "display")}
+                r = await self._call_create_session(stripped)
+            else:
+                raise
         return SessionRecord.from_dict(r["session"])
 
     async def send_prompt(self, session_id: str, text: str, images=None, *,

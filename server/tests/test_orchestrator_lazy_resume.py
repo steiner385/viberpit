@@ -52,7 +52,7 @@ def test_ensure_driver_resumes_detached_session(tmp_path):
     # Track what resume value the factory was called with
     resume_calls = []
 
-    def tracking_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+    def tracking_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None, options_overlay=None):
         resume_calls.append(resume)
         from server.tests.fakes.fake_sdk import FakeSDKClient
         return FakeSDKClient([], on_can_use_tool=can_use_tool)
@@ -100,7 +100,7 @@ def test_ensure_driver_falls_back_to_fresh_when_resume_fails(tmp_path):
     session_id = "s-fallback"
     resume_calls = []
 
-    def factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+    def factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None, options_overlay=None):
         resume_calls.append(resume)
         c = FakeSDKClient([], on_can_use_tool=can_use_tool)
         if resume is not None:
@@ -157,7 +157,7 @@ def test_ensure_driver_never_starts_fresh_when_the_transcript_still_exists(tmp_p
     good_csid = "csid-with-a-real-transcript"
     resume_calls = []
 
-    def factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+    def factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None, options_overlay=None):
         resume_calls.append(resume)
         c = FakeSDKClient([], on_can_use_tool=can_use_tool)
 
@@ -223,7 +223,7 @@ def test_ensure_driver_empty_engine_session_id(tmp_path):
 
     resume_calls = []
 
-    def tracking_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+    def tracking_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None, options_overlay=None):
         resume_calls.append(resume)
         from server.tests.fakes.fake_sdk import FakeSDKClient
         return FakeSDKClient([], on_can_use_tool=can_use_tool)
@@ -266,7 +266,7 @@ def test_ensure_driver_returns_existing_driver(tmp_path):
 
     factory_calls = []
 
-    def counting_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+    def counting_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None, options_overlay=None):
         factory_calls.append(1)
         from server.tests.fakes.fake_sdk import FakeSDKClient
         return FakeSDKClient([], on_can_use_tool=can_use_tool)
@@ -414,7 +414,7 @@ def test_ensure_driver_concurrent_calls_start_driver_once(tmp_path):
         def __getattr__(self, name):
             return getattr(self._inner, name)
 
-    def yielding_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+    def yielding_factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None, options_overlay=None):
         nonlocal factory_call_count
         factory_call_count += 1
         from server.tests.fakes.fake_sdk import FakeSDKClient
@@ -468,7 +468,7 @@ def test_ensure_driver_recreates_missing_cwd(tmp_path):
     missing_cwd = str(tmp_path / "gone" / "session-cwd")  # does NOT exist
     session_id = "s-missing-cwd"
 
-    def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None):
+    def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None, options_overlay=None):
         return FakeSDKClient([], on_can_use_tool=can_use_tool)
 
     async def _run():

@@ -24,7 +24,7 @@ import time
 import uuid
 from pathlib import Path
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, cast
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from server.pipeline.merge_train import MergeTrainState
     from server.pipeline.track import StageModel
     from server.pm.onboarding import ProjectOnboardingView
+    from server.sessions.native_display import NativeDisplay
     from server.sessions.replay import EngineReplay
 
 from ccswitch import accounts as ccswitch_accounts
@@ -68,6 +69,7 @@ from server.sessions import events as ev
 from server.sessions import host_heartbeat
 from server.sessions.liveness import heartbeat_interval_s
 from server.sessions import primary_lease
+from server.sessions import session_lease
 from server.sessions import push as push_mod
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
@@ -85,6 +87,7 @@ from server.sessions.engine import (
     SuggestionProvider,
     parse_agent_engine,
 )
+from server.sessions import orphan_cli as _orphan_cli
 from server.sessions.orphaned_asks import orphaned_answer_prompt, orphaned_ask_kind
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
 from server.sessions import session_actions
@@ -98,6 +101,7 @@ from server.sessions.recovery import (
     STALL_TIMEOUT, STALL_TIMEOUT_THROTTLED,
 )
 from server.sessions.selection import AllAccountsBusy, Picked, select_account  # noqa: F401
+from server.sessions.display_policy import DISPLAY_NATIVE, DISPLAY_VIRTUAL, resolve_display_mode
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
 from server.obs.context import log_event, PROC_EPOCH
 from server.sessions.title_generator import generate_title
@@ -320,6 +324,21 @@ class BranchSwitchError(Exception):
     """Raised when a git branch checkout fails."""
 
 
+class SessionLeaseHeld(RuntimeError):
+    """Another host holds this session's ownership lease — refuse to spawn (#1379).
+
+    Raised only by the spawn path; ``ensure_driver`` returns None instead, because
+    every one of its callers already handles a driverless session. Carries the id so
+    the daemon RPC layer surfaces which session was refused.
+    """
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(
+            f"session {session_id} is leased to another host — refusing to start a "
+            f"second CLI for it (see #1379)")
+
+
 class InsufficientStorageError(Exception):
     """Raised when unarchiving cannot proceed due to inode or byte exhaustion."""
 
@@ -438,11 +457,39 @@ SPAWN_WAIT_S = env_float("CCSWITCH_SPAWN_WAIT_S", 60.0, minimum=1.0)
 # of the real primary is never delayed by this.
 PRIMARY_LEASE_TTL_S = env_float("CCSWITCH_PRIMARY_LEASE_TTL_S", 300.0, minimum=10.0)
 
+# How stale a PER-SESSION lease's heartbeat may be before a different host may claim
+# that session (#1379). Deliberately far shorter than the primary lease: this one is
+# only held while a driver is actually live, it is released the moment the driver
+# goes away, and the TTL is the worst-case delay before a genuinely dead host's
+# sessions can be picked up elsewhere. Renewal cadence is TTL/5.
+SESSION_LEASE_TTL_S = env_float("CCSWITCH_SESSION_LEASE_TTL_S", 120.0, minimum=10.0)
+
+# Kill switch for the per-session lease gate. When false the lease is still taken and
+# renewed (so the DB shows who believes it owns what) but a LOSS no longer blocks a
+# driver build — the pre-#1379 behaviour, kept reachable for an operator who has to
+# force a takeover without waiting out the TTL.
+def session_lease_enforced() -> bool:
+    return os.environ.get("CCSWITCH_SESSION_LEASE_ENFORCE", "").strip().lower() \
+        not in {"0", "false", "no", "off"}
+
+
 # TTL for the cached enabled-hosts registry snapshot that backs session-ownership
 # decisions. Ownership only changes when an operator edits the fleet registry, so
 # a short cache is plenty — this bounds DB reads from the event-driven rotation
 # monitor, not correctness.
 _OWNERSHIP_HOSTS_TTL_S = 60.0
+
+
+async def _lease_state(session_id: str):
+    """``session_lease.current`` for a log line — None on any DB error.
+
+    Only ever used to name the holder in a warning; a second DB failure while
+    already handling a lost lease must not turn a refusal into an exception.
+    """
+    try:
+        return await session_lease.current(session_id)
+    except Exception:
+        return None
 
 
 def _limiting_window(usage, ceiling: float):
@@ -578,6 +625,9 @@ class SessionOrchestrator:
         self._schedule_blocked: dict[str, bool] = {}
         self._sdk_factory = sdk_factory or real_sdk_factory
         self._x11 = x11  # X11Manager | None — per-session virtual displays
+        # NativeDisplay | None — the host's real X display; wired by app.py / ipc.serve
+        # exactly like _x11. Sessions created from that host's own desktop render here.
+        self._native: "NativeDisplay | None" = None
         self._copilot = copilot  # CopilotProxyManager | None — per-account translating proxy
         self._copilot_auth = copilot_auth  # CopilotAuthManager | None — device-flow auth manager
         # CodexRunnerManager | None — per-account `codex app-server` supervision.
@@ -724,11 +774,13 @@ class SessionOrchestrator:
         # (SessionRecord stays a plain mirror-the-DB-row dataclass; this is transient
         # process state, not a session field).
         self._pending_notices: dict[str, list[dict]] = {}
-        # session_id → ClaudeAgentOptions overlay for an assistant-kind session
-        # (see register_assistant_overlay). In-memory only: the overlay holds a live
+        # session_id → options overlay for ANY kind (see register_overlay): the
+        # assistant's full overlay (a ClaudeAgentOptions dict for Claude, a
+        # CodexAssistantOverlay for Codex) or a coding session's
+        # `{"mcp_servers": {<brand.MCP_SERVER_NAME>: …}}`. In-memory only: the overlay holds a live
         # in-process MCP server bound to that session, so it is neither persisted nor
         # sent over RPC — a restart rebuilds it with the session.
-        self._assistant_overlays: dict[str, dict] = {}
+        self._overlays: dict[str, Any] = {}
         # Cap-purge poison tracking (#825): consecutive permanent_delete failures per
         # session, and the set that has crossed _ARCHIVE_PURGE_MAX_STRIKES and is now
         # skipped during selection so one un-deletable archive can't wedge the whole
@@ -1149,6 +1201,12 @@ class SessionOrchestrator:
         # start(). None on workers and on an orchestrator that never start()ed.
         self._lease_task: asyncio.Task | None = None
         self._lease_fence: int | None = None
+        # Per-SESSION leases (#1379): session_id -> fence, for every session this
+        # daemon has claimed the right to run a CLI for. Populated by
+        # _claim_session at each driver build; reconciled (renewed / released) by
+        # _session_lease_loop against the live `_drivers` map.
+        self._session_lease_task: asyncio.Task | None = None
+        self._session_lease_fences: dict[str, int] = {}
         # Per-host fenced heartbeat (spec 002 FR-101): liveness is DERIVED from this
         # row's beat_at (server/sessions/liveness.py), never stored per-session.
         self._hb_task: asyncio.Task | None = None
@@ -1234,17 +1292,19 @@ class SessionOrchestrator:
         """
         return None if is_assistant_kind(kind) else self._suggester
 
-    def register_assistant_overlay(self, session_id: str, overlay: dict) -> None:
-        """Register the ``ClaudeAgentOptions`` overlay an assistant session spawns with.
+    def register_overlay(self, session_id: str, overlay: Any) -> None:
+        """Register the options overlay a session spawns with.
 
         Kept out of the spawn signature because the overlay carries a live in-process
-        MCP server bound to THIS session (``server.assistant.server.build_server``), so
-        it can neither be persisted on the row nor round-tripped over RPC. The caller
-        registers it, then creates the session; ``_session_factory`` picks it up.
+        MCP server bound to THIS session (``server.assistant.server.build_server`` for
+        an assistant, ``server.sessions.tools.server.build_session_server`` for a
+        coding session), so it can neither be persisted on the row nor round-tripped
+        over RPC. The caller registers it, then creates the session;
+        ``_session_factory`` picks it up.
         """
-        overlays = getattr(self, "_assistant_overlays", None)
+        overlays = getattr(self, "_overlays", None)
         if overlays is None:
-            overlays = self._assistant_overlays = {}
+            overlays = self._overlays = {}
         overlays[session_id] = overlay
 
     async def _setup_assistant_overlay(self, session_id: str, *, identity: str,
@@ -1263,7 +1323,7 @@ class SessionOrchestrator:
         and ``max_turns``, and the idle reap (spec §4.7) drops the driver — and its
         overlay — every 15 minutes. A resume that skipped this rebuilt the drawer as a
         plain Claude Code session with the operator's own MCP servers mounted and no tool
-        restrictions at all, while simultaneously losing its ``mcp__ccswitch__*`` tools.
+        restrictions at all, while simultaneously losing its ``mcp__viberpit__*`` tools.
 
         Also called from ``_reassign_locked`` (account rotation / 401 recompose / crash
         recovery), the THIRD site that builds an AgentDriver: a rotated assistant would
@@ -1298,10 +1358,71 @@ class SessionOrchestrator:
         # unused copy of the tool table whose drift nothing would catch.
         server = (build_server(api, operator=operator)
                   if selected is AgentEngine.CLAUDE_CODE else None)
-        self.register_assistant_overlay(session_id, assistant_overlay_for(
+        self.register_overlay(session_id, assistant_overlay_for(
             selected, api=api, server=server, max_turns=cfg.assistant_max_turns,
             model=model or cfg.assistant_model, operator=operator))
         return api
+
+    async def _setup_session_overlay(self, session_id: str, *, identity: str,
+                                     kind: str | None = None,
+                                     engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+                                     ) -> None:
+        """Arm a CODING session's in-process MCP surface (session tools spec §3.3).
+
+        The overlay is exactly ``{"mcp_servers": {<brand.MCP_SERVER_NAME>: server}}``: never
+        ``strict_mcp_config`` (it would drop the repo's own .mcp.json servers) and never
+        ``system_prompt`` (the factory's append carries the marker contracts). Rebuilt
+        at every driver build like the assistant's — the server closes over this
+        orchestrator's live record accessor, and ``_teardown_driver_state`` drops it.
+        """
+        from server.config import get_settings
+        from server.sessions.tools.context import SessionToolContext
+        if not get_settings().session_tools_enabled:
+            self._overlays.pop(session_id, None)
+            return
+        selected = parse_agent_engine(engine, legacy_default=True)
+        ctx = SessionToolContext(
+            session_id=session_id, identity=identity, kind=kind, engine=selected.value,
+            record=lambda: self._records.get(session_id), host=self_host_name())
+        if selected is AgentEngine.CODEX:
+            from server.sessions.tools.codex import CodexSessionTools
+            self.register_overlay(session_id, CodexSessionTools.build(ctx))
+            return
+        from server.mcp_spec import SERVER_NAME
+        from server.sessions.tools.server import build_session_server
+        self.register_overlay(
+            session_id, {"mcp_servers": {SERVER_NAME: build_session_server(ctx)}})
+
+    async def _setup_overlay_for_kind(self, session_id: str, *, kind: str | None, identity: str,
+                                      model: str | None,
+                                      engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+                                      ) -> "AssistantApi | None":
+        """THE overlay arming call every driver-build site makes (spawn, ensure_driver,
+        _reassign_locked, adopt_session). Returns the AssistantApi for an assistant
+        kind, else None.
+
+        One helper with four callers on purpose: an overlay is per-PROCESS state, and
+        arming it only on the create path is the bug shape recorded in
+        ``docs/superpowers/fix-patterns/2026-09-04-per-process-state-armed-only-on-the-create-path.md``.
+        """
+        if is_assistant_kind(kind):
+            return await self._setup_assistant_overlay(
+                session_id, identity=identity, model=model, engine=engine)
+        await self._setup_session_overlay(session_id, identity=identity, kind=kind,
+                                          engine=engine)
+        return None
+
+    def _display_env(self, session_id: str) -> dict[str, str]:
+        """The DISPLAY/XAUTHORITY env for this session's process — the one place it
+        is chosen. Native records get the host desktop (no XAUTHORITY, see
+        NativeDisplay); everything else the Xvfb lease if one exists. A native record
+        whose desktop is gone gets {} — the same degrade an exhausted pool gives."""
+        rec = self._records.get(session_id)
+        if rec is not None and rec.display_mode == DISPLAY_NATIVE:
+            if self._native is not None and self._native.available():
+                return self._native.env()
+            return {}
+        return self._x11.env_for(session_id) if self._x11 else {}
 
     def _session_factory(self, session_id: str):
         """Return a factory closure injecting this session's DISPLAY and PreCompact hook.
@@ -1309,20 +1430,23 @@ class SessionOrchestrator:
         Forwards ``on_pre_compact`` to the base factory so the real SDK factory can
         register the hook; fake factories accept and ignore it.
 
-        An assistant session additionally carries an ``options_overlay`` (registered by
-        ``register_assistant_overlay``). It is passed ONLY when present, so every
-        existing factory — including the test fakes — keeps its current signature.
+        A session additionally carries an ``options_overlay`` (registered by
+        ``register_overlay``): the assistant's full overlay, or a coding session's
+        ``{"mcp_servers": {<brand.MCP_SERVER_NAME>: …}}``. It is passed only when present (an assistant,
+        or a coding session with the flag on), so a factory that never sees one (flag off,
+        Codex) keeps its current signature, and fakes that do must accept
+        ``options_overlay=None``.
         """
         base = self._sdk_factory
-        x11 = self._x11
         def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
-            extra = {**(x11.env_for(session_id) if x11 else {}), **self._oat_env(session_id)}
+            extra = {**self._display_env(session_id), **self._oat_env(session_id)}
             kw: dict = {"on_pre_compact": on_pre_compact}
-            overlay = getattr(self, "_assistant_overlays", {}).get(session_id)
-            # `dict` and not merely "not None": the Codex overlay for an assistant
-            # session lands in the same registry and is a different type entirely
-            # (server/assistant/options_codex.CodexAssistantOverlay). It is read by
-            # `_codex_assistant_overlay_for_session`, never by this factory.
+            overlay = getattr(self, "_overlays", {}).get(session_id)
+            # `dict` and not merely "not None": every kind's overlay lands in the same
+            # registry, and a Codex session's is a different type entirely
+            # (server/assistant/options_codex.CodexAssistantOverlay). Those are read by
+            # the Codex getters, never by this factory. A coding session's Claude
+            # overlay IS a dict, so it passes through here unchanged.
             if isinstance(overlay, dict):
                 kw["options_overlay"] = overlay
             if extra:
@@ -1362,7 +1486,8 @@ class SessionOrchestrator:
             from server.codex.driver import CodexAgentDriverFactory
             factories[AgentEngine.CODEX] = CodexAgentDriverFactory(
                 self._codex, self._registry, self._launch_model_for_session,
-                self._codex_assistant_overlay_for_session)
+                self._codex_assistant_overlay_for_session,
+                self._codex_session_tools_for_session)
         return factories
 
     def _launch_model_for_session(self, session_id: str) -> str | None:
@@ -1382,16 +1507,29 @@ class SessionOrchestrator:
     def _codex_assistant_overlay_for_session(self, session_id: str):
         """The Codex assistant overlay registered for *session_id*, if any.
 
-        Type-checked rather than assumed: ``_assistant_overlays`` holds whichever
-        overlay ``assistant_overlay_for`` built, and the two engines' overlays are
-        different types on purpose. Handing a Claude options dict to the Codex
+        Type-checked rather than assumed: ``_overlays`` is the registry for EVERY
+        kind, so it holds whichever overlay was built — and the two engines' overlays
+        are different types on purpose. Handing a Claude options dict to the Codex
         driver — or the reverse — is the one mistake this seam can make, so it is
         made unrepresentable here instead of guarded at each use.
         """
         from server.assistant.options_codex import CodexAssistantOverlay
 
-        overlay = getattr(self, "_assistant_overlays", {}).get(session_id)
+        overlay = getattr(self, "_overlays", {}).get(session_id)
         return overlay if isinstance(overlay, CodexAssistantOverlay) else None
+
+    def _codex_session_tools_for_session(self, session_id: str):
+        """The Codex coding-session tool surface registered for *session_id*, if any.
+
+        Type-checked for the same reason as its assistant sibling above: ``_overlays``
+        holds whichever overlay the session's kind and engine built — a Claude options
+        dict, an assistant overlay or this — and handing the wrong one to the Codex
+        driver is the single mistake this seam can make.
+        """
+        from server.sessions.tools.codex import CodexSessionTools
+
+        overlay = getattr(self, "_overlays", {}).get(session_id)
+        return overlay if isinstance(overlay, CodexSessionTools) else None
 
     def _engine_supports(self, engine: AgentEngine | str, capability: str) -> bool:
         """True iff this host's driver for *engine* declares *capability*.
@@ -1554,6 +1692,12 @@ class SessionOrchestrator:
             self._goal_monitor(), name="goal-inference-monitor"
         )
         self._stall_task = asyncio.create_task(self._stall_loop(), name="stall-watchdog")
+        # Renew/release the per-session ownership leases this daemon holds (#1379).
+        # Unconditional (not role-gated like the primary lease): the duplicate-CLI
+        # bug is a WORKER-vs-primary race as much as a primary-vs-primary one.
+        self._session_lease_task = asyncio.create_task(
+            self._session_lease_loop(), name="session-lease-heartbeat"
+        )
         # Per-host fenced heartbeat: register our row (adopting any surviving fence)
         # and beat it on an interval. DB failure here must not kill boot (NFR-5).
         try:
@@ -1705,6 +1849,159 @@ class SessionOrchestrator:
                     state.holder if state else "<released>",
                 )
 
+    # ------------------------------------------------------------------
+    # Per-session ownership lease (#1379)
+    # ------------------------------------------------------------------
+
+    def _lease_fences(self) -> dict[str, int]:
+        """The held-lease map, created on demand.
+
+        Defensive like ``_startup_note`` / ``_ownership_hosts_cache``: rehydrate- and
+        teardown-shaped tests build orchestrators via ``SessionOrchestrator.__new__``
+        (no ``__init__``), and both the claim and the release run on paths those
+        tests drive.
+        """
+        fences = getattr(self, "_session_lease_fences", None)
+        if fences is None:
+            fences = {}
+            self._session_lease_fences = fences
+        return fences
+
+    async def _claim_session(self, session_id: str, *, why: str) -> bool:
+        """Win the right to run a CLI for *session_id* on THIS host, or refuse.
+
+        Called immediately before every driver build. The three outcomes:
+
+        * **won** — the lease row was absent, already ours, or held by a host whose
+          heartbeat lapsed past ``SESSION_LEASE_TTL_S``. The fence is remembered so
+          ``_session_lease_loop`` can renew it, and the build proceeds.
+        * **lost** — a DIFFERENT host holds it with a fresh heartbeat, i.e. a live
+          twin already owns this conversation. Log loudly and refuse: spawning here
+          is exactly the duplicate-CLI bug (#1379), and the caller treats a refusal
+          the same as any other failed build.
+        * **DB error** — fail OPEN. The lease is a safety net over a rare race; a
+          database blip must never stop a whole fleet from running sessions. The
+          loop re-attempts the claim on its next tick.
+        """
+        me = self_host_name()
+        try:
+            fence = await session_lease.acquire(
+                session_id, me, ttl_s=SESSION_LEASE_TTL_S)
+        except Exception:
+            log.warning("session-lease: acquire for %s failed (DB error) — allowing "
+                        "the build (fail-open)", session_id, exc_info=True)
+            return True
+        if fence is not None:
+            self._lease_fences()[session_id] = fence
+            return True
+        state = await _lease_state(session_id)
+        holder = state.holder if state is not None else "<unknown>"
+        age = f"{state.age_s:.0f}s ago" if state is not None else "recently"
+        if not session_lease_enforced():
+            log.warning(
+                "session-lease: %s is held by %r (renewed %s) but enforcement is "
+                "OFF — building a SECOND driver for it anyway (%s)",
+                session_id, holder, age, why)
+            return True
+        log.warning(
+            "session-lease: refusing to %s session %s — host %r holds its lease "
+            "(renewed %s). Two live CLIs on one conversation race on git and split "
+            "its worktree (#1379); leaving it to its owner.",
+            why, session_id, holder, age)
+        log_event(log, logging.WARNING, "session.lease_denied",
+                  session_id=session_id, holder=holder, reason=why)
+        return False
+
+    async def _release_session_lease(self, session_id: str) -> None:
+        """Drop our claim on *session_id* so another host need not wait out the TTL."""
+        fence = self._lease_fences().pop(session_id, None)
+        if fence is None:
+            return
+        try:
+            await session_lease.release(session_id, self_host_name(), fence)
+        except Exception:
+            log.debug("session-lease: release of %s failed (DB error) — it will go "
+                      "stale on its own", session_id, exc_info=True)
+
+    async def _session_lease_tick(self) -> None:
+        """One reconcile pass: renew the leases we still need, release the rest.
+
+        Reconciling against the live ``_drivers`` map rather than instrumenting every
+        teardown path is deliberate: drivers are dropped from a dozen places (close,
+        idle reap, rotation, crash recovery, shutdown) and a lease leaked by ONE
+        missed call site keeps a session pinned to a host that is not running it.
+        Here the absence of a driver IS the release signal, so the set self-heals.
+
+        A renew that returns False means the lease was fenced away — another host
+        now believes it owns this session while we are still driving it. That is the
+        split-brain this module exists to catch, so it is logged at CRITICAL with the
+        new holder; the running turn is left alone (killing a driver mid-turn has its
+        own failure modes) but the next build re-checks and loses.
+
+        Separate from the loop below so tests drive a pass directly instead of racing
+        a wall clock — a tight sleep-and-poll test is a flake on a loaded CI shard.
+        """
+        me = self_host_name()
+        for sid, fence in list(self._lease_fences().items()):
+            if sid not in self._drivers:
+                await self._release_session_lease(sid)
+                continue
+            try:
+                ok = await session_lease.renew(sid, me, fence)
+            except Exception:
+                log.debug("session-lease: renew of %s failed (DB error) — "
+                          "retrying next beat", sid, exc_info=True)
+                continue
+            if ok:
+                continue
+            self._lease_fences().pop(sid, None)
+            state = await _lease_state(sid)
+            log.critical(
+                "session-lease: LOST session %s (fenced takeover by %r) while a "
+                "driver for it is still live here — TWO hosts may now be running "
+                "this conversation (#1379).",
+                sid, state.holder if state is not None else "<released>")
+
+    async def _session_lease_loop(self) -> None:
+        """Beat :meth:`_session_lease_tick` at TTL/5 (#1379). Never dies on an error:
+        one bad pass must not stop every later renew and silently let the whole
+        host's session claims lapse."""
+        interval = max(SESSION_LEASE_TTL_S / 5.0, 2.0)
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._session_lease_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.warning("session-lease: reconcile pass failed", exc_info=True)
+
+    async def reap_orphan_clis(self) -> int:
+        """Kill `claude` CLIs a previous daemon incarnation left running on this host.
+
+        The other half of the duplicate-owner fix: the per-session lease stops a
+        second daemon from *starting* a twin, but an orphan that outlived its unit
+        holds no lease and answers to no daemon. Runs on the daemon boot path, before
+        anything can rehydrate or resume, and never raises — a diagnostic sweep may
+        not prevent a start. Returns the number of CLIs signalled.
+        """
+        try:
+            known = [a["name"] for a in ccswitch_accounts.list_accounts()]
+        except Exception:
+            log.warning("orphan-cli: account enumeration failed — skipping the reap",
+                        exc_info=True)
+            return 0
+        try:
+            reaped = await asyncio.to_thread(_orphan_cli.reap_orphans, known)
+        except Exception:
+            log.warning("orphan-cli: reap failed", exc_info=True)
+            return 0
+        for orphan in reaped:
+            log_event(log, logging.WARNING, "session.orphan_cli_reaped",
+                      pid=orphan.pid, account=orphan.account,
+                      resume=orphan.resume, cwd=orphan.cwd)
+        return len(reaped)
+
     async def _heartbeat_loop(self) -> None:
         """Stamp this host's fenced heartbeat every interval (spec 002 FR-101).
 
@@ -1840,7 +2137,7 @@ class SessionOrchestrator:
                      "_autopilot_task", "_mirror_task",
                      "_cicd_task", "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_recurring_task",
-                     "_lease_task", "_hb_task", "_drain_timer"):
+                     "_lease_task", "_session_lease_task", "_hb_task", "_drain_timer"):
             # Default None: stop() must be safe on an orchestrator that never
             # start()ed (tests build one via __new__/without start).
             task = getattr(self, attr, None)
@@ -1885,6 +2182,15 @@ class SessionOrchestrator:
         # primary immediately instead of waiting out the TTL. getattr: stop()
         # must be safe on a never-start()ed / __new__-built orchestrator. The
         # fenced release makes releasing after a takeover a harmless no-op.
+        # Same rule for the per-session leases (#1379), and for the same reason: the
+        # drivers were closed just above, so every session this daemon was running is
+        # now genuinely free. Releasing here means a planned restart hands its
+        # sessions over immediately instead of leaving them fenced off for a whole
+        # SESSION_LEASE_TTL_S — the drain-then-restart path the incident came from.
+        for sid in list(getattr(self, "_session_lease_fences", {})):
+            await bounded_wait(self._release_session_lease(sid),
+                               timeout=_STOP_TASK_TIMEOUT_S,
+                               phase=f"stop:session-lease-release:{sid}")
         fence = getattr(self, "_lease_fence", None)
         if fence is not None:
             self._lease_fence = None
@@ -1917,6 +2223,8 @@ class SessionOrchestrator:
         kind: str | None = None,
         owner_identity: str | None = None,
         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+        client_node: str | None = None,
+        display: str | None = None,
     ) -> SessionRecord:
         """Pick an account, start an AgentDriver, persist a DB row, return a SessionRecord.
 
@@ -1981,7 +2289,8 @@ class SessionOrchestrator:
                 attachment_ids=attachment_ids, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref, model=model,
                 reasoning_effort=reasoning_effort, kind=kind,
-                owner_identity=owner_identity, engine=selected_engine)
+                owner_identity=owner_identity, engine=selected_engine,
+                client_node=client_node, display=display)
 
         # Global active-session cap: at/over the cap the session is created as a
         # queued row (real session, no worktree/account/driver yet) and started
@@ -1997,7 +2306,8 @@ class SessionOrchestrator:
                 permission_mode=permission_mode, attachment_ids=attachment_ids,
                 name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref,
                 model=model, reasoning_effort=reasoning_effort, kind=kind,
-                owner_identity=owner_identity, engine=selected_engine)
+                owner_identity=owner_identity, engine=selected_engine,
+                client_node=client_node, display=display)
         return await self._spawn_session(
             session_id, name=name, account=account, initial_prompt=initial_prompt,
             cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
@@ -2005,7 +2315,8 @@ class SessionOrchestrator:
             attachment_ids=attachment_ids, name_is_auto=name_is_auto,
             origin=origin, origin_ref=origin_ref, model=model,
             reasoning_effort=reasoning_effort, kind=kind,
-            owner_identity=owner_identity, engine=selected_engine)
+            owner_identity=owner_identity, engine=selected_engine,
+            client_node=client_node, display=display)
 
     def _active_session_count(self) -> int:
         """Sessions consuming a runtime capacity slot (see CAPACITY_EXEMPT_STATUSES).
@@ -2024,10 +2335,24 @@ class SessionOrchestrator:
         val = getattr(s, "max_active_sessions", None) if s else None
         return max(1, val if val is not None else DEFAULT_MAX_ACTIVE_SESSIONS)
 
+    def _resolve_display_mode_for(self, display: str | None, client_node: str | None) -> str:
+        """The one call to ``resolve_display_mode`` for this daemon — used by the
+        spawn, enqueue and hold paths so the decision is made identically wherever a
+        session is born, not just where it happens to start a driver. A queued or
+        held session must persist this NOW, on the daemon that owns the request: the
+        client_node/display that produced it never survives into the shared queue
+        blob (see ``_enqueue_session``'s comment on why) or a restart, so waiting
+        until spawn time would silently lose it and fall back to virtual.
+        """
+        return resolve_display_mode(
+            requested=display, client_node=client_node, runner=self_host_name(),
+            native_available=self._native is not None and self._native.available())
+
     async def _enqueue_session(self, session_id: str, *, name, account,
                                initial_prompt, cols, rows, cwd, branch, repo,
                                identity, permission_mode, attachment_ids,
                                name_is_auto, origin, origin_ref, model,
+                               client_node=None, display=None,
                                reasoning_effort=None, kind=None, owner_identity=None,
                                engine=AgentEngine.CLAUDE_CODE) -> SessionRecord:
         from datetime import datetime
@@ -2035,6 +2360,23 @@ class SessionOrchestrator:
         now = datetime.utcnow()
         host = local_host_stamp()
         selected_engine = parse_agent_engine(engine)
+        # Resolve and persist the display decision NOW, on this daemon — the
+        # client_node/display that produced the request never survives into the
+        # shared `params` JSON blob below (mixed-daemon-version TypeError hazard,
+        # see the comment on that blob) or a restart, so this is the only place a
+        # queued session's native-vs-virtual choice can be captured durably.
+        #
+        # Same _prior precedence as _spawn_session: an approve-at-capacity re-enqueue
+        # (resolve_model_approval's approve branch, when the fleet is back at the cap)
+        # calls this with the SAME session_id a _hold_for_approval already decided —
+        # its placeholder row is gone by the time we get here (the approve path
+        # deletes it before calling _enqueue_session/_spawn_session to avoid a
+        # duplicate-PK insert), but the in-memory record survives on purpose (see
+        # resolve_model_approval's comment on why), so its persisted display_mode
+        # must win over a fresh re-resolution with client_node=None.
+        _prior = self._records.get(session_id)
+        display_mode = (getattr(_prior, "display_mode", None)
+                        or self._resolve_display_mode_for(display, client_node))
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
@@ -2044,7 +2386,8 @@ class SessionOrchestrator:
                 permission_mode=permission_mode, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref, model=model,
                 initial_prompt=initial_prompt, host=host,
-                kind=kind, owner_identity=owner_identity))
+                kind=kind, owner_identity=owner_identity,
+                display_mode=display_mode))
         params: dict = {
             "name": name, "account": account, "initial_prompt": initial_prompt,
             "cols": cols, "rows": rows, "cwd": cwd, "branch": branch,
@@ -2080,7 +2423,8 @@ class SessionOrchestrator:
             status="queued", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
             model=model, reasoning_effort=reasoning_effort, host=host,
-            kind=kind, owner_identity=owner_identity)
+            kind=kind, owner_identity=owner_identity,
+            display_mode=display_mode)
         self._records[session_id] = rec
         log.info("session.queued id=%s priority=%d origin=%s",
                  session_id, priority, origin)
@@ -2090,6 +2434,7 @@ class SessionOrchestrator:
                                  initial_prompt, cols, rows, cwd, branch, repo,
                                  identity, permission_mode, attachment_ids,
                                  name_is_auto, origin, origin_ref, model,
+                                 client_node=None, display=None,
                                  reasoning_effort=None, kind=None, owner_identity=None,
                                  engine=AgentEngine.CLAUDE_CODE) -> SessionRecord:
         """Park a model-gated session at 'pending_approval': persist a driverless row
@@ -2100,11 +2445,17 @@ class SessionOrchestrator:
         the requested_by/at provenance columns set. The full spawn kwargs are kept in
         self._pending_approvals so the approve path (Task 10) can spawn cleanly; that
         map is in-memory only — a restart rebuilds the row-backed record via rehydrate.
+
+        Like _enqueue_session, the display decision is resolved and persisted HERE:
+        an approval can sit for as long as a human takes to act on it (far longer
+        than a queue drain), so client_node/display must not depend on anything
+        in-memory-only surviving that wait.
         """
         from datetime import datetime
         now = datetime.utcnow()
         host = local_host_stamp()
         selected_engine = parse_agent_engine(engine)
+        display_mode = self._resolve_display_mode_for(display, client_node)
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
@@ -2117,7 +2468,8 @@ class SessionOrchestrator:
                 model=None, pending_model=model,
                 pending_model_requested_by=identity, pending_model_requested_at=now,
                 initial_prompt=initial_prompt, host=host,
-                kind=kind, owner_identity=owner_identity))
+                kind=kind, owner_identity=owner_identity,
+                display_mode=display_mode))
             await record_audit(db, type="model_approval.requested", identity=identity,
                                detail={"session_id": session_id, "model": model,
                                        "account": account})
@@ -2137,7 +2489,8 @@ class SessionOrchestrator:
             status="pending_approval", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
             model=None, reasoning_effort=reasoning_effort, pending_model=model, host=host,
-            kind=kind, owner_identity=owner_identity)
+            kind=kind, owner_identity=owner_identity,
+            display_mode=display_mode)
         self._records[session_id] = rec
         log.info("session.pending_approval id=%s model=%s origin=%s",
                  session_id, model, origin)
@@ -2375,6 +2728,12 @@ class SessionOrchestrator:
         stands — this is recovery, not a new decision). Any failure here is swallowed
         so it cannot mask the original spawn exception the caller re-raises."""
         from datetime import datetime
+        # The display decision was made once, at _hold_for_approval time, and is not
+        # re-derivable here: `kwargs` carries no `display`/`client_node` (the approve
+        # path strips them), so a re-resolution would silently fall back to virtual.
+        # The failed _spawn_session leaves its pre-record in _records, which still
+        # carries the held mode — same _prior precedence as _enqueue_session.
+        prior_mode = getattr(self._records.get(session_id), "display_mode", None)
         try:
             async with db_session() as db:
                 # The failed spawn may or may not have INSERTed a row before raising;
@@ -2401,7 +2760,8 @@ class SessionOrchestrator:
                     pending_model_requested_at=requested_at,
                     initial_prompt=kwargs.get("initial_prompt"), host=host,
                     kind=kwargs.get("kind"),
-                    owner_identity=kwargs.get("owner_identity")))
+                    owner_identity=kwargs.get("owner_identity"),
+                    display_mode=prior_mode))
             restored = dict(kwargs)
             restored["model"] = model
             self._pending_approvals[session_id] = restored
@@ -2418,7 +2778,8 @@ class SessionOrchestrator:
                 model=None, reasoning_effort=kwargs.get("reasoning_effort"),
                 pending_model=model, host=host,
                 kind=kwargs.get("kind"),
-                owner_identity=kwargs.get("owner_identity"))
+                owner_identity=kwargs.get("owner_identity"),
+                display_mode=prior_mode)
         except Exception:
             # Never let the recovery path mask the real spawn error.
             log.exception("session.model_approval_hold_restore_failed id=%s",
@@ -2869,6 +3230,8 @@ class SessionOrchestrator:
         preexisting_row: bool = False,
         resume: str | None = None,
         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+        client_node: str | None = None,
+        display: str | None = None,
     ) -> SessionRecord:
         """Start an AgentDriver, persist/update a DB row, return a SessionRecord.
 
@@ -2884,6 +3247,16 @@ class SessionOrchestrator:
         persisted before the assistant existed still replays cleanly (its
         params dict has neither key).
         """
+        # Claim the session BEFORE any of the work below (#1379). A brand-new id has
+        # no lease row so this is free for a fresh spawn; it matters for the paths
+        # that spawn OVER an existing conversation — a queue promotion, or the
+        # _prior_csid fallback further down — which are exactly the shapes another
+        # host may already be running. Doing it first means a refused spawn never
+        # checks out a worktree or touches the row for a session it will not run;
+        # a spawn that claims and then fails later has its lease reconciled away by
+        # _session_lease_tick (no driver ⇒ released).
+        if not await self._claim_session(session_id, why="spawn"):
+            raise SessionLeaseHeld(session_id)
         selected_engine = self._engine_registry.require(parse_agent_engine(engine))
         repo_root = await self._effective_repo_root()
 
@@ -2938,13 +3311,6 @@ class SessionOrchestrator:
             selected_engine, account, cwd, kind
         )
 
-        # Allocate a virtual X11 display for this session (if X11Manager wired in).
-        if self._x11 is not None:
-            try:
-                await self._x11.start_display(session_id)
-            except Exception:
-                log.exception("session.display_start_failed id=%s", session_id)
-
         # Ensure the Copilot proxy is running for copilot-backed accounts.
         if self._copilot is not None and _provider_of(account) == _copilot_mod.PROVIDER:
             await self._copilot.ensure(account)
@@ -2960,6 +3326,23 @@ class SessionOrchestrator:
         # A session promoted from the queue keeps its queue-time created_at (and
         # host stamp); a fresh spawn is born now, on this host (worker) / NULL.
         _prior = self._records.get(session_id)
+        # Decide where this session's GUI renders — ONCE, here — then either lease a
+        # virtual Xvfb display or leave the host's real one to _display_env. A
+        # previously-queued/resumed row keeps its persisted decision.
+        display_mode = (getattr(_prior, "display_mode", None)
+                        or self._resolve_display_mode_for(display, client_node))
+        if display_mode == DISPLAY_VIRTUAL and self._x11 is not None:
+            try:
+                await self._x11.start_display(session_id)
+            except Exception:
+                log.exception("session.display_start_failed id=%s", session_id)
+        elif display_mode == DISPLAY_NATIVE:
+            # self._native can still be None here: a queued/resumed row's persisted
+            # decision (via _prior) wins even if this host no longer has native
+            # display wired up. _display_env degrades that case to {} at inject time.
+            log.info("session.display_native id=%s client_node=%s display=%s",
+                     session_id, client_node,
+                     self._native.display if self._native is not None else None)
         _host = getattr(_prior, "host", None) or local_host_stamp()
         # Belt-and-suspenders for #1107: the queue-drain call site threads the
         # row's engine_session_id through `resume` explicitly, but if some future
@@ -2989,6 +3372,7 @@ class SessionOrchestrator:
             reasoning_effort=reasoning_effort, host=_host,
             kind=kind, owner_identity=owner_identity,
             last_activity_at=time.monotonic(),
+            display_mode=display_mode,
         )
         self._records[session_id] = _pre_record
         # Track the spawn from the pre-seed until the driver is registered (or the
@@ -3000,16 +3384,14 @@ class SessionOrchestrator:
         driver: AgentDriver | None = None
         row_persisted = False
         try:
-            # An assistant-kind session gets its ClaudeAgentOptions overlay (system
-            # prompt, in-process `ccswitch` MCP server, no builtin tools) registered
-            # BEFORE the driver is built: _session_factory picks it up from
-            # self._assistant_overlays the moment the SDK factory closure runs inside
-            # driver.start() below.
-            assistant_api = None
-            if is_assistant_kind(kind):
-                assistant_api = await self._setup_assistant_overlay(
-                    session_id, identity=identity, model=model,
-                    engine=selected_engine)
+            # Every session gets its options overlay registered BEFORE the driver is
+            # built — an assistant's full overlay (system prompt, in-process `ccswitch`
+            # MCP server, no builtin tools) or a coding session's `ccswitch` MCP
+            # surface: _session_factory picks it up from self._overlays the moment the
+            # SDK factory closure runs inside driver.start() below.
+            assistant_api = await self._setup_overlay_for_kind(
+                session_id, kind=kind, identity=identity, model=model,
+                engine=selected_engine)
 
             driver = self._create_driver(
                 engine=selected_engine,
@@ -3064,16 +3446,21 @@ class SessionOrchestrator:
                 self._pending_initial_attachment_ids[session_id] = list(attachment_ids)
 
             if preexisting_row:
-                # UPDATE the existing queued row → idle with resolved account/cwd/branch/model
+                # UPDATE the existing queued row → idle with resolved account/cwd/branch/model.
+                # display_mode only overwrites a NULL (legacy/pre-decision row) — a row
+                # that already carries a persisted decision (native or virtual) keeps it,
+                # matching the in-memory `display_mode` resolved above from `_prior`.
                 async with db_session() as db:
                     from sqlalchemy import update as sa_update
+                    from sqlalchemy import func as sa_func
                     await db.execute(
                         sa_update(DbSession)
                         .where(DbSession.id == session_id)
                         .values(status="idle", account_name=account,
                                 engine=selected_engine.value, cwd=cwd,
                                 branch=branch_name, model=model,
-                                reasoning_effort=reasoning_effort)
+                                reasoning_effort=reasoning_effort,
+                                display_mode=sa_func.coalesce(DbSession.display_mode, display_mode))
                     )
             else:
                 # Persist DB row (fresh session, not previously queued)
@@ -3099,6 +3486,7 @@ class SessionOrchestrator:
                         host=_host,
                         kind=kind,
                         owner_identity=owner_identity,
+                        display_mode=display_mode,
                     )
                     db.add(row)
             row_persisted = True
@@ -3135,7 +3523,8 @@ class SessionOrchestrator:
                             if assistant_api is not None:
                                 with contextlib.suppress(Exception):
                                     await assistant_api.aclose()
-                    self._assistant_overlays.pop(session_id, None)
+                    # The overlay is dropped by _teardown_driver_state above — it is
+                    # per-driver state, released on every teardown path.
                     rollback_record = (self._records.pop(session_id)
                                        if session_id in self._records else None)
                     await self._cleanup_session_paths(session_id, rollback_record)
@@ -3285,8 +3674,8 @@ class SessionOrchestrator:
         The single source of truth for "this session no longer has a running driver",
         shared by ``close_session``, ``archive_session`` and the assistant idle reap.
         Three verbatim copies of this block existed before; the third had already
-        drifted (it also dropped the assistant options overlay, which turned every
-        resume after a reap into an UNRESTRICTED coding session).
+        drifted (only IT dropped the assistant options overlay, so a resume after a
+        close/archive kept a stale one — the overlay pop now lives here, once).
 
         Two things deliberately stay with the CALLER, because they legitimately differ:
 
@@ -3309,6 +3698,12 @@ class SessionOrchestrator:
         self._turn_restart_at.pop(session_id, None)
         self._self_model_state.pop(session_id, None)
         self._handled_model_requests.pop(session_id, None)
+        # The options overlay is per-DRIVER state: it holds a live in-process MCP
+        # server (and, for an assistant, an AssistantApi whose httpx client the
+        # caller's aclose() is about to shut down). Released here so all three
+        # teardown paths drop it, and re-armed by _setup_overlay_for_kind at every
+        # driver build — never preserved across one.
+        self._overlays.pop(session_id, None)
         self._pending_initial_prompt.pop(session_id, None)
 
         # Release this session's claim on its account's Codex app-server (a no-op
@@ -3322,6 +3717,15 @@ class SessionOrchestrator:
             except Exception:
                 log.exception("session.codex_detach_failed id=%s", session_id)
 
+        # Hand back the per-session ownership lease (#1379). This is the same
+        # "no longer has a running driver" moment the display teardown uses, and the
+        # lease means exactly that — holding it after the CLI is gone would fence
+        # another host off this session for a whole SESSION_LEASE_TTL_S for nothing.
+        # _session_lease_loop would eventually reconcile it away; doing it here makes
+        # a close/archive/reap hand over immediately. Guarded for the same reason as
+        # the Codex detach: a DB blip must not stop a session being torn down.
+        await self._release_session_lease(session_id)
+
         # Teardown the virtual X11 display — runs unconditionally so orphaned
         # displays are never leaked even when the driver was never registered.
         if self._x11 is not None:
@@ -3329,7 +3733,32 @@ class SessionOrchestrator:
                 await self._x11.stop_display(session_id)
             except Exception:
                 log.exception("session.display_cleanup_failed id=%s", session_id)
+
+        if self._native is not None:
+            try:
+                await self._native.close(session_id)
+            except Exception:
+                log.exception("session.native_display_cleanup_failed id=%s", session_id)
         return driver
+
+    async def open_browser(self, session_id: str, url: str | None) -> dict:
+        """Launch a managed Chromium for this session on whichever display it owns.
+
+        Returns {"ok", "reason"}; reasons: no_display (no such live session / no lease),
+        cap (per-session browser limit), native_unavailable (the desktop went away).
+        The daemon RPC ``x11_open_browser`` and the in-process API route both call
+        this, so the native/virtual branch exists exactly once.
+        """
+        rec = self._records.get(session_id)
+        if rec is not None and rec.display_mode == DISPLAY_NATIVE:
+            if self._native is None or not self._native.available():
+                return {"ok": False, "reason": "native_unavailable"}
+            ok = await self._native.launch_browser(session_id, url)
+            return {"ok": bool(ok), "reason": None if ok else "cap"}
+        if self._x11 is None or self._x11.display_for(session_id) is None:
+            return {"ok": False, "reason": "no_display"}
+        ok = await self._x11.launch_browser(session_id, url)
+        return {"ok": bool(ok), "reason": None if ok else "cap"}
 
     async def _cleanup_session_paths(
         self, session_id: str, record: SessionRecord | None,
@@ -3455,21 +3884,22 @@ class SessionOrchestrator:
             # finds `_ensure_lock` free, `_swapping` empty, `_releasing` EMPTY and a
             # status that is not yet "ended", and starts a SECOND claude process on the
             # same claude_session_id. The sweep would then resume and delete that
-            # rebuild's overlay (`_session_factory` re-reads `_assistant_overlays` on
-            # every factory call, so the next model switch or recoverable-failure
-            # respawn would come back with no tools=[] and no denylist — Critical 1
-            # again, by the back door) and stamp the live session "ended".
+            # rebuild's overlay (`_session_factory` re-reads `_overlays` on every
+            # factory call, so the next model switch or recoverable-failure respawn
+            # would come back with no tools=[] and no denylist — Critical 1 again, by
+            # the back door) and stamp the live session "ended".
             #
             # Only `_records` is deliberately left alone: the row surviving IS
             # resume-on-reopen (spec §4.7).
 
-            # Drop the options overlay. Correct BECAUSE ensure_driver rebuilds it (see
-            # _setup_assistant_overlay): the overlay captures an AssistantApi whose
+            # The options overlay is dropped by the `_teardown_driver_state` call
+            # below — which pops it before its own first await, so it is still inside
+            # this atomic claim. Correct BECAUSE ensure_driver rebuilds it (see
+            # _setup_overlay_for_kind): the overlay captures an AssistantApi whose
             # httpx client driver.aclose() below is about to close, so a preserved
             # overlay would hand the resumed session dead MCP tools. It must not simply
             # be LEAKED either — a resume that found no overlay would build a plain,
             # unrestricted coding agent out of the drawer.
-            self._assistant_overlays.pop(rec.id, None)
             rec.status = "ended"
 
             # Publish the teardown in `_releasing` rather than awaiting aclose() inline.
@@ -8716,6 +9146,7 @@ class SessionOrchestrator:
             pr_resolution=getattr(row, "pr_resolution", None),
             pr_resolution_source=getattr(row, "pr_resolution_source", None),
             host=getattr(row, "host", None),
+            display_mode=getattr(row, "display_mode", None),
             kind=getattr(row, "kind", None),
             owner_identity=getattr(row, "owner_identity", None),
             paused_reason=getattr(row, "paused_reason", None),
@@ -10659,6 +11090,16 @@ class SessionOrchestrator:
                 except Exception:
                     pass
 
+            # Claim the session before spawning anything (#1379). This is the choke
+            # point the duplicate-owner bug went through: after a fleet-wide daemon
+            # restart both hosts rehydrated the same row, both believed they owned it
+            # (the stamp flips during a cut-short drain), and both resumed the same
+            # conversation into the same worktree. `_owns_record` is a per-process
+            # OPINION; the lease is a fact both hosts read from the same row. Losing
+            # it returns None, which every caller of ensure_driver already handles.
+            if not await self._claim_session(session_id, why="resume"):
+                return None
+
             # Build and start a new driver resuming from the stored engine_session_id,
             # ON THE SESSION'S OWN ENGINE. This used to hardcode CLAUDE_CODE, so a
             # detached Codex session came back as a Claude driver pointed at a Codex
@@ -10682,7 +11123,7 @@ class SessionOrchestrator:
             # with the display-injecting factory but x11.env_for() returns {}, so the
             # claude subprocess launches with no DISPLAY and X rendering escapes the
             # virtual viewport. start_display is idempotent (no-op if already leased).
-            if self._x11 is not None:
+            if self._x11 is not None and getattr(rec, "display_mode", None) != DISPLAY_NATIVE:
                 try:
                     await self._x11.start_display(session_id)
                 except Exception:
@@ -10712,23 +11153,24 @@ class SessionOrchestrator:
             # would raise CodexRunnerUnavailable on its first call.
             await self._ensure_codex_runner(resume_engine, rec.account)
 
-            # An assistant's options overlay is rebuilt for EVERY driver build here, not
-            # just at spawn: it is what makes the session an assistant, and the idle
-            # reap drops it along with the driver. See _setup_assistant_overlay for why
-            # it must be rebuilt rather than preserved (the old one holds a closed
-            # loopback client and a token that may already have expired). Rebuilt per
-            # _build() call, so the fresh-start fallback below — which acloses the first
-            # driver, and with it the first AssistantApi — also gets a live one.
+            # A session's options overlay is rebuilt for EVERY driver build here, not
+            # just at spawn: for an assistant it is what makes the session an assistant,
+            # for a coding session it is its `ccswitch` MCP surface — and every teardown
+            # (close, archive, idle reap) drops it along with the driver. See
+            # _setup_assistant_overlay for why it must be rebuilt rather than preserved
+            # (the old one holds a closed loopback client and a token that may already
+            # have expired). Rebuilt per _build() call, so the fresh-start fallback
+            # below — which acloses the first driver, and with it the first
+            # AssistantApi — also gets a live one.
             built_assistant_apis: list[AssistantApi] = []
 
             async def _build(resume_arg):
-                assistant_api = None
-                if is_assistant(rec):
-                    # Must run before _create_driver: the SDK factory reads
-                    # self._assistant_overlays[session_id] when it builds the client.
-                    assistant_api = await self._setup_assistant_overlay(
-                        session_id, identity=identity, model=rec.model,
-                        engine=resume_engine)
+                # Must run before _create_driver: the SDK factory reads
+                # self._overlays[session_id] when it builds the client.
+                assistant_api = await self._setup_overlay_for_kind(
+                    session_id, kind=getattr(rec, "kind", None), identity=identity,
+                    model=rec.model, engine=resume_engine)
+                if assistant_api is not None:
                     built_assistant_apis.append(assistant_api)
                 return self._create_driver(
                     engine=resume_engine,
@@ -10834,16 +11276,15 @@ class SessionOrchestrator:
                             await driver.aclose()
                         raise
             except BaseException:
-                # The resume failed and no driver was registered: release what
-                # _setup_assistant_overlay allocated, mirroring _spawn_session's own
-                # start()-failure path. Leaving the overlay behind would let an
-                # unrelated later build for this id pick up a stale one holding a
-                # closed loopback client, and the httpx clients would leak.
-                if built_assistant_apis:
-                    self._assistant_overlays.pop(session_id, None)
-                    for _api in built_assistant_apis:
-                        with contextlib.suppress(Exception):
-                            await _api.aclose()
+                # The resume failed and no driver was registered, so no teardown path
+                # will run: release what _setup_overlay_for_kind allocated, mirroring
+                # _spawn_session's own start()-failure path. Leaving the overlay behind
+                # would let an unrelated later build for this id pick up a stale one
+                # holding a closed loopback client, and the httpx clients would leak.
+                self._overlays.pop(session_id, None)
+                for _api in built_assistant_apis:
+                    with contextlib.suppress(Exception):
+                        await _api.aclose()
                 raise
             finally:
                 if self._swapping.get(session_id) is swap_done:
@@ -11080,6 +11521,11 @@ class SessionOrchestrator:
                     )
 
         session_id = str(uuid.uuid4())
+        # A fresh id can never be contended, so this always wins — it is here to keep
+        # the invariant uniform ("a session with a live driver holds its lease"), so
+        # the reconcile pass and any later resume on another host see a consistent
+        # picture rather than a driver with no claim behind it (#1379).
+        await self._claim_session(session_id, why="adopt")
         Path(cand.cwd).mkdir(parents=True, exist_ok=True)
         driver_config_dir = self._driver_config_dir(
             AgentEngine.CLAUDE_CODE, cand.account, cand.cwd, None
@@ -11116,22 +11562,41 @@ class SessionOrchestrator:
                 suggester=self._suggester,
             )
 
+        # The FOURTH driver-build site (see the fix-pattern doc named on
+        # _setup_overlay_for_kind). An adopted process is always a coding session —
+        # never an assistant — so this arms its `ccswitch` MCP surface, which the
+        # system-prompt append tells every Claude session it has. Re-armed for the
+        # fresh-start rebuild below, like ensure_driver's `_build`.
+        await self._setup_overlay_for_kind(
+            session_id, kind=None, identity=identity, model=None,
+            engine=AgentEngine.CLAUDE_CODE)
+
         # Resume the conversation; fall back to a fresh session if resume fails so
         # the adopted record stays usable (prior transcript still shows via replay).
         resumed = True
-        driver = _build(claude_session_id)
         try:
-            await driver.start()
-        except Exception:
-            log.warning("adopt.resume_failed sid=%s; starting fresh",
-                        claude_session_id, exc_info=True)
+            driver = _build(claude_session_id)
             try:
-                await driver.aclose()
+                await driver.start()
             except Exception:
-                pass
-            driver = _build(None)
-            await driver.start()
-            resumed = False
+                log.warning("adopt.resume_failed sid=%s; starting fresh",
+                            claude_session_id, exc_info=True)
+                try:
+                    await driver.aclose()
+                except Exception:
+                    pass
+                await self._setup_overlay_for_kind(
+                    session_id, kind=None, identity=identity, model=None,
+                    engine=AgentEngine.CLAUDE_CODE)
+                driver = _build(None)
+                await driver.start()
+                resumed = False
+        except BaseException:
+            # The adoption failed with no driver registered, so no teardown path will
+            # release the overlay armed above — and this session_id is discarded, so a
+            # leaked entry could never be reclaimed.
+            self._overlays.pop(session_id, None)
+            raise
         self._drivers[session_id] = driver
 
         # The transcript mtime is the adopted session's real last-response time — seed the
@@ -13125,6 +13590,14 @@ class SessionOrchestrator:
                                    phase=f"reassign.interrupt:{record.id}")
                 await old_driver.aclose()
             Path(cwd).mkdir(parents=True, exist_ok=True)
+            # Re-assert the lease across the swap (#1379). We normally already hold it
+            # — a reassign only runs on a session with a live driver — so this just
+            # refreshes the fence. It matters when the lease was FENCED away while the
+            # old driver kept running: relaunching then would hand a session that
+            # another host has already claimed a second CLI, which is the bug. Refuse
+            # instead; the caller's `except` pauses the session for a human.
+            if not await self._claim_session(record.id, why=f"relaunch ({reason})"):
+                raise SessionLeaseHeld(record.id)
             driver_config_dir = self._driver_config_dir(
                 record.engine,
                 new_account,
@@ -13138,18 +13611,19 @@ class SessionOrchestrator:
             # up before a driver can attach to it, exactly as a fresh spawn or a
             # detached resume already requires (see ensure_driver).
             await self._ensure_codex_runner(record.engine, new_account)
-            # An assistant-kind session's overlay carries an AssistantApi whose MCP
-            # tool handlers close over a live httpx.AsyncClient. old_driver.aclose()
-            # above already closed that client (it belonged to old_driver), so every
-            # mcp__ccswitch__* call on the rebuilt driver would raise against a dead
-            # connection unless a FRESH AssistantApi is minted here and re-registered
-            # under record.id before the new AgentDriver is built — the same
-            # _setup_assistant_overlay the spawn and the resume use (#1125).
-            assistant_api = None
-            if is_assistant_kind(getattr(record, "kind", None)):
-                assistant_api = await self._setup_assistant_overlay(
-                    record.id, identity=identity, model=record.model,
-                    engine=record.engine)
+            # This is the THIRD driver-build site, so it re-arms the overlay too. It
+            # matters most for an assistant, whose overlay carries an AssistantApi
+            # whose MCP tool handlers close over a live httpx.AsyncClient:
+            # old_driver.aclose() above already closed that client (it belonged to
+            # old_driver), so every mcp__ccswitch__* call on the rebuilt driver would
+            # raise against a dead connection unless a FRESH AssistantApi is minted
+            # here and re-registered under record.id before the new AgentDriver is
+            # built — the same _setup_overlay_for_kind the spawn and the resume use
+            # (#1125). A coding session's `ccswitch` surface is rebuilt for the same
+            # reason: the rotation drops the driver the overlay belonged to.
+            assistant_api = await self._setup_overlay_for_kind(
+                record.id, kind=getattr(record, "kind", None), identity=identity,
+                model=record.model, engine=record.engine)
             new_driver = self._create_driver(
                 engine=record.engine,
                 session_id=record.id,
@@ -13175,8 +13649,11 @@ class SessionOrchestrator:
             try:
                 await new_driver.start()
             except Exception:
+                # No driver was registered, so no teardown path will release the
+                # overlay this build armed — drop it here rather than leave a stale
+                # one for the next build to inherit.
+                self._overlays.pop(record.id, None)
                 if assistant_api is not None:
-                    self._assistant_overlays.pop(record.id, None)
                     await assistant_api.aclose()
                 raise
             self._install_driver(record.id, new_driver)

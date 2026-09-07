@@ -85,6 +85,12 @@ auto-merge-armed PR, disable auto-merge first and immediately re-read merged sta
 - CI runs the server suite as `pytest server/tests/ -n auto --dist loadfile --timeout=300`. Serial
   it takes ~25 min; run it in the background with output tee'd to `/tmp/`, and never two full runs
   at once — the load spike gets the Bash call SIGKILLed (exit 137).
+- **Test-run slot cap (#822):** before a full `pytest server/tests/` run on rocky, acquire via `/api/test-slots` (`CCSWITCH_TEST_SLOT_CAP`, default 1/host; fail-open in `server/api/test_slots.py`). **Put the pytest command in the SAME Bash call / shell as the acquire loop and trap** — run the acquire as its own call and that shell exits the moment it finishes, firing the EXIT trap and freeing the slot before pytest ever starts, so the cap is a no-op:
+  ```bash
+  sid="${CCSWITCH_SESSION_ID:-$$}"; host="$(hostname -s)"; trap 'curl -sf -X POST http://127.0.0.1:8787/api/test-slots/release -H "Content-Type: application/json" -d "{\"sessionId\":\"$sid\"}" >/dev/null 2>&1||true' EXIT
+  while :; do resp="$(curl -sf -X POST http://127.0.0.1:8787/api/test-slots/acquire -H 'Content-Type: application/json' -d "{\"sessionId\":\"$sid\",\"host\":\"$host\"}" 2>/dev/null)" || { echo "test-slot API unreachable — proceeding (fail-open)"; break; }; echo "$resp" | grep -qE '"granted": *true' && break; echo "$resp" | grep -qE '"degraded": *true' && { echo "test-slot control plane degraded — proceeding unchecked"; break; }; echo "waiting for test slot, $(echo "$resp" | grep -oE '"ahead": *[0-9]+' | grep -oE '[0-9]+') ahead"; sleep 15; done
+  pytest server/tests/ …   # inside this same block: the trap releases only when THIS shell exits
+  ```
 - **Unset `CCSWITCH_SESSIOND_*` and `CCSWITCH_DAEMON_ROLE` before running `server/tests/` locally.**
   `server/app.py` builds the app at import; a live shell's sessiond client-cert vars make it demand
   certs, and a worker `CCSWITCH_DAEMON_ROLE` turns ~90 tests into "No session with id" failures.
@@ -140,6 +146,11 @@ auto-merge-armed PR, disable auto-merge first and immediately re-read merged sta
   edit that needs a restart, do it when the Sessions page shows nothing mid-turn. Never restart a daemon
   whose installed unit still has `KillMode=control-group` while sessions are working — that kills them
   outright (`deploy/README.md` § "Stopping / restarting the daemon").
+- **Fast local test loop (#823):** `pytest server/tests/ -m "not slow"` skips tests where a real
+  `time.sleep`/`asyncio.sleep` (≳0.3s) or subprocess/daemon spawn IS the thing under test, not
+  something pollable away (e.g. `test_teardown_watchdog.py`, `test_ipc_entrypoint.py`). CI never
+  filters — every push runs the full set. Marker registered in `server/tests/conftest.py`; use it
+  only for an intentional real-time wait, never for incidental slowness that should be fixed instead.
 
 ## Working norms
 
@@ -290,3 +301,9 @@ system-prompt half and the scan half cannot drift).
   and any acting on a marker.
 - Audit `model_approval.approve` carries `{requested, applied}` — requested ≠ applied is the
   metric for whether sessions self-assess accurately.
+
+## Session tool surface
+
+Every coding session mounts the in-process app MCP server (`server/sessions/tools/`; wire name from `ccswitch.brand`) with `session_context`/`report_feedback`, both READ-class (no permission card).
+The coding overlay is exactly `{"mcp_servers": …}` — never add `strict_mcp_config` or `system_prompt`. Kill switch `CCSWITCH_SESSION_TOOLS_ENABLED`. Registry primitives live in `server/mcp_spec.py`; add a tool by adding a `ToolSpec` + handler + eval case.
+Spec: `docs/superpowers/specs/2026-09-06-session-feedback-to-backlog-design.md`.

@@ -16,7 +16,7 @@ from .account_names import aliases_store_root
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
 from .engines import AgentEngine
-from .quota import QuotaSnapshot, unknown_snapshot
+from .quota import UNSUPPORTED, QuotaSnapshot, unknown_snapshot
 from .selector import AllAccountsBusy, Picked, eligible_names, select_picked
 
 log = logging.getLogger(__name__)
@@ -333,33 +333,45 @@ def _note_usage_fetch_failure(name: str) -> None:
         ledger.note_usage_fetch_failure(led, name, time.time())
 
 
-def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "QuotaSnapshot | None | object":
+def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "QuotaSnapshot | object":
     """Auth fallback for accounts that hold a long-lived setup-token.
 
     A setup-token (``sk-ant-oat01``) makes the account launch-capable via
     ``CLAUDE_CODE_OAUTH_TOKEN`` even when the slot's browser-OAuth token is dead,
-    so the usage path must NOT flip such an account to needs-reauth. Best-effort
-    fetch usage with the setup-token; on any failure keep the account ``ok`` with
-    usage unknown — the orchestrator's in-session 401 path stays the authority on
-    a token that is genuinely dead for inference too. Returns ``_NO_SETUP_TOKEN``
-    when no token exists, so the caller proceeds to its normal needs-reauth flip.
-    NEVER logs the token.
+    so the usage path must NOT flip such an account to needs-reauth. Returns
+    ``_NO_SETUP_TOKEN`` when no token exists, so the caller proceeds to its normal
+    needs-reauth flip. NEVER logs the token.
+
+    A FAILED read here records an ``UNSUPPORTED`` snapshot rather than a fetch
+    failure, because for this credential shape it is a capability gap and not a
+    transient fault: a setup-token minted with the narrow ``user:inference`` scope
+    is refused by the usage endpoint permanently, and no amount of retrying earns
+    it the ``user:profile`` scope it lacks (see ``setup_token_oauth``). Counting
+    that as a failure grew ``usageFetchCooldownUntil`` without bound while leaving
+    the account's quota simply blank — a state the UI could not explain and the
+    selector could not distinguish from a fetch that had never been tried.
+    ``UNSUPPORTED`` says the thing that is actually true, and because
+    ``record_usage`` caches it under the normal TTL, the doomed call stops
+    repeating yet still re-checks once the TTL lapses (so a re-minted, broader-
+    scoped token recovers on its own). ``selector.usage_known`` already treats
+    ``UNSUPPORTED`` exactly as it treated ``None``, so rotation is unchanged.
     """
     from . import crypto
     tok = crypto.read_oauth_token(name)
     if not tok:
         return _NO_SETUP_TOKEN
-    u: QuotaSnapshot | None = None
     try:
         u = oauth.fetch_usage(tok, **retry_kw)
     except (oauth.AuthError, oauth.UsageError, oauth.TransientError) as e:
-        log.warning("usage_for(%s): setup-token usage fetch failed (%s); keeping ok, usage unknown", name, e)
+        log.warning("usage_for(%s): setup-token cannot read usage (%s); keeping ok, "
+                    "quota reported UNSUPPORTED for this credential", name, e)
+        u = unknown_snapshot("anthropic", fetched_at=now, availability=UNSUPPORTED)
     with ledger.locked_ledger() as led:
-        if u is not None:
-            ledger.record_usage(led, name, u, now)
-        else:
-            ledger.note_usage_fetch_failure(led, name, time.time())
+        ledger.record_usage(led, name, u, now)
         ledger.set_status(led, name, "ok")
+    # Returned, not swallowed to None: the very next call reads this same snapshot
+    # back out of the cache, so returning None here would make the first call and
+    # the second disagree about the same state.
     return u
 
 

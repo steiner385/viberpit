@@ -40,7 +40,7 @@ from typing import Any, Final
 from ccswitch import brand
 from server.codex import schema
 from server.sessions import events as ev
-from server.sessions.completion import COMPLETION_MARKER, resolution_from_text
+from server.sessions.completion import has_completion_marker, resolution_from_text
 
 #: Upper bound on the aggregated command output carried in a `ToolResult`
 #: payload. The payload rides the WebSocket to every attached client and then
@@ -358,7 +358,7 @@ class CodexEventTranslator:
         pr_resolution = resolution_from_text(text)
         outcome = _OUTCOME_BY_STATUS[turn.status]
         if outcome == "success" and (
-            COMPLETION_MARKER in text or pr_resolution is not None
+            has_completion_marker(text) or pr_resolution is not None
         ):
             outcome = "complete"
         out: list[object] = []

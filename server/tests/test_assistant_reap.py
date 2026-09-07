@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 from claude_agent_sdk import TextBlock
 
+from ccswitch import brand
 from ccswitch.selector import Picked
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.types import ASSISTANT_KIND
@@ -218,7 +219,7 @@ async def test_resume_after_reap_rebuilds_the_assistant_overlay(
         orch.note_user_interaction(a.id)
         t0 = orch.get_session(a.id).last_activity_at
         assert await orch._reap_idle_assistants_once(now=t0 + 101) == [a.id]
-        assert a.id not in orch._assistant_overlays, "reap must drop the stale overlay"
+        assert a.id not in orch._overlays, "reap must drop the stale overlay"
 
         driver = await orch.ensure_driver(a.id, "u@x")
         assert driver is not None
@@ -229,14 +230,15 @@ async def test_resume_after_reap_rebuilds_the_assistant_overlay(
         assert resumed["tools"] == []
         assert "Bash" in resumed["disallowed_tools"] and "Write" in resumed["disallowed_tools"]
         assert resumed["strict_mcp_config"] is True
-        assert set(resumed["mcp_servers"]) == {"ccswitch"}
+        assert set(resumed["mcp_servers"]) == {brand.MCP_SERVER_NAME}
         assert resumed["system_prompt"] == spawn_overlay["system_prompt"]
         assert resumed["max_turns"] == spawn_overlay["max_turns"]
 
         # REBUILT, not preserved: the spawn's MCP tool handlers close over an
         # AssistantApi whose httpx client driver.aclose() shut down during the reap, so
         # reusing the old overlay would resume with dead tools.
-        assert resumed["mcp_servers"]["ccswitch"] is not spawn_overlay["mcp_servers"]["ccswitch"]
+        assert (resumed["mcp_servers"][brand.MCP_SERVER_NAME]
+                is not spawn_overlay["mcp_servers"][brand.MCP_SERVER_NAME])
         assert driver._assistant_api is not None
         assert driver._assistant_api._client.is_closed is False
     finally:
@@ -379,7 +381,7 @@ async def test_reap_publishes_its_teardown_in_releasing(isolated_db, tmp_path, m
         async def _sample_during_stop(sid):
             await asyncio.sleep(0)      # a real yield, like the real stop_display
             during["releasing"] = orch._releasing.get(sid)
-            during["overlay"] = sid in orch._assistant_overlays
+            during["overlay"] = sid in orch._overlays
             during["status"] = orch.get_session(sid).status
             during["driver"] = sid in orch._drivers
 
@@ -416,7 +418,7 @@ async def test_reap_publishes_its_teardown_in_releasing(isolated_db, tmp_path, m
 def test_all_three_driver_teardowns_route_through_one_helper():
     """close_session, archive_session and the assistant reap ran three VERBATIM copies
     of the same "stop the X11 display + six dict pops + aclose()" block. The third copy
-    had already drifted harmfully (it additionally dropped `_assistant_overlays`, which
+    had already drifted harmfully (it additionally dropped `_overlays`, which
     is what turned every post-reap resume into an unrestricted coding session).
 
     Consolidated into `_teardown_driver_state`. This guards the consolidation the only

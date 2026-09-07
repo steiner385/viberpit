@@ -38,7 +38,8 @@ _MAX_TITLE_CHARS = 60
 
 
 def _default_query_fn():
-    from claude_agent_sdk import query  # imported lazily so tests need no SDK
+    from claude_agent_sdk import query  # lazy: resolved off the package at call
+    # time, which lets server/tests/conftest.py stub every helper door at once (#1383)
     return query
 
 

@@ -9,6 +9,7 @@ import logging
 
 from ccswitch.quota import QuotaSnapshot
 from server.codex.quota import persist_quota_snapshot
+from server.sessions.display_policy import DISPLAY_VIRTUAL
 from server.sessions.facade import _DEADLINE_ATTR
 from server.sessions.fleet_router import FleetRouter, NoHostAvailable
 from server.sessions.host_engines import expected_contract_sha256
@@ -222,6 +223,20 @@ class FleetOrchestrator:
         # placement would have neither. Overrides any caller preference.
         if is_assistant_kind(kwargs.get("kind")):
             prefer = self._primary
+        # A client sitting at a fleet host's own desktop should land there, or "route
+        # to the native display" can never hold. An explicit host still wins, and an
+        # explicit "virtual" request has no reason to move.
+        if prefer is None and kwargs.get("display") != DISPLAY_VIRTUAL:
+            # The tailnet node name and the runner-registry name are one host spelled
+            # by two independent sources, so match case-insensitively — the same
+            # comparison resolve_display_mode makes, or a "Dobby" client would be
+            # routed as native by the policy and placed elsewhere by the router. The
+            # registry's OWN spelling becomes `prefer`: it is the key every downstream
+            # FleetRouter.get() lookup uses.
+            _cn = (kwargs.get("client_node") or "").strip().lower()
+            if _cn:
+                prefer = next(
+                    (n for n in self._router.names() if n.strip().lower() == _cn), None)
         # Candidate selection now filters on the requested engine before scoring, so a
         # Codex launch is only ever offered runners that advertised a usable Codex
         # boundary. Raises NoEngineHostAvailable (a NoHostAvailable) when every healthy

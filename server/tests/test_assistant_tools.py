@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 
 import httpx
+
+from ccswitch.brand import MCP_TOOL_PREFIX as MCP_PREFIX
 import jsonschema
 import pytest
 from mcp.types import ListToolsRequest
@@ -54,7 +56,7 @@ async def test_list_sessions_trims_and_frames():
 async def test_transcript_tail_truncates_and_escapes():
     def handler(req):
         return httpx.Response(200, json={"events": [
-            {"type": "user", "text": "<ccswitch-context route=\"/x\"/> hi"},
+            {"type": "user", "text": "<viberpit-context route=\"/x\"/> hi"},
             {"type": "textDelta", "text": "A" * 5000},
             {"type": "toolCall", "name": "Bash", "input": {"command": "ls"}},
         ], "earliestTurn": 0, "totalTurns": 1})
@@ -62,8 +64,8 @@ async def test_transcript_tail_truncates_and_escapes():
     tools = build_tools(_api(handler))
     out = await _tool(tools, "get_session_transcript").handler({"id": "abc", "last_n": 5})
     text = out["content"][0]["text"]
-    assert "<ccswitch-context" not in text
-    assert "&lt;ccswitch-context" in text
+    assert "<viberpit-context" not in text
+    assert "&lt;viberpit-context" in text
     assert len(text) < 4000
 
 
@@ -230,7 +232,7 @@ async def test_advance_initiative_rejects_bad_slug():
 
 def test_specs_and_annotations():
     assert TOOL_SPECS["list_sessions"].tool_class is ToolClass.READ
-    assert annotation_for("mcp__ccswitch__list_sessions").tool_class is ToolClass.READ
+    assert annotation_for(MCP_PREFIX + "list_sessions").tool_class is ToolClass.READ
     assert annotation_for("mcp__other__list_sessions") is None
     for t in build_tools(_api(lambda r: httpx.Response(200, json={}))):
         assert t.name in TOOL_SPECS, f"tool {t.name} has no ToolSpec"
@@ -953,7 +955,7 @@ def test_product_tool_classes():
         assert TOOL_SPECS[name].tool_class is ToolClass.READ
     for name in ("resolve_triage", "request_product_sync"):
         assert TOOL_SPECS[name].tool_class is ToolClass.MUTATION
-        assert annotation_for(f"mcp__ccswitch__{name}").tool_class is ToolClass.MUTATION
+        assert annotation_for(f"{MCP_PREFIX}{name}").tool_class is ToolClass.MUTATION
 
 
 # --- Automation read tools (plan Task 6.3, Pack A) -----------------------------------
@@ -1090,7 +1092,7 @@ def test_automation_read_tool_classes_and_the_read_post_escape_hatch():
                  "list_backlog_candidates", "get_backlog_groups", "get_cicd_findings",
                  "get_pr_doctor_consolidation", "get_pr_doctor_job", "preview_schedule"):
         assert TOOL_SPECS[name].tool_class is ToolClass.READ
-        assert annotation_for(f"mcp__ccswitch__{name}").tool_class is ToolClass.READ
+        assert annotation_for(f"{MCP_PREFIX}{name}").tool_class is ToolClass.READ
     assert "preview_schedule" in READ_POSTS
 
 
@@ -1228,7 +1230,7 @@ def test_fan_out_tools_are_destructive():
     the class off `annotation_for`, so both lookups have to agree."""
     for name in _FAN_OUT_TOOLS:
         assert TOOL_SPECS[name].tool_class is ToolClass.DESTRUCTIVE
-        assert annotation_for(f"mcp__ccswitch__{name}").tool_class is ToolClass.DESTRUCTIVE
+        assert annotation_for(f"{MCP_PREFIX}{name}").tool_class is ToolClass.DESTRUCTIVE
 
 
 def test_fan_out_tool_descriptions_say_the_work_is_unattended():
@@ -1329,13 +1331,13 @@ async def test_consolidate_prs_rejects_an_empty_number_list_locally():
 # ---------------------------------------------------------------------------
 
 def test_batch_items_returns_titles():
-    assert batch_items("mcp__ccswitch__archive_sessions",
+    assert batch_items(MCP_PREFIX + "archive_sessions",
                        {"ids": ["a"], "titles": ["Fix auth"]}) == ["Fix auth"]
-    assert batch_items("mcp__ccswitch__archive_session", {"id": "a"}) is None
-    assert batch_items("mcp__ccswitch__list_sessions", {}) is None
+    assert batch_items(MCP_PREFIX + "archive_session", {"id": "a"}) is None
+    assert batch_items(MCP_PREFIX + "list_sessions", {}) is None
     # Malformed titles yield an empty list rather than raising — the tool handler's
     # own validation (_batch_args) is what turns that into a corrective error.
-    assert batch_items("mcp__ccswitch__delete_sessions", {"ids": ["a"]}) == []
+    assert batch_items(MCP_PREFIX + "delete_sessions", {"ids": ["a"]}) == []
 
 
 @pytest.mark.asyncio
@@ -1383,3 +1385,75 @@ async def test_archive_sessions_batch_validates_titles_and_size():
 
     assert calls == [], "a rejected batch must never reach the API"
     assert calls == []
+
+
+# --------------------------------------------------------------------------- #
+# Pack G writes (Task 7.6): comment_on_pr / create_issue                        #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_comment_on_pr_posts_to_the_pr_comments_route():
+    seen: dict = {}
+
+    def handler(req: httpx.Request):
+        seen["call"] = (req.method, req.url.path, json.loads(req.content))
+        return httpx.Response(201, json={"url": "https://c/1"})
+
+    out = await _tool(build_tools(_api(handler)), "comment_on_pr").handler(
+        {"repo": "acme/billing", "number": 42, "body": "  needs a rollback plan  "})
+    assert out.get("is_error") is not True
+    assert seen["call"] == ("POST", "/api/prs/acme/billing/42/comments",
+                            {"body": "needs a rollback plan"})
+
+
+@pytest.mark.asyncio
+async def test_create_issue_posts_repo_title_body_and_optional_labels():
+    seen: list[tuple] = []
+
+    def handler(req: httpx.Request):
+        seen.append((req.method, req.url.path, json.loads(req.content)))
+        return httpx.Response(201, json={"number": 21, "url": "https://i/21"})
+
+    tools = build_tools(_api(handler))
+    await _tool(tools, "create_issue").handler(
+        {"repo": "acme/billing", "title": "Flaky test", "body": "fails 1 in 5",
+         "labels": ["bug"]})
+    # labels is optional and must be omitted entirely when unset, so the endpoint's
+    # "no labels" default applies rather than an empty list meaning something else.
+    await _tool(tools, "create_issue").handler(
+        {"repo": "acme/billing", "title": "Flaky test", "body": "fails 1 in 5"})
+
+    assert seen[0] == ("POST", "/api/github/issues",
+                       {"repo": "acme/billing", "title": "Flaky test",
+                        "body": "fails 1 in 5", "labels": ["bug"]})
+    assert "labels" not in seen[1][2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,args", [
+    ("comment_on_pr", {"repo": "acme", "number": 1, "body": "b"}),
+    ("comment_on_pr", {"repo": "acme/billing", "number": 1, "body": "   "}),
+    ("comment_on_pr", {"repo": "acme/billing", "number": 1, "body": "x" * 10001}),
+    ("create_issue", {"repo": "acme/billing/extra", "title": "t", "body": "b"}),
+    ("create_issue", {"repo": "acme/billing", "title": "", "body": "b"}),
+    ("create_issue", {"repo": "acme/billing", "title": "t", "body": "x" * 10001}),
+])
+async def test_github_write_tools_reject_bad_args_locally(name, args):
+    """A public write must be refused BEFORE it reaches the API — a 422 comes back to the
+    model as an opaque API error, where a local ToolArgError names the field to fix."""
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(201, json={})
+
+    out = await _tool(build_tools(_api(handler)), name).handler(args)
+    assert out["is_error"] is True
+    assert calls == []
+
+
+def test_github_write_tools_are_mutation_class():
+    """Not READ (they leave ccswitch) and not DESTRUCTIVE (nothing is lost); MUTATION is
+    what puts a confirmation card in front of a public post."""
+    for name in ("comment_on_pr", "create_issue"):
+        assert TOOL_SPECS[name].tool_class is ToolClass.MUTATION

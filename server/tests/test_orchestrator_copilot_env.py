@@ -78,7 +78,7 @@ def test_factory_closure_injects_copilot_env(tmp_path):
 
     seen: dict = {}
 
-    def recording_factory(cwd, cfg, cut, mode, resume, extra_env=None, *, on_pre_compact=None):
+    def recording_factory(cwd, cfg, cut, mode, resume, extra_env=None, *, on_pre_compact=None, options_overlay=None):
         seen["extra_env"] = extra_env
 
         class _Fake:
@@ -138,7 +138,7 @@ async def test_create_session_calls_ensure(tmp_path):
     seen: dict = {}
     _inner = fake_sdk_factory()
 
-    def recording_factory(cwd, cfg, cut, mode, resume, extra_env=None, *, on_pre_compact=None):
+    def recording_factory(cwd, cfg, cut, mode, resume, extra_env=None, *, on_pre_compact=None, options_overlay=None):
         seen["extra_env"] = extra_env
         return _inner(cwd, cfg, cut, mode, resume, extra_env=extra_env, on_pre_compact=on_pre_compact)
 
@@ -231,7 +231,7 @@ async def test_create_session_start_failure_leaves_no_record(tmp_path):
         async def __aenter__(self):
             raise RuntimeError("simulated driver.start() failure")
 
-    def failing_factory(cwd, cfg, cut, mode, resume, extra_env=None, *, on_pre_compact=None):
+    def failing_factory(cwd, cfg, cut, mode, resume, extra_env=None, *, on_pre_compact=None, options_overlay=None):
         return _FailingSDKClient([])
 
     from ccswitch.selector import Picked

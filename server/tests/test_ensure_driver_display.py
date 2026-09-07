@@ -49,7 +49,7 @@ class FakeX11:
 def _recording_factory(captured):
     """A factory that records the extra_env it was built with (the subprocess env)."""
 
-    def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):
+    def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None, options_overlay=None):
         captured["extra_env"] = extra_env
         return FakeSDKClient([], on_can_use_tool=can_use_tool)
 

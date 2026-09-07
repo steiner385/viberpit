@@ -17,9 +17,10 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from server.auth.middleware import current_identity
+from server.github import ci_issues
 from server.pipeline.dashboard_state import dashboard_state
 from server.pipeline.deploy_status import compute_repo_deploy
 from server.pipeline.group_history import (
@@ -63,6 +64,36 @@ async def pr_detail(
     if result is None:
         raise HTTPException(status_code=404, detail="PR not found")
     return result
+
+
+class PrCommentBody(BaseModel):
+    body: str = Field(min_length=1, max_length=ci_issues.BODY_MAX_CHARS)
+
+
+@router.post("/{owner}/{name}/{number}/comments", status_code=201)
+async def comment_on_pr(
+    owner: str,
+    name: str,
+    number: int,
+    payload: PrCommentBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+) -> dict:
+    """Post a comment on a pull request as the operator's gh identity.
+
+    An assistant-token call gets the authorship trailer; the same route called from the
+    UI does not (`ci_issues.with_authorship`). A gh failure is a 502 rather than a
+    swallowed success — the caller is about to tell a human "I commented".
+    """
+    repo = f"{owner}/{name}"
+    if not ci_issues.valid_repo(repo):
+        raise HTTPException(status_code=422, detail="repo must be 'owner/name'")
+    text = ci_issues.with_authorship(
+        payload.body, via=getattr(request.state, "via", None), identity=identity)
+    url = await asyncio.to_thread(ci_issues.comment_on_pr, repo, number, text)
+    if url is None:
+        raise HTTPException(status_code=502, detail="GitHub rejected the comment")
+    return {"url": url}
 
 
 repos_router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
