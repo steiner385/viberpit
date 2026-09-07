@@ -145,6 +145,8 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/pm/projects/[a-z0-9-]+/onboarding"),
         ("GET", r"/api/pm/queue"),
         ("GET", r"/api/pm/triage"),
+        ("GET", r"/api/pm/map"),
+        ("GET", r"/api/pm/leaves"),
         ("POST", r"/api/pm/projects/[a-z0-9-]+/sync"),
         ("POST", r"/api/pm/triage/[A-Za-z0-9-]+/(accept|reject)"),
         ("POST", r"/api/sessions"),

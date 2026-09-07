@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, tuple_
 
 from server.api.sdlc import _capabilities_batch, _epic_progress_batch
@@ -15,6 +15,7 @@ from server.db.models import (
     Feature, FeatureLink, Initiative, Project, ProjectRepo, Session as DbSession,
     TriageItem, TriageProposal, WorkItem, WorkItemDep)
 from server.pm.desired_state import ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES
+from server.pm.score import rice_score
 from server.pm.tree import CapabilityIn, InitiativeIn, ProductIn, build_product_tree, issue_tier
 
 router = APIRouter(prefix="/api/pm", tags=["pm"])
@@ -160,3 +161,64 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
             incident_statuses=tuple(s for r in my_repos for s in incidents_by_repo.get(r, [])),
         )))
     return {"products": products, "generatedAt": datetime.now(timezone.utc).isoformat()}
+
+
+def _leaf(w: WorkItem, tier: str, blockers: list[str], session_status: str | None,
+          parent_ref: str | None) -> dict:
+    score = rice_score(w.reach, w.impact, w.effort, w.confidence)
+    return {
+        "id": w.id, "ref": _ref(w), "repo": w.repo, "number": w.number, "kind": w.kind,
+        "title": w.title, "url": w.url, "state": w.state, "triageState": w.triage_state,
+        "score": score, "reach": w.reach, "impact": w.impact, "effort": w.effort,
+        "confidence": w.confidence, "tier": tier, "blockedBy": blockers,
+        "parentRef": parent_ref, "sessionStatus": session_status,
+        "ghCreatedAt": w.gh_created_at.isoformat() if w.gh_created_at else None,
+    }
+
+
+def _leaf_sort_key(leaf: dict) -> tuple:
+    return (
+        0 if leaf["state"] == "open" else 1,
+        0 if leaf["score"] is not None else 1,
+        -(leaf["score"] or 0.0),
+        leaf["ghCreatedAt"] or "9999",
+        leaf["number"] or 0,
+    )
+
+
+@router.get("/leaves")
+async def get_leaves(
+    capability: str | None = Query(default=None),
+    initiative: str | None = Query(default=None),
+    _identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    if bool(capability) == bool(initiative):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={
+            "error": "bad_scope", "message": "pass exactly one of capability= or initiative="})
+    if capability:
+        feat = (await db.execute(select(Feature).where(Feature.id == capability))).scalar_one_or_none()
+        if feat is None:
+            raise HTTPException(status_code=404, detail={"error": "not_found"})
+        items = (await db.execute(select(WorkItem).where(WorkItem.feature_id == feat.id))).scalars().all()
+    else:
+        ini = (await db.execute(select(Initiative).where(Initiative.slug == initiative))).scalar_one_or_none()
+        if ini is None:
+            raise HTTPException(status_code=404, detail={"error": "not_found"})
+        items = []
+        if ini.epic_repo and ini.epic_number:
+            epic = (await db.execute(select(WorkItem).where(
+                WorkItem.repo == ini.epic_repo, WorkItem.number == ini.epic_number,
+                WorkItem.kind == "issue"))).scalar_one_or_none()
+            if epic is not None:
+                items = (await db.execute(select(WorkItem).where(
+                    WorkItem.parent_work_item_id == epic.id))).scalars().all()
+    blocked, session, blockers = await _issue_facts(db, items)
+    parent_ids = {w.parent_work_item_id for w in items if w.parent_work_item_id}
+    parents = {p.id: _ref(p) for p in (await db.execute(select(WorkItem).where(
+        WorkItem.id.in_(parent_ids)))).scalars().all()} if parent_ids else {}
+    leaves = [_leaf(w, issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id]),
+                    blockers[w.id], session[w.id], parents.get(w.parent_work_item_id))
+              for w in items]
+    leaves.sort(key=_leaf_sort_key)
+    return {"items": leaves}

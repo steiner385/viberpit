@@ -140,3 +140,61 @@ def test_map_is_empty_without_products():
         r = c.get("/api/pm/map", headers=IDENTITY_HEADERS)
         assert r.status_code == 200
         assert r.json()["products"] == []
+
+
+def test_leaves_for_capability_and_initiative():
+    import asyncio
+
+    from server.db import db_session, init_db
+    from server.db.models import Feature, Initiative, Project, WorkItem
+
+    async def _seed(db_url: str) -> str:
+        await init_db(db_url)
+        async with db_session() as db:
+            prod = Project(slug="example-product", name="Example product")
+            db.add(prod)
+            await db.flush()
+            cap = Feature(project_id=prod.id, slug="dictation", title="Dictation", state="live")
+            db.add(cap)
+            await db.flush()
+            epic = WorkItem(repo="o/r", number=10, kind="issue", state="open", title="Epic",
+                             is_epic=True)
+            db.add(epic)
+            await db.flush()
+            low = WorkItem(repo="o/r", number=1, kind="issue", state="open", title="Low",
+                           feature_id=cap.id, triage_state="classified",
+                           reach=1, impact=1, effort=1, confidence=1)
+            high = WorkItem(repo="o/r", number=2, kind="issue", state="open", title="High",
+                            feature_id=cap.id, triage_state="classified",
+                            reach=5, impact=5, effort=1, confidence=5, parent_work_item_id=epic.id)
+            done = WorkItem(repo="o/r", number=3, kind="issue", state="closed", title="Done",
+                            feature_id=cap.id, triage_state="classified",
+                            reach=9, impact=9, effort=1, confidence=9, parent_work_item_id=epic.id)
+            db.add_all([low, high, done])
+            ini = Initiative(slug="whisper", repo="o/r", title="W", stage="build", status="active",
+                             project_id=prod.id, epic_repo="o/r", epic_number=10)
+            db.add(ini)
+            await db.commit()
+            return cap.id
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        cap_id = asyncio.run(_seed(db_url))
+
+        with _client(db_url) as c:
+            r = c.get(f"/api/pm/leaves?capability={cap_id}", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            items = r.json()["items"]
+            assert [i["number"] for i in items] == [2, 1, 3]          # open by score desc, closed last
+            assert items[0]["score"] == 125.0 and items[0]["tier"] == "idle"
+            assert items[0]["parentRef"] == "o/r#10"
+            assert items[2]["tier"] == "live"
+
+            r = c.get("/api/pm/leaves?initiative=whisper", headers=IDENTITY_HEADERS)
+            assert [i["number"] for i in r.json()["items"]] == [2, 3]  # the epic's children only
+
+            assert c.get("/api/pm/leaves", headers=IDENTITY_HEADERS).status_code == 422
+            assert c.get(f"/api/pm/leaves?capability={cap_id}&initiative=whisper",
+                         headers=IDENTITY_HEADERS).status_code == 422
+            assert c.get("/api/pm/leaves?capability=nope", headers=IDENTITY_HEADERS).status_code == 404
+            assert c.get("/api/pm/leaves?initiative=nope", headers=IDENTITY_HEADERS).status_code == 404
