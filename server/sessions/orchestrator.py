@@ -69,6 +69,7 @@ from server.sessions import events as ev
 from server.sessions import host_heartbeat
 from server.sessions.liveness import heartbeat_interval_s
 from server.sessions import primary_lease
+from server.sessions import session_lease
 from server.sessions import push as push_mod
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
@@ -86,6 +87,7 @@ from server.sessions.engine import (
     SuggestionProvider,
     parse_agent_engine,
 )
+from server.sessions import orphan_cli as _orphan_cli
 from server.sessions.orphaned_asks import orphaned_answer_prompt, orphaned_ask_kind
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
 from server.sessions import session_actions
@@ -322,6 +324,21 @@ class BranchSwitchError(Exception):
     """Raised when a git branch checkout fails."""
 
 
+class SessionLeaseHeld(RuntimeError):
+    """Another host holds this session's ownership lease — refuse to spawn (#1379).
+
+    Raised only by the spawn path; ``ensure_driver`` returns None instead, because
+    every one of its callers already handles a driverless session. Carries the id so
+    the daemon RPC layer surfaces which session was refused.
+    """
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(
+            f"session {session_id} is leased to another host — refusing to start a "
+            f"second CLI for it (see #1379)")
+
+
 class InsufficientStorageError(Exception):
     """Raised when unarchiving cannot proceed due to inode or byte exhaustion."""
 
@@ -440,11 +457,39 @@ SPAWN_WAIT_S = env_float("CCSWITCH_SPAWN_WAIT_S", 60.0, minimum=1.0)
 # of the real primary is never delayed by this.
 PRIMARY_LEASE_TTL_S = env_float("CCSWITCH_PRIMARY_LEASE_TTL_S", 300.0, minimum=10.0)
 
+# How stale a PER-SESSION lease's heartbeat may be before a different host may claim
+# that session (#1379). Deliberately far shorter than the primary lease: this one is
+# only held while a driver is actually live, it is released the moment the driver
+# goes away, and the TTL is the worst-case delay before a genuinely dead host's
+# sessions can be picked up elsewhere. Renewal cadence is TTL/5.
+SESSION_LEASE_TTL_S = env_float("CCSWITCH_SESSION_LEASE_TTL_S", 120.0, minimum=10.0)
+
+# Kill switch for the per-session lease gate. When false the lease is still taken and
+# renewed (so the DB shows who believes it owns what) but a LOSS no longer blocks a
+# driver build — the pre-#1379 behaviour, kept reachable for an operator who has to
+# force a takeover without waiting out the TTL.
+def session_lease_enforced() -> bool:
+    return os.environ.get("CCSWITCH_SESSION_LEASE_ENFORCE", "").strip().lower() \
+        not in {"0", "false", "no", "off"}
+
+
 # TTL for the cached enabled-hosts registry snapshot that backs session-ownership
 # decisions. Ownership only changes when an operator edits the fleet registry, so
 # a short cache is plenty — this bounds DB reads from the event-driven rotation
 # monitor, not correctness.
 _OWNERSHIP_HOSTS_TTL_S = 60.0
+
+
+async def _lease_state(session_id: str):
+    """``session_lease.current`` for a log line — None on any DB error.
+
+    Only ever used to name the holder in a warning; a second DB failure while
+    already handling a lost lease must not turn a refusal into an exception.
+    """
+    try:
+        return await session_lease.current(session_id)
+    except Exception:
+        return None
 
 
 def _limiting_window(usage, ceiling: float):
@@ -1123,6 +1168,12 @@ class SessionOrchestrator:
         # start(). None on workers and on an orchestrator that never start()ed.
         self._lease_task: asyncio.Task | None = None
         self._lease_fence: int | None = None
+        # Per-SESSION leases (#1379): session_id -> fence, for every session this
+        # daemon has claimed the right to run a CLI for. Populated by
+        # _claim_session at each driver build; reconciled (renewed / released) by
+        # _session_lease_loop against the live `_drivers` map.
+        self._session_lease_task: asyncio.Task | None = None
+        self._session_lease_fences: dict[str, int] = {}
         # Per-host fenced heartbeat (spec 002 FR-101): liveness is DERIVED from this
         # row's beat_at (server/sessions/liveness.py), never stored per-session.
         self._hb_task: asyncio.Task | None = None
@@ -1539,6 +1590,12 @@ class SessionOrchestrator:
             self._goal_monitor(), name="goal-inference-monitor"
         )
         self._stall_task = asyncio.create_task(self._stall_loop(), name="stall-watchdog")
+        # Renew/release the per-session ownership leases this daemon holds (#1379).
+        # Unconditional (not role-gated like the primary lease): the duplicate-CLI
+        # bug is a WORKER-vs-primary race as much as a primary-vs-primary one.
+        self._session_lease_task = asyncio.create_task(
+            self._session_lease_loop(), name="session-lease-heartbeat"
+        )
         # Per-host fenced heartbeat: register our row (adopting any surviving fence)
         # and beat it on an interval. DB failure here must not kill boot (NFR-5).
         try:
@@ -1683,6 +1740,159 @@ class SessionOrchestrator:
                     state.holder if state else "<released>",
                 )
 
+    # ------------------------------------------------------------------
+    # Per-session ownership lease (#1379)
+    # ------------------------------------------------------------------
+
+    def _lease_fences(self) -> dict[str, int]:
+        """The held-lease map, created on demand.
+
+        Defensive like ``_startup_note`` / ``_ownership_hosts_cache``: rehydrate- and
+        teardown-shaped tests build orchestrators via ``SessionOrchestrator.__new__``
+        (no ``__init__``), and both the claim and the release run on paths those
+        tests drive.
+        """
+        fences = getattr(self, "_session_lease_fences", None)
+        if fences is None:
+            fences = {}
+            self._session_lease_fences = fences
+        return fences
+
+    async def _claim_session(self, session_id: str, *, why: str) -> bool:
+        """Win the right to run a CLI for *session_id* on THIS host, or refuse.
+
+        Called immediately before every driver build. The three outcomes:
+
+        * **won** — the lease row was absent, already ours, or held by a host whose
+          heartbeat lapsed past ``SESSION_LEASE_TTL_S``. The fence is remembered so
+          ``_session_lease_loop`` can renew it, and the build proceeds.
+        * **lost** — a DIFFERENT host holds it with a fresh heartbeat, i.e. a live
+          twin already owns this conversation. Log loudly and refuse: spawning here
+          is exactly the duplicate-CLI bug (#1379), and the caller treats a refusal
+          the same as any other failed build.
+        * **DB error** — fail OPEN. The lease is a safety net over a rare race; a
+          database blip must never stop a whole fleet from running sessions. The
+          loop re-attempts the claim on its next tick.
+        """
+        me = self_host_name()
+        try:
+            fence = await session_lease.acquire(
+                session_id, me, ttl_s=SESSION_LEASE_TTL_S)
+        except Exception:
+            log.warning("session-lease: acquire for %s failed (DB error) — allowing "
+                        "the build (fail-open)", session_id, exc_info=True)
+            return True
+        if fence is not None:
+            self._lease_fences()[session_id] = fence
+            return True
+        state = await _lease_state(session_id)
+        holder = state.holder if state is not None else "<unknown>"
+        age = f"{state.age_s:.0f}s ago" if state is not None else "recently"
+        if not session_lease_enforced():
+            log.warning(
+                "session-lease: %s is held by %r (renewed %s) but enforcement is "
+                "OFF — building a SECOND driver for it anyway (%s)",
+                session_id, holder, age, why)
+            return True
+        log.warning(
+            "session-lease: refusing to %s session %s — host %r holds its lease "
+            "(renewed %s). Two live CLIs on one conversation race on git and split "
+            "its worktree (#1379); leaving it to its owner.",
+            why, session_id, holder, age)
+        log_event(log, logging.WARNING, "session.lease_denied",
+                  session_id=session_id, holder=holder, reason=why)
+        return False
+
+    async def _release_session_lease(self, session_id: str) -> None:
+        """Drop our claim on *session_id* so another host need not wait out the TTL."""
+        fence = self._lease_fences().pop(session_id, None)
+        if fence is None:
+            return
+        try:
+            await session_lease.release(session_id, self_host_name(), fence)
+        except Exception:
+            log.debug("session-lease: release of %s failed (DB error) — it will go "
+                      "stale on its own", session_id, exc_info=True)
+
+    async def _session_lease_tick(self) -> None:
+        """One reconcile pass: renew the leases we still need, release the rest.
+
+        Reconciling against the live ``_drivers`` map rather than instrumenting every
+        teardown path is deliberate: drivers are dropped from a dozen places (close,
+        idle reap, rotation, crash recovery, shutdown) and a lease leaked by ONE
+        missed call site keeps a session pinned to a host that is not running it.
+        Here the absence of a driver IS the release signal, so the set self-heals.
+
+        A renew that returns False means the lease was fenced away — another host
+        now believes it owns this session while we are still driving it. That is the
+        split-brain this module exists to catch, so it is logged at CRITICAL with the
+        new holder; the running turn is left alone (killing a driver mid-turn has its
+        own failure modes) but the next build re-checks and loses.
+
+        Separate from the loop below so tests drive a pass directly instead of racing
+        a wall clock — a tight sleep-and-poll test is a flake on a loaded CI shard.
+        """
+        me = self_host_name()
+        for sid, fence in list(self._lease_fences().items()):
+            if sid not in self._drivers:
+                await self._release_session_lease(sid)
+                continue
+            try:
+                ok = await session_lease.renew(sid, me, fence)
+            except Exception:
+                log.debug("session-lease: renew of %s failed (DB error) — "
+                          "retrying next beat", sid, exc_info=True)
+                continue
+            if ok:
+                continue
+            self._lease_fences().pop(sid, None)
+            state = await _lease_state(sid)
+            log.critical(
+                "session-lease: LOST session %s (fenced takeover by %r) while a "
+                "driver for it is still live here — TWO hosts may now be running "
+                "this conversation (#1379).",
+                sid, state.holder if state is not None else "<released>")
+
+    async def _session_lease_loop(self) -> None:
+        """Beat :meth:`_session_lease_tick` at TTL/5 (#1379). Never dies on an error:
+        one bad pass must not stop every later renew and silently let the whole
+        host's session claims lapse."""
+        interval = max(SESSION_LEASE_TTL_S / 5.0, 2.0)
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._session_lease_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.warning("session-lease: reconcile pass failed", exc_info=True)
+
+    async def reap_orphan_clis(self) -> int:
+        """Kill `claude` CLIs a previous daemon incarnation left running on this host.
+
+        The other half of the duplicate-owner fix: the per-session lease stops a
+        second daemon from *starting* a twin, but an orphan that outlived its unit
+        holds no lease and answers to no daemon. Runs on the daemon boot path, before
+        anything can rehydrate or resume, and never raises — a diagnostic sweep may
+        not prevent a start. Returns the number of CLIs signalled.
+        """
+        try:
+            known = [a["name"] for a in ccswitch_accounts.list_accounts()]
+        except Exception:
+            log.warning("orphan-cli: account enumeration failed — skipping the reap",
+                        exc_info=True)
+            return 0
+        try:
+            reaped = await asyncio.to_thread(_orphan_cli.reap_orphans, known)
+        except Exception:
+            log.warning("orphan-cli: reap failed", exc_info=True)
+            return 0
+        for orphan in reaped:
+            log_event(log, logging.WARNING, "session.orphan_cli_reaped",
+                      pid=orphan.pid, account=orphan.account,
+                      resume=orphan.resume, cwd=orphan.cwd)
+        return len(reaped)
+
     async def _heartbeat_loop(self) -> None:
         """Stamp this host's fenced heartbeat every interval (spec 002 FR-101).
 
@@ -1818,7 +2028,7 @@ class SessionOrchestrator:
                      "_autopilot_task", "_mirror_task",
                      "_cicd_task", "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_recurring_task",
-                     "_lease_task", "_hb_task", "_drain_timer"):
+                     "_lease_task", "_session_lease_task", "_hb_task", "_drain_timer"):
             # Default None: stop() must be safe on an orchestrator that never
             # start()ed (tests build one via __new__/without start).
             task = getattr(self, attr, None)
@@ -1863,6 +2073,15 @@ class SessionOrchestrator:
         # primary immediately instead of waiting out the TTL. getattr: stop()
         # must be safe on a never-start()ed / __new__-built orchestrator. The
         # fenced release makes releasing after a takeover a harmless no-op.
+        # Same rule for the per-session leases (#1379), and for the same reason: the
+        # drivers were closed just above, so every session this daemon was running is
+        # now genuinely free. Releasing here means a planned restart hands its
+        # sessions over immediately instead of leaving them fenced off for a whole
+        # SESSION_LEASE_TTL_S — the drain-then-restart path the incident came from.
+        for sid in list(getattr(self, "_session_lease_fences", {})):
+            await bounded_wait(self._release_session_lease(sid),
+                               timeout=_STOP_TASK_TIMEOUT_S,
+                               phase=f"stop:session-lease-release:{sid}")
         fence = getattr(self, "_lease_fence", None)
         if fence is not None:
             self._lease_fence = None
@@ -2919,6 +3138,16 @@ class SessionOrchestrator:
         persisted before the assistant existed still replays cleanly (its
         params dict has neither key).
         """
+        # Claim the session BEFORE any of the work below (#1379). A brand-new id has
+        # no lease row so this is free for a fresh spawn; it matters for the paths
+        # that spawn OVER an existing conversation — a queue promotion, or the
+        # _prior_csid fallback further down — which are exactly the shapes another
+        # host may already be running. Doing it first means a refused spawn never
+        # checks out a worktree or touches the row for a session it will not run;
+        # a spawn that claims and then fails later has its lease reconciled away by
+        # _session_lease_tick (no driver ⇒ released).
+        if not await self._claim_session(session_id, why="spawn"):
+            raise SessionLeaseHeld(session_id)
         selected_engine = self._engine_registry.require(parse_agent_engine(engine))
         repo_root = await self._effective_repo_root()
 
@@ -3373,6 +3602,15 @@ class SessionOrchestrator:
                 self._codex.detach(session_id)
             except Exception:
                 log.exception("session.codex_detach_failed id=%s", session_id)
+
+        # Hand back the per-session ownership lease (#1379). This is the same
+        # "no longer has a running driver" moment the display teardown uses, and the
+        # lease means exactly that — holding it after the CLI is gone would fence
+        # another host off this session for a whole SESSION_LEASE_TTL_S for nothing.
+        # _session_lease_loop would eventually reconcile it away; doing it here makes
+        # a close/archive/reap hand over immediately. Guarded for the same reason as
+        # the Codex detach: a DB blip must not stop a session being torn down.
+        await self._release_session_lease(session_id)
 
         # Teardown the virtual X11 display — runs unconditionally so orphaned
         # displays are never leaked even when the driver was never registered.
@@ -10490,6 +10728,16 @@ class SessionOrchestrator:
                 except Exception:
                     pass
 
+            # Claim the session before spawning anything (#1379). This is the choke
+            # point the duplicate-owner bug went through: after a fleet-wide daemon
+            # restart both hosts rehydrated the same row, both believed they owned it
+            # (the stamp flips during a cut-short drain), and both resumed the same
+            # conversation into the same worktree. `_owns_record` is a per-process
+            # OPINION; the lease is a fact both hosts read from the same row. Losing
+            # it returns None, which every caller of ensure_driver already handles.
+            if not await self._claim_session(session_id, why="resume"):
+                return None
+
             # Build and start a new driver resuming from the stored engine_session_id,
             # ON THE SESSION'S OWN ENGINE. This used to hardcode CLAUDE_CODE, so a
             # detached Codex session came back as a Claude driver pointed at a Codex
@@ -10911,6 +11159,11 @@ class SessionOrchestrator:
                     )
 
         session_id = str(uuid.uuid4())
+        # A fresh id can never be contended, so this always wins — it is here to keep
+        # the invariant uniform ("a session with a live driver holds its lease"), so
+        # the reconcile pass and any later resume on another host see a consistent
+        # picture rather than a driver with no claim behind it (#1379).
+        await self._claim_session(session_id, why="adopt")
         Path(cand.cwd).mkdir(parents=True, exist_ok=True)
         driver_config_dir = self._driver_config_dir(
             AgentEngine.CLAUDE_CODE, cand.account, cand.cwd, None
@@ -12956,6 +13209,14 @@ class SessionOrchestrator:
                                    phase=f"reassign.interrupt:{record.id}")
                 await old_driver.aclose()
             Path(cwd).mkdir(parents=True, exist_ok=True)
+            # Re-assert the lease across the swap (#1379). We normally already hold it
+            # — a reassign only runs on a session with a live driver — so this just
+            # refreshes the fence. It matters when the lease was FENCED away while the
+            # old driver kept running: relaunching then would hand a session that
+            # another host has already claimed a second CLI, which is the bug. Refuse
+            # instead; the caller's `except` pauses the session for a human.
+            if not await self._claim_session(record.id, why=f"relaunch ({reason})"):
+                raise SessionLeaseHeld(record.id)
             driver_config_dir = self._driver_config_dir(
                 record.engine,
                 new_account,
