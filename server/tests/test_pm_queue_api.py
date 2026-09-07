@@ -5,7 +5,6 @@ seeding via db_session(), CCSWITCH_DEV=1 + empty allowlist auth bypass.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import tempfile
 from contextlib import contextmanager
@@ -47,9 +46,20 @@ def _client():
                     os.environ[k] = v
 
 
-def _seed_ready_and_blocked() -> None:
+def _seed_ready_and_blocked(c) -> None:
     """One onboarded product with a linked board: a Ready item and a Blocked-by-dep
-    item (an active native dep whose destination issue is open)."""
+    item (an active native dep whose destination issue is open).
+
+    Seeded through the app's OWN event loop (same idiom as
+    test_cicd_findings_api._seed). A bare ``asyncio.run(_seed_async())`` runs on a
+    throwaway loop while the app holds the module-level ``server.db._engine`` on the
+    TestClient portal loop. Both share one AsyncAdaptedQueuePool, and that pool's
+    ``asyncio.Queue`` binds to whichever loop first *awaits* a checkout —
+    ``get_nowait()`` never checks loop affinity, which is why an idle pool tolerates
+    the cross-loop seed. Once the orchestrator's control loops saturate the
+    5-connection pool at startup, the foreign-loop checkout has to await and dies
+    with "Queue ... is bound to a different event loop".
+    """
     from server.db import db_session
     from server.db.models import (
         GhProject, GhProjectItem, Project, ProjectRepo, WorkItem, WorkItemDep)
@@ -94,12 +104,13 @@ def _seed_ready_and_blocked() -> None:
             ))
             await db.commit()
 
-    asyncio.run(_seed_async())
+    assert c.portal is not None
+    c.portal.call(_seed_async)
 
 
 def test_queue_endpoint_ranks_ready_and_skips_blocked():
     with _client() as c:
-        _seed_ready_and_blocked()
+        _seed_ready_and_blocked(c)
 
         resp = c.get("/api/pm/queue", headers=IDENTITY_HEADERS)
         assert resp.status_code == 200, resp.text
@@ -128,6 +139,6 @@ def test_queue_endpoint_invalid_min_status_422():
 
 def test_queue_endpoint_requires_identity():
     with _client() as c:
-        _seed_ready_and_blocked()
+        _seed_ready_and_blocked(c)
         assert c.get("/api/pm/queue").status_code == 401
         assert c.get("/api/pm/queue", headers=IDENTITY_HEADERS).status_code == 200
