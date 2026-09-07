@@ -46,9 +46,17 @@ def test_label_descriptions_name_the_product(monkeypatch):
     assert descs and all(d == f"{brand.SLUG} backlog-runner" for d in descs)
 
     calls2, run2 = _capture()
-    ci_issues._ensure_label("o/r", run2)
+    ci_issues._ensure_label("o/r", ci_issues.LABEL, run2)
     assert any(f"description=Filed by the {brand.NAME} CI/CD Doctor" in a
                for args in calls2 for a in args)
+
+    # Any other label is created by the write endpoints on behalf of a human or the
+    # assistant, so its description names the product without claiming the doctor filed it.
+    calls3, run3 = _capture()
+    ci_issues._ensure_label("o/r", "needs-triage", run3)
+    assert any(f"description=Applied by {brand.NAME}" in a
+               for args in calls3 for a in args)
+    assert not any("ccswitch" in a for args in calls3 for a in args)
 
 
 def test_cicd_issue_body_names_the_product():

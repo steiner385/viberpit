@@ -466,6 +466,100 @@ _install_no_real_grouping_guard()
 
 
 # --------------------------------------------------------------------------- #
+# No-real-SDK-subprocess guard at the SHARED door (issue #1383).               #
+#                                                                              #
+# The two guards above each close ONE call site. The doors are plural and      #
+# growing: nine modules define their own `_default_query_fn` (goal_inference,  #
+# title_generator, prompt_refiner, open_question, autopilot_decider,           #
+# model_pick, pr_intent, nudge_composer, backlog_grouping) and                 #
+# claude_sdk_factory builds three ClaudeSDKClients (session, suggester,        #
+# summarizer). Every one of them carries some variant of the comment "lazy —   #
+# not available in tests", and every one of them is WRONG: claude-agent-sdk is #
+# a hard dependency, so the import succeeds, the SDK falls back to its own     #
+# bundled `claude` binary, and the call spends 14-75s discovering it is        #
+# `Not logged in`.                                                             #
+#                                                                              #
+# That is the mechanism behind #1383. A WS test injects a fake only at the     #
+# DRIVER door (`SessionOrchestrator(sdk_factory=...)`); the auxiliary paths    #
+# the same orchestrator drives — auto-name, suggestions, summaries, goal       #
+# inference — reach the SDK by direct module import and escape the fake. On    #
+# the 2-vCPU shard several of those serialize inside one test's window, which  #
+# is why `test_teardown_unsubscribes_even_with_an_auto_reattach_in_flight`     #
+# blew a 120s fence and then a 240s one, seven times, always on shard 2 and    #
+# always on a diff disjoint from WS teardown. The fence was never the variable.#
+#                                                                              #
+# Closing the doors one by one would fix today's flake and leave door #13      #
+# open. They all resolve their symbol off the `claude_agent_sdk` PACKAGE at    #
+# call time (that is what "lazy" buys), so replacing the two package           #
+# attributes here closes every existing and future door with one installer.    #
+#                                                                              #
+# Shape matters: the stubs fail exactly where the real ones do — `query` on    #
+# first iteration, `ClaudeSDKClient` on connect, not construction — so what    #
+# runs at each call site is its own existing degrade-on-failure path (return   #
+# None / [] and log), the same outcome CI already had, minus the minutes. The  #
+# message deliberately avoids every substring `sessions.failure.classify`      #
+# treats as transient, so `helper_call` classifies it "other" and does not     #
+# burn the retry ladder on it.                                                 #
+#                                                                              #
+# Opting back in: a test that wants real SDK behaviour replaces the attribute  #
+# for its own scope, exactly as test_sdk_factory.py and test_suggestions.py    #
+# already do with their own fakes.                                             #
+#                                                                              #
+# Expect this guard to EXPOSE tests that were green only because of the        #
+# latency it removes. It found one:                                            #
+# test_ws.py::test_replay_batch_leads_with_reset_on_every_attach drained for a #
+# `replayComplete` that, on a now-unloaded event loop, already arrived inside  #
+# the first batch frame — the batcher had been flushing mid-replay only        #
+# because a stray real spawn kept the loop busy. That is this same bug one     #
+# level down, not a defect in the guard; fix such a test, do not re-widen a    #
+# fence. `_drain_events`/`_drain_until` are where it will surface, because     #
+# their receive_text() has no timeout and so outlives their `timeout` arg.     #
+# --------------------------------------------------------------------------- #
+_NO_REAL_SDK_MSG = (
+    "server tests must not spawn a real SDK subprocess: this call site reached "
+    "claude_agent_sdk without an injected fake. Inject one (query_fn=/sdk_factory=/"
+    "monkeypatch the attribute) — see server/tests/conftest.py and issue #1383."
+)
+
+
+def _install_no_real_sdk_spawn_guard():
+    try:
+        import claude_agent_sdk as _sdk
+    except ImportError:  # pragma: no cover — nothing to spawn without the SDK
+        return
+    if getattr(getattr(_sdk, "query", None), "_no_real_sdk_guard", False):
+        return  # already guarded (conftest re-imported)
+
+    async def _blocked_query(*args, **kwargs):
+        raise RuntimeError(_NO_REAL_SDK_MSG)
+        yield  # pragma: no cover — makes this an async GENERATOR, like the real query
+
+    class _BlockedSDKClient:
+        """Constructs like the real client; refuses to spawn one."""
+
+        _no_real_sdk_guard = True
+
+        def __init__(self, *args, **kwargs):
+            self.options = kwargs.get("options")
+
+        async def connect(self, *args, **kwargs):
+            raise RuntimeError(_NO_REAL_SDK_MSG)
+
+        async def __aenter__(self):
+            await self.connect()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    _blocked_query._no_real_sdk_guard = True
+    _sdk.query = _blocked_query
+    _sdk.ClaudeSDKClient = _BlockedSDKClient
+
+
+_install_no_real_sdk_spawn_guard()
+
+
+# --------------------------------------------------------------------------- #
 # Teardown watchdog on every TestClient exit (issue #846).                     #
 #                                                                              #
 # The dominant CI flake is a random test dying at pytest-timeout's 300s inside #
