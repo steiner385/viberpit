@@ -14,6 +14,7 @@ def test_serve_configures_json_logging(monkeypatch, tmp_path):
 
     root = logging.getLogger()
     before = list(root.handlers)
+    before_process = jsonlog.PROCESS
     monkeypatch.setattr(jsonlog, "_configured", False)
     monkeypatch.setattr(serve_mod, "build_daemon", lambda: (FastAPI(), object()))
     monkeypatch.setattr(serve_mod.uvicorn, "run", lambda *a, **k: None)
@@ -23,6 +24,7 @@ def test_serve_configures_json_logging(monkeypatch, tmp_path):
             "daemon entrypoint did not install the JSON handler"
         assert jsonlog.PROCESS == "daemon"
     finally:
+        jsonlog.PROCESS = before_process
         for h in list(root.handlers):
             if h not in before:
                 root.removeHandler(h)
@@ -32,11 +34,13 @@ def test_configure_logging_defaults_to_edge(monkeypatch):
     from server.obs import jsonlog
     root = logging.getLogger()
     before = list(root.handlers)
+    before_process = jsonlog.PROCESS
     monkeypatch.setattr(jsonlog, "_configured", False)
     try:
         jsonlog.configure_logging()
         assert jsonlog.PROCESS == "edge"
     finally:
+        jsonlog.PROCESS = before_process
         for h in list(root.handlers):
             if h not in before:
                 root.removeHandler(h)
