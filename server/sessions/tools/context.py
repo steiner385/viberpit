@@ -17,6 +17,14 @@ class SessionToolContext:
     engine: str
     record: Callable[[], Any]  # -> SessionRecord | None
     host: str | None = None
+    #: This engine can act on a self-directed model request
+    #: (``AgentCapabilities.self_model_switch``). Declaring `request_model` without
+    #: it offers a tool whose result is silently dropped.
+    self_model_switch: bool = False
+    #: This engine gets the signalling tools rather than the marker contract
+    #: (``AgentCapabilities.durable_tool_surface``). False → Codex, which loses its
+    #: declared tools on `thread/resume` and keeps the markers instead.
+    signalling_tools: bool = False
 
 
 def context_snapshot(ctx: SessionToolContext) -> dict[str, Any]:
