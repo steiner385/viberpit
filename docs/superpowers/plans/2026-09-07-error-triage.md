@@ -2957,7 +2957,7 @@ env -u CCSWITCH_SESSIOND_CERT -u CCSWITCH_SESSIOND_KEY -u CCSWITCH_SESSIOND_CA -
 
 Acquire the test slot first if running on rocky (CLAUDE.md snippet; put the pytest in the same shell). Expected: all four green. Fix anything red before continuing — mypy typically flags `Mapped[int | None]` arithmetic (`ES.count_since_filed - seen` is fine as a SQL expression; Python-side `int(x or 0)` casts are already in the code).
 
-- [ ] **Step 3: Commit the docs, push, open the PR, arm auto-merge**
+- [x] **Step 3: Commit the docs, push, open the PR, arm auto-merge**
 
 ```bash
 git add docs/superpowers/specs/2026-09-07-error-triage-design.md docs/superpowers/plans/2026-09-07-error-triage.md
@@ -2989,7 +2989,7 @@ gh pr create --repo steiner385/viberpit --base master --title "feat(obs): error 
 gh pr merge --squash --auto
 ```
 
-- [ ] **Step 4: Verify the PR is non-draft with auto-merge armed**
+- [x] **Step 4: Verify the PR is non-draft with auto-merge armed**
 
 ```bash
 gh api graphql -f query='{repository(owner:"steiner385",name:"viberpit"){pullRequests(states:OPEN,last:1,headRefName:"'"$(git branch --show-current)"'"){nodes{number isDraft autoMergeRequest{enabledAt} mergeStateStatus}}}}'
