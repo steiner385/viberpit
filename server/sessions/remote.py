@@ -558,6 +558,19 @@ class RemoteOrchestrator:
         try:
             r = await self._client.call("create_session", **kwargs)
         except DaemonError as exc:
+            if (exc.err_type == "TypeError"
+                    and ("client_node" in exc.message or "'display'" in exc.message)
+                    and ("client_node" in kwargs or "display" in kwargs)):
+                # Rolling upgrade: this daemon predates display routing and rejects
+                # the additive kwargs at call binding, before any work. Retry without
+                # them — the session is virtual there, which is what it would have
+                # been anyway. Same posture as the protocol-v1 `engine` pop above.
+                log.warning("daemon predates display routing; creating without "
+                            "client_node/display (session will use a virtual display)")
+                stripped = {k: v for k, v in kwargs.items()
+                            if k not in ("client_node", "display")}
+                r = await self._client.call("create_session", **stripped)
+                return SessionRecord.from_dict(r["session"])
             if exc.err_type == "AllAccountsBusy":
                 data = exc.data or {}
                 reset = data.get("earliest_reset")

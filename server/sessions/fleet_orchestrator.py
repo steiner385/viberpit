@@ -222,6 +222,12 @@ class FleetOrchestrator:
         # placement would have neither. Overrides any caller preference.
         if is_assistant_kind(kwargs.get("kind")):
             prefer = self._primary
+        # A client sitting at a fleet host's own desktop should land there, or "route
+        # to the native display" can never hold. An explicit host still wins, and an
+        # explicit "virtual" request has no reason to move.
+        if (prefer is None and kwargs.get("display") != "virtual"
+                and kwargs.get("client_node") in self._router.names()):
+            prefer = kwargs["client_node"]
         # Candidate selection now filters on the requested engine before scoring, so a
         # Codex launch is only ever offered runners that advertised a usable Codex
         # boundary. Raises NoEngineHostAvailable (a NoHostAvailable) when every healthy

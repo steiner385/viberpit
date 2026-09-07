@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from ccswitch import accounts as _accounts
 from ccswitch import gitrepos
-from server.auth.middleware import current_identity
+from server.auth.middleware import current_client_node, current_identity
 from server.sessions.search import parse_terms, session_matches
 from server.sessions.types import ASSISTANT_KIND, RESUME_ELIGIBLE_STATUSES, is_assistant
 from server.sessions.usage_stall import is_usage_stalled
@@ -93,6 +93,10 @@ class CreateSessionRequest(BaseModel):
     # Optional runner preference. None → auto-rank; a name → that host first, still
     # failing over. Forwarded to FleetOrchestrator.create_session as prefer=.
     host: str | None = None
+    # Where the session's GUI renders. None/"auto" → decided from the requesting
+    # client's locality (native when the browser is on the runner host); "native" /
+    # "virtual" force it. Only the resolved mode is persisted (Session.displayMode).
+    display: Literal["auto", "native", "virtual"] | None = None
 
 
 class RenameSessionRequest(BaseModel):
@@ -564,6 +568,7 @@ async def create_session(
     body: CreateSessionRequest,
     request: Request,
     identity: str = Depends(current_identity),
+    client_node: str | None = Depends(current_client_node),
     db=Depends(get_db),
 ):
     """Create a native-agent session on the most-headroom compatible account.
@@ -689,6 +694,8 @@ async def create_session(
             name_is_auto=name_is_auto,
             model=_resolved_model,
             engine=body.engine,
+            client_node=client_node,
+            display=body.display,
             **({"reasoning_effort": _resolved_effort}
                if _resolved_effort is not None else {}),
         )

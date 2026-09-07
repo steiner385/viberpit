@@ -669,3 +669,35 @@ def test_api_orchestrator_reads_are_all_classified():
     assert not unclassified, (
         f"server/api reaches unclassified orchestrator methods: {sorted(unclassified)} — "
         f"classify each as per-session, merge-all, or PRIMARY_LOCAL")
+
+
+@pytest.mark.asyncio
+async def test_local_client_prefers_its_own_host(monkeypatch):
+    rocky, dobby = _FakeOrch("rocky"), _FakeOrch("dobby")
+    async def create_session(self, **kw): return _Rec(f"sess-{self.name}")
+    _FakeOrch.create_session = create_session
+    router = _FakeRouter({"rocky": rocky, "dobby": dobby}); got = {}
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        got["prefer"] = prefer; return ["dobby", "rocky"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
+    await fo.create_session(client_node="dobby")
+    assert got["prefer"] == "dobby"
+
+
+@pytest.mark.asyncio
+async def test_explicit_host_and_explicit_virtual_beat_the_nudge(monkeypatch):
+    rocky, dobby = _FakeOrch("rocky"), _FakeOrch("dobby")
+    async def create_session(self, **kw): return _Rec("s")
+    _FakeOrch.create_session = create_session
+    router = _FakeRouter({"rocky": rocky, "dobby": dobby}); got = []
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        got.append(prefer); return ["rocky"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
+    await fo.create_session(prefer="rocky", client_node="dobby")
+    await fo.create_session(client_node="dobby", display="virtual")
+    await fo.create_session(client_node="laptop")          # not a fleet host
+    assert got == ["rocky", None, None]
