@@ -1,0 +1,95 @@
+# Control-band policy for the SDLC Maintain loop (AI-Native SDLC design §3.2/§4,
+# issue #804). Parsed and validated by `server/sdlc/bands.py`; the detector that
+# consumes it is `server/sdlc/control_bands.py`.
+#
+# This file is deliberately version-controlled and reviewable: it declares what an
+# UNATTENDED agent is allowed to do in response to a production signal, which is a
+# governance decision, not a preference. Changing a tier's `response` or `tools`
+# should be read as a policy change in review.
+#
+# Detection is deterministic (Western Electric zone rules over a rolling baseline)
+# and judgment is gated: only a breach may invoke Claude, and only at the tier the
+# breach's σ selects.
+version: 1
+
+# Response tiers: 1σ log · 2σ diagnose (read-only) · 3σ propose.
+#
+# `tools` is a PROMPT-LEVEL binding constraint stated verbatim to the response
+# session — ccswitch has no per-session tool allowlist (see server/sdlc/bands.py's
+# module docstring). The hard limits on these sessions are `permission_mode`, the
+# managed deny rules, and the prod-deploy gate hook. Do not read `tools` as a
+# sandbox.
+tiers:
+  log:
+    sigma: 1
+    response: log
+    # No session, so no tools: a 1σ excursion is recorded in the triage queue and
+    # the activity feed, and nothing else happens. Most of what a control chart
+    # sees at 1σ is normal variation.
+    tools: []
+
+  diagnose:
+    sigma: 2
+    response: diagnose
+    # Read-only investigation. `full-auto` rather than `interactive` because the
+    # session is unattended and would otherwise block forever on a permission
+    # prompt (#750); read-only-ness comes from the tool list and from the fact
+    # that this tier's prompt forbids commits, pushes and PRs outright.
+    permission_mode: full-auto
+    tools:
+      - Read
+      - Grep
+      - Glob
+      - WebFetch
+      - Bash(git log:*)
+      - Bash(git show:*)
+      - Bash(git diff:*)
+      - Bash(gh pr view:*)
+      - Bash(gh run view:*)
+
+  propose:
+    sigma: 3
+    response: propose
+    permission_mode: full-auto
+    # A 3σ breach files the incident into the triage queue, where SDLC Intake
+    # picks it up and produces the `intent.md` PR that re-enters Phase 1. The
+    # tools below are what that intake session needs to investigate, write the
+    # artifact and open a non-draft PR.
+    tools:
+      - Read
+      - Grep
+      - Glob
+      - Write
+      - Edit
+      - Bash
+
+metrics:
+  # PR cycle time is the chosen stable metric (issue #804's "e.g. ... PR cycle
+  # time"): `merged_prs` is written for every merged PR by the pipeline timeline
+  # store, so the series is dense, has no merge-queue prerequisite, and a
+  # regression in it is a real signal about the delivery loop rather than about
+  # one flaky check.
+  - id: ccswitch-pr-cycle-time
+    source: pr_cycle_time_hours
+    repo: steiner385/ccswitch
+    title: PR cycle time
+    unit: hours
+    direction: higher_is_worse
+    baseline_points: 30
+    min_baseline: 10
+
+  # Merge-group CI failure rate. Shipped DISABLED: ccswitch is a user-owned repo
+  # with no merge queue available (see .agents/instructions/core.md), so
+  # `group_runs`/`group_failures` stay empty here and an enabled band would sit
+  # permanently below `min_baseline`. It is declared rather than deleted so the
+  # source stays exercised and a repo that does run a merge queue enables it with
+  # a one-line diff.
+  - id: ccswitch-ci-failure-rate
+    source: ci_failure_rate
+    repo: steiner385/ccswitch
+    title: Merge-group CI failure rate
+    unit: fraction
+    direction: higher_is_worse
+    baseline_points: 30
+    min_baseline: 10
+    enabled: false

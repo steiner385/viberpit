@@ -16,6 +16,11 @@ on:
       - "evals/**"
       - "scripts/run_evals.py"
       - "server/sdlc/evals.py"
+      # The control-band policy (#804) is agent configuration: it declares what an
+      # unattended agent may do about a metric breach, and its loader is what
+      # refuses a tier that could not run unattended.
+      - "server/sdlc/bands.yaml"
+      - "server/sdlc/bands.py"
       - ".github/workflows/evals.yml"
   pull_request:
     paths:
@@ -27,6 +32,11 @@ on:
       - "evals/**"
       - "scripts/run_evals.py"
       - "server/sdlc/evals.py"
+      # The control-band policy (#804) is agent configuration: it declares what an
+      # unattended agent may do about a metric breach, and its loader is what
+      # refuses a tier that could not run unattended.
+      - "server/sdlc/bands.yaml"
+      - "server/sdlc/bands.py"
       - ".github/workflows/evals.yml"
 
 concurrency:

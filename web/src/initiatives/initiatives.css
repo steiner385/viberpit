@@ -39,6 +39,70 @@
 .init-artifact-pending { color: var(--muted); font-size: 12px; }
 .init-commit-link { margin-left: auto; }
 
+/* Control-band incident queue (#804). Same tokens as the board it sits above. */
+.incident-queue {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px; margin-bottom: 14px;
+}
+.incident-queue-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 8px;
+}
+.incident-queue-title {
+  font-size: 14px; font-weight: 700; color: var(--text); margin: 0;
+  display: flex; align-items: center; gap: 8px;
+}
+.incident-count {
+  background: var(--amber); color: var(--bg); border-radius: 999px;
+  padding: 0 7px; font-size: 11px; font-weight: 700;
+}
+.incident-list { list-style: none; margin: 0; padding: 0; }
+.incident-row {
+  border-top: 1px solid var(--border); padding: 10px 0;
+}
+.incident-row:first-child { border-top: none; padding-top: 0; }
+.incident-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* Severity reads at a glance: 3σ is the tier that opens a PR, 1σ is a note. */
+.incident-sigma {
+  font-variant-numeric: tabular-nums; font-weight: 700; font-size: 12px;
+  border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px;
+  color: var(--muted);
+}
+.incident-sigma-2 { color: var(--amber); border-color: var(--amber); }
+.incident-sigma-3 { color: var(--fail); border-color: var(--fail); }
+.incident-ident { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.incident-metric { font-weight: 600; color: var(--text); }
+.incident-repo { color: var(--muted); font-size: 11px; }
+.incident-status {
+  padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border);
+  color: var(--muted); font-size: 11px; font-weight: 600;
+}
+.incident-status-queued { color: var(--accent); border-color: var(--accent); }
+.incident-status-diagnosing { color: var(--amber); border-color: var(--amber); }
+.incident-status-intake { color: var(--done); border-color: var(--done); }
+.incident-occurrences {
+  margin-left: auto; color: var(--muted); font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.incident-detail {
+  margin: 6px 0 0; font-size: 12px; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.incident-detail strong { color: var(--text); }
+.incident-rule {
+  margin-left: 8px; padding: 1px 6px; border-radius: 6px;
+  border: 1px solid var(--border); font-size: 11px;
+}
+.incident-note { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+.incident-actions {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px;
+}
+.incident-dismiss { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.incident-dismiss input {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 8px; font-size: 12px; color: var(--text); min-width: 220px;
+}
+
 .init-new-form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .init-new-form input {
   background: var(--bg); border: 1px solid var(--border); border-radius: 6px;

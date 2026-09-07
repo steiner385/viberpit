@@ -485,10 +485,18 @@ def daemon_role() -> str:
 _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
     "_backlog_task", "_sdlc_intake_task", "_pm_sync_task", "_pm_triage_task",
     "_gh_reconcile_task",
-    "_sdlc_synth_task",
+    "_sdlc_synth_task", "_control_band_task",
     "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
     "_archive_limit_task", "_recurring_task", "_mirror_task",
 })
+
+# How many raw rows a control-band metric reader pulls per repo (#804). Generous
+# enough to cover the longest configurable baseline several times over (a band
+# reads at most `baseline_points + 8` DAILY samples, and a busy repo merges a
+# handful of PRs a day), and bounded so a repo with years of history cannot turn
+# a detection tick into a full-table scan. Rows are ordered newest-first, so the
+# limit trims the ancient end — the end a rolling baseline discards anyway.
+_CONTROL_BAND_ROW_LIMIT = 2000
 
 
 def local_host_stamp() -> str | None:
@@ -1026,6 +1034,29 @@ class SessionOrchestrator:
             clock=time.monotonic,
         )
         self._sdlc_synth_task: asyncio.Task | None = None
+        # Control-Band Monitor control loop (#804): the BACK of the SDLC loop.
+        # Deterministic Western-Electric detection over ccswitch's own delivery
+        # metrics against the committed `server/sdlc/bands.yaml` policy; a breach
+        # files a triage item and, by tier, spawns a read-only diagnosis (2σ) or
+        # queues an incident for SDLC Intake (3σ) — which is what closes the loop
+        # back into Phase 1 via `_sdlc_intake_read_triggers`.
+        from server.automations.control_band_monitor import ControlBandMonitorLoop
+        from server.sdlc import triage_store as _triage_store
+        self._control_band_ctx = AutomationContext(
+            "control-band-monitor", create_session=self.create_session)
+        self._control_band_loop = ControlBandMonitorLoop(
+            self._control_band_ctx,
+            read_config=self._control_band_read_config,
+            read_bands=self._control_band_read_bands,
+            read_series=self._control_band_read_series,
+            file_item=self._control_band_file_item,
+            set_disposition=_triage_store.set_disposition,
+            spawn_diagnosis=self._control_band_spawn_diagnosis,
+            count_queued=_triage_store.count_queued,
+            release_due=_triage_store.release_due,
+            clock=time.monotonic,
+        )
+        self._control_band_task: asyncio.Task | None = None
         self._recurring_task: asyncio.Task | None = None
         # Autopilot control loop: advances every governed session through its stuck
         # states each tick (also nudged from _persist_status). All seams injected so
@@ -1595,6 +1626,13 @@ class SessionOrchestrator:
             self._sdlc_synth_task = asyncio.create_task(
                 self._sdlc_synth_tick_loop(interval=60.0), name="sdlc-synthesizer-loop"
             )
+            # Control-Band Monitor: one detection pass per interval. Deliberately
+            # the slowest loop here — its series are bucketed by DAY, so a tick
+            # faster than the data moves would only re-derive the same verdict.
+            # A disabled row makes each tick a cheap no-op.
+            self._control_band_task = asyncio.create_task(
+                self._control_band_tick_loop(interval=300.0), name="control-band-loop"
+            )
             # Autopilot control loop: one tick per interval plus status-change nudges.
             self._autopilot_task = asyncio.create_task(
                 self._autopilot_tick_loop(interval=20.0), name="autopilot-loop"
@@ -1798,7 +1836,7 @@ class SessionOrchestrator:
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
                      "_token_refresh_task", "_backlog_task", "_sdlc_intake_task",
                      "_pm_sync_task", "_pm_triage_task", "_gh_reconcile_task",
-                     "_sdlc_synth_task",
+                     "_sdlc_synth_task", "_control_band_task",
                      "_autopilot_task", "_mirror_task",
                      "_cicd_task", "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_recurring_task",
@@ -4732,10 +4770,59 @@ class SessionOrchestrator:
             log_key="sdlc_intake")
 
     async def _sdlc_intake_read_triggers(self) -> list:
-        """Pending intake triggers. Empty until a trigger source is wired: the
-        Phase-2 triage queue (#804) and the /api/sdlc intake path (#802) feed
-        this seam. Returning [] keeps every tick a cheap no-op today."""
-        return []
+        """Pending intake triggers — the control-band triage queue (#804).
+
+        This is where the SDLC loop closes. The control-band monitor files an
+        incident and (at 3σ, or on a human's "triage now") queues it; Intake picks
+        it up here and turns it into the ``intent.md`` PR, using the exact same
+        path a human-originated trigger takes. Phase 2 feeds this seam rather than
+        forking a second intent writer (constitution VI).
+
+        Deliberately NOT stamped as ``origin_ref``: ``InitiativeView.issue`` is
+        built from ``Initiative.origin_ref``, so putting a breach key there would
+        hand ``HandoffToBuild`` a string that is not an issue. Provenance rides on
+        ``origin="control-band"`` plus the triage row's ``initiative_slug``
+        back-pointer instead.
+        """
+        from server.automations.sdlc_intake import Trigger
+        from server.sdlc import triage_store
+        from server.sdlc.control_bands import Baseline, Breach, Sample
+        from server.sdlc.prompts import build_breach_trigger
+
+        try:
+            items = await triage_store.queued_for_intake()
+        except Exception:  # pragma: no cover — a queue read must not crash the tick
+            log.warning("sdlc_intake.read_triggers_failed", exc_info=True)
+            return []
+
+        triggers = []
+        for item in items:
+            if not item.initiative_slug:
+                continue
+            # Rebuild the pure Breach view from the stored snapshot so the trigger
+            # text comes out of the ONE renderer both response tiers use, rather
+            # than a second ad-hoc format string here.
+            breach = Breach(
+                metric=item.metric or "", rule=item.rule or "",
+                sigma=int(item.sigma or 0), side=item.side or "high",
+                at=item.observed_at or "", value=float(item.value or 0.0),
+                baseline=Baseline(mean=float(item.baseline_mean or 0.0),
+                                  stddev=float(item.baseline_stddev or 0.0),
+                                  n=int(item.baseline_n or 0)),
+                points=tuple(Sample(at=str(p.get("at") or ""),
+                                    value=float(p.get("value") or 0.0))
+                             for p in (item.evidence or [])),
+            )
+            triggers.append(Trigger(
+                slug=item.initiative_slug,
+                text=build_breach_trigger(breach, repo=item.repo or "",
+                                          title=item.summary or ""),
+                title=f"Control-band incident: {item.metric}",
+                repo=item.repo or "",
+                origin="control-band",
+                origin_ref=None,
+            ))
+        return triggers
 
     async def _sdlc_intake_ensure_initiative(self, trigger):
         """Find-or-create the Initiative for *trigger* (idempotent by slug) at the
@@ -4777,6 +4864,15 @@ class SessionOrchestrator:
             db.add(InitiativeArtifact(
                 initiative_id=row.id, kind="intent", repo_path=repo_path,
                 session_id=session_id))
+        # A control-band incident stops being a queue item the moment its intent
+        # artifact exists — from here it is an Initiative, tracked on the board.
+        # Terminal for the monitor, so the still-breaching metric cannot re-queue
+        # it. A no-op for a human-originated trigger (no row carries that slug).
+        from server.sdlc import triage_store
+        try:
+            await triage_store.mark_intake(slug, session_id)
+        except Exception:  # pragma: no cover — the artifact row is what matters
+            log.warning("sdlc_intake.mark_intake_failed slug=%s", slug, exc_info=True)
 
     async def _sdlc_intake_spawn(self, trigger, prompt: str, engine: AgentEngine):
         """Spawn a de-duped intent session for *trigger*, seeded with *prompt*.
@@ -4836,6 +4932,195 @@ class SessionOrchestrator:
                 await self._bump_automation_active("sdlc-intake")
         except Exception:  # pragma: no cover — a heartbeat failure must not stall
             log.debug("sdlc_intake.bump_active_failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Control-Band Monitor control-loop dependencies (#804)
+    #
+    # Every seam here is a thin adapter: the DECISIONS live in the pure modules
+    # (server/sdlc/control_bands.py for detection, server/sdlc/bands.py for
+    # policy) and the WRITES live in server/sdlc/triage_store.py, which the API
+    # shares. Nothing in this block decides anything.
+    # ------------------------------------------------------------------
+
+    async def _control_band_read_config(self) -> tuple[str, dict]:
+        """The control-band-monitor row's (mode, config) merged onto schema
+        defaults. Off + pure defaults on an absent/invalid row, so a bad config
+        never spawns (mirrors ``_sdlc_intake_read_config``)."""
+        from server.automations.config_store import read_automation_config
+        from server.automations.control_band_monitor import ControlBandMonitor
+        return await read_automation_config(
+            "control-band-monitor", ControlBandMonitor.config_schema,
+            modes=("monitor", "propose"), log_key="control_band_monitor")
+
+    async def _control_band_read_bands(self):
+        """The committed ``server/sdlc/bands.yaml`` policy.
+
+        Read on every tick, off the event loop, rather than cached at
+        construction: the policy is a deployed file, and an operator who edits a
+        band should see it take effect on the next tick without restarting a
+        daemon that owns every live session."""
+        from server.sdlc.bands import load_bands
+        return await asyncio.to_thread(load_bands)
+
+    async def _control_band_read_series(self, band) -> list:
+        """One metric band's daily samples, oldest first.
+
+        The ``source`` switch is exhaustive over ``control_bands.METRIC_SOURCES``
+        by construction — the bands loader rejects any other value at load time,
+        so an unhandled source is a load error, never a silent empty series."""
+        from server.sdlc.control_bands import bucket_daily
+        if band.source == "pr_cycle_time_hours":
+            return bucket_daily(await self._control_band_pr_cycle_observations(band.repo))
+        if band.source == "ci_failure_rate":
+            return await self._control_band_ci_failure_series(band.repo)
+        raise ValueError(f"unhandled band source {band.source!r}")  # pragma: no cover
+
+    async def _control_band_pr_cycle_observations(self, repo: str) -> list:
+        """``(merged_at, hours_open)`` per merged PR — the raw input to bucketing.
+
+        Rows missing either endpoint are skipped rather than defaulted: an
+        unknown open time is not a zero-hour cycle, and one fabricated zero drags
+        a day's mean far enough to manufacture a low-side breach."""
+        from sqlalchemy import select
+        from server.db.models import MergedPr
+        from server.time_iso import parse_iso_utc
+        async with db_session() as db:
+            rows = (await db.execute(
+                select(MergedPr.created_at, MergedPr.merged_at)
+                .where(MergedPr.repo == repo)
+                .order_by(MergedPr.merged_at.desc())
+                .limit(_CONTROL_BAND_ROW_LIMIT))).all()
+        out = []
+        for created_iso, merged_iso in rows:
+            created = parse_iso_utc(created_iso)
+            merged = parse_iso_utc(merged_iso)
+            if created is None or merged is None or merged < created:
+                continue
+            out.append((merged, (merged - created).total_seconds() / 3600.0))
+        return out
+
+    async def _control_band_ci_failure_series(self, repo: str) -> list:
+        """Daily share of merge-group runs that ejected at least one check.
+
+        Not expressible through ``bucket_daily``: that reducer averages one value
+        per observation, and this metric is a ratio of two differently-shaped
+        populations. ``group_runs`` holds one row per fully-green run while
+        ``group_failures`` holds one row per failing CHECK, so failures are
+        counted by DISTINCT ``group_sha`` — three checks failing in one run is one
+        failed run, not three.
+        """
+        from sqlalchemy import select
+        from server.db.models import GroupFailure, GroupRun
+        from server.sdlc.control_bands import Sample
+        from server.time_iso import parse_iso_utc
+        async with db_session() as db:
+            green = (await db.execute(
+                select(GroupRun.completed_at).where(GroupRun.repo == repo)
+                .order_by(GroupRun.completed_at.desc())
+                .limit(_CONTROL_BAND_ROW_LIMIT))).scalars().all()
+            failed = (await db.execute(
+                select(GroupFailure.observed_at, GroupFailure.group_sha)
+                .where(GroupFailure.repo == repo)
+                .order_by(GroupFailure.observed_at.desc())
+                .limit(_CONTROL_BAND_ROW_LIMIT))).all()
+        green_by_day: dict[str, int] = {}
+        for iso in green:
+            at = parse_iso_utc(iso)
+            if at is not None:
+                day = at.date().isoformat()
+                green_by_day[day] = green_by_day.get(day, 0) + 1
+        failed_by_day: dict[str, set] = {}
+        for iso, sha in failed:
+            at = parse_iso_utc(iso)
+            if at is not None and sha:
+                failed_by_day.setdefault(at.date().isoformat(), set()).add(sha)
+        samples = []
+        for day in sorted(set(green_by_day) | set(failed_by_day)):
+            bad = len(failed_by_day.get(day, ()))
+            total = bad + green_by_day.get(day, 0)
+            if total:
+                samples.append(Sample(at=day, value=bad / total))
+        return samples
+
+    async def _control_band_file_item(self, band, breach, tier, slug):
+        """Upsert the breach into the triage queue (idempotent by breach key)."""
+        from server.automations.control_band_monitor import FiledItem
+        from server.sdlc import triage_store
+        filed = await triage_store.upsert_breach(
+            key=breach.key(), metric=band.id, source=band.source, repo=band.repo,
+            rule=breach.rule, sigma=breach.sigma, side=breach.side,
+            tier=tier.name, response=tier.response, value=breach.value,
+            baseline_mean=breach.baseline.mean,
+            baseline_stddev=breach.baseline.stddev, baseline_n=breach.baseline.n,
+            observed_at=breach.at, summary=breach.summary(),
+            evidence=[{"at": s.at, "value": s.value} for s in breach.points],
+            slug=slug)
+        return FiledItem(id=filed.id, key=filed.key, status=filed.status,
+                         created=filed.created)
+
+    async def _control_band_spawn_diagnosis(self, item_id: str, prompt: str,
+                                            band, tier):
+        """Spawn the 2σ read-only diagnosis session for a triage item.
+
+        Deduped on the ITEM id, not the metric: an incident gets exactly one
+        diagnosis session, and a second breach of the same metric weeks later is a
+        different item and earns its own. The tier's ``permission_mode`` is passed
+        explicitly (the loader has already refused ``interactive`` for a spawning
+        tier), so the policy file — not the automation fallback — decides how much
+        rope this session gets."""
+        from server.automations.control_band_monitor import ControlBandMonitor
+        origin_ref = f"triage:{item_id}"
+        plan = await self._control_band_ctx.launch_plan_or_refuse(origin_ref)
+        if plan is None:
+            return None
+        launch_engine, _config = plan
+        account = await self._automation_account_for(
+            self._control_band_ctx, origin_ref, engine=launch_engine)
+        cwd = None
+        if band.repo:
+            url = f"https://github.com/{band.repo}.git"
+            try:
+                cwd = await asyncio.to_thread(
+                    gitrepos.ensure_clone, await self._effective_repo_root(),
+                    band.repo, url)
+            except Exception:
+                log.warning("control_band.spawn.clone_failed repo=%s", band.repo,
+                            exc_info=True)
+        return await self._control_band_ctx.spawn_session(
+            origin_ref=origin_ref,
+            dedupe_key=origin_ref,
+            repo=band.repo or None,
+            cwd=cwd,
+            account=account,
+            engine=launch_engine,
+            permission_mode=tier.permission_mode,
+            name=f"diagnose {band.id}",
+            initial_prompt=prompt,
+            detail={"itemId": item_id, "metric": band.id, "tier": tier.name,
+                    "automation": ControlBandMonitor.id},
+        )
+
+    async def _control_band_tick_loop(self, interval: float) -> None:
+        """Periodic driver for the control-band loop (mirrors _sdlc_intake_tick_loop)."""
+        while True:
+            await self._control_band_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _control_band_tick_once(self) -> None:
+        """One control-band tick + an enabled-only ``last_active_at`` heartbeat.
+        Best-effort — neither the tick nor the heartbeat may crash the loop."""
+        if not await self._schedule_allows_tick("control-band-monitor"):
+            return
+        try:
+            await self._control_band_loop.tick()
+        except Exception:  # pragma: no cover — tick() already swallows; belt+braces
+            log.warning("control_band.tick_loop_error", exc_info=True)
+        try:
+            mode, _ = await self._control_band_read_config()
+            if mode != "off":
+                await self._bump_automation_active("control-band-monitor")
+        except Exception:  # pragma: no cover — a heartbeat failure must not stall
+            log.debug("control_band.bump_active_failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # PM Sync control-loop dependencies (injected into PmSyncLoop)

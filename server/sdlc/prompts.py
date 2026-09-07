@@ -11,12 +11,22 @@ concerns flagged); ``spec.md`` seeds ``plan.md`` (plan mode). Every session
 commits to ``docs/sdlc/<slug>/<kind>.md``, opens a NON-draft PR, and must never
 edit the upstream artifacts it reads — v1 is propose-only, so the artifact PR is
 the proposal and a human advance is the gate.
+
+Phase 2 (#804) adds the *back* of the loop to this same module rather than a
+parallel one: ``build_breach_evidence`` renders a control-band breach, and the
+two builders above it turn that evidence into either a read-only diagnosis
+session (2σ) or the intake trigger text that becomes ``intent.md`` (3σ).
 """
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from ccswitch.engines import AgentEngine
 
 from server.sessions.completion import commit_trailer
+
+if TYPE_CHECKING:  # pragma: no cover — typing only, keeps this module import-light
+    from server.sdlc.control_bands import Breach
 
 # One place defining the committed-artifact directory (single source of truth).
 SDLC_DOCS_DIR = "docs/sdlc"
@@ -143,4 +153,127 @@ def build_plan_prompt(
         "- **Tests** — the tests that prove each step, TDD-first where possible.\n"
         "- **Risks** — what could go wrong and the mitigation for each.\n\n"
         + _common_instructions(slug, "plan", repo, default_branch, engine)
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2 — the Maintain loop (#804)                                            #
+#                                                                               #
+# A control-band breach is rendered ONCE, by build_breach_evidence, and both     #
+# response tiers read that rendering. Two independent descriptions of the same   #
+# incident would drift, and the diagnosis a human reads at 2σ has to be the same #
+# incident the intent.md at 3σ was written from (constitution VI).               #
+# --------------------------------------------------------------------------- #
+
+def build_breach_evidence(breach: "Breach", *, repo: str = "", unit: str = "") -> str:
+    """Render a ``control_bands.Breach`` as the evidence block both Maintain-loop
+    prompts embed. Pure — every number comes off the breach.
+
+    The rendering states the rule *and* the arithmetic behind it. An agent told
+    only "PR cycle time breached 3σ" has to re-derive the detection to know
+    whether it agrees; one given the baseline, the σ-distance and the offending
+    points can start on the actual question, which is *why*.
+    """
+    suffix = f" {unit}" if unit else ""
+    points = "\n".join(
+        f"  - {s.at}: {s.value:.4g}{suffix} "
+        f"({breach.baseline.zone(s.value):+.2f}σ)" for s in breach.points)
+    return (
+        "CONTROL-BAND BREACH (deterministic detection — no model was involved)\n"
+        f"- Metric: {breach.metric}{f' in {repo}' if repo else ''}\n"
+        f"- Rule: {breach.rule} — breached the {breach.sigma}σ band on the "
+        f"{breach.side} side\n"
+        f"- Newest observation: {breach.value:.4g}{suffix} at {breach.at} "
+        f"({breach.z:+.2f}σ)\n"
+        f"- Rolling baseline: mean {breach.baseline.mean:.4g}{suffix}, "
+        f"σ {breach.baseline.stddev:.4g}, over n={breach.baseline.n} samples\n"
+        f"- Points that fired the rule (oldest first):\n{points}\n"
+    )
+
+
+def build_diagnosis_prompt(
+    breach: "Breach",
+    *,
+    tools: list[str] | tuple[str, ...] = (),
+    repo: str = "",
+    unit: str = "",
+) -> str:
+    """Seed prompt for a 2σ **read-only** diagnosis session.
+
+    This tier investigates and reports; it never changes anything. The session's
+    transcript IS its deliverable — it is linked to the triage item, the way a
+    ``pr_doctor`` session is linked to its PR — so the prompt asks for a
+    conclusion in the conversation rather than a file nobody asked for.
+
+    *tools* is the tier's allowlist from ``bands.yaml``, stated as a binding
+    constraint. See ``server/sdlc/bands.py`` on what that does and does not
+    enforce.
+    """
+    tools_block = ("\n".join(f"- {t}" for t in tools)
+                   if tools else "- (none declared — read-only inspection only)")
+    return (
+        "You are running the **Maintain** stage of an AI-native SDLC loop, at the "
+        "read-only *diagnose* tier. A deterministic control-band monitor detected "
+        "the breach below and woke you to explain it. Nobody is watching this "
+        "session; finish with a written conclusion.\n\n"
+        f"{build_breach_evidence(breach, repo=repo, unit=unit)}\n"
+        "Investigate and answer, in this order:\n"
+        "1. **Is it real?** Could this be a measurement artifact (a backfill, a\n"
+        "   window boundary, one outlier PR) rather than a change in the system?\n"
+        "2. **What changed?** Correlate the breach window against merges, releases\n"
+        "   and config changes in that period.\n"
+        "3. **Most likely cause**, with the evidence for it and your confidence.\n"
+        "4. **Recommended response** — and say plainly if the right answer is\n"
+        "   \"nothing, this is normal variation\".\n\n"
+        "Constraints — this tier is READ-ONLY. You may use only these tools:\n"
+        f"{tools_block}\n"
+        "- Do NOT edit, create or delete any file.\n"
+        "- Do NOT commit, push, open a PR, or comment on GitHub.\n"
+        "- Do NOT restart, ship or reconfigure anything.\n"
+        "If the fix seems obvious and urgent, say so in your conclusion and stop — "
+        "escalating past read-only is a human's call, not yours.\n"
+    )
+
+
+def build_breach_trigger(
+    breach: "Breach",
+    *,
+    repo: str = "",
+    unit: str = "",
+    title: str = "",
+) -> str:
+    """The intake **trigger text** for a 3σ breach — the step that closes the loop.
+
+    Deliberately NOT a second intent-writing prompt. It is the ``Trigger.text``
+    handed to the existing ``SdlcIntakeLoop``, which already owns the one path
+    that turns a trigger into a committed ``intent.md`` PR (constitution VI:
+    there is exactly one intent writer, and Phase 2 feeds it rather than forking
+    it — ``build_intent_prompt`` wraps this text).
+
+    The regression-eval clause is the design's Phase-3 tie-in (§7: *"each
+    incident adds a regression eval"*). It rides on the intent document because
+    that is the artifact this incident actually produces — a separate
+    eval-writing session would be a second agent reasoning about the same
+    incident from less context.
+    """
+    heading = title or breach.metric
+    return (
+        f"A control-band monitor watching **{heading}** breached its "
+        f"{breach.sigma}σ band and filed this incident automatically. Detection "
+        "was deterministic; the judgment is yours.\n\n"
+        f"{build_breach_evidence(breach, repo=repo, unit=unit)}\n"
+        "Write the intent document for fixing this. Before you do, investigate "
+        "the breach window — what merged, what shipped, what changed — and let "
+        "what you find drive the Problem section. If your investigation concludes "
+        "this is normal variation or a measurement artifact, SAY SO as the "
+        "document's Problem and recommend closing the incident: a wrong intent is "
+        "more expensive than an honest no-op.\n\n"
+        "Additionally, add a regression eval for this incident under "
+        "`evals/regressions/` (see `evals/README.md` for the case format: `id`, "
+        "`description`, `kind: static`, `check`, `tags`). Its `check` must be a "
+        "deterministic shell command that exits non-zero if the condition that "
+        "produced this breach can recur. Commit it in the same PR as the intent "
+        "document. If no deterministic check is possible for this incident, say "
+        "why in the intent's Open questions section instead of inventing a "
+        "vacuous one that always passes.\n"
     )

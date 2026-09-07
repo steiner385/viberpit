@@ -1,0 +1,14 @@
+id: control-band-policy-tiers
+description: >-
+  server/sdlc/bands.yaml still loads and still declares the designed response
+  ladder — 1σ log, 2σ diagnose (read-only), 3σ propose — with no mutating tool in
+  the read-only tier. bands.yaml is agent configuration in the strongest sense:
+  it is the file that decides what an unattended agent may do about a production
+  signal, so a change to it belongs behind this gate alongside CLAUDE.md and the
+  hooks (AI-Native SDLC §7 / #804).
+kind: static
+tags: [agent-config, control-bands, sdlc-maintain]
+# Routes through the pytest assertions rather than restating them: those tests are
+# where the invariant is expressed, and a second copy here would be free to drift
+# from the first (constitution VI).
+check: python -m pytest server/tests/test_sdlc_bands.py -q -k committed

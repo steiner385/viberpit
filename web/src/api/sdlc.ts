@@ -103,3 +103,74 @@ export function createInitiative(input: CreateInitiativeInput): Promise<Initiati
 export function advanceInitiative(slug: string): Promise<Initiative> {
   return api.post<Initiative>(`/sdlc/initiatives/${encodeURIComponent(slug)}/advance`)
 }
+
+// ── Control-band incidents: the SDLC Maintain-loop triage queue (#804) ───────
+//
+// NOT the PM triage inbox (`api/pm.ts`, `QK.triage`). That one holds AI proposals
+// about how to classify work items; this one holds control-band INCIDENTS —
+// deterministic metric breaches. The two share the word and nothing else, so
+// everything here is named `incident`/`sdlcTriage` to keep them apart.
+
+/** Lifecycle of an incident — mirrors server `TRIAGE_STATUSES`. */
+export const INCIDENT_STATUSES = [
+  'open', 'diagnosing', 'scheduled', 'queued', 'intake', 'dismissed',
+] as const
+export type IncidentStatus = (typeof INCIDENT_STATUSES)[number]
+
+/** What a human may do to an incident — mirrors server `TRIAGE_ACTIONS`. */
+export type IncidentAction = 'triage_now' | 'schedule' | 'dismiss'
+
+export interface IncidentPoint {
+  at: string
+  value: number
+}
+
+export interface Incident {
+  id: string
+  /** Stable breach identity, `metric:rule:side`. */
+  key: string | null
+  metric: string | null
+  source: string | null
+  repo: string | null
+  /** Western Electric rule that fired: we1 | we2 | we3 | we4. */
+  rule: string | null
+  sigma: number | null
+  side: string | null
+  /** bands.yaml tier this breach selected, and what that tier does. */
+  tier: string | null
+  response: string | null
+  value: number | null
+  baselineMean: number | null
+  baselineStddev: number | null
+  baselineN: number | null
+  observedAt: string | null
+  summary: string | null
+  evidence: IncidentPoint[]
+  status: IncidentStatus | string | null
+  dismissedReason: string | null
+  scheduledFor: string | null
+  sessionId: string | null
+  initiativeSlug: string | null
+  occurrences: number | null
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+export interface IncidentActionInput {
+  id: string
+  action: IncidentAction
+  /** ISO-8601, required for `schedule` and rejected in the past. */
+  scheduledFor?: string
+  /** Required for `dismiss` — the queue is an audit trail. */
+  reason?: string
+}
+
+export function fetchIncidents(): Promise<Incident[]> {
+  return api
+    .get<{ items: Incident[] }>('/sdlc/triage')
+    .then((r) => r.items ?? [])
+}
+
+export function actOnIncident({ id, ...body }: IncidentActionInput): Promise<Incident> {
+  return api.post<Incident>(`/sdlc/triage/${encodeURIComponent(id)}/action`, body)
+}

@@ -60,6 +60,7 @@ from .cicd_doctor import CicdDoctor  # noqa: E402
 from .archive_audit import ArchiveAudit  # noqa: E402
 from .sdlc_intake import SdlcIntake  # noqa: E402
 from .sdlc_synthesizer import SdlcSynthesizer  # noqa: E402
+from .control_band_monitor import ControlBandMonitor  # noqa: E402
 from .pm_sync import PmSync  # noqa: E402
 from .pm_triage import PmTriage  # noqa: E402
 from .pm_onboard import PmOnboard  # noqa: E402
@@ -73,6 +74,7 @@ registry.register(CicdDoctor())
 registry.register(ArchiveAudit())
 registry.register(SdlcIntake())
 registry.register(SdlcSynthesizer())
+registry.register(ControlBandMonitor())
 registry.register(PmSync())
 registry.register(PmTriage())
 registry.register(PmOnboard())

@@ -1,5 +1,8 @@
-"""SDLC initiative API (#802) + build-stage correlation (#801)."""
+"""SDLC initiative API (#802) + build-stage correlation (#801) + the Phase-2
+control-band triage queue (#804)."""
 from __future__ import annotations
+
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -8,8 +11,17 @@ from sqlalchemy import select
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
-from server.db.models import GhProjectItem, Initiative, InitiativeArtifact, Session as DbSession, WorkItem
+from server.db.models import (
+    TRIAGE_STATUSES,
+    GhProjectItem,
+    Initiative,
+    InitiativeArtifact,
+    Session as DbSession,
+    TriageItem,
+    WorkItem,
+)
 from server.pm.desired_state import STATUS_BLOCKED, STATUS_NEEDS_HUMAN
+from server.sdlc import triage_store
 from server.sdlc.engine import (
     ArtifactView,
     AwaitApproval,
@@ -330,9 +342,122 @@ async def advance_initiative(
     return _initiative_to_dict(ini)
 
 
+# --------------------------------------------------------------------------- #
+# Triage queue — the Maintain loop's human surface (#804)                       #
+# --------------------------------------------------------------------------- #
+
+#: What a human may do to a queued incident (design §6, issue #804: "triage now /
+#: schedule / dismiss-with-reason"). One vocabulary, shared with the web client.
+TRIAGE_ACTIONS: tuple[str, ...] = ("triage_now", "schedule", "dismiss")
+
+#: An incident SDLC Intake has already adopted is an Initiative now — it has a
+#: branch, a session and (soon) a PR. Re-dispositioning the queue row would
+#: change nothing about any of that while making the queue lie about it, so every
+#: action refuses on this status rather than pretending to work.
+_ADOPTED = "intake"
+
+
+class TriageActionBody(BaseModel):
+    action: str
+    # Only for `schedule`. Timezone-aware or naive; naive is read as UTC, matching
+    # every other datetime boundary in this app.
+    scheduledFor: datetime | None = None
+    # Required for `dismiss`. A dismissal without a reason is indistinguishable
+    # from an unexplained one six weeks later, and this queue is an audit trail.
+    reason: str | None = None
+
+
 @router.get("/triage")
 async def triage(
+    status_filter: str | None = None,
+    limit: int = 100,
     _identity: str = Depends(current_identity),
 ) -> dict:
-    # Phase 2 (#804) stub
-    return {"items": []}
+    """The control-band triage queue, newest first (#804).
+
+    ``status_filter`` is a comma-separated subset of ``TRIAGE_STATUSES``; omit it
+    for everything. The web queue asks for everything and groups client-side —
+    the queue is bounded by the monitor's own incident ceiling, so paging it
+    would add a control the data cannot outgrow.
+    """
+    statuses = None
+    if status_filter:
+        statuses = [s.strip() for s in status_filter.split(",") if s.strip()]
+        unknown = [s for s in statuses if s not in TRIAGE_STATUSES]
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": "unknown_status", "message": f"unknown status(es): {unknown}"})
+    items = await triage_store.list_items(
+        statuses=statuses, limit=max(1, min(int(limit), 500)))
+    return {"items": [triage_store.item_to_dict(i) for i in items]}
+
+
+@router.post("/triage/{item_id}/action")
+async def triage_action(
+    item_id: str,
+    body: TriageActionBody,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Disposition one incident: triage it now, schedule it, or dismiss it.
+
+    ``triage_now`` queues the incident for SDLC Intake — the same status a 3σ
+    breach reaches on its own. That is deliberate: the human tap and the
+    automatic path converge on ONE state, so there is a single way an incident
+    becomes an ``intent.md`` and no second code path to keep in step.
+    """
+    if body.action not in TRIAGE_ACTIONS:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "unknown_action",
+                    "message": f"action must be one of {', '.join(TRIAGE_ACTIONS)}"})
+    item = (
+        await db.execute(select(TriageItem).where(TriageItem.id == item_id))
+    ).scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found"})
+    if item.status == _ADOPTED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "already_adopted",
+                    "message": "SDLC Intake has already adopted this incident; "
+                               "act on the initiative instead"})
+
+    detail: dict = {"key": item.key, "action": body.action}
+    if body.action == "triage_now":
+        item.status = "queued"
+        item.scheduled_for = None
+    elif body.action == "schedule":
+        when = body.scheduledFor
+        if when is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": "missing_scheduled_for",
+                        "message": "schedule requires scheduledFor"})
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if when <= datetime.now(timezone.utc):
+            raise HTTPException(
+                status_code=422,
+                detail={"error": "scheduled_in_the_past",
+                        "message": "scheduledFor must be in the future"})
+        item.status = "scheduled"
+        item.scheduled_for = when
+        detail["scheduledFor"] = when.isoformat()
+    else:  # dismiss
+        reason = (body.reason or "").strip()
+        if not reason:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": "missing_reason",
+                        "message": "dismiss requires a reason"})
+        item.status = "dismissed"
+        item.dismissed_reason = reason
+        item.scheduled_for = None
+        detail["reason"] = reason
+
+    await db.flush()
+    await record_audit(db=db, type=f"sdlc.triage.{body.action}", identity=identity,
+                       detail=detail)
+    return triage_store.item_to_dict(item)

@@ -1168,6 +1168,106 @@ class InitiativeArtifact(Base):
 
 
 # ---------------------------------------------------------------------------
+# SDLC Maintain loop — the triage queue (#795 Phase 2 / #804)
+#
+# One row per control-band incident: a deterministic breach detected by
+# server/sdlc/control_bands.py, filed by the control-band-monitor automation, and
+# dispositioned either by ccswitch (a 3σ breach queues itself for SDLC Intake) or
+# by a human (triage now / schedule / dismiss-with-reason).
+#
+# Why a table and not AutomationTargetState: that store holds per-target
+# state-machine COUNTERS (attempts, backoff, gave-up flags) — see the Initiative
+# block above, which deliberately uses it for exactly that. A triage item is
+# durable domain data with a human disposition, an ordering, an audit trail and
+# an API of its own, so it earns a row. The monitor's own retry/cap counters DO
+# still live in AutomationTargetState, unchanged.
+#
+# Same nullability rule as the Initiative block: every non-key column is nullable
+# so _reconcile_columns can ALTER-ADD it on any dialect. key/metric/status are
+# writer-side invariants (always set on insert).
+# ---------------------------------------------------------------------------
+
+# Lifecycle of a triage item. Single source of truth — import this rather than
+# re-inlining the strings (the API validator and the web client both read it).
+#
+#   open       — filed, awaiting a disposition (every 1σ item rests here)
+#   diagnosing — a read-only 2σ diagnosis session is attached (session_id)
+#   scheduled  — a human deferred it until scheduled_for
+#   queued     — queued for SDLC Intake; the intake seam picks these up
+#   intake     — Intake has spawned the intent session (initiative_slug set)
+#   dismissed  — a human closed it with a reason
+TRIAGE_STATUSES: tuple[str, ...] = (
+    "open", "diagnosing", "scheduled", "queued", "intake", "dismissed")
+
+# Statuses a re-detected breach may NOT overwrite: once a human (or Intake) has
+# acted on an incident, a later tick observing the same ongoing breach must not
+# silently reopen it. The monitor refreshes the measurements on these rows but
+# leaves the disposition alone.
+TRIAGE_TERMINAL_STATUSES: frozenset[str] = frozenset({"dismissed", "intake"})
+
+
+class TriageItem(Base):
+    """One control-band incident in the SDLC triage queue.
+
+    ``key`` is the breach's stable identity (``metric:rule:side``) and is unique,
+    so a breach that persists across ticks updates its row instead of filing a
+    duplicate every minute. The measurement columns are a snapshot of the
+    detection that filed it — the row is the audit record of what ccswitch saw,
+    so they are stored rather than recomputed on read.
+    """
+
+    __tablename__ = "triage_items"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    # Writer-side invariant: always set. Nullable + unique for the same reason
+    # Initiative.slug is — reconcile must be able to ALTER-ADD it, and a unique
+    # index over a nullable column permits many NULLs on both dialects.
+    key: Mapped[str | None] = mapped_column(String, nullable=True, unique=True, index=True)
+    metric: Mapped[str | None] = mapped_column(String, nullable=True)
+    source: Mapped[str | None] = mapped_column(String, nullable=True)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Detection snapshot: which rule fired, in which zone, on which side.
+    rule: Mapped[str | None] = mapped_column(String, nullable=True)
+    sigma: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    side: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The bands.yaml tier this breach selected, and what that tier does.
+    tier: Mapped[str | None] = mapped_column(String, nullable=True)
+    response: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Measurements (Float, not Numeric: these are display/diagnostic values, never
+    # money, and both dialects round-trip a double identically).
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    baseline_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
+    baseline_stddev: Mapped[float | None] = mapped_column(Float, nullable=True)
+    baseline_n: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Bucket label of the newest sample (a UTC date string, not a timestamp — it
+    # names a bucket, and re-parsing it as an instant would imply a precision the
+    # daily reduction does not have).
+    observed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The points that fired the rule: [{"at": "...", "value": 1.0}, ...].
+    evidence: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # Disposition. Writer-side invariant: always set (TRIAGE_STATUSES).
+    status: Mapped[str | None] = mapped_column(String, nullable=True, default="open",
+                                               index=True)
+    dismissed_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None)
+    # The 2σ diagnosis session, when one was spawned.
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Set once SDLC Intake adopts the item — the pointer that closes the loop back
+    # into Phase 1. A slug (not an FK): Intake creates the Initiative row lazily on
+    # its own tick, so the item names it before the row exists.
+    initiative_slug: Mapped[str | None] = mapped_column(String, nullable=True)
+    # How many times this breach has been re-observed while still open. Surfaced
+    # in the queue so a human can tell a one-off from a week-long regression.
+    occurrences: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+# ---------------------------------------------------------------------------
 # PM product layer (design: docs/superpowers/specs/2026-08-31-pm-product-layer-design.md)
 #
 # Truth model is layered: GitHub owns work items (WorkItem is a disposable
