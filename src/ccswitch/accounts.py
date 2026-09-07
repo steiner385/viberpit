@@ -16,7 +16,7 @@ from .account_names import aliases_store_root
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
 from .engines import AgentEngine
-from .quota import UNSUPPORTED, QuotaSnapshot, unknown_snapshot
+from .quota import REASON_SETUP_TOKEN_SCOPE, UNSUPPORTED, QuotaSnapshot, unknown_snapshot
 from .selector import AllAccountsBusy, Picked, eligible_names, select_picked
 
 log = logging.getLogger(__name__)
@@ -342,19 +342,28 @@ def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "Qu
     ``_NO_SETUP_TOKEN`` when no token exists, so the caller proceeds to its normal
     needs-reauth flip. NEVER logs the token.
 
-    A FAILED read here records an ``UNSUPPORTED`` snapshot rather than a fetch
-    failure, because for this credential shape it is a capability gap and not a
-    transient fault: a setup-token minted with the narrow ``user:inference`` scope
-    is refused by the usage endpoint permanently, and no amount of retrying earns
-    it the ``user:profile`` scope it lacks (see ``setup_token_oauth``). Counting
-    that as a failure grew ``usageFetchCooldownUntil`` without bound while leaving
-    the account's quota simply blank — a state the UI could not explain and the
-    selector could not distinguish from a fetch that had never been tried.
-    ``UNSUPPORTED`` says the thing that is actually true, and because
-    ``record_usage`` caches it under the normal TTL, the doomed call stops
-    repeating yet still re-checks once the TTL lapses (so a re-minted, broader-
-    scoped token recovers on its own). ``selector.usage_known`` already treats
-    ``UNSUPPORTED`` exactly as it treated ``None``, so rotation is unchanged.
+    A FAILED read here is one of two very different things, and the usage
+    endpoint's own answer cannot tell them apart — it refuses a setup-token
+    minted with the narrow ``user:inference`` scope with a 429, the same status
+    a genuine throttle sends. So the failure is confirmed against the profile
+    endpoint (``oauth.has_usage_scope``), which refuses a scope-less token
+    explicitly:
+
+    * scope absent → a permanent capability gap, not a transient fault: no amount
+      of retrying earns the token the ``user:profile`` scope it lacks (see
+      ``setup_token_oauth``). Record ``UNSUPPORTED`` with
+      ``REASON_SETUP_TOKEN_SCOPE`` so the UI can say "re-authenticate" rather
+      than leaving quota blank. ``record_usage`` caches it under the normal TTL,
+      so the doomed call stops repeating yet re-checks once the TTL lapses — a
+      re-minted, broader-scoped token recovers on its own.
+    * scope present, or the oracle could not answer → we genuinely do not know:
+      back off through the ledger-shared (bounded) cooldown exactly like every
+      other transient usage failure, and return None. Recording UNSUPPORTED
+      here would tell the user to re-authenticate an account whose credential
+      is fine.
+
+    ``selector.usage_known`` already treats ``UNSUPPORTED`` exactly as it
+    treated ``None``, so rotation is unchanged either way.
     """
     from . import crypto
     tok = crypto.read_oauth_token(name)
@@ -363,9 +372,18 @@ def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "Qu
     try:
         u = oauth.fetch_usage(tok, **retry_kw)
     except (oauth.AuthError, oauth.UsageError, oauth.TransientError) as e:
-        log.warning("usage_for(%s): setup-token cannot read usage (%s); keeping ok, "
-                    "quota reported UNSUPPORTED for this credential", name, e)
-        u = unknown_snapshot("anthropic", fetched_at=now, availability=UNSUPPORTED)
+        if not _setup_token_lacks_usage_scope(name, tok):
+            log.warning("usage_for(%s): setup-token usage fetch failed (%s) but the token "
+                        "carries the usage scope — transient, backing off", name, e)
+            with ledger.locked_ledger() as led:
+                ledger.note_usage_fetch_failure(led, name, time.time())
+                ledger.set_status(led, name, "ok")
+            return None
+        log.warning("usage_for(%s): setup-token lacks the user:profile scope (usage endpoint "
+                    "said: %s); keeping ok, quota UNSUPPORTED until the account is "
+                    "re-authenticated", name, e)
+        u = unknown_snapshot("anthropic", fetched_at=now, availability=UNSUPPORTED,
+                             reason=REASON_SETUP_TOKEN_SCOPE)
     with ledger.locked_ledger() as led:
         ledger.record_usage(led, name, u, now)
         ledger.set_status(led, name, "ok")
@@ -373,6 +391,20 @@ def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "Qu
     # back out of the cache, so returning None here would make the first call and
     # the second disagree about the same state.
     return u
+
+
+def _setup_token_lacks_usage_scope(name: str, tok: str) -> bool:
+    """True only on the server's EXPLICIT scope refusal. NEVER logs the token.
+
+    Any other outcome — scope present, token dead, oracle unreachable — is False:
+    "could not confirm the gap" must fall through to the transient path, never
+    to a permanent UNSUPPORTED verdict.
+    """
+    try:
+        return not oauth.has_usage_scope(tok)
+    except (oauth.AuthError, oauth.TransientError, oauth.UsageError) as e:
+        log.debug("usage_for(%s): scope probe could not answer (%s)", name, e)
+        return False
 
 
 def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -> QuotaSnapshot | None:

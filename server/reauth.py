@@ -478,9 +478,11 @@ class ReauthManager:
             token = await asyncio.to_thread(setup_token_oauth.exchange, code, challenge)
             await asyncio.to_thread(crypto.store_oauth_token, name, token)
             await asyncio.to_thread(accounts.mark_reauthenticated, name)
+            scope_note = await asyncio.to_thread(
+                self._usage_scope_note, name, token, getattr(challenge, "scope", None))
             async with self._lock:
                 self._state.state = "success"
-                self._state.message = None
+                self._state.message = scope_note
         except setup_token_oauth.SetupTokenStateMismatch:
             await self._fail(name, "Code didn't match this request — restart generation.")
         except setup_token_oauth.SetupTokenInvalidCode as exc:
@@ -500,6 +502,37 @@ class ReauthManager:
             await self._fail(name, "Token generation failed — try again.")
 
         return self.status(name)
+
+    @staticmethod
+    def _usage_scope_note(name: str, token: str, requested_scope: str | None) -> str | None:
+        """Confirm the freshly minted token can read usage; a message if it cannot.
+
+        This is the one scope failure the exchange path cannot see: the authorize
+        page grants a code but silently narrows it, so ``exchange()`` succeeds and
+        the token launches sessions — yet the usage endpoint will refuse it and
+        the account shows no quota. Confirming against the real API at mint time
+        (``oauth.has_usage_scope``) surfaces that immediately, on the reauth
+        panel, instead of as a blank badge minutes later. The log line names the
+        scope that was REQUESTED so the next attempt is diagnosable.
+
+        Advisory only: the token is already stored and the run is a success
+        either way; an oracle that cannot answer says nothing. NEVER logs the
+        token.
+        """
+        from ccswitch import oauth
+
+        try:
+            if oauth.has_usage_scope(token):
+                return None
+        except Exception as exc:  # noqa: BLE001 — advisory probe, never fails the reauth
+            log.debug("setup-token scope probe for %r could not answer: %s", name, exc)
+            return None
+        log.warning(
+            "setup-token for %r was minted WITHOUT user:profile although %r was requested — "
+            "sessions will launch, but quota will report UNSUPPORTED until re-authenticated",
+            name, requested_scope)
+        return ("Signed in, but this token lacks the user:profile scope, so the account "
+                "will not report usage. Re-authenticate to fix that.")
 
     async def _retry_at_fallback_scope(self, exc, challenge) -> bool:
         """Re-issue the challenge at the narrow scope after a SCOPE refusal.

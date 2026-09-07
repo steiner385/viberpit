@@ -117,24 +117,32 @@ class TestUsageFetchBackoff(unittest.TestCase):
         A narrow-scope setup-token (``user:inference``, no ``user:profile``) is
         refused by the usage endpoint *permanently* — retrying can never earn it
         the scope it lacks. So this is a capability gap, not a fetch failure: the
-        snapshot says UNSUPPORTED, the failure cooldown is NOT grown, and neither
-        endpoint is re-hit because the snapshot caches under the normal TTL.
+        snapshot says UNSUPPORTED and names the reason, the failure cooldown is
+        NOT grown, and neither endpoint is re-hit because the snapshot caches
+        under the normal TTL.
+
+        The usage endpoint's 429 alone does not prove the gap (it is the same
+        status a real throttle sends), so the fallback confirms it against the
+        profile endpoint, which refuses a scope-less token explicitly.
         """
         with temp_env():
             from ccswitch import accounts, crypto, oauth
-            from ccswitch.quota import UNSUPPORTED
+            from ccswitch.quota import REASON_SETUP_TOKEN_SCOPE, UNSUPPORTED
             _seed_account("alpha", expires_in_ms=-1)  # expired → refresh attempted
             with mock.patch.object(
                     oauth, "refresh_access_token",
                     side_effect=oauth.AuthError("dead")) as rt, \
                  mock.patch.object(crypto, "read_oauth_token", return_value="sk-ant-oat01-x"), \
+                 mock.patch.object(oauth, "has_usage_scope", return_value=False) as hs, \
                  mock.patch.object(
                     oauth, "fetch_usage",
                     side_effect=oauth.UsageError("usage endpoint returned 429")) as fu:
                 u = accounts.usage_for("alpha")
                 self.assertIsNotNone(u)
                 self.assertEqual(u.availability, UNSUPPORTED)
+                self.assertEqual(u.reason, REASON_SETUP_TOKEN_SCOPE)
                 self.assertEqual(u.windows, ())   # never a fabricated 0%
+                hs.assert_called_once_with("sk-ant-oat01-x")
                 self.assertEqual(rt.call_count, 1)
                 self.assertEqual(fu.call_count, 1)
                 # Account stays ok — the setup token keeps it launch-capable.
@@ -147,6 +155,52 @@ class TestUsageFetchBackoff(unittest.TestCase):
                 self.assertEqual(accounts.usage_for("alpha").availability, UNSUPPORTED)
                 self.assertEqual(rt.call_count, 1)
                 self.assertEqual(fu.call_count, 1)
+
+    def test_setup_token_with_usage_scope_treats_a_429_as_transient(self):
+        """A setup-token that HAS ``user:profile`` and still fails is throttled, not
+        capability-gapped: back off (bounded, ledger-shared) and try again later.
+        Recording UNSUPPORTED here would tell the user to re-authenticate an
+        account whose credential is fine — the wrong instruction.
+        """
+        with temp_env():
+            from ccswitch import accounts, crypto, oauth
+            _seed_account("alpha", expires_in_ms=-1)
+            with mock.patch.object(oauth, "refresh_access_token",
+                                   side_effect=oauth.AuthError("dead")), \
+                 mock.patch.object(crypto, "read_oauth_token", return_value="sk-ant-oat01-x"), \
+                 mock.patch.object(oauth, "has_usage_scope", return_value=True), \
+                 mock.patch.object(oauth, "fetch_usage",
+                                   side_effect=oauth.UsageError("usage endpoint returned 429")) as fu:
+                self.assertIsNone(accounts.usage_for("alpha"))
+                self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
+                fails, until = _cooldown("alpha")
+                self.assertEqual(fails, 1)
+                self.assertAlmostEqual(until - time.time(), 60.0, delta=5.0)
+                # Cooldown honoured: no second usage call until it lapses.
+                self.assertIsNone(accounts.usage_for("alpha"))
+                self.assertEqual(fu.call_count, 1)
+                _expire_cooldown("alpha")
+                accounts.usage_for("alpha")
+                self.assertEqual(fu.call_count, 2)
+
+    def test_setup_token_scope_probe_failure_is_transient_not_unsupported(self):
+        """If the scope oracle itself cannot answer (network, 5xx), we do not know —
+        and 'do not know' is a backoff, never a permanent UNSUPPORTED verdict."""
+        with temp_env():
+            from ccswitch import accounts, crypto, oauth, paths
+            _seed_account("alpha", expires_in_ms=-1)
+            with mock.patch.object(oauth, "refresh_access_token",
+                                   side_effect=oauth.AuthError("dead")), \
+                 mock.patch.object(crypto, "read_oauth_token", return_value="sk-ant-oat01-x"), \
+                 mock.patch.object(oauth, "has_usage_scope",
+                                   side_effect=oauth.TransientError("profile 503")), \
+                 mock.patch.object(oauth, "fetch_usage",
+                                   side_effect=oauth.UsageError("usage endpoint returned 429")):
+                self.assertIsNone(accounts.usage_for("alpha"))
+                fails, _ = _cooldown("alpha")
+                self.assertEqual(fails, 1)
+                data = json.loads(paths.ledger_path().read_text())
+                self.assertNotIn("usage", data["accounts"]["alpha"])
 
     def test_unsupported_setup_token_usage_keeps_account_out_of_scored_tiers(self):
         """UNSUPPORTED must read to the selector exactly as None did.

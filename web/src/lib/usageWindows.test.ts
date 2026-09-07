@@ -59,4 +59,17 @@ describe('usageWindows', () => {
       .toBe('Credentials rejected — re-authenticate')
     expect(usageUnavailableReason(unavailable('unknown'))).toBe('Usage unavailable')
   })
+
+  // 'unsupported' covers two very different situations: a provider with no quota
+  // API (nothing to do) and an Anthropic setup-token minted without the scope the
+  // usage endpoint reads (re-authenticate). The server names which via `reason`.
+  it('tells the user to re-authenticate when the credential lacks the usage scope', () => {
+    expect(usageUnavailableReason({ ...unavailable('unsupported'), reason: 'setup_token_scope' }))
+      .toBe('Setup-token lacks the user:profile scope — re-authenticate to restore usage reporting')
+    // An unrecognised reason falls back to the generic availability wording.
+    expect(usageUnavailableReason({ ...unavailable('unsupported'), reason: 'something_new' }))
+      .toBe('Quota not reported for this credential')
+    expect(usageUnavailableReason({ ...unavailable('unsupported'), reason: null }))
+      .toBe('Quota not reported for this credential')
+  })
 })

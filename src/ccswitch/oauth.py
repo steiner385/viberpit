@@ -33,6 +33,7 @@ _DEFAULT_MAX_RETRIES = 3
 _DEFAULT_MAX_TOTAL_SEC = 15.0  # wall-clock ceiling across all attempts
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 BETA_HEADER = "oauth-2025-04-20"
@@ -223,6 +224,48 @@ def fetch_usage(access_token: str, *, max_retries: int = _DEFAULT_MAX_RETRIES,
     if status != 200:
         raise UsageError(f"usage endpoint returned {status}")
     return parse_usage(json.loads(body))
+
+
+# The server's own error code for "token lacks the scope this endpoint needs".
+# Matched on the body rather than the bare 403 because a Cloudflare edge block
+# is a 403 too (see ``_is_transient_status``), and that one IS worth retrying.
+_SCOPE_INSUFFICIENT = b"oauth_scope_insufficient"
+
+
+def has_usage_scope(access_token: str, *, max_retries: int = _DEFAULT_MAX_RETRIES,
+                    max_total_sec: float = _DEFAULT_MAX_TOTAL_SEC) -> bool:
+    """Whether *access_token* carries the scope the usage endpoint reads (``user:profile``).
+
+    The usage endpoint cannot answer this itself: it refuses a scope-less
+    setup-token with a 429 — the same status a genuine throttle sends — so a
+    failed usage read alone cannot tell "re-authenticate this account" from
+    "try again later". ``GET /api/oauth/profile`` guards on the same scope and
+    says so explicitly: 403 with ``oauth_scope_insufficient`` when it is missing,
+    200 when present (verified against the real API, 2026-09-07). That makes it
+    the scope oracle.
+
+    Returns True / False only on those two definitive answers. A 401 raises
+    ``AuthError`` (the token itself is dead); anything else — a 429, a 5xx, a
+    network failure, or a 403 that is NOT the scope refusal (Cloudflare) —
+    raises ``TransientError``, because "the oracle could not answer" must never
+    be read as "the scope is absent".
+    """
+    status, body = http_request(
+        "GET", PROFILE_URL,
+        headers={"Authorization": f"Bearer {access_token}", "anthropic-beta": BETA_HEADER},
+        # A scope 403 is terminal, and ``http_request`` would otherwise spend the
+        # whole retry budget (and its sleeps) on it. Retrying a transient here
+        # buys little: the caller has already backed off the failed usage read.
+        max_retries=0, max_total_sec=max_total_sec,
+    )
+    if status == 200:
+        return True
+    if status == 401:
+        raise AuthError("profile endpoint returned 401", status=status,
+                        body=_truncate_body(body))
+    if status == 403 and _SCOPE_INSUFFICIENT in body:
+        return False
+    raise TransientError(f"profile endpoint returned {status}")
 
 
 def refresh_access_token(refresh_token: str, prior: dict, *,

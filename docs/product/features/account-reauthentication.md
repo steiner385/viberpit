@@ -63,6 +63,17 @@ Running re-auth on a worker — it must run on the master and stream the display
   the *authorize* page, where no code is ever produced. A token already minted at the narrow scope
   cannot gain the scope retroactively, so its account reports quota `UNSUPPORTED` (a permanent
   capability gap, not a fetch failure) until it is re-minted.
+- The usage endpoint's 429 is NOT a scope signal on its own — it is the same status a genuine
+  throttle sends. The scope oracle is `GET /api/oauth/profile` (`oauth.has_usage_scope`): it guards
+  on the same `user:profile` scope and refuses a scope-less token with an explicit 403
+  `oauth_scope_insufficient`, while answering a `user:profile` token 200 (verified 2026-09-07). The
+  setup-token usage fallback confirms every failure against it: scope absent → `UNSUPPORTED` with
+  `reason=setup_token_scope`, which the Accounts page words as "re-authenticate"; scope present or
+  oracle unreachable → an ordinary bounded usage-fetch backoff, never a permanent verdict.
+  `submit_code` runs the same check at mint time so a token the authorize page silently narrowed is
+  reported on the reauth panel immediately (the log names the scope that was requested) rather than
+  as a blank quota badge later. Tokens minted before #1387 was deployed — the reauth ran against the
+  edge's *deployed* build, not the merged one — are narrow-scope and must simply be re-minted.
 - Browser re-auth alternative (#331): the reauth browser runs on a virtual X display viewable via
   web VNC; `auth_login.py` prepares a temp Chrome profile with Claude cookies stripped and cleans it
   up on cancel/timeout/error (#745).
