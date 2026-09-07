@@ -193,11 +193,16 @@ SELF_CERTIFIED_SOURCES = frozenset({"marker", "tool"})
 with a test that asserts every self-certifying source is in it. A session's own claim is a claim
 regardless of which transport carried it.
 
-**Telemetry.** Because `resolution` is now declared rather than guessed, the `session.tool_call` audit
-payload for `mark_no_pr` carries `{declared, inferred}` — the argument, and what
-`resolution_from_text` would have returned for the same turn text. That comparison is the only way to
-learn whether the heuristic was ever right, and mirrors the `{requested, applied}` pair the
-`model_approval.approve` audit already records for the same purpose. Audit rows only; no new metric.
+**Telemetry.** Because `resolution` is now declared rather than guessed, the two can be compared: what
+`mark_no_pr` was given, against what `resolution_from_text` would have inferred from the same turn
+text. That comparison is the only way to learn whether the heuristic was ever right, and mirrors the
+`{requested, applied}` pair `model_approval.approve` already records for the same purpose.
+
+It is emitted by the **Translator**, as a structured log event when the two disagree — not, as an
+earlier draft of this section had it, in the `session.tool_call` audit payload. A tool handler
+receives only its own arguments; it cannot see the turn text the inference would read, so the audit
+row is structurally the wrong place for the comparison. The Translator holds both at
+`ResultMessage`. No new event field, no new metric.
 
 ## 9. Instruction composition
 
