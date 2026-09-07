@@ -24,6 +24,8 @@ exercise the real writer/reader paths.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from sqlalchemy import DateTime
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.functions import FunctionElement
@@ -57,7 +59,7 @@ def db_utc_now() -> _DbUtcNow:
     return _DbUtcNow()
 
 
-def naive_utc_now() -> "datetime":
+def naive_utc_now() -> datetime:
     """Python-side "now" in the schema's convention: naive UTC.
 
     The writer-side twin of :func:`db_utc_now`. Use it for any timestamp you
@@ -65,5 +67,4 @@ def naive_utc_now() -> "datetime":
     of re-spelling ``datetime.now(timezone.utc).replace(tzinfo=None)`` at each
     call site.
     """
-    from datetime import datetime, timezone
     return datetime.now(timezone.utc).replace(tzinfo=None)

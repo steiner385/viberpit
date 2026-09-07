@@ -43,11 +43,9 @@ def upgrade() -> None:
         sa.Column("issue_closed_at", sa.DateTime(), nullable=True),
         sa.Column("muted_at", sa.DateTime(), nullable=True),
     )
-    op.create_index("ix_error_signatures_fingerprint", "error_signatures", ["fingerprint"])
     op.create_index("ix_error_signatures_status", "error_signatures", ["status"])
 
 
 def downgrade() -> None:
     op.drop_index("ix_error_signatures_status", table_name="error_signatures")
-    op.drop_index("ix_error_signatures_fingerprint", table_name="error_signatures")
     op.drop_table("error_signatures")
