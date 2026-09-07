@@ -87,6 +87,11 @@ compatibility audit; API-key authentication in v1.
   whatever models happened to exist during development.
 - Shared usage becomes a list of typed quota windows. OpenAI's multiple/model-specific buckets are
   preserved; an API key with unknown spend must not be ranked as unused quota.
+- Quota (`account/rateLimits/read`) is answerable only by a logged-in app-server. So that an
+  account with no session open still shows quota, `server/usage/process_quota.py` reads a running
+  app-server every sweep and, once the ledger's reading is older than `process_quota_ttl_sec`
+  (default 600 s), starts one cold for a single read and leaves it to the idle reaper. The
+  accounts page's refresh button forces that read.
 - V1 is ChatGPT device-code auth plus interactive sessions. API-key auth is post-v1. Backlog/SDLC
   Codex automation parity is a required fast follow after origin-specific compatibility tests.
 - **Automation engine policy (Phase 7).** Every automation origin declares an audited engine

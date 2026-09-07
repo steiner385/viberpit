@@ -51,47 +51,6 @@ def set_auth_failure_sink(fn: "Callable[[AuthFailure], None] | None") -> None:
     _auth_failure_sink = fn
 
 
-_copilot_usage_reader: Callable[[str], "dict | None"] | None = None
-
-
-def set_copilot_usage_reader(fn: "Callable[[str], dict | None] | None") -> None:
-    """Register (or clear) the reader that fetches the proxy /usage payload for a copilot account.
-
-    The core stays transport-free: the daemon registers a reader at startup. When
-    unset (CLI usage) copilot usage_for returns None.
-    """
-    global _copilot_usage_reader
-    _copilot_usage_reader = fn
-
-
-def _copilot_usage_for(name: str) -> QuotaSnapshot | None:
-    reader = _copilot_usage_reader
-    if reader is None:
-        # Feature not configured — not a fetch failure, so no backoff.
-        return None
-    # Same ledger cooldown as the Anthropic path: a dead/idle proxy must not be
-    # re-hit on every sweep and every dashboard read.
-    with ledger.locked_ledger() as led:
-        if ledger.usage_fetch_cooldown_active(led, name, time.time()):
-            log.debug("usage_for(%s): fetch-failure cooldown active — skipping", name)
-            return None
-    try:
-        payload = reader(name)
-    except Exception:
-        log.warning("copilot usage read failed for %s", name, exc_info=True)
-        _note_usage_fetch_failure(name)
-        return None
-    now = datetime.now(timezone.utc)
-    u = copilot.usage_from_proxy(payload, now) if payload is not None else None
-    with ledger.locked_ledger() as led:
-        if u is not None:
-            ledger.record_usage(led, name, u, now)
-            ledger.set_status(led, name, "ok")
-        else:
-            ledger.note_usage_fetch_failure(led, name, time.time())
-    return u
-
-
 def emit_auth_failure(f: AuthFailure) -> None:
     sink = _auth_failure_sink
     if sink is None:
@@ -428,18 +387,26 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
         # nobody.
         log.warning("usage_for(%s): not in the account manifest — usage unknown", name)
         return None
-    if provider == copilot.PROVIDER:
-        return _copilot_usage_for(name)
-    if provider == account_registry.PROVIDER_OPENAI:
-        # Codex quota is read through the daemon's authenticated app-server and
-        # persisted into the canonical ledger path there. This synchronous core
-        # must never look for an Anthropic credential slot that OpenAI accounts
-        # intentionally do not have.
+    if provider in (copilot.PROVIDER, account_registry.PROVIDER_OPENAI):
+        # Process-backed quota: the Copilot proxy's /usage and the Codex
+        # app-server's account/rateLimits/read are readable only through a process
+        # the server owns. server/usage/process_quota.py starts one on demand,
+        # reads, and persists into the canonical ledger path; this synchronous
+        # core (CLI, selector probes, the poller) only ever reads what it left,
+        # judged fresh on the process TTL (ledger.usage_cache_ttl_for). It must
+        # never look for an Anthropic credential slot these accounts do not have,
+        # and an empty ledger is "not read yet", never a fetch failure — arming
+        # the shared cooldown here would block the refresher's next attempt.
         cfg = load_config()
         now = datetime.now(timezone.utc)
         with ledger.locked_ledger() as led:
             cached = ledger.cached_usage(led, name, cfg, now)
-        return cached or unknown_snapshot(account_registry.PROVIDER_OPENAI, fetched_at=now)
+        if cached is not None or provider == copilot.PROVIDER:
+            # Copilot keeps None for "nothing fresh": the rotation monitor reads
+            # consecutive None polls as an unreachable account, and a proxy that
+            # cannot be started for a whole process TTL is exactly that.
+            return cached
+        return unknown_snapshot(account_registry.PROVIDER_OPENAI, fetched_at=now)
     if name in _dead_accounts:
         log.debug("usage_for(%s): refresh token known-dead (400) — skipping without network I/O", name)
         return None

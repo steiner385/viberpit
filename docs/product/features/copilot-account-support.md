@@ -46,9 +46,17 @@ single ~monthly premium allowance instead.
   through the Copilot API may violate GitHub's ToS or Anthropic's usage policies — provided for
   personal experimentation; users own compliance (CLAUDE.md § Copilot).
 - Provider constant + usage mapping live in `src/ccswitch/copilot.py` (single source of truth):
-  `usage_from_proxy` projects the premium-request quota onto BOTH session and weekly dimensions so
-  the selector's binding-dimension logic works unchanged; a garbage payload returns None (degrades
-  to "usage unknown", not a false ceiling).
+  `usage_from_proxy` maps the premium-request quota to exactly one `premium` window of the shared
+  `QuotaSnapshot`, so the selector's binding-window logic works unchanged; a garbage payload
+  returns None (degrades to "usage unknown", not a false ceiling).
+- Usage is read through the proxy's `GET /usage`, which only exists while a proxy is running —
+  and the proxy is idle-reaped once its last session detaches. So that a Copilot account shows
+  usage with no session open (as an Anthropic account does), `server/usage/process_quota.py`
+  refreshes it on the poller's cadence: a running proxy is read every sweep; otherwise, once the
+  ledger's reading is older than `process_quota_ttl_sec` (config.json, default 600 s), the proxy is
+  started cold, read once, and handed straight back to the idle reaper. The same refresher serves
+  Codex. The core's `usage_for` never starts a process — it reads what the refresher persisted;
+  the accounts page's refresh button forces an immediate re-read.
 - Add flow: GitHub device-flow via `CopilotAuthManager` (`server/sessions/copilot_auth.py`) — spawns
   `copilot2api -token-dir <dir>` in login mode, scrapes the `github.com/login/device` URL + code
   (accumulated across separate output lines, #516), advances to `authorized` when

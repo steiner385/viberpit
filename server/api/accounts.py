@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 from ccswitch.accounts import (list_accounts, provider_of, remove_account,
                                set_account_enabled, set_allow_extra_usage, set_nickname,
                                set_weekly_reserve)
-from ccswitch import account_registry, paths
+from ccswitch import account_registry, copilot, paths
 from ccswitch.account_names import assert_valid_account_name, InvalidAccountName
 from ccswitch.account_registry import UnknownAccountError
 from ccswitch.config import load_config
@@ -90,6 +90,12 @@ USAGE_FETCH_TIMEOUT = float(os.environ.get("CCSWITCH_USAGE_FETCH_TIMEOUT", "3.0"
 # sat in ledger.json. Past this cap the data is old enough to mislead — serve
 # None instead. Overridable for tests / tuning.
 STALE_USAGE_MAX_AGE_SEC = float(os.environ.get("CCSWITCH_USAGE_STALE_MAX_AGE_SEC", "3600"))
+
+# A forced Copilot refresh may have to START the proxy (spawn + health gate,
+# up to CopilotProxyManager.ready_timeout_s) before it can read /usage, so it
+# gets a longer deadline than a plain usage read.
+PROCESS_QUOTA_REFRESH_TIMEOUT = float(
+    os.environ.get("CCSWITCH_PROCESS_QUOTA_REFRESH_TIMEOUT", "20"))
 
 
 def _local_cached_usage(name: str):
@@ -337,7 +343,9 @@ def _account_response_from_info(acct: dict, usage=None, **kw) -> dict[str, Any]:
     )
 
 
-async def _codex_details(request: Request, names: list[str]) -> dict[str, dict]:
+async def _codex_details(
+    request: Request, names: list[str], *, force: bool = False
+) -> dict[str, dict]:
     """Per-account Codex facts for the accounts list, or ``{}`` when irrelevant.
 
     Fetched ONCE per request and only when an OpenAI account actually exists, so a
@@ -349,6 +357,9 @@ async def _codex_details(request: Request, names: list[str]) -> dict[str, dict]:
     Every failure degrades to a partial answer. The accounts page is the surface
     an operator uses to FIX a broken authority, so it must render when the
     authority is down.
+
+    ``force`` is the refresh button: re-read quota now, starting the account's
+    app-server if none is running, instead of serving the ledger's reading.
     """
     openai_names = [n for n in names if _provider_or_none(n) == account_registry.PROVIDER_OPENAI]
     if not openai_names:
@@ -365,7 +376,7 @@ async def _codex_details(request: Request, names: list[str]) -> dict[str, dict]:
 
     async def _one(account: str) -> tuple[str, dict]:
         try:
-            status = await orch.codex_account_status(account)
+            status = await orch.codex_account_status(account, force=force)
         except Exception:  # noqa: BLE001 -- one account must not fail the list
             log.warning("codex status for %s failed", account, exc_info=True)
             status = {}
@@ -625,11 +636,25 @@ async def refresh_account(
 
     codex = None
     stale_as_of = None
-    if _provider_or_none(name) == account_registry.PROVIDER_OPENAI:
-        details = (await _codex_details(request, [name])).get(name, {})
+    provider = _provider_or_none(name)
+    if provider == account_registry.PROVIDER_OPENAI:
+        details = (await _codex_details(request, [name], force=True)).get(name, {})
         usage = details.get("_usage")
         codex = {key: value for key, value in details.items() if key != "_usage"}
     else:
+        if provider == copilot.PROVIDER:
+            # Copilot quota is process-backed: the poller only reads what the
+            # refresher persisted, so "refresh" must re-read the proxy NOW —
+            # starting it if no session has one up — before the ordinary usage
+            # path below picks the fresh reading out of the ledger. Bounded +
+            # isolated like everything else here: a failure just means the
+            # usual stale-or-None answer.
+            try:
+                await call_with_deadline(
+                    orch.process_quota_refresh, name, force=True,
+                    timeout=PROCESS_QUOTA_REFRESH_TIMEOUT)
+            except Exception:  # noqa: BLE001 -- never 500 the refresh button
+                log.warning("copilot quota refresh for %s failed", name, exc_info=True)
         # Force a fresh fetch (bypasses cache by going through the poller lock).
         # Bounded + isolated: a wedged daemon degrades this to stale-or-None,
         # not 500.

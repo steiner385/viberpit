@@ -481,7 +481,10 @@ def test_every_remote_method_is_classified():
         # post_notice's first arg is an identity, not a session_id, so it cannot
         # use _make_per_session's calling convention either (Task 8.4).
         "post_notice",
-        "copilot_add_start", "copilot_add_status", "copilot_add_cancel", "copilot_usage",
+        "copilot_add_start", "copilot_add_status", "copilot_add_cancel",
+        # Process-backed (Copilot / Codex) quota refresh: account-scoped, and a
+        # cold read starts ONE process, so the primary answers rather than every host.
+        "process_quota_refresh",
         # Codex: the model list and model+effort validation are account-scoped and
         # give the same answer on any host that can start the app-server, so asking
         # the primary starts ONE app-server instead of one per host.
@@ -529,7 +532,7 @@ class _AggOrch(_FakeOrch):
     async def session_queue_positions(self):
         if self._fail: raise RuntimeError(f"{self.name} down")
         return self._positions or {}
-    async def codex_account_status(self, account, *, persist=True):
+    async def codex_account_status(self, account, *, persist=True, force=False):
         self.codex_persist_flags.append(persist)
         return self._status
 
@@ -642,6 +645,7 @@ def test_api_orchestrator_reads_are_all_classified():
         "adopt_session", "migrate_archive_home", "cloned_repos", "usage",
         "resume_recovery_status", "pr_doctor_job", "maybe_start_queued",
         "copilot_add_start", "copilot_add_status", "copilot_add_cancel",
+        "process_quota_refresh",
         "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_classify_run",
         "pm_advance_map_merged", "pm_advance_live",
         # Account-scoped and identical on every host: the primary answers, and one

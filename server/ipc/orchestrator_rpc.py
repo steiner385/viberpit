@@ -331,7 +331,9 @@ def register_orchestrator_rpc(app, orch) -> None:
         "automation_statuses", "automation_trigger", "pr_doctor_job",
         "consolidation_candidates", "automation_consolidate",
         "backlog_candidates", "backlog_runner_dispatch",
-        "copilot_add_start", "copilot_add_status", "copilot_add_cancel", "copilot_usage",
+        "copilot_add_start", "copilot_add_status", "copilot_add_cancel",
+        # Process-backed (Copilot / Codex) quota: a snapshot dict or None.
+        "process_quota_refresh",
         # Codex (OpenAI): model list, quota windows, and the revocation fan-out.
         # All three return plain dicts of JSON scalars — no credential ever crosses
         # this transport (the runner gets its envelope from the authority directly,

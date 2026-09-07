@@ -8,7 +8,7 @@ import asyncio
 import logging
 
 from ccswitch.quota import QuotaSnapshot
-from server.codex.quota import persist_quota_snapshot
+from server.usage.process_quota import persist_quota_snapshot
 from server.sessions.display_policy import DISPLAY_VIRTUAL
 from server.sessions.facade import _DEADLINE_ATTR
 from server.sessions.fleet_router import FleetRouter, NoHostAvailable
@@ -434,13 +434,13 @@ class FleetOrchestrator:
                           name, account, exc_info=exc)
         return {"invalidated": invalidated, "failed": failed}
 
-    async def codex_account_status(self, account: str) -> dict:
+    async def codex_account_status(self, account: str, *, force: bool = False) -> dict:
         """Merge every runner's status, then persist once from the edge."""
 
         async def _one(host: str):
             try:
                 result = await self._router.get(host).codex_account_status(
-                    account, persist=False
+                    account, persist=False, force=force
                 )
                 return host, result, None
             except Exception as exc:  # noqa: BLE001 -- isolate worker read failure

@@ -803,6 +803,23 @@ def test_accounts_list_costs_nothing_when_no_openai_account_exists(authority):
 # ---------------------------------------------------------------------------
 
 
+def test_refresh_forces_a_live_codex_quota_read(authority):
+    """The refresh button must re-read quota now — starting the app-server if
+    none is up — rather than hand back the ledger's reading; the list read
+    never forces (one cold start per account per TTL is its ceiling)."""
+    with temp_env():
+        _register_openai("chatgpt-pro")
+        client, sessions = _make_client(authority)
+        with client:
+            client.get("/api/accounts", headers=IDENTITY_HEADERS)
+            sessions.codex_account_status.assert_awaited_once_with("chatgpt-pro", force=False)
+            sessions.codex_account_status.reset_mock()
+            resp = client.post("/api/accounts/chatgpt-pro/refresh", headers=IDENTITY_HEADERS)
+    assert resp.status_code == 200
+    sessions.codex_account_status.assert_awaited_once_with("chatgpt-pro", force=True)
+    assert resp.json()["usage"]["availability"] == "available"
+
+
 def test_no_authority_means_no_background_sync_task():
     """A deployment without a credential authority must not gain a shutdown phase.
 
