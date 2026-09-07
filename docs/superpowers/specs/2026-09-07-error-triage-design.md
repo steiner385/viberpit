@@ -115,7 +115,7 @@ in `error_signature.py` and `feedback.py` is **not** changed (its inputs are age
 titles, not log lines; a shared normalizer would change existing feedback fingerprints).
 
 **Table `error_signatures`** (`ErrorSignature` in `server/db/models.py`, migration
-`0034_error_signatures` chained off `0033_triage_items`). Every column nullable so
+`0035_error_signatures` chained off `0034_pr_resolution_source_tool`). Every column nullable so
 `_reconcile_columns` adds it on both dialects; every timestamp naive UTC per the DB clock rule.
 
 | Column | Type | Meaning |
@@ -340,3 +340,27 @@ other automation action. This is the entire Phase 1 UI; it reuses the automation
 4. Follow-ups, not in this spec: worker-daemon signature shipping; an Errors master/detail
    section; `console.error` interception in the browser (currently only uncaught errors,
    rejections and boundary catches are captured).
+
+## 11. Implementation deltas (recorded 2026-09-07)
+
+- `error_signatures.sample_at` was added so "refresh the sample if older than 24 h" has a
+  column to compare against (§4).
+- Client fingerprints strip the Vite content hash from asset basenames
+  (`index-Bx9k2L3f.js` → `index.js`) as well as line:col (§5) — the hash changes per build.
+- Card actions record `muted_by = "operator"`; the trigger seam carries no identity, and
+  threading one through the RPC layer was out of scope (§7). GitHub-native mutes still
+  record `github:not_planned`.
+- The sink's re-entrancy guard covers `emit()`; the async flush is not guarded, so a
+  WARNING logged by the DB layer *during* a flush is captured as an ordinary signature
+  (bounded by dedupe) rather than dropped (§4).
+- `Decision.reason` gained `"retry"` for a row whose earlier create failed (§6.1).
+- `issue_filing.decide()` never gates recurrence comments by `daily_cap`; the cap bounds new
+  and regression issues only (§6.1 clarification).
+- `issue_body` truncates the quoted sample (2000 chars of text, 3000 chars quoted) and
+  hard-guards the whole body at `BODY_MAX_CHARS` with the Fingerprint line kept last (§6.2).
+- `ErrorTriageLoop.action_result(fp, kind) -> (status, issue_number)` is the card-action seam;
+  `action()` is a status-only wrapper (§7).
+- `ci_issues.issue_states` and `comment_on_issue` guard their whole bodies and return `{}`/`None`
+  on any failure, including a malformed repo (§6.1).
+- The migration shipped as `0035_error_signatures` chained off `0034_pr_resolution_source_tool`:
+  master landed its own 0034 while this branch was in flight, and the chain must stay linear (§4).

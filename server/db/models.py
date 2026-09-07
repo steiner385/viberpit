@@ -847,6 +847,46 @@ class SessionFeedback(Base):
     )
 
 
+class ErrorSignature(Base):
+    """One kind of WARNING+ log record, deduplicated by fingerprint (error-triage
+    spec §5). The sink (server/obs/errsink.py) upserts counts and a recent sample;
+    the error-triage automation files issues and drives the status lattice
+    observed → filed → resolved, muted from any state.
+
+    Every column is nullable so `_reconcile_columns` adds the table on both
+    dialects; every timestamp is naive UTC (server/db/clock.py)."""
+
+    __tablename__ = "error_signatures"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    fingerprint: Mapped[str | None] = mapped_column(String, nullable=True, unique=True, index=True)
+    source: Mapped[str | None] = mapped_column(String, nullable=True)      # edge | daemon | client
+    level: Mapped[str | None] = mapped_column(String, nullable=True)       # WARNING | ERROR | CRITICAL
+    logger: Mapped[str | None] = mapped_column(String, nullable=True)
+    event: Mapped[str | None] = mapped_column(String, nullable=True)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    sample_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sample_exc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # request_id, proc_epoch, host, app_version, url of the sample + recent_sessions (≤5 ids)
+    sample_context: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    sample_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    # Occurrences since the last file or comment; the sink adds, the triage tick subtracts.
+    count_since_filed: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    # observed | filed | resolved | muted
+    status: Mapped[str | None] = mapped_column(String, nullable=True, default="observed", index=True)
+    issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    muted_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    first_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    filed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    last_commented_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    issue_closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    muted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+
+
 # ---------------------------------------------------------------------------
 # Phase-3 plotroom tables: merged PR timeline, group runs/failures, deploy cfg
 # ---------------------------------------------------------------------------

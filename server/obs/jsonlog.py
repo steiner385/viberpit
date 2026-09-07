@@ -100,16 +100,22 @@ class JSONFormatter(logging.Formatter):
 
 
 _configured = False
+# Which process this is ("edge" | "daemon"); set by configure_logging(). The error
+# sink (errsink.py) tags every captured signature with it.
+PROCESS = "edge"
 
 
-def configure_logging() -> None:
+def configure_logging(*, process: str = "edge") -> None:
     """Attach JSON stdout + rotating-file handlers to the root logger. Idempotent.
 
-    Never raises: a bad log dir degrades to stdout-only with one warning.
+    ``process`` names the caller ("edge" for server/app.py, "daemon" for
+    server/ipc/serve.py) and is exposed as ``PROCESS``. Never raises: a bad log
+    dir degrades to stdout-only with one warning.
     """
-    global _configured
+    global _configured, PROCESS
     if _configured:
         return
+    PROCESS = process
 
     from server.config import get_settings
 
@@ -146,4 +152,12 @@ def configure_logging() -> None:
     # Suppress CancelledError pool-reset noise from sqlalchemy.pool (expected during
     # shutdown/cancellation; ~400 per rotation at ERROR level — not actionable).
     logging.getLogger("sqlalchemy.pool").addFilter(_PoolCancelledFilter())
+
+    # Error-triage capture (spec 2026-09-07 §4): WARNING+ records → error_signatures.
+    # Installed here so the edge and the daemon get it from the same call; the
+    # flusher is started by each process's lifespan once the DB is up.
+    if bool(getattr(settings, "error_sink_enabled", True)):
+        from server.obs.errsink import install_error_sink
+        install_error_sink(source=process)
+
     _configured = True

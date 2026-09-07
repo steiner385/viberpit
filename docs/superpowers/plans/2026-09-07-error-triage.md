@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Every new column is **nullable**; every timestamp column is **naive UTC** (`DateTime` without `timezone=True`). Never `func.now()`; Python-side now is `naive_utc_now()` added to `server/db/clock.py` in Task 3.
-- Migration `0034_error_signatures` chains `down_revision = "0033_triage_items"`.
+- Migration `0035_error_signatures` chains `down_revision = "0034_pr_resolution_source_tool"` (renumbered from 0034 after master landed `0034_pr_resolution_source_tool`).
 - No `except (asyncio.CancelledError, Exception)` and no `suppress(CancelledError…)` anywhere (blocked by `test_no_swallowed_outer_cancellation.py`). Teardown uses `server/aio.py:cancel_and_reap`.
 - The sink never blocks, never raises into a logging call site, ignores its own logger `server.obs.errsink`, and holds at most `MAX_PENDING = 512` fingerprints between flushes.
 - Fingerprint = first 16 hex of sha1 over `"\x1f"`-joined parts (spec §5). Hashed: source, level, logger, event-or-normalized-message, exception class, innermost app frame (client: top frame as hash-stripped basename:function). Never hashed: timestamps, ids, proc_epoch, host, app_version, line numbers.
@@ -36,7 +36,7 @@
 | `server/app.py` | Edge starts/stops the flusher in `_lifespan`. |
 | `server/config.py`, `server/api/settings.py` | `error_sink_enabled` flag. |
 | `server/db/clock.py` | `naive_utc_now()` Python-side helper. |
-| `server/db/models.py`, `server/db/migrations/versions/0034_error_signatures.py` | `ErrorSignature` model + migration record. |
+| `server/db/models.py`, `server/db/migrations/versions/0035_error_signatures.py` | `ErrorSignature` model + migration record. |
 | `server/github/ci_issues.py` | `comment_on_issue`, `issue_states` (one GraphQL query). |
 | `server/automations/issue_filing.py` (new) | `Linked`, `Decision`, `Applied`, `decide`, `apply`, `neutralize_markers`. Shared by #1433/#1434 later. |
 | `server/automations/error_triage.py` (new) | `ErrorTriage` automation, `should_file`, `is_ignored`, `issue_title`, `issue_body`, `ErrorTriageLoop`, `ErrorTriageActionProvider`. |
@@ -59,7 +59,7 @@ Run tests from the worktree root with the main checkout's interpreter, e.g.
 **Interfaces:**
 - Produces: `configure_logging(*, process: str = "edge") -> None`. `process` is stored in module global `jsonlog.PROCESS` (read by Task 4 to tag the sink's source).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # server/tests/test_daemon_configures_logging.py
@@ -107,12 +107,12 @@ def test_configure_logging_defaults_to_edge(monkeypatch):
                 root.removeHandler(h)
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `$PY -m pytest server/tests/test_daemon_configures_logging.py -v`
 Expected: FAIL — `AttributeError: module 'server.obs.jsonlog' has no attribute 'PROCESS'` (first test may also fail on the missing handler).
 
-- [ ] **Step 3: Add the `process` kwarg to `configure_logging`**
+- [x] **Step 3: Add the `process` kwarg to `configure_logging`**
 
 In `server/obs/jsonlog.py`, replace the `_configured = False` line and the function signature/first lines:
 
@@ -138,7 +138,7 @@ def configure_logging(*, process: str = "edge") -> None:
 
 Leave the rest of the body unchanged.
 
-- [ ] **Step 4: Call it from the daemon entrypoint**
+- [x] **Step 4: Call it from the daemon entrypoint**
 
 In `server/ipc/serve.py`, add the import near the other `server.*` imports:
 
@@ -158,12 +158,12 @@ def serve(socket_path: str | None = None) -> None:
     endpoint = Endpoint("unix", path=socket_path) if socket_path else sessiond_endpoint()
 ```
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `$PY -m pytest server/tests/test_daemon_configures_logging.py server/tests/test_ipc_entrypoint.py -v`
 Expected: PASS (the entrypoint test is `slow`; it spawns the real daemon and must still answer `ping`).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add server/obs/jsonlog.py server/ipc/serve.py server/tests/test_daemon_configures_logging.py
@@ -188,7 +188,7 @@ git commit -F /tmp/c1.txt
   - `client_frame(stack: str) -> tuple[str | None, str | None]` → `(exception_name, "basename:function")`.
   - `app_frame(exc_info) -> str | None` → `"module:func"` of the innermost frame under `/server/` or `/ccswitch/`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # server/tests/test_error_signature.py
@@ -338,12 +338,12 @@ def test_sample_is_redacted_and_capped():
     assert len(sig.sample_message) <= 4000
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `$PY -m pytest server/tests/test_error_signature.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'server.obs.error_signature'`.
 
-- [ ] **Step 3: Implement the module**
+- [x] **Step 3: Implement the module**
 
 ```python
 # server/obs/error_signature.py
@@ -513,12 +513,12 @@ def signature_of(record: logging.LogRecord, *, source: str, host: str) -> Signat
     )
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `$PY -m pytest server/tests/test_error_signature.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/obs/error_signature.py server/tests/test_error_signature.py
@@ -533,7 +533,7 @@ git commit -F /tmp/c2.txt
 **Files:**
 - Modify: `server/db/clock.py` (append helper)
 - Modify: `server/db/models.py` (after `SessionFeedback`, ~line 848)
-- Create: `server/db/migrations/versions/0034_error_signatures.py`
+- Create: `server/db/migrations/versions/0035_error_signatures.py`
 - Modify: `server/config.py:263-270` and `:558-563`
 - Modify: `server/api/settings.py:48-52` (`_MANAGED`)
 - Modify: `server/obs/metrics.py` (after `session_feedback_total`, ~line 232)
@@ -542,7 +542,7 @@ git commit -F /tmp/c2.txt
 **Interfaces:**
 - Produces: `server.db.clock.naive_utc_now() -> datetime`; `server.db.models.ErrorSignature` with columns listed below; `Settings.error_sink_enabled: bool`; `server.obs.metrics.error_sink_dropped_total: Counter` (label-less).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # server/tests/test_error_signature_model.py
@@ -594,8 +594,8 @@ async def test_fingerprint_is_unique(isolated_db):
 
 
 def test_migration_0034_chains_off_the_current_head():
-    mod = importlib.import_module("server.db.migrations.versions.0034_error_signatures")
-    assert mod.revision == "0034_error_signatures"
+    mod = importlib.import_module("server.db.migrations.versions.0035_error_signatures")
+    assert mod.revision == "0035_error_signatures"
     assert mod.down_revision == "0033_triage_items"
 
 
@@ -619,12 +619,12 @@ def test_dropped_counter_exists():
     assert metrics.error_sink_dropped_total.value() == before + 1
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `$PY -m pytest server/tests/test_error_signature_model.py -v`
 Expected: FAIL — `ImportError: cannot import name 'naive_utc_now'` and friends.
 
-- [ ] **Step 3: Add `naive_utc_now` to `server/db/clock.py`**
+- [x] **Step 3: Add `naive_utc_now` to `server/db/clock.py`**
 
 Append at the end of the file:
 
@@ -643,7 +643,7 @@ def naive_utc_now() -> "datetime":
 
 Also add `from datetime import datetime` under `TYPE_CHECKING` at the top if mypy complains about the string annotation; simplest is a real import at the top: `from datetime import datetime, timezone` and drop the inner import.
 
-- [ ] **Step 4: Add the model after `SessionFeedback` in `server/db/models.py`**
+- [x] **Step 4: Add the model after `SessionFeedback` in `server/db/models.py`**
 
 ```python
 class ErrorSignature(Base):
@@ -688,13 +688,13 @@ class ErrorSignature(Base):
 
 (`models.py` cannot import `server.db.clock` without a cycle risk — `clock.py` imports only SQLAlchemy, so `from server.db.clock import naive_utc_now` IS safe; use `default=naive_utc_now` if the import works cleanly, otherwise keep the lambda as `SessionFeedback` does.)
 
-- [ ] **Step 5: Write the migration**
+- [x] **Step 5: Write the migration**
 
 ```python
-# server/db/migrations/versions/0034_error_signatures.py
+# server/db/migrations/versions/0035_error_signatures.py
 """Error triage: error_signatures — deduplicated WARNING+ log signatures.
 
-Revision ID: 0034_error_signatures
+Revision ID: 0035_error_signatures
 Revises: 0033_triage_items
 Create Date: 2026-09-07
 
@@ -705,7 +705,7 @@ _reconcile_columns ALTER-ADDs any later nullable column.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0034_error_signatures"
+revision = "0035_error_signatures"
 down_revision = "0033_triage_items"
 branch_labels = None
 depends_on = None
@@ -747,7 +747,7 @@ def downgrade() -> None:
     op.drop_table("error_signatures")
 ```
 
-- [ ] **Step 6: Add the settings flag in both `Settings` definitions**
+- [x] **Step 6: Add the settings flag in both `Settings` definitions**
 
 Pydantic block (after `session_feedback_cap`, ~line 269):
 
@@ -772,7 +772,7 @@ Dataclass fallback (after `session_feedback_cap`, ~line 563):
     ("error_sink_enabled", "CCSWITCH_ERROR_SINK_ENABLED", "Capture WARNING+ log records into error signatures for Error Triage"),
 ```
 
-- [ ] **Step 7: Add the metric** (after `session_feedback_total` in `server/obs/metrics.py`):
+- [x] **Step 7: Add the metric** (after `session_feedback_total` in `server/obs/metrics.py`):
 
 ```python
 error_sink_dropped_total = Counter(
@@ -780,15 +780,15 @@ error_sink_dropped_total = Counter(
     "Log records the error sink dropped because its per-flush fingerprint map was full")
 ```
 
-- [ ] **Step 8: Run the tests plus the schema guards**
+- [x] **Step 8: Run the tests plus the schema guards**
 
 Run: `$PY -m pytest server/tests/test_error_signature_model.py server/tests/test_schema_reconcile_coverage.py server/tests/test_postgres_compat.py -v`
 Expected: PASS (Postgres tests skip without `CCSWITCH_TEST_PG_URL`; that is fine locally — CI runs them, and no `_REQUIRED_EXTRAS` entry is needed because every column is nullable).
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
-git add server/db/clock.py server/db/models.py server/db/migrations/versions/0034_error_signatures.py server/config.py server/api/settings.py server/obs/metrics.py server/tests/test_error_signature_model.py
+git add server/db/clock.py server/db/models.py server/db/migrations/versions/0035_error_signatures.py server/config.py server/api/settings.py server/obs/metrics.py server/tests/test_error_signature_model.py
 printf 'feat(db): error_signatures table, CCSWITCH_ERROR_SINK_ENABLED flag, naive_utc_now\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n' > /tmp/c3.txt
 git commit -F /tmp/c3.txt
 ```
@@ -809,7 +809,7 @@ git commit -F /tmp/c3.txt
   - Module constants `MAX_PENDING = 512`, `FLUSH_INTERVAL_S = 5.0`, `SAMPLE_REFRESH_S = 86400`, `RECENT_SESSIONS = 5`.
   - `_Pending` dataclass: `sig: Signature`, `count: int`, `first_seen: datetime`, `last_seen: datetime`, `sessions: list[str]`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # server/tests/test_errsink.py
@@ -1014,12 +1014,12 @@ def test_configure_logging_respects_kill_switch(monkeypatch):
                 root.removeHandler(h)
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `$PY -m pytest server/tests/test_errsink.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'server.obs.errsink'`.
 
-- [ ] **Step 3: Implement the sink**
+- [x] **Step 3: Implement the sink**
 
 ```python
 # server/obs/errsink.py
@@ -1232,7 +1232,7 @@ def reset_for_tests() -> None:
     _sink = None
 ```
 
-- [ ] **Step 4: Install it from `configure_logging`**
+- [x] **Step 4: Install it from `configure_logging`**
 
 In `server/obs/jsonlog.py`, just before `_configured = True` at the end of `configure_logging`:
 
@@ -1245,12 +1245,12 @@ In `server/obs/jsonlog.py`, just before `_configured = True` at the end of `conf
         install_error_sink(source=process)
 ```
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `$PY -m pytest server/tests/test_errsink.py server/tests/test_error_signature.py server/tests/test_daemon_configures_logging.py server/tests/test_no_swallowed_outer_cancellation.py -v`
 Expected: PASS. The daemon test's `finally` already removes any handler added during the call, so the sink installed there is cleaned up; if it leaks, add `errsink.reset_for_tests()` to that test's `finally`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add server/obs/errsink.py server/obs/jsonlog.py server/tests/test_errsink.py server/tests/test_daemon_configures_logging.py
@@ -1270,7 +1270,7 @@ git commit -F /tmp/c4.txt
 **Interfaces:**
 - Consumes: `get_error_sink()`, `ErrorSink.start()/stop()` (Task 4).
 
-- [ ] **Step 1: Write the failing test** (append to `server/tests/test_errsink.py`)
+- [x] **Step 1: Write the failing test** (append to `server/tests/test_errsink.py`)
 
 ```python
 def test_edge_lifespan_runs_the_flusher(monkeypatch, tmp_path):
@@ -1297,12 +1297,12 @@ def test_edge_lifespan_runs_the_flusher(monkeypatch, tmp_path):
                 root.removeHandler(h)
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `$PY -m pytest server/tests/test_errsink.py::test_edge_lifespan_runs_the_flusher -v`
 Expected: FAIL — `assert sink.is_running` is False.
 
-- [ ] **Step 3: Wire the edge**
+- [x] **Step 3: Wire the edge**
 
 In `server/app.py:_lifespan`, immediately after `await init_db(db_url=db_url)`:
 
@@ -1323,7 +1323,7 @@ In the shutdown branch, right after the `for _attr, _phase in (("loop_lag_task",
                            phase="shutdown:error-sink")
 ```
 
-- [ ] **Step 4: Wire the daemon**
+- [x] **Step 4: Wire the daemon**
 
 In `server/ipc/serve.py:daemon_lifespan`, immediately after `await init_db(db_url=db_url)`:
 
@@ -1346,12 +1346,12 @@ In the shutdown part, right after the `loop_lag_task` reap (`await cancel_and_re
 
 (`asyncio.wait_for` raising `TimeoutError` is an `Exception`; a caller cancellation propagates as `CancelledError`, which is a `BaseException` and is NOT swallowed — this is the shape `test_no_swallowed_outer_cancellation.py` allows.)
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `$PY -m pytest server/tests/test_errsink.py server/tests/test_ipc_entrypoint.py server/tests/test_no_swallowed_outer_cancellation.py -v`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add server/app.py server/ipc/serve.py server/tests/test_errsink.py
@@ -1371,7 +1371,7 @@ git commit -F /tmp/c5.txt
   - `comment_on_issue(repo: str, number: int, body: str, *, run=gitrepos._run_gh) -> str | None` — comment html_url, `None` on failure, never raises.
   - `issue_states(repo: str, numbers: Sequence[int], *, run=gitrepos._run_gh) -> dict[int, tuple[bool, str | None]]` — `{number: (closed, state_reason)}` with `state_reason` lowercased (`"completed"`, `"not_planned"`, `"reopened"`, or `None`). One GraphQL call for up to 100 numbers; `{}` on failure or empty input.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # server/tests/test_ci_issues_comment_states.py
@@ -1431,12 +1431,12 @@ def test_issue_states_empty_and_failure():
     assert issue_states("o/r", [1], run=_runner(calls, rc=1)) == {}
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `$PY -m pytest server/tests/test_ci_issues_comment_states.py -v`
 Expected: FAIL — `ImportError: cannot import name 'comment_on_issue'`.
 
-- [ ] **Step 3: Implement** (append after `comment_on_pr` in `server/github/ci_issues.py`)
+- [x] **Step 3: Implement** (append after `comment_on_pr` in `server/github/ci_issues.py`)
 
 ```python
 def comment_on_issue(repo: str, number: int, body: str, *,
@@ -1496,12 +1496,12 @@ def issue_states(repo: str, numbers: Sequence[int], *,
 
 `valid_repo(repo)` is the caller's job (the triage loop checks it before any call), matching how the module's other functions trust their `repo`.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `$PY -m pytest server/tests/test_ci_issues_comment_states.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/github/ci_issues.py server/tests/test_ci_issues_comment_states.py
@@ -1527,7 +1527,7 @@ git commit -F /tmp/c6.txt
   - `async apply(decision: Decision, *, repo: str, title: str, body: str, labels: Sequence[str], linked: Linked | None, run=gitrepos._run_gh) -> Applied` — never raises.
   - `neutralize_markers(text: str) -> str`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # server/tests/test_issue_filing.py
@@ -1637,12 +1637,12 @@ def test_neutralize_markers():
     assert "<!--" not in out and "-->" not in out and "viberpit:complete" in out
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `$PY -m pytest server/tests/test_issue_filing.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'server.automations.issue_filing'`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 # server/automations/issue_filing.py
@@ -1730,12 +1730,12 @@ def neutralize_markers(text: str) -> str:
     return text.replace("<!--", "<!\u200b--").replace("-->", "--\u200b>")
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `$PY -m pytest server/tests/test_issue_filing.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/automations/issue_filing.py server/tests/test_issue_filing.py
@@ -1761,7 +1761,7 @@ git commit -F /tmp/c7.txt
   - `issue_body(row, *, regression_of: int | None, repo: str) -> str`
   - `recurrence_comment(row, *, since: datetime | None) -> str`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # server/tests/test_error_triage_policy.py
@@ -1863,12 +1863,12 @@ def test_recurrence_comment():
     assert "`a1b2c3d4e5f60718`" in text
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `$PY -m pytest server/tests/test_error_triage_policy.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'server.automations.error_triage'`.
 
-- [ ] **Step 3: Implement the pure half**
+- [x] **Step 3: Implement the pure half**
 
 ```python
 # server/automations/error_triage.py
@@ -2013,12 +2013,12 @@ def recurrence_comment(row: Any, *, since: datetime | None) -> str:
             f"{_fmt(since)}, last at {_fmt(row.last_seen_at)}. Fingerprint `{row.fingerprint}`.")
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `$PY -m pytest server/tests/test_error_triage_policy.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/automations/error_triage.py server/tests/test_error_triage_policy.py
@@ -2038,7 +2038,7 @@ git commit -F /tmp/c8.txt
 - Consumes: everything from Tasks 3, 6, 7, 8; `AutomationContext.emit`.
 - Produces: `class ErrorTriageLoop` with `__init__(self, ctx, *, read_config: Callable[[], Awaitable[tuple[str, dict]]], run=gitrepos._run_gh, clock: Callable[[], datetime] = naive_utc_now)`, `async tick() -> None`, and the internal steps `_sync_issue_states`, `_retention`, `_reset_stale_warning_bursts`, `_recurrence_comments`, `_file_candidates`. Sets `ctx.error_triage_counts = {"candidates", "filed_today", "daily_cap", "filed", "muted"}`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # server/tests/test_error_triage_loop.py
@@ -2287,12 +2287,12 @@ def test_retention_deletes_stale_unfiled_only(tmp_path):
     _run(body, tmp_path)
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `$PY -m pytest server/tests/test_error_triage_loop.py -v`
 Expected: FAIL — `ImportError: cannot import name 'ErrorTriageLoop'`.
 
-- [ ] **Step 3: Append the loop to `server/automations/error_triage.py`**
+- [x] **Step 3: Append the loop to `server/automations/error_triage.py`**
 
 ```python
 # ---------------------------------------------------------------------------
@@ -2489,12 +2489,12 @@ class ErrorTriageLoop:
         return {"filed": by.get("filed", 0), "muted": by.get("muted", 0)}
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `$PY -m pytest server/tests/test_error_triage_loop.py server/tests/test_error_triage_policy.py -v`
 Expected: PASS. If `test_daily_cap_counts_todays_filings` fails on `filed_today == 1`: the pre-existing `old` row's `filed_at` is a day and a minute before `NOW` and must not count; check `day_start` is midnight of `NOW`'s date, not `NOW - 24h`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/automations/error_triage.py server/tests/test_error_triage_loop.py
@@ -2516,7 +2516,7 @@ git commit -F /tmp/c9.txt
   - `ErrorTriageLoop.action(fingerprint: str, kind: str) -> str` → status string `"filed" | "muted" | "unmuted" | "not_found" | "failed" | "off"`
   - `class ErrorTriageActionProvider` with `valid_kinds = frozenset({"file_now", "mute", "unmute"})`, `__init__(self, orch)`, `actionable()`, `trigger(item_id, kind)`. Reads `orch._error_triage_loop` lazily.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # server/tests/test_error_triage_actions.py
@@ -2619,12 +2619,12 @@ def test_action_provider_maps_statuses(tmp_path):
     _run(body, tmp_path)
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `$PY -m pytest server/tests/test_error_triage_actions.py -v`
 Expected: FAIL — `AttributeError: 'ErrorTriageLoop' object has no attribute 'actionable_items'`.
 
-- [ ] **Step 3: Append to `server/automations/error_triage.py`**
+- [x] **Step 3: Append to `server/automations/error_triage.py`**
 
 Add these methods inside `ErrorTriageLoop` (after `_counts`):
 
@@ -2750,12 +2750,12 @@ class ErrorTriageActionProvider:
         return TriggerResult(status=status, level=level, message=message)
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `$PY -m pytest server/tests/test_error_triage_actions.py server/tests/test_error_triage_loop.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add server/automations/error_triage.py server/tests/test_error_triage_actions.py
@@ -2776,7 +2776,7 @@ git commit -F /tmp/c10.txt
 - Consumes: `ErrorTriage`, `ErrorTriageLoop`, `ErrorTriageActionProvider` (Tasks 8–10).
 - Produces: orchestrator attributes `_error_triage_ctx`, `_error_triage_loop`, `_error_triage_task`; methods `_error_triage_tick_loop(interval)`, `_error_triage_tick_once()`, `_error_triage_read_config()`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # server/tests/test_error_triage_wiring.py
@@ -2811,12 +2811,12 @@ def test_error_triage_has_action_provider_and_status_ctx():
 in `_PRIMARY_ONLY_LOOP_ATTRS`; source assertions here just pin the three wiring points that no
 behavioural test reaches cheaply.)
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `$PY -m pytest server/tests/test_error_triage_wiring.py -v`
 Expected: FAIL — `KeyError: 'error-triage'`.
 
-- [ ] **Step 3: Register** — in `server/automations/registry.py` add after the `GhReconcile` import and registration:
+- [x] **Step 3: Register** — in `server/automations/registry.py` add after the `GhReconcile` import and registration:
 
 ```python
 from .error_triage import ErrorTriage  # noqa: E402
@@ -2825,7 +2825,7 @@ from .error_triage import ErrorTriage  # noqa: E402
 registry.register(ErrorTriage())
 ```
 
-- [ ] **Step 4: Wire the orchestrator**
+- [x] **Step 4: Wire the orchestrator**
 
 (a) `_PRIMARY_ONLY_LOOP_ATTRS`: add `"_error_triage_task",` to the set.
 
@@ -2904,12 +2904,12 @@ registry.register(ErrorTriage())
             log_key="error_triage")
 ```
 
-- [ ] **Step 5: Run the wiring, lease and registry tests**
+- [x] **Step 5: Run the wiring, lease and registry tests**
 
 Run: `$PY -m pytest server/tests/test_error_triage_wiring.py server/tests/test_primary_lease.py server/tests/test_automation_registry.py server/tests/test_api_automations*.py -v`
 Expected: PASS. If an API test enumerates automation ids or counts cards, add `error-triage` to its expected list.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add server/automations/registry.py server/sessions/orchestrator.py server/tests/test_error_triage_wiring.py
@@ -2925,7 +2925,7 @@ git commit -F /tmp/c11.txt
 - Modify: `docs/superpowers/specs/2026-09-07-error-triage-design.md` (§4, §5, §7)
 - Modify: `docs/superpowers/plans/2026-09-07-error-triage.md` (tick the boxes)
 
-- [ ] **Step 1: Record the implementation deltas in the spec**
+- [x] **Step 1: Record the implementation deltas in the spec**
 
 Append a section at the end of the spec:
 
@@ -2945,7 +2945,7 @@ Append a section at the end of the spec:
 - `Decision.reason` gained `"retry"` for a row whose earlier create failed (§6.1).
 ```
 
-- [ ] **Step 2: Run the four-step gate** (from the worktree root, env scrubbed as the memory note says)
+- [x] **Step 2: Run the four-step gate** (from the worktree root, env scrubbed as the memory note says)
 
 ```bash
 env -u CCSWITCH_SESSIOND_CERT -u CCSWITCH_SESSIOND_KEY -u CCSWITCH_SESSIOND_CA -u CCSWITCH_DAEMON_ROLE -u CCSWITCH_TAILNET_ALLOWLIST CCSWITCH_DEV=1 bash -c '
@@ -2957,7 +2957,7 @@ env -u CCSWITCH_SESSIOND_CERT -u CCSWITCH_SESSIOND_KEY -u CCSWITCH_SESSIOND_CA -
 
 Acquire the test slot first if running on rocky (CLAUDE.md snippet; put the pytest in the same shell). Expected: all four green. Fix anything red before continuing — mypy typically flags `Mapped[int | None]` arithmetic (`ES.count_since_filed - seen` is fine as a SQL expression; Python-side `int(x or 0)` casts are already in the code).
 
-- [ ] **Step 3: Commit the docs, push, open the PR, arm auto-merge**
+- [x] **Step 3: Commit the docs, push, open the PR, arm auto-merge**
 
 ```bash
 git add docs/superpowers/specs/2026-09-07-error-triage-design.md docs/superpowers/plans/2026-09-07-error-triage.md
@@ -2989,7 +2989,7 @@ gh pr create --repo steiner385/viberpit --base master --title "feat(obs): error 
 gh pr merge --squash --auto
 ```
 
-- [ ] **Step 4: Verify the PR is non-draft with auto-merge armed**
+- [x] **Step 4: Verify the PR is non-draft with auto-merge armed**
 
 ```bash
 gh api graphql -f query='{repository(owner:"steiner385",name:"viberpit"){pullRequests(states:OPEN,last:1,headRefName:"'"$(git branch --show-current)"'"){nodes{number isDraft autoMergeRequest{enabledAt} mergeStateStatus}}}}'

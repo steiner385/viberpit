@@ -16,6 +16,7 @@ from server.ipc.drain_on_signal import install_drain_on_sigterm
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 from server.ipc.reauth_rpc import register_reauth
 from server.ipc.x11_rpc import register_x11
+from server.obs.jsonlog import configure_logging
 from server.reauth import ReauthManager
 from server.ipc.paths import Endpoint, sessiond_endpoint
 from server.ipc.tls import DaemonTLSFiles, daemon_tls_files, daemon_ssl_context_factory, client_allowlist
@@ -109,6 +110,12 @@ async def daemon_lifespan(app, orchestrator):
     at startup, so a daemon start does not respawn every session at once."""
     db_url = os.environ.get("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
+
+    from server.obs.errsink import get_error_sink
+    error_sink = get_error_sink()
+    if error_sink is not None:
+        error_sink.start()
+
     # Wire the Codex app-server manager BEFORE anything can spawn a session
     # (rehydrate/auto_resume below both can). It is built here rather than in
     # build_daemon() because deciding availability probes the real binary, which is
@@ -276,6 +283,11 @@ async def daemon_lifespan(app, orchestrator):
             loop_lag_task = None
         if loop_lag_task is not None:
             await cancel_and_reap(loop_lag_task, phase="daemon.loop-lag")
+        if error_sink is not None:
+            try:
+                await asyncio.wait_for(error_sink.stop(), timeout=_DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S)
+            except Exception:  # noqa: BLE001 — never let the sink block daemon shutdown
+                log.warning("daemon shutdown: error sink stop failed", exc_info=True)
         # A daemon stopped within seconds of boot can still have the doctor waiting
         # on the authority's 20 s admin deadline; reap it the same way, never with a
         # hand-rolled cancel (#1164).
@@ -286,6 +298,10 @@ async def daemon_lifespan(app, orchestrator):
 
 
 def serve(socket_path: str | None = None) -> None:
+    # #1423: the daemon owns the orchestrator in remote mode, so it is most of the
+    # app's diagnostic surface — and it never configured logging, so every INFO
+    # was dropped and WARNING+ leaked as bare text. Same call the edge makes.
+    configure_logging(process="daemon")
     # Back-compat: an explicit socket_path arg forces a unix bind at that path.
     endpoint = Endpoint("unix", path=socket_path) if socket_path else sessiond_endpoint()
     app, orchestrator = build_daemon()

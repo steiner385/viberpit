@@ -125,6 +125,61 @@ def comment_on_pr(repo: str, number: int, body: str, *,
         return None
 
 
+def comment_on_issue(repo: str, number: int, body: str, *,
+                     run=gitrepos._run_gh) -> str | None:
+    """Comment on an issue, returning the comment's html_url; None on failure.
+
+    Same endpoint as ``comment_on_pr`` (GitHub shares one comment API across
+    issues and PRs) — kept as its own name so call sites in the filers read as
+    what they are. Used by the error-triage recurrence path and, later, the
+    session-feedback filer (#1434) and the CI/CD Doctor (#1433).
+    """
+    try:
+        proc = run(["api", f"repos/{repo}/issues/{number}/comments", "-f", f"body={body}"])
+        if proc.returncode != 0:
+            log.warning("github.issue_comment_failed repo=%s #%s: %s",
+                        repo, number, proc.stderr.strip())
+            return None
+        return str(json.loads(proc.stdout)["html_url"])
+    except Exception:
+        log.warning("github.issue_comment_failed repo=%s #%s", repo, number, exc_info=True)
+        return None
+
+
+def issue_states(repo: str, numbers: Sequence[int], *,
+                 run=gitrepos._run_gh) -> dict[int, tuple[bool, str | None]]:
+    """``{number: (closed, state_reason)}`` for up to 100 issues in ONE GraphQL call.
+
+    ``state_reason`` is GitHub's ``stateReason`` lowercased ("completed",
+    "not_planned", "reopened") or None. Issues that do not exist are omitted.
+    Returns {} on any failure — callers treat "unknown" as "unchanged".
+    """
+    try:
+        wanted = [int(n) for n in numbers][:100]
+        if not wanted:
+            return {}
+        owner, name = repo.split("/", 1)
+        aliases = " ".join(f"i{n}: issue(number: {n}) {{ number closed stateReason }}"
+                           for n in wanted)
+        query = f'query {{ repository(owner: "{owner}", name: "{name}") {{ {aliases} }} }}'
+        proc = run(["api", "graphql", "-f", f"query={query}"])
+        if proc.returncode != 0:
+            log.warning("github.issue_states_failed repo=%s: %s", repo, proc.stderr.strip())
+            return {}
+        repo_data = (json.loads(proc.stdout).get("data") or {}).get("repository") or {}
+        out: dict[int, tuple[bool, str | None]] = {}
+        for value in repo_data.values():
+            if not value:
+                continue
+            reason = value.get("stateReason")
+            out[int(value["number"])] = (bool(value.get("closed")),
+                                         str(reason).lower() if reason else None)
+        return out
+    except Exception:
+        log.warning("github.issue_states_failed repo=%s", repo, exc_info=True)
+        return {}
+
+
 def close_issue(repo: str, number: int, *, run=gitrepos._run_gh) -> bool:
     try:
         proc = run(["api", "-X", "PATCH", f"repos/{repo}/issues/{number}",
