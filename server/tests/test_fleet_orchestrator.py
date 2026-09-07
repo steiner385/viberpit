@@ -687,7 +687,11 @@ async def test_local_client_prefers_its_own_host(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_explicit_host_and_explicit_virtual_beat_the_nudge(monkeypatch):
+async def test_explicit_host_beats_the_nudge(monkeypatch):
+    """Pins the ``prefer is None`` guard: client_node="dobby" is a fleet host and
+    WOULD trigger the nudge on its own, but an explicit prefer must win. If the
+    ``prefer is None`` check were dropped, the nudge would clobber "rocky" with
+    "dobby" and this would fail."""
     rocky, dobby = _FakeOrch("rocky"), _FakeOrch("dobby")
     async def create_session(self, **kw): return _Rec("s")
     _FakeOrch.create_session = create_session
@@ -698,6 +702,42 @@ async def test_explicit_host_and_explicit_virtual_beat_the_nudge(monkeypatch):
     fo = FleetOrchestrator(router, primary="rocky")
     monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
     await fo.create_session(prefer="rocky", client_node="dobby")
+    assert got == ["rocky"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_virtual_suppresses_the_nudge(monkeypatch):
+    """Pins the ``display != "virtual"`` guard: client_node="dobby" is a fleet
+    host and prefer is None, so the nudge WOULD fire, unless the explicit
+    "virtual" request suppresses it. If that guard were dropped, prefer would
+    become "dobby" and this would fail."""
+    rocky, dobby = _FakeOrch("rocky"), _FakeOrch("dobby")
+    async def create_session(self, **kw): return _Rec("s")
+    _FakeOrch.create_session = create_session
+    router = _FakeRouter({"rocky": rocky, "dobby": dobby}); got = []
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        got.append(prefer); return ["rocky"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
     await fo.create_session(client_node="dobby", display="virtual")
+    assert got == [None]
+
+
+@pytest.mark.asyncio
+async def test_non_fleet_client_node_does_not_nudge(monkeypatch):
+    """Pins the ``client_node in self._router.names()`` guard: prefer is None
+    and display is not "virtual", so the nudge WOULD fire on any client_node,
+    unless "laptop" (not a fleet host) is excluded. If that membership check
+    were dropped, prefer would become "laptop" and this would fail."""
+    rocky, dobby = _FakeOrch("rocky"), _FakeOrch("dobby")
+    async def create_session(self, **kw): return _Rec("s")
+    _FakeOrch.create_session = create_session
+    router = _FakeRouter({"rocky": rocky, "dobby": dobby}); got = []
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        got.append(prefer); return ["rocky"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
     await fo.create_session(client_node="laptop")          # not a fleet host
-    assert got == ["rocky", None, None]
+    assert got == [None]
