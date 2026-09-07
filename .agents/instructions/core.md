@@ -89,7 +89,7 @@ auto-merge-armed PR, disable auto-merge first and immediately re-read merged sta
   `/api/test-slots` (`CCSWITCH_TEST_SLOT_CAP`, default 1/host; fail-open in `server/api/test_slots.py`):
   ```bash
   sid="${CCSWITCH_SESSION_ID:-$$}"; host="$(hostname -s)"; trap 'curl -sf -X POST http://127.0.0.1:8787/api/test-slots/release -H "Content-Type: application/json" -d "{\"sessionId\":\"$sid\"}" >/dev/null 2>&1||true' EXIT
-  while :; do resp="$(curl -sf -X POST http://127.0.0.1:8787/api/test-slots/acquire -H 'Content-Type: application/json' -d "{\"sessionId\":\"$sid\",\"host\":\"$host\"}" 2>/dev/null)" || break; echo "$resp" | grep -qE '"granted": *true' && break; sleep 15; done
+  while :; do resp="$(curl -sf -X POST http://127.0.0.1:8787/api/test-slots/acquire -H 'Content-Type: application/json' -d "{\"sessionId\":\"$sid\",\"host\":\"$host\"}" 2>/dev/null)" || { echo "test-slot API unreachable — proceeding (fail-open)"; break; }; echo "$resp" | grep -qE '"granted": *true' && break; echo "waiting for test slot, $(echo "$resp" | grep -oE '"ahead": *[0-9]+' | grep -oE '[0-9]+') ahead"; sleep 15; done
   ```
 - **Unset `CCSWITCH_SESSIOND_*` and `CCSWITCH_DAEMON_ROLE` before running `server/tests/` locally.**
   `server/app.py` builds the app at import; a live shell's sessiond client-cert vars make it demand
