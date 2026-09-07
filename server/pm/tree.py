@@ -128,6 +128,16 @@ def _add_counts(into: dict, other: dict) -> None:
         into[k] += other[k]
 
 
+def _bump(counts: dict, tier: str) -> None:
+    """Tally *tier* into inFlight/blocked/needsYou; a no-op for any other tier."""
+    if tier == "in-flight":
+        counts["inFlight"] += 1
+    elif tier == "blocked":
+        counts["blocked"] += 1
+    elif tier == "needs-you":
+        counts["needsYou"] += 1
+
+
 def _capability_node(cap: CapabilityIn, children: list[dict],
                      initiatives_here: list[dict], touching: list[str]) -> dict:
     counts = _empty_counts()
@@ -136,12 +146,7 @@ def _capability_node(cap: CapabilityIn, children: list[dict],
     counts["needsYou"] = sum(1 for t in cap.issue_tiers if t == "needs-you")
     counts["inFlight"] = sum(1 for t in cap.issue_tiers if t == "in-flight")
     for ini in initiatives_here:
-        if ini["tier"] == "in-flight":
-            counts["inFlight"] += 1
-        elif ini["tier"] == "blocked":
-            counts["blocked"] += 1
-        elif ini["tier"] == "needs-you":
-            counts["needsYou"] += 1
+        _bump(counts, ini["tier"])
     for child in children:
         _add_counts(counts, child["counts"])
     tier = max_tier(capability_own_tier(cap.state), *cap.issue_tiers,
@@ -179,17 +184,16 @@ def build_product_tree(product: ProductIn) -> dict:
         return _capability_node(cap, kids, primary_under.get(cap.slug, []), touching.get(cap.slug, []))
 
     roots = [build(c) for c in sorted(children_of.get(None, []), key=lambda c: c.slug)]
-    counts = _empty_counts()
+    # Product-level counts have their own shape (no openIssues) — do not reuse the
+    # capability-shaped _empty_counts()/_add_counts() helpers here.
+    counts = {"inFlight": 0, "blocked": 0, "needsYou": 0}
     for r in roots:
-        _add_counts(counts, r["counts"])
+        counts["inFlight"] += r["counts"]["inFlight"]
+        counts["blocked"] += r["counts"]["blocked"]
+        counts["needsYou"] += r["counts"]["needsYou"]
     for node in initiative_nodes:
         if node["primaryCapability"] not in caps:
-            if node["tier"] == "in-flight":
-                counts["inFlight"] += 1
-            elif node["tier"] == "blocked":
-                counts["blocked"] += 1
-            elif node["tier"] == "needs-you":
-                counts["needsYou"] += 1
+            _bump(counts, node["tier"])
     counts["capabilities"] = len(product.capabilities)
     counts["awaitingTriage"] = product.awaiting_triage
     counts["needsHome"] = product.needs_home

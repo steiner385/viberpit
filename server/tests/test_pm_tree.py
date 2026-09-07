@@ -85,6 +85,8 @@ def test_build_product_tree_nests_and_rolls_up():
     assert tree["tier"] == "needs-you"
     assert tree["counts"]["capabilities"] == 4
     assert tree["counts"]["needsYou"] == 1
+    assert tree["counts"] == {"capabilities": 4, "inFlight": 0, "blocked": 1,
+                              "needsYou": 1, "awaitingTriage": 0, "needsHome": 0}
 
 
 def test_pseudo_nodes_and_incidents_lift_the_product_tier():
@@ -98,3 +100,30 @@ def test_pseudo_nodes_and_incidents_lift_the_product_tier():
     diag = ProductIn(slug="p", name="P", capabilities=(_cap("a"),), initiatives=(),
                      awaiting_triage=0, needs_home=0, incident_statuses=("diagnosing",))
     assert build_product_tree(diag)["tier"] == "in-flight"
+
+
+def test_edge_cases_root_fallback_and_empty_product():
+    empty = ProductIn(slug="p", name="P", capabilities=(), initiatives=(),
+                      awaiting_triage=0, needs_home=0, incident_statuses=())
+    empty_tree = build_product_tree(empty)
+    assert empty_tree["tier"] == "idle"
+    assert empty_tree["counts"] == {"capabilities": 0, "inFlight": 0, "blocked": 0,
+                                    "needsYou": 0, "awaitingTriage": 0, "needsHome": 0}
+    assert empty_tree["capabilities"] == []
+
+    product = ProductIn(
+        slug="p2", name="P2",
+        capabilities=(_cap("orphaned", parent="nope"),),
+        initiatives=(
+            InitiativeIn(slug="floating", title="Floating", stage="build", status="active",
+                         primary_slug="nope", capability_slugs=(), epic=None),
+        ),
+        awaiting_triage=0, needs_home=0, incident_statuses=(),
+    )
+    tree = build_product_tree(product)
+    roots = {c["slug"]: c for c in tree["capabilities"]}
+    assert "orphaned" in roots     # parent_slug points nowhere real → treated as a root
+    assert roots["orphaned"]["initiatives"] == []
+    by_slug = {i["slug"]: i for i in tree["initiatives"]}
+    assert by_slug["floating"]["tier"] == "in-flight"
+    assert tree["counts"]["inFlight"] == 1
