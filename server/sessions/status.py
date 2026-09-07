@@ -55,6 +55,17 @@ SEEDABLE_STATUSES: frozenset[str] = frozenset({
     "done", "complete", "needs_attention", "waiting_question", "waiting_external",
 })
 
+# The statuses derive_status() produces from a STRUCTURED pending card — a plan
+# approval, an AskUserQuestion, a permission prompt. Membership (not a re-listed
+# precedence chain) is how the completion hold in SessionOrchestrator reads a
+# driver's live signals: it derives the status, and if it names one of these, the
+# session is handed back at THAT status. Collapsing all three into
+# waiting_question is what put "Answer needed" on sessions whose only open card
+# was a permission prompt.
+STRUCTURED_HOLD_STATUSES: frozenset[str] = frozenset({
+    "ready_review", "waiting_question", "waiting_input",
+})
+
 
 def derive_status(sig: StatusSignals) -> str:
     if sig.pending_plan:

@@ -265,31 +265,70 @@ def test_complete_without_question_archives(monkeypatch):
     asyncio.run(run())
 
 
+def _pending_driver(*, question=False, permission=False, plan=False):
+    """A driver reporting exactly one structured card still open at archive time."""
+    from server.sessions.status import StatusSignals
+    return types.SimpleNamespace(_dash_signals=lambda: StatusSignals(
+        turn_active=False, pending_permission=permission, pending_question=question,
+        pending_plan=plan, turns_completed=1, last_turn_outcome="complete"))
+
+
+def _no_classifier(monkeypatch):
+    import server.sessions.open_question as oq_mod
+
+    async def _boom(text, **kw):
+        raise AssertionError("classifier must not run when a structured card "
+                             "is already pending")
+
+    monkeypatch.setattr(oq_mod, "completion_awaits_user", _boom)
+
+
 def test_structured_pending_question_holds_without_classifier(monkeypatch):
-    """A still-pending structured question/permission (race: registered after the
-    complete status persisted) holds the archive without any LLM call."""
+    """A still-pending structured question (race: registered after the complete
+    status persisted) holds the archive without any LLM call."""
     async def run():
         rec = _rec("s1", origin=None)
         orch, archived, nudged, statuses = _orch_question(
             {"s1": rec}, _armed_pr(), awaits=False, monkeypatch=monkeypatch)
-
-        from server.sessions.status import StatusSignals
-        driver = types.SimpleNamespace(_dash_signals=lambda: StatusSignals(
-            turn_active=False, pending_permission=False, pending_question=True,
-            pending_plan=False, turns_completed=1, last_turn_outcome="complete"))
-        orch._drivers = {"s1": driver}
-
-        import server.sessions.open_question as oq_mod
-
-        async def _boom(text, **kw):
-            raise AssertionError("classifier must not run when a structured "
-                                 "question is already pending")
-
-        monkeypatch.setattr(oq_mod, "completion_awaits_user", _boom)
+        orch._drivers = {"s1": _pending_driver(question=True)}
+        _no_classifier(monkeypatch)
         orch._maybe_autoarchive_completed("s1", "complete", rec)
         await _drain()
         assert archived == []
         assert statuses == [("s1", "waiting_question")]
+    asyncio.run(run())
+
+
+# The hold must hand the session back at the status that names the card actually
+# open. Collapsing all three into waiting_question put "Answer needed" on sessions
+# whose only open card was a permission prompt or a plan — a needs-you pill whose
+# promised question is nowhere in the transcript.
+
+def test_structured_pending_permission_holds_as_waiting_input(monkeypatch):
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged, statuses = _orch_question(
+            {"s1": rec}, _armed_pr(), awaits=False, monkeypatch=monkeypatch)
+        orch._drivers = {"s1": _pending_driver(permission=True)}
+        _no_classifier(monkeypatch)
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert archived == []
+        assert statuses == [("s1", "waiting_input")]
+    asyncio.run(run())
+
+
+def test_structured_pending_plan_holds_as_ready_review(monkeypatch):
+    async def run():
+        rec = _rec("s1", origin=None)
+        orch, archived, nudged, statuses = _orch_question(
+            {"s1": rec}, _armed_pr(), awaits=False, monkeypatch=monkeypatch)
+        orch._drivers = {"s1": _pending_driver(plan=True)}
+        _no_classifier(monkeypatch)
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert archived == []
+        assert statuses == [("s1", "ready_review")]
     asyncio.run(run())
 
 

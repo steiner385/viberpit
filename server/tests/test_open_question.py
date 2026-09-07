@@ -3,9 +3,11 @@
 A session that emits the completion marker while its final message still poses a
 question to the user must NOT be treated as complete (prod 2026-08-19: two of the
 four most recent completion archives ended "Want me to …?" + marker). Detection is
-a gated LLM helper (``completion_awaits_user``) that degrades to the existing
-prose heuristic (``text_awaits_user``) when the helper is skipped/unavailable —
-the LLM verdict, when present, always wins over the heuristic.
+a gated LLM helper (``completion_awaits_user``) sitting ABOVE the existing prose
+heuristic (``text_awaits_user``): the heuristic is the recall floor that decides
+whether there is an ask to judge at all, and the LLM verdict then narrows it (a
+polite closing, a rhetorical question). The LLM can veto a hold but never invent
+one, and when the helper lane is unusable the heuristic's own True stands.
 """
 from __future__ import annotations
 
@@ -151,3 +153,67 @@ def test_prod_tails_detected_by_fallback_heuristic():
     from server.sessions.background_tasks import text_awaits_user
     assert text_awaits_user(strip_markers(PROD_TAIL_PHASES))
     assert text_awaits_user(strip_markers(PROD_TAIL_FOLLOWUP))
+
+
+# ------------------------------------------------- heuristic gate (recall floor)
+#
+# Prod 2026-09-07: two completed sessions were flipped to waiting_question
+# ("Answer needed") on final messages that asked nothing — one closed with the
+# words "No further action needed from me". Opening either card showed no
+# question anywhere, and the pm-classify session's whole run was discarded
+# because its chain never saw a settled status. The cheap heuristic said "no ask
+# in this prose" for BOTH, so it now gates the classifier: the LLM may only
+# narrow a hold the heuristic already sees, never invent one.
+
+# Verbatim tail of the prod session the user reported (cairnea/KinDash, 07:25).
+PROD_TAIL_NO_ASK = (
+    "Both issues are now resolved:\n\n"
+    "- **#15544** — closed automatically when PR #15577 merged to `main`.\n"
+    "- **#9049** — PR **#15605** is open, ready for review, and has auto-merge "
+    "armed.\n\n"
+    "No further action needed from me; #15605 will merge automatically once CI "
+    "clears.\n" + COMPLETION_MARKER
+)
+
+
+def _spy_query(payload: str, calls: list):
+    """query_fn stub that records every invocation before answering *payload*."""
+    def gen(prompt=None, options=None):
+        calls.append(prompt)
+        return _fake_query(payload)(prompt=prompt, options=options)
+    return gen
+
+
+def test_statement_only_tail_never_reaches_the_classifier():
+    calls: list = []
+
+    async def run():
+        return await oq.completion_awaits_user(
+            strip_markers(PROD_TAIL_NO_ASK),
+            query_fn=_spy_query('{"open_question": true}', calls))
+    assert asyncio.run(run()) is False
+    assert calls == [], "prose with no ask must not cost a classifier call"
+
+
+def test_classifier_yes_cannot_invent_a_question():
+    """An LLM 'yes' cannot hold a completion whose prose asks nothing. The gate is
+    checked first, so a false positive can no longer strand a finished session in
+    "Answer needed" with no question for the user to find."""
+    async def run():
+        return await oq.completion_awaits_user(
+            "PR #42 merged. All tests green.",
+            query_fn=_fake_query('{"open_question": true}'))
+    assert asyncio.run(run()) is False
+
+
+def test_gate_does_not_swallow_a_real_prose_question():
+    """The gate is a recall floor, not a filter: every tail the heuristic sees as
+    an ask still reaches the classifier and can still hold."""
+    calls: list = []
+
+    async def run():
+        return await oq.completion_awaits_user(
+            strip_markers(PROD_TAIL_PHASES),
+            query_fn=_spy_query('{"open_question": true}', calls))
+    assert asyncio.run(run()) is True
+    assert len(calls) == 1
