@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from server.ipc.client import DaemonUnavailable
@@ -27,6 +28,10 @@ from server.tests.test_ws_prompt_after_release import (
 )
 
 _TRANSCRIPT_FIXTURE = str(Path(__file__).parent / "fixtures" / "transcript.jsonl")
+
+# Real races against real WS threads, arbitrated with real time.sleep() windows
+# (up to 2.2s) rather than polling — the timing IS the thing under test.
+pytestmark = pytest.mark.slow
 
 
 def _with_history(orch) -> None:

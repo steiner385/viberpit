@@ -49,6 +49,7 @@ from server.api.snapshots import router as snapshots_router
 from server.api.dispatch import router as dispatch_router
 from server.api.sdlc import router as sdlc_router
 from server.api.pm import router as pm_router
+from server.api.test_slots import router as test_slots_router
 from server.assistant.api import router as assistant_router
 
 
@@ -843,6 +844,7 @@ def create_app(
     app.include_router(dispatch_router)
     app.include_router(sdlc_router)
     app.include_router(pm_router)
+    app.include_router(test_slots_router)
     app.include_router(assistant_router)
 
     # WebSocket bridge

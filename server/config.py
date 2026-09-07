@@ -251,6 +251,12 @@ try:
         # are parked for a human instead. Bounds a session driving itself in circles.
         self_model_switch_cap: int = Field(
             default=3, alias="CCSWITCH_SELF_MODEL_SWITCH_CAP")
+        # Verification-phase test-run slot cap (#822): max sessions per host that
+        # may simultaneously hold a "running the full server suite" slot. Keeps a
+        # Backlog Runner burst from piling up N concurrent full pytest runs (the
+        # 2026-08-29 exit-137 incident, #821/#822). Fail-open by design — see
+        # server/sessions/test_run_slots.py and server/api/test_slots.py.
+        test_slot_cap: int = Field(default=1, alias="CCSWITCH_TEST_SLOT_CAP")
         # Reconciler kill switch (spec 003 Phase B): whether the reconciler is
         # allowed to write back to GitHub (project moves, addBlockedBy, etc.).
         # Defaults off — Phase B lands the schema/read-side before any write path.
@@ -527,6 +533,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         self_model_switch_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_SELF_MODEL_SWITCH_CAP", "")) and v.isdigit() else 3
+        )
+        test_slot_cap: int = dataclasses.field(
+            default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_TEST_SLOT_CAP", "")) and v.isdigit() else 1
         )
         gh_reconcile_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_GH_RECONCILE_ENABLED", "false").lower() in ("1", "true", "yes", "on")
