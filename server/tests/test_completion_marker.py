@@ -23,10 +23,14 @@ def test_no_pr_instruction_embeds_marker():
 
 
 def test_sdk_factory_append_contains_no_pr_marker():
-    # sdk_factory appends both COMPLETION_INSTRUCTION and NO_PR_INSTRUCTION
+    """With the session-tools surface off, sdk_factory falls back to the marker
+    contract, appending both COMPLETION_INSTRUCTION and NO_PR_INSTRUCTION. With
+    tools mounted (the default), `mark_no_pr` replaces the marker instead — never
+    both (task-8, marker-to-tool migration)."""
     from server.sessions.claude_sdk_factory import _build_append_string
     append = _build_append_string()
-    assert NO_PR_MARKER in append
+    assert "mark_no_pr" in append
+    assert NO_PR_MARKER not in append
 
 
 def test_no_pr_instruction_excludes_unfinished_code_objectives():

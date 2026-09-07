@@ -63,3 +63,28 @@ def parse_model_request(text: str) -> dict | None:
         return None
     model, reason = matches[-1]
     return {"model": model, "reason": reason or None}
+
+
+#: The tier vocabulary, identical to the rubric in MODEL_REQUEST_INSTRUCTION and to
+#: ``automations.model_pick._ASSESS_SYSTEM``. One vocabulary, three readers.
+MODEL_TIERS: tuple[str, ...] = ("haiku", "sonnet", "opus", "fable")
+
+
+def parse_request_model(args: dict) -> dict:
+    """Validate ``request_model`` arguments into ``{"model", "reason"}``.
+
+    ``reason`` is REQUIRED here though the marker made it optional: the marker's
+    reason was free text at the end of a sentence, while a tool argument the model
+    must fill is the cheapest place to force the self-assessment that
+    ``model_approval.approve``'s {requested, applied} audit exists to measure.
+    """
+    from server.mcp_spec import ToolArgError
+    model = (args or {}).get("model")
+    model = model.strip().lower() if isinstance(model, str) else None
+    if model not in MODEL_TIERS:
+        raise ToolArgError(f"model must be one of {', '.join(MODEL_TIERS)}")
+    reason = (args or {}).get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ToolArgError("reason is required: one short sentence on why this tier fits "
+                           "the work better than the current one")
+    return {"model": model, "reason": reason.strip()}

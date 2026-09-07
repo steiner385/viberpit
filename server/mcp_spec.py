@@ -33,6 +33,12 @@ class ToolClass(str, Enum):
     READ = "read"
     MUTATION = "mutation"
     DESTRUCTIVE = "destructive"
+    #: Reports the session's OWN state back to the harness (completion, no-PR,
+    #: a model request). No permission card: these replace HTML-comment markers,
+    #: which had no gate at all, and a card at the end of a turn would block an
+    #: unattended session behind a prompt nobody is there to answer. Not READ —
+    #: a signal moves a status badge, and annotating that read-only is false.
+    SIGNAL = "signal"
 
 
 @dataclass(frozen=True)
@@ -56,7 +62,7 @@ def annotations_for(spec: ToolSpec) -> ToolAnnotations:
         title=spec.title,
         readOnlyHint=spec.tool_class is ToolClass.READ,
         destructiveHint=spec.tool_class is ToolClass.DESTRUCTIVE,
-        idempotentHint=spec.tool_class is ToolClass.READ,
+        idempotentHint=spec.tool_class in (ToolClass.READ, ToolClass.SIGNAL),
         openWorldHint=False,
     )
 

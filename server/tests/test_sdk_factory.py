@@ -18,11 +18,15 @@ def _captured_options(monkeypatch, mode="interactive"):
 
 
 def test_factory_appends_completion_instruction(monkeypatch):
+    """With the session-tools surface on by default, Claude's `durable_tool_surface`
+    means the append teaches `mark_complete` INSTEAD of the marker — never both
+    (task-8, marker-to-tool migration)."""
     opts = _captured_options(monkeypatch)
     sp = opts.system_prompt
     assert isinstance(sp, dict)
     assert sp["type"] == "preset" and sp["preset"] == "claude_code"
-    assert COMPLETION_MARKER in sp["append"]
+    assert "mark_complete" in sp["append"]
+    assert COMPLETION_MARKER not in sp["append"]
 
 
 def test_factory_still_sets_core_options(monkeypatch):
