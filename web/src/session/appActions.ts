@@ -71,6 +71,8 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   rotate_sessions: 'Rotated sessions',
   set_autopilot_paused: 'Changed autopilot pause',
   fix_pr: 'Fixed a pull request',
+  comment_on_pr: 'Commented on a pull request',
+  create_issue: 'Filed a GitHub issue',
   set_automation_enabled: 'Changed automation',
   rename_session: 'Renamed session',
   move_in_queue: 'Reordered queued session',
