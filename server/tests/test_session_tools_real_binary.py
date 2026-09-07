@@ -14,21 +14,32 @@ pytestmark = pytest.mark.skipif(os.environ.get("CCSWITCH_TEST_CLAUDE_MCP") != "1
 @pytest.mark.asyncio
 async def test_project_mcp_server_and_ccswitch_server_coexist(tmp_path):
     """(a) a coding session with a project .mcp.json sees BOTH that server and
-    mcp__ccswitch__session_context; (b) calling report_feedback in `default` mode
-    produces no permission prompt."""
-    from claude_agent_sdk import AssistantMessage, ClaudeSDKClient, ClaudeAgentOptions, ToolUseBlock
+    mcp__ccswitch__session_context; (b) calling report_feedback in `default` mode is
+    verified as the registry resolves the call without a card — not that the SDK
+    never invokes `can_use_tool` (it does, even for readOnlyHint tools; "no permission
+    card" per spec §3.5b is ccswitch's own PermissionRegistry decision, not the SDK's
+    callback-invocation policy)."""
+    from claude_agent_sdk import (AssistantMessage, ClaudeSDKClient, ClaudeAgentOptions,
+                                  PermissionResultAllow, PermissionResultDeny, ToolUseBlock)
     from server.sessions.claude_bin import cli_path_kwargs
+    from server.sessions.permissions import PermissionRegistry
+    import server.sessions.tools  # noqa: F401 - registers the "session" surface
     from server.sessions.tools.context import SessionToolContext
     from server.sessions.tools.server import build_session_server
     (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"echo": {
         "command": "python3", "args": ["-c", "import sys; sys.exit(0)"]}}}))
     ctx = SessionToolContext(session_id="real", identity="test", kind=None, engine="claude_code",
                              record=lambda: None, host="local")
-    prompts: list[str] = []
+    reg = PermissionRegistry()
+    decisions: list[tuple[str, str | None]] = []
     async def can_use_tool(name, inp, ctx_=None):
-        from claude_agent_sdk import PermissionResultAllow
-        prompts.append(name)
-        return PermissionResultAllow()
+        pid, fut, _ = await reg.request("real", "t1", name, inp, mode="default",
+                                        denylist=(), allowlist=True, identity="test")
+        decisions.append((name, pid))
+        if pid is not None:
+            reg.resolve(pid, "allow", "test")
+        allowed = await fut
+        return PermissionResultAllow() if allowed else PermissionResultDeny(message="denied")
     opts = ClaudeAgentOptions(
         cwd=str(tmp_path), permission_mode="default", can_use_tool=can_use_tool,
         settings=json.dumps({"enableAllProjectMcpServers": True}),
@@ -45,4 +56,5 @@ async def test_project_mcp_server_and_ccswitch_server_coexist(tmp_path):
                 used += [b.name for b in msg.content if isinstance(b, ToolUseBlock)]
     assert "mcp__ccswitch__session_context" in used
     assert "mcp__ccswitch__report_feedback" in used
-    assert not [p for p in prompts if p.startswith("mcp__ccswitch__")], prompts
+    carded = [n for n, pid in decisions if n.startswith("mcp__ccswitch__") and pid is not None]
+    assert not carded, carded
