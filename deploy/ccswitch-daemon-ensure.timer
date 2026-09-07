@@ -1,15 +1,1 @@
-# Pairs with ccswitch-daemon-ensure.service. See that unit for why this exists.
-[Unit]
-Description=Check every 60s that ccswitch-daemon did not stay dead after a cancelled start job
-Documentation=https://github.com/steiner385/cc-account-switcher
-
-[Timer]
-# OnBootSec is deliberately short: the boot race this fixes happens seconds after
-# boot, and every minute it goes unnoticed is a minute of outage.
-OnBootSec=45
-OnUnitActiveSec=60
-AccuracySec=10s
-Unit=ccswitch-daemon-ensure.service
-
-[Install]
-WantedBy=timers.target
+viberpit-daemon-ensure.timer

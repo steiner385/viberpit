@@ -1,17 +1,1 @@
-[Unit]
-Description=ccswitch daemon health watchdog — probe, auto-restart on wedge, alert
-# Pairs with ccswitch-health.timer. Recovers the "process alive but control-plane
-# socket wedged" failure that systemd's Restart=on-failure cannot see.
-After=ccswitch-daemon.service
-Documentation=https://github.com/steiner385/cc-account-switcher
-
-[Service]
-Type=oneshot
-User=tony
-SyslogIdentifier=ccswitch-health
-# Optional: CCSWITCH_ALERT_WEBHOOK (ntfy/webhook URL) + threshold overrides.
-EnvironmentFile=-/etc/ccswitch/ccswitch.env
-# On the host this is rewritten to the live deploy worktree path
-# (/home/tony/GitHub/cc-account-switcher-deploy/scripts/...), matching how
-# ccswitch-daemon.service is installed. See deploy/README.md.
-ExecStart=/home/tony/GitHub/cc-account-switcher-deploy/scripts/ccswitch-health-check.sh
+viberpit-health.service

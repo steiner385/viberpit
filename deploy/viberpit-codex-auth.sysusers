@@ -1,0 +1,16 @@
+# systemd-sysusers(5) declaration for the ChatGPT credential authority.
+#
+# Install as /usr/lib/sysusers.d/viberpit-codex-auth.conf and apply with
+#   sudo systemd-sysusers
+#
+# A system user with NO login shell and NO home directory of its own: the
+# authority's only writable location is its StateDirectory
+# (/var/lib/ccswitch-codex-auth, 0700), and every vendor subprocess it spawns has
+# HOME pinned to the account's managed CODEX_HOME (see
+# server/codex/auth_authority.py:_child_env). Giving this user a real home would
+# create a second place a `codex` code path could drop an auth.json.
+#
+# The session user (tony) must NOT be a member of this group. That is the
+# enforceable form of "prove the session-daemon user cannot traverse it":
+#   sudo -u tony test -r /var/lib/ccswitch-codex-auth/accounts   # must fail
+u ccswitch-auth - "ViberPit ChatGPT credential authority" - -

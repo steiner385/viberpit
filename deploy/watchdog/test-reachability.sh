@@ -37,13 +37,17 @@
 # We cannot "repair" an unreachable network, so the `repair` path is where the
 # cooldown gate lives and where the actual reboot decision is committed.
 #
-# Config lives in WDR_CONF (default /etc/ccswitch/watchdog-reachability.conf); see
+# Config lives in WDR_CONF (default /etc/viberpit/watchdog-reachability.conf; legacy fallback); see
 # reachability.conf.example. Every knob is also overridable by environment for
 # testing (server/tests/test_watchdog_reachability.py drives it with injected
 # clock, uptime, ping stub and state dir — no real network is touched).
 set -uo pipefail
 
-WDR_CONF="${WDR_CONF:-/etc/ccswitch/watchdog-reachability.conf}"
+WDR_DEFAULT=/etc/viberpit/watchdog-reachability.conf
+if [ ! -e "$WDR_DEFAULT" ] && [ -e /etc/ccswitch/watchdog-reachability.conf ]; then
+    WDR_DEFAULT=/etc/ccswitch/watchdog-reachability.conf
+fi
+WDR_CONF="${WDR_CONF:-$WDR_DEFAULT}"
 # shellcheck disable=SC1090  # operator-provided path, sourced only if present
 [ -f "$WDR_CONF" ] && . "$WDR_CONF"
 

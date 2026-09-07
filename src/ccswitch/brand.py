@@ -30,7 +30,7 @@ LEGACY_ENV_PREFIX = f"{LEGACY_SLUG.upper()}_"
 CLI_NAME = LEGACY_SLUG
 #: Stem of /etc, /run, /var/lib, /var/log paths and systemd units. Flips in Phase 3
 #: together with the unit files and the per-host migration runbook.
-HOST_SLUG = LEGACY_SLUG
+HOST_SLUG = SLUG
 #: MCP server wire name. The SDK derives tool names ``mcp__<name>__<tool>`` from it,
 #: and the permission registry string-matches the prefix. Flipped in Phase 2a
 #: together with the accept-both helpers below — never on its own.

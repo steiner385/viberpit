@@ -7,11 +7,12 @@ import sys
 
 from ccswitch.env_compat import mirror_legacy_env
 from server.deploy.controller import DeployController
+from server.host_units import resolve_unit
 
 
 def _daemon_enabled() -> bool:
     try:
-        return subprocess.run(["systemctl", "is-enabled", "ccswitch-daemon.service"],
+        return subprocess.run(["systemctl", "is-enabled", resolve_unit("daemon")],
                               capture_output=True).returncode == 0
     except Exception:
         return False

@@ -1,7 +1,8 @@
 # Dobby and rocky naming cutover
 
-This is an additive bridge for hosts with live ViberPit sessions. Canonical unit,
-process, directory, environment and package names remain legacy during this phase.
+This runbook has two stages: an additive bridge for hosts with live sessions,
+then a drained canonical host/service cutover. The first-stage installer below
+retains legacy canonical unit and directory names.
 The script never starts, stops, restarts, enables or disables services. A systemd
 manager reload loads aliases and Description-only dropins without restarting units.
 It does not install application code or change the mount/authentication topology.
@@ -117,33 +118,105 @@ verification logs as evidence. A crash after creation but before its completion
 record requires manual review of that intent, not blind replay. The manifest itself
 may be removed only after rollback verification and preserving the audit record.
 
-## Pending canonical flip — not completed by this bridge
+## Canonical cutover after the compatibility release
 
-Legacy Id/cgroup names, ExecStart and WorkingDirectory paths, installed unit filenames,
-CCSWITCH environment keys, virtualenv interpreter paths, Python package name, DB
-identity, mounts and historical session cwd references intentionally remain.
+Deploy the merged, CI-green runtime resolver and canonical definitions before
+renaming installed hosts. Send the normal audited edge request
+`POST /api/deploy/start` with `{"targetSha":"<merged-green-sha>"}` and monitor
+`GET /api/deploy/status` through completion. Confirm both daemon `/info` responses
+report that SHA, then inspect authenticated `/healthz`, `startup_report`, and
+`resume_recovery_status`. A controller warning is not proof that sessions restored.
+Do not advance while the controller is still rolling out or awaiting its self-restart.
 
-Before making new names canonical, deploy compatible Phase 3 unit/path resolution
-and canonical unit definitions. Inventory every installed dropin and
-`systemd.control` limit; preserve all effective settings. Coordinate admission
-control and a quiet window on each runner so no live turn is terminated. Preserve
-one daemon owner per host, mount service identity and credential authority. Prepare
-an explicit reverse migration before switching unit ownership. Never arm an
-unattended restart to finish cosmetic naming. Change environment prefixes only
-after every live shell and entrypoint supports both names; package renaming is a
-separate migration. Existing process command lines cannot be renamed in place.
+The installed-host tool preserves the exact installed unit bodies, all dropins
+(including `system.control` limits), owners, modes, boot dependencies, and state
+inodes. It does not replace customized units with repository templates. Its default
+mode prints a read-only path plan, without environment values. Use a reviewed
+checkout outside the runtime directory being renamed, and keep both host scripts
+(`viberpit-host-cutover.py` and `viberpit-host-aliases.py`) together.
 
-The remaining canonical cutover is tracked by
-[#1370](https://github.com/steiner385/viberpit/issues/1370) (runtime resolution),
-[#1371](https://github.com/steiner385/viberpit/issues/1371) (unit definitions), and
-[#1372](https://github.com/steiner385/viberpit/issues/1372) (host migration). This
-bridge does not close those tasks. Before that window, explicitly inventory and
-remove/reverse these bridge aliases using their manifests: never copy new units or
-move directories through existing symlinks. Preserve all installed dropins,
-`systemd.control` resource limits, boot dependencies, and the non-remounted mount
-service. Reissue the credential authority's identity and rename its private state
-only in the separately planned credential rotation. Keep historical session cwd,
-Git worktree metadata, native agent caches, and account stores stable.
+```bash
+sudo python3 scripts/viberpit-host-cutover.py --host rocky
+sudo python3 scripts/viberpit-host-cutover.py --host rocky --prepare /root/viberpit-cutover-rocky
+```
+
+Preparation writes private backups and a mutation journal; it does not stop units.
+If any observed configuration changes, prepare a fresh bundle after investigating.
+Apply refuses changed inventories, conflicting destinations, unknown control state,
+and any discovered service/timer that is not fully inactive with zero main/control
+PIDs. The mount unit is explicitly excluded from both migration and stopped checks.
+It owns SSHFS child processes even while its systemd state is `active (exited)`.
+
+Perform the following on **rocky first**, verify it, then repeat on dobby:
+
+1. Capture unit identity/policy, path inode/ownership/modes, mount topology and
+   sanitized session IDs/statuses. Record which services/timers are active and
+   which boot dependency links exist. Pause host watchdog timers and any running
+   watchdog oneshot; do not enable previously disabled timers.
+2. Call authenticated daemon `begin_drain` with a self-clear interval long enough
+   for the operation, then poll `drain_status` until `ready` with zero busy and
+   condensing sessions. Verify assistant/live driver activity as well. Allow turns
+   to finish; do not use a second SIGTERM or force-kill to meet a naming deadline.
+3. Call `snapshot_deploy` after the drain and preserve its host-local snapshot in
+   a private backup. The response can contain prompts: log IDs and statuses only.
+   Stop the old daemon and wait for graceful completion. On dobby also stop the
+   edge, deploy controller and sole credential authority before moving their paths.
+   Stop other discovered services/timers, preserving their prior activation state.
+4. Prepare a fresh private bundle while owners are stopped, then apply it:
+   `sudo python3 scripts/viberpit-host-cutover.py --host rocky --apply /root/<bundle>`.
+   The tool reverses aliases with a short missing-path interval only while owners
+   are stopped. It never starts/stops units or reloads systemd itself.
+5. Run `sudo systemctl daemon-reload`. Before starting, require
+   `systemctl show -p Id viberpit-daemon.service` to resolve to the new canonical
+   identity, and the old name to resolve to that same identity. Recheck effective
+   unit security/resource settings, dependency links, config and state permissions.
+6. While owners remain stopped, preserve the existing editable-install metadata and
+   console entrypoints in the private bundle. Refresh the editable install from the
+   canonical checkout using its interpreter with
+   `-m pip install --no-deps --no-index --find-links <prepared-build-wheels>
+   -e <canonical-checkout>`; pre-download and test the build requirements in a
+   disposable environment before the window. Build isolation uses those local
+   wheels without updating runtime dependencies. Verify `ccswitch`
+   imports from that checkout and the CLI works. Include these metadata backups in
+   rollback if the refresh fails. Start the new canonical daemon (on dobby, start
+   the credential authority first).
+   Confirm authenticated health, the expected SHA, startup report, and one daemon
+   owner. Call `restore_deploy` and inspect each failed/replayed result; then check
+   `resume_recovery_status`. A lease denial can be correct if the other host already
+   owns the session: verify that ownership rather than launching a duplicate.
+7. On dobby start the canonical edge/controller. Restore only previously active
+   timers after health succeeds. Verify edge/daemon connectivity, CLI launchers,
+   legacy aliases, shared mounts, credential authority UID/private state and boot
+   dependencies. For an explicit fleet `repoPath`, preserve the old value and update
+   it through `PUT /api/fleet/hosts/<host>` to the verified canonical checkout; do
+   not populate a previously unset local-host override. The mTLS endpoint is
+   unchanged. Record final IDs, PIDs, paths, recovery results and bundle location.
+
+Existing environment keys/values, Python package and console-script internals,
+DB identities, account identities and historical session/Git worktree paths remain
+compatible through old aliases. Do not bulk-rewrite persisted session cwd or native
+agent storage. Keep `ccswitch-auth` and `/var/lib/ccswitch-codex-auth` unchanged until
+a separately planned credential rotation. Keep the active `ccswitch-mounts.service`
+identity on rocky; `viberpit-mounts.service` remains its alias until a future remount
+window. Shared archive storage remains physically stable through its ViberPit alias.
+
+### Canonical rollback
+
+Keep the private bundle, including `plan.json` and `journal.json`, on its original
+host. If health fails, stop any newly started owners gracefully, keeping mounts
+active, then run the same tool with `--rollback /root/<bundle>`. It replays only
+recorded changes in reverse and rejects changed files/links instead of overwriting
+another operator's work. An interrupted apply or rollback can be recovered from
+its durable pending-operation journal; unexpected state requires investigation.
+Run `systemctl daemon-reload`, verify old canonical identities and original policy,
+start the original owners, restore the preserved session snapshot if still needed,
+and restore prior timers. Do not use the additive-stage removal manifest to undo
+a completed canonical reversal.
+
+The runtime/unit work addresses [#1370](https://github.com/steiner385/viberpit/issues/1370)
+and [#1371](https://github.com/steiner385/viberpit/issues/1371); the host operation is
+tracked by [#1372](https://github.com/steiner385/viberpit/issues/1372). This runbook and
+an offline test establish a procedure, not a claim that the live flip has happened.
 
 ## Live receipt — 2026-09-07, America/New_York
 

@@ -1,4 +1,24 @@
-# Deploy — ccswitch web (self-hosted)
+# Deploy — ViberPit web (self-hosted)
+
+Canonical templates use `viberpit*` names. The `ccswitch*` template paths are
+compatibility symlinks to the same files, and `[Install] Alias=` retains old
+systemctl callers. Install the **canonical** filenames so enablement creates
+aliases pointing to them. The remote daemon template is installed as
+`viberpit-daemon.service`, never alongside the local daemon template.
+
+For an existing running host, follow [the host cutover runbook](../docs/runbooks/viberpit-host-cutover.md)
+before installing these templates. Preserve effective host drop-ins, resource
+limits, secrets, socket bindings and enabled-unit state. Do not copy generic
+units over a live host's settings. In particular, keep the current mounts
+service running: changing its name must not execute `ExecStop` or remount the
+account store. Keep `Requires=`/`After=` on its surviving service identity until
+a later cold boot can adopt the canonical mount unit.
+
+Configuration uses `/etc/viberpit/viberpit.env`; `CCSWITCH_*` environment keys
+remain supported. The credential authority keeps the `ccswitch-auth` Unix user
+and private `/var/lib/ccswitch-codex-auth` state until credential rotation.
+Database identities and existing session/worktree namespaces also stay intact.
+
 
 The server runs as a **systemd service** on the Tailscale host.
 
@@ -6,9 +26,9 @@ The server runs as a **systemd service** on the Tailscale host.
 
 | Unit | Role |
 |------|------|
-| `ccswitch.service` | Long-running uvicorn server (`server.app:app`), serves the API + built `web/dist`. |
-| `ccswitch-daemon.service` | Session daemon (`python -m server.ipc`) — owns live `claude` PTY sessions in remote mode. |
-| `ccswitch-codex-auth.service` | ChatGPT credential authority (`python -m server.codex.auth_main`) — the only holder of OpenAI refresh tokens. Separate OS user, separate mTLS trust domain, no failover. |
+| `viberpit.service` | Long-running uvicorn server (`server.app:app`), serves the API + built `web/dist`. |
+| `viberpit-daemon.service` | Session daemon (`python -m server.ipc`) — owns live `claude` PTY sessions in remote mode. |
+| `viberpit-codex-auth.service` | ChatGPT credential authority (`python -m server.codex.auth_main`) — the only holder of OpenAI refresh tokens. Separate OS user, separate mTLS trust domain, no failover. |
 
 ## Deploy (Plan 1: manual)
 
@@ -20,20 +40,20 @@ This gates on GitHub CI being green, fast-forwards `origin/master`, syncs deps o
 when lockfiles changed, rebuilds `web/dist`, restarts the daemon (if daemon code
 changed) then the edge, health-gates on the deployed SHA, and rolls back on failure.
 
-> The notify-on-pending UI and one-click trigger (a long-lived `ccswitch-deploy-controller`
+> The notify-on-pending UI and one-click trigger (a long-lived `viberpit-deploy-controller`
 > service) land in Plans 2–3. Until then, `--once` is the supported path and the
 > `ccswitch-deploy.timer`/`.service` units have been removed (no more auto-deploy).
 
-## Runtime env (`/etc/ccswitch/ccswitch.env`, root-only, NOT committed)
+## Runtime env (`/etc/viberpit/viberpit.env`, root-only, NOT committed)
 
 Holds the secrets/config the server needs — `CCSWITCH_DB_URL`, `CCSWITCH_MASTER_KEY`,
 `CCSWITCH_SESSION_SECRET`, `CCSWITCH_TAILNET_ALLOWLIST`, `CCSWITCH_HOST`, `CCSWITCH_PORT`
 — plus `PATH`/`HOME` so the service can find `git`/`node`/`claude`. `chmod 600`, `root:root`.
 
 A host may point the **daemon** at a different env file via a local
-`ccswitch-daemon.service.d/` drop-in (`EnvironmentFile=` then `EnvironmentFile=/etc/ccswitch/daemon.env`,
+`viberpit-daemon.service.d/` drop-in (`EnvironmentFile=` then `EnvironmentFile=/etc/viberpit/daemon.env`,
 as on dobby). Whatever file the daemon actually loads is the one that matters for its `PATH`; check it
-with `systemctl cat ccswitch-daemon.service`. The daemon does not strictly need `~/.local/bin` on that
+with `systemctl cat viberpit-daemon.service`. The daemon does not strictly need `~/.local/bin` on that
 `PATH` any more: `server/sessions/claude_bin.py` falls back to the native installer's well-known
 locations (`~/.local/bin/claude`, newest `~/.local/share/claude/versions/*`) when `claude` is not on
 `PATH`, and logs a WARNING if none exist. `CCSWITCH_CLAUDE_BIN` still overrides everything.
@@ -41,10 +61,10 @@ locations (`~/.local/bin/claude`, newest `~/.local/share/claude/versions/*`) whe
 ## Install
 
 ```bash
-sudo install -m644 deploy/ccswitch.service          /etc/systemd/system/
-sudo install -m644 deploy/ccswitch-daemon.service   /etc/systemd/system/
+sudo install -m644 deploy/viberpit.service          /etc/systemd/system/
+sudo install -m644 deploy/viberpit-daemon.service   /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now ccswitch.service
+sudo systemctl enable --now viberpit.service
 ```
 
 ## HTTPS via nginx + tailscale cert (required once per host)
@@ -55,30 +75,30 @@ run this once on the host (nginx must already be installed):
 
 ```bash
 sudo tailscale cert \
-    --cert-file /etc/ccswitch/dobby.tail0dd570.ts.net.crt \
-    --key-file  /etc/ccswitch/dobby.tail0dd570.ts.net.key \
+    --cert-file /etc/viberpit/dobby.tail0dd570.ts.net.crt \
+    --key-file  /etc/viberpit/dobby.tail0dd570.ts.net.key \
     dobby.tail0dd570.ts.net
-sudo cp deploy/ccswitch-tailnet.nginx /etc/nginx/sites-available/ccswitch-tailnet
-sudo ln -sf /etc/nginx/sites-available/ccswitch-tailnet /etc/nginx/sites-enabled/
+sudo cp deploy/viberpit-tailnet.nginx /etc/nginx/sites-available/viberpit-tailnet
+sudo ln -sf /etc/nginx/sites-available/viberpit-tailnet /etc/nginx/sites-enabled/
 sudo nginx -t && sudo nginx -s reload
-sudo cp deploy/ccswitch-cert-renew.{service,timer} /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now ccswitch-cert-renew.timer
+sudo cp deploy/viberpit-cert-renew.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now viberpit-cert-renew.timer
 ```
 
-Access ccswitch at `https://dobby.tail0dd570.ts.net/`. Tailscale provisions the TLS
-certificate; `ccswitch-cert-renew.timer` renews it weekly and reloads nginx automatically.
+Access ViberPit at `https://dobby.tail0dd570.ts.net/`. Tailscale provisions the TLS
+certificate; `viberpit-cert-renew.timer` renews it weekly and reloads nginx automatically.
 
 To verify the nginx vhost is active:
 
 ```bash
 sudo nginx -t
-systemctl status ccswitch-cert-renew.timer
+systemctl status viberpit-cert-renew.timer
 ```
 
 ## Server-side dictation (optional)
 
-Set `CCSWITCH_ENABLE_STT=true` in `/etc/ccswitch/ccswitch.env` and restart the edge
-(`ccswitch.service` only — the daemon is untouched). The venv needs the `stt` extra
+Set `CCSWITCH_ENABLE_STT=true` in `/etc/viberpit/viberpit.env` and restart the edge
+(`viberpit.service` only — the daemon is untouched). The venv needs the `stt` extra
 (`pip install -e '.[server,stt]'`, ~440 MB; the deploy controller does this automatically
 when `pyproject.toml` changes). The `base.en` model (~150 MB) is downloaded into
 `~/.cache/huggingface` at the first edge start after enabling, by the lifespan's warm
@@ -105,7 +125,7 @@ it reuses the normal session stack, so there is no extra venv extra and no model
 **The Settings toggle overrides the env var, not the other way round.** `assistant_enabled` in
 `server/assistant/policy.py` reads `app_settings.assistant_enabled` first and only falls back to
 the env when that column is NULL. So once anyone has flipped Settings → General → AI assistant,
-editing `CCSWITCH_ASSISTANT_ENABLED` in `ccswitch.env` has **no effect** — to disable a deployment
+editing `CCSWITCH_ASSISTANT_ENABLED` in `viberpit.env` has **no effect** — to disable a deployment
 for good, turn the switch off in Settings (or `UPDATE app_settings SET assistant_enabled = false
 WHERE id = 'singleton';`). Set it back to NULL to hand control to the env var again.
 `CCSWITCH_ASSISTANT_MODEL` / `assistant_model` and `CCSWITCH_ASSISTANT_OPERATOR_TOOLS` /
@@ -132,9 +152,9 @@ without it, but wants it once session volume grows.
 ## Operate
 
 ```bash
-systemctl status ccswitch.service                 # server health
-journalctl -u ccswitch.service -f                 # server logs
-journalctl -u ccswitch-daemon.service -f          # daemon logs
+systemctl status viberpit.service                 # server health
+journalctl -u viberpit.service -f                 # server logs
+journalctl -u viberpit-daemon.service -f          # daemon logs
 # Force a deploy now:
 PYTHONPATH=<repo>/src <repo>/.venv/bin/python -m server.deploy --once
 ```
@@ -161,30 +181,30 @@ PYTHONPATH=<repo>/src <repo>/.venv/bin/python -m server.deploy --once
   `CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_sessions_kind_owner ON sessions (kind,
   owner_identity);` — the assistant works without it, just slower once session volume grows.
 
-## Session daemon (`ccswitch-daemon.service`)
+## Session daemon (`viberpit-daemon.service`)
 
-`ccswitch-daemon.service` runs `python -m server.ipc` — the session daemon that owns
+`viberpit-daemon.service` runs `python -m server.ipc` — the session daemon that owns
 live `claude` PTY sessions in remote mode. The daemon is **not enabled until remote
 mode is deployed**; the unit file is shipped so `server.deploy` can restart it on
 hosts where it is enabled, without affecting hosts where it isn't.
 
-The `RuntimeDirectory=ccswitch` directive creates `/run/ccswitch/` on each start; the
-daemon's Unix socket lives at `/run/ccswitch/sessiond.sock`.
+The `RuntimeDirectory=viberpit` directive creates `/run/viberpit/` on each start; the
+daemon's Unix socket lives at `/run/viberpit/sessiond.sock`.
 
 ### Install
 
 ```bash
-sudo install -m644 deploy/ccswitch-daemon.service /etc/systemd/system/
+sudo install -m644 deploy/viberpit-daemon.service /etc/systemd/system/
 sudo systemctl daemon-reload
 # Enable only when remote-mode edge is deployed:
-# sudo systemctl enable --now ccswitch-daemon.service
+# sudo systemctl enable --now viberpit-daemon.service
 ```
 
-`server.deploy` restarts `ccswitch-daemon.service` before the edge when daemon code
-changed, but only when `systemctl is-enabled ccswitch-daemon.service` succeeds — making
+`server.deploy` restarts `viberpit-daemon.service` before the edge when daemon code
+changed, but only when `systemctl is-enabled viberpit-daemon.service` succeeds — making
 the block a complete no-op on hosts where the unit is not yet enabled.
 
-### Stopping / restarting the daemon (`systemctl stop|restart ccswitch-daemon.service`)
+### Stopping / restarting the daemon (`systemctl stop|restart viberpit-daemon.service`)
 
 The daemon owns every live `claude` session. **Any** stop or restart — the deploy
 controller, the health watchdog, or you typing it after an env edit — is the same
@@ -205,7 +225,7 @@ by `test_restart_turn_interruption.py`:
 - `TimeoutStopSec=660` — the 570 s condense cap plus the ≤90 s shutdown budget. Lower
   it and systemd SIGKILLs the daemon mid-drain.
 
-Escape hatches: a second SIGTERM (`sudo systemctl kill -s TERM ccswitch-daemon.service`)
+Escape hatches: a second SIGTERM (`sudo systemctl kill -s TERM viberpit-daemon.service`)
 skips the wait; `systemctl kill -s SIGKILL` is what the health watchdog does to a
 daemon whose loop is wedged (it can't run the drain, so waiting 660 s is pointless).
 
@@ -220,8 +240,8 @@ the drain is defeated before it starts.
 `claude` children may outlive it. Every deploy logs it —
 
 ```
-systemd: ccswitch-daemon.service: Killing process 4041937 (claude) with signal SIGKILL.
-systemd: ccswitch-daemon.service: Unit process 4041937 (claude) remains running after unit stopped.
+systemd: viberpit-daemon.service: Killing process 4041937 (claude) with signal SIGKILL.
+systemd: viberpit-daemon.service: Unit process 4041937 (claude) remains running after unit stopped.
 ```
 
 On 2026-09-06 a fleet-wide restart resumed **one** session on **both** hosts. Each daemon
@@ -243,7 +263,7 @@ agent's memory across three account config dirs. Two mechanisms now prevent it:
   **nothing alive owns it** (walking `ppid` finds no live non-CLI ancestor, only pid 1 or
   a parent that already exited) **and** its `CLAUDE_CONFIG_DIR` maps to a managed account.
   A human's interactive `claude`, an internal pty-host/spare, any CLI on an unmanaged
-  config dir, and the CLIs of any *other live* ccswitch process on the box (a co-located
+  config dir, and the CLIs of any *other live* ViberPit process on the box (a co-located
   edge running its own orchestrator) are never touched. Each reap is logged at WARNING
   with the pid, account, cwd and the conversation id it was resuming.
 
@@ -260,12 +280,12 @@ Triage — live CLIs per conversation id, on each host:
 ```bash
 for p in $(pgrep -f '[/]claude '); do echo "$(hostname) pid=$p ppid=$(ps -o ppid= -p $p) \
   $(tr '\0' ' ' </proc/$p/cmdline | grep -oE -- '--resume [a-f0-9-]{36}') cwd=$(readlink /proc/$p/cwd)"; done
-journalctl -u ccswitch-daemon.service --since today | grep -E 'session-lease|orphan-cli'
+journalctl -u viberpit-daemon.service --since today | grep -E 'session-lease|orphan-cli'
 ```
 
-## ChatGPT credential authority (`ccswitch-codex-auth.service`)
+## ChatGPT credential authority (`viberpit-codex-auth.service`)
 
-`ccswitch-codex-auth.service` runs `python -m server.codex.auth_main` — the **only**
+`viberpit-codex-auth.service` runs `python -m server.codex.auth_main` — the **only**
 process in the fleet that holds an OpenAI/ChatGPT *refresh* token. Runners
 (dobby's daemon, rocky's worker) never hold one: they fetch short-lived access-token
 envelopes over mutual TLS and hand them straight to `codex app-server` over stdin.
@@ -292,26 +312,26 @@ takes an exclusive lock or exits 3.
 ### Install
 
 ```bash
-sudo install -m644 deploy/ccswitch-codex-auth.sysusers \
-     /usr/lib/sysusers.d/ccswitch-codex-auth.conf
+sudo install -m644 deploy/viberpit-codex-auth.sysusers \
+     /usr/lib/sysusers.d/viberpit-codex-auth.conf
 sudo systemd-sysusers
-sudo install -m644 deploy/ccswitch-codex-auth.service /etc/systemd/system/
+sudo install -m644 deploy/viberpit-codex-auth.service /etc/systemd/system/
 sudo systemctl daemon-reload
-# Enable only once /etc/ccswitch/codex-auth.env exists (see below):
-# sudo systemctl enable --now ccswitch-codex-auth.service
+# Enable only once /etc/viberpit/codex-auth.env exists (see below):
+# sudo systemctl enable --now viberpit-codex-auth.service
 ```
 
-### `/etc/ccswitch/codex-auth.env` (root-only, NOT committed)
+### `/etc/viberpit/codex-auth.env` (root-only, NOT committed)
 
-Deliberately a separate file from `/etc/ccswitch/ccswitch.env`: the authority has no
+Deliberately a separate file from `/etc/viberpit/viberpit.env`: the authority has no
 business inheriting the edge's database URL, GitHub credentials, or session-daemon
 client key.
 
 ```bash
 CCSWITCH_CODEX_AUTHORITY_LISTEN_ENDPOINT=https://0.0.0.0:8442
-CCSWITCH_CODEX_AUTHORITY_TLS_CERT=/etc/ccswitch/codex-auth/server.pem
-CCSWITCH_CODEX_AUTHORITY_TLS_KEY=/etc/ccswitch/codex-auth/server.key
-CCSWITCH_CODEX_AUTHORITY_TLS_CLIENT_CA=/etc/ccswitch/codex-auth/client-ca.pem
+CCSWITCH_CODEX_AUTHORITY_TLS_CERT=/etc/viberpit/codex-auth/server.pem
+CCSWITCH_CODEX_AUTHORITY_TLS_KEY=/etc/viberpit/codex-auth/server.key
+CCSWITCH_CODEX_AUTHORITY_TLS_CLIENT_CA=/etc/viberpit/codex-auth/client-ca.pem
 # Deny-by-default. Unlike the session daemon's allowlist, an EMPTY value is a
 # startup error, not "permissive".
 CCSWITCH_CODEX_AUTHORITY_CLIENT_ALLOWLIST=codex-edge,codex-runner:dobby,codex-runner:rocky
@@ -328,9 +348,9 @@ Every host that talks to the authority (the edge, and each runner) needs:
 
 ```bash
 CCSWITCH_CODEX_AUTHORITY_ENDPOINT=https://dobby:8442
-CCSWITCH_CODEX_AUTHORITY_CLIENT_CERT=/etc/ccswitch/codex-auth/<role>.pem
-CCSWITCH_CODEX_AUTHORITY_CLIENT_KEY=/etc/ccswitch/codex-auth/<role>.key
-CCSWITCH_CODEX_AUTHORITY_CLIENT_CA=/etc/ccswitch/codex-auth/server-ca.pem
+CCSWITCH_CODEX_AUTHORITY_CLIENT_CERT=/etc/viberpit/codex-auth/<role>.pem
+CCSWITCH_CODEX_AUTHORITY_CLIENT_KEY=/etc/viberpit/codex-auth/<role>.key
+CCSWITCH_CODEX_AUTHORITY_CLIENT_CA=/etc/viberpit/codex-auth/server-ca.pem
 ```
 
 With `CCSWITCH_CODEX_ENABLED=true` and `CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED=true`
@@ -436,10 +456,10 @@ None of this affects host health. A runner with no Codex binary stays `healthy`,
 taking Claude sessions, and remains a deploy target — Codex unavailability is dropped
 from Codex dispatch only.
 
-## Deploy controller (`ccswitch-deploy-controller.service`)
+## Deploy controller (`viberpit-deploy-controller.service`)
 
 Long-lived service that polls `origin/master` (notify-only) and runs user-triggered deploys.
-Serves a UDS at `/run/ccswitch/deploy.sock`; the edge proxies `/api/deploy/*` to it.
+Serves a UDS at `/run/viberpit/deploy.sock`; the edge proxies `/api/deploy/*` to it.
 
 A triggered deploy runs seven phases, in order (`server/deploy/types.py::Phase`):
 `preflight` (gate on GitHub CI green) → `save` (snapshot) → `update` (fast-forward, sync deps,
@@ -448,8 +468,8 @@ rebuild `web/dist`) → `report` → `runners` (fan out to every fleet host — 
 deploy panel and `GET /api/deploy/status` mirror this phase list.
 
 Poll cadence defaults to **30s** (how quickly the "changes pending" banner appears after a
-merge). Tune it with `CCSWITCH_DEPLOY_POLL_INTERVAL=<seconds>` in `ccswitch.env`, then
-`sudo systemctl restart ccswitch-deploy-controller.service`. Each tick is one `git fetch` +
+merge). Tune it with `CCSWITCH_DEPLOY_POLL_INTERVAL=<seconds>` in `viberpit.env`, then
+`sudo systemctl restart viberpit-deploy-controller.service`. Each tick is one `git fetch` +
 one `gh api` CI check, so even small values stay well under the GitHub rate limit.
 
 **Cutover from the old auto-deploy (one-time).** The merge that ships this controller also
@@ -461,17 +481,17 @@ unit, so it must be installed by hand — a deploy can't install its own success
     sudo systemctl disable --now ccswitch-deploy.timer
     # 2. install + start the controller (edit the unit's WorkingDirectory/ExecStart to
     #    THIS host's deploy checkout first if it differs from the committed path)
-    sudo install -m644 deploy/ccswitch-deploy-controller.service /etc/systemd/system/
+    sudo install -m644 deploy/viberpit-deploy-controller.service /etc/systemd/system/
     sudo systemctl daemon-reload
-    sudo systemctl enable --now ccswitch-deploy-controller.service
+    sudo systemctl enable --now viberpit-deploy-controller.service
 
 Until the controller runs, `/api/deploy/status` soft-degrades to "controller unavailable" and
 the dashboard's deploy panel stays inert. Replaces the retired `ccswitch-deploy.timer`/`.service`
 (no more auto-deploy).
 
-## Health watchdog (`ccswitch-health.timer`)
+## Health watchdog (`viberpit-health.timer`)
 
-A 60s oneshot (`scripts/ccswitch-health-check.sh`) that does two things the rest of the
+A 60s oneshot (`scripts/viberpit-health-check.sh`) that does two things the rest of the
 stack cannot:
 
 1. **Control-plane watchdog.** Probes the daemon's Unix socket `/healthz`. A daemon whose
@@ -481,27 +501,27 @@ stack cannot:
    crash-loop is left to `Restart=on-failure`).
 2. **Early warning.** Alerts on disk `>=85%`, any account `status=needs-reauth`, or daemon
    memory near the 12G `MemoryMax`. Alerts go to the journal; set `CCSWITCH_ALERT_WEBHOOK`
-   (e.g. an ntfy topic URL) in `/etc/ccswitch/ccswitch.env` to also get push notifications.
+   (e.g. an ntfy topic URL) in `/etc/viberpit/viberpit.env` to also get push notifications.
 
 Install (rewrite `ExecStart` to this host's deploy checkout first, like the daemon unit):
 
-    sudo install -m644 deploy/ccswitch-health.service /etc/systemd/system/
-    sudo install -m644 deploy/ccswitch-health.timer   /etc/systemd/system/
+    sudo install -m644 deploy/viberpit-health.service /etc/systemd/system/
+    sudo install -m644 deploy/viberpit-health.timer   /etc/systemd/system/
     sudo systemctl daemon-reload
-    sudo systemctl enable --now ccswitch-health.timer
+    sudo systemctl enable --now viberpit-health.timer
 
 The daemon unit also gains `MemoryHigh=10G` (soft reclaim pressure below the 12G hard
 `MemoryMax`/`OOMPolicy=stop`) so a restart-storm of relaunched session+MCP fleets degrades
 instead of being OOM-killed. On an already-running host apply it live without a restart:
 
-    sudo systemctl set-property --runtime ccswitch-daemon.service MemoryHigh=10G
+    sudo systemctl set-property --runtime viberpit-daemon.service MemoryHigh=10G
 
 ## Hardware watchdog reachability test (`deploy/watchdog/test-reachability.sh`)
 
 This is a **host-level** hardware-watchdog test, separate from the application health
 timer above. It closes the gap that let rocky sit off the network for ~46 min on
 2026-08-25 while its `watchdog.service` ran happily the whole time
-([#767](https://github.com/steiner385/ccswitch/issues/767)): `test-ssh.sh` (below) only
+([#767](https://github.com/steiner385/viberpit/issues/767)): `test-ssh.sh` (below) only
 probes **loopback**, which proves `sshd` is alive *on the box* but says nothing about
 whether anything can **reach** the box. A hardware watchdog only fires on a *hung*
 system; an alive-but-unreachable host never hangs, so nothing tripped.
@@ -529,8 +549,8 @@ Install on the daemon host (this needs the `watchdog` package with
     # 1. config for THIS host (root:root, 0644) — set WDR_TARGETS to a gateway +
     #    a tailnet peer + one target on a different path (>= 3 independent targets)
     sudo install -m644 deploy/watchdog/reachability.conf.example \
-        /etc/ccswitch/watchdog-reachability.conf
-    sudo $EDITOR /etc/ccswitch/watchdog-reachability.conf   # set WDR_TARGETS
+        /etc/viberpit/watchdog-reachability.conf
+    sudo $EDITOR /etc/viberpit/watchdog-reachability.conf   # set WDR_TARGETS
 
     # 2. drop the test beside the loopback-only test-ssh.sh
     sudo install -m755 deploy/watchdog/test-reachability.sh /etc/watchdog.d/
@@ -601,7 +621,7 @@ Keep anything else in `/etc/watchdog.d/` **non-executable** — the daemon runs 
 executable file in that directory, so an executable `test-ssh.sh.bak-<timestamp>` left
 beside the script silently keeps running the old test.
 
-## Remote mounts (`ccswitch-mounts.service`, remote session host only)
+## Remote mounts (`viberpit-mounts.service`, remote session host only)
 
 rocky runs the sessions; **dobby is canonical** for the account store, the shared
 `~/.claude` assets, and the archive dir (spec decision 4). rocky reaches all of them
@@ -609,7 +629,7 @@ over sshfs across the tailnet. Without the mounts the daemon starts but every se
 fails: no credentials, the wrong skill set, and archiving dies with `Permission denied`
 on `/mnt/hdd-storage`.
 
-`ccswitch-daemon.service.d/require-mounts.conf` binds the daemon to the mount unit with
+`viberpit-daemon.service.d/require-mounts.conf` binds the daemon to the mount unit with
 `Requires=` + `After=`. That `Requires=` is **load-bearing** — #765 was the daemon
 starting into a *dead* sshfs mount and dying with
 `OSError: [Errno 5] Input/output error: '/home/tony/.claude-accounts'`. Do not loosen it
@@ -617,34 +637,34 @@ to `Wants=`.
 
 The cost of `Requires=` is that a failed mount unit **cancels** the daemon's start job,
 and a cancelled start job never engages `Restart=always`. On 2026-08-26 that took the
-fleet down: rocky rebooted, `ccswitch-mounts.service` ran while tailscaled was still
+fleet down: rocky rebooted, `viberpit-mounts.service` ran while tailscaled was still
 settling, the first sshfs attempt for `.claude-accounts` died with
 `read: Connection reset by peer`, and the daemon sat dead until
-`ccswitch-daemon-ensure.timer` fired ~60s later. Two layers now cover it, in order:
+`viberpit-daemon-ensure.timer` fired ~60s later. Two layers now cover it, in order:
 
-1. **`bin-ccswitch-mounts.sh` retries internally** (`CCSWITCH_MOUNT_ATTEMPTS`, default 5,
+1. **`bin-viberpit-mounts.sh` retries internally** (`CCSWITCH_MOUNT_ATTEMPTS`, default 5,
    `CCSWITCH_MOUNT_RETRY_DELAY`, default 3s) so a tailnet still settling at boot never
    fails the unit in the first place. Retries are bounded, so a genuinely-down dobby
    still fails loudly. `TimeoutStartSec=300` on the unit must stay above the worst-case
    retry budget, or systemd SIGKILLs the script mid-retry and reopens the race.
-2. **`ccswitch-daemon-ensure.timer`** re-starts a daemon left dead by a cancelled job (#765).
+2. **`viberpit-daemon-ensure.timer`** re-starts a daemon left dead by a cancelled job (#765).
 
 Behaviour is pinned by `server/tests/test_mounts_unit.py`, which executes the real script
 against stubbed `sshfs`/`mountpoint` (a retry loop that does not retry passes a grep).
 
 Install on the remote session host:
 
-    sudo install -m755 deploy/bin-ccswitch-mounts.sh /home/tony/bin-ccswitch-mounts.sh
-    sudo install -m644 deploy/ccswitch-mounts.service /etc/systemd/system/
-    sudo mkdir -p /etc/systemd/system/ccswitch-daemon.service.d
-    sudo install -m644 deploy/ccswitch-daemon.service.d/require-mounts.conf \
-        /etc/systemd/system/ccswitch-daemon.service.d/
+    sudo install -m755 deploy/bin-viberpit-mounts.sh /home/tony/bin-viberpit-mounts.sh
+    sudo install -m644 deploy/viberpit-mounts.service /etc/systemd/system/
+    sudo mkdir -p /etc/systemd/system/viberpit-daemon.service.d
+    sudo install -m644 deploy/viberpit-daemon.service.d/require-mounts.conf \
+        /etc/systemd/system/viberpit-daemon.service.d/
     sudo systemctl daemon-reload
-    sudo systemctl enable --now ccswitch-mounts.service
+    sudo systemctl enable --now viberpit-mounts.service
 
 ### Cache profiles: the account store must be mounted coherently (#1005)
 
-`bin-ccswitch-mounts.sh` picks one of two `-o` profiles per path:
+`bin-viberpit-mounts.sh` picks one of two `-o` profiles per path:
 
 | profile | paths | options |
 |---|---|---|
@@ -671,7 +691,7 @@ purpose — unmounting drops every in-flight read. After deploying, remount the 
 when the Sessions page shows nothing mid-turn:
 
     CCSWITCH_MOUNT_FORCE_REMOUNT=1 CCSWITCH_MOUNT_PATHS=/home/tony/.claude-accounts \
-      /home/tony/bin-ccswitch-mounts.sh
+      /home/tony/bin-viberpit-mounts.sh
     grep .claude-accounts /proc/mounts    # expect attr_timeout=0, no dir_cache=yes
 
 Two further layers make this safe even where a host's mount profile is still wrong:
@@ -688,7 +708,7 @@ Two further layers make this safe even where a host's mount profile is still wro
   three days of resets left nothing to diagnose. It now prunes only entries older than
   `CCSWITCH_CONFIG_BACKUP_RETENTION_S` (default 24h).
 
-**Verifying the fix.** `scripts/ccswitch-health-check.sh` section 6 alerts on either counter
+**Verifying the fix.** `scripts/viberpit-health-check.sh` section 6 alerts on either counter
 being non-zero over the last hour:
 
     ALERT[config-torn-read] shared config coherence: N torn read(s) … and M '.claude.json.corrupted.*' reset(s) …

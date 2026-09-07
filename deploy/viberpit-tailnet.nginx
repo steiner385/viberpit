@@ -1,0 +1,33 @@
+# ViberPit HTTPS vhost — tailnet-only (dobby.tail0dd570.ts.net)
+# Install: ln -sf /etc/nginx/sites-available/viberpit-tailnet /etc/nginx/sites-enabled/
+# Cert: provisioned by tailscale cert (see viberpit-cert-renew.service)
+
+server {
+    listen 443 ssl;
+    server_name dobby.tail0dd570.ts.net;
+
+    ssl_certificate     /etc/viberpit/dobby.tail0dd570.ts.net.crt;
+    ssl_certificate_key /etc/viberpit/dobby.tail0dd570.ts.net.key;
+
+    # Anti-spoofing: strip any client-supplied Tailscale identity headers.
+    # nginx sets these to empty before forwarding, so clients cannot inject
+    # a fake identity. The app's X-Real-IP whois fallback relies on this.
+    proxy_set_header Tailscale-User-Login   "";
+    proxy_set_header X-Tailscale-User-Login "";
+
+    # Pass the real Tailscale peer IP so the whois identity fallback works
+    # when Tailscale-User-Login is not present.
+    proxy_set_header X-Real-IP $remote_addr;
+
+    # WebSocket upgrade — required for xterm.js terminal and VNC bridge.
+    # Timeout set to 24 h; sessions stay open indefinitely.
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade    $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 86400s;
+    proxy_send_timeout 86400s;
+
+    location / {
+        proxy_pass http://127.0.0.1:8787;
+    }
+}

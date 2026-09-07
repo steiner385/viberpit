@@ -8,21 +8,23 @@ from server.ipc import paths as ipc_paths
 from server.sessions import daemon_health, deploy_snapshot
 
 
-def test_values_match_the_installed_units():
-    # deploy/*.service: RuntimeDirectory=ccswitch, StateDirectory=ccswitch,
-    # EnvironmentFile=/etc/ccswitch/ccswitch.env
-    assert hostpaths.SESSIOND_SOCKET == "/run/ccswitch/sessiond.sock"
-    assert hostpaths.DEPLOY_SOCKET == "/run/ccswitch/deploy.sock"
-    assert hostpaths.DEPLOY_STATUS_PATH == "/run/ccswitch/deploy-status.json"
-    assert hostpaths.HEALTH_STATE_DIR == "/var/lib/ccswitch/health"
-    assert hostpaths.DEPLOY_SNAPSHOT_PATH == "/var/lib/ccswitch/deploy-snapshot/live.json"
-    assert hostpaths.LOG_DIR == "/var/log/ccswitch"
-    assert hostpaths.ENV_FILE == "/etc/ccswitch/ccswitch.env"
+def test_paths_prefer_new_then_legacy_then_new_default(tmp_path):
+    new, old = tmp_path / brand.HOST_SLUG, tmp_path / brand.LEGACY_SLUG
+    def choose():
+        return hostpaths.prefer_existing(str(new), str(old))
+    assert choose() == str(new)
+    old.mkdir()
+    assert choose() == str(old)
+    new.symlink_to(old, target_is_directory=True)
+    assert choose() == str(new)
 
 
-def test_derived_from_host_slug():
-    for value in (hostpaths.RUN_DIR, hostpaths.STATE_DIR, hostpaths.LOG_DIR, hostpaths.ETC_DIR):
-        assert value.endswith("/" + brand.HOST_SLUG), value
+def test_derived_paths_share_selected_roots():
+    assert hostpaths.SESSIOND_SOCKET == f"{hostpaths.RUN_DIR}/sessiond.sock"
+    assert hostpaths.DEPLOY_SOCKET == f"{hostpaths.RUN_DIR}/deploy.sock"
+    assert hostpaths.DEPLOY_STATUS_PATH == f"{hostpaths.RUN_DIR}/deploy-status.json"
+    assert hostpaths.HEALTH_STATE_DIR == f"{hostpaths.STATE_DIR}/health"
+    assert hostpaths.DEPLOY_SNAPSHOT_PATH == f"{hostpaths.STATE_DIR}/deploy-snapshot/live.json"
 
 
 def test_consumers_alias_hostpaths():

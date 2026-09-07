@@ -85,14 +85,35 @@ def _redirect_state_off_production():
     home = os.environ.get("CCSWITCH_HOME")
     db = os.environ.get("CCSWITCH_DB_URL")
     archive = os.environ.get("CCSWITCH_ARCHIVE_HOME")
+    # The startup janitor uses repo_root, independently of the account store.
+    # Its empty test session registry cannot protect real sessions' worktrees.
+    # Fence both prefixes: a later entrypoint mirror must not restore a live root.
+    repo_vars = ("CCSWITCH_REPO_ROOT", "VIBERPIT_REPO_ROOT")
+    unsafe_repo_vars = [
+        name for name in repo_vars
+        if not os.environ.get(name)
+        or not Path(os.environ[name]).expanduser().resolve().is_relative_to(
+            Path(tempfile.gettempdir()).resolve()
+        )
+    ]
     home_is_prod = home is None or Path(home).resolve() == _REAL_HOME
     db_is_prod = _db_is_production(db)
     archive_is_prod = _archive_home_is_production(archive)
-    if not home_is_prod and not db_is_prod and not archive_is_prod:
+    if not home_is_prod and not db_is_prod and not archive_is_prod and not unsafe_repo_vars:
         return  # caller already isolated everything — respect it
 
     session_home = Path(tempfile.mkdtemp(prefix="ccswitch-tests-"))
     atexit.register(shutil.rmtree, session_home, ignore_errors=True)
+    if unsafe_repo_vars:
+        # Preserve an explicitly isolated harness root, including new-prefix-only
+        # configuration; otherwise allocate an empty root owned by this run.
+        repo_root = next(
+            (os.environ[name] for name in repo_vars if name not in unsafe_repo_vars),
+            str(session_home / "repos"),
+        )
+        Path(repo_root).mkdir(parents=True, exist_ok=True)
+        for name in unsafe_repo_vars:
+            os.environ[name] = repo_root
     if home_is_prod:
         os.environ["CCSWITCH_HOME"] = str(session_home)
     if db_is_prod:
