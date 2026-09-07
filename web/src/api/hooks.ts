@@ -333,6 +333,8 @@ export interface CreateSessionInput {
   reasoningEffort?: string | null
   /** Optional runner preference. null → auto-rank; a name → that host first. */
   host?: string | null
+  presetId?: string
+  permissionProfileId?: string
 }
 
 export function useCreateSession() {
