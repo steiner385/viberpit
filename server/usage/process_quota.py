@@ -46,13 +46,28 @@ from server.aio import cancel_and_reap
 log = logging.getLogger(__name__)
 
 
-def persist_quota_snapshot(account: str, snapshot: QuotaSnapshot) -> None:
+def persist_quota_snapshot(account: str, snapshot: QuotaSnapshot) -> bool:
     """Persist one process-backed snapshot in the canonical ledger path.
+
+    Only an AVAILABLE reading is ever written; a degraded one (unknown,
+    auth_error, unsupported) is refused and ``False`` returned. This is the one
+    place that rule lives — the refresher and the fleet edge both land here —
+    because a persisted degraded reading is worse than none: ``record_usage``
+    treats any write as a successful fetch and clears the backoff, the
+    synchronous core serves the blob as this account's quota for a whole
+    process TTL, and the refresher's own cache check then sees a fresh entry and
+    stops re-reading — so a single failed read on the accounts-page poll became
+    "Usage unavailable" that re-wrote itself every 30 s and never recovered.
 
     Blocking (file lock) — call through ``asyncio.to_thread`` from the loop.
     """
+    if not snapshot.is_available:
+        log.debug("process quota: not persisting a %s reading for %s",
+                  snapshot.availability, account)
+        return False
     with ledger.locked_ledger() as led:
         ledger.record_usage(led, account, snapshot, snapshot.fetched_at)
+    return True
 
 
 class QuotaSource(Protocol):
@@ -260,7 +275,15 @@ class ProcessQuotaRefresher:
     def _cached(self, account: str, ttl: float) -> QuotaSnapshot | None:
         with ledger.locked_ledger() as led:
             got = ledger.stale_usage(led, account, datetime.now(timezone.utc), max_age_sec=ttl)
-        return None if got is None else got[0]
+        if got is None:
+            return None
+        snapshot = got[0]
+        if not snapshot.is_available:
+            # persist_quota_snapshot refuses these now, but a ledger written by
+            # an older build can still hold one. It is a record of a failed
+            # read, not of quota — never a reason to skip reading again.
+            return None
+        return snapshot
 
     def _cooling_down(self, account: str) -> bool:
         with ledger.locked_ledger() as led:

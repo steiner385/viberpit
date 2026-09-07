@@ -15,11 +15,20 @@ import pytest
 
 from ccswitch import account_registry, accounts, ledger, paths
 from ccswitch.config import load_config
-from ccswitch.quota import UNKNOWN, QuotaSnapshot, copilot_snapshot, unknown_snapshot
+from ccswitch.quota import (
+    AUTH_ERROR,
+    UNKNOWN,
+    UNSUPPORTED,
+    QuotaSnapshot,
+    QuotaWindow,
+    copilot_snapshot,
+    unknown_snapshot,
+)
 from server.usage.process_quota import (
     CodexQuotaSource,
     CopilotQuotaSource,
     ProcessQuotaRefresher,
+    persist_quota_snapshot,
 )
 from tests.helpers import temp_env
 
@@ -83,6 +92,15 @@ def _refresher(*sources, **kw) -> ProcessQuotaRefresher:
 
 def _snap(pct: float = 30.0) -> QuotaSnapshot:
     return copilot_snapshot(pct, None, fetched_at=datetime.now(timezone.utc))
+
+
+def _codex_snap(pct: float = 30.0) -> QuotaSnapshot:
+    """An AVAILABLE Codex reading with one account-scoped window."""
+    return QuotaSnapshot(
+        provider="openai",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(QuotaWindow(key="primary", label="Primary", used_pct=pct),),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +223,41 @@ def test_degraded_snapshot_is_returned_but_never_persisted():
         assert got is degraded
         with ledger.locked_ledger() as led:
             assert "usage" not in led["accounts"].get("chatgpt", {})
+
+
+def test_persist_helper_refuses_every_degraded_availability():
+    """The refusal lives in the helper, not in its callers: the fleet edge
+    persists the merged fleet reading through the same function."""
+    with temp_env():
+        account_registry.register_account("chatgpt", account_registry.PROVIDER_OPENAI,
+                                          engine="codex")
+        for availability in (UNKNOWN, AUTH_ERROR, UNSUPPORTED):
+            assert persist_quota_snapshot(
+                "chatgpt", unknown_snapshot("openai", availability=availability)) is False
+            with ledger.locked_ledger() as led:
+                assert "usage" not in led["accounts"].get("chatgpt", {})
+        assert persist_quota_snapshot("chatgpt", _codex_snap(20.0)) is True
+        assert accounts.usage_for("chatgpt").windows[0].used_pct == 20.0
+
+
+def test_degraded_ledger_entry_never_counts_as_a_fresh_reading():
+    """The production failure: an older edge wrote "unknown" into the ledger
+    every 30 s, so a runner with a live app-server saw a sub-TTL entry, took it
+    as a cache hit, and never re-read — the account was stuck unavailable. A
+    degraded entry must fall through to a read, whatever its age."""
+    with temp_env():
+        account_registry.register_account("chatgpt", account_registry.PROVIDER_OPENAI,
+                                          engine="codex")
+        _record("chatgpt", unknown_snapshot("openai", availability=UNKNOWN),
+                timedelta(seconds=5))
+        src = FakeSource("openai", snapshot=_codex_snap(42.0))
+        src.running_accounts.add("chatgpt")
+        got = asyncio.run(_refresher(src).refresh("chatgpt"))
+        assert src.reads == ["chatgpt"]
+        assert got is not None and got.is_available
+        assert got.windows[0].used_pct == 42.0
+        # ...and the good reading replaces the poisoned entry.
+        assert accounts.usage_for("chatgpt").is_available
 
 
 def test_persist_false_returns_the_reading_without_writing_it():
