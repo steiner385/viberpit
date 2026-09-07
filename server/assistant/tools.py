@@ -15,13 +15,14 @@ from urllib.parse import urlparse
 from claude_agent_sdk import SdkMcpTool, tool
 from mcp.types import ToolAnnotations
 
+from ccswitch import brand
 from server.obs.metrics import assistant_gap_reports_total, assistant_tool_calls_total
 
 from .client import AssistantApi, AssistantApiError
 
 log = logging.getLogger(__name__)
 
-MCP_PREFIX = "mcp__ccswitch__"
+MCP_PREFIX = brand.MCP_TOOL_PREFIX
 
 
 class ToolClass(str, Enum):
@@ -864,8 +865,8 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                               {"schedule": args["schedule"]})
 
     # -- Session-start conveniences (spec v2 §4.5, Pack C) ------------------------------
-    # Presets, templates and permission profiles a session can be started from. This
-    # task only reads them; Task 7.4 wires preset/profile/branch into create_session.
+    # Presets, templates and permission profiles a session can be started from.
+    # create_session (Task 7.4) wires preset/profile/branch into POST /api/sessions.
 
     @spec_tool("list_presets",
                "Saved session-start presets: repo, account, model, permission mode, "
@@ -910,15 +911,19 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     @spec_tool("create_session",
                "Start a NEW coding session on a repo with an initial prompt, and return its id "
                "and the URL to open it. Use only when the user wants new work started; to add "
-               "to work already running use send_prompt instead.",
+               "to work already running use send_prompt instead. preset and permission_profile "
+               "ids can be discovered via list_presets / list_permission_profiles. Note: "
+               "permission_profile's patterns are recorded on the session but not yet "
+               "enforced — no tool restriction happens today.",
                _schema(("prompt",), prompt=str, repo=str, model=str, permission_mode=str,
-                       account=str))
+                       account=str, branch=str, preset=str, permission_profile=str))
     @guarded
     async def create_session(args: dict[str, Any]) -> Any:
         rec = await api.post("/api/sessions", {
             "name": None, "initialPrompt": args["prompt"], "repo": args.get("repo"),
             "model": args.get("model"), "permissionMode": args.get("permission_mode"),
-            "account": args.get("account")})
+            "account": args.get("account"), "branch": args.get("branch"),
+            "presetId": args.get("preset"), "permissionProfileId": args.get("permission_profile")})
         return {"id": rec["id"], "url": f"/sessions/{rec['id']}"}
 
     @spec_tool("send_prompt",
@@ -1132,10 +1137,12 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "without starting a new model turn — good for 'let me know when X'. "
                "kind='pr' with condition='breaks' watches target='owner/repo' for its CI "
                "going red; kind='automation' with condition='error' or 'warn' watches "
-               "target=<automation id> for that severity. once=true (default) disables the "
-               "watch after it fires once; ttl_hours caps how long it stays armed (default "
-               "72). Watching a specific session or an account going limited is not "
-               "supported yet.",
+               "target=<automation id> for that severity; kind='session' with "
+               "condition='finishes' watches target=<session id> for that session handing "
+               "a turn back; kind='account' with condition='limited' watches "
+               "target=<account name> (or 'any' for every account) hitting its usage "
+               "ceiling. once=true (default) disables the watch after it fires once; "
+               "ttl_hours caps how long it stays armed (default 72).",
                _schema(("kind", "target", "condition"), kind=str, target=str, condition=str,
                        once=bool, ttl_hours=int))
     @guarded

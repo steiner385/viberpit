@@ -335,6 +335,8 @@ export interface CreateSessionInput {
   host?: string | null
   /** Force where the GUI renders; omitted/'auto' → decided from client locality. */
   display?: 'auto' | 'native' | 'virtual'
+  presetId?: string
+  permissionProfileId?: string
 }
 
 export function useCreateSession() {

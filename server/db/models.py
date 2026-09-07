@@ -515,11 +515,16 @@ class NotificationRule(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    # needs_input | session_ended | automation_error | automation_warn | pr_broke | pr_merged | *
+    # needs_input | session_ended | automation_error | automation_warn | pr_broke | pr_merged
+    # | account_limited | *
     event_class: Mapped[str] = mapped_column(String, nullable=False, default="*")
     scope_repo: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     scope_account: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     scope_automation: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # A `kind="session"` watch's target (#1354): scopes a `session_ended` rule to one
+    # session id, same shape as the other scope_* columns. Nullable — plain #602 rules
+    # and every other watch kind never set it.
+    scope_session_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     action: Mapped[str] = mapped_column(String, nullable=False, default="push")  # push|channel|ignore
     channel_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # When true this rule's delivery ignores quiet hours (critical bypass).

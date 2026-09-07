@@ -12,6 +12,7 @@ import uuid
 from typing import Callable
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ResultMessage
 from claude_agent_sdk._errors import CLIConnectionError
+from ccswitch import brand
 from ccswitch import copilot as _copilot_mod
 from ccswitch.accounts import provider_or_none as _provider_of
 from server.aio import bounded_wait, cancel_and_reap
@@ -692,7 +693,7 @@ class ClaudeAgentDriver:
         turn_id = self._turn()
         if tool_name == "AskUserQuestion":
             return await self._handle_ask_user_question(tool_input, turn_id)
-        if is_assistant_kind(self.kind) and not tool_name.startswith("mcp__ccswitch__"):
+        if is_assistant_kind(self.kind) and not tool_name.startswith(brand.MCP_TOOL_PREFIX):
             # An assistant-kind session's model is scoped to the ccswitch MCP
             # server only (spec §4.4) — anything else (Bash, a third-party MCP
             # server, …) is a hard deny with no card: this is a programming

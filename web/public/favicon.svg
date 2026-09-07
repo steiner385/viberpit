@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <!-- ccswitch mark: two session lanes; the live signal switches lanes, changing
+  <!-- ViberPit mark: two session lanes; the live signal switches lanes, changing
        color (account identity) as it crosses. Keep in sync with BrandMark.tsx. -->
   <defs>
     <linearGradient id="s" x1="6" y1="11" x2="26" y2="21" gradientUnits="userSpaceOnUse">

@@ -1,5 +1,6 @@
 import { HelpCircle, Sparkles } from 'lucide-react'
 import { BrandMark } from '@/components/BrandMark'
+import { BRAND_NAME } from '@/brand'
 import { useOpenDrawer } from '@/shell/drawerParam'
 import { NavItem } from './NavItem'
 
@@ -11,7 +12,7 @@ import { NavItem } from './NavItem'
  * It deliberately renders NO `h1`. The page title is the page's own `h1`, owned
  * by `PageHeader`; a second one here would give every phone screen two level-1
  * headings and break the page contract. The brand is plain text beside the mark
- * — `BrandMark` is `aria-hidden`, so the word "ccswitch" is what a screen reader
+ * — `BrandMark` is `aria-hidden`, so the word "ViberPit" is what a screen reader
  * announces, exactly as in the header this replaces.
  */
 export function TopBar() {
@@ -27,7 +28,7 @@ export function TopBar() {
       style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.5rem)' }}
     >
       <BrandMark size={22} />
-      <span className="text-base font-semibold tracking-tight">ccswitch</span>
+      <span className="text-base font-semibold tracking-tight">{BRAND_NAME}</span>
       <div className="flex-1" />
       <NavItem onClick={() => openDrawer('assistant')} icon={Sparkles} label="Assistant" />
       <NavItem onClick={() => openDrawer('help')} icon={HelpCircle} label="Help" />

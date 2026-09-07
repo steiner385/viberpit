@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from ccswitch import brand
 from server.auth.middleware import current_identity
 from server.library import snapshots
 
@@ -57,7 +58,7 @@ async def get_export(_identity: str = Depends(current_identity)) -> Any:
         io.BytesIO(data),
         media_type="application/gzip",
         headers={
-            "Content-Disposition": 'attachment; filename="ccswitch-config-bundle.tar.gz"'
+            "Content-Disposition": f'attachment; filename="{brand.SLUG}-config-bundle.tar.gz"'
         },
     )
 

@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from server.sessions.replay import EngineReplay
 
 from ccswitch import accounts as ccswitch_accounts
+from ccswitch import brand
 from ccswitch import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
 from ccswitch.accounts import provider_or_none as _provider_of
 from ccswitch.account_names import (
@@ -203,6 +204,11 @@ TURN_RESTART_DEFER_S: float = 60.0
 PUSH_STATUSES: frozenset[str] = frozenset(
     {"waiting_input", "waiting_question", "ready_review", "needs_attention"}
 )
+
+# Statuses that count as "this session finished" for a kind="session" assistant watch
+# (#1354): a turn handed back with nothing more expected, mirroring status.py's
+# ACTIVITY_STATUSES minus the "still needs you" ones already covered by PUSH_STATUSES.
+SESSION_FINISHED_STATUSES: frozenset[str] = frozenset({"done", "complete"})
 
 
 def is_push_worthy(status: str) -> bool:
@@ -824,6 +830,13 @@ class SessionOrchestrator:
         # Session-ids currently in a push-worthy state (AUT-02 debounce): push fires once
         # on entry; cleared when the session transitions out so re-entry fires again.
         self._pushed: set[str] = set()
+        # Session-ids currently SESSION_FINISHED_STATUSES (#1354 kind="session" watch
+        # debounce): same on-entry/cleared-on-exit shape as `_pushed`.
+        self._session_finished_notified: set[str] = set()
+        # Account names currently notified "limited" (#1354 kind="account" watch
+        # debounce): fires once per account entering the rotation-trigger branch of
+        # `_rotation_monitor`; cleared on the recovery branch so a re-exhaustion re-fires.
+        self._account_limited_notified: set[str] = set()
         # Session-ids (any origin) we've scheduled a completion auto-archive for,
         # so repeated ``complete`` status emits schedule the archive exactly once.
         self._auto_archiving: set[str] = set()
@@ -4152,12 +4165,34 @@ class SessionOrchestrator:
                 rec = self._records.get(session_id)
                 name = rec.name if rec else session_id
                 await push_mod.notify_event(
-                    "needs_input", "ccswitch — needs you", f"{name}: {status}",
+                    "needs_input", f"{brand.NAME} — needs you", f"{name}: {status}",
                     repo=getattr(rec, "repo", None),
                     account=getattr(rec, "account_name", None),
                     url=f"/session/{session_id}", orch=self)
         else:
             self._pushed.discard(session_id)
+        await self._maybe_notify_session_finished(session_id, status)
+
+    async def _maybe_notify_session_finished(self, session_id: str, status: str) -> None:
+        """Fire `session_ended` when a session hands a turn back (#1354 kind="session"
+        watch). Same debounce shape as `_maybe_push`: fires once on entry into
+        SESSION_FINISHED_STATUSES, cleared on exit so the next completed turn re-fires
+        — harmless for a `once=True` watch (its NotificationRule already self-disables
+        after the first delivery) and correct for a recurring #602 routing rule.
+        """
+        if status in SESSION_FINISHED_STATUSES:
+            if session_id not in self._session_finished_notified:
+                self._session_finished_notified.add(session_id)
+                rec = self._records.get(session_id)
+                name = rec.name if rec else session_id
+                await push_mod.notify_event(
+                    "session_ended", f"{brand.NAME} — session finished", f"{name}: {status}",
+                    repo=getattr(rec, "repo", None),
+                    account=getattr(rec, "account_name", None),
+                    session_id=session_id,
+                    url=f"/session/{session_id}", orch=self)
+        else:
+            self._session_finished_notified.discard(session_id)
 
     # ------------------------------------------------------------------
     # Backlog Runner control-loop dependencies (injected into BacklogRunnerLoop)
@@ -4436,7 +4471,7 @@ class SessionOrchestrator:
         Posts a brief linking comment on each issue so a human sees who claimed
         it and can trace back to the runner via the ``origin_ref``."""
         from server.automations import backlog_github
-        comment = (f"Claimed by ccswitch Backlog Runner ({batch.primary}) — "
+        comment = (f"Claimed by {brand.NAME} Backlog Runner ({batch.primary}) — "
                    f"an implementation session is in progress.")
         return await asyncio.to_thread(
             backlog_github.claim_batch, batch, gh_run=self._gh_run, comment=comment)
@@ -7342,7 +7377,7 @@ class SessionOrchestrator:
             return
         self._pushed_pr.add(key)
         await push_mod.notify_event(
-            "pr_broke", "ccswitch — PR broke", f"{rec.name}: {repo} CI failing",
+            "pr_broke", f"{brand.NAME} — PR broke", f"{rec.name}: {repo} CI failing",
             repo=repo, account=getattr(rec, "account_name", None),
             url=f"/session/{rec.id}", orch=self,
         )
@@ -11938,7 +11973,9 @@ class SessionOrchestrator:
 
         Also handles accounts that become persistently unreachable (usage=None for
         _UNREACHABLE_ROTATION_THRESHOLD consecutive polls) — the canonical case is a
-        Copilot proxy that exits when its premium-request quota is exhausted.
+        Copilot proxy that exits when its premium-request quota is exhausted. Fires
+        `account_limited` (#1354 kind="account" watch) once per account entering either
+        branch, debounced via `_account_limited_notified` and cleared on recovery.
         """
         q = self._poller.subscribe()
         try:
@@ -11963,11 +12000,22 @@ class SessionOrchestrator:
                         # Rotating off such an account finds no better target and parks
                         # the session as needs_attention for nothing.
                         self._maybe_sweep_on_recovery()
+                        self._account_limited_notified.discard(account)
                         continue
                     limiting = _limiting_window(usage, _ROTATION_CEILING)
                     session_pct = limiting.used_pct if limiting is not None else 0.0
                     reason = (f"{limiting.label} limit reached" if limiting is not None
                               else "usage limit reached")
+
+                # #1354 kind="account" watch: fire once per account entering this branch
+                # (unreachable proxy or usage-ceiling exhaustion), cleared on the recovery
+                # continue above so a later re-exhaustion re-fires.
+                if account not in self._account_limited_notified:
+                    self._account_limited_notified.add(account)
+                    await push_mod.notify_event(
+                        "account_limited", f"{brand.NAME} — account limited",
+                        f"{account}: {reason.replace('_', ' ')}",
+                        account=account, orch=self)
 
                 # Find all live sessions on this account and rotate them.
                 enabled_hosts = await self._enabled_host_names()

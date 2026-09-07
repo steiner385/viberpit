@@ -84,7 +84,7 @@ describe('page contract', () => {
         const h1s = await screen.findAllByRole('heading', { level: 1 })
         expect(h1s).toHaveLength(1)
         expect(h1s[0]).toHaveTextContent(page.title)
-        expect(document.title).toMatch(new RegExp(`${page.title} — ccswitch$`))
+        expect(document.title).toMatch(new RegExp(`${page.title} — ViberPit$`))
         expect(document.querySelector(`[data-page-variant="${page.variant}"]`)).not.toBeNull()
 
         const root = document.getElementById('root') ?? document.body
