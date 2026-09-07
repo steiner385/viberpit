@@ -24,6 +24,8 @@ import {
 import type { OverlayEdits, TriageProposal } from '@/api/triage'
 import { NAV_BY_ID } from '@/shell/navDefs'
 import { overlayIsOpen } from '@/shell/useOverlayState'
+import { PageHeader } from '@/ui/PageHeader'
+import { PageContent } from '@/ui/PageContent'
 
 import {
   inboxReducer, initialInboxState, isTypingTarget, resolveCursorIndex, scoreInputValue,
@@ -51,7 +53,7 @@ function scoreOf(p: TriageProposal): OverlayEdits {
   }
 }
 
-export function TriageInbox() {
+function InboxBody() {
   useTriageLive()
   const [params] = useSearchParams()
   const projectSlug = params.get('projectSlug') || undefined
@@ -224,7 +226,6 @@ export function TriageInbox() {
   return (
     <div className="triage-inbox">
       <header className="triage-header">
-        <span className="triage-hint">j/k move · a accept · e edit · r reject · x select · A accept selected</span>
         {projectSlug && (
           <span className="triage-depth">
             Scope: {projectSlug} <Link to={NAV_BY_ID.triage.path}>Clear</Link>
@@ -324,6 +325,20 @@ export function TriageInbox() {
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+export function TriageInbox() {
+  return (
+    <div className="flex flex-col h-full min-h-0" data-page-variant="standard">
+      <PageHeader
+        title="Triage"
+        meta={<span className="triage-hint">j/k move · a accept · e edit · r reject · x select · A accept selected</span>}
+      />
+      <PageContent>
+        <InboxBody />
+      </PageContent>
     </div>
   )
 }

@@ -11,6 +11,9 @@ import type { Project } from '@/api/pm'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { NAV_BY_ID } from '@/shell/navDefs'
 import { PRODUCT, onboardingStateLabel } from '@/features/products/vocab'
+import { PageHeader } from '@/ui/PageHeader'
+import { PageContent } from '@/ui/PageContent'
+import { Button } from '@/ui/Button'
 
 import { DependencyPanel } from './DependencyPanel'
 import { OnboardingWizard } from './OnboardingWizard'
@@ -125,22 +128,21 @@ export function ProjectsTab() {
   const { data: projects, isLoading } = useProjects()
   const [showForm, setShowForm] = useState(false)
   return (
-    <div className="pm-projects">
-      <div className="pm-projects-toolbar">
-        <h2>{PRODUCT.plural}</h2>
-        <button onClick={() => setShowForm(true)}>{PRODUCT.new}</button>
-      </div>
-      {showForm && <NewProjectForm onClose={() => setShowForm(false)} />}
-      {isLoading && <p className="pm-muted">Loading…</p>}
-      {!isLoading && (projects ?? []).length === 0 && (
-        <p className="pm-muted">
-          {PRODUCT.empty}
-        </p>
-      )}
-      <div className="pm-project-grid">
-        {(projects ?? []).map((p) => <ProjectCard key={p.id} project={p} />)}
-      </div>
-      <TriageCta />
+    <div className="flex flex-col h-full min-h-0" data-page-variant="standard">
+      <PageHeader
+        title={PRODUCT.plural}
+        actions={<Button size="sm" onClick={() => setShowForm(true)}>{PRODUCT.new}</Button>}
+      />
+      <PageContent busy={isLoading} className="pm-projects">
+        {showForm && <NewProjectForm onClose={() => setShowForm(false)} />}
+        {!isLoading && (projects ?? []).length === 0 && (
+          <p className="pm-muted">{PRODUCT.empty}</p>
+        )}
+        <div className="pm-project-grid">
+          {(projects ?? []).map((p) => <ProjectCard key={p.id} project={p} />)}
+        </div>
+        <TriageCta />
+      </PageContent>
     </div>
   )
 }

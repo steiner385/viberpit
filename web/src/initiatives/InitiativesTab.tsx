@@ -10,6 +10,9 @@ import { useSessionSocket } from '@/ws/client'
 import { INITIATIVE_STAGES, type Initiative, type InitiativeArtifact } from '@/api/sdlc'
 import { fileUrl, commitUrl, prUrl } from '@/lib/githubUrl'
 import { initiativeStatusLabel, stageLabel } from '@/features/products/vocab'
+import { PageHeader } from '@/ui/PageHeader'
+import { PageContent } from '@/ui/PageContent'
+import { Button } from '@/ui/Button'
 import { InitiativeTrack } from './InitiativeTrack'
 import { IncidentQueue } from './IncidentQueue'
 import '../pipeline/plotroom.css'
@@ -112,9 +115,8 @@ function InitiativeRow({ init }: { init: Initiative }) {
   )
 }
 
-function NewInitiativeForm() {
+function NewInitiativeForm({ onClose }: { onClose: () => void }) {
   const create = useCreateInitiative()
-  const [open, setOpen] = useState(false)
   const [slug, setSlug] = useState('')
   const [title, setTitle] = useState('')
   const [repo, setRepo] = useState('')
@@ -122,13 +124,6 @@ function NewInitiativeForm() {
   // so a blank one would 422; gate submission on it rather than surprise the user.
   const canSubmit =
     slug.trim().length > 0 && title.trim().length > 0 && repo.trim().length > 0 && !create.isPending
-  if (!open) {
-    return (
-      <button type="button" className="btn-ghost" onClick={() => setOpen(true)}>
-        + New initiative
-      </button>
-    )
-  }
   return (
     <form
       className="init-new-form"
@@ -137,7 +132,7 @@ function NewInitiativeForm() {
         if (!canSubmit) return
         create.mutate(
           { slug: slug.trim(), title: title.trim(), repo: repo.trim(), origin: 'human' },
-          { onSuccess: () => { setSlug(''); setTitle(''); setRepo(''); setOpen(false) } },
+          { onSuccess: onClose },
         )
       }}
     >
@@ -148,7 +143,7 @@ function NewInitiativeForm() {
       <input aria-label="repo" placeholder="owner/repo"
              value={repo} onChange={(e) => setRepo(e.target.value)} />
       <button type="submit" className="btn-ghost" disabled={!canSubmit}>Create</button>
-      <button type="button" className="btn-ghost" onClick={() => setOpen(false)}>Cancel</button>
+      <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
       {create.isError && (
         <p role="alert" className="init-error">
           {extractMutationErrorMessage(create.error, 'Could not create initiative')}
@@ -161,23 +156,30 @@ function NewInitiativeForm() {
 export function InitiativesTab() {
   useInitiativesLive()
   const { data: initiatives, isLoading, isError } = useInitiatives()
+  const [creating, setCreating] = useState(false)
   return (
-    <div className="prdash-root init-board flex-1 min-h-0 overflow-y-auto">
-      <div className="init-board-head">
-        <h2 className="init-board-title">Initiatives</h2>
-        <NewInitiativeForm />
-      </div>
-      {/* The back of the SDLC loop sits above its front: an open incident is the
-          thing most likely to become the next initiative on this board. */}
-      <IncidentQueue />
-      {isLoading && <p role="status">Loading initiatives…</p>}
-      {isError && <p className="stale" role="status">Could not load initiatives.</p>}
-      {!isLoading && !isError && (initiatives?.length ?? 0) === 0 && (
-        <p className="init-empty">
-          No initiatives yet. Create one, or let the SDLC automations open the first intent.
-        </p>
-      )}
-      {initiatives?.map((init) => <InitiativeRow key={init.slug} init={init} />)}
+    <div className="flex flex-col h-full min-h-0 prdash-root" data-page-variant="standard">
+      <PageHeader
+        title="Initiatives"
+        actions={
+          <Button variant="ghost" size="sm" onClick={() => setCreating(true)}>
+            + New initiative
+          </Button>
+        }
+      />
+      <PageContent busy={isLoading} className="init-board">
+        {creating && <NewInitiativeForm onClose={() => setCreating(false)} />}
+        {/* The back of the SDLC loop sits above its front: an open incident is the
+            thing most likely to become the next initiative on this board. */}
+        <IncidentQueue />
+        {isError && <p className="stale" role="status">Could not load initiatives.</p>}
+        {!isLoading && !isError && (initiatives?.length ?? 0) === 0 && (
+          <p className="init-empty">
+            No initiatives yet. Create one, or let the SDLC automations open the first intent.
+          </p>
+        )}
+        {initiatives?.map((init) => <InitiativeRow key={init.slug} init={init} />)}
+      </PageContent>
     </div>
   )
 }
