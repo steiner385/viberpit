@@ -1220,6 +1220,12 @@ export function transcriptReducer(
         turns: [...state.turns, turn],
         pendingSent: capped,
         pendingSentSeq: state.pendingSentSeq + 1,
+        // Retire the banner: it always describes a turn that has already ended, and
+        // several of its messages (the interrupted-mid-tool one especially) literally
+        // tell the user to send another message. Sending is the acknowledgement. The
+        // inline `error` block stays in the transcript, so nothing is lost, and a
+        // condition that still holds raises a fresh error on this turn.
+        error: null,
       }
     }
 

@@ -7,7 +7,9 @@
  */
 
 import { useState, useEffect, type ReactNode } from 'react'
+import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { IconButton } from '@/ui/IconButton'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { SessionMeta } from './SessionMeta'
 import { StatusBar } from './StatusBar'
@@ -156,23 +158,36 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
       {(() => {
         const conversationPanel = (
           <>
-            {/* Error banner */}
+            {/* Error banner. Transient by design: dismissable here, and retired
+                automatically by the reducer when the next prompt is sent. The
+                matching inline ErrorCard is the durable record, so closing this
+                never loses the failure. */}
             {rt.state.error && (
               <div
                 role="alert"
                 className={cn(
-                  'flex-shrink-0 px-4 py-3 text-sm',
+                  'flex-shrink-0 flex items-start gap-2 px-4 py-3 text-sm',
                   'bg-red-50 dark:bg-red-950/40 text-red-800 dark:text-red-300',
                   'border-b border-red-200 dark:border-red-800',
                 )}
               >
-                <span className="font-medium">Error: </span>
-                {rt.state.error.message}
-                {rt.state.error.resetsAt && (
-                  <span className="ml-2 text-xs opacity-75">
-                    (Resets at {new Date(rt.state.error.resetsAt).toLocaleTimeString()})
-                  </span>
-                )}
+                <div className="flex-1 min-w-0">
+                  <span className="font-medium">Error: </span>
+                  {rt.state.error.message}
+                  {rt.state.error.resetsAt && (
+                    <span className="ml-2 text-xs opacity-75">
+                      (Resets at {new Date(rt.state.error.resetsAt).toLocaleTimeString()})
+                    </span>
+                  )}
+                </div>
+                <IconButton
+                  aria-label="Dismiss"
+                  size="sm"
+                  onClick={rt.dismissError}
+                  className="-my-1 shrink-0 text-red-800 dark:text-red-300"
+                >
+                  <X size={14} aria-hidden="true" />
+                </IconButton>
               </div>
             )}
 
