@@ -435,7 +435,14 @@ class FleetOrchestrator:
         return {"invalidated": invalidated, "failed": failed}
 
     async def codex_account_status(self, account: str, *, force: bool = False) -> dict:
-        """Merge every runner's status, then persist once from the edge."""
+        """Merge every runner's status, then persist once from the edge.
+
+        The merged reading is still returned degraded when no host could read
+        quota, but ``persist_quota_snapshot`` refuses to write it: an edge that
+        re-persisted "unknown" on every accounts-page poll kept the ledger
+        entry perpetually fresh, so no runner's refresher ever re-read the
+        app-server and the account stayed "Usage unavailable" for good.
+        """
 
         async def _one(host: str):
             try:

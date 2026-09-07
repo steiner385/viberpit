@@ -598,6 +598,35 @@ async def test_codex_status_fanout_has_one_edge_writer_and_no_runner_writer(monk
 
 
 @pytest.mark.asyncio
+async def test_codex_status_fanout_returns_but_never_persists_a_degraded_merge():
+    """Every host answered degraded (2026-09-07: rocky's app-server client had
+    latched closed, dobby had no runner). The page must still see the honest
+    "unknown", but writing it to the ledger every 30 s poll kept the entry
+    fresh, so no runner ever re-read and the account never recovered. Uses the
+    real persist helper: the refusal lives there, not in this caller."""
+    from ccswitch import account_registry, ledger
+    from tests.helpers import temp_env
+
+    degraded = {
+        "v": 2, "provider": "openai", "fetched_at": "2026-09-07T18:56:05+00:00",
+        "availability": "unknown", "extra_usage_enabled": False, "windows": [],
+    }
+    dobby = _AggOrch("dobby", status={"quota": degraded, "activeRunners": 0,
+                                      "degradedReason": None})
+    rocky = _AggOrch("rocky", status={"quota": degraded, "activeRunners": 1,
+                                      "degradedReason": None})
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    with temp_env():
+        account_registry.register_account("chatgpt-pro", account_registry.PROVIDER_OPENAI,
+                                          engine="codex")
+        result = await fo.codex_account_status("chatgpt-pro")
+        assert result["quota"]["availability"] == "unknown"
+        assert result["activeRunners"] == 1
+        with ledger.locked_ledger() as led:
+            assert "usage" not in led["accounts"].get("chatgpt-pro", {})
+
+
+@pytest.mark.asyncio
 async def test_merge_all_skips_unreachable_worker_but_raises_on_primary():
     dobby = _AggOrch("dobby", load={"acctA": 1.0})
     rocky = _AggOrch("rocky", fail=True)  # a dead worker must not blank the total
