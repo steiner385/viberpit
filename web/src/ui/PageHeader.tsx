@@ -11,8 +11,8 @@ export interface PageHeaderProps {
    * Settings is the case this exists for: the page is one page called
    * "Settings", so its `h1` must not change under the user as they move between
    * sections — but a browser tab (or a window switcher) showing three tabs all
-   * reading "Settings — ccswitch" is useless, so the TITLE carries the section
-   * ("Defaults · Settings — ccswitch"). WCAG 2.4.2 asks the title to identify
+   * reading "Settings — ViberPit" is useless, so the TITLE carries the section
+   * ("Defaults · Settings — ViberPit"). WCAG 2.4.2 asks the title to identify
    * the page; it does not ask it to be byte-identical to the heading.
    *
    * Defaults to `title`, so every other page is unaffected.

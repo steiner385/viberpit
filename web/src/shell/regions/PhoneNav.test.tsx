@@ -201,7 +201,7 @@ describe('TopBar', () => {
 
   it('renders the brand and the Assistant and Help controls', () => {
     renderPhoneNav()
-    expect(within(topBar()).getByText('ccswitch')).toBeInTheDocument()
+    expect(within(topBar()).getByText('ViberPit')).toBeInTheDocument()
     expect(within(topBar()).getByRole('button', { name: 'Assistant' })).toBeInTheDocument()
     expect(within(topBar()).getByRole('button', { name: 'Help' })).toBeInTheDocument()
   })

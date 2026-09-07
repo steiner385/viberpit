@@ -9,9 +9,9 @@ this module may spell the brand.
 from __future__ import annotations
 
 #: Display name — UI, page titles, prose, push-notification titles, GitHub comments.
-NAME = "ccswitch"
+NAME = "ViberPit"
 #: Lowercase identifier stem — User-Agent product, download filenames, new slugs.
-SLUG = "ccswitch"
+SLUG = "viberpit"
 #: The pre-rebrand slug. Only compat readers (parsers, path fallbacks) may use it.
 LEGACY_SLUG = "ccswitch"
 

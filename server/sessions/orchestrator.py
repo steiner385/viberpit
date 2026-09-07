@@ -4079,7 +4079,7 @@ class SessionOrchestrator:
                 rec = self._records.get(session_id)
                 name = rec.name if rec else session_id
                 await push_mod.notify_event(
-                    "session_ended", "ccswitch — session finished", f"{name}: {status}",
+                    "session_ended", f"{brand.NAME} — session finished", f"{name}: {status}",
                     repo=getattr(rec, "repo", None),
                     account=getattr(rec, "account_name", None),
                     session_id=session_id,
@@ -4364,7 +4364,7 @@ class SessionOrchestrator:
         Posts a brief linking comment on each issue so a human sees who claimed
         it and can trace back to the runner via the ``origin_ref``."""
         from server.automations import backlog_github
-        comment = (f"Claimed by ccswitch Backlog Runner ({batch.primary}) — "
+        comment = (f"Claimed by {brand.NAME} Backlog Runner ({batch.primary}) — "
                    f"an implementation session is in progress.")
         return await asyncio.to_thread(
             backlog_github.claim_batch, batch, gh_run=self._gh_run, comment=comment)
@@ -11905,7 +11905,7 @@ class SessionOrchestrator:
                 if account not in self._account_limited_notified:
                     self._account_limited_notified.add(account)
                     await push_mod.notify_event(
-                        "account_limited", "ccswitch — account limited",
+                        "account_limited", f"{brand.NAME} — account limited",
                         f"{account}: {reason.replace('_', ' ')}",
                         account=account, orch=self)
 
