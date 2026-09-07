@@ -146,6 +146,7 @@ async def test_codex_engine_registers_the_codex_surface(isolated_db, monkeypatch
     from server.sessions.orchestrator import SessionOrchestrator
     from server.sessions.tools.codex import CodexSessionTools
 
+    monkeypatch.delenv("CCSWITCH_SESSION_TOOLS_ENABLED", raising=False)
     orch = SessionOrchestrator.__new__(SessionOrchestrator)
     orch._overlays = {}
     orch._records = {"s1": SimpleNamespace(id="s1", name="n", repo="o/n", branch="b",

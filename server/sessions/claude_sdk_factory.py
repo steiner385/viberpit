@@ -18,15 +18,16 @@ def _build_append_string() -> str:
     ``marker_instructions`` for the completion/no-PR pair alone.
 
     Also appends the session-tools paragraph when the surface is mounted (session
-    tools spec §3.3), so a session is never told about tools it does not have.
+    tools spec §3.3), so a session is never told about tools it does not have —
+    through the shared ``append_session_tools``, which the Codex driver's fresh
+    ``thread/start`` calls for the same purpose.
     """
     from server.config import get_settings
-    from server.sessions.tools.instruction import SESSION_TOOLS_INSTRUCTION
+    from server.sessions.tools.instruction import append_session_tools
     cfg = get_settings()
-    parts = [marker_instructions(self_model_switch=cfg.self_model_switch_enabled)]
-    if cfg.session_tools_enabled:
-        parts.append(SESSION_TOOLS_INSTRUCTION)
-    return "\n\n".join(parts)
+    return append_session_tools(
+        marker_instructions(self_model_switch=cfg.self_model_switch_enabled),
+        enabled=cfg.session_tools_enabled)
 
 # Inline flag-settings payload (--settings layer, highest priority).  Auto-approves any
 # project-scoped `.mcp.json` MCP server so the CLI's trust gate (LX1 → "pending" → prompt)

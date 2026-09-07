@@ -24,6 +24,7 @@ import pytest_asyncio
 
 from server.codex import schema
 from server.sessions import events as ev
+from server.sessions.completion import marker_instructions
 from server.sessions.tools.context import SessionToolContext
 from server.tests.test_codex_driver import THREAD, Harness
 
@@ -141,11 +142,64 @@ async def test_a_fresh_coding_thread_declares_the_surface(harness, session_tools
 
 
 @pytest.mark.asyncio
+async def test_a_fresh_thread_is_TOLD_about_the_tools_it_declared(harness, session_tools):
+    """Declaring a tool the model was never told about leaves a surface it never
+    reaches for. The paragraph rides `developerInstructions` — the same string the
+    marker contracts do, through the same helper the Claude append uses."""
+    from server.sessions.tools.instruction import SESSION_TOOLS_INSTRUCTION
+
+    await harness.boot(session_tools=session_tools)
+    instructions = harness.params(schema.METHOD_THREAD_START)["developerInstructions"]
+    assert SESSION_TOOLS_INSTRUCTION in instructions
+    # And it is an APPEND, not a replacement: the marker contracts must survive.
+    assert marker_instructions(self_model_switch=False) in instructions
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_thread_without_tools_is_not_told_about_them(harness):
+    from server.sessions.tools.instruction import SESSION_TOOLS_INSTRUCTION
+
+    await harness.boot()
+    instructions = harness.params(schema.METHOD_THREAD_START)["developerInstructions"]
+    assert SESSION_TOOLS_INSTRUCTION not in instructions
+    assert instructions == marker_instructions(self_model_switch=False)
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_thread_is_never_told_about_tools_it_cannot_have(harness,
+                                                                         session_tools):
+    """The other half: a resumed thread declares no tools, so it must not claim any.
+    `ThreadResumeParams` carries no `developerInstructions` at all, which is what makes
+    this free rather than a guard that could be forgotten."""
+    await harness.boot(session_tools=session_tools, resume="thread-from-yesterday")
+    assert "developerInstructions" not in harness.params(schema.METHOD_THREAD_RESUME)
+
+
+def test_both_engines_compose_the_instruction_through_one_helper(monkeypatch):
+    """The append shape is shared, not spelled twice (constitution VI). The Claude
+    factory's system-prompt append and the Codex `thread/start` above are the two
+    callers of ``append_session_tools``."""
+    from server.sessions.claude_sdk_factory import _build_append_string
+    from server.sessions.tools.instruction import (SESSION_TOOLS_INSTRUCTION,
+                                                   append_session_tools)
+
+    base = marker_instructions(self_model_switch=False)
+    assert append_session_tools(base, enabled=False) == base
+    assert append_session_tools(base, enabled=True) == f"{base}\n\n{SESSION_TOOLS_INSTRUCTION}"
+    monkeypatch.delenv("CCSWITCH_SESSION_TOOLS_ENABLED", raising=False)
+    assert _build_append_string().endswith(f"\n\n{SESSION_TOOLS_INSTRUCTION}")
+
+
+@pytest.mark.asyncio
 async def test_a_coding_thread_with_tools_keeps_its_own_profile(harness, session_tools,
                                                                 tmp_path):
-    """The assistant's pinning must not leak: a coding session keeps its real cwd,
-    its mode's sandbox/approval policy and the marker instructions. Compared against
-    a driver booted with no tools at all, so a new pinned field cannot slip in."""
+    """The assistant's pinning must not leak: a coding session keeps its real cwd, its
+    mode's sandbox/approval policy and the marker instructions. Diffed against a driver
+    booted with no tools at all, so a newly pinned field cannot slip in: the ONLY
+    differences may be the declaration itself, the appended instruction paragraph, and
+    the two harnesses' different temp cwds."""
+    from server.sessions.tools.instruction import SESSION_TOOLS_INSTRUCTION
+
     other = tmp_path / "plain"
     other.mkdir()
     plain = Harness(other)
@@ -157,8 +211,10 @@ async def test_a_coding_thread_with_tools_keeps_its_own_profile(harness, session
     await harness.boot(session_tools=session_tools)
     params = dict(harness.params(schema.METHOD_THREAD_START))
     assert params.pop("dynamicTools")
+    assert params.pop("developerInstructions") == (
+        f"{reference['developerInstructions']}\n\n{SESSION_TOOLS_INSTRUCTION}")
     assert {k: v for k, v in params.items() if k != "cwd"} == {
-        k: v for k, v in reference.items() if k != "cwd"}
+        k: v for k, v in reference.items() if k not in {"cwd", "developerInstructions"}}
 
 
 @pytest.mark.asyncio

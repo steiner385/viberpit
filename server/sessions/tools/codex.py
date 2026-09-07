@@ -21,19 +21,16 @@ it resumes without the tools and says so once in the journal
 """
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from server.assistant.options_codex import ToolHandler, _as_result, input_schema_for, tool_error
+from server.assistant.options_codex import ToolHandler, input_schema_for, run_declared_tool
 from server.codex import schema
 from server.mcp_spec import MCP_PREFIX
 
 from .context import SessionToolContext
 from .tools import build_session_tools
-
-log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -41,10 +38,15 @@ class CodexSessionTools:
     """One coding session's declared tool surface plus the handlers behind it.
 
     Held as data, like ``CodexAssistantOverlay``, so the driver applies it at exactly
-    one place (``thread/start``) and a test can assert the whole shape. It answers the
-    same three questions the driver's ``_on_dynamic_tool`` asks of either surface —
-    ``declares``, ``mcp_name``, ``run_tool`` — which is why that handler needs no
-    branch for which one it is serving.
+    one place (``thread/start``) and a test can assert the whole shape.
+
+    **``CodexAgentDriver._on_dynamic_tool`` is written against this trio —
+    ``declares``, ``mcp_name``, ``run_tool`` — and takes EITHER this or a
+    ``CodexAssistantOverlay`` without branching on which.** That is what keeps one
+    permission policy across both surfaces, and it means the three must keep answering
+    identically on both types: ``mcp_name`` from the shared ``MCP_PREFIX``, ``run_tool``
+    from the shared :func:`run_declared_tool`. Changing one of them here without the
+    other is how the drawer and a coding session would end up gated differently.
     """
 
     dynamic_tools: tuple[schema.FunctionDynamicToolSpec, ...]
@@ -77,23 +79,10 @@ class CodexSessionTools:
     async def run_tool(self, tool: str, arguments: Any) -> schema.DynamicToolCallResponse:
         """Execute one declared tool. Never raises.
 
-        Deliberately the same decisions as ``CodexAssistantOverlay.run_tool``: an
-        unknown name and a non-object ``arguments`` are tool *errors*, not exceptions,
-        because a failed turn is worse for the model than being told the call did not
-        happen — and a fabricated success is worse than both.
+        The body is :func:`server.assistant.options_codex.run_declared_tool`, shared
+        with the assistant drawer rather than restated: every decision in it (unknown
+        name, argument normalization, exception containment, never fabricating a
+        success) is a safety decision that must be identical on both surfaces.
         """
-        handler = self.handlers.get(tool)
-        if handler is None:
-            log.warning("codex session tools: unknown tool %r", tool)
-            return tool_error(f"ccswitch tool error: no tool named {tool!r}")
-        if arguments is None:
-            args: dict[str, Any] = {}
-        elif isinstance(arguments, Mapping):
-            args = dict(arguments)
-        else:
-            return tool_error("ccswitch tool error: arguments must be an object")
-        try:
-            return _as_result(await handler(args))
-        except Exception as exc:  # noqa: BLE001 - a tool must never fail the turn
-            log.warning("codex session tool %s failed", tool, exc_info=True)
-            return tool_error(f"ccswitch tool error: {exc.__class__.__name__}")
+        return await run_declared_tool(self.handlers, tool, arguments,
+                                       log_label="codex session tools")

@@ -539,6 +539,8 @@ class CodexAgentDriver:
                 )
             )
         else:
+            from server.sessions.tools.instruction import append_session_tools
+
             response = await client.start_thread(
                 schema.ThreadStartParams(
                     cwd=self.cwd,
@@ -549,8 +551,18 @@ class CodexAgentDriver:
                     # (`AgentCapabilities.self_model_switch=False`), so it is
                     # never told about the marker — asking for a signal nothing
                     # honours burns turns on a request that is silently dropped.
-                    developer_instructions=marker_instructions(
-                        self_model_switch=False
+                    #
+                    # The session-tools paragraph rides the SAME string, through the
+                    # same helper the Claude factory's system-prompt append uses, and
+                    # ONLY on this branch: declaring the tools without telling the
+                    # model when to reach for them leaves a surface it never uses,
+                    # and saying they exist on a RESUMED thread (which cannot declare
+                    # them) would describe a surface that is not there. Resume needs
+                    # no matching guard — `ThreadResumeParams` carries no
+                    # `developerInstructions` at all.
+                    developer_instructions=append_session_tools(
+                        marker_instructions(self_model_switch=False),
+                        enabled=self._session_tools is not None,
                     ),
                     # The coding session's ccswitch tool surface, or nothing at
                     # all: an empty tuple emits no `dynamicTools` field, so a
@@ -1195,7 +1207,7 @@ class CodexAgentDriver:
     def resolve_permission(self, perm_id: str, decision: str, identity: str) -> bool:
         return self._reg.resolve(perm_id, decision, identity)
 
-    # -- client-declared tools (assistant threads only) ----------------------
+    # -- client-declared tools (assistant threads + coding-session tools) ----
 
     async def _on_dynamic_tool(
         self, params: schema.DynamicToolCallParams

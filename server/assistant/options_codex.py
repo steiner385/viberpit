@@ -231,6 +231,46 @@ def _as_result(payload: Any) -> schema.DynamicToolCallResponse:
     )
 
 
+async def run_declared_tool(handlers: Mapping[str, ToolHandler], tool: str,
+                            arguments: Any, *,
+                            log_label: str) -> schema.DynamicToolCallResponse:
+    """Execute one host-declared Codex tool. Never raises.
+
+    THE executor behind every `item/tool/call` ccswitch answers, shared by both
+    surfaces that declare `dynamicTools` — the assistant drawer
+    (:class:`CodexAssistantOverlay`) and a coding session
+    (``server.sessions.tools.codex.CodexSessionTools``). One body, because every
+    decision in it is a *safety* decision that must be identical on both:
+
+    * an unknown name is a tool error, not an exception — the app-server should only
+      ever ask for a declared tool, so this is either a bug or the model confabulating
+      one, and both are better answered with "no such tool" than with a failed turn;
+    * ``None`` arguments mean "no arguments", a non-object is a tool error;
+    * any exception out of a handler becomes a tool error carrying only the exception
+      *class*, never its message (which can quote scrubbed internals);
+    * nothing here ever fabricates a success — an invented answer is one the model
+      will go on to reason from.
+
+    *log_label* names the calling surface in the warning line; it is the only thing
+    that differs between the two callers.
+    """
+    handler = handlers.get(tool)
+    if handler is None:
+        log.warning("%s: unknown tool %r", log_label, tool)
+        return tool_error(f"ccswitch tool error: no tool named {tool!r}")
+    if arguments is None:
+        args: dict[str, Any] = {}
+    elif isinstance(arguments, Mapping):
+        args = dict(arguments)
+    else:
+        return tool_error("ccswitch tool error: arguments must be an object")
+    try:
+        return _as_result(await handler(args))
+    except Exception as exc:  # noqa: BLE001 - a tool must never fail the turn
+        log.warning("%s tool %s failed", log_label, tool, exc_info=True)
+        return tool_error(f"ccswitch tool error: {exc.__class__.__name__}")
+
+
 @dataclass(frozen=True)
 class CodexAssistantOverlay:
     """Everything that makes one Codex thread an assistant rather than a coding agent.
@@ -283,28 +323,10 @@ class CodexAssistantOverlay:
         return MCP_PREFIX + tool
 
     async def run_tool(self, tool: str, arguments: Any) -> schema.DynamicToolCallResponse:
-        """Execute one declared tool. Never raises.
-
-        An unknown name is a tool error, not an exception: the app-server should
-        only ever ask for a declared tool, so this is either a bug or the model
-        confabulating one, and both are better answered with "no such tool" than
-        with a failed turn.
-        """
-        handler = self.handlers.get(tool)
-        if handler is None:
-            log.warning("assistant codex overlay: unknown tool %r", tool)
-            return tool_error(f"ccswitch tool error: no tool named {tool!r}")
-        if arguments is None:
-            args: dict[str, Any] = {}
-        elif isinstance(arguments, Mapping):
-            args = dict(arguments)
-        else:
-            return tool_error("ccswitch tool error: arguments must be an object")
-        try:
-            return _as_result(await handler(args))
-        except Exception as exc:  # noqa: BLE001 - a tool must never fail the turn
-            log.warning("assistant codex tool %s failed", tool, exc_info=True)
-            return tool_error(f"ccswitch tool error: {exc.__class__.__name__}")
+        """Execute one declared tool. Never raises — see :func:`run_declared_tool`,
+        which holds the body this shares with the coding-session surface."""
+        return await run_declared_tool(self.handlers, tool, arguments,
+                                       log_label="assistant codex overlay")
 
 
 def assistant_codex_options(*, api: AssistantApi, model: str,
