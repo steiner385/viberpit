@@ -1385,3 +1385,75 @@ async def test_archive_sessions_batch_validates_titles_and_size():
 
     assert calls == [], "a rejected batch must never reach the API"
     assert calls == []
+
+
+# --------------------------------------------------------------------------- #
+# Pack G writes (Task 7.6): comment_on_pr / create_issue                        #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_comment_on_pr_posts_to_the_pr_comments_route():
+    seen: dict = {}
+
+    def handler(req: httpx.Request):
+        seen["call"] = (req.method, req.url.path, json.loads(req.content))
+        return httpx.Response(201, json={"url": "https://c/1"})
+
+    out = await _tool(build_tools(_api(handler)), "comment_on_pr").handler(
+        {"repo": "acme/billing", "number": 42, "body": "  needs a rollback plan  "})
+    assert out.get("is_error") is not True
+    assert seen["call"] == ("POST", "/api/prs/acme/billing/42/comments",
+                            {"body": "needs a rollback plan"})
+
+
+@pytest.mark.asyncio
+async def test_create_issue_posts_repo_title_body_and_optional_labels():
+    seen: list[tuple] = []
+
+    def handler(req: httpx.Request):
+        seen.append((req.method, req.url.path, json.loads(req.content)))
+        return httpx.Response(201, json={"number": 21, "url": "https://i/21"})
+
+    tools = build_tools(_api(handler))
+    await _tool(tools, "create_issue").handler(
+        {"repo": "acme/billing", "title": "Flaky test", "body": "fails 1 in 5",
+         "labels": ["bug"]})
+    # labels is optional and must be omitted entirely when unset, so the endpoint's
+    # "no labels" default applies rather than an empty list meaning something else.
+    await _tool(tools, "create_issue").handler(
+        {"repo": "acme/billing", "title": "Flaky test", "body": "fails 1 in 5"})
+
+    assert seen[0] == ("POST", "/api/github/issues",
+                       {"repo": "acme/billing", "title": "Flaky test",
+                        "body": "fails 1 in 5", "labels": ["bug"]})
+    assert "labels" not in seen[1][2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,args", [
+    ("comment_on_pr", {"repo": "acme", "number": 1, "body": "b"}),
+    ("comment_on_pr", {"repo": "acme/billing", "number": 1, "body": "   "}),
+    ("comment_on_pr", {"repo": "acme/billing", "number": 1, "body": "x" * 10001}),
+    ("create_issue", {"repo": "acme/billing/extra", "title": "t", "body": "b"}),
+    ("create_issue", {"repo": "acme/billing", "title": "", "body": "b"}),
+    ("create_issue", {"repo": "acme/billing", "title": "t", "body": "x" * 10001}),
+])
+async def test_github_write_tools_reject_bad_args_locally(name, args):
+    """A public write must be refused BEFORE it reaches the API — a 422 comes back to the
+    model as an opaque API error, where a local ToolArgError names the field to fix."""
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(201, json={})
+
+    out = await _tool(build_tools(_api(handler)), name).handler(args)
+    assert out["is_error"] is True
+    assert calls == []
+
+
+def test_github_write_tools_are_mutation_class():
+    """Not READ (they leave ccswitch) and not DESTRUCTIVE (nothing is lost); MUTATION is
+    what puts a confirmation card in front of a public post."""
+    for name in ("comment_on_pr", "create_issue"):
+        assert TOOL_SPECS[name].tool_class is ToolClass.MUTATION

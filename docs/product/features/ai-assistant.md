@@ -96,9 +96,9 @@ sharing, voice, or proactive/unsolicited messages — the assistant only speaks 
   session power tools, GitHub, proactive notices, opt-in operator tier, external MCP/CLI access) are
   in `docs/superpowers/specs/2026-09-05-ai-assistant-capabilities-v2-design.md`; plan:
   `docs/superpowers/plans/2026-09-05-ai-assistant-capabilities-v2.md`.
-- **Tool surface (v2)** — 89 tools are registered in `server/assistant/tools.py`; 84 are exposed by
-  default, Pack O's operator tools registering only once the operator tier is enabled. Pack G has
-  its first tool (PR detail); Pack X is not yet built.
+- **Tool surface (v2)** — 91 tools are registered in `server/assistant/tools.py`; 86 are exposed by
+  default, Pack O's operator tools registering only once the operator tier is enabled. Pack X is
+  not yet built.
 
   | Pack | Tools | Surface |
   |---|---|---|
@@ -109,7 +109,7 @@ sharing, voice, or proactive/unsolicited messages — the assistant only speaks 
   | S — session power | 13 | rename, queue-move, account pin, rotate, reload, suggest, adopt, and the five batch tools with an enumerating card |
   | C — session-start conveniences | 4 | presets, templates + render, permission profiles |
   | N — proactive notices | 10 | notification channels/rules, watches, quiet hours, test notification |
-  | G — GitHub | 1 | PR detail (checks with conclusions/urls, reviews, mergeability, owning session) |
+  | G — GitHub | 3 | PR detail (checks with conclusions/urls, reviews, mergeability, owning session), plus the two writes that leave ccswitch: PR comment and issue creation, each signed with an authorship trailer |
   | O — operator tier | 5 | deploy/host/account administration, flag-gated off by default |
 
   These counts are pinned by `test_feature_doc_tool_counts_match_the_registry` — a new tool fails
