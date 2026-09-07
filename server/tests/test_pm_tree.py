@@ -33,6 +33,12 @@ def test_issue_and_capability_and_incident_tiers():
     assert issue_tier("open", "classified", True, None) == "blocked"
     assert issue_tier("open", "classified", False, "in_progress") == "in-flight"
     assert issue_tier("open", "classified", False, None) == "idle"
+    # Board Status tier rows (spec §11): GhProjectItem.status mirrors the board.
+    assert issue_tier("open", "classified", False, None, board_status="Needs human") == "needs-you"
+    assert issue_tier("open", "classified", False, None, board_status="Blocked") == "blocked"
+    assert issue_tier("open", "classified", False, None, board_status="In progress") == "in-flight"
+    assert issue_tier("open", "classified", False, None, board_status="Backlog") == "idle"
+    assert issue_tier("open", "classified", False, None, board_status=None) == "idle"
     assert capability_own_tier("live") == "live"
     assert capability_own_tier("proposed") == "proposed"
     assert capability_own_tier("delivering") == "idle"

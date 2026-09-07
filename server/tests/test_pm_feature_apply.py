@@ -7,13 +7,14 @@ import tempfile
 from contextlib import contextmanager
 from unittest.mock import patch
 
-IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
-
 
 @contextmanager
-def _app():
-    from fastapi.testclient import TestClient
-    from server.app import create_app
+def _orch():
+    """Bare orchestrator over a real (temp) SQLite db — no TestClient/app, no
+    second event loop. The tests never make an HTTP call, and opening a
+    TestClient (its own event loop) alongside `asyncio.run(...)` against the
+    same aiosqlite pool is a cross-loop race (reproduced on this branch)."""
+    from server.db import init_db
     from server.sessions.orchestrator import SessionOrchestrator
     from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -23,12 +24,11 @@ def _app():
     with tempfile.TemporaryDirectory() as tmp:
         saved = {k: os.environ.pop(k, None) for k in _clear}
         try:
-            with patch.dict(os.environ, {"CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{tmp}/t.db",
+            db_url = f"sqlite+aiosqlite:///{tmp}/t.db"
+            with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
                                          "CCSWITCH_DEV": "1", "CCSWITCH_TAILNET_ALLOWLIST": ""}):
-                orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
-                app = create_app(orchestrator=orch)
-                with TestClient(app, raise_server_exceptions=False):
-                    yield orch
+                asyncio.run(init_db(db_url))
+                yield SessionOrchestrator(sdk_factory=fake_sdk_factory())
         finally:
             for k, v in saved.items():
                 if v is not None:
@@ -42,7 +42,7 @@ def test_apply_writes_parents_and_links_and_rewrites_stale_links():
     from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
     from server.pm.featuredoc import FeatureLinkRef
 
-    with _app() as orch:
+    with _orch() as orch:
         async def _seed() -> tuple[str, str | None]:
             async with db_session() as db:
                 infra = Project(slug="example-infra", name="Example infra")
@@ -66,7 +66,7 @@ def test_apply_writes_parents_and_links_and_rewrites_stale_links():
                                                   [FeatureLinkRef("powered_by", "example-infra", "message-queue"),
                                                    FeatureLinkRef("integrates_with", "example-product", "old")])),
             orphan_slugs=(), revive_slugs=(), warnings=("dictation: sample warning",))
-        asyncio.run(orch._pm_sync_apply_feature_plan(prod_id, plan1, {}))
+        asyncio.run(orch._pm_sync_apply_feature_plan(prod_id, plan1))
 
         async def _read():
             async with db_session() as db:
@@ -90,7 +90,7 @@ def test_second_apply_rewrites_links():
     from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
     from server.pm.featuredoc import FeatureLinkRef
 
-    with _app() as orch:
+    with _orch() as orch:
         async def _seed() -> str:
             async with db_session() as db:
                 infra = Project(slug="example-infra", name="Example infra")
@@ -111,10 +111,10 @@ def test_second_apply_rewrites_links():
 
         asyncio.run(orch._pm_sync_apply_feature_plan(prod_id, _plan([
             FeatureLinkRef("powered_by", "example-infra", "message-queue"),
-            FeatureLinkRef("integrates_with", "example-product", "old")]), {}))
+            FeatureLinkRef("integrates_with", "example-product", "old")])))
         asyncio.run(orch._pm_sync_apply_feature_plan(prod_id, _plan([
             FeatureLinkRef("powered_by", "example-infra", "message-queue"),
-            FeatureLinkRef("powered_by", "nope", "nope")]), {}))
+            FeatureLinkRef("powered_by", "nope", "nope")])))
 
         async def _links():
             async with db_session() as db:
@@ -126,3 +126,45 @@ def test_second_apply_rewrites_links():
                 return [(r.kind, r.dst_feature_id) for r in rows], dst.id
         rows, mq_id = asyncio.run(_links())
         assert rows == [("powered_by", mq_id)]
+
+
+def test_duplicate_link_in_one_upsert_applies_without_error():
+    """F1 regression: a doc listing the same (kind, project, feature) link twice
+    must not insert two identical FeatureLink rows — that trips uq_feature_link
+    and rolls back the whole apply."""
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import Feature, FeatureLink, Project
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
+    from server.pm.featuredoc import FeatureLinkRef
+
+    with _orch() as orch:
+        async def _seed() -> str:
+            async with db_session() as db:
+                infra = Project(slug="example-infra", name="Example infra")
+                prod = Project(slug="example-product", name="Example product")
+                db.add_all([infra, prod])
+                await db.flush()
+                db.add(Feature(project_id=infra.id, slug="message-queue", title="MQ", state="live"))
+                await db.commit()
+                return prod.id
+        prod_id = asyncio.run(_seed())
+
+        plan = FeatureIndexPlan(
+            upserts=(FeatureUpsert(
+                slug="dictation", title="D", state="live", summary="",
+                repo_path="d/dictation.md", parent_slug=None,
+                links=(FeatureLinkRef("powered_by", "example-infra", "message-queue"),
+                       FeatureLinkRef("powered_by", "example-infra", "message-queue"))),),
+            orphan_slugs=(), revive_slugs=(), warnings=())
+        asyncio.run(orch._pm_sync_apply_feature_plan(prod_id, plan))
+
+        async def _links():
+            async with db_session() as db:
+                src = (await db.execute(select(Feature).where(
+                    Feature.project_id == prod_id, Feature.slug == "dictation"))).scalar_one()
+                return (await db.execute(select(FeatureLink).where(
+                    FeatureLink.src_feature_id == src.id))).scalars().all()
+        rows = asyncio.run(_links())
+        assert len(rows) == 1
+        assert rows[0].kind == "powered_by"

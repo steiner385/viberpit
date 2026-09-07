@@ -294,6 +294,11 @@ async def create_initiative(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={"error": "capability_not_found",
                         "message": f"unknown capability id(s): {', '.join(missing)}"})
+        if len({f.project_id for f in features.values()}) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"error": "capabilities_span_products",
+                        "message": "all capabilities must belong to one product"})
     project_id = None
     if wanted:
         anchor = features[body.primaryCapabilityId] if body.primaryCapabilityId else features[wanted[0]]

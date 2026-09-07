@@ -1,6 +1,6 @@
 """Pure feature-index planner tests (spec §4: upsert + sunset-orphan)."""
 from server.pm.feature_index import FeatureRowView, plan_feature_index
-from server.pm.featuredoc import FeatureDoc
+from server.pm.featuredoc import FeatureDoc, FeatureLinkRef
 
 
 def _doc(slug: str, body: str = "## Problem\n\nSummary line here.") -> FeatureDoc:
@@ -27,9 +27,6 @@ def test_already_orphaned_not_reorphaned():
     existing = [FeatureRowView(slug="gone", orphaned=True)]
     plan = plan_feature_index(existing, [])
     assert plan.orphan_slugs == ()
-
-
-from server.pm.featuredoc import FeatureLinkRef
 
 
 def _pdoc(slug: str, parent: str | None, links=()) -> FeatureDoc:

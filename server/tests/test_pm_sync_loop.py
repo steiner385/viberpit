@@ -76,7 +76,7 @@ def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None
     async def list_rows(project_id):
         return []
 
-    async def apply_plan(project_id, plan, docs_by_slug):
+    async def apply_plan(project_id, plan):
         applied.append((project_id, plan))
 
     loop = PmSyncLoop(

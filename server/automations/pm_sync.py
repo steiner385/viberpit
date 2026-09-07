@@ -106,7 +106,7 @@ UpsertItems = Callable[[list[WorkItemView]], Awaitable[None]]
 SaveSyncState = Callable[..., Awaitable[None]]
 ReadFeatureDocs = Callable[[str], Awaitable[list[tuple[str, str]]]]
 ListFeatureRows = Callable[[str], Awaitable[list[FeatureRowView]]]
-ApplyFeaturePlan = Callable[[str, FeatureIndexPlan, dict[str, FeatureDoc]], Awaitable[None]]
+ApplyFeaturePlan = Callable[[str, FeatureIndexPlan], Awaitable[None]]
 
 # --- Projects v2 + relations mirror seams (003 Phase A) ---------------------
 # All default to None so the mirror pass is a no-op unless the orchestrator
@@ -532,7 +532,6 @@ class PmSyncLoop:
                 kind="feature_read_error", target=view.repo)
             return
         docs: list[tuple[str, FeatureDoc]] = []
-        by_slug: dict[str, FeatureDoc] = {}
         for path, text in raw:
             try:
                 doc = parse_feature_doc(text)
@@ -541,10 +540,9 @@ class PmSyncLoop:
                             view.repo, path, exc_info=True)
                 continue  # one bad doc never poisons the index (spec §4)
             docs.append((path, doc))
-            by_slug[doc.slug] = doc
         rows = await self._list_feature_rows(view.project_id)
         plan = plan_feature_index(rows, docs)
-        await self._apply_feature_plan(view.project_id, plan, by_slug)
+        await self._apply_feature_plan(view.project_id, plan)
 
     def _stash(self, synced: int, backfilling: int, errors: int,
                gh_projects: int = 0) -> None:

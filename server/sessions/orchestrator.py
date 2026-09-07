@@ -5893,7 +5893,7 @@ class SessionOrchestrator:
                 for f in rows]
 
     async def _pm_sync_apply_feature_plan(
-        self, project_id: str, plan, by_slug: dict
+        self, project_id: str, plan
     ) -> None:
         """Write upserts/orphans from *plan* into the Feature table, then the
         capability tree (parent) and the project's outgoing feature links.
@@ -5912,7 +5912,7 @@ class SessionOrchestrator:
         webhook needed.  No other states are touched."""
         from sqlalchemy import delete, func, select
         from server.db.models import Feature, FeatureLink, Project
-        for warning in getattr(plan, "warnings", ()):
+        for warning in plan.warnings:
             log.warning("pm_sync.feature_index project=%s %s", project_id, warning)
         async with db_session() as db:
             for up in plan.upserts:
@@ -5955,7 +5955,8 @@ class SessionOrchestrator:
             src_ids = [f.id for f in mine.values()]
             if src_ids:
                 await db.execute(delete(FeatureLink).where(FeatureLink.src_feature_id.in_(src_ids)))
-            wanted = [(up.slug, link) for up in plan.upserts for link in up.links]
+            wanted = list(dict.fromkeys(
+                (up.slug, link) for up in plan.upserts for link in up.links))
             if wanted:
                 project_slugs = {link.project for _, link in wanted}
                 projects = {p.slug: p.id for p in (await db.execute(

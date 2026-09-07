@@ -12,8 +12,8 @@ from server.api.sdlc import _capabilities_batch, _epic_progress_batch
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.db.models import (
-    Feature, FeatureLink, Initiative, Project, ProjectRepo, Session as DbSession,
-    TriageItem, TriageProposal, WorkItem, WorkItemDep)
+    Feature, FeatureLink, GhProjectItem, Initiative, Project, ProjectRepo,
+    Session as DbSession, TriageItem, TriageProposal, WorkItem, WorkItemDep)
 from server.pm.desired_state import ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES
 from server.pm.score import rice_score
 from server.pm.tree import CapabilityIn, InitiativeIn, ProductIn, build_product_tree, issue_tier
@@ -32,12 +32,14 @@ def _split_ref(ref: str) -> tuple[str, int] | None:
     return (repo, int(num)) if repo and num.isdigit() else None
 
 
-async def _issue_facts(db, items: list[WorkItem]) -> tuple[dict[str, bool], dict[str, str | None], dict[str, list[str]]]:
+async def _issue_facts(db, items: list[WorkItem]) -> tuple[
+        dict[str, bool], dict[str, str | None], dict[str, list[str]], dict[str, str | None]]:
     """For each work item id: has an open blocker; the live session status if any;
-    the open blocker refs. Blockers fail closed: an unmirrored destination counts
-    as open (spec 003 §10)."""
+    the open blocker refs; the mirrored board Status if any. Blockers fail closed:
+    an unmirrored destination counts as open (spec 003 §10)."""
     if not items:
-        return {}, {}, {}
+        return {}, {}, {}, {}
+    ids = [w.id for w in items]
     refs = [_ref(w) for w in items]
     deps = (await db.execute(select(WorkItemDep).where(
         WorkItemDep.src_ref.in_(refs), WorkItemDep.active.is_(True)))).scalars().all()
@@ -54,10 +56,17 @@ async def _issue_facts(db, items: list[WorkItem]) -> tuple[dict[str, bool], dict
     sessions = (await db.execute(select(DbSession.origin_ref, DbSession.status).where(
         DbSession.origin_ref.in_(refs), DbSession.status.in_(_LIVE)))).all()
     session_by_ref = {ref: st for ref, st in sessions}
+    board_status: dict[str, str | None] = {}
+    if ids:
+        rows = (await db.execute(select(GhProjectItem.work_item_id, GhProjectItem.status).where(
+            GhProjectItem.work_item_id.in_(ids)).order_by(GhProjectItem.updated_at))).all()
+        for wid, st in rows:
+            board_status[wid] = st  # last write wins (ordered by updated_at)
     by_id_blocked = {w.id: bool(blockers.get(_ref(w))) for w in items}
     by_id_session = {w.id: session_by_ref.get(_ref(w)) for w in items}
     by_id_blockers = {w.id: blockers.get(_ref(w), []) for w in items}
-    return by_id_blocked, by_id_session, by_id_blockers
+    by_id_board_status = {w.id: board_status.get(w.id) for w in items}
+    return by_id_blocked, by_id_session, by_id_blockers, by_id_board_status
 
 
 @router.get("/map")
@@ -93,13 +102,15 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
             (link.kind or "", slug_of.get(dst.project_id) or "", dst.slug or ""))
 
     open_items = (await db.execute(select(WorkItem).where(
-        WorkItem.feature_id.in_(list(feat_by_id)), WorkItem.state == "open"))).scalars().all() \
+        WorkItem.feature_id.in_(list(feat_by_id)), WorkItem.state == "open",
+        WorkItem.kind == "issue"))).scalars().all() \
         if feat_by_id else []
-    blocked, session, _ = await _issue_facts(db, open_items)
+    blocked, session, _, board_status = await _issue_facts(db, open_items)
     tiers_by_feature: dict[str, list[str]] = {}
     for w in open_items:
         tiers_by_feature.setdefault(w.feature_id, []).append(
-            issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id]))
+            issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id],
+                      board_status[w.id]))
 
     initiatives = (await db.execute(select(Initiative).where(
         Initiative.project_id.in_(pids)).order_by(Initiative.created_at))).scalars().all()
@@ -118,15 +129,17 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
     if all_repos:
         pending = (await db.execute(select(WorkItem.repo).join(
             TriageProposal, TriageProposal.work_item_id == WorkItem.id).where(
-            WorkItem.repo.in_(all_repos), TriageProposal.status == "pending"))).all()
+            WorkItem.repo.in_(all_repos), WorkItem.state == "open",
+            TriageProposal.status == "pending"))).all()
         for (repo,) in pending:
             pending_by_repo[repo] = pending_by_repo.get(repo, 0) + 1
         needs_home = (await db.execute(select(WorkItem.repo).where(
             WorkItem.repo.in_(all_repos), WorkItem.state == "open",
-            WorkItem.triage_state == "needs_human"))).all()
+            WorkItem.triage_state == "needs_human", WorkItem.feature_id.is_(None)))).all()
         for (repo,) in needs_home:
             needs_home_by_repo[repo] = needs_home_by_repo.get(repo, 0) + 1
         incidents = (await db.execute(select(TriageItem.repo, TriageItem.status).where(
+            TriageItem.status.in_(("open", "scheduled", "diagnosing", "queued")),
             TriageItem.repo.in_(all_repos)))).all()
         for repo, st in incidents:
             incidents_by_repo.setdefault(repo, []).append(st or "")
@@ -213,11 +226,12 @@ async def get_leaves(
             if epic is not None:
                 items = (await db.execute(select(WorkItem).where(
                     WorkItem.parent_work_item_id == epic.id))).scalars().all()
-    blocked, session, blockers = await _issue_facts(db, items)
+    blocked, session, blockers, board_status = await _issue_facts(db, items)
     parent_ids = {w.parent_work_item_id for w in items if w.parent_work_item_id}
     parents = {p.id: _ref(p) for p in (await db.execute(select(WorkItem).where(
         WorkItem.id.in_(parent_ids)))).scalars().all()} if parent_ids else {}
-    leaves = [_leaf(w, issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id]),
+    leaves = [_leaf(w, issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id],
+                                  board_status[w.id]),
                     blockers[w.id], session[w.id], parents.get(w.parent_work_item_id))
               for w in items]
     leaves.sort(key=_leaf_sort_key)

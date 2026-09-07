@@ -142,6 +142,56 @@ def test_map_is_empty_without_products():
         assert r.json()["products"] == []
 
 
+def test_board_status_blocked_tiers_the_issue_on_leaves_and_map():
+    """Spec §11 board-Status tier row: an otherwise-idle open issue mirrored onto
+    a GhProject board with Status="Blocked" gets tier "blocked" — via /leaves for
+    the issue itself, and rolled up into the capability's counts["blocked"] via
+    /map — even with no native blocker edge and no live session."""
+    import asyncio
+
+    from server.db import db_session, init_db
+    from server.db.models import Feature, GhProject, GhProjectItem, Project, ProjectRepo, WorkItem
+
+    async def _seed(db_url: str) -> str:
+        await init_db(db_url)
+        async with db_session() as db:
+            prod = Project(slug="example-product", name="Example product")
+            db.add(prod)
+            await db.flush()
+            db.add(ProjectRepo(project_id=prod.id, repo="o/r", is_primary=True))
+            dictation = Feature(project_id=prod.id, slug="dictation", title="Dictation", state="live")
+            db.add(dictation)
+            await db.flush()
+            issue = WorkItem(repo="o/r", number=1, kind="issue", state="open", title="Idle-looking",
+                             feature_id=dictation.id, triage_state="classified")
+            db.add(issue)
+            await db.flush()
+            ghp = GhProject(project_id=prod.id, gh_project_number=1, title="example-product")
+            db.add(ghp)
+            await db.flush()
+            db.add(GhProjectItem(gh_project_id=ghp.id, work_item_id=issue.id, status="Blocked"))
+            await db.commit()
+            return dictation.id
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        cap_id = asyncio.run(_seed(db_url))
+
+        with _client(db_url) as c:
+            leaves = c.get(f"/api/pm/leaves?capability={cap_id}", headers=IDENTITY_HEADERS)
+            assert leaves.status_code == 200, leaves.text
+            items = leaves.json()["items"]
+            assert len(items) == 1 and items[0]["tier"] == "blocked"
+
+            r = c.get("/api/pm/map", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            products = {p["slug"]: p for p in r.json()["products"]}
+            dictation = products["example-product"]["capabilities"][0]
+            assert dictation["slug"] == "dictation"
+            assert dictation["counts"]["blocked"] == 1
+            assert dictation["tier"] == "blocked"
+
+
 def test_leaves_for_capability_and_initiative():
     import asyncio
 

@@ -497,6 +497,48 @@ def test_create_with_unknown_capability_is_422():
         assert r.json()["detail"]["error"] == "capability_not_found"
 
 
+def test_create_with_capabilities_spanning_products_is_422():
+    """A capability set touching two products is rejected: an initiative has one
+    projectSlug (derived from its capabilities' project), so a cross-product set
+    would leave that derivation ambiguous."""
+    from server.db import db_session
+    from server.db.models import Feature, Project
+
+    async def _seed(db_url: str) -> tuple[str, str]:
+        from server.db import init_db
+        await init_db(db_url)
+        async with db_session() as db:
+            p1 = Project(slug="product-one", name="Product one")
+            p2 = Project(slug="product-two", name="Product two")
+            db.add_all([p1, p2])
+            await db.flush()
+            f1 = Feature(project_id=p1.id, slug="alpha", title="Alpha", state="live")
+            f2 = Feature(project_id=p2.id, slug="beta", title="Beta", state="live")
+            db.add_all([f1, f2])
+            await db.commit()
+            return f1.id, f2.id
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        f1_id, f2_id = asyncio.run(_seed(db_url))
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
+                                     "CCSWITCH_DEV": "1",
+                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.tests.fakes.fake_factory import fake_sdk_factory
+            from server.app import create_app
+            from fastapi.testclient import TestClient
+
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            app = create_app(orchestrator=orch)
+            with TestClient(app, raise_server_exceptions=False) as c:
+                r = c.post("/api/sdlc/initiatives", json={
+                    "title": "Cross product", "repo": "o/r",
+                    "capabilityIds": [f1_id, f2_id]}, headers=IDENTITY_HEADERS)
+                assert r.status_code == 422, r.text
+                assert r.json()["detail"]["error"] == "capabilities_span_products"
+
+
 def test_initiative_without_capabilities_has_null_fields():
     with _client() as c:
         r = c.post("/api/sdlc/initiatives", json={"title": "Plain", "repo": "o/r"},

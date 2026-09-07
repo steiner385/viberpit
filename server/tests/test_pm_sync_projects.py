@@ -104,7 +104,7 @@ def _loop(ctx, *, products, owner_fetch, repo_fetch, now_fn=None, config=None,
     async def list_rows(project_id):
         return []
 
-    async def apply_plan(project_id, plan, docs_by_slug):
+    async def apply_plan(project_id, plan):
         pass
 
     async def list_products():

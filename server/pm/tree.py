@@ -10,7 +10,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from server.db.models import INITIATIVE_STAGES
-from server.pm.desired_state import ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES
+from server.pm.desired_state import (
+    ACTIVE_SESSION_STATUSES,
+    HUMAN_WAIT_SESSION_STATUSES,
+    STATUS_BLOCKED,
+    STATUS_IN_PROGRESS,
+    STATUS_NEEDS_HUMAN,
+)
 
 TIERS: tuple[str, ...] = ("needs-you", "blocked", "in-flight", "proposed", "live", "idle")
 _RANK = {t: i for i, t in enumerate(TIERS)}
@@ -50,14 +56,16 @@ def capability_own_tier(state: str | None) -> str:
 
 
 def issue_tier(state: str | None, triage_state: str | None,
-               has_open_blocker: bool, session_status: str | None) -> str:
+               has_open_blocker: bool, session_status: str | None,
+               board_status: str | None = None) -> str:
     if state in ("closed", "merged"):
         return "live"
-    if triage_state == "needs_human" or session_status in HUMAN_WAIT_SESSION_STATUSES:
+    if (triage_state == "needs_human" or session_status in HUMAN_WAIT_SESSION_STATUSES
+            or board_status == STATUS_NEEDS_HUMAN):
         return "needs-you"
-    if has_open_blocker:
+    if has_open_blocker or board_status == STATUS_BLOCKED:
         return "blocked"
-    if session_status in ACTIVE_SESSION_STATUSES:
+    if session_status in ACTIVE_SESSION_STATUSES or board_status == STATUS_IN_PROGRESS:
         return "in-flight"
     return "idle"
 
@@ -109,6 +117,10 @@ class ProductIn:
 
 def _initiative_node(ini: InitiativeIn, project_slug: str) -> dict:
     epic = ini.epic or {}
+    # NOTE: this node's `primaryCapability` is a slug string (the map tree is
+    # slug-keyed), whereas server/api/sdlc.py's initiative payload serializes
+    # `primaryCapability` as `{id, slug, title}`. Both shapes are intended —
+    # Phase 3 consumes each from its own endpoint — not a drift to reconcile.
     return {
         "slug": ini.slug, "title": ini.title, "stage": ini.stage, "status": ini.status,
         "projectSlug": project_slug, "primaryCapability": ini.primary_slug,
@@ -179,7 +191,15 @@ def build_product_tree(product: ProductIn) -> dict:
             if slug in caps:
                 touching.setdefault(slug, []).append(node["slug"])
 
+    seen: set[str] = set()
+
     def build(cap: CapabilityIn) -> dict:
+        if cap.slug in seen:
+            # Defensive: a parent cycle should never reach here (feature-index
+            # breaks cycles at index time), but a stale/handcrafted tree must
+            # not blow the stack — cut recursion and render a childless node.
+            return _capability_node(cap, [], primary_under.get(cap.slug, []), touching.get(cap.slug, []))
+        seen.add(cap.slug)
         kids = [build(k) for k in sorted(children_of.get(cap.slug, []), key=lambda c: c.slug)]
         return _capability_node(cap, kids, primary_under.get(cap.slug, []), touching.get(cap.slug, []))
 

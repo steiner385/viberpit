@@ -42,6 +42,8 @@
 Deviations from spec §10, with reasons:
 - The `feature_map_changes` table is **not** created here. Its first writer is Phase 5's map-changes endpoint; creating it now would be a table with no reader or writer.
 - The spec's §11 module name `features/products/roadmapTier.ts` stays for the web, but the tier is computed server-side (Global Constraints) so that the map endpoint's rollup counts and tiers come from one function.
+- Spec §11's "artifact PR open" tier source is not implemented: `InitiativeArtifact` records `pr_number`/`pr_url` but no PR state, so "open" is not derivable without a live GitHub read. Deferred until an artifact PR-state column exists (Phase 4, with the initiative edit endpoint).
+- The board-Status tier rows ("Needs human", "Blocked", "In progress") are implemented via `GhProjectItem.status`, last-write-wins across boards.
 
 ---
 

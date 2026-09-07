@@ -231,7 +231,7 @@ async def test_apply_feature_plan_map_proposed_advances_to_map_merged(db_env):
         revive_slugs=(),
         warnings=(),
     )
-    await orch._pm_sync_apply_feature_plan(project_id, plan, {})
+    await orch._pm_sync_apply_feature_plan(project_id, plan)
 
     async with db_session() as db:
         from sqlalchemy import select
@@ -266,7 +266,7 @@ async def test_apply_feature_plan_non_map_proposed_state_unchanged(db_env):
         revive_slugs=(),
         warnings=(),
     )
-    await orch._pm_sync_apply_feature_plan(project_id, plan, {})
+    await orch._pm_sync_apply_feature_plan(project_id, plan)
 
     async with db_session() as db:
         from sqlalchemy import select
@@ -291,7 +291,7 @@ async def test_apply_feature_plan_map_proposed_no_upserts_stays(db_env):
 
     from server.pm.feature_index import FeatureIndexPlan
     plan = FeatureIndexPlan(upserts=[], orphan_slugs=(), revive_slugs=(), warnings=())
-    await orch._pm_sync_apply_feature_plan(project_id, plan, {})
+    await orch._pm_sync_apply_feature_plan(project_id, plan)
 
     async with db_session() as db:
         from sqlalchemy import select
