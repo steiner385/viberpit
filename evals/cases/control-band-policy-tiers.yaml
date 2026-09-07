@@ -1,0 +1,31 @@
+id: control-band-policy-tiers
+description: >-
+  server/sdlc/bands.yaml still loads and still declares the designed response
+  ladder — 1sigma log, 2sigma diagnose (read-only), 3sigma propose — with no
+  mutating tool in the read-only tier. bands.yaml is agent configuration in the
+  strongest sense: it is the file that decides what an unattended agent may do
+  about a production signal, so a change to it belongs behind this gate alongside
+  CLAUDE.md and the hooks (AI-Native SDLC section 7 / #804).
+kind: static
+tags: [agent-config, control-bands, sdlc-maintain]
+# Self-contained like every other case here (they are all one shell command), and
+# deliberately independent of the pytest job: this gate has its own trigger paths,
+# so it must not go red because an unrelated conftest change broke an import.
+# The PARSING still comes from the one loader — only the assertion is restated,
+# in a second gate, on purpose. `python3`, not `python`: setup-python provides
+# both in CI, but only `python3` exists on a plain Debian/Ubuntu shell.
+# One folded line. Two YAML traps, both of which python -c reports as an
+# IndentationError: `>-` turns a MORE-indented continuation into a literal
+# newline (so every line sits flush), and folding inserts a space at each join —
+# so the code has to START on the quote's own line, not the one after it.
+check: >-
+  python3 -c "from server.sdlc.bands import load_bands;
+  c = load_bands();
+  t = {x.sigma: x for x in c.tiers};
+  assert set(t) == {1, 2, 3}, t;
+  assert (t[1].response, t[2].response, t[3].response) == ('log', 'diagnose', 'propose');
+  assert t[2].tools, 'the read-only tier must grant some inspection tool';
+  bad = ('Bash', 'Write', 'Edit', 'NotebookEdit');
+  assert not [x for x in t[2].tools if x in bad or x.startswith(('Write(', 'Edit('))], t[2].tools;
+  assert c.enabled_metrics(), 'the shipped policy must watch at least one metric'
+  "

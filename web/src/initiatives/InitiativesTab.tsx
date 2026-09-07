@@ -10,18 +10,26 @@ import { useSessionSocket } from '@/ws/client'
 import { INITIATIVE_STAGES, type Initiative, type InitiativeArtifact } from '@/api/sdlc'
 import { fileUrl, commitUrl, prUrl } from '@/lib/githubUrl'
 import { InitiativeTrack } from './InitiativeTrack'
+import { IncidentQueue } from './IncidentQueue'
 import '../pipeline/plotroom.css'
 import './initiatives.css'
 
 /** Live nudge: the artifact chain moves when SDLC-spawned sessions change state,
  *  so invalidate the board on `/ws` status frames (the same socket the rest of
  *  the app already holds open) rather than polling hard. Baseline polling in
- *  useInitiatives covers the gaps. */
+ *  useInitiatives covers the gaps.
+ *
+ *  Incidents ride the same nudge: a 2σ breach spawns a diagnosis session, and
+ *  SDLC Intake adopting a queued incident spawns another — both of which move a
+ *  row in the queue and both of which arrive as status frames. */
 function useInitiativesLive() {
   const qc = useQueryClient()
   const { on, off } = useSessionSocket()
   useEffect(() => {
-    const nudge = () => void qc.invalidateQueries({ queryKey: QK.initiatives })
+    const nudge = () => {
+      void qc.invalidateQueries({ queryKey: QK.initiatives })
+      void qc.invalidateQueries({ queryKey: QK.incidents })
+    }
     on('status', nudge)
     return () => off('status', nudge)
   }, [on, off, qc])
@@ -163,6 +171,9 @@ export function InitiativesTab() {
         <h2 className="init-board-title">Initiatives</h2>
         <NewInitiativeForm />
       </div>
+      {/* The back of the SDLC loop sits above its front: an open incident is the
+          thing most likely to become the next initiative on this board. */}
+      <IncidentQueue />
       {isLoading && <p role="status">Loading initiatives…</p>}
       {isError && <p className="stale" role="status">Could not load initiatives.</p>}
       {!isLoading && !isError && (initiatives?.length ?? 0) === 0 && (

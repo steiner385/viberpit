@@ -419,10 +419,13 @@ def test_unauthenticated_401():
         assert c.get("/api/sdlc/initiatives/nope").status_code == 401
         assert c.post("/api/sdlc/initiatives/nope/advance").status_code == 401
         assert c.get("/api/sdlc/triage").status_code == 401
+        assert c.post("/api/sdlc/triage/x/action",
+                      json={"action": "dismiss", "reason": "r"}).status_code == 401
 
 
-def test_triage_stub():
-    """GET /api/sdlc/triage → {'items': []}."""
+def test_triage_queue_is_empty_before_any_band_breaches():
+    """The queue is real (#804) but starts empty — the control-band monitor is
+    what fills it. Behaviour with rows lives in test_sdlc_triage_api.py."""
     with _client() as c:
         r = c.get("/api/sdlc/triage", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text

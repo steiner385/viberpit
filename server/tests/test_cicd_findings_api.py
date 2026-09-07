@@ -1,7 +1,6 @@
 """GET /api/automations/cicd-doctor/findings — filters + shape."""
 from __future__ import annotations
 
-import asyncio
 import os
 import tempfile
 from contextlib import contextmanager
@@ -27,7 +26,7 @@ def _client():
                 yield c
 
 
-async def _seed():
+async def _seed_rows():
     from server.db import db_session
     from server.db.models import CiFinding
     async with db_session() as db:
@@ -38,9 +37,26 @@ async def _seed():
         await db.flush()
 
 
+def _seed(c):
+    """Seed through the app's OWN event loop (same idiom as
+    test_assistant_external_token._mint_and_insert).
+
+    A bare ``asyncio.run(_seed_rows())`` runs on a throwaway loop while the app
+    holds the module-level ``server.db._engine`` on the TestClient portal loop.
+    Both share one AsyncAdaptedQueuePool, and that pool's ``asyncio.Queue`` binds
+    to whichever loop first *awaits* a checkout — ``get_nowait()`` never checks
+    loop affinity, which is why an idle pool tolerates the cross-loop seed. Once
+    the orchestrator's control loops saturate the 5-connection pool at startup,
+    the foreign-loop checkout has to await and dies with
+    "Queue ... is bound to a different event loop".
+    """
+    assert c.portal is not None
+    c.portal.call(_seed_rows)
+
+
 def test_findings_default_open_only_and_shape():
     with _client() as c:
-        asyncio.run(_seed())
+        _seed(c)
         body = c.get("/api/automations/cicd-doctor/findings", headers=H).json()
         assert [f["kind"] for f in body] == ["flaky_test"]
         f = body[0]
@@ -50,7 +66,7 @@ def test_findings_default_open_only_and_shape():
 
 def test_findings_status_and_repo_filters():
     with _client() as c:
-        asyncio.run(_seed())
+        _seed(c)
         assert len(c.get("/api/automations/cicd-doctor/findings?status=all",
                          headers=H).json()) == 2
         assert c.get("/api/automations/cicd-doctor/findings?repo=o/other",

@@ -22,7 +22,9 @@ import type {
 import { fetchDeployStatus, startDeploy } from './deploy'
 import {
   fetchInitiatives, advanceInitiative, createInitiative,
+  fetchIncidents, actOnIncident,
   type Initiative, type CreateInitiativeInput,
+  type Incident, type IncidentActionInput,
 } from './sdlc'
 import {
   fetchProjects, createProject, requestProjectSync,
@@ -82,6 +84,9 @@ export const QK = {
     ['library', 'content', kind, id, plugin ?? null] as const,
   initiatives: ['sdlc', 'initiatives'] as const,
   initiative: (slug: string) => ['sdlc', 'initiative', slug] as const,
+  // Control-band INCIDENTS (#804) — deliberately not `triage` below, which is the
+  // PM classification inbox. Same word, unrelated data.
+  incidents: ['sdlc', 'incidents'] as const,
   projects: ['pm', 'projects'] as const,
   triage: ['pm', 'triage'] as const,          // phase 2 OWNS this key
   onboarding: (slug: string) => ['pm', 'onboarding', slug] as const,
@@ -1474,6 +1479,41 @@ export function useCreateInitiative() {
   return useMutation<Initiative, ApiRequestError, CreateInitiativeInput>({
     mutationFn: (input) => createInitiative(input),
     onSuccess: () => void qc.invalidateQueries({ queryKey: QK.initiatives }),
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** The control-band incident queue (#804). Polled on the initiatives cadence —
+ *  the monitor's own tick is far slower (5 min) than either, and the board
+ *  invalidates this alongside the tracks on `/ws` status frames. */
+export function useIncidents() {
+  return useQuery<Incident[]>({
+    queryKey: QK.incidents,
+    queryFn: fetchIncidents,
+    staleTime: 5_000,
+    refetchInterval: 30_000,
+  })
+}
+
+/** Disposition one incident: triage now / schedule / dismiss.
+ *
+ *  NOT optimistic, unlike the PM triage inbox's accept/reject. Those remove a row
+ *  outright, so a rollback is invisible; here a disposition CHANGES a row that
+ *  stays on screen, and every failure mode is a server-side refusal with a reason
+ *  worth reading (a past `scheduledFor`, an incident Intake already adopted).
+ *  Showing the row's real state after the server answers is the honest rendering.
+ *
+ *  `initiatives` is invalidated too: `triage_now` is the tap that eventually
+ *  produces an Initiative, and dropping that would leave the board stale until
+ *  its own poll. */
+export function useIncidentAction() {
+  const qc = useQueryClient()
+  return useMutation<Incident, ApiRequestError, IncidentActionInput>({
+    mutationFn: (input) => actOnIncident(input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.incidents })
+      void qc.invalidateQueries({ queryKey: QK.initiatives })
+    },
     meta: PM_MUTATION_META,
   })
 }

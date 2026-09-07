@@ -57,6 +57,9 @@ def test_every_registered_origin_declares_its_audited_policy():
         "pm-onboard": EnginePolicy.CODEX_ALLOWED,
         "pm-classify": EnginePolicy.CODEX_ALLOWED,
         "gh-reconcile": EnginePolicy.CLAUDE_ONLY,
+        # #804: no Codex acceptance suite exists for the control-band diagnosis
+        # prompt, and an unaudited engine must fail closed.
+        "control-band-monitor": EnginePolicy.CLAUDE_ONLY,
     }
 
 
