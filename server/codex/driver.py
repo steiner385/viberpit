@@ -87,7 +87,6 @@ from server.codex.translator import TRANSLATED_NOTIFICATIONS, CodexEventTranslat
 from server.obs.context import log_event
 from server.sessions import events as ev
 from server.sessions.background_tasks import OpenBgTask
-from server.sessions.completion import marker_instructions
 from server.sessions.driver_stream import _STREAM_DONE, DriverStream
 from server.sessions.engine import (
     AgentDriverConfig,
@@ -540,7 +539,7 @@ class CodexAgentDriver:
                 )
             )
         else:
-            from server.sessions.tools.instruction import append_session_tools
+            from server.sessions.tools.instruction import session_instructions
 
             response = await client.start_thread(
                 schema.ThreadStartParams(
@@ -561,9 +560,16 @@ class CodexAgentDriver:
                     # them) would describe a surface that is not there. Resume needs
                     # no matching guard — `ThreadResumeParams` carries no
                     # `developerInstructions` at all.
-                    developer_instructions=append_session_tools(
-                        marker_instructions(self_model_switch=False),
-                        enabled=self._session_tools is not None,
+                    #
+                    # signalling_tools reads `self.capabilities.durable_tool_surface`
+                    # rather than a literal False: that capability is what says a
+                    # declared surface does not survive `thread/resume` (§5), so the
+                    # day it flips True this call flips with it instead of disagreeing
+                    # with the capability that already answers the question.
+                    developer_instructions=session_instructions(
+                        session_tools=self._session_tools is not None,
+                        signalling_tools=self.capabilities.durable_tool_surface,
+                        self_model_switch=False,
                     ),
                     # The coding session's ccswitch tool surface, or nothing at
                     # all: an empty tuple emits no `dynamicTools` field, so a

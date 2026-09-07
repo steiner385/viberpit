@@ -18,7 +18,7 @@ from server.sessions.feedback import CATEGORIES, IMPACTS, record_feedback, valid
 from server.sessions.model_request import MODEL_TIERS, parse_request_model
 
 from .context import SessionToolContext, context_snapshot
-from .registry import SESSION_TOOL_SPECS
+from .registry import SESSION_TOOL_SPECS, mounted_signal_names
 
 log = logging.getLogger(__name__)
 
@@ -47,13 +47,10 @@ async def _audit_tool_call(ctx: SessionToolContext, spec: ToolSpec, ok: bool, ms
 def mounted_tool_names(ctx: SessionToolContext) -> tuple[str, ...]:
     """The tool names THIS context gets, in declaration order. THE predicate:
     `build_session_tools` builds from it and the system-prompt paragraph names from
-    it, so a session can never be told about a tool it was not declared."""
-    names = ["session_context", "report_feedback"]
-    if ctx.signalling_tools:
-        names += ["mark_complete", "mark_no_pr"]
-        if ctx.self_model_switch:
-            names.append("request_model")
-    return tuple(names)
+    it (via `mounted_signal_names` for the SIGNAL half), so a session can never be
+    told about a tool it was not declared."""
+    return ("session_context", "report_feedback") + mounted_signal_names(
+        signalling_tools=ctx.signalling_tools, self_model_switch=ctx.self_model_switch)
 
 
 def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:

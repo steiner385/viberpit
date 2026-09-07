@@ -5,29 +5,27 @@ import os
 
 from .account_auth import helper_env
 from .claude_bin import cli_path_kwargs as _cli_path_kwargs
-from .completion import marker_instructions
 from .permissions import to_sdk_permission_mode
 
 
 def _build_append_string() -> str:
-    """This engine's system-prompt append: the shared marker instructions.
+    """This engine's system-prompt append, through the shared ``session_instructions``
+    (session tools spec §9), which the Codex driver's fresh ``thread/start`` calls for
+    the same purpose.
 
-    Claude is the one engine whose driver implements self-directed model
-    switching (``AgentCapabilities.self_model_switch``), so it is also the one
-    engine that passes the flag through; every other engine asks
-    ``marker_instructions`` for the completion/no-PR pair alone.
-
-    Also appends the session-tools paragraph when the surface is mounted (session
-    tools spec §3.3), so a session is never told about tools it does not have —
-    through the shared ``append_session_tools``, which the Codex driver's fresh
-    ``thread/start`` calls for the same purpose.
+    Claude is the one engine whose capability is ``durable_tool_surface`` (its declared
+    tool surface survives a resume) and whose driver implements self-directed model
+    switching (``AgentCapabilities.self_model_switch``), so it is the one engine that
+    passes both flags through as True when the surface is on: a Claude session with
+    tools mounted is told about the tools and never about the markers they replace.
     """
     from server.config import get_settings
-    from server.sessions.tools.instruction import append_session_tools
+    from server.sessions.tools.instruction import session_instructions
     cfg = get_settings()
-    return append_session_tools(
-        marker_instructions(self_model_switch=cfg.self_model_switch_enabled),
-        enabled=cfg.session_tools_enabled)
+    return session_instructions(
+        session_tools=cfg.session_tools_enabled,
+        signalling_tools=cfg.session_tools_enabled,
+        self_model_switch=cfg.self_model_switch_enabled)
 
 # Inline flag-settings payload (--settings layer, highest priority).  Auto-approves any
 # project-scoped `.mcp.json` MCP server so the CLI's trust gate (LX1 → "pending" → prompt)

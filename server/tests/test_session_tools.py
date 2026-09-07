@@ -116,6 +116,8 @@ def test_server_is_named_from_the_brand():
 
 
 def test_instruction_names_the_tool_and_the_rules():
-    from server.sessions.tools.instruction import SESSION_TOOLS_INSTRUCTION as s
+    from server.sessions.tools.instruction import session_instructions
+    s = session_instructions(session_tools=True, signalling_tools=False,
+                             self_model_switch=False)
     assert "report_feedback" in s and "session_context" in s
     assert "never a bug in the project" in s and "keep working" in s.lower()

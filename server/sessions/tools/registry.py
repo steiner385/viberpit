@@ -29,4 +29,23 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
 SIGNAL_TOOL_NAMES: frozenset[str] = frozenset(
     name for name, spec in SESSION_TOOL_SPECS.items() if spec.tool_class is ToolClass.SIGNAL)
 
+
+def mounted_signal_names(*, signalling_tools: bool, self_model_switch: bool) -> tuple[str, ...]:
+    """Which SIGNAL tool names are mounted, in declaration order — THE predicate for the
+    signalling half of a session's tool surface. ``tools.mounted_tool_names`` (the full
+    predicate, READ tools included) and ``tools/instruction.py``'s system-prompt paragraph
+    both build from this rather than re-deriving "which tools does this session get": two
+    copies of that condition is how a session ends up told about a tool it does not have.
+
+    ``request_model`` is named only when ``self_model_switch`` — declaring it otherwise
+    offers a call whose result is silently dropped (no engine capability to honour it).
+    """
+    if not signalling_tools:
+        return ()
+    names = ["mark_complete", "mark_no_pr"]
+    if self_model_switch:
+        names.append("request_model")
+    return tuple(names)
+
+
 register_surface("session", SESSION_TOOL_SPECS)
