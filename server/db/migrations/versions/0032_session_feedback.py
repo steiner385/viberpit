@@ -1,7 +1,7 @@
 """Session tools Phase 1: session_feedback table for `report_feedback` rows.
 
-Revision ID: 0029_session_feedback
-Revises: 0028_assistant_tokens
+Revision ID: 0032_session_feedback
+Revises: 0031_session_display_mode
 Create Date: 2026-09-06
 
 Reviewable record only: nothing runs `alembic upgrade` at deploy time — init_db's
@@ -10,8 +10,8 @@ create_all builds the new table on both SQLite and Postgres at next boot.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0029_session_feedback"
-down_revision = "0028_assistant_tokens"
+revision = "0032_session_feedback"
+down_revision = "0031_session_display_mode"
 branch_labels = None
 depends_on = None
 

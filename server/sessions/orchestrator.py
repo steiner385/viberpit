@@ -1264,6 +1264,7 @@ class SessionOrchestrator:
         return api
 
     async def _setup_session_overlay(self, session_id: str, *, identity: str,
+                                     kind: str | None = None,
                                      engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
                                      ) -> None:
         """Arm a CODING session's ``ccswitch`` MCP surface (session tools spec §3.3).
@@ -1281,7 +1282,7 @@ class SessionOrchestrator:
             return
         selected = parse_agent_engine(engine, legacy_default=True)
         ctx = SessionToolContext(
-            session_id=session_id, identity=identity, kind=None, engine=selected.value,
+            session_id=session_id, identity=identity, kind=kind, engine=selected.value,
             record=lambda: self._records.get(session_id), host=self_host_name())
         if selected is AgentEngine.CODEX:
             from server.sessions.tools.codex import CodexSessionTools
@@ -1305,7 +1306,8 @@ class SessionOrchestrator:
         if is_assistant_kind(kind):
             return await self._setup_assistant_overlay(
                 session_id, identity=identity, model=model, engine=engine)
-        await self._setup_session_overlay(session_id, identity=identity, engine=engine)
+        await self._setup_session_overlay(session_id, identity=identity, kind=kind,
+                                          engine=engine)
         return None
 
     def _session_factory(self, session_id: str):

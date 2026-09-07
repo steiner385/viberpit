@@ -13,7 +13,7 @@ class SessionToolContext:
 
     session_id: str
     identity: str            # owner identity; audit attribution
-    kind: str | None
+    kind: str | None       # the row's session kind as the orchestrator resolved it
     engine: str
     record: Callable[[], Any]  # -> SessionRecord | None
     host: str | None = None

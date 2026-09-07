@@ -596,9 +596,16 @@ class CodexAgentDriver:
             events=self._on_event,
             approvals=self._on_approval,
             user_input=self._on_user_input,
-            # Registered when EITHER surface declared tools. Left unregistered
-            # otherwise so an `item/tool/call` on a thread with no host tool
-            # surface takes the protocol's own fail-closed path.
+            # Registered when EITHER surface is MOUNTED — which is not the same
+            # as "declared on this thread": a resumed coding session carries a
+            # `_session_tools` whose `dynamicTools` the pinned `thread/resume`
+            # cannot send (see server/sessions/tools/codex.py), so the callback
+            # is live with nothing declared behind it. That is deliberate and
+            # still fail-closed one layer in: `_on_dynamic_tool` refuses any name
+            # the mounted surface does not `declare()` before the permission
+            # gate, so an `item/tool/call` on such a thread is rejected by us
+            # rather than by the protocol. Left unregistered only when NEITHER
+            # surface is mounted, where the protocol's own `-32601` is the answer.
             dynamic_tools=(
                 None
                 if (overlay is None and self._session_tools is None)

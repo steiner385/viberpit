@@ -43,11 +43,11 @@ async def test_session_feedback_table_round_trips(isolated_db):
         assert row.context == {"repo": "o/n"}
 
 
-def test_migration_0029_chains_off_the_current_head():
+def test_migration_0032_chains_off_the_current_head():
     import importlib
-    mod = importlib.import_module("server.db.migrations.versions.0029_session_feedback")
-    assert mod.revision == "0029_session_feedback"
-    assert mod.down_revision == "0028_assistant_tokens"
+    mod = importlib.import_module("server.db.migrations.versions.0032_session_feedback")
+    assert mod.revision == "0032_session_feedback"
+    assert mod.down_revision == "0031_session_display_mode"
 
 
 def test_fingerprint_normalizes_title():

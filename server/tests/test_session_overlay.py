@@ -98,17 +98,15 @@ async def test_resume_rebuilds_the_overlay(isolated_db, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_adopt_arms_the_overlay(tmp_path, monkeypatch):
+async def test_adopt_arms_the_overlay(isolated_db, tmp_path, monkeypatch):
     """The FOURTH driver-build site. An adopted process is a coding session, and the
-    system-prompt append tells every Claude session its ccswitch tools exist — so
+    system-prompt append tells every Claude session its harness tools exist — so
     adopting without arming the surface would advertise tools that are not mounted."""
     from datetime import datetime, timezone
 
-    from server.db import init_db
     from server.sessions.adopt import AdoptionCandidate
     from server.sessions.orchestrator import SessionOrchestrator
 
-    await init_db(db_url="sqlite+aiosqlite:///:memory:")
     cwd = tmp_path / "repo"
     cwd.mkdir()
     sid = "66666666-6666-6666-6666-666666666666"
