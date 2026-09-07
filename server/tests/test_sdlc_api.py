@@ -432,13 +432,18 @@ def test_triage_queue_is_empty_before_any_band_breaches():
         assert r.json() == {"items": []}
 
 
-def _seed_product_with_capabilities() -> tuple[str, str, str]:
-    """Returns (project_id, root_feature_id, child_feature_id)."""
-    import asyncio
+def test_create_with_capabilities_links_and_derives_product():
+    """Seed the product + capabilities into the SAME db_url the TestClient will use,
+    in one asyncio.run() BEFORE the client (and its own event loop) is opened —
+    mirrors test_list_includes_artifact_chain above. Seeding via a separate
+    asyncio.run() *inside* the `with _client():` block would run against a
+    different db_url and race the app's own loop over the aiosqlite pool."""
     from server.db import db_session
     from server.db.models import Feature, Project
 
-    async def _seed():
+    async def _seed(db_url: str) -> tuple[str, str, str]:
+        from server.db import init_db
+        await init_db(db_url)
         async with db_session() as db:
             p = Project(slug="example-product", name="Example product")
             db.add(p)
@@ -451,28 +456,37 @@ def _seed_product_with_capabilities() -> tuple[str, str, str]:
             db.add(child)
             await db.commit()
             return p.id, root.id, child.id
-    return asyncio.run(_seed())
 
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _, root_id, child_id = asyncio.run(_seed(db_url))
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
+                                     "CCSWITCH_DEV": "1",
+                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.tests.fakes.fake_factory import fake_sdk_factory
+            from server.app import create_app
+            from fastapi.testclient import TestClient
 
-def test_create_with_capabilities_links_and_derives_product():
-    with _client() as c:
-        _, root_id, child_id = _seed_product_with_capabilities()
-        r = c.post("/api/sdlc/initiatives", json={
-            "title": "Whisper on the edge", "repo": "o/r",
-            "primaryCapabilityId": child_id, "capabilityIds": [root_id]},
-            headers=IDENTITY_HEADERS)
-        assert r.status_code == 201, r.text
-        body = r.json()
-        assert body["projectSlug"] == "example-product"
-        assert body["primaryCapability"] == {"id": child_id, "slug": "dictation", "title": "Dictation"}
-        assert sorted((x["slug"], x["isPrimary"]) for x in body["capabilities"]) == [
-            ("dictation", True), ("sessions", False)]
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            app = create_app(orchestrator=orch)
+            with TestClient(app, raise_server_exceptions=False) as c:
+                r = c.post("/api/sdlc/initiatives", json={
+                    "title": "Whisper on the edge", "repo": "o/r",
+                    "primaryCapabilityId": child_id, "capabilityIds": [root_id]},
+                    headers=IDENTITY_HEADERS)
+                assert r.status_code == 201, r.text
+                body = r.json()
+                assert body["projectSlug"] == "example-product"
+                assert body["primaryCapability"] == {"id": child_id, "slug": "dictation", "title": "Dictation"}
+                assert sorted((x["slug"], x["isPrimary"]) for x in body["capabilities"]) == [
+                    ("dictation", True), ("sessions", False)]
 
-        listed = c.get("/api/sdlc/initiatives", headers=IDENTITY_HEADERS).json()
-        assert listed[0]["primaryCapability"]["slug"] == "dictation"
-        detail = c.get("/api/sdlc/initiatives/whisper-on-the-edge", headers=IDENTITY_HEADERS).json()
-        assert detail["projectSlug"] == "example-product"
-        assert len(detail["capabilities"]) == 2
+                listed = c.get("/api/sdlc/initiatives", headers=IDENTITY_HEADERS).json()
+                assert listed[0]["primaryCapability"]["slug"] == "dictation"
+                detail = c.get("/api/sdlc/initiatives/whisper-on-the-edge", headers=IDENTITY_HEADERS).json()
+                assert detail["projectSlug"] == "example-product"
+                assert len(detail["capabilities"]) == 2
 
 
 def test_create_with_unknown_capability_is_422():
