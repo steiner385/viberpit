@@ -49,6 +49,7 @@ from server.api.snapshots import router as snapshots_router
 from server.api.dispatch import router as dispatch_router
 from server.api.sdlc import router as sdlc_router
 from server.api.pm import router as pm_router
+from server.api.test_slots import router as test_slots_router
 from server.assistant.api import router as assistant_router
 
 
@@ -560,6 +561,14 @@ async def _lifespan(app: FastAPI):
             except Exception:
                 log.warning("shutdown: reauth x11 sweep incomplete", exc_info=True)
 
+        _nd = getattr(app.state, "native_display", None)
+        if _nd is not None:
+            try:
+                await asyncio.wait_for(_nd.stop_all(), timeout=_SHUTDOWN_SWEEP_TIMEOUT_S)
+            except Exception:
+                _logging.getLogger("server").warning(
+                    "shutdown: native display sweep incomplete", exc_info=True)
+
         await bounded_wait(app.state.orchestrator.stop(),
                            timeout=_SHUTDOWN_STOP_TIMEOUT_S,
                            phase="shutdown:orchestrator-stop")
@@ -696,6 +705,16 @@ def create_app(
         app.state.x11 = build_x11_manager(_gs())
         if orchestrator is not None:
             orchestrator._x11 = app.state.x11
+
+    # Native display — the host desktop as a session target. Same ownership rule as
+    # x11: in remote mode the daemon has it, the edge only proxies.
+    from server.sessions.native_display import build_native_display
+    if getattr(app.state, "remote_mode", False):
+        app.state.native_display = None
+    else:
+        app.state.native_display = build_native_display(_gs())
+        if orchestrator is not None:
+            orchestrator._native = app.state.native_display
 
     # Copilot proxy manager — None when proxy binary absent or feature disabled.
     if not getattr(app.state, "remote_mode", False) and orchestrator is not None:
@@ -843,6 +862,7 @@ def create_app(
     app.include_router(dispatch_router)
     app.include_router(sdlc_router)
     app.include_router(pm_router)
+    app.include_router(test_slots_router)
     app.include_router(assistant_router)
 
     # WebSocket bridge
@@ -925,6 +945,15 @@ def create_app(
 
     from fastapi import Body, HTTPException  # noqa: PLC0415 — local import avoids top-level churn
 
+    # Shared by both branches of open_browser() below — the daemon RPC and the
+    # in-process orchestrator call return the same {"ok", "reason"} shape (Task 6),
+    # so one mapping keeps the HTTP detail text in sync across both modes.
+    _OPEN_BROWSER_DETAIL = {
+        "no_display": "no display for session",
+        "cap": "browser cap reached",
+        "native_unavailable": "native display unavailable",
+    }
+
     @app.post("/api/sessions/{session_id}/browser/open")
     async def open_browser(
         session_id: str,
@@ -933,16 +962,11 @@ def create_app(
     ) -> dict:
         if getattr(app.state, "remote_mode", False):
             res = await app.state.sessions.x11_open_browser(session_id, payload.get("url"))
-            if not res.get("ok"):
-                detail = "no display for session" if res.get("reason") == "no_display" else "browser cap reached"
-                raise HTTPException(status_code=409, detail=detail)
-            return {"ok": True}
-        x11 = getattr(app.state, "x11", None)
-        if x11 is None or x11.display_for(session_id) is None:
-            raise HTTPException(status_code=409, detail="no display for session")
-        ok = await x11.launch_browser(session_id, payload.get("url"))
-        if not ok:
-            raise HTTPException(status_code=409, detail="browser cap reached")
+        else:
+            res = await app.state.sessions.open_browser(session_id, payload.get("url"))
+        if not res.get("ok"):
+            raise HTTPException(status_code=409, detail=_OPEN_BROWSER_DETAIL.get(
+                res.get("reason"), "browser cap reached"))
         return {"ok": True}
 
     # SPA static files with client-side-routing fallback — optional; guarded so a

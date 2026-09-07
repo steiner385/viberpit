@@ -50,13 +50,18 @@ CCSWITCH_XVFB_RESOLUTION=1280x1024x24
 
 # Seconds of VNC idle before x11vnc tears down (Xvfb and browser persist)
 CCSWITCH_VNC_IDLE_TIMEOUT_S=1800
+
+# Route sessions created from this host's own desktop to its real X display
+CCSWITCH_NATIVE_DISPLAY_ENABLED=true
+CCSWITCH_NATIVE_DISPLAY=:0
 ```
 
 All values above are the defaults — only `CCSWITCH_ENABLE_XVFB=true` is required to opt
 in. The rest can be omitted unless you need to change them.
 
-> **Display range conflict:** ensure `CCSWITCH_REAUTH_DISPLAY` (default `:0`) does not
-> fall within `[CCSWITCH_DISPLAY_START, CCSWITCH_DISPLAY_START + CCSWITCH_DISPLAY_COUNT)`.
+> **Display range conflict:** ensure `CCSWITCH_REAUTH_DISPLAY` and `CCSWITCH_NATIVE_DISPLAY`
+> (both default `:0`) do not fall within
+> `[CCSWITCH_DISPLAY_START, CCSWITCH_DISPLAY_START + CCSWITCH_DISPLAY_COUNT)`.
 
 > **Login profile contents:** the reauth Chrome runs on a temp copy of
 > `CCSWITCH_CHROME_PROFILE`, which defaults to a dedicated ccswitch-owned profile
