@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Every new column is **nullable**; every timestamp column is **naive UTC** (`DateTime` without `timezone=True`). Never `func.now()`; Python-side now is `naive_utc_now()` added to `server/db/clock.py` in Task 3.
-- Migration `0034_error_signatures` chains `down_revision = "0033_triage_items"`.
+- Migration `0035_error_signatures` chains `down_revision = "0034_pr_resolution_source_tool"` (renumbered from 0034 after master landed `0034_pr_resolution_source_tool`).
 - No `except (asyncio.CancelledError, Exception)` and no `suppress(CancelledError…)` anywhere (blocked by `test_no_swallowed_outer_cancellation.py`). Teardown uses `server/aio.py:cancel_and_reap`.
 - The sink never blocks, never raises into a logging call site, ignores its own logger `server.obs.errsink`, and holds at most `MAX_PENDING = 512` fingerprints between flushes.
 - Fingerprint = first 16 hex of sha1 over `"\x1f"`-joined parts (spec §5). Hashed: source, level, logger, event-or-normalized-message, exception class, innermost app frame (client: top frame as hash-stripped basename:function). Never hashed: timestamps, ids, proc_epoch, host, app_version, line numbers.
@@ -36,7 +36,7 @@
 | `server/app.py` | Edge starts/stops the flusher in `_lifespan`. |
 | `server/config.py`, `server/api/settings.py` | `error_sink_enabled` flag. |
 | `server/db/clock.py` | `naive_utc_now()` Python-side helper. |
-| `server/db/models.py`, `server/db/migrations/versions/0034_error_signatures.py` | `ErrorSignature` model + migration record. |
+| `server/db/models.py`, `server/db/migrations/versions/0035_error_signatures.py` | `ErrorSignature` model + migration record. |
 | `server/github/ci_issues.py` | `comment_on_issue`, `issue_states` (one GraphQL query). |
 | `server/automations/issue_filing.py` (new) | `Linked`, `Decision`, `Applied`, `decide`, `apply`, `neutralize_markers`. Shared by #1433/#1434 later. |
 | `server/automations/error_triage.py` (new) | `ErrorTriage` automation, `should_file`, `is_ignored`, `issue_title`, `issue_body`, `ErrorTriageLoop`, `ErrorTriageActionProvider`. |
@@ -533,7 +533,7 @@ git commit -F /tmp/c2.txt
 **Files:**
 - Modify: `server/db/clock.py` (append helper)
 - Modify: `server/db/models.py` (after `SessionFeedback`, ~line 848)
-- Create: `server/db/migrations/versions/0034_error_signatures.py`
+- Create: `server/db/migrations/versions/0035_error_signatures.py`
 - Modify: `server/config.py:263-270` and `:558-563`
 - Modify: `server/api/settings.py:48-52` (`_MANAGED`)
 - Modify: `server/obs/metrics.py` (after `session_feedback_total`, ~line 232)
@@ -594,8 +594,8 @@ async def test_fingerprint_is_unique(isolated_db):
 
 
 def test_migration_0034_chains_off_the_current_head():
-    mod = importlib.import_module("server.db.migrations.versions.0034_error_signatures")
-    assert mod.revision == "0034_error_signatures"
+    mod = importlib.import_module("server.db.migrations.versions.0035_error_signatures")
+    assert mod.revision == "0035_error_signatures"
     assert mod.down_revision == "0033_triage_items"
 
 
@@ -691,10 +691,10 @@ class ErrorSignature(Base):
 - [x] **Step 5: Write the migration**
 
 ```python
-# server/db/migrations/versions/0034_error_signatures.py
+# server/db/migrations/versions/0035_error_signatures.py
 """Error triage: error_signatures — deduplicated WARNING+ log signatures.
 
-Revision ID: 0034_error_signatures
+Revision ID: 0035_error_signatures
 Revises: 0033_triage_items
 Create Date: 2026-09-07
 
@@ -705,7 +705,7 @@ _reconcile_columns ALTER-ADDs any later nullable column.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0034_error_signatures"
+revision = "0035_error_signatures"
 down_revision = "0033_triage_items"
 branch_labels = None
 depends_on = None
@@ -788,7 +788,7 @@ Expected: PASS (Postgres tests skip without `CCSWITCH_TEST_PG_URL`; that is fine
 - [x] **Step 9: Commit**
 
 ```bash
-git add server/db/clock.py server/db/models.py server/db/migrations/versions/0034_error_signatures.py server/config.py server/api/settings.py server/obs/metrics.py server/tests/test_error_signature_model.py
+git add server/db/clock.py server/db/models.py server/db/migrations/versions/0035_error_signatures.py server/config.py server/api/settings.py server/obs/metrics.py server/tests/test_error_signature_model.py
 printf 'feat(db): error_signatures table, CCSWITCH_ERROR_SINK_ENABLED flag, naive_utc_now\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n' > /tmp/c3.txt
 git commit -F /tmp/c3.txt
 ```

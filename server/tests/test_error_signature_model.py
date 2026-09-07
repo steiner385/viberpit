@@ -46,9 +46,9 @@ async def test_fingerprint_is_unique(isolated_db):
 
 
 def test_migration_0034_chains_off_the_current_head():
-    mod = importlib.import_module("server.db.migrations.versions.0034_error_signatures")
-    assert mod.revision == "0034_error_signatures"
-    assert mod.down_revision == "0033_triage_items"
+    mod = importlib.import_module("server.db.migrations.versions.0035_error_signatures")
+    assert mod.revision == "0035_error_signatures"
+    assert mod.down_revision == "0034_pr_resolution_source_tool"
 
 
 def test_error_sink_flag_default_and_env(monkeypatch):

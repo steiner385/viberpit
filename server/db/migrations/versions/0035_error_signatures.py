@@ -1,7 +1,7 @@
 """Error triage: error_signatures — deduplicated WARNING+ log signatures.
 
-Revision ID: 0034_error_signatures
-Revises: 0033_triage_items
+Revision ID: 0035_error_signatures
+Revises: 0034_pr_resolution_source_tool
 Create Date: 2026-09-07
 
 Reviewable record only: nothing runs `alembic upgrade` at deploy time — init_db's
@@ -11,8 +11,8 @@ _reconcile_columns ALTER-ADDs any later nullable column.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0034_error_signatures"
-down_revision = "0033_triage_items"
+revision = "0035_error_signatures"
+down_revision = "0034_pr_resolution_source_tool"
 branch_labels = None
 depends_on = None
 

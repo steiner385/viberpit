@@ -115,7 +115,7 @@ in `error_signature.py` and `feedback.py` is **not** changed (its inputs are age
 titles, not log lines; a shared normalizer would change existing feedback fingerprints).
 
 **Table `error_signatures`** (`ErrorSignature` in `server/db/models.py`, migration
-`0034_error_signatures` chained off `0033_triage_items`). Every column nullable so
+`0035_error_signatures` chained off `0034_pr_resolution_source_tool`). Every column nullable so
 `_reconcile_columns` adds it on both dialects; every timestamp naive UTC per the DB clock rule.
 
 | Column | Type | Meaning |
@@ -362,3 +362,5 @@ other automation action. This is the entire Phase 1 UI; it reuses the automation
   `action()` is a status-only wrapper (§7).
 - `ci_issues.issue_states` and `comment_on_issue` guard their whole bodies and return `{}`/`None`
   on any failure, including a malformed repo (§6.1).
+- The migration shipped as `0035_error_signatures` chained off `0034_pr_resolution_source_tool`:
+  master landed its own 0034 while this branch was in flight, and the chain must stay linear (§4).
