@@ -626,7 +626,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               Name the reason instead — the account is fine, its credential just
               cannot answer the usage endpoint. */}
           {usageUnavailableReason(account.usage) && (
-            <span className="text-xs text-muted-foreground" data-testid="usage-unavailable">
+            <span className="text-xs text-ink-muted" data-testid="usage-unavailable">
               {usageUnavailableReason(account.usage)}
             </span>
           )}
