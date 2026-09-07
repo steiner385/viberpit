@@ -1,7 +1,7 @@
 """Roadmap drill-down Phase 2 (#993): capability tree and initiative↔capability links.
 
-Revision ID: 0034_roadmap_tree
-Revises: 0033_triage_items
+Revision ID: 0035_roadmap_tree
+Revises: 0034_pr_resolution_source_tool
 Create Date: 2026-09-07
 
 Reviewable record only: nothing runs `alembic upgrade` at deploy time. The two
@@ -13,8 +13,8 @@ columns, so the leftover DB columns/table are harmless until then.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0034_roadmap_tree"
-down_revision = "0033_triage_items"
+revision = "0035_roadmap_tree"
+down_revision = "0034_pr_resolution_source_tool"
 branch_labels = None
 depends_on = None
 

@@ -30,7 +30,7 @@
 | `server/pm/featuredoc.py` | Parse `parent:` from frontmatter into `FeatureDoc.parent`; serialize it back. |
 | `server/pm/feature_index.py` | Plan carries `parent_slug`, `links` and cycle `warnings`; cycles fall back to root. |
 | `server/db/models.py` | `Feature.parent_feature_id`, `InitiativeFeature.is_primary`; delete `InitiativeRepo` and `Initiative.reach/impact/effort/confidence`. |
-| `server/db/migrations/versions/0034_roadmap_tree.py` | The reviewable record of the above. |
+| `server/db/migrations/versions/0035_roadmap_tree.py` | The reviewable record of the above. |
 | `server/sessions/orchestrator.py` | `_pm_sync_apply_feature_plan` writes parents and rewrites feature links. |
 | `server/pm/tree.py` | Pure: tier vocabulary, per-node tier rules, rollup, tree builder over dataclasses. |
 | `server/api/sdlc.py` | Create body accepts capabilities; every initiative payload carries `projectSlug`, `primaryCapability`, `capabilities`. |
@@ -311,7 +311,7 @@ git commit -F /tmp/p2-t2.txt
 
 **Files:**
 - Modify: `server/db/models.py:1441-1466` (Feature), `:1164-1207` (Initiative), `:1676-1706` (InitiativeRepo, InitiativeFeature)
-- Create: `server/db/migrations/versions/0034_roadmap_tree.py`
+- Create: `server/db/migrations/versions/0035_roadmap_tree.py`
 - Modify: `server/tests/test_postgres_compat.py:259`, `server/tests/test_pm_models.py:17-18,113-126`
 
 **Interfaces:**
@@ -374,13 +374,13 @@ and update its docstring to `"""Which capabilities an initiative creates or chan
 
 - [ ] **Step 4: Write the migration record**
 
-Create `server/db/migrations/versions/0034_roadmap_tree.py`:
+Create `server/db/migrations/versions/0035_roadmap_tree.py`:
 
 ```python
 """Roadmap drill-down Phase 2 (#993): capability tree and initiative↔capability links.
 
-Revision ID: 0034_roadmap_tree
-Revises: 0033_triage_items
+Revision ID: 0035_roadmap_tree
+Revises: 0034_pr_resolution_source_tool
 Create Date: 2026-09-07
 
 Reviewable record only: nothing runs `alembic upgrade` at deploy time. The two
@@ -392,8 +392,8 @@ columns, so the leftover DB columns/table are harmless until then.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0034_roadmap_tree"
-down_revision = "0033_triage_items"
+revision = "0035_roadmap_tree"
+down_revision = "0034_pr_resolution_source_tool"
 branch_labels = None
 depends_on = None
 
@@ -440,8 +440,8 @@ Expected: PASS (Postgres cases skip without `CCSWITCH_TEST_PG_URL`).
 - [ ] **Step 7: Commit**
 
 ```bash
-printf 'feat(db): capability parent, initiative primary capability; drop dead initiative_repos and score columns\n\nMigration 0034_roadmap_tree records the change; reconcile applies the adds.\n\nRefs #993\n\nCo-Authored-By: Claude <model> <noreply@anthropic.com>\n' > /tmp/p2-t3.txt
-git add server/db/models.py server/db/migrations/versions/0034_roadmap_tree.py server/tests/test_postgres_compat.py server/tests/test_pm_models.py
+printf 'feat(db): capability parent, initiative primary capability; drop dead initiative_repos and score columns\n\nMigration 0035_roadmap_tree records the change; reconcile applies the adds.\n\nRefs #993\n\nCo-Authored-By: Claude <model> <noreply@anthropic.com>\n' > /tmp/p2-t3.txt
+git add server/db/models.py server/db/migrations/versions/0035_roadmap_tree.py server/tests/test_postgres_compat.py server/tests/test_pm_models.py
 git commit -F /tmp/p2-t3.txt
 ```
 
@@ -1756,7 +1756,7 @@ Phase 2 of the roadmap drill-down (spec `docs/superpowers/specs/2026-09-07-roadm
 - **Initiatives ↔ capabilities:** `POST /api/sdlc/initiatives` accepts `primaryCapabilityId` / `capabilityIds` and derives the product; every initiative payload carries `projectSlug`, `primaryCapability`, `capabilities`.
 - **`GET /api/pm/map`:** every product's nested capabilities, initiatives with the capabilities they touch, per-node rollup counts and one attention tier (`needs-you > blocked > in-flight > proposed > live > idle`), computed once server-side in `server/pm/tree.py`.
 - **`GET /api/pm/leaves`:** the issues under one capability or initiative, ordered open-first by score.
-- **Dead code dropped:** `initiative_repos` and the four unused score columns on `initiatives` (migration `0034_roadmap_tree`).
+- **Dead code dropped:** `initiative_repos` and the four unused score columns on `initiatives` (migration `0035_roadmap_tree`).
 
 No web changes; Phase 3 renders this.
 
