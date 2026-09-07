@@ -47,7 +47,7 @@ async def acquire(session_id: str, host: str, *, cap: int) -> tuple[bool, int]:
         if existing is not None:
             if existing.status == HOLDING:
                 return True, 0
-            return False, await _ahead(db, host, existing.requested_at)
+            return False, await _ahead(db, existing.host, existing.requested_at)
 
         holding_count = (await db.execute(
             select(func.count()).select_from(TestRunSlot)
@@ -100,4 +100,4 @@ async def status(session_id: str, host: str) -> tuple[str, int]:
             return "none", 0
         if row.status == HOLDING:
             return "holding", 0
-        return "waiting", await _ahead(db, host, row.requested_at)
+        return "waiting", await _ahead(db, row.host, row.requested_at)
