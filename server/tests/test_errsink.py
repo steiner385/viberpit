@@ -143,6 +143,28 @@ async def test_flush_failure_requeues_bounded(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_flush_failure_merges_into_live_entry(monkeypatch):
+    """A failed flush must fold its sessions into a live entry, not just count/first_seen."""
+    from server.obs import errsink
+    sink = _sink()
+    sink.emit(_rec("boom", session_id="s1"))
+
+    async def fail(batch):
+        # A live entry for the same fingerprint is created WHILE the failed batch
+        # (holding "s1") is in flight — the merge-back must fold "s1" into it.
+        sink.emit(_rec("boom", session_id="s2"))
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(errsink, "_upsert", fail)
+    await sink.flush_once()
+    pend = sink.drain()
+    assert len(pend) == 1
+    p = next(iter(pend.values()))
+    assert p.count == 2
+    assert p.sessions == ["s2", "s1"]
+
+
+@pytest.mark.asyncio
 async def test_start_and_stop_drain(isolated_db, monkeypatch):
     from sqlalchemy import select
     from server.db import db_session
@@ -154,9 +176,14 @@ async def test_start_and_stop_drain(isolated_db, monkeypatch):
     assert sink.is_running
     sink.start()  # idempotent
     sink.emit(_rec("boom"))
-    await asyncio.sleep(0.2)
-    async with db_session() as db:
-        assert (await db.execute(select(ErrorSignature))).scalars().one().count == 1
+    row = None
+    for _ in range(40):
+        await asyncio.sleep(0.05)
+        async with db_session() as db:
+            row = (await db.execute(select(ErrorSignature))).scalars().one_or_none()
+        if row is not None and row.count == 1:
+            break
+    assert row is not None and row.count == 1, "background flush did not land within 2s"
     sink.emit(_rec("boom"))
     await sink.stop()  # cancels the loop, then flushes what is pending
     assert not sink.is_running

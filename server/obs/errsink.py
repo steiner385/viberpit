@@ -128,6 +128,11 @@ class ErrorSink(logging.Handler):
                     if cur is not None:
                         cur.count += p.count
                         cur.first_seen = min(cur.first_seen, p.first_seen)
+                        cur.last_seen = max(cur.last_seen, p.last_seen)
+                        for s in p.sessions:
+                            if s not in cur.sessions:
+                                cur.sessions.append(s)
+                        del cur.sessions[RECENT_SESSIONS:]
                     elif len(self._pending) < MAX_PENDING:
                         self._pending[fp] = p
                     else:
