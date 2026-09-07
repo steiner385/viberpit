@@ -22,7 +22,7 @@ set -euo pipefail
 OUT="${1:?usage: ccswitch-mint-mtls.sh <outdir> <daemon-dns> <daemon-ip>}"
 DNS="${2:?daemon dns name, e.g. rocky.tail0dd570.ts.net}"
 IP="${3:?daemon ip, e.g. 100.69.70.109}"
-TLS_DIR="${CCSWITCH_TLS_DIR:-/etc/ccswitch/tls}"
+TLS_DIR="${VIBERPIT_TLS_DIR:-${CCSWITCH_TLS_DIR:-/etc/ccswitch/tls}}"
 
 for existing in "$TLS_DIR"/ca*.pem "$TLS_DIR"/ca*.key; do
   [ -e "$existing" ] || continue

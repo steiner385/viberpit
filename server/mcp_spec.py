@@ -1,11 +1,15 @@
-"""MCP registry primitives shared by every in-process `ccswitch` MCP surface.
+"""MCP registry primitives shared by every one of the app's in-process MCP surfaces.
 
-Two surfaces mount a server under the wire name ``ccswitch`` — the assistant drawer
+Two surfaces mount a server under ``brand.MCP_SERVER_NAME`` — the assistant drawer
 (``server/assistant/tools.py``) and the coding session (``server/sessions/tools/``).
-They never coexist in one session, so they share the name and the ``mcp__ccswitch__``
-prefix; what they must NOT share is a duplicated copy of these primitives. The
-permission layer keys its read/mutation/destructive rule on ``annotation_for``, so
-every surface registers its spec table here and the lookup consults all of them.
+They never coexist in one session, so they share the name and the tool prefix; what
+they must NOT share is a duplicated copy of these primitives. The permission layer
+keys its read/mutation/destructive rule on ``annotation_for``, so every surface
+registers its spec table here and the lookup consults all of them.
+
+The wire name itself is NOT spelled here: ``src/ccswitch/brand.py`` owns it, and the
+names below are aliases so a reader of this module does not have to know which of the
+two dual-accept prefixes is the emitted one.
 """
 from __future__ import annotations
 
@@ -16,8 +20,13 @@ from typing import Any
 
 from mcp.types import ToolAnnotations
 
-MCP_PREFIX = "mcp__ccswitch__"
-SERVER_NAME = "ccswitch"
+from ccswitch.brand import MCP_SERVER_NAME as SERVER_NAME
+from ccswitch.brand import MCP_TOOL_PREFIX as MCP_PREFIX
+from ccswitch.brand import MCP_TOOL_PREFIXES, is_mcp_tool, mcp_tool_stem
+
+__all__ = ["MCP_PREFIX", "MCP_TOOL_PREFIXES", "SERVER_NAME", "ToolArgError", "ToolClass",
+           "ToolSpec", "annotation_for", "annotations_for", "is_mcp_tool",
+           "mcp_tool_stem", "register_surface", "surfaces", "tool_err"]
 
 
 class ToolClass(str, Enum):
@@ -57,8 +66,8 @@ _SURFACES: dict[str, Mapping[str, ToolSpec]] = {}
 
 def register_surface(name: str, specs: Mapping[str, ToolSpec]) -> None:
     """Register one surface's spec table. Tool names are unique ACROSS surfaces: the
-    permission layer sees only ``mcp__ccswitch__<tool>``, so two surfaces defining the
-    same name would be gated by whichever registered first."""
+    permission layer sees only the prefixed ``mcp__<brand>__<tool>``, so two surfaces
+    defining the same name would be gated by whichever registered first."""
     for other, table in _SURFACES.items():
         if other == name:
             continue
@@ -73,9 +82,18 @@ def surfaces() -> dict[str, Mapping[str, ToolSpec]]:
 
 
 def annotation_for(mcp_name: str) -> ToolSpec | None:
-    if not mcp_name.startswith(MCP_PREFIX):
+    """The spec for *mcp_name* under EITHER brand prefix, across every surface.
+
+    Both halves matter and for different reasons. Accepting either prefix is the
+    permanent compat side of the rebrand (``brand.mcp_tool_stem``): a resumed thread
+    or a replayed transcript still carries pre-rebrand names, and a None here would
+    downgrade a DESTRUCTIVE tool's card to the grantable mutation branch. Consulting
+    every surface is what lets one permission rule cover the drawer and a coding
+    session without either growing its own copy of it.
+    """
+    short = mcp_tool_stem(mcp_name)
+    if short is None:
         return None
-    short = mcp_name[len(MCP_PREFIX):]
     for table in _SURFACES.values():
         spec = table.get(short)
         if spec is not None:

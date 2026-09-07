@@ -3,11 +3,20 @@
 The same literal is appended to every session's system prompt (so the agent
 knows how to signal completion) and scanned for by the Translator (so the
 dashboard can show 'Complete'). Keeping both in one module prevents drift.
+
+Emit one spelling, accept two: the ``_RE`` matchers also read the pre-rebrand
+``<!-- ccswitch:… -->`` form, permanently. Stored transcripts are re-parsed on
+replay and a session that was mid-flight across the flip already wrote the old
+form, so a parser that stopped accepting it would strand those sessions in
+'working' forever. This is not Phase-7 scaffolding — it never comes out.
 """
 from __future__ import annotations
 import re
 
-COMPLETION_MARKER = "<!-- ccswitch:complete -->"
+from ccswitch import brand
+
+COMPLETION_MARKER = brand.marker("complete")
+COMPLETION_MARKER_RE = brand.marker_re("complete")
 
 COMPLETION_INSTRUCTION = (
     "When you have fully accomplished the objective of this session, end your "
@@ -19,7 +28,8 @@ COMPLETION_INSTRUCTION = (
     "do X if wanted'), not questions."
 )
 
-NO_PR_MARKER = "<!-- ccswitch:no-pr -->"
+NO_PR_MARKER = brand.marker("no-pr")
+NO_PR_MARKER_RE = brand.marker_re("no-pr")
 
 NO_PR_INSTRUCTION = (
     "If the work is genuinely finished but NO pull request is appropriate — the "
@@ -67,10 +77,20 @@ def commit_trailer(engine: object = None) -> str:
     return _COMMIT_TRAILERS.get(str(key), _COMMIT_TRAILERS["claude_code"])
 
 
-def marker_instructions(*, self_model_switch: bool) -> str:
-    """Compose every ccswitch marker instruction into one system-prompt append.
+def has_completion_marker(text: str | None) -> bool:
+    """Whether *text* carries the completion marker in EITHER brand spelling.
 
-    Engine-neutral on purpose. The markers are a ccswitch contract, not a Claude
+    Callers used to write ``COMPLETION_MARKER in text``; that substring test is
+    what would have silently stopped matching pre-rebrand transcripts, so the
+    membership check lives here instead of at each translator.
+    """
+    return bool(text) and COMPLETION_MARKER_RE.search(text) is not None
+
+
+def marker_instructions(*, self_model_switch: bool) -> str:
+    """Compose every marker instruction into one system-prompt append.
+
+    Engine-neutral on purpose. The markers are OUR contract, not a Claude
     one: a Codex thread is told about them through ``thread/start``'s
     ``developerInstructions`` exactly as a Claude session is told through the
     SDK's system-prompt append, and both halves of each marker (the instruction
@@ -101,8 +121,9 @@ def strip_markers(text: str) -> str:
     if not text:
         return text
     from .model_request import MODEL_REQUEST_RE
-    text = text.replace(COMPLETION_MARKER, "").replace(NO_PR_MARKER, "")
-    return MODEL_REQUEST_RE.sub("", text).rstrip()
+    for pattern in (COMPLETION_MARKER_RE, NO_PR_MARKER_RE, MODEL_REQUEST_RE):
+        text = pattern.sub("", text)
+    return text.rstrip()
 
 
 def resolution_from_text(text: str) -> str | None:
@@ -110,6 +131,6 @@ def resolution_from_text(text: str) -> str | None:
 
     Returns None when the marker is absent. When present, 'cancelled' if the text
     reads as an explicit cancellation/abandonment, else 'not-needed'."""
-    if text is None or NO_PR_MARKER not in text:
+    if not text or NO_PR_MARKER_RE.search(text) is None:
         return None
     return "cancelled" if _CANCEL_RE.search(text) else "not-needed"

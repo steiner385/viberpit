@@ -3,7 +3,7 @@
 
 A *sibling* of :mod:`server.sessions.tools.server`, selected behind the engine, for
 the reason spelled out in :mod:`server.assistant.options_codex`: Codex has no
-in-process MCP server, so ccswitch declares the tools on the thread and executes
+in-process MCP server, so the app declares the tools on the thread and executes
 them from the ``item/tool/call`` callback. The tool table itself — descriptions,
 schemas, handlers, permission annotations — is :func:`build_session_tools`,
 unchanged and unduplicated, so adding a session tool reaches both engines at once.
@@ -67,10 +67,10 @@ class CodexSessionTools:
         return tool in self.handlers
 
     def mcp_name(self, tool: str) -> str:
-        """The canonical ``mcp__ccswitch__*`` name for *tool*.
+        """The canonical ``mcp__<brand>__*`` name for *tool*.
 
         The permission layer keys on this name (``PermissionRegistry.request``'s
-        ``mcp__ccswitch__`` branch reads the tool's read/mutation/destructive
+        own-MCP branch reads the tool's read/mutation/destructive
         annotation from ``server.mcp_spec``), so a Codex tool call is gated by the
         SAME rule and renders the SAME card as its Claude twin.
         """

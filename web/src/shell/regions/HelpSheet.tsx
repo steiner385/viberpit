@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { BRAND_NAME } from '@/brand'
 import { shortcutsByGroup, displayKeys, type Shortcut, type ShortcutGroup } from '@/shell/shortcuts'
 import { Kbd } from '@/ui/Kbd'
 import { NAV_DEFS } from '@/shell/navDefs'
@@ -62,7 +63,7 @@ const TIPS = [
   {
     title: 'Accounts = config dirs',
     detail:
-      'Each account is an isolated CLAUDE_CONFIG_DIR; ccswitch rotates them as usage allows.',
+      `Each account is an isolated CLAUDE_CONFIG_DIR; ${BRAND_NAME} rotates them as usage allows.`,
   },
   {
     title: 'Archive vs delete',

@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
+from ccswitch.brand import MCP_TOOL_PREFIX as MCP_PREFIX
 from server.assistant import options_codex as oc
 from server.codex import schema
 from server.sessions import events as ev
@@ -175,7 +176,7 @@ async def test_a_read_tool_runs_and_answers_with_its_envelope(harness, overlay):
 
 @pytest.mark.asyncio
 async def test_a_read_tool_raises_no_permission_card(harness, overlay):
-    # The `mcp__ccswitch__` branch of PermissionRegistry auto-allows READs, and
+    # The app-action branch of PermissionRegistry auto-allows READs, and
     # routing through it is precisely how this stays identical to Claude.
     await harness.boot(assistant_overlay=overlay)
     request_id = harness.server.request(TOOL_CALL, _call())
@@ -195,7 +196,7 @@ async def test_a_destructive_tool_raises_a_card_and_a_denial_stops_it(harness, o
         await asyncio.sleep(0.005)
     pending = harness.registry.pending(SESSION)
     assert pending, "a destructive ccswitch tool ran with no card"
-    assert pending[0]["tool"] == "mcp__ccswitch__archive_session"
+    assert pending[0]["tool"] == MCP_PREFIX + "archive_session"
     driver.resolve_permission(pending[0]["permId"], "deny", "user@example.com")
     reply = await _await_reply(harness, request_id)
     assert reply["result"]["success"] is False
@@ -213,7 +214,7 @@ async def test_an_undeclared_tool_name_is_a_tool_error(harness, overlay):
 
 @pytest.mark.asyncio
 async def test_an_undeclared_tool_never_raises_a_confirmation_card(harness, overlay):
-    # The registry treats an unannotated `mcp__ccswitch__*` name conservatively as
+    # The registry treats an unannotated app-action name conservatively as
     # mutation-like, so reaching the gate with a name that does not exist would
     # park the turn behind a card for a tool nobody can run.
     await harness.boot(assistant_overlay=overlay)

@@ -53,7 +53,8 @@ def test_build_declares_both_tools_with_object_schemas():
     for spec in st.dynamic_tools:
         assert spec.input_schema["type"] == "object"
     assert st.declares("report_feedback") and not st.declares("Bash")
-    assert st.mcp_name("report_feedback") == "mcp__ccswitch__report_feedback"
+    from server.mcp_spec import MCP_PREFIX
+    assert st.mcp_name("report_feedback") == MCP_PREFIX + "report_feedback"
 
 
 def test_the_declaration_can_ride_thread_start_unchanged():

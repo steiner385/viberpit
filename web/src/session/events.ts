@@ -20,7 +20,7 @@ export interface EvTextDelta     { type: 'textDelta';     turnId: string; text: 
 export interface EvThinkingDelta { type: 'thinkingDelta'; turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
 export interface EvToolCall      { type: 'toolCall';      turnId: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
 export interface EvToolResult    { type: 'toolResult';    toolId: string; ok: boolean; payload: Record<string, unknown>; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
-// `alwaysAllowed` is false only for destructive `mcp__ccswitch__*` tools (spec §4.4);
+// `alwaysAllowed` is false only for destructive `mcp__viberpit__*` tools (spec §4.4);
 // mirrors PermissionRequest.always_allowed (server/sessions/events.py), default true.
 // `items` is set only for a BATCH ccswitch tool (archive_sessions, delete_sessions…):
 // the titles of every session it would act on (spec v2 B4) — mirrors

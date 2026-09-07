@@ -10,6 +10,7 @@ from typing import Any
 
 from claude_agent_sdk import SdkMcpTool, tool
 
+from ccswitch import brand
 from server.mcp_spec import ToolArgError, ToolSpec, annotations_for, tool_err
 from server.obs.metrics import session_tool_calls_total
 from server.sessions.feedback import CATEGORIES, IMPACTS, record_feedback, validate_item
@@ -21,7 +22,7 @@ log = logging.getLogger(__name__)
 
 
 def tool_ok(data: Any) -> dict[str, Any]:
-    env = {"source": "ccswitch", "now": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    env = {"source": brand.SLUG, "now": datetime.now(timezone.utc).isoformat(timespec="seconds"),
            "data": data}
     return {"content": [{"type": "text", "text": json.dumps(env, separators=(",", ":"), ensure_ascii=False)}]}
 
@@ -56,7 +57,7 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
             except Exception as e:  # noqa: BLE001 - never let a tool crash the SDK loop
                 ok = False
                 log.warning("session tool %s failed", spec.name, exc_info=True)
-                return tool_err(f"ccswitch tool error: {e.__class__.__name__}")
+                return tool_err(f"{brand.NAME} tool error: {e.__class__.__name__}")
             finally:
                 session_tool_calls_total.labels(spec.name, spec.tool_class.value,
                                                 "ok" if ok else "error").inc()
@@ -67,7 +68,7 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
         return tool(name, description, schema, annotations=annotations_for(SESSION_TOOL_SPECS[name]))
 
     @spec_tool("session_context",
-               "What ccswitch knows about THIS session: id, name, repo, branch, cwd, host, "
+               f"What {brand.NAME} knows about THIS session: id, name, repo, branch, cwd, host, "
                "engine, model, account, the automation that dispatched it (origin) and its "
                "reference (originRef, e.g. owner/repo#123), the effective goal, and the "
                "permission mode. Call it when you need to know how you were dispatched.",
@@ -77,16 +78,16 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
         return context_snapshot(ctx)
 
     @spec_tool("report_feedback",
-               "Report a problem with ccswitch, the harness that dispatched and supervises "
+               f"Report a problem with {brand.NAME}, the harness that dispatched and supervises "
                "this session — never a bug in the project you are working on or a choice the "
-               "user made. Call it when ccswitch's instructions contradict each other or the "
+               f"user made. Call it when {brand.NAME}'s instructions contradict each other or the "
                "task, the dispatch prompt was wrong or ambiguous about the repo, branch or "
-               "issue, ccswitch interrupted or switched model or account at a bad moment, or a "
+               f"issue, {brand.NAME} interrupted or switched model or account at a bad moment, or a "
                "worktree, credential, tool or marker it provides is broken. One call per "
                "distinct problem, at most three per session. It records the report for the "
-               "ccswitch backlog and returns immediately — keep working. "
+               f"{brand.NAME} backlog and returns immediately — keep working. "
                f"category: one of {', '.join(CATEGORIES)}. impact: one of {', '.join(IMPACTS)}. "
-               "title: 8-120 chars. body: what happened, what you expected, what ccswitch "
+               f"title: 8-120 chars. body: what happened, what you expected, what {brand.NAME} "
                "should change (quote the exact text when the problem is an instruction). "
                "evidence (optional): the offending prompt excerpt, command, or error.",
                {"type": "object",

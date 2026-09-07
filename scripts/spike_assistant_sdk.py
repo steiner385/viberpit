@@ -23,6 +23,8 @@ from claude_agent_sdk import (
 )
 from mcp.types import ToolAnnotations
 
+from ccswitch import brand
+
 SEEN_TOOL_CALLS: list[tuple[str, dict]] = []
 
 
@@ -68,7 +70,7 @@ async def main() -> int:
     if not cfg:
         print("set CLAUDE_CONFIG_DIR to an account config dir", file=sys.stderr)
         return 2
-    server = create_sdk_mcp_server("ccswitch", version="0.0.0",
+    server = create_sdk_mcp_server(brand.MCP_SERVER_NAME, version="0.0.0",
                                    tools=[list_sessions, archive_session])
     # Without an explicit cli_path the SDK spawns its own vendored
     # _bundled/claude (observed: 2.1.183) instead of the system CLI on PATH
@@ -85,7 +87,7 @@ async def main() -> int:
         tools=[],
         disallowed_tools=["Bash", "Edit", "Write", "NotebookEdit", "Read",
                           "Glob", "Grep", "WebFetch", "WebSearch", "Task", "Agent", "TodoWrite"],
-        mcp_servers={"ccswitch": server},
+        mcp_servers={brand.MCP_SERVER_NAME: server},
         strict_mcp_config=True,
         setting_sources=[],
         can_use_tool=can_use_tool,

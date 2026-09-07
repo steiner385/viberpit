@@ -1,4 +1,4 @@
-"""The `ccswitch` MCP tool surface (spec §4.2). Each tool is a thin adapter over ONE API
+"""The app's own MCP tool surface (spec §4.2). Each tool is a thin adapter over ONE API
 endpoint: validate args, call, trim, frame as untrusted data. No business logic here."""
 from __future__ import annotations
 
@@ -14,6 +14,12 @@ from urllib.parse import urlparse
 from claude_agent_sdk import SdkMcpTool, tool
 from mcp.types import ToolAnnotations
 
+from ccswitch import brand
+
+# The registry primitives live in server.mcp_spec, which every surface shares — this
+# module owns the drawer's TOOL_SPECS table and nothing else. MCP_PREFIX/annotation_for
+# are re-exported because callers (and the brand wire-contract gate) still read them
+# from here; both are the mcp_spec objects, not a second copy.
 from server.mcp_spec import (MCP_PREFIX, ToolArgError, ToolClass, ToolSpec,  # noqa: F401 - re-exported
                              annotation_for, annotations_for, register_surface, tool_err)
 from server.obs.metrics import assistant_gap_reports_total, assistant_tool_calls_total
@@ -33,6 +39,8 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("list_accounts", ToolClass.READ, "List accounts"),
     ToolSpec("list_hosts", ToolClass.READ, "List fleet hosts"),
     ToolSpec("list_prs", ToolClass.READ, "List pull requests"),
+    # Pack G — GitHub (spec v2 §4.6): PR detail built on the poller's own fetchers.
+    ToolSpec("get_pr", ToolClass.READ, "Get pull request detail"),
     ToolSpec("get_pipeline_health", ToolClass.READ, "Get CI check health"),
     ToolSpec("list_repos", ToolClass.READ, "List repositories"),
     ToolSpec("list_branches", ToolClass.READ, "List branches"),
@@ -170,6 +178,19 @@ def _slug(s: str, *, field: str = "slug") -> str:
     return s
 
 
+def _owner_name(repo: Any) -> tuple[str, str]:
+    """Split a ``"owner/name"`` repo string for a path-segment URL. The route it
+    feeds (``GET /api/prs/{owner}/{name}/{number}``) needs two clean segments,
+    unlike every other repo-taking tool here which passes the whole string as a
+    body/query value — so this is the one tool that validates the format."""
+    if not isinstance(repo, str) or repo.count("/") != 1:
+        raise ToolArgError("repo must be 'owner/name'")
+    owner, _, name = repo.partition("/")
+    if not owner or not name:
+        raise ToolArgError("repo must be 'owner/name'")
+    return owner, name
+
+
 def _nonempty(s: Any, *, field: str) -> str:
     if not isinstance(s, str) or not s.strip():
         raise ToolArgError(f"{field} must be a non-empty string")
@@ -260,7 +281,7 @@ class Trimmed:
 
 def wrap_untrusted(data: Any, *, truncated: int = 0) -> str:
     env: dict[str, Any] = {
-        "source": "ccswitch-api", "trust": "untrusted-data",
+        "source": f"{brand.SLUG}-api", "trust": "untrusted-data",
         # B6: the model's ONLY clock. The system prompt is a frozen cache prefix with
         # no timestamp, and tool results are never part of that prefix, so stamping
         # every result costs no cache hit and is what makes "in the last hour" or
@@ -392,10 +413,10 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                 return _err(str(e))
             except AssistantApiError as e:
                 ok = False
-                return _err(f"ccswitch API error {e.message}")
+                return _err(f"{brand.NAME} API error {e.message}")
             except Exception as e:  # noqa: BLE001 - never let a tool crash the SDK loop
                 ok = False
-                return _err(f"ccswitch tool error: {e.__class__.__name__}")
+                return _err(f"{brand.NAME} tool error: {e.__class__.__name__}")
             finally:
                 assistant_tool_calls_total.labels(
                     spec.name, spec.tool_class.value, "ok" if ok else "error").inc()
@@ -523,6 +544,16 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         rows = await api.get("/api/prs")
         return [p for p in rows if not args.get("repo") or p.get("repo") == args["repo"]]
 
+    @spec_tool("get_pr",
+               "One pull request's detail: check runs with conclusions and urls, review "
+               f"state per reviewer, live mergeability, and the {brand.NAME} session that "
+               "authored it (if any). Use after list_prs to drill into one PR — repo is "
+               "'owner/name'.", {"repo": str, "number": int})
+    @guarded
+    async def get_pr(args: dict[str, Any]) -> Any:
+        owner, name = _owner_name(args.get("repo"))
+        return await api.get(f"/api/prs/{owner}/{name}/{int(args['number'])}")
+
     @spec_tool("get_pipeline_health", "Slowest and flakiest CI checks for a repo over a window "
                "(24h, 7d, 14d, 30d).", _schema(("repo",), repo=str, window=str))
     @guarded
@@ -577,7 +608,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.get("/api/deploy/status")
 
     @spec_tool("list_adoptable_sessions",
-               "Discover live claude sessions running outside ccswitch that could be adopted "
+               f"Discover live claude sessions running outside {brand.NAME} that could be adopted "
                "(force-taken-over) into tracking. Each candidate is flagged with a skipReason "
                "when it is not actually adoptable.", {})
     @guarded
@@ -834,8 +865,8 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                               {"schedule": args["schedule"]})
 
     # -- Session-start conveniences (spec v2 §4.5, Pack C) ------------------------------
-    # Presets, templates and permission profiles a session can be started from. This
-    # task only reads them; Task 7.4 wires preset/profile/branch into create_session.
+    # Presets, templates and permission profiles a session can be started from.
+    # create_session (Task 7.4) wires preset/profile/branch into POST /api/sessions.
 
     @spec_tool("list_presets",
                "Saved session-start presets: repo, account, model, permission mode, "
@@ -880,15 +911,19 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     @spec_tool("create_session",
                "Start a NEW coding session on a repo with an initial prompt, and return its id "
                "and the URL to open it. Use only when the user wants new work started; to add "
-               "to work already running use send_prompt instead.",
+               "to work already running use send_prompt instead. preset and permission_profile "
+               "ids can be discovered via list_presets / list_permission_profiles. Note: "
+               "permission_profile's patterns are recorded on the session but not yet "
+               "enforced — no tool restriction happens today.",
                _schema(("prompt",), prompt=str, repo=str, model=str, permission_mode=str,
-                       account=str))
+                       account=str, branch=str, preset=str, permission_profile=str))
     @guarded
     async def create_session(args: dict[str, Any]) -> Any:
         rec = await api.post("/api/sessions", {
             "name": None, "initialPrompt": args["prompt"], "repo": args.get("repo"),
             "model": args.get("model"), "permissionMode": args.get("permission_mode"),
-            "account": args.get("account")})
+            "account": args.get("account"), "branch": args.get("branch"),
+            "presetId": args.get("preset"), "permissionProfileId": args.get("permission_profile")})
         return {"id": rec["id"], "url": f"/sessions/{rec['id']}"}
 
     @spec_tool("send_prompt",
@@ -1071,7 +1106,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
 
     @spec_tool("adopt_session",
                "Force-take-over an untracked live claude session found by "
-               "list_adoptable_sessions: terminate it and resume it under ccswitch tracking.",
+               f"list_adoptable_sessions: terminate it and resume it under {brand.NAME} tracking.",
                {"claude_session_id": str})
     @guarded
     async def adopt_session(args: dict[str, Any]) -> Any:
@@ -1102,10 +1137,12 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "without starting a new model turn — good for 'let me know when X'. "
                "kind='pr' with condition='breaks' watches target='owner/repo' for its CI "
                "going red; kind='automation' with condition='error' or 'warn' watches "
-               "target=<automation id> for that severity. once=true (default) disables the "
-               "watch after it fires once; ttl_hours caps how long it stays armed (default "
-               "72). Watching a specific session or an account going limited is not "
-               "supported yet.",
+               "target=<automation id> for that severity; kind='session' with "
+               "condition='finishes' watches target=<session id> for that session handing "
+               "a turn back; kind='account' with condition='limited' watches "
+               "target=<account name> (or 'any' for every account) hitting its usage "
+               "ceiling. once=true (default) disables the watch after it fires once; "
+               "ttl_hours caps how long it stays armed (default 72).",
                _schema(("kind", "target", "condition"), kind=str, target=str, condition=str,
                        once=bool, ttl_hours=int))
     @guarded
@@ -1270,7 +1307,7 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.post("/api/deploy/start", body)
 
     @spec_tool("upgrade_host",
-               "Upgrades and restarts the ccswitch daemon on the named fleet host — this "
+               f"Upgrades and restarts the {brand.NAME} daemon on the named fleet host — this "
                "drains or kills every session currently live on that host.",
                {"name": str})
     @guarded
@@ -1303,7 +1340,8 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
 
     base_tools = [list_sessions, get_session, get_session_transcript, get_tool_result,
             export_session, search_sessions,
-            list_archived_sessions, list_accounts, list_hosts, list_prs, get_pipeline_health,
+            list_archived_sessions, list_accounts, list_hosts, list_prs, get_pr,
+            get_pipeline_health,
             list_automations, get_automation_events, get_deploy_status,
             list_adoptable_sessions, suggest_next_prompt,
             list_notification_channels, list_notification_rules, get_quiet_hours,

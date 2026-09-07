@@ -203,6 +203,55 @@ async def test_rotation_monitor_rotates_at_usage_ceiling():
 
 
 @pytest.mark.asyncio
+async def test_rotation_monitor_notifies_account_limited(monkeypatch):
+    """#1354 kind="account" watch: hitting the usage ceiling fires account_limited."""
+    notified = []
+
+    async def fake_notify_event(event_class, title, body, **kwargs):
+        notified.append((event_class, kwargs.get("account")))
+
+    monkeypatch.setattr(orch_mod.push_mod, "notify_event", fake_notify_event)
+    o = _make_orch()
+    _rec(o, account="copilot_acct")
+    o._poller = _poller_with_failures(0)
+    usage = anthropic_snapshot(session_pct=100.0, session_resets_at=None,
+                  weekly_pct=50.0, weekly_resets_at=None, extra_usage_enabled=False)
+
+    await _run_monitor_one_event(o, {"account": "copilot_acct", "usage": usage})
+
+    assert ("account_limited", "copilot_acct") in notified
+
+
+@pytest.mark.asyncio
+async def test_rotation_monitor_account_limited_notify_is_debounced_until_recovery(monkeypatch):
+    notified = []
+
+    async def fake_notify_event(event_class, title, body, **kwargs):
+        notified.append(event_class)
+
+    monkeypatch.setattr(orch_mod.push_mod, "notify_event", fake_notify_event)
+    o = _make_orch()
+    _rec(o, account="copilot_acct")
+    o._poller = _poller_with_failures(0)
+    at_ceiling = anthropic_snapshot(session_pct=100.0, session_resets_at=None,
+                  weekly_pct=50.0, weekly_resets_at=None, extra_usage_enabled=False)
+    recovered = anthropic_snapshot(session_pct=10.0, session_resets_at=None,
+                  weekly_pct=10.0, weekly_resets_at=None, extra_usage_enabled=False)
+
+    await _run_monitor_one_event(o, {"account": "copilot_acct", "usage": at_ceiling})
+    assert notified.count("account_limited") == 1
+
+    # Still at ceiling — no re-fire.
+    await _run_monitor_one_event(o, {"account": "copilot_acct", "usage": at_ceiling})
+    assert notified.count("account_limited") == 1
+
+    # Recovers, then hits the ceiling again — re-fires.
+    await _run_monitor_one_event(o, {"account": "copilot_acct", "usage": recovered})
+    await _run_monitor_one_event(o, {"account": "copilot_acct", "usage": at_ceiling})
+    assert notified.count("account_limited") == 2
+
+
+@pytest.mark.asyncio
 async def test_rotation_monitor_skips_below_ceiling():
     """session_pct < 100 → no rotation."""
     o = _make_orch()

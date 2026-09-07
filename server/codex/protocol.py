@@ -75,6 +75,7 @@ from typing import Any, Final, Protocol
 from server.codex import redaction, schema
 from server.obs.context import log_event
 from server.obs.metrics import codex_request_ms
+from ccswitch import brand
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,7 @@ DEFAULT_MAX_INFLIGHT_SERVER_REQUESTS: Final = 8
 DEFAULT_MAX_OUTBOUND_REQUESTS: Final = 32
 
 DEFAULT_CLIENT_INFO: Final = schema.ClientInfo(
-    name="ccswitch", version="1", title="ccswitch session manager"
+    name=brand.SLUG, version="1", title=f"{brand.NAME} session manager"
 )
 
 

@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 from claude_agent_sdk import TextBlock
 
+from ccswitch import brand
 from ccswitch.selector import Picked
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.types import ASSISTANT_KIND
@@ -229,14 +230,15 @@ async def test_resume_after_reap_rebuilds_the_assistant_overlay(
         assert resumed["tools"] == []
         assert "Bash" in resumed["disallowed_tools"] and "Write" in resumed["disallowed_tools"]
         assert resumed["strict_mcp_config"] is True
-        assert set(resumed["mcp_servers"]) == {"ccswitch"}
+        assert set(resumed["mcp_servers"]) == {brand.MCP_SERVER_NAME}
         assert resumed["system_prompt"] == spawn_overlay["system_prompt"]
         assert resumed["max_turns"] == spawn_overlay["max_turns"]
 
         # REBUILT, not preserved: the spawn's MCP tool handlers close over an
         # AssistantApi whose httpx client driver.aclose() shut down during the reap, so
         # reusing the old overlay would resume with dead tools.
-        assert resumed["mcp_servers"]["ccswitch"] is not spawn_overlay["mcp_servers"]["ccswitch"]
+        assert (resumed["mcp_servers"][brand.MCP_SERVER_NAME]
+                is not spawn_overlay["mcp_servers"][brand.MCP_SERVER_NAME])
         assert driver._assistant_api is not None
         assert driver._assistant_api._client.is_closed is False
     finally:

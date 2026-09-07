@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
+from ccswitch import brand
 from ccswitch import paths
 from server.aio import cancel_and_reap
 from server.assistant.context import PromptContext
@@ -1231,7 +1232,7 @@ class CodexAgentDriver:
         deliberately the same *decision* as the Claude half rather than a
         parallel one: the call is gated through
         ``PermissionRegistry.request`` under the canonical
-        ``mcp__ccswitch__<tool>`` name, so a read auto-allows, a mutation offers a
+        ``mcp__viberpit__<tool>`` name, so a read auto-allows, a mutation offers a
         card that can be remembered, and a destructive tool always prompts and
         never offers "always allow" — one policy, two engines.
 
@@ -1261,7 +1262,7 @@ class CodexAgentDriver:
                 reason="stale_request",
             )
             return tool_error(
-                "ccswitch tool error: this session is no longer accepting tool calls"
+                f"{brand.NAME} tool error: this session is no longer accepting tool calls"
             )
         if not overlay.declares(params.tool):
             # Refused BEFORE the permission gate, not after. An undeclared name

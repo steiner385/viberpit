@@ -111,14 +111,18 @@ class TestUsageFetchBackoff(unittest.TestCase):
             self.assertIsNone(fails)
             self.assertIsNone(until)
 
-    def test_dead_refresh_token_with_setup_token_backs_off(self):
-        """The kindash shape: dead refresh token + setup-token fallback 429ing.
+    def test_dead_refresh_token_with_setup_token_reports_unsupported(self):
+        """The kindash shape: dead refresh token + setup-token refused for usage.
 
-        Neither the token endpoint nor the usage endpoint may be re-hit while
-        the cooldown is active.
+        A narrow-scope setup-token (``user:inference``, no ``user:profile``) is
+        refused by the usage endpoint *permanently* — retrying can never earn it
+        the scope it lacks. So this is a capability gap, not a fetch failure: the
+        snapshot says UNSUPPORTED, the failure cooldown is NOT grown, and neither
+        endpoint is re-hit because the snapshot caches under the normal TTL.
         """
         with temp_env():
             from ccswitch import accounts, crypto, oauth
+            from ccswitch.quota import UNSUPPORTED
             _seed_account("alpha", expires_in_ms=-1)  # expired → refresh attempted
             with mock.patch.object(
                     oauth, "refresh_access_token",
@@ -127,15 +131,37 @@ class TestUsageFetchBackoff(unittest.TestCase):
                  mock.patch.object(
                     oauth, "fetch_usage",
                     side_effect=oauth.UsageError("usage endpoint returned 429")) as fu:
-                self.assertIsNone(accounts.usage_for("alpha"))
+                u = accounts.usage_for("alpha")
+                self.assertIsNotNone(u)
+                self.assertEqual(u.availability, UNSUPPORTED)
+                self.assertEqual(u.windows, ())   # never a fabricated 0%
                 self.assertEqual(rt.call_count, 1)
                 self.assertEqual(fu.call_count, 1)
-                # Account stays ok (setup token keeps it launch-capable) …
+                # Account stays ok — the setup token keeps it launch-capable.
                 self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
-                # … but the cooldown stops the loop.
-                self.assertIsNone(accounts.usage_for("alpha"))
+                # No unbounded failure cooldown for a permanent capability gap.
+                fails, until = _cooldown("alpha")
+                self.assertIsNone(fails)
+                self.assertIsNone(until)
+                # The cached snapshot stops the loop just as the cooldown did.
+                self.assertEqual(accounts.usage_for("alpha").availability, UNSUPPORTED)
                 self.assertEqual(rt.call_count, 1)
                 self.assertEqual(fu.call_count, 1)
+
+    def test_unsupported_setup_token_usage_keeps_account_out_of_scored_tiers(self):
+        """UNSUPPORTED must read to the selector exactly as None did.
+
+        The snapshot is now non-None, so this pins the thing that could silently
+        regress: an account with unreadable quota must not be scored as if it had
+        headroom.
+        """
+        from ccswitch import selector
+        from ccswitch.quota import UNSUPPORTED, unknown_snapshot
+        from datetime import datetime, timezone
+        snap = unknown_snapshot("anthropic", fetched_at=datetime.now(timezone.utc),
+                                availability=UNSUPPORTED)
+        self.assertFalse(selector.usage_known(snap))
+        self.assertFalse(selector.usage_known(None))
 
     def test_needs_reauth_flip_backs_off_token_endpoint(self):
         """Dead refresh token, no setup token: don't re-refresh every call."""

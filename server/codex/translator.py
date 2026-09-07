@@ -37,16 +37,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from ccswitch import brand
 from server.codex import schema
 from server.sessions import events as ev
-from server.sessions.completion import COMPLETION_MARKER, resolution_from_text
+from server.sessions.completion import has_completion_marker, resolution_from_text
 
 #: Upper bound on the aggregated command output carried in a `ToolResult`
 #: payload. The payload rides the WebSocket to every attached client and then
 #: into the daemon's event ring, so an unbounded `cat` of a large file would be
 #: paid for once per viewer.
 MAX_TOOL_OUTPUT_CHARS: Final = 16_000
-OUTPUT_TRUNCATION_MARKER: Final = "\n… [truncated by ccswitch]"
+OUTPUT_TRUNCATION_MARKER: Final = f"\n… [truncated by {brand.NAME}]"
 
 #: Error code for a thread that reported `systemError`. `ThreadStatus` carries
 #: no message, so the text is fixed here rather than synthesized from native
@@ -357,7 +358,7 @@ class CodexEventTranslator:
         pr_resolution = resolution_from_text(text)
         outcome = _OUTCOME_BY_STATUS[turn.status]
         if outcome == "success" and (
-            COMPLETION_MARKER in text or pr_resolution is not None
+            has_completion_marker(text) or pr_resolution is not None
         ):
             outcome = "complete"
         out: list[object] = []

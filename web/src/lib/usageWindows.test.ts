@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import type { AccountUsage } from '@/api/types'
-import { bindingWindow, reserveWindow, usageKnown, usageWindows, windowByKey } from './usageWindows'
+import { bindingWindow, reserveWindow, usageKnown, usageUnavailableReason, usageWindows, windowByKey } from './usageWindows'
 import { anthropicUsage, copilotUsage } from '@/test/factories'
+
+function unavailable(availability: AccountUsage['availability']): AccountUsage {
+  return { provider: 'anthropic', fetchedAt: null, availability, windows: [], staleAsOf: null }
+}
 
 describe('usageWindows', () => {
   it('lists the windows a provider actually reported', () => {
@@ -42,5 +46,17 @@ describe('usageWindows', () => {
   it('looks a window up by key', () => {
     expect(windowByKey(anthropicUsage(10, 20), 'weekly')?.pct).toBe(20)
     expect(windowByKey(copilotUsage(20), 'weekly')).toBeNull()
+  })
+
+  // A blank badge row could not distinguish "poll hasn't landed" from "this
+  // credential can never report quota" — the state a setup-token account sits in.
+  it('names why there are no windows, and stays silent when there are', () => {
+    expect(usageUnavailableReason(anthropicUsage(10, 20))).toBeNull()
+    expect(usageUnavailableReason(null)).toBe('Usage not read yet')
+    expect(usageUnavailableReason(unavailable('unsupported')))
+      .toBe('Quota not reported for this credential')
+    expect(usageUnavailableReason(unavailable('auth_error')))
+      .toBe('Credentials rejected — re-authenticate')
+    expect(usageUnavailableReason(unavailable('unknown'))).toBe('Usage unavailable')
   })
 })

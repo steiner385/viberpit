@@ -3,7 +3,7 @@
 
 Loads cases from ``docs/superpowers/evals/assistant/cases.jsonl``, runs each one as a real
 one-shot assistant turn — the actual ``claude_agent_sdk`` query loop against the real
-``mcp__ccswitch__*`` tools (``server.assistant.tools.build_tools``) — but backed by an
+``mcp__viberpit__*`` tools (``server.assistant.tools.build_tools``) — but backed by an
 in-memory fixture instead of a live ccswitch API, so the run needs no edge/daemon/DB. Each
 tool call is recorded as it happens (the in-process equivalent of the `assistant.tool_call`
 audit trail a live turn writes) and graded against the case's ``expect_tools``/
@@ -762,6 +762,7 @@ async def run_turn(
     ``(observed_tool_names, final_answer_text, HelperOutcome)``."""
     from claude_agent_sdk import ClaudeAgentOptions, create_sdk_mcp_server
 
+    from ccswitch import brand
     from server.assistant.context import render_context_header
     from server.assistant.options import assistant_options
     from server.sessions.account_auth import helper_env
@@ -770,7 +771,7 @@ async def run_turn(
 
     observed: list[str] = []
     tools = _instrumented_tools(observed, operator=case.operator)
-    server = create_sdk_mcp_server(name="ccswitch", version="eval", tools=tools)
+    server = create_sdk_mcp_server(name=brand.MCP_SERVER_NAME, version="eval", tools=tools)
     overlay = assistant_options(server=server, max_turns=max_turns, model=model,
                                 operator=case.operator)
 

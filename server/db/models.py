@@ -147,7 +147,7 @@ class Session(Base):
     pending_model_requested_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     pending_model_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     # Why the requester wants this model — free text from a session's own
-    # <!-- ccswitch:model=… reason="…" --> marker. Shown on the approval card.
+    # <!-- viberpit:model=… reason="…" --> marker. Shown on the approval card.
     pending_model_reason: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Active /goal condition for this session (the built-in Claude Code goal feature).
     # NULL = no active goal. Nullable so init_db backfills on dev SQLite without a migration.
@@ -193,6 +193,12 @@ class Session(Base):
     # the host a session ran on is a fact about that session, not about current
     # config — the same mistake archive_root exists to prevent.
     host: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Where this session's GUI renders: "native" (the runner host's real X display)
+    # or "virtual" (a pooled Xvfb display viewed over VNC). Decided once at spawn from
+    # the requesting client's locality and honoured on every rehydrate. NULL = created
+    # before this column existed → treated as virtual. Nullable so init_db backfills
+    # without a migration. Design: docs/superpowers/specs/2026-09-06-native-display-routing-design.md
+    display_mode: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Snapshot of the decision features at AUTO-archive time ({repo, goal, goal_source,
     # pr_state, reason}); copied into an `archive_reversed` autopilot event on unarchive so
     # the auto-archive algorithm can learn which sessions it wrongly archived. none_as_null
@@ -476,6 +482,32 @@ class SessionQueue(Base):
     params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
 
+class TestRunSlot(Base):
+    """Verification-phase test-run slot (#822): one row per session that is
+    holding or waiting for a "running the full server-test suite" slot on a
+    host. Capacity (rows with status='holding' per host) is enforced by
+    server.sessions.test_run_slots against server.config.Settings.test_slot_cap;
+    this table only records state — it enforces nothing on its own.
+
+    Deleted when the session releases (or gives up); releasing a 'holding' row
+    promotes the oldest 'waiting' row for the same host to 'holding'.
+    """
+
+    __tablename__ = "test_run_slots"
+
+    # Opaque holder key (a real sessions.id, OR a shell PID for the curl-based
+    # recipe in .agents/instructions/core.md) — deliberately NOT a foreign key
+    # into `sessions`. A real FK made acquire() raise IntegrityError for any
+    # non-session holder id, and the API layer's fail-open handling turned
+    # that into a silent "always granted" (#822 final review finding).
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    host: Mapped[str] = mapped_column(String, nullable=False)
+    # "holding" (counts against the cap) | "waiting" (queued, no slot yet)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="waiting")
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
 class NotificationChannel(Base):
     """A user-defined delivery channel for notifications (#602). v1 kind is
     'webhook' — a POST to a user-supplied URL (covers ntfy/Slack/Discord).
@@ -509,11 +541,16 @@ class NotificationRule(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    # needs_input | session_ended | automation_error | automation_warn | pr_broke | pr_merged | *
+    # needs_input | session_ended | automation_error | automation_warn | pr_broke | pr_merged
+    # | account_limited | *
     event_class: Mapped[str] = mapped_column(String, nullable=False, default="*")
     scope_repo: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     scope_account: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     scope_automation: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # A `kind="session"` watch's target (#1354): scopes a `session_ended` rule to one
+    # session id, same shape as the other scope_* columns. Nullable — plain #602 rules
+    # and every other watch kind never set it.
+    scope_session_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     action: Mapped[str] = mapped_column(String, nullable=False, default="push")  # push|channel|ignore
     channel_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # When true this rule's delivery ignores quiet hours (critical bypass).

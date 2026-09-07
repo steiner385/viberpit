@@ -1,9 +1,11 @@
 """Single source of truth for the session-initiated model-request marker.
 
 The same literal is appended to every session's system prompt (so the agent knows
-how to ask for a different model) and scanned for by the Translator (so ccswitch
+how to ask for a different model) and scanned for by the Translator (so the app
 can act on it). Keeping both in one module prevents drift — the same guarantee
-``completion.py`` provides for the completion marker.
+``completion.py`` provides for the completion marker. That guarantee is why the
+rebrand's emit half and parse half had to ship in one PR: the instruction below
+teaches ``viberpit:``, and the regex above it accepts both spellings.
 
 The tier rubric below is deliberately identical to
 ``server.automations.model_pick._ASSESS_SYSTEM`` so a session's self-assessment and
@@ -13,18 +15,21 @@ from __future__ import annotations
 
 import re
 
-# Matches: <!-- ccswitch:model=<alias-or-id> [reason="..."] -->
+from ccswitch import brand
+
+# Matches: <!-- viberpit:model=<alias-or-id> [reason="..."] --> and its pre-rebrand
+# `ccswitch:` spelling, permanently (stored transcripts are re-parsed on replay).
 # The model token excludes whitespace and '-->' so a malformed marker cannot swallow
 # the rest of the message; the reason is a non-greedy run inside double quotes.
 MODEL_REQUEST_RE = re.compile(
-    r'<!--\s*ccswitch:model=([A-Za-z0-9._\[\]-]+)'
+    rf'<!--\s*{brand.EITHER_SLUG_RE}:model=([A-Za-z0-9._\[\]-]+)'
     r'(?:\s+reason="([^"]*)")?\s*-->'
 )
 
 MODEL_REQUEST_INSTRUCTION = (
     "If partway through this session you determine the work needs a different model "
     "tier than the one you are running on, end a message with "
-    '`<!-- ccswitch:model=<tier> reason="<short reason>" -->` on its own line. Tiers, '
+    f'`<!-- {brand.SLUG}:model=<tier> reason="<short reason>" -->` on its own line. Tiers, '
     "cheapest first:\n"
     "- haiku: trivial/mechanical work — typo or copy fixes, config bumps, single-line "
     "changes, dependency pins.\n"

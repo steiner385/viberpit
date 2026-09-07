@@ -25,6 +25,7 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 
+from ccswitch import brand  # noqa: E402
 from server.sdlc.evals import DEFAULT_THRESHOLD, EvalCase, EvalResult, aggregate  # noqa: E402
 
 _CASE_DIRS = ("evals/cases", "evals/regressions")
@@ -62,7 +63,7 @@ def run_static_case(case: EvalCase) -> EvalResult:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Run the ccswitch eval suite.")
+    ap = argparse.ArgumentParser(description=f"Run the {brand.NAME} eval suite.")
     ap.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
                     help=f"minimum pass-rate to pass the gate (default {DEFAULT_THRESHOLD})")
     ap.add_argument("--kind", choices=("static", "agent"), default="static",

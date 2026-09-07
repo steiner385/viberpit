@@ -1,12 +1,18 @@
-"""The system-prompt paragraph that tells a coding session its ccswitch tools exist.
-Detail lives in the tool descriptions, which the model reads at call time."""
+"""The system-prompt paragraph that tells a coding session its harness tools exist.
+Detail lives in the tool descriptions, which the model reads at call time.
+
+Both the product name and the MCP server name come from ``ccswitch.brand``: this
+paragraph tells the model which server to look under, so a hand-typed name would
+point it at a server that is not mounted."""
 from __future__ import annotations
 
+from ccswitch import brand
+
 SESSION_TOOLS_INSTRUCTION = (
-    "ccswitch is the harness that dispatched and supervises this session; it exposes two "
-    "MCP tools under the `ccswitch` server. `session_context` tells you how you were "
-    "dispatched (repo, branch, originating automation and issue, goal). `report_feedback` "
-    "reports a problem with ccswitch ITSELF — contradictory or wrong instructions, an "
+    f"{brand.NAME} is the harness that dispatched and supervises this session; it exposes "
+    f"two MCP tools under the `{brand.MCP_SERVER_NAME}` server. `session_context` tells you "
+    "how you were dispatched (repo, branch, originating automation and issue, goal). "
+    f"`report_feedback` reports a problem with {brand.NAME} ITSELF — contradictory or wrong instructions, an "
     "ambiguous dispatch prompt, an interrupt or model/account switch at a bad moment, a "
     "broken worktree, credential or tool it provides — never a bug in the project you are "
     "working on or a choice the user made. One report per distinct problem, at most three "

@@ -138,3 +138,24 @@ def test_all_prs_rpc_registered_and_round_trips():
     assert prs[0]["number"] == 42
     assert prs[0]["session"] == {"id": "s1", "name": "S"}
     orch.all_prs.assert_called_once_with()
+
+
+def test_pr_detail_rpc_registered_and_round_trips():
+    """pr_detail must be a registered RPC returning a JSON-safe {'detail': {...} | None} —
+    all_prs's sibling for the single-PR endpoint (SPEC v2 Pack G), same trap as #1199/#1201:
+    a method the edge calls in-process but never proxies is a 500 on a real (edge != daemon)
+    deployment despite an all-green in-process test suite."""
+    app, orch = _app()
+    orch.pr_detail = mock.AsyncMock(return_value={"number": 42, "checks": []})
+    with TestClient(app) as c:
+        r = c.post("/rpc/pr_detail", json={"repo": "o/r", "number": 42}).json()
+    assert r["result"]["detail"] == {"number": 42, "checks": []}
+    orch.pr_detail.assert_awaited_once_with("o/r", 42)
+
+
+def test_pr_detail_rpc_none_when_not_found():
+    app, orch = _app()
+    orch.pr_detail = mock.AsyncMock(return_value=None)
+    with TestClient(app) as c:
+        r = c.post("/rpc/pr_detail", json={"repo": "o/r", "number": 999}).json()
+    assert r["result"]["detail"] is None

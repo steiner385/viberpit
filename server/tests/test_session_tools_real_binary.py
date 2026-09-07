@@ -12,15 +12,20 @@ pytestmark = pytest.mark.skipif(os.environ.get("CCSWITCH_TEST_CLAUDE_MCP") != "1
 
 
 @pytest.mark.asyncio
-async def test_project_mcp_server_and_ccswitch_server_coexist(tmp_path):
-    """(a) a coding session with a project .mcp.json sees BOTH that server and
-    mcp__ccswitch__session_context; (b) calling report_feedback in `default` mode is
+async def test_project_mcp_server_and_our_server_coexist(tmp_path):
+    """(a) a coding session with a project .mcp.json sees BOTH that server and our own
+    `<prefix>session_context`; (b) calling report_feedback in `default` mode is
     verified as the registry resolves the call without a card — not that the SDK
     never invokes `can_use_tool` (it does, even for readOnlyHint tools; "no permission
-    card" per spec §3.5b is ccswitch's own PermissionRegistry decision, not the SDK's
-    callback-invocation policy)."""
+    card" per spec §3.5b is our own PermissionRegistry decision, not the SDK's
+    callback-invocation policy).
+
+    Wire names come from `brand`, so this exercises the CURRENT server name rather
+    than passing only via the dual-accept compat path."""
     from claude_agent_sdk import (AssistantMessage, ClaudeSDKClient, ClaudeAgentOptions,
                                   PermissionResultAllow, PermissionResultDeny, ToolUseBlock)
+    from ccswitch import brand
+    from server.mcp_spec import MCP_PREFIX
     from server.sessions.claude_bin import cli_path_kwargs
     from server.sessions.permissions import PermissionRegistry
     import server.sessions.tools  # noqa: F401 - registers the "session" surface
@@ -43,18 +48,18 @@ async def test_project_mcp_server_and_ccswitch_server_coexist(tmp_path):
     opts = ClaudeAgentOptions(
         cwd=str(tmp_path), permission_mode="default", can_use_tool=can_use_tool,
         settings=json.dumps({"enableAllProjectMcpServers": True}),
-        mcp_servers={"ccswitch": build_session_server(ctx)}, max_turns=6,
+        mcp_servers={brand.MCP_SERVER_NAME: build_session_server(ctx)}, max_turns=6,
         disallowed_tools=["ToolSearch"],
         **cli_path_kwargs())
     used: list[str] = []
     async with ClaudeSDKClient(options=opts) as client:
-        await client.query("Call the ccswitch session_context tool, then call report_feedback with "
+        await client.query(f"Call the {brand.NAME} session_context tool, then call report_feedback with "
                            "category=other impact=minor title='Real-binary smoke check' body='ignore'. "
                            "Reply with the word done.")
         async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
                 used += [b.name for b in msg.content if isinstance(b, ToolUseBlock)]
-    assert "mcp__ccswitch__session_context" in used
-    assert "mcp__ccswitch__report_feedback" in used
-    carded = [n for n, pid in decisions if n.startswith("mcp__ccswitch__") and pid is not None]
+    assert MCP_PREFIX + "session_context" in used
+    assert MCP_PREFIX + "report_feedback" in used
+    carded = [n for n, pid in decisions if n.startswith(MCP_PREFIX) and pid is not None]
     assert not carded, carded

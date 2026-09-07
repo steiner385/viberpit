@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from ccswitch import brand
 from ccswitch.engines import AgentEngine
 from server.assistant import options_codex as oc
 from server.assistant.options import assistant_options, assistant_overlay_for
@@ -226,7 +227,7 @@ async def test_a_raising_handler_becomes_a_failed_result_not_an_exception(overla
     result = await broken.run_tool("list_sessions", {})
     assert result.success is False
     # The exception TYPE, never its message: a tool error reaches the model.
-    assert result.content_items[0].text == "ccswitch tool error: RuntimeError"
+    assert result.content_items[0].text == f"{brand.NAME} tool error: RuntimeError"
 
 
 @pytest.mark.asyncio

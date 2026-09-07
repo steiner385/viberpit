@@ -4,10 +4,10 @@ from enum import Enum
 import time
 from typing import TYPE_CHECKING
 
-from server.mcp_spec import MCP_PREFIX as _APP_ACTION_PREFIX
+from ccswitch import brand
 
 if TYPE_CHECKING:
-    # Typing-only, so this module's runtime imports stay stdlib-only. PromptContext is
+    # Typing-only, so this module's runtime imports stay free of server.* imports. PromptContext is
     # a leaf TypedDict (server/assistant/context.py imports nothing from
     # server.sessions), so this direction can never form a cycle.
     from server.assistant.context import PromptContext
@@ -28,7 +28,7 @@ _TOOL_KIND = {
     "LS": ToolKind.SEARCH, "WebFetch": ToolKind.WEB, "WebSearch": ToolKind.WEB,
     "Task": ToolKind.TASK,
 }
-# The ccswitch MCP server (server/assistant/tools.py) is the app talking to
+# Our own MCP server (server/assistant/tools.py) is the app talking to
 # itself, not a third-party integration — it gets its own kind so the web
 # presenter can render "Listed sessions" instead of the raw mcp__ name and the
 # permission card can apply its non-grantable-destructive rule (spec §4.4).
@@ -36,8 +36,10 @@ _TOOL_KIND = {
 
 def tool_kind(name: str) -> ToolKind:
     # MCP tools are namespaced `mcp__<server>__<tool>`; the server/tool parts are
-    # open-ended, so match the prefix rather than enumerate every name.
-    if name.startswith(_APP_ACTION_PREFIX):
+    # open-ended, so match the prefix rather than enumerate every name. Both brand
+    # prefixes count as ours — a replayed transcript keeps the name it was written
+    # with, and demoting it to plain MCP would lose the "Listed sessions" row.
+    if brand.is_mcp_tool(name):
         return ToolKind.APP_ACTION
     if name.startswith("mcp__"):
         return ToolKind.MCP

@@ -128,6 +128,7 @@ async def notify_event(
     repo: str | None = None,
     account: str | None = None,
     automation: str | None = None,
+    session_id: str | None = None,
     url: str | None = None,
     critical: bool = False,
     fanout_when_unconfigured: bool = True,
@@ -173,7 +174,7 @@ async def notify_event(
                     channel_id=r.channel_id, critical=r.critical,
                     priority=r.priority, created_at=r.created_at,
                     once=bool(r.once), owner_session_id=r.owner_session_id,
-                    expires_at=r.expires_at,
+                    expires_at=r.expires_at, scope_session_id=r.scope_session_id,
                 )
                 for r in rows
             ]
@@ -191,7 +192,8 @@ async def notify_event(
             channels = {c.id: c for c in (await db.execute(
                 select(NotificationChannel))).scalars().all()}
         ev = Event(event_class=event_class, title=title, body=body,
-                   repo=repo, account=account, automation=automation, url=url)
+                   repo=repo, account=account, automation=automation, url=url,
+                   session_id=session_id)
         decision = plan(ev, rules, q_start, q_end, datetime.now(timezone.utc))
     except Exception:
         log.warning("notify_event.routing_failed", exc_info=True)
@@ -302,8 +304,9 @@ def generate_vapid_keys() -> tuple[str, str]:
 
 if __name__ == "__main__":  # pragma: no cover
     import sys
+    from server import hostpaths
     if "--keygen" in sys.argv:
         priv, pub = generate_vapid_keys()
-        print("# Paste into /etc/ccswitch/ccswitch.env, then restart the services:")
+        print(f"# Paste into {hostpaths.ENV_FILE}, then restart the services:")
         print(f"CCSWITCH_VAPID_PRIVATE_KEY={priv!r}")
         print(f"CCSWITCH_VAPID_PUBLIC_KEY={pub}")

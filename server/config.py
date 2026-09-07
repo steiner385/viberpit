@@ -4,6 +4,16 @@ Reads settings from environment variables. Copy .env.example → .env and fill i
 """
 import os
 from pathlib import Path
+from typing import Any
+
+from ccswitch.env_compat import mirror_legacy_env
+from server import hostpaths
+
+# Every alias below spells the legacy prefix, and this module reads os.environ in its
+# body. Mirror before any of that, so a host whose env file has already moved to
+# VIBERPIT_* still configures the process. Idempotent: a no-op after the entrypoint's
+# call (server/__init__.py for the server, main() for the CLIs).
+mirror_legacy_env()
 
 
 def env_float(name: str, default: float, *, minimum: float | None = None) -> float:
@@ -58,6 +68,11 @@ try:
 
     class Settings(BaseSettings):
         """Application settings loaded from environment variables."""
+
+        def __init__(self, **kwargs: Any) -> None:
+            # Fill either prefix from the other before pydantic reads the aliases.
+            mirror_legacy_env()
+            super().__init__(**kwargs)
 
         host: str = Field(default="127.0.0.1", alias="CCSWITCH_HOST")
         port: int = Field(default=8787, alias="CCSWITCH_PORT")
@@ -119,6 +134,13 @@ try:
         # callback listener mid-login (zombie consent page).
         reauth_timeout_s: float = Field(default=900.0, alias="CCSWITCH_REAUTH_TIMEOUT_S")
         enable_xvfb: bool = Field(default=False, alias="CCSWITCH_ENABLE_XVFB")
+        # Route a session's GUI to the host's real X display when the requesting
+        # client sits on that host (tailscale whois node == self_host_name()).
+        # Gated at spawn time on the X socket actually existing, so a headless
+        # worker never sees a native session. Design:
+        # docs/superpowers/specs/2026-09-06-native-display-routing-design.md
+        native_display_enabled: bool = Field(default=True, alias="CCSWITCH_NATIVE_DISPLAY_ENABLED")
+        native_display: str = Field(default=":0", alias="CCSWITCH_NATIVE_DISPLAY")
         enable_adoption: bool = Field(default=False, alias="CCSWITCH_ENABLE_ADOPTION")
         display_start: int = Field(default=100, alias="CCSWITCH_DISPLAY_START")
         display_count: int = Field(default=12, alias="CCSWITCH_DISPLAY_COUNT")
@@ -196,7 +218,7 @@ try:
         log_level: str = Field(default="INFO", alias="CCSWITCH_LOG_LEVEL")
         log_dir: str = Field(
             default_factory=lambda: os.environ.get("CCSWITCH_LOG_DIR")
-            or ("/var/log/ccswitch" if os.access("/var/log", os.W_OK)
+            or (hostpaths.LOG_DIR if os.access("/var/log", os.W_OK)
                 else str(Path.home() / ".claude-accounts" / "logs")),
             alias="CCSWITCH_LOG_DIR",
         )
@@ -236,7 +258,7 @@ try:
         # are parked for a human instead. Bounds a session driving itself in circles.
         self_model_switch_cap: int = Field(
             default=3, alias="CCSWITCH_SELF_MODEL_SWITCH_CAP")
-        # Per-session ccswitch MCP surface for coding sessions (session tools spec §3).
+        # Per-session in-process MCP surface for coding sessions (session tools spec §3).
         # Off = no in-process server is mounted and no instruction is appended.
         session_tools_enabled: bool = Field(
             default=True, alias="CCSWITCH_SESSION_TOOLS_ENABLED")
@@ -244,6 +266,12 @@ try:
         # are recorded as "capped": visible, never filed.
         session_feedback_cap: int = Field(
             default=3, alias="CCSWITCH_SESSION_FEEDBACK_CAP")
+        # Verification-phase test-run slot cap (#822): max sessions per host that
+        # may simultaneously hold a "running the full server suite" slot. Keeps a
+        # Backlog Runner burst from piling up N concurrent full pytest runs (the
+        # 2026-08-29 exit-137 incident, #821/#822). Fail-open by design — see
+        # server/sessions/test_run_slots.py and server/api/test_slots.py.
+        test_slot_cap: int = Field(default=1, alias="CCSWITCH_TEST_SLOT_CAP")
         # Reconciler kill switch (spec 003 Phase B): whether the reconciler is
         # allowed to write back to GitHub (project moves, addBlockedBy, etc.).
         # Defaults off — Phase B lands the schema/read-side before any write path.
@@ -402,6 +430,12 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         enable_xvfb: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_XVFB", "false").lower() in ("1","true","yes","on")
         )
+        native_display_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_NATIVE_DISPLAY_ENABLED", "true").lower() in ("1","true","yes","on")
+        )
+        native_display: str = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_NATIVE_DISPLAY", ":0")
+        )
         enable_adoption: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_ENABLE_ADOPTION", "false").lower() in ("1","true","yes","on")
         )
@@ -497,7 +531,7 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         log_dir: str = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_LOG_DIR")
-            or ("/var/log/ccswitch" if os.access("/var/log", os.W_OK)
+            or (hostpaths.LOG_DIR if os.access("/var/log", os.W_OK)
                 else str(Path.home() / ".claude-accounts" / "logs"))
         )
         client_log_level: str = dataclasses.field(
@@ -526,6 +560,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         session_feedback_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_SESSION_FEEDBACK_CAP", "")) and v.isdigit() else 3
+        )
+        test_slot_cap: int = dataclasses.field(
+            default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_TEST_SLOT_CAP", "")) and v.isdigit() else 1
         )
         gh_reconcile_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_GH_RECONCILE_ENABLED", "false").lower() in ("1", "true", "yes", "on")
@@ -593,6 +630,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
             return result
 
     def get_settings() -> Settings:  # type: ignore[misc]
+        # The dataclass reads os.environ in its default_factory calls, i.e. during
+        # __init__ — mirror before constructing, as the pydantic branch does.
+        mirror_legacy_env()
         return Settings()
 
 

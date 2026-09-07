@@ -1,4 +1,4 @@
-"""A coding session's ccswitch MCP overlay is armed at every driver build and released
+"""A coding session's in-process MCP overlay is armed at every driver build and released
 by the shared teardown (session tools spec §3.3; fix-pattern
 docs/superpowers/fix-patterns/2026-09-04-per-process-state-armed-only-on-the-create-path.md).
 
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from ccswitch import brand
 from server.sessions.types import ASSISTANT_KIND
 from server.tests.fakes.fake_sdk import FakeSDKClient
 from server.tests.test_assistant_reap import _boot_orch, _capturing_factory, _teardown
@@ -24,7 +25,7 @@ async def test_spawn_mounts_only_mcp_servers(isolated_db, tmp_path, monkeypatch)
         s = await orch.create_session(name="Code", cwd=str(tmp_path), identity="u@x")
         ov = overlays[-1]
         assert ov is not None and set(ov) == {"mcp_servers"}, ov
-        assert set(ov["mcp_servers"]) == {"ccswitch"}
+        assert set(ov["mcp_servers"]) == {brand.MCP_SERVER_NAME}
         assert "strict_mcp_config" not in ov and "system_prompt" not in ov
         assert s.id in orch._overlays
     finally:
@@ -129,7 +130,7 @@ async def test_adopt_arms_the_overlay(isolated_db, tmp_path, monkeypatch):
     rec, _ = await orch.adopt_session(sid, identity="t@e.com")
     assert rec.id in orch._overlays
     assert overlays[-1] is not None and set(overlays[-1]) == {"mcp_servers"}
-    assert set(overlays[-1]["mcp_servers"]) == {"ccswitch"}
+    assert set(overlays[-1]["mcp_servers"]) == {brand.MCP_SERVER_NAME}
 
 
 @pytest.mark.asyncio

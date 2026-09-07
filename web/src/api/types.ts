@@ -31,7 +31,12 @@ export interface UsageWindow {
 /** How much a snapshot's windows can be trusted. Anything other than 'available'
  *  means the read failed — the windows array is then EMPTY rather than holding a
  *  fabricated 0%. */
-export type UsageAvailability = 'available' | 'unknown' | 'auth_error'
+// Mirrors `quota.AVAILABILITIES` in src/ccswitch/quota.py — keep the two in step.
+// 'unsupported' means the credential/provider boundary cannot report quota at
+// all (an OpenAI account; an Anthropic account whose only live credential is a
+// narrow-scope setup-token). It is a PERMANENT answer, unlike 'unknown', which
+// is a read that failed and may succeed next time.
+export type UsageAvailability = 'available' | 'unknown' | 'auth_error' | 'unsupported'
 
 export interface AccountUsage {
   provider: string
@@ -294,6 +299,10 @@ export interface Session {
   /** Fleet host that ran this session. Null for sessions created before the fleet
    *  existed, and for deployments whose endpoint is not in the host registry. */
   host?: string | null
+  /** Where the session's GUI renders: 'native' = the runner host's real desktop,
+   *  'virtual' = a pooled Xvfb display viewed over VNC. Null for pre-feature rows
+   *  (read as virtual). */
+  displayMode?: 'native' | 'virtual' | null
   status: SessionStatus
   createdAt: string
   /** Last-activity time. May be null/absent for a session with no recorded

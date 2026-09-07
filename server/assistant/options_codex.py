@@ -56,6 +56,7 @@ from typing import Any
 from claude_agent_sdk import SdkMcpTool
 from claude_agent_sdk import _python_type_to_json_schema
 
+from ccswitch import brand
 from ccswitch import paths as _paths
 from server.codex import schema
 from server.codex.permissions import ASSISTANT_PROFILE
@@ -153,7 +154,7 @@ def assistant_approval_decision(method: str) -> schema.ApprovalResponse:
     built-in it is allowed to use, so every ``item/commandExecution/requestApproval``
     and ``item/fileChange/requestApproval`` it raises is the model reaching outside
     its surface. That is a prompt-injection surface, not a user decision, so — like
-    ``ClaudeAgentDriver._can_use_tool``'s hard deny for a non-``mcp__ccswitch__``
+    ``ClaudeAgentDriver._can_use_tool``'s hard deny for a non-``mcp__viberpit__``
     tool — it never reaches the permission registry and never renders a card.
     """
     if method == schema.METHOD_COMMAND_EXECUTION_APPROVAL:
@@ -214,7 +215,7 @@ def _as_result(payload: Any) -> schema.DynamicToolCallResponse:
     table, not one per engine. This is the only place that shape is translated.
     """
     if not isinstance(payload, Mapping):
-        return tool_error("ccswitch tool error: malformed result")
+        return tool_error(f"{brand.NAME} tool error: malformed result")
     blocks = payload.get("content")
     texts: list[str] = []
     if isinstance(blocks, str):
@@ -236,7 +237,7 @@ async def run_declared_tool(handlers: Mapping[str, ToolHandler], tool: str,
                             log_label: str) -> schema.DynamicToolCallResponse:
     """Execute one host-declared Codex tool. Never raises.
 
-    THE executor behind every `item/tool/call` ccswitch answers, shared by both
+    THE executor behind every `item/tool/call` the app answers, shared by both
     surfaces that declare `dynamicTools` — the assistant drawer
     (:class:`CodexAssistantOverlay`) and a coding session
     (``server.sessions.tools.codex.CodexSessionTools``). One body, because every
@@ -257,18 +258,18 @@ async def run_declared_tool(handlers: Mapping[str, ToolHandler], tool: str,
     handler = handlers.get(tool)
     if handler is None:
         log.warning("%s: unknown tool %r", log_label, tool)
-        return tool_error(f"ccswitch tool error: no tool named {tool!r}")
+        return tool_error(f"{brand.NAME} tool error: no tool named {tool!r}")
     if arguments is None:
         args: dict[str, Any] = {}
     elif isinstance(arguments, Mapping):
         args = dict(arguments)
     else:
-        return tool_error("ccswitch tool error: arguments must be an object")
+        return tool_error(f"{brand.NAME} tool error: arguments must be an object")
     try:
         return _as_result(await handler(args))
     except Exception as exc:  # noqa: BLE001 - a tool must never fail the turn
         log.warning("%s tool %s failed", log_label, tool, exc_info=True)
-        return tool_error(f"ccswitch tool error: {exc.__class__.__name__}")
+        return tool_error(f"{brand.NAME} tool error: {exc.__class__.__name__}")
 
 
 @dataclass(frozen=True)
@@ -312,10 +313,10 @@ class CodexAssistantOverlay:
         return tool in self.handlers
 
     def mcp_name(self, tool: str) -> str:
-        """The canonical ``mcp__ccswitch__*`` name for *tool*.
+        """The canonical ``mcp__viberpit__*`` name for *tool*.
 
         The permission layer keys on this name
-        (``PermissionRegistry.request``'s ``mcp__ccswitch__`` branch, which reads
+        (``PermissionRegistry.request``'s app-action branch, which reads
         the tool's read/mutation/destructive annotation), so a Codex tool call is
         gated by the SAME rule and renders the SAME card as its Claude twin
         instead of growing a second policy.

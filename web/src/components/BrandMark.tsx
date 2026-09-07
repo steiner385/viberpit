@@ -1,6 +1,6 @@
-/** ccswitch logo mark: two session lanes; the live signal switches lanes, changing
+/** ViberPit logo mark: two session lanes; the live signal switches lanes, changing
  *  color (account identity) as it crosses. Decorative — pair it with visible
- *  "ccswitch" text; screen readers get the text, not the glyph.
+ *  "ViberPit" text; screen readers get the text, not the glyph.
  *  Keep the geometry in sync with public/favicon.svg (same glyph as a standalone file). */
 export function BrandMark({ size = 22 }: { size?: number }) {
   return (

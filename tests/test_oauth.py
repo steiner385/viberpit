@@ -212,8 +212,8 @@ class TestUserAgent(unittest.TestCase):
             oauth.http_request("GET", "https://x")
         self.assertIsNotNone(captured["ua"], "no User-Agent header sent")
         self.assertTrue(
-            captured["ua"].startswith("ccswitch/"),
-            f"expected a ccswitch/<version> UA, got {captured['ua']!r}",
+            captured["ua"].startswith("viberpit/"),
+            f"expected a viberpit/<version> UA, got {captured['ua']!r}",
         )
 
     def test_explicit_user_agent_is_not_overridden(self):

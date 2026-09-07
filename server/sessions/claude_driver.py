@@ -12,12 +12,13 @@ import uuid
 from typing import Callable
 from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ResultMessage
 from claude_agent_sdk._errors import CLIConnectionError
+from ccswitch import brand
 from ccswitch import copilot as _copilot_mod
 from ccswitch.accounts import provider_or_none as _provider_of
 from server.aio import bounded_wait, cancel_and_reap
 from server.assistant.context import PromptContext, render_context_header
 from server.hostname import self_host_name
-from server.mcp_spec import MCP_PREFIX
+from server.mcp_spec import is_mcp_tool
 from server.obs.metrics import assistant_sessions_live, assistant_ttft_ms, assistant_turn_ms
 from . import events as ev
 from .driver_stream import _STREAM_DONE, DriverStream
@@ -693,15 +694,21 @@ class ClaudeAgentDriver:
         turn_id = self._turn()
         if tool_name == "AskUserQuestion":
             return await self._handle_ask_user_question(tool_input, turn_id)
-        if is_assistant_kind(self.kind) and not tool_name.startswith(MCP_PREFIX):
-            # An assistant-kind session's model is scoped to the ccswitch MCP
+        if is_assistant_kind(self.kind) and not is_mcp_tool(tool_name):
+            # An assistant-kind session's model is scoped to our own MCP
             # server only (spec §4.4) — anything else (Bash, a third-party MCP
             # server, …) is a hard deny with no card: this is a programming
             # error / prompt-injection surface, not a user decision, so it never
             # touches the registry or emits a PermissionRequest event.
-            log.warning("driver._can_use_tool: assistant session=%s attempted non-ccswitch "
+            #
+            # `is_mcp_tool` accepts the pre-rebrand prefix too. A resumed assistant
+            # thread that was started before the flip can still name a tool the old
+            # way, and denying it here would break the drawer for that thread while
+            # protecting nothing: the name resolves to the same TOOL_SPECS entry.
+            log.warning("driver._can_use_tool: assistant session=%s attempted out-of-surface "
                         "tool=%s", self.session_id, tool_name)
-            return PermissionResultDeny(message="assistant sessions may only use ccswitch tools")
+            return PermissionResultDeny(
+                message=f"assistant sessions may only use {brand.NAME} tools")
         # Lazy import: server.assistant.tools does not import server.sessions, but
         # keeping this at call time avoids a module-load-order cycle (mirrors
         # PermissionRegistry.request's own lazy import of the same module).
@@ -1207,13 +1214,13 @@ class ClaudeAgentDriver:
 
     @property
     def last_model_request(self) -> dict | None:
-        """The most recent ``<!-- ccswitch:model=… -->`` request, or None.
+        """The most recent ``<!-- viberpit:model=… -->`` request, or None.
         ``{"turn_id", "model", "reason"}``."""
         return self._last_model_request
 
     @property
     def last_pr_resolution(self) -> str | None:
-        """Resolution token from the most recent ``<!-- ccswitch:no-pr -->`` marker,
+        """Resolution token from the most recent ``<!-- viberpit:no-pr -->`` marker,
         or ``None`` if no completed turn has carried one yet."""
         return self._last_pr_resolution
 

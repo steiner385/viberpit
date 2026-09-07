@@ -1,4 +1,4 @@
-"""The coding-session `ccswitch` MCP surface (session tools spec §3)."""
+"""The coding-session in-process MCP surface (session tools spec §3)."""
 from __future__ import annotations
 
 import json
@@ -33,7 +33,8 @@ def test_registry_is_a_registered_surface_with_two_read_tools():
     assert set(SESSION_TOOL_SPECS) == {"session_context", "report_feedback"}
     assert all(s.tool_class is mcp_spec.ToolClass.READ for s in SESSION_TOOL_SPECS.values())
     assert mcp_spec.surfaces()["session"] is SESSION_TOOL_SPECS
-    assert mcp_spec.annotation_for("mcp__ccswitch__report_feedback").tool_class is mcp_spec.ToolClass.READ
+    assert mcp_spec.annotation_for(
+        mcp_spec.MCP_PREFIX + "report_feedback").tool_class is mcp_spec.ToolClass.READ
 
 
 def test_every_session_tool_has_a_spec_and_an_eval_case():
@@ -95,10 +96,11 @@ async def test_handler_exception_never_escapes(isolated_db, monkeypatch):
     assert out.get("is_error") is True
 
 
-def test_server_is_named_ccswitch():
+def test_server_is_named_from_the_brand():
+    from ccswitch import brand
     from server.sessions.tools.server import build_session_server
     cfg = build_session_server(_ctx())
-    assert cfg["type"] == "sdk" and cfg["name"] == "ccswitch"
+    assert cfg["type"] == "sdk" and cfg["name"] == brand.MCP_SERVER_NAME
 
 
 def test_instruction_names_the_tool_and_the_rules():

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import threading
 
+from ccswitch import brand
+
 LabelValues = tuple[str, ...]
 
 
@@ -259,7 +261,7 @@ codex_request_ms = Histogram(
 )
 codex_threads_active = Gauge(
     "codex_threads_active",
-    "Codex threads registered to a live ccswitch session",
+    f"Codex threads registered to a live {brand.NAME} session",
     labelnames=("account",),
 )
 codex_turns_active = Gauge(

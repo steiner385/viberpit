@@ -389,6 +389,27 @@ describe('transcriptReducer', () => {
     expect(transcriptReducer(initialTranscript, { type: '_clearError' })).toBe(initialTranscript)
   })
 
+  it('sending the next prompt retires the error banner', () => {
+    // Every banner describes a turn that has already ended, so the act of sending
+    // supersedes it. If the condition still holds the backend raises a fresh error.
+    const s = transcriptReducer(initialTranscript, { type: 'error', code: 'execution_error', message: 'interrupted mid-tool' })
+    const sent = transcriptReducer(s, { type: '_trackSentPrompt', text: 'continue' })
+    expect(sent.error).toBeNull()
+  })
+
+  it('retiring the banner on send leaves the inline error block in the transcript', () => {
+    // The banner is transient; the inline card is the durable record. Dismissing
+    // one must never erase the other.
+    const s = reduce([
+      { type: 'turnStart', turnId: 't1' },
+      { type: 'error', code: 'max_turns', message: 'Reached the maximum number of turns', turnId: 't1' },
+    ])
+    const sent = transcriptReducer(s, { type: '_trackSentPrompt', text: 'continue' })
+    expect(sent.error).toBeNull()
+    const turn = sent.turns.find((t) => t.id === 't1')!
+    expect(turn.blocks.some((b) => b.kind === 'error')).toBe(true)
+  })
+
   it('error with turnId appends an inline error block to that turn AND sets the banner', () => {
     const s = reduce([
       { type: 'turnStart', turnId: 't1' },

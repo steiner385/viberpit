@@ -138,6 +138,11 @@ class InProcessOrchestratorAdapter:
     # falls back to it when transcript_path() is None; see the orchestrator method.
     async def engine_replay_window(self, *a, **k): return await _maybe_await(self._orch.engine_replay_window(*a, **k))
     async def interrupt(self, *a, **k): return await _maybe_await(self._orch.interrupt(*a, **k))
+    # "Open a browser" — the in-process route (server/app.py) calls this the same way
+    # the daemon RPC calls orchestrator.open_browser directly; the native-vs-virtual
+    # branch lives once on SessionOrchestrator (Task 6). Deliberately NOT added to
+    # RemoteOrchestrator — remote mode keeps using x11_open_browser.
+    async def open_browser(self, *a, **k): return await _maybe_await(self._orch.open_browser(*a, **k))
     async def set_permission_mode(self, *a, **k): return await _maybe_await(self._orch.set_permission_mode(*a, **k))
     async def set_model_for_session(self, *a, **k): return await _maybe_await(self._orch.set_model_for_session(*a, **k))
     async def cancel_queued(self, *a, **k): return await _maybe_await(self._orch.cancel_queued(*a, **k))
@@ -185,6 +190,7 @@ class InProcessOrchestratorAdapter:
     async def live_session_counts(self): return await _maybe_await(self._orch.live_session_counts())
     def pr_for(self, repo, branch): return self._orch.pr_for(repo, branch)
     async def all_prs(self): return await _maybe_await(self._orch.all_prs())
+    async def pr_detail(self, *a, **k): return await _maybe_await(self._orch.pr_detail(*a, **k))
     async def all_repos_stage_models(self): return await _maybe_await(self._orch.all_repos_stage_models())
     async def request_pr_fix(self, *a, **k): return await _maybe_await(self._orch.request_pr_fix(*a, **k))
     async def automation_statuses(self, *a, **k): return await _maybe_await(self._orch.automation_statuses(*a, **k))

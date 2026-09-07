@@ -3,6 +3,7 @@ import {
   Inbox, Package, LineChart, Settings,
   type LucideIcon,
 } from 'lucide-react'
+import { BRAND_NAME } from '@/brand'
 
 /** Which count `useNavBadges()` supplies for this section, if any. */
 export type NavBadgeKey = 'sessions' | 'pipeline' | 'automations' | 'settings'
@@ -98,7 +99,7 @@ const DEFS = [
   // showInKiosk:false — `ProjectsTab` has `create.mutate` and `sync.mutate(slug)`;
   // `OnboardingWizard` has `proposeMap.mutate`/`classify.mutate`.
   { id: 'projects',    label: 'Products',    icon: Package,         path: '/projects',                          showInKiosk: false, hasList: false,
-    help: 'The product registry: the repos ccswitch tracks, their onboarding and their dependency edges. Triage review is its own section.' },
+    help: `The product registry: the repos ${BRAND_NAME} tracks, their onboarding and their dependency edges. Triage review is its own section.` },
   // showInKiosk:true — verified read-only: `InsightsView` is two `<select>`s over
   // local state, two `useQuery` hooks, and `CheckTable`, which renders a table.
   { id: 'insights',    label: 'Insights',    icon: LineChart,       path: '/insights',                          showInKiosk: true,  hasList: false,

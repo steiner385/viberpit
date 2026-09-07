@@ -1,4 +1,4 @@
-"""Build the in-process `ccswitch` MCP server for one CODING session."""
+"""Build the in-process MCP server (named `brand.MCP_SERVER_NAME`) for one CODING session."""
 from __future__ import annotations
 
 from claude_agent_sdk import create_sdk_mcp_server

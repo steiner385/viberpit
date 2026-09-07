@@ -197,7 +197,11 @@ import pytest
 # Test modules that exercise the daemon/IPC layer itself assert on the real
 # DEFAULT_SOCKET_PATH (value, precedence, live-socket probing), so the redirect
 # below must NOT apply to them. They manage their own daemon/socket state.
-_DAEMON_LAYER_MODULE_PREFIXES = ("test_ipc_", "test_remote_", "test_daemon_")
+# test_hostpaths asserts server.ipc.paths.DEFAULT_SOCKET_PATH `is` the
+# server.hostpaths.SESSIOND_SOCKET string it aliases — an identity check the
+# monkeypatch below would defeat.
+_DAEMON_LAYER_MODULE_PREFIXES = ("test_ipc_", "test_remote_", "test_daemon_",
+                                 "test_hostpaths")  # exact module; identity test on ipc_paths.DEFAULT_SOCKET_PATH
 
 
 @pytest.fixture(autouse=True)
@@ -250,6 +254,11 @@ def isolated_db(tmp_path, monkeypatch):
 def pytest_configure(config):
     config.addinivalue_line(
         "markers", "asyncio: mark test as async"
+    )
+    config.addinivalue_line(
+        "markers",
+        "slow: real-time waits (watchdog timers, subprocess spawns) — excluded from "
+        "the fast local default (`pytest -m 'not slow'`), always run in CI (#823)",
     )
 
 
