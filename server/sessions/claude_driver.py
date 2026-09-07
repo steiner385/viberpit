@@ -259,6 +259,7 @@ class ClaudeAgentDriver:
         # `base`, keeping the attach snapshot in step with the session list.
         self._status_overlay: tuple[str, str] | None = None
         self._last_pr_resolution: str | None = None
+        self._last_pr_resolution_source: str | None = None
         self._last_model_request: dict | None = None
         self._suggester = suggester
         self._suggest_task: asyncio.Task | None = None
@@ -1010,7 +1011,13 @@ class ClaudeAgentDriver:
                 if e.pr_resolution is not None:
                     # Intentionally sticky: set-only; first-write-wins is enforced
                     # downstream by the rec.pr_resolution is None guard in _persist_status.
+                    # The source is latched INSIDE this branch so it has exactly the
+                    # same stickiness — an unconditional assignment would let a later
+                    # resolution-free turn wipe "tool" back to None, and the
+                    # orchestrator's `or "marker"` default would then file a tool call
+                    # as a marker.
                     self._last_pr_resolution = e.pr_resolution
+                    self._last_pr_resolution_source = e.pr_resolution_source
                 self._latch_model_request(e)
             elif isinstance(e, ev.ErrorEvent):
                 failure = await self._maybe_signal_recovery(
@@ -1224,9 +1231,19 @@ class ClaudeAgentDriver:
 
     @property
     def last_pr_resolution(self) -> str | None:
-        """Resolution token from the most recent ``<!-- viberpit:no-pr -->`` marker,
-        or ``None`` if no completed turn has carried one yet."""
+        """Resolution token from the most recent ``mark_no_pr`` call or
+        ``<!-- viberpit:no-pr -->`` marker, or ``None`` if no completed turn has
+        carried one yet."""
         return self._last_pr_resolution
+
+    @property
+    def last_pr_resolution_source(self) -> str | None:
+        """How ``last_pr_resolution`` arrived — ``"tool"`` (a ``mark_no_pr`` call) or
+        ``"marker"`` — or ``None`` if no completed turn has carried a resolution yet.
+
+        Latched together with ``last_pr_resolution`` and therefore exactly as sticky:
+        a turn with no resolution leaves both alone, so the pair can never disagree."""
+        return self._last_pr_resolution_source
 
     def open_stream(self) -> DriverStream:
         """Open an attach stream ATOMICALLY — no await anywhere in this method,

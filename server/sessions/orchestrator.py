@@ -4056,6 +4056,13 @@ class SessionOrchestrator:
         # getattr (not attribute access): a driver may be absent, or a test/partial
         # driver stub without last_pr_resolution — neither should break status persist.
         resolution = getattr(driver, "last_pr_resolution", None)
+        # Provenance of that token. Only ClaudeAgentDriver latches it (the Codex
+        # driver keeps the marker contract by design and leaves
+        # TurnEnd.pr_resolution_source None), so the `or "marker"` default is
+        # load-bearing: any driver — or partial test stub — that reports a resolution
+        # without a source keeps the pre-provenance behaviour and persists "marker",
+        # never None.
+        resolution_source = getattr(driver, "last_pr_resolution_source", None) or "marker"
         if rec is not None:
             rec.status = status
             rec.updated_at = datetime.utcnow()   # row-write token; bumps on EVERY persist (see rev_at)
@@ -4065,7 +4072,7 @@ class SessionOrchestrator:
             # but never clobber a pre-existing value (e.g. from a classifier).
             if status == "complete" and resolution and rec.pr_resolution is None:
                 rec.pr_resolution = resolution
-                rec.pr_resolution_source = "marker"
+                rec.pr_resolution_source = resolution_source
             # The session is doing something again → the "interrupted by daemon restart,
             # re-send to resume" hint (issue #434) is resolved. Clear it on any non-idle
             # status so the card stops nagging once the user re-sends.
@@ -4091,11 +4098,11 @@ class SessionOrchestrator:
                 values["paused_until"] = None
             # Write pr_resolution to DB when the in-memory record was just set above;
             # rec.pr_resolution == resolution guards idempotency (won't overwrite a
-            # pre-existing classifier value that differs from the marker resolution).
+            # pre-existing classifier value that differs from the session's own).
             if (status == "complete" and resolution and rec is not None
                     and rec.pr_resolution == resolution):
                 values["pr_resolution"] = resolution
-                values["pr_resolution_source"] = "marker"
+                values["pr_resolution_source"] = resolution_source
             # Fold the in-memory slash-command catalog (cached during attach by
             # command_catalog(), which must not write from the cancellable attach path)
             # into this driver-loop write so it reaches the DB row for cross-restart
