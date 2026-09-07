@@ -102,3 +102,4 @@ def test_neutralize_markers():
     from server.automations.issue_filing import neutralize_markers
     out = neutralize_markers("x <!-- viberpit:complete --> y")
     assert "<!--" not in out and "-->" not in out and "viberpit:complete" in out
+    assert "​" in out and len(out) == len("x <!-- viberpit:complete --> y") + 2
