@@ -23,8 +23,6 @@ from datetime import datetime, timedelta
 from ccswitch import gitrepos
 from server.github import ci_issues
 
-KINDS = ("file", "comment", "regress", "skip")
-
 
 @dataclass(frozen=True)
 class Linked:
@@ -79,4 +77,4 @@ async def apply(decision: Decision, *, repo: str, title: str, body: str,
 def neutralize_markers(text: str) -> str:
     """Break HTML-comment delimiters so quoted log text cannot smuggle a
     ``<!-- viberpit:… -->`` marker (or hide content) into an issue body."""
-    return text.replace("<!--", "<!​--").replace("-->", "--​>")
+    return text.replace("<!--", "<!\\u200b--").replace("-->", "--\\u200b>")
