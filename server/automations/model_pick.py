@@ -75,7 +75,8 @@ _ASSESS_SYSTEM = (
 
 
 def _default_sdk_query_fn():
-    from claude_agent_sdk import query  # lazy import — not available in tests
+    from claude_agent_sdk import query  # lazy: resolved off the package at call
+    # time, which lets server/tests/conftest.py stub every helper door at once (#1383)
     return query
 
 

@@ -381,12 +381,22 @@ def test_teardown_unsubscribes_even_with_an_auto_reattach_in_flight(tmp_path):
                     client.portal.call(orch._persist_status, sid, "in_progress")
                     time.sleep(0.7)   # the auto re-attach is now inside the resume
                 # ...and the socket closes on top of it.
-                # Bumped from 120s (2026-09-06): the CI runner is 2 vCPUs, and this
-                # exact assertion failed identically 3x on PR #1350's shard 2, once on
-                # a bare `master` push (no PR), and was independently diagnosed as a
-                # load flake on unrelated PR #1323 — all the same day, none touching
-                # this test or the teardown path it exercises. 240s still leaves
-                # headroom under the shard's 300s per-test pytest-timeout.
+                #
+                # This assertion was the repo's most persistent CI flake: 7 failures
+                # on `server-tests (2)`, 3 of them after the fence was widened
+                # 120s -> 240s, every one on a diff disjoint from WS teardown. The
+                # fence was never the variable (#1383). `_Harness` injects a fake at
+                # the DRIVER door only; the auxiliary paths this orchestrator drives —
+                # auto-name, suggestions, summaries, goal inference — reached the SDK
+                # by direct module import, spawned the bundled `claude` binary, and
+                # took 14-75s EACH to fail `Not logged in`. Several serialized inside
+                # this window and teardown queued behind them. conftest.py now stubs
+                # `claude_agent_sdk.query` / `.ClaudeSDKClient` — the one door all of
+                # them resolve at call time — so no real spawn can compete here again.
+                #
+                # The fence stays at 240s: it is a ceiling, only ever paid on failure,
+                # and still leaves headroom under the shard's 300s pytest-timeout. If
+                # this fires again, the cause is NOT the margin — look for a new door.
                 assert _wait_until(lambda: bool(unsubscribed), timeout=240.0), (
                     "teardown must unsubscribe the lifecycle queue even with an "
                     "auto re-attach in flight")
