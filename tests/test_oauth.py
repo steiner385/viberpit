@@ -446,3 +446,63 @@ class TestUsageNullReset(unittest.TestCase):
         self.assertIsNone(u.window("session").resets_at)
         self.assertEqual(u.window("weekly").used_pct, 40.0)
         self.assertIsNotNone(u.window("weekly").resets_at)
+
+
+class TestHasUsageScope(unittest.TestCase):
+    """``has_usage_scope`` — the authoritative "can this token read usage?" oracle.
+
+    Verified against the real API on 2026-09-07: ``GET /api/oauth/usage`` refuses
+    a setup-token minted without ``user:profile`` with a 429 (a rate-limit shape,
+    indistinguishable from a genuine throttle), while ``GET /api/oauth/profile``
+    answers the same token with an explicit 403 whose body carries
+    ``oauth_scope_insufficient`` — and answers a ``user:profile`` token 200. The
+    profile endpoint is therefore the scope oracle; the usage endpoint's 429 is not.
+    """
+
+    SCOPE_403 = (b'{"type":"error","error":{"type":"permission_error","message":"OAuth token '
+                 b'does not meet scope requirement any_of(user:profile, user:office)","details":'
+                 b'{"required_scopes":["user:profile","user:office"],"match":"any",'
+                 b'"error_code":"oauth_scope_insufficient"}}}')
+
+    def test_200_means_the_scope_is_present(self):
+        from ccswitch import oauth
+        with mock.patch.object(oauth, "http_request", return_value=(200, b'{"account":{}}')) as hr:
+            self.assertTrue(oauth.has_usage_scope("tok"))
+        self.assertEqual(hr.call_args.args[:2], ("GET", oauth.PROFILE_URL))
+
+    def test_explicit_scope_refusal_means_absent(self):
+        from ccswitch import oauth
+        with mock.patch.object(oauth, "http_request", return_value=(403, self.SCOPE_403)):
+            self.assertFalse(oauth.has_usage_scope("tok"))
+
+    def test_scope_refusal_is_not_retried(self):
+        """403 is on the shared transient list (Cloudflare 1010), but a SCOPE 403 is
+        terminal: retrying it would burn the whole retry budget per probe."""
+        from ccswitch import oauth
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(req)
+            raise _http_error(403, body=self.SCOPE_403)
+
+        with mock.patch.object(oauth.urllib.request, "urlopen", side_effect=fake_urlopen), \
+             mock.patch.object(oauth.time, "sleep") as slept:
+            self.assertFalse(oauth.has_usage_scope("tok"))
+        self.assertEqual(len(calls), 1)
+        slept.assert_not_called()
+
+    def test_edge_403_without_scope_error_is_transient(self):
+        """A Cloudflare block is a 403 too — it must not be read as 'scope absent'."""
+        from ccswitch import oauth
+        with mock.patch.object(oauth, "http_request", return_value=(403, b"error code: 1010\n")):
+            with self.assertRaises(oauth.TransientError):
+                oauth.has_usage_scope("tok")
+
+    def test_401_is_an_auth_error_and_429_is_transient(self):
+        from ccswitch import oauth
+        with mock.patch.object(oauth, "http_request", return_value=(401, b"{}")):
+            with self.assertRaises(oauth.AuthError):
+                oauth.has_usage_scope("tok")
+        with mock.patch.object(oauth, "http_request", return_value=(429, b"{}")):
+            with self.assertRaises(oauth.TransientError):
+                oauth.has_usage_scope("tok")

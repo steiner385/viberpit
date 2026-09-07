@@ -226,9 +226,14 @@ def _usage_to_dict(usage, stale_as_of: datetime | None = None) -> dict[str, Any]
     return {
         "provider": usage.provider,
         "fetchedAt": iso_utc(usage.fetched_at),
-        # "available" | "unknown" | "auth_error" — how much the windows can be
-        # trusted. A failed read is expressed HERE, never as a fabricated window.
+        # "available" | "unknown" | "auth_error" | "unsupported" — how much the
+        # windows can be trusted. A failed read is expressed HERE, never as a
+        # fabricated window.
         "availability": usage.availability,
+        # WHY it is not available, when the producer knows (a `quota.REASON_*`
+        # code, e.g. a setup-token minted without the usage scope). The browser
+        # words it; an unrecognised code falls back to the availability wording.
+        "reason": usage.reason,
         "staleAsOf": iso_utc(stale_as_of),
         "windows": [
             {

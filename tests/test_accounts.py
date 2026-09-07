@@ -432,6 +432,7 @@ class TestUsageForSetupTokenFallback(unittest.TestCase):
             _seed_account("alpha", expires_in_ms=-1)
             with mock.patch.object(crypto, "read_oauth_token", return_value=self.OAT), \
                  mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("dead")), \
+                 mock.patch.object(oauth, "has_usage_scope", return_value=False), \
                  mock.patch.object(oauth, "fetch_usage", side_effect=oauth.AuthError("401")):
                 u = accounts.usage_for("alpha")
             self.assertEqual(u.availability, UNSUPPORTED)
@@ -457,6 +458,7 @@ class TestUsageForSetupTokenFallback(unittest.TestCase):
             from ccswitch.quota import UNSUPPORTED
             with mock.patch.object(crypto, "read_oauth_token", return_value=self.OAT), \
                  mock.patch.object(oauth, "fetch_usage", side_effect=oauth.AuthError("401")), \
+                 mock.patch.object(oauth, "has_usage_scope", return_value=False), \
                  mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("dead")):
                 u = accounts.usage_for("alpha")
             self.assertEqual(u.availability, UNSUPPORTED)
