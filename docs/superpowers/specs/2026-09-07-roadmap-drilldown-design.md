@@ -50,7 +50,7 @@ add detail at any level; see status.
 | D6 | Products becomes a **master/detail section on the Sessions chassis**: list column in `app.list`, detail in `app.main`, selection is the URL. | Reuses the generic list, row, filter, ordering and keyboard code that already exists; one paradigm across the app. |
 | D7 | The list column has three scopes: **Map · Initiatives · Queue**. Initiatives also appear as leaves in Map under their primary capability; Issues appear as lazy-loaded leaves. | Map is the complete picture; Initiatives is the flat, stage-grouped view of the same rows; Queue is what agents do next. |
 | D8 | **Editing is inline** at every level. | Adding detail at a level is the point; a separate form page breaks the drill-down. |
-| D9 | The tree shows **one attention tier per row**, rolled up from children, computed like the sessions tier. | Four raw status vocabularies are the single largest source of confusion. |
+| D9 | The tree shows **one attention tier per row**, rolled up from children, computed like the sessions tier. | Five raw status vocabularies are the single largest source of confusion. |
 | D10 | Triage keeps its nav entry and keystrokes, moves onto the same chassis, gains a capability chooser and undo. | It is a work mode, not a page; the list/detail split fixes its unlabelled editor. |
 | D11 | User-facing vocabulary is fixed: **Product, Capability, Initiative, Epic, Issue**. Code and API identifiers keep `project`/`feature`. | Renaming tables and routes is a cascade across sync, reconcile and assistant tools; labels come from one module so copy cannot drift. |
 | D12 | Control-band **incidents** (#804) are not "triage" in the UI. They surface in the Needs you tabs of the portfolio and of the product that owns the repo, and on the initiative that adopts one. The Triage nav entry is the PM proposal inbox only. | The two queues share a word and nothing else; the incident code already says "incident" everywhere. |
@@ -398,7 +398,8 @@ no onward action; no detail routes, no edit/delete, no search/filter/sort anywhe
 **Vocabulary.** Nav "Products" vs everything else "project"; capability vs feature;
 track labels Intent/Spec vs Advance button `intake`/`design`
 (`InitiativeTrack.tsx:19-21`, `InitiativesTab.tsx:85`); onboarding state raw on the
-card, friendly in the wizard; four status vocabularies; "triage" also means the
+card, friendly in the wizard; five status vocabularies (initiative status, triage
+state, feature lifecycle, board Status, incident status); "triage" also means the
 session attention tier (`session/triageTier.ts`).
 
 **Interaction.** Triage `a`/`r`/`A` irreversible with no undo; `A` has no pointer
