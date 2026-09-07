@@ -5895,14 +5895,25 @@ class SessionOrchestrator:
     async def _pm_sync_apply_feature_plan(
         self, project_id: str, plan, by_slug: dict
     ) -> None:
-        """Write upserts/orphans from *plan* into the Feature table.
+        """Write upserts/orphans from *plan* into the Feature table, then the
+        capability tree (parent) and the project's outgoing feature links.
+
+        Parents resolve by slug within the project after every upsert row
+        exists, so a child listed before its parent still links. Links are
+        REWRITTEN each apply — the docs are truth, so a link that left the
+        frontmatter leaves the table — and resolve by (Project.slug,
+        Feature.slug); an unresolvable target is skipped with a warning rather
+        than failing the apply. Plan warnings (unknown parent, cycle) are
+        logged the same way.
 
         After upserting, if the project is in ``map_proposed`` and now has ≥1
         non-orphaned Feature, advance it to ``map_merged``.  This ties the
         transition to the observable "map merged & indexed" state — no PR
         webhook needed.  No other states are touched."""
-        from sqlalchemy import func, select
-        from server.db.models import Feature, Project
+        from sqlalchemy import delete, func, select
+        from server.db.models import Feature, FeatureLink, Project
+        for warning in getattr(plan, "warnings", ()):
+            log.warning("pm_sync.feature_index project=%s %s", project_id, warning)
         async with db_session() as db:
             for up in plan.upserts:
                 row = (await db.execute(
@@ -5928,6 +5939,39 @@ class SessionOrchestrator:
                 )).scalar_one_or_none()
                 if row is not None:
                     row.orphaned = True
+            await db.flush()
+
+            # Tree: parent by slug, within this project only.
+            mine = {f.slug: f for f in (await db.execute(
+                select(Feature).where(Feature.project_id == project_id))).scalars().all()}
+            for up in plan.upserts:
+                row = mine.get(up.slug)
+                if row is None:
+                    continue
+                parent = mine.get(up.parent_slug) if up.parent_slug else None
+                row.parent_feature_id = parent.id if parent is not None else None
+
+            # Links: rewrite every outgoing edge of this project's features.
+            src_ids = [f.id for f in mine.values()]
+            if src_ids:
+                await db.execute(delete(FeatureLink).where(FeatureLink.src_feature_id.in_(src_ids)))
+            wanted = [(up.slug, link) for up in plan.upserts for link in up.links]
+            if wanted:
+                project_slugs = {link.project for _, link in wanted}
+                projects = {p.slug: p.id for p in (await db.execute(
+                    select(Project).where(Project.slug.in_(project_slugs)))).scalars().all()}
+                targets = {(f.project_id, f.slug): f.id for f in (await db.execute(
+                    select(Feature).where(Feature.project_id.in_(list(projects.values()))))).scalars().all()}
+                for src_slug, link in wanted:
+                    src = mine.get(src_slug)
+                    dst_project = projects.get(link.project)
+                    dst_id = targets.get((dst_project, link.feature)) if dst_project else None
+                    if src is None or dst_id is None:
+                        log.warning("pm_sync.feature_link_unresolved project=%s src=%s -> %s/%s",
+                                    project_id, src_slug, link.project, link.feature)
+                        continue
+                    db.add(FeatureLink(src_feature_id=src.id, dst_feature_id=dst_id, kind=link.kind))
+
             # Advance map_proposed → map_merged when ≥1 non-orphaned feature
             # exists after this upsert.  Other states are intentionally left alone.
             proj = (await db.execute(
