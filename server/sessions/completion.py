@@ -134,3 +134,29 @@ def resolution_from_text(text: str) -> str | None:
     if not text or NO_PR_MARKER_RE.search(text) is None:
         return None
     return "cancelled" if _CANCEL_RE.search(text) else "not-needed"
+
+
+#: The two resolution tokens a no-PR completion can carry. Identical to what
+#: ``resolution_from_text`` infers from prose, so the tool path and the marker
+#: fallback produce values that are comparable rather than merely similar.
+NO_PR_RESOLUTIONS: tuple[str, ...] = ("not-needed", "cancelled")
+
+
+def parse_mark_no_pr(args: dict) -> dict:
+    """Validate ``mark_no_pr`` arguments into ``{"resolution", "note"}``.
+
+    THE parser for both halves of the tool: the handler calls it to reject a bad
+    argument locally (``ToolArgError`` → a corrective message to the model, no side
+    effect), and the Translator calls it on the observed tool-use block. A second
+    copy on either side is how the model's acknowledgement and the harness's
+    recorded resolution would come to disagree.
+    """
+    from server.mcp_spec import ToolArgError
+    resolution = (args or {}).get("resolution")
+    if not isinstance(resolution, str) or resolution not in NO_PR_RESOLUTIONS:
+        raise ToolArgError(
+            f"resolution must be one of {', '.join(NO_PR_RESOLUTIONS)} — "
+            "'not-needed' when the objective is already satisfied without a code "
+            "change, 'cancelled' when the work was called off.")
+    note = (args or {}).get("note")
+    return {"resolution": resolution, "note": note if isinstance(note, str) and note else None}
