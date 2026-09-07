@@ -134,7 +134,7 @@ def signature_of(record: logging.LogRecord, *, source: str, host: str) -> Signat
         stack = str(fields.get("stack") or "")
         exc_name, frame = client_frame(stack)
         summary = normalize(msg)
-        parts = ("client", level, summary, exc_name or "", frame or "")
+        parts: tuple[str, ...] = ("client", level, summary, exc_name or "", frame or "")
         return Signature(
             fingerprint=_fp(parts), source="client", level=level, logger="client",
             event=event, title=f"{level} client: {summary[:_TITLE_SUMMARY_MAX]}",
