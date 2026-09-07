@@ -17,7 +17,7 @@ from server.audit import redact_text
 from server.github import ci_issues
 
 from .base import AutomationStatus, ConfigField
-from .base import ActionableItem, ActionSpec, TriggerResult  # noqa: F401 — used by the actions appended in later tasks
+from .base import ActionableItem, ActionSpec, TriggerResult
 from .engine_policy import EnginePolicy
 from .issue_filing import neutralize_markers
 from .issue_filing import Decision, Linked, apply, decide
@@ -181,6 +181,7 @@ class ErrorTriageLoop:
         self._run = run
         self._clock = clock
         self._lock = asyncio.Lock()
+        self._last_filed_number: int | None = None
 
     async def tick(self) -> None:
         async with self._lock:
@@ -330,18 +331,14 @@ class ErrorTriageLoop:
                 filed_today += 1
         # Phase 2: gh, outside the DB write lock.
         for fp, d, title, body, labels in plan:
-            applied = await apply(d, repo=repo, title=title, body=body, labels=labels,
-                                  linked=None, run=self._run)
-            if applied.issue_number is None:
+            issue_number = await self._file_one(fp, d, title, body, labels, repo)
+            if issue_number is None:
                 await self._ctx.emit("warn", f"issue create failed — will retry: {title}",
                                      kind="file_failed", target=fp)
                 continue
-            async with db_session() as db:
-                await db.execute(update(ES).where(ES.fingerprint == fp)
-                                 .values(issue_number=applied.issue_number))
-            await self._ctx.emit("info", f"filed #{applied.issue_number}: {title}",
+            await self._ctx.emit("info", f"filed #{issue_number}: {title}",
                                  kind="regressed" if d.kind == "regress" else "filed",
-                                 target=fp, detail={"url": ci_issues.issue_url(repo, applied.issue_number)})
+                                 target=fp, detail={"url": ci_issues.issue_url(repo, issue_number)})
         return waiting, filed_today
 
     async def _counts(self) -> dict[str, int]:
@@ -352,3 +349,136 @@ class ErrorTriageLoop:
             rows = (await db.execute(select(ES.status, func.count()).group_by(ES.status))).all()
         by = {str(s): int(n) for s, n in rows}
         return {"filed": by.get("filed", 0), "muted": by.get("muted", 0)}
+
+    async def _file_one(self, fp: str, decision: Decision, title: str, body: str,
+                        labels: list[str], repo: str) -> int | None:
+        """Phase 2 for one candidate that already has its row claimed (Phase-1
+        write already sets status="filed", issue_number=None): run the gh side
+        effect, then write the issue number back on success. Returns None on
+        failure — the row stays retryable (issue_number stays NULL)."""
+        from sqlalchemy import update
+        from server.db import db_session
+        from server.db.models import ErrorSignature as ES
+        applied = await apply(decision, repo=repo, title=title, body=body, labels=labels,
+                              linked=None, run=self._run)
+        if applied.issue_number is None:
+            return None
+        async with db_session() as db:
+            await db.execute(update(ES).where(ES.fingerprint == fp)
+                             .values(issue_number=applied.issue_number))
+        self._last_filed_number = applied.issue_number
+        return applied.issue_number
+
+    # -- card actions ---------------------------------------------------------
+    async def actionable_items(self, limit: int = 50) -> list[ActionableItem]:
+        from sqlalchemy import select
+        from server.db import db_session
+        from server.db.models import ErrorSignature as ES
+        _, config = await self._read_config()
+        repo = str(config.get("target_repo") or "")
+        async with db_session() as db:
+            rows = (await db.execute(select(ES).where(ES.status.in_(("observed", "resolved", "filed", "muted")))
+                                     .order_by(ES.last_seen_at.desc()).limit(limit * 4))).scalars().all()
+        items: list[ActionableItem] = []
+        for r in rows:
+            subtitle = f"{r.level} · {r.source} · {int(r.count or 0)}× · last {_fmt(r.last_seen_at)}"
+            url = ci_issues.issue_url(repo, int(r.issue_number)) if r.issue_number and repo else None
+            if r.status == "muted":
+                actions = [ActionSpec(kind="unmute", label="Unmute")]
+            elif r.status == "filed":
+                actions = [ActionSpec(kind="mute", label="Mute", style="risky")]
+            else:
+                if is_ignored(r.logger, config) or not should_file(
+                        level=str(r.level or ""), count_since_filed=int(r.count_since_filed or 0),
+                        config=config):
+                    continue
+                actions = [ActionSpec(kind="file_now", label="File now"),
+                           ActionSpec(kind="mute", label="Mute", style="risky")]
+            items.append(ActionableItem(id=str(r.fingerprint), title=str(r.title or r.fingerprint),
+                                        subtitle=subtitle, url=url, actions=actions))
+            if len(items) >= limit:
+                break
+        return items
+
+    async def action(self, fingerprint: str, kind: str) -> str:
+        from sqlalchemy import select, update
+        from server.db import db_session
+        from server.db.models import ErrorSignature as ES
+        mode, config = await self._read_config()
+        now = self._clock()
+        async with db_session() as db:
+            row = (await db.execute(select(ES).where(ES.fingerprint == fingerprint))).scalars().one_or_none()
+            if row is None:
+                return "not_found"
+            if kind == "mute":
+                await db.execute(update(ES).where(ES.fingerprint == fingerprint).values(
+                    status="muted", muted_at=now, muted_by="operator"))
+                return "muted"
+            if kind == "unmute":
+                back = "filed" if row.issue_number else "observed"
+                await db.execute(update(ES).where(ES.fingerprint == fingerprint).values(
+                    status=back, muted_at=None, muted_by=None))
+                return "unmuted"
+            if kind != "file_now":
+                return "failed"
+            if mode == "off":
+                return "off"
+            repo = str(config.get("target_repo") or "")
+            if not ci_issues.valid_repo(repo) or row.status not in ("observed", "resolved", "filed"):
+                return "failed"
+            regression_of = row.issue_number if row.status == "resolved" else None
+            title = issue_title(row, regression=regression_of is not None)
+            body = issue_body(row, regression_of=regression_of, repo=repo)
+            labels = [LABEL, source_label(row.source)]
+            seen = int(row.count_since_filed or 0)
+            await db.execute(update(ES).where(ES.fingerprint == fingerprint).values(
+                status="filed", filed_at=now, issue_number=None, issue_closed_at=None,
+                count_since_filed=ES.count_since_filed - seen))
+        decision = Decision("regress" if regression_of else "file", "no_issue")
+        issue_number = await self._file_one(fingerprint, decision, title, body, labels, repo)
+        if issue_number is None:
+            await self._ctx.emit("warn", f"File now failed — will retry: {title}",
+                                 kind="file_failed", target=fingerprint)
+            return "failed"
+        await self._ctx.emit("info", f"filed #{issue_number} (File now): {title}",
+                             kind="filed", target=fingerprint,
+                             detail={"url": ci_issues.issue_url(repo, issue_number)})
+        return "filed"
+
+
+# ---------------------------------------------------------------------------
+# The action provider
+# ---------------------------------------------------------------------------
+
+_ACTION_STATUS = {
+    "filed": ("ok", "Issue filed"),
+    "muted": ("ok", "Muted — it will not be filed or commented on again"),
+    "unmuted": ("ok", "Unmuted"),
+    "not_found": ("warn", "That signature no longer exists"),
+    "off": ("warn", "Error Triage is off — enable it first"),
+    "failed": ("error", "Action failed — see the feed"),
+}
+
+
+class ErrorTriageActionProvider:
+    """Card actions for error-triage. Reads the loop off the orchestrator lazily —
+    the providers dict is built before the loops are (orchestrator.__init__ order)."""
+
+    valid_kinds = frozenset({"file_now", "mute", "unmute"})
+
+    def __init__(self, orch: Any) -> None:
+        self._orch = orch
+
+    @property
+    def _loop(self) -> "ErrorTriageLoop":
+        return self._orch._error_triage_loop
+
+    async def actionable(self) -> list[ActionableItem]:
+        return await self._loop.actionable_items()
+
+    async def trigger(self, item_id: str, kind: str) -> TriggerResult:
+        status = await self._loop.action(item_id, kind)
+        level, message = _ACTION_STATUS.get(status, ("error", "Action failed — see the feed"))
+        if status == "filed" and self._loop._last_filed_number:
+            message = f"Issue filed: #{self._loop._last_filed_number}"
+        return TriggerResult(status=status, level=level, message=message)
