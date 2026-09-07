@@ -255,6 +255,11 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "asyncio: mark test as async"
     )
+    config.addinivalue_line(
+        "markers",
+        "slow: real-time waits (watchdog timers, subprocess spawns) — excluded from "
+        "the fast local default (`pytest -m 'not slow'`), always run in CI (#823)",
+    )
 
 
 # --------------------------------------------------------------------------- #

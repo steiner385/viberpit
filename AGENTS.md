@@ -142,6 +142,11 @@ auto-merge-armed PR, disable auto-merge first and immediately re-read merged sta
   edit that needs a restart, do it when the Sessions page shows nothing mid-turn. Never restart a daemon
   whose installed unit still has `KillMode=control-group` while sessions are working — that kills them
   outright (`deploy/README.md` § "Stopping / restarting the daemon").
+- **Fast local test loop (#823):** `pytest server/tests/ -m "not slow"` skips tests where a real
+  `time.sleep`/`asyncio.sleep` (≳0.3s) or subprocess/daemon spawn IS the thing under test, not
+  something pollable away (e.g. `test_teardown_watchdog.py`, `test_ipc_entrypoint.py`). CI never
+  filters — every push runs the full set. Marker registered in `server/tests/conftest.py`; use it
+  only for an intentional real-time wait, never for incidental slowness that should be fixed instead.
 
 ## Working norms
 
