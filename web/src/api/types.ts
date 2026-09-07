@@ -42,6 +42,10 @@ export interface AccountUsage {
   provider: string
   fetchedAt: string | null
   availability: UsageAvailability
+  /** WHY the read is not 'available', when the server knows — a `quota.REASON_*`
+   *  code such as 'setup_token_scope'. Absent/null on an available read and on
+   *  older payloads. `usageUnavailableReason` words it. */
+  reason?: string | null
   windows: UsageWindow[]
   // Whether the PROVIDER has extra usage enabled — read-only, set in the
   // Anthropic console. Distinct from `allowExtraUsage` below, which is this

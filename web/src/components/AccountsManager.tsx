@@ -794,6 +794,14 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
           ✓ Re-authentication successful — account refreshed.
         </p>
       )}
+      {/* A success can still carry a caveat: the minted token launches sessions
+          but cannot read usage (no user:profile scope). Say so here, at the
+          moment it is actionable, rather than only as a blank quota badge. */}
+      {!editing && isReauthSuccess && reauthStatus?.message && (
+        <p className="text-xs text-amber-600 dark:text-amber-400" role="status">
+          {reauthStatus.message}
+        </p>
+      )}
       {!editing && isReauthError && reauthStatus?.message && (
         <p className="text-xs text-red-600 dark:text-red-400" role="alert">
           {reauthStatus.message}

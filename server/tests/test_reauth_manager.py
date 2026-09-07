@@ -705,6 +705,13 @@ async def test_success_writes_audit_row_no_token_material():
 import ccswitch.setup_token_oauth as _sto
 
 
+@pytest.fixture(autouse=True)
+def _token_has_usage_scope(monkeypatch):
+    """submit_code() confirms the freshly minted token's scope against the real
+    profile endpoint; the fake tokens here must never reach the network."""
+    monkeypatch.setattr("ccswitch.oauth.has_usage_scope", lambda tok: True)
+
+
 def _make_manager(monkeypatch, tmp_path):
     """Construct a ReauthManager with key available and setup_token_oauth.begin() mocked."""
     from server.reauth import ReauthManager
@@ -749,6 +756,47 @@ async def test_setup_token_submit_code_stores_token(monkeypatch, tmp_path):
     assert stored.get("acct") == "sk-ant-oat01-OK123"
     assert stored.get("reauth") == "acct"
     assert mgr.status("acct").state == "success"
+
+
+@pytest.mark.asyncio
+async def test_submit_code_reports_a_token_minted_without_the_usage_scope(monkeypatch, tmp_path, caplog):
+    """The one scope failure the exchange cannot see: the authorize page grants
+    the code but silently narrows it. The token is stored (it launches sessions),
+    the run still succeeds, but the user is told usage will not report — and the
+    log names the scope that was asked for, so the next re-auth is diagnosable."""
+    mgr = _make_manager(monkeypatch, tmp_path)
+    monkeypatch.setattr("ccswitch.crypto.store_oauth_token", lambda name, tok: None)
+    monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda name: None)
+    monkeypatch.setattr(_sto, "exchange", lambda code, ch: "sk-ant-oat01-NARROW")
+    monkeypatch.setattr("ccswitch.oauth.has_usage_scope", lambda tok: False)
+
+    await mgr.start("acct", "id@example.com", mode="setup_token")
+    with caplog.at_level("WARNING"):
+        st = await mgr.submit_code("acct", f"CODE#{mgr._setup_challenge.state}")
+
+    assert st.state == "success"
+    assert "usage" in (st.message or "").lower()
+    assert "user:profile" in (st.message or "")
+    assert any("user:profile" in r.getMessage() and "NARROW" not in r.getMessage()
+               for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_submit_code_scope_probe_failure_does_not_fail_the_reauth(monkeypatch, tmp_path):
+    """The probe is advisory: a network blip must not turn a stored token into an error."""
+    mgr = _make_manager(monkeypatch, tmp_path)
+    monkeypatch.setattr("ccswitch.crypto.store_oauth_token", lambda name, tok: None)
+    monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda name: None)
+    monkeypatch.setattr(_sto, "exchange", lambda code, ch: "sk-ant-oat01-OK")
+
+    def boom(tok):
+        raise OSError("no route to host")
+
+    monkeypatch.setattr("ccswitch.oauth.has_usage_scope", boom)
+    await mgr.start("acct", "id@example.com", mode="setup_token")
+    st = await mgr.submit_code("acct", f"CODE#{mgr._setup_challenge.state}")
+    assert st.state == "success"
+    assert st.message is None
 
 
 @pytest.mark.asyncio
