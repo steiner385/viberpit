@@ -154,14 +154,14 @@ def issue_states(repo: str, numbers: Sequence[int], *,
     "not_planned", "reopened") or None. Issues that do not exist are omitted.
     Returns {} on any failure — callers treat "unknown" as "unchanged".
     """
-    wanted = [int(n) for n in numbers][:100]
-    if not wanted:
-        return {}
-    owner, name = repo.split("/", 1)
-    aliases = " ".join(f"i{n}: issue(number: {n}) {{ number closed stateReason }}"
-                       for n in wanted)
-    query = f'query {{ repository(owner: "{owner}", name: "{name}") {{ {aliases} }} }}'
     try:
+        wanted = [int(n) for n in numbers][:100]
+        if not wanted:
+            return {}
+        owner, name = repo.split("/", 1)
+        aliases = " ".join(f"i{n}: issue(number: {n}) {{ number closed stateReason }}"
+                           for n in wanted)
+        query = f'query {{ repository(owner: "{owner}", name: "{name}") {{ {aliases} }} }}'
         proc = run(["api", "graphql", "-f", f"query={query}"])
         if proc.returncode != 0:
             log.warning("github.issue_states_failed repo=%s: %s", repo, proc.stderr.strip())

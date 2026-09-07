@@ -52,3 +52,24 @@ def test_issue_states_empty_and_failure():
     assert issue_states("o/r", [], run=_runner(calls)) == {}
     assert calls == []
     assert issue_states("o/r", [1], run=_runner(calls, rc=1)) == {}
+
+
+def test_issue_states_malformed_repo_returns_empty():
+    from server.github.ci_issues import issue_states
+    calls: list[list[str]] = []
+    assert issue_states("just-a-name", [1], run=_runner(calls)) == {}
+    assert calls == []
+
+
+def test_issue_states_truncates_to_100():
+    from server.github.ci_issues import issue_states
+    calls: list[list[str]] = []
+    numbers = list(range(1, 151))
+    payload = {"data": {"repository": {
+        f"i{n}": {"number": n, "closed": False, "stateReason": None} for n in numbers[:100]
+    }}}
+    issue_states("o/r", numbers, run=_runner(calls, stdout=json.dumps(payload)))
+    assert len(calls) == 1 and calls[0][:2] == ["api", "graphql"]
+    query = calls[0][3]
+    assert "i100: issue(number: 100)" in query
+    assert "i101:" not in query
