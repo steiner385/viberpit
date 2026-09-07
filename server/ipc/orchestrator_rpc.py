@@ -217,6 +217,12 @@ def register_orchestrator_rpc(app, orch) -> None:
             items = await items
         return {"prs": [p.to_dict() for p in items]}
 
+    async def pr_detail(params: dict) -> dict:
+        result = orch.pr_detail(params["repo"], params["number"])
+        if inspect.isawaitable(result):
+            result = await result
+        return {"detail": result}
+
     async def all_repos_stage_models(params: dict) -> dict:
         models = orch.all_repos_stage_models()
         if inspect.isawaitable(models):
@@ -284,6 +290,7 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "prs_for_many", prs_for_many)
 
     register_rpc(app, "all_prs", all_prs)
+    register_rpc(app, "pr_detail", pr_detail)
     register_rpc(app, "all_repos_stage_models", all_repos_stage_models)
     register_rpc(app, "all_merge_trains", all_merge_trains)
     register_rpc(app, "latest_queue_entries", latest_queue_entries)

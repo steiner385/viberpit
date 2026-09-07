@@ -1,7 +1,8 @@
 from datetime import datetime, timezone, timedelta
 
 from server.github.pr_status import (
-    CheckDetail, PullRequestInfo, build_pr_query, parse_pr_response,
+    CheckDetail, PullRequestInfo, build_pr_detail_query, build_pr_query,
+    parse_pr_detail_response, parse_pr_response,
 )
 
 
@@ -559,6 +560,45 @@ def test_parse_population_tolerates_null_check_contexts():
     (pr,) = parse_population_response(resp, "o/r")
     assert pr.number == 811
     assert CheckDetail(name="ci", conclusion="success") in pr.checks_detail
+
+
+def test_build_pr_detail_query_embeds_owner_name_and_number():
+    q = build_pr_detail_query("acme/billing", 42)
+    assert '"acme"' in q and '"billing"' in q
+    assert "pullRequest(number: 42)" in q
+    assert "mergeable" in q and "reviews(last: 20)" in q
+
+
+def test_parse_pr_detail_response_extracts_checks_reviews_mergeable():
+    context_nodes = [
+        {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED",
+         "conclusion": "SUCCESS", "url": "https://example/lint"},
+        {"__typename": "StatusContext", "context": "legacy-ci", "state": "PENDING",
+         "targetUrl": "https://example/legacy"},
+    ]
+    rollup = {"contexts": {"nodes": context_nodes}}
+    commits = {"nodes": [{"commit": {"statusCheckRollup": rollup}}]}
+    pull_request = {
+        "mergeable": "MERGEABLE",
+        "reviews": {"nodes": [{"author": {"login": "alice"}, "state": "APPROVED"}]},
+        "commits": commits,
+    }
+    resp = {"data": {"repository": {"pullRequest": pull_request}}}
+    out = parse_pr_detail_response(resp)
+    assert out["mergeable"] == "MERGEABLE"
+    assert out["reviews"] == [{"author": "alice", "state": "APPROVED"}]
+    assert out["checks"] == [
+        {"name": "lint", "status": "COMPLETED", "conclusion": "success",
+         "url": "https://example/lint"},
+        {"name": "legacy-ci", "status": "COMPLETED", "conclusion": "pending",
+         "url": "https://example/legacy"},
+    ]
+
+
+def test_parse_pr_detail_response_missing_pr_degrades_empty():
+    assert parse_pr_detail_response({"data": {"repository": {"pullRequest": None}}}) == {
+        "checks": [], "reviews": [], "mergeable": None}
+    assert parse_pr_detail_response({}) == {"checks": [], "reviews": [], "mergeable": None}
 
 
 def test_build_population_query_isolates_deploy_fields():

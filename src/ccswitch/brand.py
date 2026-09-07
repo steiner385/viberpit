@@ -15,6 +15,14 @@ SLUG = "viberpit"
 #: The pre-rebrand slug. Only compat readers (parsers, path fallbacks) may use it.
 LEGACY_SLUG = "ccswitch"
 
+#: Environment-variable prefix. Both prefixes are live for the whole rebrand:
+#: ``ccswitch.env_compat.mirror_legacy_env()`` fills each from the other at process
+#: start, so an ``/etc`` env file may spell either one. The reverse direction retires
+#: in Phase 7, once every host's env file is confirmed migrated.
+ENV_PREFIX = f"{SLUG.upper()}_"
+#: The pre-rebrand environment-variable prefix, still read everywhere.
+LEGACY_ENV_PREFIX = f"{LEGACY_SLUG.upper()}_"
+
 #: The installed console script. CLI message prefixes name the binary the user ran,
 #: so this flips in Phase 5 when the ``viberpit`` entry point is added.
 CLI_NAME = LEGACY_SLUG
