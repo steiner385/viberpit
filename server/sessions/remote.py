@@ -1023,18 +1023,24 @@ class RemoteOrchestrator:
         """Cancel an in-flight device-flow login for a copilot account, via the daemon."""
         return await self._client.call("copilot_add_cancel", account=account)
 
-    async def copilot_usage(self, account: str) -> dict | None:
-        """Return the proxy /usage payload for a copilot account, via the daemon."""
-        return await self._client.call("copilot_usage", account=account)
+    async def process_quota_refresh(
+        self, account: str, *, force: bool = False, persist: bool = True
+    ) -> dict | None:
+        """Fresh-enough Copilot/Codex quota (a snapshot dict or None), via the daemon."""
+        return await self._client.call(
+            "process_quota_refresh", account=account, force=force, persist=persist
+        )
 
     async def codex_models(self, account: str, refresh: bool = False) -> dict:
         """Model options for an OpenAI account, from the daemon's app-server."""
         return await self._client.call("codex_models", account=account, refresh=refresh)
 
-    async def codex_account_status(self, account: str, *, persist: bool = True) -> dict:
+    async def codex_account_status(
+        self, account: str, *, persist: bool = True, force: bool = False
+    ) -> dict:
         """Quota, runner count and auth health for an OpenAI account, via the daemon."""
         return await self._client.call(
-            "codex_account_status", account=account, persist=persist
+            "codex_account_status", account=account, persist=persist, force=force
         )
 
     async def codex_validate_model(

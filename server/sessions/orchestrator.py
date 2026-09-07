@@ -114,6 +114,11 @@ from server.sessions.usage_stall import is_usage_stalled
 from server.config import env_float
 from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
+from server.usage.process_quota import (
+    CodexQuotaSource,
+    CopilotQuotaSource,
+    ProcessQuotaRefresher,
+)
 from server.github.pr_status import PullRequestInfo
 from server.hostname import self_host_name  # noqa: F401 — re-exported; the fleet identity lives in server.hostname
 from server.sessions.pr_fix import build_conflict_fix_prompt, build_pr_fix_prompt
@@ -820,6 +825,21 @@ class SessionOrchestrator:
         self._poller: UsagePoller = UsagePoller(
             poll_interval=poll_interval,
             usage_fn=_poller_usage_fn,
+        )
+        # Copilot and Codex quota is process-backed (no REST endpoint), so the
+        # poller above can only ever read what this refresher persisted: it
+        # starts an account's proxy / app-server cold when the ledger reading
+        # is older than the process TTL, reads once, and hands the process to
+        # the idle reaper — which is what lets those accounts show usage with
+        # no session open, as Anthropic accounts do. The managers are resolved
+        # lazily: app.py / ipc.serve install _copilot after construction and
+        # install_codex_manager swaps _codex in after the availability probe.
+        self._process_quota = ProcessQuotaRefresher(
+            (
+                CopilotQuotaSource(lambda: self._copilot),
+                CodexQuotaSource(lambda: self._codex, self._codex_quota_reader),
+            ),
+            sweep_interval=poll_interval,
         )
         from server.github.pr_poller import PrStatusPoller
         from server.github.api_budget import PriorityGate
@@ -1676,6 +1696,7 @@ class SessionOrchestrator:
                 self._primary_lease_heartbeat(), name="primary-lease-heartbeat"
             )
         await self._poller.start()
+        await self._process_quota.start()
         await self._pr_poller.start()
         await self._pr_population.start()
         await self._deploy_watcher.start()
@@ -2171,6 +2192,8 @@ class SessionOrchestrator:
                                        phase=f"stop:driver-close:{sid}")
         await bounded_wait(self._poller.stop(), timeout=_STOP_TASK_TIMEOUT_S,
                            phase="stop:usage-poller")
+        await bounded_wait(self._process_quota.stop(), timeout=_STOP_TASK_TIMEOUT_S,
+                           phase="stop:process-quota")
         await bounded_wait(self._pr_poller.stop(), timeout=_STOP_TASK_TIMEOUT_S,
                            phase="stop:pr-poller")
         await bounded_wait(self._pr_population.stop(), timeout=_STOP_TASK_TIMEOUT_S,
@@ -10576,9 +10599,21 @@ class SessionOrchestrator:
         """Cancel an in-flight device-flow login for a copilot account."""
         return await self._copilot_auth.cancel(account)
 
-    async def copilot_usage(self, account: str) -> dict | None:
-        """Return the proxy /usage payload for a copilot account, or None."""
-        return self._copilot.usage(account) if self._copilot is not None else None
+    async def process_quota_refresh(
+        self, account: str, *, force: bool = False, persist: bool = True
+    ) -> dict | None:
+        """Fresh-enough quota for a process-backed (Copilot / Codex) account.
+
+        The accounts page's refresh button lands here with ``force=True``: the
+        account's process is started if it is not running, read once, and
+        handed to the idle reaper. Returns the canonical snapshot dict, or None
+        when this host cannot read the account (provider not available here,
+        start failure, cooldown). The daemon RPC layer forwards it verbatim.
+        """
+        snapshot = await self._process_quota.refresh(
+            account, force=force, persist=persist
+        )
+        return None if snapshot is None else snapshot.to_dict()
 
     # ------------------------------------------------------------------
     # Codex (OpenAI) account surfaces
@@ -10668,7 +10703,9 @@ class SessionOrchestrator:
             log.warning("codex model validation for %s degraded: %s", account, exc)
         return {"ok": True, "model": model, "effort": effort}
 
-    async def codex_account_status(self, account: str, *, persist: bool = True) -> dict:
+    async def codex_account_status(
+        self, account: str, *, persist: bool = True, force: bool = False
+    ) -> dict:
         """Everything host-local the accounts page needs about one OpenAI account.
 
         One RPC rather than three. Quota, the live runner count and the auth
@@ -10687,16 +10724,22 @@ class SessionOrchestrator:
                 "activeRunners": 0,
                 "degradedReason": None,
             }
-        # Deliberately NOT ensure()d: this is polled by the accounts page, and
-        # starting an app-server on every poll would keep one alive per account
-        # forever, defeating the idle reaper. With nothing running the reader
-        # answers UNKNOWN (or last-good with an age), which is the honest answer.
+        # Quota goes through the process-backed refresher. A live app-server is
+        # read on the REST cadence; with none running the ledger is served until
+        # its process TTL lapses, then ONE app-server is started for a single
+        # read and handed to the idle reaper. That bounds this page-driven read
+        # (polled every 30s) to one cold start per account per TTL — the reason
+        # it used to refuse ensure() outright — while an account with no session
+        # open still shows its quota, as an Anthropic account does. ``force`` is
+        # the refresh button: bypass the TTL and the cooldown.
+        snapshot = await self._process_quota.refresh(
+            account, force=force, persist=persist
+        )
+        if snapshot is None:
+            # Could not read right now (start failure, cooldown): a CURRENT
+            # unknown, never a stale AVAILABLE served as fresh.
+            snapshot = unknown_snapshot("openai")
         client = codex.client_for(account)
-        snapshot = await self._codex_quota_reader().read(account, client=client)
-        if persist:
-            from server.codex.quota import persist_quota_snapshot
-
-            await asyncio.to_thread(persist_quota_snapshot, account, snapshot)
         provider = getattr(codex, "external_auth", None)
         return {
             "quota": snapshot.to_dict(),

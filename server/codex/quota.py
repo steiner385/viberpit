@@ -242,12 +242,3 @@ class CodexQuotaReader:
             fetched_at=datetime.fromtimestamp(self._clock(), tz=timezone.utc),
             availability=availability,
         )
-
-
-def persist_quota_snapshot(account: str, snapshot: QuotaSnapshot) -> None:
-    """Persist one edge-authoritative Codex snapshot in the canonical ledger."""
-
-    from ccswitch import ledger
-
-    with ledger.locked_ledger() as led:
-        ledger.record_usage(led, account, snapshot, snapshot.fetched_at)

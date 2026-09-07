@@ -202,7 +202,7 @@ class InProcessOrchestratorAdapter:
     async def copilot_add_start(self, *a, **k): return await _maybe_await(self._orch.copilot_add_start(*a, **k))
     async def copilot_add_status(self, *a, **k): return await _maybe_await(self._orch.copilot_add_status(*a, **k))
     async def copilot_add_cancel(self, *a, **k): return await _maybe_await(self._orch.copilot_add_cancel(*a, **k))
-    async def copilot_usage(self, *a, **k): return await _maybe_await(self._orch.copilot_usage(*a, **k))
+    async def process_quota_refresh(self, *a, **k): return await _maybe_await(self._orch.process_quota_refresh(*a, **k))
     # --- codex (OpenAI) account surfaces: answered by the host that owns the app-server ---
     async def codex_models(self, *a, **k): return await _maybe_await(self._orch.codex_models(*a, **k))
     async def codex_account_status(self, *a, **k): return await _maybe_await(self._orch.codex_account_status(*a, **k))

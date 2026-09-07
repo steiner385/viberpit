@@ -259,48 +259,10 @@ class TestUsageFetchBackoff(unittest.TestCase):
                 fu.assert_not_called()
 
 
-class TestCopilotUsageFetchBackoff(unittest.TestCase):
-    def _seed_copilot(self, name):
-        from ccswitch import paths
-        d = paths.copilot_token_dir(name)
-        d.mkdir(parents=True, exist_ok=True)
-        # A token dir without credentials.json is not a Copilot ACCOUNT — it is a
-        # half-finished device flow. The manifest importer (like the discovery it
-        # replaced) only registers dirs that hold credentials.
-        (d / "credentials.json").write_text("{}")
-
-    def test_copilot_fetch_failure_sets_cooldown_and_skips_reader(self):
-        with temp_env():
-            from ccswitch import accounts
-            self._seed_copilot("cp1")
-            calls = {"n": 0}
-
-            def reader(name):
-                calls["n"] += 1
-                raise RuntimeError("proxy dead")
-
-            accounts.set_copilot_usage_reader(reader)
-            try:
-                self.assertIsNone(accounts.usage_for("cp1"))
-                self.assertEqual(calls["n"], 1)
-                fails, until = _cooldown("cp1")
-                self.assertEqual(fails, 1)
-                # Within the cooldown the reader must not be re-hit.
-                self.assertIsNone(accounts.usage_for("cp1"))
-                self.assertEqual(calls["n"], 1)
-            finally:
-                accounts.set_copilot_usage_reader(None)
-
-    def test_copilot_without_reader_does_not_back_off(self):
-        """No reader wired = feature not configured, not a fetch failure."""
-        with temp_env():
-            from ccswitch import accounts
-            self._seed_copilot("cp1")
-            accounts.set_copilot_usage_reader(None)
-            self.assertIsNone(accounts.usage_for("cp1"))
-            fails, until = _cooldown("cp1")
-            self.assertIsNone(fails)
-            self.assertIsNone(until)
+# Copilot fetch-failure backoff moved with the proxy read itself to
+# server/usage/process_quota.py (server/tests/test_process_quota.py): the core
+# no longer reads a process, so it has nothing to back off from
+# (tests/test_process_quota_ttl.py).
 
 
 if __name__ == "__main__":
