@@ -258,12 +258,9 @@ persisted, loopback-only. Kill switch `CCSWITCH_ASSISTANT_ENABLED`; evals under
 
 ## Self-directed model switching
 
-A running session can ask for a different model. Claude sessions do this by calling the
-`request_model(model, reason)` session tool (below); Codex sessions still end a message with
-`<!-- ccswitch:model=<tier> reason="..." -->` — the marker is still parsed permanently (see "Session
-tool surface"). Both halves of both mechanisms live in `server/sessions/model_request.py` (marker +
-tool-arg parser + instruction, one module so the system-prompt/tool-description half and the scan
-half cannot drift).
+To ask for a different model, Claude calls the `request_model(model, reason)` session tool;
+Codex ends a message with `<!-- ccswitch:model=<tier> reason="..." -->` (parsed permanently). Both live in
+`server/sessions/model_request.py` so the prompt and scan halves cannot drift.
 
 - **Downgrades auto-apply** on the next turn; **upgrades park** for human approval in the existing `pending_model` columns.
   `resolve_self_directed_model_policy` composes this with the tier denylist and takes the stricter outcome — a **blocked tier stays blocked
@@ -274,27 +271,19 @@ half cannot drift).
   approval. Approvals use the low-level `driver.set_model()` / `_spawn_session(model=…)` paths.
 - Guards (`server/sessions/self_model_guards.py`): same-tier dedupe, a cap of `CCSWITCH_SELF_MODEL_SWITCH_CAP` (default 3) auto-applies per
   session, a flip-flop halt, and a drop once a human has amended a request for that tier.
-- Kill switch: `CCSWITCH_SELF_MODEL_SWITCH_ENABLED=false` stops both the prompt instruction and any acting on a marker.
+- Kill switch: `CCSWITCH_SELF_MODEL_SWITCH_ENABLED=false` stops both the instruction and any acting on a request.
 - Audit `model_approval.approve` carries `{requested, applied}` — requested ≠ applied is the metric for whether sessions self-assess
   accurately.
 
 ## Session tool surface
 
 Every coding session mounts the in-process app MCP server (`server/sessions/tools/`; wire name from `ccswitch.brand`) with
-`session_context`/`report_feedback`, both READ-class (no permission card). A session whose engine has
-`AgentCapabilities.durable_tool_surface` (Claude — its declared tool surface survives a resume) also gets three
-SIGNAL-class tools that replaced the old HTML-comment markers: `mark_complete()`, `mark_no_pr(resolution, note?)`,
-`request_model(model, reason)`. SIGNAL also renders no card (it moves a status badge rather than changing nothing, so
-it isn't annotated read-only, but it's ungated for the same reason READ is — these replace markers, which had no
-gate). Codex lacks `durable_tool_surface` (`thread/resume` carries neither `developerInstructions` nor
-`dynamicTools`) and keeps the marker contract instead — **the marker parsers are permanent**, not migration
-scaffolding: they cover Codex, replay of stored transcripts, and a Claude session resumed across a deploy. Which
-signal a turn carries is read by the Translator observing the tool-use block, not by the tool handler, to preserve
-the sub-agent (`parent_tool_use_id is None`) guard.
+`session_context`/`report_feedback` (READ-class, no card). Engines with `AgentCapabilities.durable_tool_surface` (Claude)
+also get the SIGNAL-class `mark_complete()`, `mark_no_pr(resolution, note?)` and `request_model(model, reason)`, which
+replaced the HTML-comment markers (SIGNAL is ungated like READ). Codex lacks the capability and keeps the markers —
+**the marker parsers are permanent**. The Translator reads the signal from the tool-use block, not the handler, to
+keep the sub-agent (`parent_tool_use_id is None`) guard.
 The coding overlay is exactly `{"mcp_servers": …}` — never add `strict_mcp_config` or `system_prompt`. Kill switch
-`CCSWITCH_SESSION_TOOLS_ENABLED` (drops all five tools together; no separate switch for the SIGNAL three). Registry
-primitives live in `server/mcp_spec.py`; add a tool by adding a `ToolSpec` + handler + eval case.
-Specs: `docs/superpowers/specs/2026-09-06-session-feedback-to-backlog-design.md`,
-`docs/superpowers/specs/2026-09-07-marker-to-tool-migration-design.md`. Details:
-`docs/product/features/session-tools.md`.
+`CCSWITCH_SESSION_TOOLS_ENABLED` drops all five tools. Registry primitives live in `server/mcp_spec.py`; add a tool by
+adding a `ToolSpec` + handler + eval case. Details: `docs/product/features/session-tools.md`.
 
