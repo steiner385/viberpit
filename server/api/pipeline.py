@@ -15,7 +15,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
@@ -46,6 +46,23 @@ async def list_prs(
     orch = request.app.state.sessions
     items = await orch.all_prs()
     return [p.to_dict() for p in items]
+
+
+@router.get("/{owner}/{name}/{number}")
+async def pr_detail(
+    owner: str,
+    name: str,
+    number: int,
+    request: Request,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    orch = request.app.state.sessions
+    result = orch.pr_detail(f"{owner}/{name}", number)
+    if inspect.isawaitable(result):
+        result = await result
+    if result is None:
+        raise HTTPException(status_code=404, detail="PR not found")
+    return result
 
 
 repos_router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])

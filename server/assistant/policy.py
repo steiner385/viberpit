@@ -94,6 +94,8 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/accounts"),
         ("GET", r"/api/fleet/hosts"),
         ("GET", r"/api/prs"),
+        # PR detail (spec v2 §4.6, Pack G, Task 7.5).
+        ("GET", r"/api/prs/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/\d+"),
         ("GET", r"/api/pipeline/insights/checks"),
         ("GET", r"/api/pipeline/repos"),
         ("GET", r"/api/github/repos"),

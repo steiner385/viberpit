@@ -185,6 +185,7 @@ class InProcessOrchestratorAdapter:
     async def live_session_counts(self): return await _maybe_await(self._orch.live_session_counts())
     def pr_for(self, repo, branch): return self._orch.pr_for(repo, branch)
     async def all_prs(self): return await _maybe_await(self._orch.all_prs())
+    async def pr_detail(self, *a, **k): return await _maybe_await(self._orch.pr_detail(*a, **k))
     async def all_repos_stage_models(self): return await _maybe_await(self._orch.all_repos_stage_models())
     async def request_pr_fix(self, *a, **k): return await _maybe_await(self._orch.request_pr_fix(*a, **k))
     async def automation_statuses(self, *a, **k): return await _maybe_await(self._orch.automation_statuses(*a, **k))
