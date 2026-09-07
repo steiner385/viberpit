@@ -20,6 +20,7 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   list_accounts: 'Listed accounts',
   list_hosts: 'Listed fleet hosts',
   list_prs: 'Listed pull requests',
+  get_pr: 'Got pull request detail',
   get_pipeline_health: 'Checked CI health',
   list_repos: 'Listed repositories',
   list_branches: 'Listed branches',
