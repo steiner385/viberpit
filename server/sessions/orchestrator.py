@@ -4021,14 +4021,20 @@ class SessionOrchestrator:
         completed_turn = status == "done"
         if completed_turn:
             from .background_tasks import text_awaits_user
+            from .completion import strip_markers
             if await self._session_is_parked(session_id):
                 # A parked `done` turn normally reads "Waiting…". But if the turn handed
                 # a question/decision back to the user in prose (no structured
                 # `pending_question`, which would already win in derive_status), it needs
                 # the user — not a timer/process — so surface "Answer needed" instead of
                 # masking it as waiting_external.
-                status = ("waiting_question"
-                          if text_awaits_user(self._last_assistant_prose(session_id))
+                #
+                # strip_markers FIRST, exactly as _completion_open_question does: a
+                # marker (here, a self-directed model request — the one kind a `done`
+                # turn can carry) trails the message, so an unstripped tail check can
+                # never see the closing "?" behind it. Two prose paths, one reading.
+                prose = strip_markers(self._last_assistant_prose(session_id))
+                status = ("waiting_question" if text_awaits_user(prose)
                           else "waiting_external")
         # Advance the "active … ago" clock ONLY when the assistant hands output back —
         # a finished or user-paused turn (ACTIVITY_STATUSES). Bumping it on every status
@@ -4247,11 +4253,13 @@ class SessionOrchestrator:
 
         Before ANY of that, the open-question hold: a completed session whose final
         hand-back still awaits the user — a prose question left in the marker message,
-        or a structured question/permission that raced this task — is not finished for
-        the user even when the bar is met. It flips back to ``waiting_question``
-        ("Answer needed") instead of archiving or nudging; the guard is cleared so the
-        answer's turn can complete cleanly later, and no completion nudge is consumed
-        (the cap bounds not-ready nudges — a held session did nothing wrong).
+        or a structured question/permission/plan that raced this task — is not finished
+        for the user even when the bar is met. It flips back to the status naming what
+        is actually open (``_completion_open_question`` returns it: "Answer needed",
+        "Permission needed" or "Approve plan") instead of archiving or nudging; the
+        guard is cleared so the answer's turn can complete cleanly later, and no
+        completion nudge is consumed (the cap bounds not-ready nudges — a held session
+        did nothing wrong).
 
         The app-wide kill switch gates the ARCHIVE step only. The question hold and
         the readiness gate (bar → refresh → salvage → nudge) run regardless: they are
@@ -4269,13 +4277,13 @@ class SessionOrchestrator:
         try:
             hold = await self._completion_open_question(session_id)
         except Exception:
-            hold = False  # gate is best-effort: never let it block a legitimate archive
+            hold = None  # gate is best-effort: never let it block a legitimate archive
             log.debug("completion.question_gate_failed sid=%s", session_id, exc_info=True)
         if hold:
             self._auto_archiving.discard(session_id)
-            log.info("completion.question_hold sid=%s", session_id)
+            log.info("completion.question_hold sid=%s status=%s", session_id, hold)
             try:
-                await self._persist_status(session_id, "waiting_question")
+                await self._persist_status(session_id, hold)
             except Exception:
                 log.warning("completion.question_hold_persist_failed sid=%s",
                             session_id, exc_info=True)
@@ -4385,8 +4393,9 @@ class SessionOrchestrator:
                 "info", f"archived completed run {session_id}",
                 kind="archived", session_id=session_id)
 
-    async def _completion_open_question(self, session_id: str) -> bool:
-        """True when a completed session's final hand-back still awaits the user.
+    async def _completion_open_question(self, session_id: str) -> str | None:
+        """The status a completed session must be handed back at because its final
+        hand-back still awaits the user — or None when nothing does.
 
         Two sources, checked cheapest-first: (1) a structured question/permission/
         plan still pending on the driver — free, and covers the register-after-persist
@@ -4394,15 +4403,23 @@ class SessionOrchestrator:
         LLM classifier (heuristic degrade) AFTER stripping the completion markers —
         the marker trails the message, so it masks a closing "?" from any tail check.
 
+        A structured hold returns the status naming the card that is actually open,
+        derived through ``derive_status`` so the plan > question > permission
+        precedence is not re-listed here. Returning a bare "held" and persisting
+        waiting_question for all three is what put "Answer needed" on a session
+        whose only open card was a permission prompt. A prose hold is a question by
+        construction, so it is the one case that genuinely reads waiting_question.
+
         The prose text comes from ``_last_assistant_prose`` (per-engine, one reader),
         stripped of the completion markers before the classifier sees it.
         Raises only to the caller's best-effort catch (reads as 'no question')."""
+        from .status import STRUCTURED_HOLD_STATUSES, derive_status
         driver = getattr(self, "_drivers", {}).get(session_id)
         if driver is not None:
             try:
-                sig = driver._dash_signals()
-                if sig.pending_question or sig.pending_permission or sig.pending_plan:
-                    return True
+                held = derive_status(driver._dash_signals())
+                if held in STRUCTURED_HOLD_STATUSES:
+                    return held
             except Exception:
                 log.debug("completion.question_signals_failed sid=%s",
                           session_id, exc_info=True)
@@ -4410,9 +4427,11 @@ class SessionOrchestrator:
         from .open_question import completion_awaits_user
         text = strip_markers(self._last_assistant_prose(session_id))
         if not text:
-            return False
+            return None
         rec = self._records.get(session_id)
-        return await completion_awaits_user(text, cwd=getattr(rec, "cwd", None))
+        if await completion_awaits_user(text, cwd=getattr(rec, "cwd", None)):
+            return "waiting_question"
+        return None
 
     def _last_assistant_prose(self, session_id: str) -> str:
         """The last assistant message's prose, whichever engine produced it.
