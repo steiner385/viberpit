@@ -305,7 +305,7 @@ def test_detach_then_attach_on_live_session_emits_replay_complete(tmp_path):
         _seed_account("alpha", tmp_path)
 
         def factory(cwd, config_dir, can_use_tool, mode, resume,
-                    extra_env=None, *, on_pre_compact=None):
+                    extra_env=None, *, on_pre_compact=None, options_overlay=None):
             return FakeSDKClient([f.sys_init("sess-1")], on_can_use_tool=can_use_tool)
 
         orch = SessionOrchestrator(

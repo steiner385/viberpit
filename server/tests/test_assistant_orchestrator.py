@@ -704,7 +704,7 @@ def test_driver_config_helper_composes_then_trusts_then_isolates():
         "must be compose -> trust_project -> _isolated_dir_for")
 
 
-def test_register_assistant_overlay_reaches_the_sdk_factory(tmp_path):
+def test_register_overlay_reaches_the_sdk_factory(tmp_path):
     """_session_factory forwards a registered overlay as options_overlay=, and passes
     NOTHING extra for a normal session (so existing fakes keep their signature)."""
     seen: list[dict] = []
@@ -719,11 +719,11 @@ def test_register_assistant_overlay_reaches_the_sdk_factory(tmp_path):
     orch._sdk_factory = factory
     orch._x11 = None
     orch._records = {}
-    orch._assistant_overlays = {}
+    orch._overlays = {}
 
     orch._session_factory("plain")("/tmp", "/cfg", None, "interactive", None)
     assert seen[-1] == {}
 
-    orch.register_assistant_overlay("asst", {"model": "sonnet"})
+    orch.register_overlay("asst", {"model": "sonnet"})
     orch._session_factory("asst")("/tmp", "/cfg", None, "interactive", None)
     assert seen[-1] == {"options_overlay": {"model": "sonnet"}}

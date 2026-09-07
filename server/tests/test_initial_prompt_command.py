@@ -61,7 +61,7 @@ def ws_env_ip(tmp_path):
         _seed_account("alpha")
 
         def build(msgs):
-            def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None):
+            def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *, on_pre_compact=None, options_overlay=None):
                 return FakeSDKClient(list(msgs), on_can_use_tool=can_use_tool)
 
             orch = SessionOrchestrator(

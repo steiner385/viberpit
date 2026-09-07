@@ -16,11 +16,17 @@ def _build_append_string() -> str:
     switching (``AgentCapabilities.self_model_switch``), so it is also the one
     engine that passes the flag through; every other engine asks
     ``marker_instructions`` for the completion/no-PR pair alone.
+
+    Also appends the session-tools paragraph when the surface is mounted (session
+    tools spec §3.3), so a session is never told about tools it does not have.
     """
     from server.config import get_settings
-    return marker_instructions(
-        self_model_switch=get_settings().self_model_switch_enabled
-    )
+    from server.sessions.tools.instruction import SESSION_TOOLS_INSTRUCTION
+    cfg = get_settings()
+    parts = [marker_instructions(self_model_switch=cfg.self_model_switch_enabled)]
+    if cfg.session_tools_enabled:
+        parts.append(SESSION_TOOLS_INSTRUCTION)
+    return "\n\n".join(parts)
 
 # Inline flag-settings payload (--settings layer, highest priority).  Auto-approves any
 # project-scoped `.mcp.json` MCP server so the CLI's trust gate (LX1 → "pending" → prompt)
