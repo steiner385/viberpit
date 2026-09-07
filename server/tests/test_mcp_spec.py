@@ -56,3 +56,13 @@ def test_assistant_module_reexports_the_primitives():
     assert mcp_spec.SERVER_NAME == brand.MCP_SERVER_NAME
     assert mcp_spec.MCP_TOOL_PREFIXES == brand.MCP_TOOL_PREFIXES
     assert tools.annotation_for is mcp_spec.annotation_for
+
+
+def test_signal_class_is_not_read_only_but_is_not_destructive():
+    """A signalling tool changes session status, so readOnlyHint would be a lie —
+    but it is not destructive and must never render a card."""
+    from server.mcp_spec import ToolClass, ToolSpec, annotations_for
+    ann = annotations_for(ToolSpec("mark_complete", ToolClass.SIGNAL, "Mark complete"))
+    assert ann.readOnlyHint is False
+    assert ann.destructiveHint is False
+    assert ann.idempotentHint is True

@@ -124,6 +124,17 @@ CODEX_CAPABILITIES: Final[AgentCapabilities] = AgentCapabilities(
     # session is: this catalog, plus the app-owned commands below.
     vendor_commands=True,
     vendor_skills=True,
+    # The pinned `thread/resume` carries neither `developerInstructions` nor
+    # `dynamicTools` (codex-cli 0.153.2, verified against the schema, not
+    # assumed — see server/sessions/tools/codex.py's module docstring and
+    # docs/superpowers/spikes/2026-09-06-codex-resume-dynamic-tools.md). A
+    # resumed Codex coding session therefore keeps whatever instructions it
+    # started with and loses whatever tools it declared, with nothing sendable
+    # to correct either — so a session told "call mark_complete" would be
+    # unable to signal at all past its first resume. Codex keeps the marker
+    # contract instead; this flips True on its own once the vendor contract
+    # carries both fields on resume.
+    durable_tool_surface=False,
 )
 
 #: What an unavailable engine advertises. Not "unknown" — *nothing*.

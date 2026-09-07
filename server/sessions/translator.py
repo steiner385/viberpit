@@ -1,11 +1,16 @@
 from __future__ import annotations
 import dataclasses as _dc
+import logging
 from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, UserMessage,
                               ResultMessage, ToolUseBlock, ToolResultBlock, TextBlock,
                               RateLimitEvent)
+from ccswitch import brand
 from . import events as ev
-from .completion import has_completion_marker, resolution_from_text
-from .model_request import parse_model_request
+from .completion import has_completion_marker, parse_mark_no_pr, resolution_from_text
+from .model_request import parse_model_request, parse_request_model
+from .tools.registry import SIGNAL_TOOL_NAMES
+
+log = logging.getLogger(__name__)
 
 
 def _usage_dict(u):
@@ -29,6 +34,11 @@ class Translator:
         self._seen_tools: set[str] = set()
         self._turn_text: str = ""
         self._turn_model: dict[str, str] = {}   # turn id -> last-emitted model (dedupe)
+        # Signalling tool calls made by the TOP-LEVEL agent this turn: stem -> parsed
+        # payload. Turn-scoped, NOT message-scoped like `_turn_text` — a session calls
+        # mark_complete and then writes a closing paragraph, and a per-message reset
+        # would throw the signal away. Cleared only by `_reset()`, at turn end.
+        self._turn_signals: dict[str, dict] = {}
 
     def _ensure_turn(self, uuid, pid=None) -> list:
         if pid in self._open:
@@ -50,6 +60,23 @@ class Translator:
         self._seen_tools = set()
         self._turn_text = ""
         self._turn_model = {}
+        self._turn_signals = {}
+
+    def _record_signal(self, stem: str, args) -> None:
+        """Store one signalling tool call for the turn.
+
+        Never raises: a malformed argument is dropped (the handler already returned an
+        ``is_error`` to the model) rather than failing the turn it was trying to close.
+        """
+        try:
+            if stem == "mark_complete":
+                self._turn_signals[stem] = {}
+            elif stem == "mark_no_pr":
+                self._turn_signals[stem] = parse_mark_no_pr(args or {})
+            elif stem == "request_model":
+                self._turn_signals[stem] = parse_request_model(args or {})
+        except Exception:  # noqa: BLE001 - a bad argument must not fail the turn
+            pass
 
     def _turn_end_model_request(self) -> dict | None:
         """Self-directed model request carried by this turn's text, or None.
@@ -130,6 +157,19 @@ class Translator:
                     # card on top of the QuestionCard in the frontend.
                     if b.name == "AskUserQuestion":
                         continue
+                    # A TOP-LEVEL signalling call is recorded, not rendered: the
+                    # ToolCall card for "mark_complete" would be noise on top of the
+                    # status change it causes. Only the top-level agent's call counts
+                    # — a Task sub-agent calling mark_complete finished its own
+                    # sub-objective, the same rule the text scan applies at
+                    # `pid is None` above. A sub-agent's call therefore falls THROUGH
+                    # to an ordinary ToolCall card (the AskUserQuestion precedent in
+                    # replay.py:120): it had no effect, and the card is the only way
+                    # a human reading the transcript can see the tool was misused.
+                    stem = brand.mcp_tool_stem(b.name)
+                    if stem is not None and stem in SIGNAL_TOOL_NAMES and pid is None:
+                        self._record_signal(stem, b.input)
+                        continue
                     out.append(ev.ToolCall(tid, b.id, b.name, ev.tool_kind(b.name),
                                            b.input, getattr(msg, "uuid", None),
                                            parent_tool_use_id=pid))
@@ -155,11 +195,33 @@ class Translator:
         if isinstance(msg, ResultMessage):
             self.session_id = msg.session_id or self.session_id
             tid = self._turn_ids.get(None) or "turn"
-            pr_resolution = resolution_from_text(self._turn_text)
-            model_request = self._turn_end_model_request()
+            # Precedence within one turn: the TOOL wins (spec §7). A tool call is a
+            # deliberate declaration; a marker is a string that may have been quoted,
+            # echoed from a plan, or copied out of documentation.
+            signals = self._turn_signals
+            no_pr = signals.get("mark_no_pr")
+            inferred = resolution_from_text(self._turn_text)
+            if no_pr is not None:
+                pr_resolution = no_pr["resolution"]
+                pr_source: str | None = "tool"
+                if inferred is not None and inferred != pr_resolution:
+                    # Spec §8: the declared value against what the prose heuristic
+                    # would have guessed. Emitted here because this is the only place
+                    # that holds both — a tool handler never sees the turn text.
+                    # Logged only on disagreement; agreement is the boring case.
+                    log.info("sessions.no_pr_resolution_disagreement declared=%s inferred=%s",
+                             pr_resolution, inferred)
+            else:
+                pr_resolution = inferred
+                pr_source = "marker" if pr_resolution is not None else None
+            model_request = signals.get("request_model") or self._turn_end_model_request()
+            # `pr_resolution is not None` covers BOTH a mark_no_pr tool call and the
+            # marker fallback: finishing without a PR is still finishing.
+            completed = ("mark_complete" in signals or pr_resolution is not None
+                         or has_completion_marker(self._turn_text))
             if msg.subtype != "success" or bool(getattr(msg, "is_error", False)):
                 outcome = "failed"
-            elif has_completion_marker(self._turn_text) or pr_resolution is not None:
+            elif completed:
                 outcome = "complete"
             else:
                 outcome = "success"
@@ -177,6 +239,7 @@ class Translator:
             out.append(ev.TurnEnd(tid, _usage_dict(msg.usage),
                                   getattr(msg, "total_cost_usd", None), getattr(msg, "uuid", None),
                                   outcome=outcome, pr_resolution=pr_resolution,
+                                  pr_resolution_source=pr_source,
                                   model_request=model_request))
             return out
 

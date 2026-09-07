@@ -78,6 +78,11 @@ class TurnEnd:
     turn_id: str; usage: dict | None = None; cost_usd: float | None = None
     src_uuid: str | None = None; parent_tool_use_id: str | None = None; outcome: str = "success"
     pr_resolution: str | None = None
+    # How `pr_resolution` was arrived at: "tool" (the session called mark_no_pr),
+    # "marker" (an HTML-comment marker in the turn text), or None when there is no
+    # resolution. Carried so the orchestrator records the real provenance instead of
+    # assuming "marker" — see SessionRecord.pr_resolution_source.
+    pr_resolution_source: str | None = None
     # Self-directed model request parsed from this turn's text, or None.
     # {"model": str, "reason": str | None}
     model_request: dict | None = None
@@ -85,6 +90,7 @@ class TurnEnd:
                                "costUsd": self.cost_usd, "srcUuid": self.src_uuid,
                                "parentToolUseId": self.parent_tool_use_id, "outcome": self.outcome,
                                "prResolution": self.pr_resolution,
+                               "prResolutionSource": self.pr_resolution_source,
                                "modelRequest": self.model_request}
 
 @dataclass

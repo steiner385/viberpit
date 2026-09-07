@@ -68,6 +68,14 @@ class AgentCapabilities:
     #: borrow Claude's syntax — forwarding ``/name`` at an engine that does not
     #: parse it is the untruthful catalog #1286 removed.
     vendor_skills: bool = False
+    #: This engine's DECLARED tool surface survives a resume. An engine that
+    #: re-declares nothing on resume must keep the marker contract: its sessions
+    #: would be told to call tools that are gone by the second turn, with no
+    #: documented fallback and nothing sendable to correct it. Codex is that
+    #: engine today (`ThreadResumeParams` carries neither `developerInstructions`
+    #: nor `dynamicTools`); this flips to True on its own the moment the vendor
+    #: contract gains them.
+    durable_tool_surface: bool = False
 
 
 def capabilities_to_wire(caps: AgentCapabilities) -> dict[str, bool]:

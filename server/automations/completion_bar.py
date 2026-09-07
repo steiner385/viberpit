@@ -100,28 +100,34 @@ def _is_code_goal(goal: str) -> bool:
     return not _RESEARCH_RE.search(goal or "")
 
 
-# The ``pr_resolution_source`` under which a stored resolution is the session's OWN
-# ``<!-- viberpit:no-pr -->`` marker (see ``SessionOrchestrator._persist_status``).
+# The ``pr_resolution_source`` values under which a stored resolution is the session's
+# OWN claim about its own work — whether it arrived as a ``<!-- viberpit:no-pr -->``
+# marker or as a ``mark_no_pr`` tool call (see ``SessionOrchestrator._persist_status``).
 # Every other source has already been judged (``classifier``) or is not a completion
-# claim at all (``queue-drain``: the session never ran).
-SELF_CERTIFIED_SOURCE = "marker"
+# claim at all (``queue-drain``: the session never ran). A set, not a constant: the
+# transport changed once and will change again, and a single-value comparison silently
+# promotes a new transport's claim to a verdict.
+SELF_CERTIFIED_SOURCES = frozenset({"marker", "tool"})
 
 
 def is_unverified_self_resolution(goal: str, facts: PrFacts,
                                   pr_resolution: str | None,
                                   pr_resolution_source: str | None) -> bool:
-    """True when *pr_resolution* is the session's own ``not-needed`` marker on a
-    repo-attached code goal with no PR behind it — the one shape where the claim
-    contradicts the goal unless something other than the claimant verifies it.
+    """True when *pr_resolution* is the session's own ``not-needed`` claim — by
+    marker OR by ``mark_no_pr`` tool call — on a repo-attached code goal with no PR
+    behind it: the one shape where the claim contradicts the goal unless something
+    other than the claimant verifies it.
 
-    Prod 2026-09-06 (session fdc6b27a): an "implement X with persistent storage"
-    session researched, wrote no code, recommended a spec, offered to draft it and
-    emitted the no-PR marker; the marker's token then satisfied the bar with high
-    confidence. The agent's claim was its own verification. ``cancelled`` is a
-    decision rather than a completion claim and stays trusted; a research/Q&A goal
-    or a repo-less session is where a bare no-PR is met anyway, so nothing to verify."""
+    2026-09-06 (session fdc6b27a): an "implement X with persistent storage" session
+    researched, wrote no code, recommended a spec, offered to draft it and emitted
+    the no-PR marker; the marker's token then satisfied the bar with high
+    confidence. The agent's claim was its own verification. Which transport carried
+    the claim is irrelevant to that — hence ``SELF_CERTIFIED_SOURCES``, not a single
+    value. ``cancelled`` is a decision rather than a completion claim and stays
+    trusted; a research/Q&A goal or a repo-less session is where a bare no-PR is met
+    anyway, so nothing to verify."""
     return (pr_resolution == "not-needed"
-            and pr_resolution_source == SELF_CERTIFIED_SOURCE
+            and pr_resolution_source in SELF_CERTIFIED_SOURCES
             and facts.has_repo and _is_code_goal(goal))
 
 
@@ -136,7 +142,7 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
     actual PR).
 
     ``pr_resolution_source`` decides whether a resolution is a verdict or a claim:
-    a marker-sourced ``not-needed`` on a repo-attached code goal
+    a self-certified ``not-needed`` (``marker`` or ``tool``) on a repo-attached code goal
     (``is_unverified_self_resolution``) does NOT short-circuit — it lands on the
     low-confidence code-goal branch with a remedy that tells the session to finish
     or ask, so the caller's classifier salvage judges the claim against the goal.
@@ -188,7 +194,7 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
             "the objective is a code change, but no PR exists and the transcript does "
             "not show the goal is already met. Either finish the work (open a PR and arm "
             "auto-merge), or — if you need a decision from the user — ask it as a direct "
-            "question and emit no completion marker.", "low")
+            "question and do not signal completion until you have an answer.", "low")
     if facts.has_repo and _is_code_goal(goal):
         return BarVerdict(False, "code goal but no PR opened",
                           "open a PR and arm auto-merge before finishing", "low")

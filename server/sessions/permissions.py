@@ -153,7 +153,10 @@ class PermissionRegistry:
             from server.mcp_spec import ToolClass, annotation_for
             from server.sessions.tools import registry as _session_registry  # noqa: F401 - registers surface
             ann = annotation_for(tool)
-            if ann is not None and ann.tool_class == ToolClass.READ:
+            # READ and SIGNAL both auto-allow with no card. They differ in what they
+            # claim, not in how they are gated: READ changes nothing, SIGNAL changes
+            # only ccswitch's view of THIS session and replaces an ungated marker.
+            if ann is not None and ann.tool_class in (ToolClass.READ, ToolClass.SIGNAL):
                 return None, _resolved(True), True
             if ann is not None and ann.tool_class == ToolClass.DESTRUCTIVE:
                 # Never consults the grant cache, in ANY mode — a destructive

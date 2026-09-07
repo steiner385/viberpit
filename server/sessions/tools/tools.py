@@ -13,10 +13,12 @@ from claude_agent_sdk import SdkMcpTool, tool
 from ccswitch import brand
 from server.mcp_spec import ToolArgError, ToolSpec, annotations_for, tool_err
 from server.obs.metrics import session_tool_calls_total
+from server.sessions.completion import NO_PR_RESOLUTIONS, parse_mark_no_pr
 from server.sessions.feedback import CATEGORIES, IMPACTS, record_feedback, validate_item
+from server.sessions.model_request import MODEL_TIERS, parse_request_model
 
 from .context import SessionToolContext, context_snapshot
-from .registry import SESSION_TOOL_SPECS
+from .registry import SESSION_TOOL_SPECS, mounted_names
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +42,15 @@ async def _audit_tool_call(ctx: SessionToolContext, spec: ToolSpec, ok: bool, ms
             await db.commit()
     except Exception:  # noqa: BLE001 - an audit failure must never fail the tool
         log.warning("session.tool_call audit failed tool=%s", spec.name, exc_info=True)
+
+
+def mounted_tool_names(ctx: SessionToolContext) -> tuple[str, ...]:
+    """The tool names THIS context gets, in declaration order. A thin ctx-unpacking
+    adapter over `registry.mounted_names` — THE predicate, also read by the
+    system-prompt paragraph in `tools/instruction.py` — so `build_session_tools` and
+    the paragraph can never disagree about which tool a session was declared."""
+    return mounted_names(signalling_tools=ctx.signalling_tools,
+                         self_model_switch=ctx.self_model_switch)
 
 
 def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
@@ -105,4 +116,55 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                                     cap=get_settings().session_feedback_cap)
         return {"recorded": res.recorded, "status": res.status}
 
-    return [session_context, report_feedback]
+    @spec_tool("mark_complete",
+               "Signal that you have FULLY accomplished the objective of this session. "
+               "Call it only when the work is genuinely complete — never for an interim "
+               "step, never while you are still working or waiting on something, and never "
+               "in the same turn as a question to the user: if you need an answer, ask and "
+               "do not call this. Optional follow-ups belong in prose as statements ('I can "
+               "also do X if wanted'), not questions.",
+               {"type": "object", "properties": {}, "required": []})
+    @guarded
+    async def mark_complete(args: dict[str, Any]) -> Any:
+        return {"acknowledged": True}
+
+    @spec_tool("mark_no_pr",
+               "Signal that the work is finished but NO pull request is appropriate. Use "
+               "this INSTEAD of mark_complete when finishing without a code change. "
+               "resolution: 'not-needed' when the objective was already satisfied without "
+               "one, 'cancelled' when the user called the work off or you deliberately "
+               "decided not to open one. An objective that asked for a code change is NOT "
+               "finished by investigating it — discovering the work is larger than expected, "
+               "recommending a spec, or offering to continue is a hand-back: say what you "
+               "found, ask how to proceed, and call nothing. Never call this in the same turn "
+               "as a question to the user: if you need an answer, ask and withhold the call. "
+               "note: one short sentence.",
+               {"type": "object",
+                "properties": {"resolution": {"type": "string", "enum": list(NO_PR_RESOLUTIONS)},
+                               "note": {"type": "string"}},
+                "required": ["resolution"]})
+    @guarded
+    async def mark_no_pr(args: dict[str, Any]) -> Any:
+        return {"acknowledged": True, **parse_mark_no_pr(args)}
+
+    @spec_tool("request_model",
+               "Ask to run on a different model tier, when the work has turned out "
+               "materially harder or easier than it looked. haiku: trivial/mechanical — "
+               "typo fixes, config bumps, dependency pins. sonnet: one feature or bugfix "
+               "with its tests. opus: hard multi-file work, tricky debugging, CI failures "
+               "with unclear cause. fable: the hardest architectural or cross-cutting work. "
+               "A cheaper tier applies on your next turn; a more expensive one is held for a "
+               "human, who may approve it at a different tier. Never routine, never twice "
+               "for the same conclusion, and never wait for the switch — keep working.",
+               {"type": "object",
+                "properties": {"model": {"type": "string", "enum": list(MODEL_TIERS)},
+                               "reason": {"type": "string"}},
+                "required": ["model", "reason"]})
+    @guarded
+    async def request_model(args: dict[str, Any]) -> Any:
+        return {"acknowledged": True, **parse_request_model(args)}
+
+    by_name = {"session_context": session_context, "report_feedback": report_feedback,
+               "mark_complete": mark_complete, "mark_no_pr": mark_no_pr,
+               "request_model": request_model}
+    return [by_name[name] for name in mounted_tool_names(ctx)]
