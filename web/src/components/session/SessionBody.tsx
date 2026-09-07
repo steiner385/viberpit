@@ -85,6 +85,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           account={rt.account}
           engine={sessionRecord?.engine}
           host={sessionRecord?.host}
+          displayMode={sessionRecord?.displayMode}
           reasoningEffort={sessionRecord?.reasoningEffort}
           subAgentsSupported={can(caps, 'subagents')}
           model={rt.model}
@@ -322,7 +323,8 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
         if (browserEnabled && activeTab === 'browser') {
           return (
             <div id="tab-panel-browser" role="tabpanel" aria-labelledby="tab-browser" className="flex-1 min-h-0">
-              <BrowserTab sessionId={rt.sessionId} statusState={rt.state.status.state} />
+              <BrowserTab sessionId={rt.sessionId} statusState={rt.state.status.state}
+                          displayMode={sessionRecord?.displayMode} host={sessionRecord?.host} />
             </div>
           )
         }

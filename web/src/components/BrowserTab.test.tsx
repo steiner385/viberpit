@@ -45,3 +45,21 @@ describe('BrowserTab keyboard toggle', () => {
     expect(proxy.value).toBe('')
   })
 })
+
+describe('BrowserTab native display', () => {
+  it('shows the desktop notice instead of a VNC canvas and never connects', () => {
+    setCoarsePointer(false)
+    const spy = vi.spyOn(globalThis, 'WebSocket' as never)
+    render(<BrowserTab sessionId="s" statusState="idle" displayMode="native" host="dobby" />)
+    expect(screen.getByText(/opens windows on dobby's desktop/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /open a browser/i })).toBeInTheDocument()
+    expect(document.querySelector('canvas')).toBeNull()
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('falls back to "the server" when the host is unknown', () => {
+    setCoarsePointer(false)
+    render(<BrowserTab sessionId="s" statusState="idle" displayMode="native" host={null} />)
+    expect(screen.getByText(/opens windows on the server's desktop/i)).toBeInTheDocument()
+  })
+})

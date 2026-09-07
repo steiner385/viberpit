@@ -55,3 +55,26 @@ def test_edge_startup_reaps_orphan_display_processes(tmp_path):
         assert client.get("/api/health", headers=_IDENT).status_code == 200
     assert fake.sweep_orphan_calls == 1
     assert fake.sweep_stale_calls == 1
+
+
+def test_native_display_is_built_in_process(monkeypatch, tmp_path):
+    monkeypatch.setenv("CCSWITCH_NATIVE_DISPLAY_ENABLED", "true")
+    monkeypatch.setenv("CCSWITCH_NATIVE_DISPLAY", ":0")
+    import importlib
+    import server.config as cfg
+    importlib.reload(cfg)
+    orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+    app = create_app(orchestrator=orch)
+    nd = getattr(app.state, "native_display", None)
+    assert nd is not None and nd.display == ":0"
+    assert orch._native is nd
+
+
+def test_native_display_is_none_when_disabled(monkeypatch):
+    monkeypatch.setenv("CCSWITCH_NATIVE_DISPLAY_ENABLED", "false")
+    import importlib
+    import server.config as cfg
+    importlib.reload(cfg)
+    orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+    app = create_app(orchestrator=orch)
+    assert app.state.native_display is None

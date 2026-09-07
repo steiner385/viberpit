@@ -299,6 +299,10 @@ export interface Session {
   /** Fleet host that ran this session. Null for sessions created before the fleet
    *  existed, and for deployments whose endpoint is not in the host registry. */
   host?: string | null
+  /** Where the session's GUI renders: 'native' = the runner host's real desktop,
+   *  'virtual' = a pooled Xvfb display viewed over VNC. Null for pre-feature rows
+   *  (read as virtual). */
+  displayMode?: 'native' | 'virtual' | null
   status: SessionStatus
   createdAt: string
   /** Last-activity time. May be null/absent for a session with no recorded

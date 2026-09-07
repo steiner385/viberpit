@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from server.pipeline.merge_train import MergeTrainState
     from server.pipeline.track import StageModel
     from server.pm.onboarding import ProjectOnboardingView
+    from server.sessions.native_display import NativeDisplay
     from server.sessions.replay import EngineReplay
 
 from ccswitch import accounts as ccswitch_accounts
@@ -98,6 +99,7 @@ from server.sessions.recovery import (
     STALL_TIMEOUT, STALL_TIMEOUT_THROTTLED,
 )
 from server.sessions.selection import AllAccountsBusy, Picked, select_account  # noqa: F401
+from server.sessions.display_policy import DISPLAY_NATIVE, DISPLAY_VIRTUAL, resolve_display_mode
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
 from server.obs.context import log_event, PROC_EPOCH
 from server.sessions.title_generator import generate_title
@@ -570,6 +572,9 @@ class SessionOrchestrator:
         self._schedule_blocked: dict[str, bool] = {}
         self._sdk_factory = sdk_factory or real_sdk_factory
         self._x11 = x11  # X11Manager | None — per-session virtual displays
+        # NativeDisplay | None — the host's real X display; wired by app.py / ipc.serve
+        # exactly like _x11. Sessions created from that host's own desktop render here.
+        self._native: "NativeDisplay | None" = None
         self._copilot = copilot  # CopilotProxyManager | None — per-account translating proxy
         self._copilot_auth = copilot_auth  # CopilotAuthManager | None — device-flow auth manager
         # CodexRunnerManager | None — per-account `codex app-server` supervision.
@@ -1272,6 +1277,18 @@ class SessionOrchestrator:
             model=model or cfg.assistant_model, operator=operator))
         return api
 
+    def _display_env(self, session_id: str) -> dict[str, str]:
+        """The DISPLAY/XAUTHORITY env for this session's process — the one place it
+        is chosen. Native records get the host desktop (no XAUTHORITY, see
+        NativeDisplay); everything else the Xvfb lease if one exists. A native record
+        whose desktop is gone gets {} — the same degrade an exhausted pool gives."""
+        rec = self._records.get(session_id)
+        if rec is not None and rec.display_mode == DISPLAY_NATIVE:
+            if self._native is not None and self._native.available():
+                return self._native.env()
+            return {}
+        return self._x11.env_for(session_id) if self._x11 else {}
+
     def _session_factory(self, session_id: str):
         """Return a factory closure injecting this session's DISPLAY and PreCompact hook.
 
@@ -1283,9 +1300,8 @@ class SessionOrchestrator:
         existing factory — including the test fakes — keeps its current signature.
         """
         base = self._sdk_factory
-        x11 = self._x11
         def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
-            extra = {**(x11.env_for(session_id) if x11 else {}), **self._oat_env(session_id)}
+            extra = {**self._display_env(session_id), **self._oat_env(session_id)}
             kw: dict = {"on_pre_compact": on_pre_compact}
             overlay = getattr(self, "_assistant_overlays", {}).get(session_id)
             # `dict` and not merely "not None": the Codex overlay for an assistant
@@ -1879,6 +1895,8 @@ class SessionOrchestrator:
         kind: str | None = None,
         owner_identity: str | None = None,
         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+        client_node: str | None = None,
+        display: str | None = None,
     ) -> SessionRecord:
         """Pick an account, start an AgentDriver, persist a DB row, return a SessionRecord.
 
@@ -1943,7 +1961,8 @@ class SessionOrchestrator:
                 attachment_ids=attachment_ids, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref, model=model,
                 reasoning_effort=reasoning_effort, kind=kind,
-                owner_identity=owner_identity, engine=selected_engine)
+                owner_identity=owner_identity, engine=selected_engine,
+                client_node=client_node, display=display)
 
         # Global active-session cap: at/over the cap the session is created as a
         # queued row (real session, no worktree/account/driver yet) and started
@@ -1959,7 +1978,8 @@ class SessionOrchestrator:
                 permission_mode=permission_mode, attachment_ids=attachment_ids,
                 name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref,
                 model=model, reasoning_effort=reasoning_effort, kind=kind,
-                owner_identity=owner_identity, engine=selected_engine)
+                owner_identity=owner_identity, engine=selected_engine,
+                client_node=client_node, display=display)
         return await self._spawn_session(
             session_id, name=name, account=account, initial_prompt=initial_prompt,
             cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
@@ -1967,7 +1987,8 @@ class SessionOrchestrator:
             attachment_ids=attachment_ids, name_is_auto=name_is_auto,
             origin=origin, origin_ref=origin_ref, model=model,
             reasoning_effort=reasoning_effort, kind=kind,
-            owner_identity=owner_identity, engine=selected_engine)
+            owner_identity=owner_identity, engine=selected_engine,
+            client_node=client_node, display=display)
 
     def _active_session_count(self) -> int:
         """Sessions consuming a runtime capacity slot (see CAPACITY_EXEMPT_STATUSES).
@@ -1986,10 +2007,24 @@ class SessionOrchestrator:
         val = getattr(s, "max_active_sessions", None) if s else None
         return max(1, val if val is not None else DEFAULT_MAX_ACTIVE_SESSIONS)
 
+    def _resolve_display_mode_for(self, display: str | None, client_node: str | None) -> str:
+        """The one call to ``resolve_display_mode`` for this daemon — used by the
+        spawn, enqueue and hold paths so the decision is made identically wherever a
+        session is born, not just where it happens to start a driver. A queued or
+        held session must persist this NOW, on the daemon that owns the request: the
+        client_node/display that produced it never survives into the shared queue
+        blob (see ``_enqueue_session``'s comment on why) or a restart, so waiting
+        until spawn time would silently lose it and fall back to virtual.
+        """
+        return resolve_display_mode(
+            requested=display, client_node=client_node, runner=self_host_name(),
+            native_available=self._native is not None and self._native.available())
+
     async def _enqueue_session(self, session_id: str, *, name, account,
                                initial_prompt, cols, rows, cwd, branch, repo,
                                identity, permission_mode, attachment_ids,
                                name_is_auto, origin, origin_ref, model,
+                               client_node=None, display=None,
                                reasoning_effort=None, kind=None, owner_identity=None,
                                engine=AgentEngine.CLAUDE_CODE) -> SessionRecord:
         from datetime import datetime
@@ -1997,6 +2032,23 @@ class SessionOrchestrator:
         now = datetime.utcnow()
         host = local_host_stamp()
         selected_engine = parse_agent_engine(engine)
+        # Resolve and persist the display decision NOW, on this daemon — the
+        # client_node/display that produced the request never survives into the
+        # shared `params` JSON blob below (mixed-daemon-version TypeError hazard,
+        # see the comment on that blob) or a restart, so this is the only place a
+        # queued session's native-vs-virtual choice can be captured durably.
+        #
+        # Same _prior precedence as _spawn_session: an approve-at-capacity re-enqueue
+        # (resolve_model_approval's approve branch, when the fleet is back at the cap)
+        # calls this with the SAME session_id a _hold_for_approval already decided —
+        # its placeholder row is gone by the time we get here (the approve path
+        # deletes it before calling _enqueue_session/_spawn_session to avoid a
+        # duplicate-PK insert), but the in-memory record survives on purpose (see
+        # resolve_model_approval's comment on why), so its persisted display_mode
+        # must win over a fresh re-resolution with client_node=None.
+        _prior = self._records.get(session_id)
+        display_mode = (getattr(_prior, "display_mode", None)
+                        or self._resolve_display_mode_for(display, client_node))
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
@@ -2006,7 +2058,8 @@ class SessionOrchestrator:
                 permission_mode=permission_mode, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref, model=model,
                 initial_prompt=initial_prompt, host=host,
-                kind=kind, owner_identity=owner_identity))
+                kind=kind, owner_identity=owner_identity,
+                display_mode=display_mode))
         params: dict = {
             "name": name, "account": account, "initial_prompt": initial_prompt,
             "cols": cols, "rows": rows, "cwd": cwd, "branch": branch,
@@ -2042,7 +2095,8 @@ class SessionOrchestrator:
             status="queued", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
             model=model, reasoning_effort=reasoning_effort, host=host,
-            kind=kind, owner_identity=owner_identity)
+            kind=kind, owner_identity=owner_identity,
+            display_mode=display_mode)
         self._records[session_id] = rec
         log.info("session.queued id=%s priority=%d origin=%s",
                  session_id, priority, origin)
@@ -2052,6 +2106,7 @@ class SessionOrchestrator:
                                  initial_prompt, cols, rows, cwd, branch, repo,
                                  identity, permission_mode, attachment_ids,
                                  name_is_auto, origin, origin_ref, model,
+                                 client_node=None, display=None,
                                  reasoning_effort=None, kind=None, owner_identity=None,
                                  engine=AgentEngine.CLAUDE_CODE) -> SessionRecord:
         """Park a model-gated session at 'pending_approval': persist a driverless row
@@ -2062,11 +2117,17 @@ class SessionOrchestrator:
         the requested_by/at provenance columns set. The full spawn kwargs are kept in
         self._pending_approvals so the approve path (Task 10) can spawn cleanly; that
         map is in-memory only — a restart rebuilds the row-backed record via rehydrate.
+
+        Like _enqueue_session, the display decision is resolved and persisted HERE:
+        an approval can sit for as long as a human takes to act on it (far longer
+        than a queue drain), so client_node/display must not depend on anything
+        in-memory-only surviving that wait.
         """
         from datetime import datetime
         now = datetime.utcnow()
         host = local_host_stamp()
         selected_engine = parse_agent_engine(engine)
+        display_mode = self._resolve_display_mode_for(display, client_node)
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
@@ -2079,7 +2140,8 @@ class SessionOrchestrator:
                 model=None, pending_model=model,
                 pending_model_requested_by=identity, pending_model_requested_at=now,
                 initial_prompt=initial_prompt, host=host,
-                kind=kind, owner_identity=owner_identity))
+                kind=kind, owner_identity=owner_identity,
+                display_mode=display_mode))
             await record_audit(db, type="model_approval.requested", identity=identity,
                                detail={"session_id": session_id, "model": model,
                                        "account": account})
@@ -2099,7 +2161,8 @@ class SessionOrchestrator:
             status="pending_approval", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
             model=None, reasoning_effort=reasoning_effort, pending_model=model, host=host,
-            kind=kind, owner_identity=owner_identity)
+            kind=kind, owner_identity=owner_identity,
+            display_mode=display_mode)
         self._records[session_id] = rec
         log.info("session.pending_approval id=%s model=%s origin=%s",
                  session_id, model, origin)
@@ -2337,6 +2400,12 @@ class SessionOrchestrator:
         stands — this is recovery, not a new decision). Any failure here is swallowed
         so it cannot mask the original spawn exception the caller re-raises."""
         from datetime import datetime
+        # The display decision was made once, at _hold_for_approval time, and is not
+        # re-derivable here: `kwargs` carries no `display`/`client_node` (the approve
+        # path strips them), so a re-resolution would silently fall back to virtual.
+        # The failed _spawn_session leaves its pre-record in _records, which still
+        # carries the held mode — same _prior precedence as _enqueue_session.
+        prior_mode = getattr(self._records.get(session_id), "display_mode", None)
         try:
             async with db_session() as db:
                 # The failed spawn may or may not have INSERTed a row before raising;
@@ -2363,7 +2432,8 @@ class SessionOrchestrator:
                     pending_model_requested_at=requested_at,
                     initial_prompt=kwargs.get("initial_prompt"), host=host,
                     kind=kwargs.get("kind"),
-                    owner_identity=kwargs.get("owner_identity")))
+                    owner_identity=kwargs.get("owner_identity"),
+                    display_mode=prior_mode))
             restored = dict(kwargs)
             restored["model"] = model
             self._pending_approvals[session_id] = restored
@@ -2380,7 +2450,8 @@ class SessionOrchestrator:
                 model=None, reasoning_effort=kwargs.get("reasoning_effort"),
                 pending_model=model, host=host,
                 kind=kwargs.get("kind"),
-                owner_identity=kwargs.get("owner_identity"))
+                owner_identity=kwargs.get("owner_identity"),
+                display_mode=prior_mode)
         except Exception:
             # Never let the recovery path mask the real spawn error.
             log.exception("session.model_approval_hold_restore_failed id=%s",
@@ -2831,6 +2902,8 @@ class SessionOrchestrator:
         preexisting_row: bool = False,
         resume: str | None = None,
         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+        client_node: str | None = None,
+        display: str | None = None,
     ) -> SessionRecord:
         """Start an AgentDriver, persist/update a DB row, return a SessionRecord.
 
@@ -2900,13 +2973,6 @@ class SessionOrchestrator:
             selected_engine, account, cwd, kind
         )
 
-        # Allocate a virtual X11 display for this session (if X11Manager wired in).
-        if self._x11 is not None:
-            try:
-                await self._x11.start_display(session_id)
-            except Exception:
-                log.exception("session.display_start_failed id=%s", session_id)
-
         # Ensure the Copilot proxy is running for copilot-backed accounts.
         if self._copilot is not None and _provider_of(account) == _copilot_mod.PROVIDER:
             await self._copilot.ensure(account)
@@ -2922,6 +2988,23 @@ class SessionOrchestrator:
         # A session promoted from the queue keeps its queue-time created_at (and
         # host stamp); a fresh spawn is born now, on this host (worker) / NULL.
         _prior = self._records.get(session_id)
+        # Decide where this session's GUI renders — ONCE, here — then either lease a
+        # virtual Xvfb display or leave the host's real one to _display_env. A
+        # previously-queued/resumed row keeps its persisted decision.
+        display_mode = (getattr(_prior, "display_mode", None)
+                        or self._resolve_display_mode_for(display, client_node))
+        if display_mode == DISPLAY_VIRTUAL and self._x11 is not None:
+            try:
+                await self._x11.start_display(session_id)
+            except Exception:
+                log.exception("session.display_start_failed id=%s", session_id)
+        elif display_mode == DISPLAY_NATIVE:
+            # self._native can still be None here: a queued/resumed row's persisted
+            # decision (via _prior) wins even if this host no longer has native
+            # display wired up. _display_env degrades that case to {} at inject time.
+            log.info("session.display_native id=%s client_node=%s display=%s",
+                     session_id, client_node,
+                     self._native.display if self._native is not None else None)
         _host = getattr(_prior, "host", None) or local_host_stamp()
         # Belt-and-suspenders for #1107: the queue-drain call site threads the
         # row's engine_session_id through `resume` explicitly, but if some future
@@ -2951,6 +3034,7 @@ class SessionOrchestrator:
             reasoning_effort=reasoning_effort, host=_host,
             kind=kind, owner_identity=owner_identity,
             last_activity_at=time.monotonic(),
+            display_mode=display_mode,
         )
         self._records[session_id] = _pre_record
         # Track the spawn from the pre-seed until the driver is registered (or the
@@ -3026,16 +3110,21 @@ class SessionOrchestrator:
                 self._pending_initial_attachment_ids[session_id] = list(attachment_ids)
 
             if preexisting_row:
-                # UPDATE the existing queued row → idle with resolved account/cwd/branch/model
+                # UPDATE the existing queued row → idle with resolved account/cwd/branch/model.
+                # display_mode only overwrites a NULL (legacy/pre-decision row) — a row
+                # that already carries a persisted decision (native or virtual) keeps it,
+                # matching the in-memory `display_mode` resolved above from `_prior`.
                 async with db_session() as db:
                     from sqlalchemy import update as sa_update
+                    from sqlalchemy import func as sa_func
                     await db.execute(
                         sa_update(DbSession)
                         .where(DbSession.id == session_id)
                         .values(status="idle", account_name=account,
                                 engine=selected_engine.value, cwd=cwd,
                                 branch=branch_name, model=model,
-                                reasoning_effort=reasoning_effort)
+                                reasoning_effort=reasoning_effort,
+                                display_mode=sa_func.coalesce(DbSession.display_mode, display_mode))
                     )
             else:
                 # Persist DB row (fresh session, not previously queued)
@@ -3061,6 +3150,7 @@ class SessionOrchestrator:
                         host=_host,
                         kind=kind,
                         owner_identity=owner_identity,
+                        display_mode=display_mode,
                     )
                     db.add(row)
             row_persisted = True
@@ -3291,7 +3381,32 @@ class SessionOrchestrator:
                 await self._x11.stop_display(session_id)
             except Exception:
                 log.exception("session.display_cleanup_failed id=%s", session_id)
+
+        if self._native is not None:
+            try:
+                await self._native.close(session_id)
+            except Exception:
+                log.exception("session.native_display_cleanup_failed id=%s", session_id)
         return driver
+
+    async def open_browser(self, session_id: str, url: str | None) -> dict:
+        """Launch a managed Chromium for this session on whichever display it owns.
+
+        Returns {"ok", "reason"}; reasons: no_display (no such live session / no lease),
+        cap (per-session browser limit), native_unavailable (the desktop went away).
+        The daemon RPC ``x11_open_browser`` and the in-process API route both call
+        this, so the native/virtual branch exists exactly once.
+        """
+        rec = self._records.get(session_id)
+        if rec is not None and rec.display_mode == DISPLAY_NATIVE:
+            if self._native is None or not self._native.available():
+                return {"ok": False, "reason": "native_unavailable"}
+            ok = await self._native.launch_browser(session_id, url)
+            return {"ok": bool(ok), "reason": None if ok else "cap"}
+        if self._x11 is None or self._x11.display_for(session_id) is None:
+            return {"ok": False, "reason": "no_display"}
+        ok = await self._x11.launch_browser(session_id, url)
+        return {"ok": bool(ok), "reason": None if ok else "cap"}
 
     async def _cleanup_session_paths(
         self, session_id: str, record: SessionRecord | None,
@@ -8431,6 +8546,7 @@ class SessionOrchestrator:
             pr_resolution=getattr(row, "pr_resolution", None),
             pr_resolution_source=getattr(row, "pr_resolution_source", None),
             host=getattr(row, "host", None),
+            display_mode=getattr(row, "display_mode", None),
             kind=getattr(row, "kind", None),
             owner_identity=getattr(row, "owner_identity", None),
             paused_reason=getattr(row, "paused_reason", None),
@@ -10397,7 +10513,7 @@ class SessionOrchestrator:
             # with the display-injecting factory but x11.env_for() returns {}, so the
             # claude subprocess launches with no DISPLAY and X rendering escapes the
             # virtual viewport. start_display is idempotent (no-op if already leased).
-            if self._x11 is not None:
+            if self._x11 is not None and getattr(rec, "display_mode", None) != DISPLAY_NATIVE:
                 try:
                     await self._x11.start_display(session_id)
                 except Exception:
