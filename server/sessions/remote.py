@@ -1120,8 +1120,6 @@ class RemoteOrchestrator:
                 feature_count=0,
                 open_unclassified_count=0,
                 pending_proposal_count=0,
-                map_pr_open=False,
-                map_pr_merged=False,
             )
         return ProjectOnboardingView(**result)
 

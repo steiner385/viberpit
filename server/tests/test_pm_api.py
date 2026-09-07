@@ -493,8 +493,6 @@ def test_remote_pm_onboarding_counts_returns_dataclass():
         "feature_count": 0,
         "open_unclassified_count": 0,
         "pending_proposal_count": 0,
-        "map_pr_open": False,
-        "map_pr_merged": False,
     }
 
     client = MagicMock()
@@ -512,7 +510,7 @@ def test_remote_pm_onboarding_counts_returns_dataclass():
     assert view.backfill_done_count == 1
     # Verify attribute access works — this is what the API does; a dict would raise
     # AttributeError here, which is exactly the second defect being fixed.
-    assert view.map_pr_open is False
+    assert view.pending_proposal_count == 0
 
 
 # ---------------------------------------------------------------------------

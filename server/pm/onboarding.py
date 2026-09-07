@@ -28,16 +28,13 @@ from server.db.models import PROJECT_ONBOARDING_STATES
 @dataclass(frozen=True)
 class ProjectOnboardingView:
     """The counts the engine decides over. ``backfill_done_count`` is how many
-    of the project's ``repo_count`` repos have finished pm-sync backfill;
-    ``map_pr_open``/``map_pr_merged`` describe the archaeology map PR."""
+    of the project's ``repo_count`` repos have finished pm-sync backfill."""
     state: str
     repo_count: int
     backfill_done_count: int
     feature_count: int
     open_unclassified_count: int
     pending_proposal_count: int
-    map_pr_open: bool
-    map_pr_merged: bool
 
 
 # --------------------------------------------------------------------------- #
@@ -99,12 +96,9 @@ def next_onboarding_action(view: ProjectOnboardingView) -> OnboardingAction:
     """Decide the next onboarding action for a project. Pure + total."""
     state = view.state
 
-    if state == "registered":
-        if view.repo_count <= 0:
-            return Register()
-        return AwaitBackfill()
-
-    if state == "syncing":
+    if state in ("registered", "syncing"):
+        # `syncing` is declared but no loop writes it (pm-sync backfills without
+        # touching onboarding_state), so `registered` carries the same ladder.
         if view.repo_count <= 0:
             return Register()
         if view.backfill_done_count < view.repo_count:
@@ -112,11 +106,10 @@ def next_onboarding_action(view: ProjectOnboardingView) -> OnboardingAction:
         return ProposeMap()
 
     if state == "map_proposed":
-        if view.map_pr_open or view.map_pr_merged:
-            # PR exists (open or merged): wait for the human merge + advance.
-            return AwaitMapPr()
-        # No PR yet (session never opened one / died) → re-offer the proposal.
-        return ProposeMap()
+        # The state is set only after a synthesis session was spawned. Whether
+        # its PR is open, merged or never opened is not correlated here; the
+        # wizard shows the PR search link and a "propose again" beside the wait.
+        return AwaitMapPr()
 
     if state == "map_merged":
         if view.feature_count <= 0:

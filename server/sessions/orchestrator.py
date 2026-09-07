@@ -6783,13 +6783,7 @@ class SessionOrchestrator:
             backfill_done_count=sum(1 for r in repos if r.backfill_done),
             feature_count=int(feature_count),
             open_unclassified_count=int(open_unclassified),
-            pending_proposal_count=int(pending),
-            map_pr_open=False, map_pr_merged=False)
-
-    # NOTE on map_pr_open / map_pr_merged: phase 2 does not correlate the map PR's
-    # live state into the counts view. They are left False — the engine treats
-    # map_proposed with neither flag as "re-offer ProposeMap", which is the correct
-    # resumable behavior. Wiring PR-state correlation is a phase-3 enrichment.
+            pending_proposal_count=int(pending))
 
     async def pm_advance_map_merged(self, slug: str) -> None:
         """Advance a project from ``map_proposed`` to ``map_merged`` after the

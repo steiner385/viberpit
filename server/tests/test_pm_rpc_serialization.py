@@ -33,8 +33,6 @@ def _make_view(**overrides) -> ProjectOnboardingView:
         feature_count=0,
         open_unclassified_count=0,
         pending_proposal_count=0,
-        map_pr_open=False,
-        map_pr_merged=False,
     )
     defaults.update(overrides)
     return ProjectOnboardingView(**defaults)
@@ -80,8 +78,6 @@ def test_pm_onboarding_counts_rpc_is_json_serializable():
     assert result["repo_count"] == 3
     assert result["backfill_done_count"] == 2
     assert result["feature_count"] == 0
-    assert result["map_pr_open"] is False
-    assert result["map_pr_merged"] is False
     orch.pm_onboarding_counts.assert_awaited_once_with(project_id="proj-1")
 
 
