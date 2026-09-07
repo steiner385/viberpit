@@ -53,7 +53,7 @@ def decide(linked: Linked | None, *, cap_remaining: int, comment_every: timedelt
         return Decision("file", "no_issue") if cap_remaining > 0 else Decision("skip", "daily_cap")
     if not linked.closed:
         if linked.last_commented_at is None or now - linked.last_commented_at >= comment_every:
-            return Decision("comment", "open") if cap_remaining > 0 else Decision("skip", "daily_cap")
+            return Decision("comment", "open")
         return Decision("skip", "comment_throttled")
     if linked.closed_reason == "not_planned":
         return Decision("skip", "muted_by_close")

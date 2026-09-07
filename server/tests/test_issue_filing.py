@@ -32,7 +32,7 @@ def test_decide_open_issue_comments_then_throttles():
     recent = _decide(Linked(number=7, last_commented_at=NOW - timedelta(hours=1)))
     assert (recent.kind, recent.reason) == ("skip", "comment_throttled")
     # an open issue never files a second one, cap or not
-    assert _decide(Linked(number=7), cap=0).kind == "skip"
+    assert _decide(Linked(number=7), cap=0).kind != "file"  # never a second issue; the cap does not gate comments
 
 
 def test_decide_closed_completed_regresses_and_not_planned_mutes():
