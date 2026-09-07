@@ -1,7 +1,7 @@
 """Native display routing: sessions.display_mode ("native" | "virtual" | NULL).
 
-Revision ID: 0030_session_display_mode
-Revises: 0029_notification_rule_scope_session
+Revision ID: 0031_session_display_mode
+Revises: 0030_test_run_slots
 Create Date: 2026-09-06
 
 Reviewable record only: nothing runs `alembic upgrade` at deploy time — init_db's
@@ -10,8 +10,8 @@ _reconcile_columns ALTER-ADDs the nullable column on both SQLite and Postgres.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0030_session_display_mode"
-down_revision = "0029_notification_rule_scope_session"
+revision = "0031_session_display_mode"
+down_revision = "0030_test_run_slots"
 branch_labels = None
 depends_on = None
 

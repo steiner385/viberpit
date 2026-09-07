@@ -45,7 +45,10 @@ def test_api_serializer_emits_display_mode():
 
 
 def test_migration_chain():
+    # Renumbered 0030 -> 0031: #1381 and #1385 both landed a `0030_` revision
+    # twelve minutes apart, leaving master with two alembic heads. This one
+    # landed second, so it chains off the other rather than off 0029.
     import importlib
-    m = importlib.import_module("server.db.migrations.versions.0030_session_display_mode")
-    assert m.revision == "0030_session_display_mode"
-    assert m.down_revision == "0029_notification_rule_scope_session"
+    m = importlib.import_module("server.db.migrations.versions.0031_session_display_mode")
+    assert m.revision == "0031_session_display_mode"
+    assert m.down_revision == "0030_test_run_slots"
