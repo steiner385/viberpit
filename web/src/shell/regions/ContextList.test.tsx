@@ -162,7 +162,9 @@ describe('ContextList — which sections get a list', () => {
     const { container } = renderList({ path: '/sessions' })
     expect(region(container)).toBeTruthy()
     expect(screen.getByTestId('session-list-scroll')).toBeTruthy()
-    expect(screen.getByRole('button', { name: /new session/i })).toBeTruthy()
+    // No New Session button here: with no session open the dock is already the
+    // DispatchBar, which is the surface that button exists to reveal.
+    expect(screen.queryByRole('button', { name: /new session/i })).toBeNull()
   })
 
   it('renders the session list on /sessions/:id too', () => {
@@ -280,16 +282,16 @@ describe('ContextList — the list survives a :id change', () => {
   it('is not frozen: props still flow through on the same DOM nodes', async () => {
     const user = userEvent.setup()
     renderList({ path: '/sessions' })
-    const newButton = screen.getByRole('button', { name: /new session/i })
     const before = screen.getByTestId('session-list-scroll')
-    expect(newButton).toHaveAttribute('data-selected', 'true')
+    // `newSelected` is true on /sessions, so the foot button is not rendered …
+    expect(screen.queryByRole('button', { name: /new session/i })).toBeNull()
 
     await user.click(screen.getByRole('button', { name: 'go /sessions/b' }))
 
-    // Same nodes, updated props — a re-render, which is the point, rather than a
-    // remount (which would also flip the attribute and prove nothing).
+    // Same scroll node, updated props — a re-render, which is the point, rather
+    // than a remount (which would also produce the button and prove nothing).
     expect(screen.getByTestId('session-list-scroll')).toBe(before)
-    expect(screen.getByRole('button', { name: /new session/i })).toBe(newButton)
-    expect(newButton).toHaveAttribute('data-selected', 'false')
+    // … and appears once a session is open, on the same column.
+    expect(screen.getByRole('button', { name: /new session/i })).toBeTruthy()
   })
 })

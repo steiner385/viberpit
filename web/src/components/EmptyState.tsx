@@ -11,10 +11,10 @@ import { EmptyState as Empty } from '@/ui/EmptyState'
  * the single affordance. That is why there is no `onNew` prop here, and why
  * `SessionList` no longer threads one through.
  *
- * Deliberately title-only — no `description` either. The dispatch bar fills the
- * bottom of the pane and the New Session button is pinned directly under this
- * column, so a sentence naming them would caption two controls already in the
- * reader's eyeline.
+ * Deliberately title-only — no `description` either. With no sessions there is
+ * none open, so the dispatch bar fills the bottom of the pane (the foot button
+ * only renders while a session is open), and a sentence naming it would caption
+ * a control already in the reader's eyeline.
  */
 export function EmptyState() {
   return <Empty title="No sessions yet" />

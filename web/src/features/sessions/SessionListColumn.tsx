@@ -32,7 +32,6 @@
 // scrollTop. With the provider scoped to the session pane, the list never
 // remounts and the position survives on its own.
 import { Plus } from 'lucide-react'
-import { cn } from '@/lib/utils'
 import { useArchivedSessions } from '@/api/hooks'
 import { SessionListControls } from '@/components/SessionListControls'
 import { PendingApprovalSection } from '@/components/PendingApprovalSection'
@@ -61,7 +60,8 @@ export interface SessionListColumnProps {
   isLoading?: boolean
   /** The open session, or null when the New Session slot is the target. */
   selectedId: string | null
-  /** True while the New Session slot is the target — marks the button. */
+  /** True while the New Session slot is the target. The dock is then already
+   *  the DispatchBar, so the foot button is NOT rendered (see the foot). */
   newSelected?: boolean
   /** `config.adoptionEnabled` — mounts AdoptPanel at the foot of the list. */
   adoptionEnabled?: boolean
@@ -158,20 +158,25 @@ export function SessionListColumn({
 
           Live scope only: `onNew` starts a LIVE session, and offering it beside
           a list of archived ones would start a session the list it sits under
-          can never show. */}
-      {scope === 'live' && (
+          can never show.
+
+          And only while a session is OPEN. With none open (`newSelected`) the
+          dock is already the DispatchBar — the very surface this button exists
+          to reveal — so the button would sit directly above a panel that makes
+          it redundant. It used to render highlighted in that state, to mark the
+          new-session slot as the target; the lit-up DispatchBar beneath it says
+          the same thing without a second control. On phone and tablet this is
+          every time the column is on screen at all: `app.list` is only shown
+          there with no item open, so the button was never useful on a phone. */}
+      {scope === 'live' && !newSelected && (
         <div className="shrink-0 p-2">
           <button
             type="button"
-            data-selected={newSelected}
             onClick={onNew}
-            className={cn(
-              'flex w-full min-h-target items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-              newSelected
-                ? 'border-accent bg-accent-wash text-accent'
-                : 'border-edge text-ink hover:bg-surface-raised',
-            )}
+            className={
+              'flex w-full min-h-target items-center gap-2 rounded-md border border-edge px-3 py-2 text-sm font-medium text-ink hover:bg-surface-raised ' +
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+            }
           >
             <Plus size={16} aria-hidden="true" />
             New Session

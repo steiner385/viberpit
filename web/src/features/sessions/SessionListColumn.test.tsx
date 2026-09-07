@@ -285,13 +285,20 @@ describe('SessionListColumn — gates and structure', () => {
     expect(health.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('marks the New Session button when the new-session slot is the target', async () => {
+  // The button's only job is to flip the dock to the DispatchBar. While the
+  // new-session slot is the target the dock is ALREADY the DispatchBar, so the
+  // button would sit directly above the surface it exists to reveal — on phone,
+  // where the list is only on screen with no session open, that was every time.
+  it('omits the New Session button while the new-session slot is the target', () => {
+    renderColumn({ sessions: [session()], newSelected: true })
+    expect(screen.queryByRole('button', { name: /new session/i })).not.toBeInTheDocument()
+  })
+
+  it('offers New Session while a session is open, and it fires onNew', async () => {
     const onNew = vi.fn()
     const user = userEvent.setup()
-    renderColumn({ sessions: [session()], newSelected: true, onNew })
-    const button = screen.getByRole('button', { name: /new session/i })
-    expect(button).toHaveAttribute('data-selected', 'true')
-    await user.click(button)
+    renderColumn({ sessions: [session()], newSelected: false, onNew })
+    await user.click(screen.getByRole('button', { name: /new session/i }))
     expect(onNew).toHaveBeenCalledTimes(1)
   })
 
