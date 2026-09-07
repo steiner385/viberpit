@@ -333,6 +333,8 @@ export interface CreateSessionInput {
   reasoningEffort?: string | null
   /** Optional runner preference. null → auto-rank; a name → that host first. */
   host?: string | null
+  /** Force where the GUI renders; omitted/'auto' → decided from client locality. */
+  display?: 'auto' | 'native' | 'virtual'
 }
 
 export function useCreateSession() {
