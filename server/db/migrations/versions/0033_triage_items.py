@@ -1,7 +1,7 @@
 """SDLC Phase 2 (#804): triage_items — the control-band incident queue.
 
-Revision ID: 0030_triage_items
-Revises: 0029_notification_rule_scope_session
+Revision ID: 0033_triage_items
+Revises: 0032_session_feedback
 Create Date: 2026-09-06
 
 Reviewable record only: nothing runs `alembic upgrade` at deploy time — init_db's
@@ -11,8 +11,8 @@ _reconcile_columns ALTER-ADDs any later nullable column.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0030_triage_items"
-down_revision = "0029_notification_rule_scope_session"
+revision = "0033_triage_items"
+down_revision = "0032_session_feedback"
 branch_labels = None
 depends_on = None
 
