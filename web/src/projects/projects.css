@@ -3,9 +3,6 @@
 
 .pm-projects {
   padding: 12px 14px;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
 }
 
 .pm-muted {
