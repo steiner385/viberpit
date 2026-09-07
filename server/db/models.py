@@ -489,8 +489,12 @@ class TestRunSlot(Base):
 
     __tablename__ = "test_run_slots"
 
-    session_id: Mapped[str] = mapped_column(
-        String, ForeignKey("sessions.id"), primary_key=True)
+    # Opaque holder key (a real sessions.id, OR a shell PID for the curl-based
+    # recipe in .agents/instructions/core.md) — deliberately NOT a foreign key
+    # into `sessions`. A real FK made acquire() raise IntegrityError for any
+    # non-session holder id, and the API layer's fail-open handling turned
+    # that into a silent "always granted" (#822 final review finding).
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
     host: Mapped[str] = mapped_column(String, nullable=False)
     # "holding" (counts against the cap) | "waiting" (queued, no slot yet)
     status: Mapped[str] = mapped_column(String, nullable=False, default="waiting")

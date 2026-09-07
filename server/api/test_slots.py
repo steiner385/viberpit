@@ -3,9 +3,11 @@
 Any session may call this around its own full-suite `pytest server/tests/`
 run to cooperate with the per-host cap documented in
 .agents/instructions/core.md ("Dev / testing"): acquire before running the
-suite, poll status while queued, release when done (in a shell `trap ... EXIT`
-so a crash still frees the slot on the DAEMON side once the session's process
-tree exits and nothing else releases it — see that doc for the exact recipe).
+suite, poll status while queued, release when done — inside the SAME shell
+invocation as the acquire, where a `trap ... EXIT` covers normal exit and
+interruption. An uncatchable kill still leaks the row, until
+server.sessions.test_run_slots's stale-holder reaping (~30 min TTL) clears it;
+nothing on the daemon side cleans up. See that doc for the exact recipe.
 
 Fail-open by design: ANY exception from server.sessions.test_run_slots is
 caught here and turned into "you may proceed" (acquire → granted=True,
