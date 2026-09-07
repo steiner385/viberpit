@@ -327,9 +327,10 @@ other automation action. This is the entire Phase 1 UI; it reuses the automation
 
 ## 10. Rollout and follow-ups
 
-1. Land this spec; file the two migration issues (CI/CD Doctor `_reconcile` → `issue_filing`;
-   session-feedback filer to be built on `issue_filing`, amending that spec's §6 sentence about
-   generalizing `ci_issues.py`).
+1. Land this spec. The two migration issues are filed: #1433 (CI/CD Doctor `_reconcile` →
+   `issue_filing`) and #1434 (session-feedback filer to be built on `issue_filing`, amending that
+   spec's §6 sentence about generalizing `ci_issues.py`). Both are blocked on the implementation
+   PR that creates the helper.
 2. Implementation plan via `writing-plans`, executed subagent-driven. Suggested task order:
    daemon `configure_logging()` (#1423) → `error_signature` → model + migration → `errsink` +
    lifespan wiring → `ci_issues` additions → `issue_filing` → `error_triage` + orchestrator
