@@ -29,7 +29,7 @@
 # and promptly rather than hanging past the unit's TimeoutStartSec.
 set -uo pipefail
 
-DOBBY="${CCSWITCH_DOBBY_HOST:-tony@100.102.11.121}"
+DOBBY="${VIBERPIT_DOBBY_HOST:-${CCSWITCH_DOBBY_HOST:-tony@100.102.11.121}}"
 SSH_OPTS="reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,idmap=user"
 
 # ---------------------------------------------------------------------------------
@@ -54,19 +54,19 @@ COHERENT_OPTS="${SSH_OPTS},dir_cache=no,dcache_timeout=0,attr_timeout=0,entry_ti
 
 # Overridable so the tests can drive this against stubbed sshfs on temp paths.
 DEFAULT_PATHS="/home/tony/.claude-accounts /home/tony/.claude /mnt/hdd-storage /home/tony/avd-golden"
-PATHS="${CCSWITCH_MOUNT_PATHS:-$DEFAULT_PATHS}"
+PATHS="${VIBERPIT_MOUNT_PATHS:-${CCSWITCH_MOUNT_PATHS:-$DEFAULT_PATHS}}"
 # Paths that get COHERENT_OPTS. Only the account store: /home/tony/.claude is the
 # read-mostly share source (plugins/commands/settings), /mnt/hdd-storage and
 # avd-golden are archives.
 DEFAULT_COHERENT_PATHS="/home/tony/.claude-accounts"
-COHERENT_PATHS="${CCSWITCH_MOUNT_COHERENT_PATHS-$DEFAULT_COHERENT_PATHS}"
-ATTEMPTS="${CCSWITCH_MOUNT_ATTEMPTS:-5}"
-RETRY_DELAY="${CCSWITCH_MOUNT_RETRY_DELAY:-3}"
+COHERENT_PATHS="${VIBERPIT_MOUNT_COHERENT_PATHS-${CCSWITCH_MOUNT_COHERENT_PATHS-$DEFAULT_COHERENT_PATHS}}"
+ATTEMPTS="${VIBERPIT_MOUNT_ATTEMPTS:-${CCSWITCH_MOUNT_ATTEMPTS:-5}}"
+RETRY_DELAY="${VIBERPIT_MOUNT_RETRY_DELAY:-${CCSWITCH_MOUNT_RETRY_DELAY:-3}}"
 # Opt-in: tear down and re-establish an ALREADY-mounted path so a cache-profile
 # change lands without a reboot. Off by default -- unmounting a live mount breaks
 # every session reading through it, so an operator has to ask for it explicitly
 # (deploy/README.md § "Cache profiles: the account store must be mounted coherently").
-FORCE_REMOUNT="${CCSWITCH_MOUNT_FORCE_REMOUNT:-0}"
+FORCE_REMOUNT="${VIBERPIT_MOUNT_FORCE_REMOUNT:-${CCSWITCH_MOUNT_FORCE_REMOUNT:-0}}"
 
 opts_for() {  # opts_for <path> — the cache profile this mount must use
   local p="$1" c

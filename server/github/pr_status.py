@@ -724,3 +724,68 @@ def _neg_iso(iso: str) -> str:
     # ISO-8601 strings sort lexicographically; invert each char so a *newer*
     # timestamp produces a *smaller* key (used as a min tie-break).
     return "".join(chr(0x10FFFF - ord(c)) if ord(c) < 0x10FFFF else c for c in iso)
+
+
+def build_pr_detail_query(repo: str, number: int) -> str:
+    """One GraphQL doc for exactly one PR: live ``mergeable``, reviews, and
+    check-run detail WITH a url — the fresh half of ``GET /api/prs/{owner}/
+    {name}/{number}`` (SPEC v2 Pack G). The cached population poll already
+    covers everything else a PR detail needs; it never fetches reviews, and
+    its own check fetch (``build_eta_checks_query``) has no url per check.
+    """
+    owner, _, name = repo.partition("/")
+    return (
+        "query {\n"
+        f"  repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
+        f"    pullRequest(number: {int(number)}) {{\n"
+        "      mergeable\n"
+        "      reviews(last: 20) { nodes { author { login } state } }\n"
+        "      commits(last: 1) { nodes { commit { statusCheckRollup {\n"
+        "        contexts(first: 100) { nodes {\n"
+        "          __typename\n"
+        "          ... on CheckRun { name status conclusion url }\n"
+        "          ... on StatusContext { context state targetUrl }\n"
+        "        } }\n"
+        "      } } } }\n"
+        "    }\n"
+        "  }\n"
+        "}"
+    )
+
+
+def parse_pr_detail_response(response: dict) -> dict:
+    """Parse ``build_pr_detail_query``'s response into
+    ``{"checks": [{name, status, conclusion, url}], "reviews": [{author, state}],
+    "mergeable": str | None}``. Never raises — any missing/malformed shape
+    (PR not found, forbidden scope, network hiccup already turned into an empty
+    response by the caller) degrades to the empty triple, same fail-open
+    discipline as the rest of this module.
+    """
+    empty: dict = {"checks": [], "reviews": [], "mergeable": None}
+    pr = (((response or {}).get("data") or {}).get("repository") or {}).get("pullRequest")
+    if not pr:
+        return empty
+    commit_nodes = ((pr.get("commits") or {}).get("nodes")) or []
+    rollup = (((commit_nodes[0] if commit_nodes else {}).get("commit") or {})
+              .get("statusCheckRollup") or {})
+    context_nodes = ((rollup.get("contexts") or {}).get("nodes")) or []
+    checks: list[dict] = []
+    for c in context_nodes:
+        typename = c.get("__typename")
+        if typename == "CheckRun":
+            checks.append({
+                "name": c.get("name"), "status": c.get("status"),
+                "conclusion": (c.get("conclusion") or "").lower() or None,
+                "url": c.get("url"),
+            })
+        elif typename == "StatusContext":
+            checks.append({
+                "name": c.get("context"), "status": "COMPLETED",
+                "conclusion": (c.get("state") or "").lower() or None,
+                "url": c.get("targetUrl"),
+            })
+    reviews = [
+        {"author": ((r.get("author") or {}).get("login")), "state": r.get("state")}
+        for r in ((pr.get("reviews") or {}).get("nodes")) or []
+    ]
+    return {"checks": checks, "reviews": reviews, "mergeable": pr.get("mergeable")}

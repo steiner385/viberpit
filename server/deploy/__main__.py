@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 
+from ccswitch.env_compat import mirror_legacy_env
 from server.deploy.controller import DeployController
 
 
@@ -17,6 +18,7 @@ def _daemon_enabled() -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    mirror_legacy_env()  # VIBERPIT_* <-> CCSWITCH_*, before any setting is read
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "serve":
         from server.deploy import serve as _serve

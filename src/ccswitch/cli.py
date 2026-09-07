@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from . import accounts, assistant_ask, assistant_mcp, brand, configdir
 from .config import load_config
+from .env_compat import mirror_legacy_env
 from .selector import AllAccountsBusy
 
 _P = brand.CLI_NAME
@@ -324,6 +325,7 @@ def _cmd_reauth(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    mirror_legacy_env()  # VIBERPIT_* <-> CCSWITCH_*, before any setting is read
     parser = argparse.ArgumentParser(prog=_P)
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_list = sub.add_parser("list")

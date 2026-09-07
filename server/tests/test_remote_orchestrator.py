@@ -49,6 +49,25 @@ async def test_create_session_rejects_codex_without_dispatching_on_protocol_v1()
 
 
 @pytest.mark.asyncio
+async def test_pr_detail_forwards_repo_and_number_and_unwraps_detail():
+    client = _RecordingClient({"detail": {"number": 42, "checks": []}})
+    remote = RemoteOrchestrator(client)
+
+    result = await remote.pr_detail("o/r", 42)
+
+    assert client.last_call == ("pr_detail", {"repo": "o/r", "number": 42})
+    assert result == {"number": 42, "checks": []}
+
+
+@pytest.mark.asyncio
+async def test_pr_detail_none_survives_the_rpc():
+    client = _RecordingClient({"detail": None})
+    remote = RemoteOrchestrator(client)
+
+    assert await remote.pr_detail("o/r", 999) is None
+
+
+@pytest.mark.asyncio
 async def test_list_archived_normalizes_old_daemon_wire_shape():
     client = _RecordingClient([{
         "id": "arch-1",

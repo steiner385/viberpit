@@ -464,7 +464,7 @@ def test_every_remote_method_is_classified():
     # Global/primary-routed: everything not per-session, fan-out, merge-all, or
     # explicit. Listed so adding a NEW method forces a conscious classification here.
     GLOBAL = {
-        "list_sessions", "list_archived", "pr_for", "prs_for", "all_prs",
+        "list_sessions", "list_archived", "pr_for", "prs_for", "all_prs", "pr_detail",
         "all_repos_stage_models", "all_merge_trains", "latest_queue_entries",
         "check_insights", "ready_merge", "deploy_config_list", "deploy_config_put",
         "deploy_status", "git_credential_alerts", "dismiss_git_credential_alert",
@@ -633,7 +633,7 @@ def test_api_orchestrator_reads_are_all_classified():
     # is intentionally primary-scoped (adoptable candidates, deploy status, …). A
     # fan-out here would be wrong or redundant, so they are named explicitly.
     PRIMARY_LOCAL = {
-        "list_archived", "all_prs", "all_merge_trains", "all_repos_stage_models",
+        "list_archived", "all_prs", "pr_detail", "all_merge_trains", "all_repos_stage_models",
         "latest_queue_entries", "check_insights", "ready_merge", "deploy_config_list",
         "deploy_config_put", "deploy_status", "git_credential_alerts",
         "dismiss_git_credential_alert", "automation_statuses", "automation_actionable",

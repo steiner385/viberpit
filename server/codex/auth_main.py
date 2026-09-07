@@ -22,6 +22,7 @@ import os
 import signal
 import sys
 
+from ccswitch.env_compat import mirror_legacy_env
 from server.codex import auth_endpoint, process as codex_process
 from server.codex.auth_authority import CredentialAuthority, InstanceLock
 from server.codex.auth_server import AuthorityServer
@@ -105,6 +106,7 @@ async def run() -> int:
 def main() -> int:
     from server.obs.jsonlog import configure_logging
 
+    mirror_legacy_env()  # VIBERPIT_* <-> CCSWITCH_*, before any setting is read
     configure_logging()
     try:
         return asyncio.run(run())

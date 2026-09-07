@@ -374,6 +374,12 @@ class RemoteOrchestrator:
         r = await self._client.call("all_prs")
         return [PipelinePr.from_dict(d) for d in (r.get("prs") or [])]
 
+    async def pr_detail(self, repo: str, number: int) -> "dict | None":
+        """Resolve one PR's detail (checks, reviews, mergeability, session) via
+        the daemon (already JSON-safe)."""
+        r = await self._client.call("pr_detail", repo=repo, number=number)
+        return (r or {}).get("detail")
+
     async def all_repos_stage_models(self) -> "dict":
         """Resolve per-repo StageModels from the daemon."""
         from server.pipeline.track import StageModel
