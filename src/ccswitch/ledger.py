@@ -296,12 +296,26 @@ def usage_from_blob(name: str, blob: dict) -> QuotaSnapshot:
     return _migrate_legacy_usage(name, blob)
 
 
+def usage_cache_ttl_for(name: str, cfg) -> float:
+    """How long a cached reading for *name* counts as fresh.
+
+    Anthropic usage is a REST fetch, cheap to keep warm on ``usage_cache_ttl_sec``.
+    Copilot and Codex quota can only be read through a process the server starts
+    on demand (``server/usage/process_quota.py``), on a ``process_quota_ttl_sec``
+    cadence — judging those readings by the REST TTL would declare every cold
+    reading stale a minute after it landed and blank the account between sweeps.
+    """
+    if _provider_hint(name) == "anthropic":
+        return float(cfg.usage_cache_ttl_sec)
+    return float(cfg.process_quota_ttl_sec)
+
+
 def cached_usage(led: dict, name: str, cfg, now: datetime) -> QuotaSnapshot | None:
     blob = _acct(led, name).get("usage")
     if not blob:
         return None
     fetched = datetime.fromisoformat(blob["fetched_at"])
-    if (now - fetched).total_seconds() > cfg.usage_cache_ttl_sec:
+    if (now - fetched).total_seconds() > usage_cache_ttl_for(name, cfg):
         return None
     try:
         return usage_from_blob(name, blob)

@@ -73,13 +73,9 @@ def build_daemon(orchestrator=None):
     from server.sessions.copilot_proxy import build_copilot_proxy_manager
     from server.sessions.copilot_auth import CopilotAuthManager
     from ccswitch import paths as _ccswitch_paths
-    from ccswitch.accounts import set_copilot_usage_reader
     orchestrator._copilot = build_copilot_proxy_manager(get_settings())
     orchestrator._copilot_auth = CopilotAuthManager(
         token_dir_for=_ccswitch_paths.copilot_token_dir
-    )
-    set_copilot_usage_reader(
-        lambda name: orchestrator._copilot.usage(name) if orchestrator._copilot else None
     )
     # git clone/fetch authenticate with a per-owner App installation token, and repo
     # enumeration lists the App's installation repos, rather than the machine's ambient
