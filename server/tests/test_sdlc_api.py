@@ -430,3 +430,64 @@ def test_triage_queue_is_empty_before_any_band_breaches():
         r = c.get("/api/sdlc/triage", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
         assert r.json() == {"items": []}
+
+
+def _seed_product_with_capabilities() -> tuple[str, str, str]:
+    """Returns (project_id, root_feature_id, child_feature_id)."""
+    import asyncio
+    from server.db import db_session
+    from server.db.models import Feature, Project
+
+    async def _seed():
+        async with db_session() as db:
+            p = Project(slug="example-product", name="Example product")
+            db.add(p)
+            await db.flush()
+            root = Feature(project_id=p.id, slug="sessions", title="Sessions", state="live")
+            db.add(root)
+            await db.flush()
+            child = Feature(project_id=p.id, slug="dictation", title="Dictation",
+                            state="delivering", parent_feature_id=root.id)
+            db.add(child)
+            await db.commit()
+            return p.id, root.id, child.id
+    return asyncio.run(_seed())
+
+
+def test_create_with_capabilities_links_and_derives_product():
+    with _client() as c:
+        _, root_id, child_id = _seed_product_with_capabilities()
+        r = c.post("/api/sdlc/initiatives", json={
+            "title": "Whisper on the edge", "repo": "o/r",
+            "primaryCapabilityId": child_id, "capabilityIds": [root_id]},
+            headers=IDENTITY_HEADERS)
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["projectSlug"] == "example-product"
+        assert body["primaryCapability"] == {"id": child_id, "slug": "dictation", "title": "Dictation"}
+        assert sorted((x["slug"], x["isPrimary"]) for x in body["capabilities"]) == [
+            ("dictation", True), ("sessions", False)]
+
+        listed = c.get("/api/sdlc/initiatives", headers=IDENTITY_HEADERS).json()
+        assert listed[0]["primaryCapability"]["slug"] == "dictation"
+        detail = c.get("/api/sdlc/initiatives/whisper-on-the-edge", headers=IDENTITY_HEADERS).json()
+        assert detail["projectSlug"] == "example-product"
+        assert len(detail["capabilities"]) == 2
+
+
+def test_create_with_unknown_capability_is_422():
+    with _client() as c:
+        r = c.post("/api/sdlc/initiatives", json={
+            "title": "X", "repo": "o/r", "capabilityIds": ["nope"]}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 422
+        assert r.json()["detail"]["error"] == "capability_not_found"
+
+
+def test_initiative_without_capabilities_has_null_fields():
+    with _client() as c:
+        r = c.post("/api/sdlc/initiatives", json={"title": "Plain", "repo": "o/r"},
+                   headers=IDENTITY_HEADERS)
+        body = r.json()
+        assert body["projectSlug"] is None
+        assert body["primaryCapability"] is None
+        assert body["capabilities"] == []
