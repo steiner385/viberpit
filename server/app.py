@@ -210,6 +210,13 @@ async def _lifespan(app: FastAPI):
     db_url = os.environ.get("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
 
+    # Error-triage capture: the sink itself was installed by configure_logging();
+    # its flusher needs the DB, so it starts here and stops in the shutdown branch.
+    from server.obs.errsink import get_error_sink as _get_error_sink
+    _error_sink = _get_error_sink()
+    if _error_sink is not None:
+        _error_sink.start()
+
     # Seed fleet hosts declared in CCSWITCH_FLEET_HOSTS (insert-if-absent by name).
     # Runs before ensure_default_host so a declared fleet is already present when
     # ensure_default_host checks whether the table is operator-managed.
@@ -493,6 +500,9 @@ async def _lifespan(app: FastAPI):
             _t.cancel()
             await bounded_wait(_t, timeout=_SHUTDOWN_PHASE_TIMEOUT_S,
                                phase=f"shutdown:{_phase}")
+    if _error_sink is not None:
+        await bounded_wait(_error_sink.stop(), timeout=_SHUTDOWN_PHASE_TIMEOUT_S,
+                           phase="shutdown:error-sink")
     with contextlib.suppress(Exception):
         app.state.auth_failure_auditor.stop()
     if getattr(app.state, "daemon_health", None) is not None:

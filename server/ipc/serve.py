@@ -110,6 +110,12 @@ async def daemon_lifespan(app, orchestrator):
     at startup, so a daemon start does not respawn every session at once."""
     db_url = os.environ.get("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
+
+    from server.obs.errsink import get_error_sink
+    error_sink = get_error_sink()
+    if error_sink is not None:
+        error_sink.start()
+
     # Wire the Codex app-server manager BEFORE anything can spawn a session
     # (rehydrate/auto_resume below both can). It is built here rather than in
     # build_daemon() because deciding availability probes the real binary, which is
@@ -277,6 +283,11 @@ async def daemon_lifespan(app, orchestrator):
             loop_lag_task = None
         if loop_lag_task is not None:
             await cancel_and_reap(loop_lag_task, phase="daemon.loop-lag")
+        if error_sink is not None:
+            try:
+                await asyncio.wait_for(error_sink.stop(), timeout=_DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S)
+            except Exception:  # noqa: BLE001 — never let the sink block daemon shutdown
+                log.warning("daemon shutdown: error sink stop failed", exc_info=True)
         # A daemon stopped within seconds of boot can still have the doctor waiting
         # on the authority's 20 s admin deadline; reap it the same way, never with a
         # hand-rolled cancel (#1164).

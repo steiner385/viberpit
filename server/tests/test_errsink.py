@@ -225,3 +225,27 @@ def test_configure_logging_respects_kill_switch(monkeypatch):
         for h in list(root.handlers):
             if h not in before:
                 root.removeHandler(h)
+
+
+def test_edge_lifespan_runs_the_flusher(monkeypatch, tmp_path):
+    """The edge lifespan starts the sink's flusher after init_db and stops it on shutdown."""
+    from fastapi.testclient import TestClient
+    from server.obs import errsink, jsonlog
+    monkeypatch.setenv("CCSWITCH_DEV", "1")
+    monkeypatch.delenv("CCSWITCH_TAILNET_ALLOWLIST", raising=False)
+    monkeypatch.setenv("CCSWITCH_DB_URL", f"sqlite+aiosqlite:///{tmp_path / 'edge.db'}")
+    monkeypatch.setattr(jsonlog, "_configured", False)
+    root = logging.getLogger()
+    before = list(root.handlers)
+    errsink.reset_for_tests()
+    try:
+        from server.app import app
+        with TestClient(app):
+            sink = errsink.get_error_sink()
+            assert sink is not None and sink.is_running
+        assert not sink.is_running
+    finally:
+        errsink.reset_for_tests()
+        for h in list(root.handlers):
+            if h not in before:
+                root.removeHandler(h)
