@@ -19,4 +19,14 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("request_model", ToolClass.SIGNAL, "Request a different model"),
 ]}
 
+#: THE set of signalling tool names, derived from the table above rather than
+#: re-typed. Both transcript builders — the live ``sessions/translator.py`` and the
+#: JSONL ``sessions/replay.py`` — key on it to suppress the ToolCall card for a
+#: top-level signalling call, and the translator keys on it to read the signal. A
+#: hand-written second copy is how those three readers would come to disagree about
+#: which names are signals; deriving it means a fourth ``ToolClass.SIGNAL`` spec is
+#: picked up by all of them at once.
+SIGNAL_TOOL_NAMES: frozenset[str] = frozenset(
+    name for name, spec in SESSION_TOOL_SPECS.items() if spec.tool_class is ToolClass.SIGNAL)
+
 register_surface("session", SESSION_TOOL_SPECS)

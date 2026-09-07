@@ -8,13 +8,9 @@ from ccswitch import brand
 from . import events as ev
 from .completion import has_completion_marker, parse_mark_no_pr, resolution_from_text
 from .model_request import parse_model_request, parse_request_model
+from .tools.registry import SIGNAL_TOOL_NAMES
 
 log = logging.getLogger(__name__)
-
-#: Session tools that REPORT the session's own state rather than doing work. Their
-#: tool-use blocks are read as signals here and never rendered as ToolCall cards.
-#: Bare stems: matched through ``brand.mcp_tool_stem`` so both brand prefixes work.
-_SIGNAL_TOOLS = frozenset({"mark_complete", "mark_no_pr", "request_model"})
 
 
 def _usage_dict(u):
@@ -161,15 +157,18 @@ class Translator:
                     # card on top of the QuestionCard in the frontend.
                     if b.name == "AskUserQuestion":
                         continue
-                    # Signalling tools are recorded, not rendered: the ToolCall card
-                    # for "mark_complete" would be noise on top of the status change
-                    # it causes. Only the TOP-LEVEL agent's call counts — a Task
-                    # sub-agent calling mark_complete finished its own sub-objective,
-                    # the same rule the text scan applies at `pid is None` above.
+                    # A TOP-LEVEL signalling call is recorded, not rendered: the
+                    # ToolCall card for "mark_complete" would be noise on top of the
+                    # status change it causes. Only the top-level agent's call counts
+                    # — a Task sub-agent calling mark_complete finished its own
+                    # sub-objective, the same rule the text scan applies at
+                    # `pid is None` above. A sub-agent's call therefore falls THROUGH
+                    # to an ordinary ToolCall card (the AskUserQuestion precedent in
+                    # replay.py:120): it had no effect, and the card is the only way
+                    # a human reading the transcript can see the tool was misused.
                     stem = brand.mcp_tool_stem(b.name)
-                    if stem is not None and stem in _SIGNAL_TOOLS:
-                        if pid is None:
-                            self._record_signal(stem, b.input)
+                    if stem is not None and stem in SIGNAL_TOOL_NAMES and pid is None:
+                        self._record_signal(stem, b.input)
                         continue
                     out.append(ev.ToolCall(tid, b.id, b.name, ev.tool_kind(b.name),
                                            b.input, getattr(msg, "uuid", None),

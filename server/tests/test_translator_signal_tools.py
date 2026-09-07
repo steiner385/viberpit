@@ -149,6 +149,18 @@ def test_a_subagent_request_model_is_ignored():
     assert feed_result(t).model_request is None
 
 
+def test_a_subagent_mark_no_pr_does_NOT_set_a_resolution():
+    """mark_no_pr is the signal with a persisted side effect, so the sub-agent guard
+    matters most here: a Task deciding ITS sub-objective needs no PR must not close
+    out the session's PR resolution."""
+    t = Translator()
+    feed_assistant_tool_call(t, MARK_NO_PR, {"resolution": "cancelled"}, pid="toolu_parent")
+    end = feed_result(t)
+    assert end.pr_resolution is None
+    assert end.pr_resolution_source is None
+    assert end.outcome == "success"
+
+
 def test_a_signalling_tool_call_is_not_rendered_as_a_tool_card():
     """A ToolCall card for `mark_complete` is noise on top of the status change it
     causes — the same reason AskUserQuestion is skipped in the loop above it."""
@@ -163,6 +175,30 @@ def test_a_non_signalling_ccswitch_tool_still_renders_a_card():
     t = Translator()
     out = feed_assistant_tool_call(t, "mcp__viberpit__session_context", {}, pid=None)
     assert any(isinstance(e, ToolCall) for e in out)
+
+
+def test_a_SUBAGENT_signalling_call_DOES_render_a_card():
+    """The AskUserQuestion precedent (replay.py:120): the card is suppressed only for
+    the top-level call that actually took effect. A sub-agent's call did nothing, so
+    it renders — that card is the only sign a human reading the transcript gets that
+    the tool was misused."""
+    from server.sessions.events import ToolCall
+    t = Translator()
+    out = feed_assistant_tool_call(t, MARK_COMPLETE, {}, pid="toolu_parent")
+    cards = [e for e in out if isinstance(e, ToolCall)]
+    assert len(cards) == 1
+    assert cards[0].name == MARK_COMPLETE
+    assert cards[0].parent_tool_use_id == "toolu_parent"
+
+
+def test_the_signal_tool_names_come_from_the_spec_registry():
+    """One source of truth: the names the translator suppresses/reads are exactly the
+    ToolClass.SIGNAL entries in the session tool spec table, not a re-typed copy."""
+    from server.mcp_spec import ToolClass
+    from server.sessions.tools.registry import SESSION_TOOL_SPECS, SIGNAL_TOOL_NAMES
+    assert SIGNAL_TOOL_NAMES == {n for n, s in SESSION_TOOL_SPECS.items()
+                                 if s.tool_class is ToolClass.SIGNAL}
+    assert SIGNAL_TOOL_NAMES == {"mark_complete", "mark_no_pr", "request_model"}
 
 
 def test_a_failed_result_stays_failed_even_with_a_mark_complete_call():
