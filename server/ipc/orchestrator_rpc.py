@@ -345,6 +345,8 @@ def register_orchestrator_rpc(app, orch) -> None:
         "pm_classify_run",
         # advance map_proposed → map_merged (returns None, JSON-safe)
         "pm_advance_map_merged",
+        # advance map_merged/classifying → live (returns None, JSON-safe)
+        "pm_advance_live",
     ]
 
     def _make_simple(method_name):

@@ -984,3 +984,54 @@ def test_triage_rows_carry_project_slug():
                          headers=IDENTITY_HEADERS)
         assert filtered.status_code == 200
         assert [row["repo"] for row in filtered.json()] == ["o/r"]
+
+
+def test_onboarding_view_carries_the_map_pr_search_link():
+    """The wizard's await-map-PR step needs somewhere to send the user. The PR
+    number is not stored, but the branch is deterministic, so the view carries
+    a GitHub PR search on that branch for the primary repo."""
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Ccswitch", repo="o/r")
+        r = c.get("/api/pm/projects/ccswitch/onboarding", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        map_pr = r.json()["mapPr"]
+        assert map_pr["branch"] == "pm/feature-map-ccswitch"
+        assert map_pr["url"] == (
+            "https://github.com/o/r/pulls?q=is%3Apr+head%3Apm%2Ffeature-map-ccswitch")
+
+
+def test_advance_live_transitions_state():
+    """advance-live: 200 from map_merged or classifying → live; 409 otherwise."""
+    import asyncio
+    from server.db import db_session
+    from sqlalchemy import select
+    from server.db.models import Project
+
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Ccswitch", repo="o/r")
+
+        r = c.post("/api/pm/projects/ccswitch/advance-live", headers=IDENTITY_HEADERS)
+        assert r.status_code == 409
+        assert r.json()["detail"]["error"] == "not_classifying"
+
+        async def _set(state):
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "ccswitch"))).scalar_one()
+                p.onboarding_state = state
+        asyncio.run(_set("classifying"))
+
+        r = c.post("/api/pm/projects/ccswitch/advance-live", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["onboardingState"] == "live"
+
+        async def _check():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "ccswitch"))).scalar_one()
+                assert p.onboarding_state == "live"
+        asyncio.run(_check())
+
+        # live is absorbing: a second tap is a 409, not a silent no-op
+        r = c.post("/api/pm/projects/ccswitch/advance-live", headers=IDENTITY_HEADERS)
+        assert r.status_code == 409

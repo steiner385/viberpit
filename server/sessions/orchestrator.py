@@ -6799,6 +6799,19 @@ class SessionOrchestrator:
                 proj.onboarding_state = "map_merged"
                 await db.commit()
 
+    async def pm_advance_live(self, slug: str) -> None:
+        """Advance a project from ``map_merged``/``classifying`` to ``live`` once
+        the human has drained the triage queue. The wizard's tap calls this; the
+        pm-triage loop keeps classifying new items in the live loop regardless."""
+        from sqlalchemy import select
+        from server.db.models import Project
+        async with db_session() as db:
+            proj = (await db.execute(select(Project).where(
+                Project.slug == slug))).scalar_one_or_none()
+            if proj is not None and proj.onboarding_state in ("map_merged", "classifying"):
+                proj.onboarding_state = "live"
+                await db.commit()
+
     # ------------------------------------------------------------------
     # SDLC Synthesizer control-loop dependencies (injected into SdlcSynthesizerLoop)
     # ------------------------------------------------------------------

@@ -1138,6 +1138,10 @@ class RemoteOrchestrator:
         """Advance map_proposed → map_merged, via the daemon."""
         await self._client.call("pm_advance_map_merged", slug=slug)
 
+    async def pm_advance_live(self, slug: str) -> None:
+        """Advance map_merged/classifying → live, via the daemon."""
+        await self._client.call("pm_advance_live", slug=slug)
+
     async def aclose(self) -> None:
         if self._global_pump is not None and not self._global_pump.done():
             self._global_pump.cancel()

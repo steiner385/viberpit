@@ -497,7 +497,7 @@ def test_every_remote_method_is_classified():
         "daemon_sha", "daemon_pool_stats", "daemon_epoch", "startup_report",
         "maybe_start_queued",
         "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_classify_run",
-        "pm_advance_map_merged",
+        "pm_advance_map_merged", "pm_advance_live",
     }
     public = {n for n, _ in inspect.getmembers(RemoteOrchestrator, callable)
               if not n.startswith("_")}
@@ -643,7 +643,7 @@ def test_api_orchestrator_reads_are_all_classified():
         "resume_recovery_status", "pr_doctor_job", "maybe_start_queued",
         "copilot_add_start", "copilot_add_status", "copilot_add_cancel",
         "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_classify_run",
-        "pm_advance_map_merged",
+        "pm_advance_map_merged", "pm_advance_live",
         # Account-scoped and identical on every host: the primary answers, and one
         # app-server is started rather than one per host.
         "codex_models", "codex_validate_model",

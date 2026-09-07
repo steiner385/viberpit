@@ -519,6 +519,9 @@ from server.pm.onboarding import (  # noqa: E402 — appended after router setup
     Register,
     next_onboarding_action,
 )
+from urllib.parse import quote_plus  # noqa: E402
+
+from server.pm.classification import map_branch_name  # noqa: E402
 
 
 def _onboarding_action_to_dict(action: object) -> dict:
@@ -563,10 +566,24 @@ async def get_onboarding(
     p = await _load_project(db, slug)
     orch = request.app.state.sessions
     view = await orch.pm_onboarding_counts(p.id)
+    primary = (await db.execute(select(ProjectRepo).where(
+        ProjectRepo.project_id == p.id,
+        ProjectRepo.is_primary.is_(True)))).scalars().first()
+    map_pr = None
+    if primary is not None and primary.repo:
+        branch = map_branch_name(slug)
+        # The PR number is not stored (Feature.pr_number is never written); the
+        # branch is deterministic, so a GitHub PR search on it is the link.
+        map_pr = {
+            "branch": branch,
+            "url": f"https://github.com/{primary.repo}/pulls?q="
+                   + quote_plus(f"is:pr head:{branch}"),
+        }
     return {
         "state": view.state,
         "action": _onboarding_action_to_dict(next_onboarding_action(view)),
         "counts": _counts_to_dict(view),
+        "mapPr": map_pr,
     }
 
 
@@ -628,6 +645,29 @@ async def advance_map(
     await record_audit(db=db, type="pm.onboard.advance_map", identity=identity,
                        detail={"slug": slug})
     return {"onboardingState": "map_merged"}
+
+
+@router.post("/projects/{slug}/advance-live", status_code=status.HTTP_200_OK)
+async def advance_live(
+    slug: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Advance the project to ``live`` once the human has drained the triage
+    queue. Allowed from ``map_merged`` (nothing needed classifying) and
+    ``classifying``; 409 otherwise, including from ``live`` itself."""
+    p = await _load_project(db, slug)
+    if p.onboarding_state not in ("map_merged", "classifying"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "not_classifying",
+            "message": f"project is in state '{p.onboarding_state}', "
+                       "not 'map_merged' or 'classifying'"})
+    orch = request.app.state.sessions
+    await orch.pm_advance_live(slug)
+    await record_audit(db=db, type="pm.onboard.advance_live", identity=identity,
+                       detail={"slug": slug})
+    return {"onboardingState": "live"}
 
 
 @router.post("/projects/{slug}/classify", status_code=status.HTTP_202_ACCEPTED)
