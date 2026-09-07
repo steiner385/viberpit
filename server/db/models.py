@@ -476,6 +476,28 @@ class SessionQueue(Base):
     params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
 
+class TestRunSlot(Base):
+    """Verification-phase test-run slot (#822): one row per session that is
+    holding or waiting for a "running the full server-test suite" slot on a
+    host. Capacity (rows with status='holding' per host) is enforced by
+    server.sessions.test_run_slots against server.config.Settings.test_slot_cap;
+    this table only records state — it enforces nothing on its own.
+
+    Deleted when the session releases (or gives up); releasing a 'holding' row
+    promotes the oldest 'waiting' row for the same host to 'holding'.
+    """
+
+    __tablename__ = "test_run_slots"
+
+    session_id: Mapped[str] = mapped_column(
+        String, ForeignKey("sessions.id"), primary_key=True)
+    host: Mapped[str] = mapped_column(String, nullable=False)
+    # "holding" (counts against the cap) | "waiting" (queued, no slot yet)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="waiting")
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
 class NotificationChannel(Base):
     """A user-defined delivery channel for notifications (#602). v1 kind is
     'webhook' — a POST to a user-supplied URL (covers ntfy/Slack/Discord).

@@ -230,12 +230,16 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     # token_hash are NOT NULL with no synthesizable default (set at mint time).
     "assistant_tokens": {"identity": "dtcheck@example.invalid", "scope": "read",
                           "token_hash": "0" * 64},
+    # test_run_slots joins the sweep via requested_at (DateTime); session_id is the
+    # FK-linked PK (see _FK_LINKS). host is NOT NULL with no synthesizable default.
+    "test_run_slots": {"host": "dtcheck-host"},
 }
 
 # FK columns that must be filled from a parent row inserted earlier in this
 # same sweep (Base.metadata.sorted_tables already orders parents first).
 _FK_LINKS: dict[str, dict[str, str]] = {
     "session_queue": {"session_id": "sessions"},
+    "test_run_slots": {"session_id": "sessions"},
     "automation_event": {"automation_id": "automation"},
     "automation_target_state": {"automation_id": "automation"},
     # initiative_artifacts joins the DateTime sweep via created_at; point its FK
