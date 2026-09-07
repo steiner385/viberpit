@@ -89,17 +89,17 @@ const DEFS = [
   // showInKiosk:false — `InitiativesTab` has `advance.mutate(init.slug)` (moves an
   // initiative to the next SDLC stage) and `create.mutate(...)`.
   { id: 'initiatives', label: 'Initiatives', icon: Target,          path: '/initiatives',                       showInKiosk: false, hasList: false,
-    help: 'The SDLC boards: every initiative as a stage track, with the artifact each gate needs.' },
+    help: 'Every initiative as a stage track: the gate it is at, the artifact each gate needs, and the open incidents that may become the next one.' },
   // showInKiosk:false — and this is the row the flag exists for. `TriageInbox`
   // is keyboard-first: `a` accepts, `r` rejects and `A` bulk-accepts the
   // selection on ONE keystroke, with no confirm and a `window` keydown listener,
   // so a passer-by (or a stray keyboard on a wall display) empties the queue.
   { id: 'triage',      label: 'Triage',      icon: Inbox,           path: '/triage',                            showInKiosk: false, hasList: false,
-    help: 'The cross-project triage queue: every proposed classification awaiting a human. j/k to move, a to accept, e to edit the scores first, r to reject, x then A to accept a selection.' },
+    help: 'Proposed classifications awaiting your decision: each open issue matched to a capability with scores. Accept, adjust, or reject; the key map is on the page.' },
   // showInKiosk:false — `ProjectsTab` has `create.mutate` and `sync.mutate(slug)`;
   // `OnboardingWizard` has `proposeMap.mutate`/`classify.mutate`.
   { id: 'projects',    label: 'Products',    icon: Package,         path: '/projects',                          showInKiosk: false, hasList: false,
-    help: `The product registry: the repos ${BRAND_NAME} tracks, their onboarding and their dependency edges. Triage review is its own section.` },
+    help: `The products ${BRAND_NAME} tracks: each one's repos, onboarding progress and mirrored dependencies. Triage is its own section.` },
   // showInKiosk:true — verified read-only: `InsightsView` is two `<select>`s over
   // local state, two `useQuery` hooks, and `CheckTable`, which renders a table.
   { id: 'insights',    label: 'Insights',    icon: LineChart,       path: '/insights',                          showInKiosk: true,  hasList: false,

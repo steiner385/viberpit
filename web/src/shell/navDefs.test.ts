@@ -37,6 +37,12 @@ describe('navDefs', () => {
     }
   })
 
+  it('help text describes purpose, not keys — keys belong to the shortcut registry', () => {
+    for (const d of NAV_DEFS) {
+      expect(d.help, `${d.id} help`).not.toMatch(/\bj\/k\b|\bpress\b|keystroke/i)
+    }
+  })
+
   it('only Sessions owns a list column', () => {
     expect(NAV_DEFS.filter((d) => d.hasList).map((d) => d.id)).toEqual(['sessions'])
   })
