@@ -115,3 +115,106 @@ async def test_request_model_acknowledges_a_valid_request():
                          "request_model", {"model": "opus", "reason": "cross-module refactor"})
     assert _payload(result) == {"acknowledged": True, "model": "opus",
                                 "reason": "cross-module refactor"}
+
+
+def _bare_orchestrator(engine_capabilities):
+    """A partial orchestrator built the same way as
+    ``test_session_overlay.test_codex_engine_registers_the_codex_surface`` — only
+    the state ``_setup_session_overlay`` actually touches, plus an engine registry
+    whose ``claude_code`` factory declares *engine_capabilities*."""
+    from types import SimpleNamespace
+
+    from server.sessions.engine import AgentDriverRegistry, AgentEngine
+    from server.sessions.orchestrator import SessionOrchestrator
+
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    orch._overlays = {}
+    orch._records = {}
+    orch._engine_registry = AgentDriverRegistry(
+        {AgentEngine.CLAUDE_CODE: SimpleNamespace(capabilities=engine_capabilities)})
+    return orch
+
+
+@pytest.mark.asyncio
+async def test_setup_session_overlay_sets_signalling_tools_from_the_engine_capability(
+    monkeypatch,
+):
+    """The orchestrator's context build must resolve ``signalling_tools`` (and
+    ``self_model_switch``) from the SELECTED engine's own capability declaration —
+    never a flag set by hand — so a session only gets the tools its engine can
+    keep across a resume (task 4, marker-to-tool migration)."""
+    from server.sessions.engine import AgentCapabilities
+
+    captured: dict = {}
+
+    def fake_build_session_server(ctx):
+        captured["ctx"] = ctx
+        return object()
+
+    monkeypatch.setattr("server.sessions.tools.server.build_session_server",
+                        fake_build_session_server)
+    monkeypatch.setenv("CCSWITCH_SELF_MODEL_SWITCH_ENABLED", "true")
+
+    orch = _bare_orchestrator(
+        AgentCapabilities(durable_tool_surface=True, self_model_switch=True))
+    await orch._setup_session_overlay("s1", identity="u@x", engine="claude_code")
+
+    ctx = captured["ctx"]
+    assert ctx.signalling_tools is True
+    assert ctx.self_model_switch is True
+
+
+@pytest.mark.asyncio
+async def test_setup_session_overlay_withholds_signalling_tools_without_the_capability(
+    monkeypatch,
+):
+    """The mirror case: an engine that declares neither capability (Codex today)
+    must not get the flags, even though the context object defaults them False
+    anyway — this pins that the orchestrator actually consults the capability
+    rather than relying on the dataclass default."""
+    from server.sessions.engine import AgentCapabilities
+
+    captured: dict = {}
+
+    def fake_build_session_server(ctx):
+        captured["ctx"] = ctx
+        return object()
+
+    monkeypatch.setattr("server.sessions.tools.server.build_session_server",
+                        fake_build_session_server)
+    monkeypatch.setenv("CCSWITCH_SELF_MODEL_SWITCH_ENABLED", "true")
+
+    orch = _bare_orchestrator(AgentCapabilities())
+    await orch._setup_session_overlay("s1", identity="u@x", engine="claude_code")
+
+    ctx = captured["ctx"]
+    assert ctx.signalling_tools is False
+    assert ctx.self_model_switch is False
+
+
+@pytest.mark.asyncio
+async def test_setup_session_overlay_withholds_self_model_switch_when_settings_disable_it(
+    monkeypatch,
+):
+    """``self_model_switch`` is an AND of the engine capability and the deployment
+    setting — an engine that can honour it must still lose it when the operator
+    turns the feature off."""
+    from server.sessions.engine import AgentCapabilities
+
+    captured: dict = {}
+
+    def fake_build_session_server(ctx):
+        captured["ctx"] = ctx
+        return object()
+
+    monkeypatch.setattr("server.sessions.tools.server.build_session_server",
+                        fake_build_session_server)
+    monkeypatch.setenv("CCSWITCH_SELF_MODEL_SWITCH_ENABLED", "false")
+
+    orch = _bare_orchestrator(
+        AgentCapabilities(durable_tool_surface=True, self_model_switch=True))
+    await orch._setup_session_overlay("s1", identity="u@x", engine="claude_code")
+
+    ctx = captured["ctx"]
+    assert ctx.signalling_tools is True
+    assert ctx.self_model_switch is False

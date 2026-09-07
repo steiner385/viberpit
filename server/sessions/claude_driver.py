@@ -157,6 +157,10 @@ class ClaudeAgentDriver:
         # starts — so text passthrough IS this engine's native dispatch and
         # `vendor_skills` stays False.
         vendor_commands=True,
+        # A resume carries the SDK client's full `system_prompt` append (the
+        # marker/tool instructions) and `mcp_servers` overlay again — unlike
+        # Codex's `thread/resume`, nothing declared at session start is lost.
+        durable_tool_surface=True,
     )
 
     def __init__(self, session_id, account, cwd, config_dir, *, mode, sdk_factory, registry,

@@ -54,10 +54,18 @@ def test_claude_adapter_satisfies_provider_neutral_driver_contract():
         # `get_server_info()`. `vendor_skills` stays False: the CLI parses `/name`
         # itself, so text passthrough IS this engine's native dispatch (#1286).
         vendor_commands=True,
+        # A resumed Claude session gets its declared tools and instructions again
+        # (unlike Codex's `thread/resume`), so it can be told about the signalling
+        # tools and keep them across a resume.
+        durable_tool_surface=True,
     )
 
     driver._engine_session_id = "native-1"
     assert driver.engine_session_id == "native-1"
+
+
+def test_claude_keeps_its_tool_surface_across_a_resume():
+    assert ClaudeAgentDriver.capabilities.durable_tool_surface is True
 
 
 def test_concrete_driver_rename_leaves_no_compatibility_class():

@@ -1381,9 +1381,19 @@ class SessionOrchestrator:
             self._overlays.pop(session_id, None)
             return
         selected = parse_agent_engine(engine, legacy_default=True)
+        # `None` covers both "no factory for this engine" and "a factory that
+        # declares no capabilities" (a test double) — treated as no capabilities
+        # at all, the safe side: a session that gets markers when it could have
+        # had tools still works; the reverse does not.
+        registry = getattr(self, "_engine_registry", None)
+        caps = registry.capabilities_for(selected) if registry is not None else None
         ctx = SessionToolContext(
             session_id=session_id, identity=identity, kind=kind, engine=selected.value,
-            record=lambda: self._records.get(session_id), host=self_host_name())
+            record=lambda: self._records.get(session_id), host=self_host_name(),
+            self_model_switch=bool(
+                caps is not None and caps.self_model_switch
+                and get_settings().self_model_switch_enabled),
+            signalling_tools=bool(caps is not None and caps.durable_tool_surface))
         if selected is AgentEngine.CODEX:
             from server.sessions.tools.codex import CodexSessionTools
             self.register_overlay(session_id, CodexSessionTools.build(ctx))

@@ -29,8 +29,19 @@ def test_capability_set_covers_every_declared_field():
         "models", "reasoning_effort", "steer", "interrupt", "approvals",
         "questions", "fork", "adopt", "self_model_switch", "subagents", "attachments",
         "account_rotation", "account_switch_new_thread",
-        "vendor_commands", "vendor_skills",
+        "vendor_commands", "vendor_skills", "durable_tool_surface",
     }
+
+
+def test_codex_does_not_and_therefore_keeps_the_markers():
+    """``thread/resume`` carries neither ``developerInstructions`` nor
+    ``dynamicTools`` (codex-cli 0.153.2), so a resumed Codex thread keeps its
+    original instructions and loses its tools — with nothing sendable to correct
+    it. Codex must therefore keep the marker contract rather than be told about
+    tools it will lose on the second turn."""
+    from server.codex.driver import CodexAgentDriver
+
+    assert CodexAgentDriver.capabilities.durable_tool_surface is False
 
 
 def test_the_driver_binds_this_declaration_rather_than_restating_it():
