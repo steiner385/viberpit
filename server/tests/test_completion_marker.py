@@ -15,7 +15,7 @@ def test_marker_with_cancel_phrasing_returns_cancelled():
 
 
 def test_no_pr_marker_is_html_comment():
-    assert NO_PR_MARKER == "<!-- ccswitch:no-pr -->"
+    assert NO_PR_MARKER == "<!-- viberpit:no-pr -->"
 
 
 def test_no_pr_instruction_embeds_marker():

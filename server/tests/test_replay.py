@@ -305,8 +305,8 @@ def test_replay_skips_cli_local_command_records(tmp_path):
     assert [e.text for e in user_evs] == ["audit the landing page"]
 
 
-def test_replay_strips_the_ccswitch_context_header_and_recovers_the_chip(tmp_path):
-    """An assistant prompt is journalled by the CLI with the `<ccswitch-context …/>`
+def test_replay_strips_the_context_header_and_recovers_the_chip(tmp_path):
+    """An assistant prompt is journalled by the CLI with the `<viberpit-context …/>`
     header the driver prepends for the model (driver._start_turn decorates only the
     SDK-bound copy, never the live UserMessage). Replay rebuilds UserMessage straight
     from that JSONL, so without stripping, every reload showed the user a literal
@@ -328,6 +328,9 @@ def test_replay_strips_the_ccswitch_context_header_and_recovers_the_chip(tmp_pat
 
     user_evs = [e for e in _parse(str(p), 20) if e.to_wire()["type"] == "user"]
     assert [e.text for e in user_evs] == ["what is this session doing?", "run the tests"]
-    assert "ccswitch-context" not in user_evs[0].text
+    # Neither spelling may survive into what the user sees: the header is emitted
+    # as `viberpit-context` now, and pre-rebrand JSONL still carries the old one.
+    assert not any(f"{slug}-context" in user_evs[0].text
+                   for slug in ("viberpit", "ccswitch"))
     assert user_evs[0].to_wire()["context"] == ctx
     assert user_evs[1].to_wire()["context"] is None

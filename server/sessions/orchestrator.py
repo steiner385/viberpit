@@ -1288,7 +1288,7 @@ class SessionOrchestrator:
         and ``max_turns``, and the idle reap (spec §4.7) drops the driver — and its
         overlay — every 15 minutes. A resume that skipped this rebuilt the drawer as a
         plain Claude Code session with the operator's own MCP servers mounted and no tool
-        restrictions at all, while simultaneously losing its ``mcp__ccswitch__*`` tools.
+        restrictions at all, while simultaneously losing its ``mcp__viberpit__*`` tools.
 
         Also called from ``_reassign_locked`` (account rotation / 401 recompose / crash
         recovery), the THIRD site that builds an AgentDriver: a rotated assistant would

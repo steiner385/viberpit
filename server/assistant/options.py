@@ -48,7 +48,8 @@ def assistant_options(*, server: Any, max_turns: int, model: str,
 
     *server* is the in-process MCP server config from
     ``server.assistant.server.build_server`` (an ``McpSdkServerConfig`` mapping); it is
-    mounted under the wire name ``ccswitch`` so the CLI sees ``mcp__ccswitch__*`` tools.
+    mounted under ``brand.MCP_SERVER_NAME`` so the CLI sees ``mcp__viberpit__*`` tools
+    (pre-rebrand threads keep ``mcp__ccswitch__*``; every reader accepts both).
 
     *operator* must match the ``operator`` flag *server* was built with
     (``operator_tools_enabled(db)``, spec v2 §7, Task 9.3) — it only selects which frozen

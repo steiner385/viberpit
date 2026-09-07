@@ -1,8 +1,8 @@
-import { MCP_TOOL_PREFIX } from '@/brand'
+import { mcpToolStem } from '@/brand'
 
-/** Presenter for `ToolKind.APP_ACTION` tool calls (the ccswitch MCP server
+/** Presenter for `ToolKind.APP_ACTION` tool calls (the app's own MCP server
  * talking to itself — spec §4.4/§4.8). Keyed by the BARE tool name (the part
- * after the `mcp__ccswitch__` prefix), mirroring `TOOL_SPECS` in
+ * after the `mcp__viberpit__` prefix), mirroring `TOOL_SPECS` in
  * server/assistant/tools.py — the two maps' KEY SETS must stay identical
  * (checked cross-language via appActions.test.ts + the fixture it shares with
  * server/tests/test_assistant_tools.py). Title text itself is independent:
@@ -103,10 +103,11 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   start_reauth: 'Started account re-auth',
 }
 
-/** `fullToolName` is the wire name, e.g. `mcp__ccswitch__list_sessions`. Returns
- * `undefined` for anything not in the map (including non-ccswitch MCP tools) so
- * callers can fall back to the raw name. */
+/** `fullToolName` is the wire name, e.g. `mcp__viberpit__list_sessions` (or its
+ * pre-rebrand `mcp__ccswitch__` spelling, which replayed transcripts still carry).
+ * Returns `undefined` for anything not in the map (including third-party MCP
+ * tools) so callers can fall back to the raw name. */
 export function appActionTitle(fullToolName: string): string | undefined {
-  if (!fullToolName.startsWith(MCP_TOOL_PREFIX)) return undefined
-  return APP_ACTION_TITLES[fullToolName.slice(MCP_TOOL_PREFIX.length)]
+  const stem = mcpToolStem(fullToolName)
+  return stem === undefined ? undefined : APP_ACTION_TITLES[stem]
 }

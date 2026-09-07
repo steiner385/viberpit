@@ -128,16 +128,17 @@ class PermissionRegistry:
     async def request(self, session_id, turn_id, tool, input, *, mode, denylist, allowlist, identity,
                       items: list[str] | None = None):
         now = time.time()
-        # ccswitch's own MCP server (`mcp__ccswitch__*`) is the app talking to
+        # Our own MCP server (`mcp__viberpit__*`, and `mcp__ccswitch__*` from
+        # before the rebrand) is the app talking to
         # itself, not a third-party integration trusted unconditionally like the
         # generic `mcp__` branch below — spec §4.4. Its cards are gated on the
         # tool's ANNOTATION (read/mutation/destructive), not on session mode, so
         # this branch sits ABOVE both the full-auto/bypassPermissions shortcut and
-        # the generic mcp__ auto-allow: a destructive ccswitch tool must prompt
+        # the generic mcp__ auto-allow: a destructive tool must prompt
         # even in full-auto. Local import avoids a module-load-order cycle with
         # server.assistant.tools (which itself does not import server.sessions,
         # but keeping this import lazy is cheap insurance).
-        if tool.startswith(brand.MCP_TOOL_PREFIX):
+        if brand.is_mcp_tool(tool):
             from server.assistant import tools as assistant_tools
             ann = assistant_tools.annotation_for(tool)
             if ann is not None and ann.tool_class == assistant_tools.ToolClass.READ:
