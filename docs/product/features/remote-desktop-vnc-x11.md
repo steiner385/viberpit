@@ -11,6 +11,8 @@ links:
     - web/src/vnc/keyRelay.ts
     - web/src/vnc/clipboardPaste.ts
     - web/src/vnc/useZoom.ts
+    - server/sessions/native_display.py
+    - server/sessions/display_policy.py
   prs: [130, 331, 332, 427, 428, 399, 341, 204, 339, 373]
 ---
 
@@ -61,3 +63,28 @@ insecure origins the paste button falls back to a capture field (#541).
   #428/#341 (managed-browser hardening, CDP debug port), #204 (VNC path across daemon→edge
   in remote mode), #339 (mobile soft-keyboard toggle), #373 (VNC clipboard paste for setup
   token).
+
+## Native display routing (2026-09-06)
+
+A session created from the runner host's **own desktop** does not get a virtual display:
+its `DISPLAY` is the host's real X display (`CCSWITCH_NATIVE_DISPLAY`, default `:0`) and
+"Open a browser" launches Chromium there. Every other client — any other tailnet device,
+automations, the assistant — keeps the pooled Xvfb display and VNC relay.
+
+**Detection.** The create route resolves the requesting browser's tailnet node with
+`tailscale whois` (the same peer-verified path identity uses) and the daemon that spawns
+the process compares it with its own `self_host_name()`. Native only when they match
+*and* the X socket (`/tmp/.X11-unix/X<n>`) exists on that host. A local client also
+*prefers* its own host for placement so the rule can hold across the fleet; an explicit
+host choice still wins. The decision is made once at spawn, persisted as
+`Session.displayMode`, and honoured on rehydrate. Attaching later from another device
+does not move a session.
+
+**Override.** `POST /api/sessions` accepts `display: "auto" | "native" | "virtual"`.
+
+**Requirements / limits.** The daemon runs as the desktop user and the X server must
+accept `SI:localuser:<user>` (GDM's default; otherwise `xhost +SI:localuser:<user>` in the
+session startup). No `XAUTHORITY` is set. `CCSWITCH_NATIVE_DISPLAY` must not fall inside
+the Xvfb pool range or native routing disables itself with a warning (the orphan sweep
+reaps that range). Behind `tailscale serve` (no `X-Real-IP`) locality resolves to unknown →
+virtual. Kill switch: `CCSWITCH_NATIVE_DISPLAY_ENABLED=false`.
