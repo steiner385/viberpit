@@ -45,9 +45,13 @@ def test_registry_is_a_registered_surface_with_two_read_tools():
 
 def test_every_session_tool_has_a_spec_and_an_eval_case():
     """The default context here mounts no signalling tools (`signalling_tools` and
-    `self_model_switch` default False), so this still covers exactly the two READ
-    tools every session gets regardless of engine — eval coverage for the three
-    SIGNAL tools lands with their own eval cases in a later task."""
+    `self_model_switch` default False), so `names` still covers exactly the two READ
+    tools every session gets regardless of engine. Eval coverage, however, is checked
+    against the FULL registry (all five specs, including the three SIGNAL tools
+    mounted only per engine capability) — restored to that exact-set requirement now
+    that mark_complete/mark_no_pr/request_model have their own eval cases in
+    docs/superpowers/evals/session-tools/cases.jsonl. This is what stops a tool
+    shipping without an eval case."""
     from server.sessions.tools.registry import SESSION_TOOL_SPECS
     from server.sessions.tools.tools import build_session_tools
     tools = build_session_tools(_ctx())
@@ -58,7 +62,7 @@ def test_every_session_tool_has_a_spec_and_an_eval_case():
     for line in CASES.read_text().splitlines():
         if line.strip():
             covered.update(json.loads(line)["expect_tools"])
-    assert names <= covered
+    assert set(SESSION_TOOL_SPECS) <= covered
 
 
 @pytest.mark.asyncio
