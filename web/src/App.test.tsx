@@ -119,7 +119,7 @@ describe('App routing', () => {
   it('renders the shell at /sessions', async () => {
     renderApp({ path: '/sessions' })
     await shellIsUp()
-    // `Dashboard`'s `<h1>ccswitch</h1>` is gone: `TopBar` renders the brand as
+    // `Dashboard`'s `<h1>ViberPit</h1>` is gone: `TopBar` renders the brand as
     // plain text on purpose, so the page's own `PageHeader` owns the only `h1`
     // (PhoneNav.test.tsx "renders no h1"). The brand itself is still the
     // top-left of the phone shell.

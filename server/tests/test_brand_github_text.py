@@ -22,17 +22,20 @@ def _bodies(calls):
     return [args[args.index("--body") + 1] for args in calls if "--body" in args]
 
 
-def test_escalation_comment_names_the_product():
+def test_escalation_comment_names_the_product(monkeypatch):
+    monkeypatch.setattr(backlog_github.gitrepos, "app_token_for_repo", lambda repo: None)
     calls, run = _capture()
     backlog_github._escalate_issue("o/r#1", "docs-only diff", "https://pr/1", gh_run=run)
     assert any(f"by {brand.NAME} Backlog Runner" in b for b in _bodies(calls))
     assert not any("ccswitch" in b for b in _bodies(calls))
 
 
-def test_release_comment_names_the_product():
+def test_release_comment_names_the_product(monkeypatch):
+    monkeypatch.setattr(backlog_github.gitrepos, "app_token_for_repo", lambda repo: None)
     calls, run = _capture()
     backlog_github._release_tracking_issue("o/r#2", 3, "https://pr/2", gh_run=run)
     assert any(f"{brand.NAME} Backlog Runner left it open" in b for b in _bodies(calls))
+    assert not any("ccswitch" in b for b in _bodies(calls))
 
 
 def test_label_descriptions_name_the_product(monkeypatch):
@@ -51,3 +54,4 @@ def test_label_descriptions_name_the_product(monkeypatch):
 def test_cicd_issue_body_names_the_product():
     body = findings.issue_body("flaky", {"x": 1})
     assert body.endswith(f"Filed by the {brand.NAME} CI/CD Doctor (propose mode).")
+    assert "ccswitch" not in body
