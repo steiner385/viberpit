@@ -1,7 +1,6 @@
 """Manual dispatch: backlog_runner_dispatch + /candidates + /dispatch API."""
 from __future__ import annotations
 
-import asyncio
 import os
 import tempfile
 from contextlib import contextmanager
@@ -144,7 +143,7 @@ def test_candidates_returns_list():
     with patch("server.automations.backlog_github.query_candidates",
                return_value=_CANDIDATES):
         with _api_client(patch_orch) as c:
-            asyncio.run(_seed_automation())
+            _seed(c)
             r = c.get("/api/automations/backlog-runner/candidates", headers=H)
     assert r.status_code == 200
     body = r.json()
@@ -171,7 +170,7 @@ def test_dispatch_api_happy_path():
     with patch("server.automations.backlog_github.query_candidates",
                return_value=_CANDIDATES):
         with _api_client(patch_orch) as c:
-            asyncio.run(_seed_automation())
+            _seed(c)
             r = c.post("/api/automations/backlog-runner/dispatch",
                        json={"refs": ["o/r#7"]}, headers=H)
     assert r.status_code == 200
@@ -181,7 +180,7 @@ def test_dispatch_api_happy_path():
 
 def test_dispatch_api_empty_refs_returns_400():
     with _api_client() as c:
-        asyncio.run(_seed_automation())
+        _seed(c)
         r = c.post("/api/automations/backlog-runner/dispatch",
                    json={"refs": []}, headers=H)
     assert r.status_code == 400
@@ -215,3 +214,15 @@ async def _seed_automation():
         if row is None:
             db.add(Automation(id="backlog-runner", enabled=True))
             await db.commit()
+
+
+def _seed(c) -> None:
+    """Seed on the app's own loop, never via a bare ``asyncio.run``.
+
+    The live TestClient holds the module-level engine on its portal loop; a
+    throwaway loop shares that pool's ``asyncio.Queue``, which binds to whichever
+    loop first *awaits* a checkout. It only fails once startup saturates the pool
+    ("bound to a different event loop"), so it hides locally and dies on CI (#1386).
+    """
+    assert c.portal is not None
+    c.portal.call(_seed_automation)

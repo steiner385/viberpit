@@ -1,7 +1,6 @@
 """GET /api/automations/backlog-runner/groups — plan visibility endpoint."""
 from __future__ import annotations
 
-import asyncio
 import os
 import tempfile
 from contextlib import contextmanager
@@ -45,7 +44,10 @@ async def _seed():
 
 def test_groups_shape_priority_order_and_consumed_stamp():
     with _client() as c:
-        asyncio.run(_seed())
+        # Seed on the app's own loop: a bare asyncio.run shares the engine pool
+        # across two loops and dies once startup saturates it (#1386).
+        assert c.portal is not None
+        c.portal.call(_seed)
         body = c.get("/api/automations/backlog-runner/groups", headers=H).json()
         assert body["generation"] and body["createdAt"]
         groups = body["groups"]
