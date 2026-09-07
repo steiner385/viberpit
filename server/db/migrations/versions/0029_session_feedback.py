@@ -32,6 +32,7 @@ def upgrade() -> None:
         sa.Column("issue_number", sa.Integer(), nullable=True),
         sa.Column("reported_at", sa.DateTime(), nullable=True),
         sa.Column("filed_at", sa.DateTime(), nullable=True),
+        sa.UniqueConstraint("session_id", "fingerprint", name="uq_session_feedback_session_fp"),
     )
 
 

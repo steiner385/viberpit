@@ -805,6 +805,10 @@ class SessionFeedback(Base):
         DateTime, nullable=True, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     filed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
 
+    __table_args__ = (
+        UniqueConstraint("session_id", "fingerprint", name="uq_session_feedback_session_fp"),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Phase-3 plotroom tables: merged PR timeline, group runs/failures, deploy cfg

@@ -107,3 +107,27 @@ async def test_record_feedback_duplicate_and_cap(isolated_db):
     assert capped.status == "capped" and capped.recorded
     # another session is not affected by s1's cap
     assert (await record_feedback(session_id="s2", identity="u", item=mk("Title three"), context={}, cap=2)).status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_session_fingerprint_is_unique_at_the_db(isolated_db):
+    """Pins the (session_id, fingerprint) unique constraint that makes
+    record_feedback's dedupe exact under concurrency (a SELECT-then-INSERT race can
+    let two interleaved calls both pass the in-Python pre-check); the behavioural
+    dedupe path itself is pinned by test_record_feedback_duplicate_and_cap above."""
+    from sqlalchemy.exc import IntegrityError
+
+    from server.db import db_session
+    from server.db.models import SessionFeedback
+    from server.sessions.feedback import fingerprint
+
+    fp = fingerprint("prompt", "Same title")
+    async with db_session() as db:
+        db.add(SessionFeedback(session_id="s1", fingerprint=fp, category="prompt",
+                               impact="minor", title="Same title", body="b" * 10, status="pending"))
+        await db.commit()
+    with pytest.raises(IntegrityError):
+        async with db_session() as db:
+            db.add(SessionFeedback(session_id="s1", fingerprint=fp, category="prompt",
+                                   impact="minor", title="Same title", body="b" * 10, status="pending"))
+            await db.flush()

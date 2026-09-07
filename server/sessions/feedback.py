@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from server.mcp_spec import ToolArgError
 from server.obs.metrics import session_feedback_total
@@ -92,6 +93,11 @@ async def record_feedback(*, session_id: str, identity: str, item: FeedbackItem,
             SessionFeedback.session_id == session_id, SessionFeedback.fingerprint == fp))).first()
         if dup is not None:
             return FeedbackResult(recorded=None, status="duplicate")
+        # Best-effort under concurrency: two interleaved calls can both read a count
+        # below `cap` before either commits, so a session can end up with one more
+        # "pending" row than `cap` strictly allows. Only dedupe is exact — the
+        # (session_id, fingerprint) unique constraint below is the real guard against
+        # a duplicate report, not this count.
         count = (await db.execute(select(func.count()).select_from(SessionFeedback).where(
             SessionFeedback.session_id == session_id,
             SessionFeedback.status != "capped"))).scalar_one()
@@ -100,7 +106,14 @@ async def record_feedback(*, session_id: str, identity: str, item: FeedbackItem,
                               impact=item.impact, title=item.title, body=item.body,
                               evidence=item.evidence, context=dict(context), status=status)
         db.add(row)
-        await db.flush()
+        try:
+            await db.flush()
+        except IntegrityError:
+            # Lost the race: another call for the same (session_id, fingerprint)
+            # committed between our pre-check and this flush. The unique constraint
+            # is the authority here, not the pre-check above.
+            await db.rollback()  # clear the failed statement; exit commit is a no-op
+            return FeedbackResult(recorded=None, status="duplicate")
         row_id = row.id
         try:
             await record_audit(db, "session.feedback", identity, {
