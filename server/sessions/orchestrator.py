@@ -1303,7 +1303,7 @@ class SessionOrchestrator:
         _reassign_locked, adopt_session). Returns the AssistantApi for an assistant
         kind, else None.
 
-        One helper with three callers on purpose: an overlay is per-PROCESS state, and
+        One helper with four callers on purpose: an overlay is per-PROCESS state, and
         arming it only on the create path is the bug shape recorded in
         ``docs/superpowers/fix-patterns/2026-09-04-per-process-state-armed-only-on-the-create-path.md``.
         """
@@ -1321,8 +1321,10 @@ class SessionOrchestrator:
 
         A session additionally carries an ``options_overlay`` (registered by
         ``register_overlay``): the assistant's full overlay, or a coding session's
-        ``{"mcp_servers": {"ccswitch": …}}``. It is passed ONLY when present, so every
-        existing factory — including the test fakes — keeps its current signature.
+        ``{"mcp_servers": {"ccswitch": …}}``. It is passed only when present (an assistant,
+        or a coding session with the flag on), so a factory that never sees one (flag off,
+        Codex) keeps its current signature, and fakes that do must accept
+        ``options_overlay=None``.
         """
         base = self._sdk_factory
         x11 = self._x11

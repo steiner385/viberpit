@@ -65,11 +65,12 @@ def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None
                      on_pre_compact=None, options_overlay=None):
     """Build the real ``ClaudeSDKClient`` for one session.
 
-    *options_overlay* (assistant sessions only — see ``server/assistant/options.py``)
+    *options_overlay*: the assistant's overlay (see ``server/assistant/options.py``)
     replaces individual ``ClaudeAgentOptions`` kwargs wholesale, including
-    ``system_prompt``: the ccswitch marker instructions appended below are coding-session
-    contracts (completion marker, PR marker, self-directed model request) and mean
-    nothing to the assistant.
+    ``system_prompt``; a coding session's overlay (``server/sessions/tools/``) is
+    exactly ``mcp_servers`` and must never carry ``system_prompt`` or
+    ``strict_mcp_config`` — the first would erase the marker contracts appended below,
+    the second would drop the repo's own ``.mcp.json`` servers.
     """
     ClaudeSDKClient, ClaudeAgentOptions = _import_sdk()
     env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir)
