@@ -21,6 +21,27 @@ export function usageKnown(usage: AccountUsage | null | undefined): boolean {
   return usageWindows(usage).length > 0
 }
 
+/**
+ * Why there are no windows to render, or null when there are.
+ *
+ * Lives here rather than at a call site because "no windows" has several very
+ * different causes and a blank badge cannot tell them apart — which is exactly
+ * how a permanently unreadable account (setup-token credential, no `user:profile`
+ * scope) looked identical to one whose poll had simply not landed yet.
+ */
+export function usageUnavailableReason(usage: AccountUsage | null | undefined): string | null {
+  if (usageWindows(usage).length > 0) return null
+  if (!usage) return 'Usage not read yet'
+  switch (usage.availability) {
+    case 'unsupported':
+      return 'Quota not reported for this credential'
+    case 'auth_error':
+      return 'Credentials rejected — re-authenticate'
+    default:
+      return 'Usage unavailable'
+  }
+}
+
 /** One window by key ('session' | 'weekly' | 'premium' | …), or null. */
 export function windowByKey(
   usage: AccountUsage | null | undefined,

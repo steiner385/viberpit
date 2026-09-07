@@ -214,6 +214,55 @@ above). After pulling this change, re-run the Install steps and `daemon-reload` 
 daemon host, or the installed unit keeps its old `control-group` / 60 s behaviour and
 the drain is defeated before it starts.
 
+### One owner per session: the resume lease and the orphan reap (#1379)
+
+`KillMode=mixed` is what makes the drain possible, and it has a cost: the old unit's
+`claude` children may outlive it. Every deploy logs it —
+
+```
+systemd: ccswitch-daemon.service: Killing process 4041937 (claude) with signal SIGKILL.
+systemd: ccswitch-daemon.service: Unit process 4041937 (claude) remains running after unit stopped.
+```
+
+On 2026-09-06 a fleet-wide restart resumed **one** session on **both** hosts. Each daemon
+rehydrated the shared row, each concluded it owned it (the host stamp flips when a drain
+is cut short — `drain cap — restarting anyway`), and each spawned its own
+`claude --resume <conversation-id>` into its own copy of the worktree. The twins
+force-pushed each other's branches, armed auto-merge on each other's PRs, and split the
+agent's memory across three account config dirs. Two mechanisms now prevent it:
+
+- **A per-session lease** (`server/sessions/session_lease.py`) — one `daemon_leases` row
+  per session, keyed `session:<id>`, holder = host name. Every driver build claims it
+  first; a daemon that finds a *different* host holding it with a fresh heartbeat logs
+  `session-lease: refusing to …` and skips. The same host always re-acquires instantly,
+  so a systemd restart resumes its own sessions with no delay, and a genuinely dead host's
+  sessions are picked up elsewhere once its heartbeat lapses past the TTL. `stop()` and
+  every driver teardown hand the lease back, so a planned restart hands over immediately.
+- **A boot-time orphan reap** (`server/sessions/orphan_cli.py`) — at daemon start, before
+  anything can rehydrate, an SDK-protocol `claude` is SIGTERM'd (then SIGKILL'd) only when
+  **nothing alive owns it** (walking `ppid` finds no live non-CLI ancestor, only pid 1 or
+  a parent that already exited) **and** its `CLAUDE_CONFIG_DIR` maps to a managed account.
+  A human's interactive `claude`, an internal pty-host/spare, any CLI on an unmanaged
+  config dir, and the CLIs of any *other live* ccswitch process on the box (a co-located
+  edge running its own orchestrator) are never touched. Each reap is logged at WARNING
+  with the pid, account, cwd and the conversation id it was resuming.
+
+Knobs (both default to the safe behaviour; set them only to debug an incident):
+
+| Var | Default | Effect |
+| --- | --- | --- |
+| `CCSWITCH_SESSION_LEASE_TTL_S` | `120` | How stale a holder's heartbeat may get before another host may claim its sessions. Renewal is TTL/5. |
+| `CCSWITCH_SESSION_LEASE_ENFORCE` | on | `false` still takes and logs the lease but stops a LOSS from blocking a build — an operator's forced takeover before the TTL. |
+| `CCSWITCH_REAP_ORPHAN_CLIS` | on | `false` leaves surviving CLIs alone (e.g. to inspect one). |
+
+Triage — live CLIs per conversation id, on each host:
+
+```bash
+for p in $(pgrep -f '[/]claude '); do echo "$(hostname) pid=$p ppid=$(ps -o ppid= -p $p) \
+  $(tr '\0' ' ' </proc/$p/cmdline | grep -oE -- '--resume [a-f0-9-]{36}') cwd=$(readlink /proc/$p/cwd)"; done
+journalctl -u ccswitch-daemon.service --since today | grep -E 'session-lease|orphan-cli'
+```
+
 ## ChatGPT credential authority (`ccswitch-codex-auth.service`)
 
 `ccswitch-codex-auth.service` runs `python -m server.codex.auth_main` — the **only**

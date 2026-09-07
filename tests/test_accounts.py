@@ -396,8 +396,8 @@ class TestRefreshSerialization(unittest.TestCase):
 class TestUsageForSetupTokenFallback(unittest.TestCase):
     """A setup-token (sk-ant-oat01) makes an account launch-capable via
     CLAUDE_CODE_OAUTH_TOKEN, so usage_for must NOT flip it to needs-reauth when
-    the slot's browser-OAuth token is dead. Best-effort: fetch usage with the
-    setup-token; keep status 'ok' (usage unknown) if that fails. Regression:
+    the slot's browser-OAuth token is dead. Fetch usage with the setup-token;
+    keep status 'ok' and report the quota UNSUPPORTED if that fails. Regression:
     'Generate long-lived token' wrote the setup-token but usage_for re-stamped
     needs-reauth on the very next poll, so the account flipped straight back to
     'needs authentication'. (Bug 2)
@@ -421,17 +421,21 @@ class TestUsageForSetupTokenFallback(unittest.TestCase):
             # Usage was fetched with the setup-token, not the dead slot token.
             fu.assert_called_once_with(self.OAT, max_retries=mock.ANY, max_total_sec=mock.ANY)
 
-    def test_dead_refresh_with_setup_token_usage_unknown_stays_ok(self):
-        # site 1: setup-token exists but the usage API rejects it (or is down).
-        # Must NOT flip to needs-reauth; status stays ok, usage None.
+    def test_dead_refresh_with_setup_token_usage_unsupported_stays_ok(self):
+        # site 1: setup-token exists but the usage API rejects it. Must NOT flip
+        # to needs-reauth; status stays ok and the quota is reported UNSUPPORTED
+        # (a narrow-scope setup-token can never read usage — see
+        # setup_token_oauth.DEFAULT_SCOPE), never a fabricated 0%.
         with temp_env():
             from ccswitch import accounts, oauth, crypto
+            from ccswitch.quota import UNSUPPORTED
             _seed_account("alpha", expires_in_ms=-1)
             with mock.patch.object(crypto, "read_oauth_token", return_value=self.OAT), \
                  mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("dead")), \
                  mock.patch.object(oauth, "fetch_usage", side_effect=oauth.AuthError("401")):
                 u = accounts.usage_for("alpha")
-            self.assertIsNone(u)
+            self.assertEqual(u.availability, UNSUPPORTED)
+            self.assertEqual(u.windows, ())
             self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
 
     def test_no_setup_token_still_marks_needs_reauth(self):
@@ -450,11 +454,12 @@ class TestUsageForSetupTokenFallback(unittest.TestCase):
         with temp_env():
             from ccswitch import accounts, oauth, crypto
             _seed_account("alpha")  # fresh
+            from ccswitch.quota import UNSUPPORTED
             with mock.patch.object(crypto, "read_oauth_token", return_value=self.OAT), \
                  mock.patch.object(oauth, "fetch_usage", side_effect=oauth.AuthError("401")), \
                  mock.patch.object(oauth, "refresh_access_token", side_effect=oauth.AuthError("dead")):
                 u = accounts.usage_for("alpha")
-            self.assertIsNone(u)
+            self.assertEqual(u.availability, UNSUPPORTED)
             self.assertEqual(accounts.list_accounts()[0]["status"], "ok")
 
 

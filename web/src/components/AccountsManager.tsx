@@ -33,7 +33,7 @@ import type { AccountUpdate } from '@/api/hooks'
 import { AddAccountDialog } from './AddAccountDialog'
 import { DeviceCodePanel } from './DeviceCodePanel'
 import type { Account, LiveSessionCounts, Session } from '@/api/types'
-import { reserveWindow, usageWindows } from '@/lib/usageWindows'
+import { reserveWindow, usageUnavailableReason, usageWindows } from '@/lib/usageWindows'
 
 // ── Sessions + Rank Badges ───────────────────────────────────────────────────
 
@@ -621,6 +621,15 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               }
             />
           ))}
+          {/* With no windows the row was simply blank, which read as "still
+              loading" for an account whose quota is permanently unreadable.
+              Name the reason instead — the account is fine, its credential just
+              cannot answer the usage endpoint. */}
+          {usageUnavailableReason(account.usage) && (
+            <span className="text-xs text-ink-muted" data-testid="usage-unavailable">
+              {usageUnavailableReason(account.usage)}
+            </span>
+          )}
           {/* Both device-flow providers get the same control and the same label
               — it IS the same action. Copilot re-runs it through the add dialog
               (its add route tolerates an existing slot); OpenAI runs it in place
