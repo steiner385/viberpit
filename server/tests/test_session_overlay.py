@@ -134,6 +134,36 @@ async def test_adopt_arms_the_overlay(tmp_path, monkeypatch):
     assert set(overlays[-1]["mcp_servers"]) == {"ccswitch"}
 
 
+@pytest.mark.asyncio
+async def test_codex_engine_registers_the_codex_surface(isolated_db, monkeypatch):
+    """The Codex branch of the same registry (Task 7). Exercised on a bare
+    orchestrator instance rather than a booted one: a Codex-capable orchestrator
+    needs a live ``CodexRunnerManager``, and what is under test here is only which
+    overlay TYPE the engine selects — the driver half has its own suite
+    (``test_codex_session_tools.py``)."""
+    from types import SimpleNamespace
+
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.sessions.tools.codex import CodexSessionTools
+
+    orch = SessionOrchestrator.__new__(SessionOrchestrator)
+    orch._overlays = {}
+    orch._records = {"s1": SimpleNamespace(id="s1", name="n", repo="o/n", branch="b",
+                                           cwd="/w", engine="codex", model=None,
+                                           account="a", host="h", origin=None,
+                                           origin_ref=None, active_goal=None,
+                                           inferred_goal=None, permission_mode="default")}
+    await orch._setup_session_overlay("s1", identity="u@x", engine="codex")
+    surface = orch._overlays["s1"]
+    assert isinstance(surface, CodexSessionTools)
+    assert {s.name for s in surface.dynamic_tools} == {"session_context",
+                                                       "report_feedback"}
+    # And the same fence as the Claude branch: the flag off registers nothing.
+    monkeypatch.setenv("CCSWITCH_SESSION_TOOLS_ENABLED", "false")
+    await orch._setup_session_overlay("s1", identity="u@x", engine="codex")
+    assert "s1" not in orch._overlays
+
+
 def test_append_string_carries_the_instruction_when_enabled(monkeypatch):
     from server.sessions.claude_sdk_factory import _build_append_string
     from server.sessions.tools.instruction import SESSION_TOOLS_INSTRUCTION

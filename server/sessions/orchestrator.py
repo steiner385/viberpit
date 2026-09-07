@@ -1284,12 +1284,7 @@ class SessionOrchestrator:
             session_id=session_id, identity=identity, kind=None, engine=selected.value,
             record=lambda: self._records.get(session_id), host=self_host_name())
         if selected is AgentEngine.CODEX:
-            try:
-                from server.sessions.tools.codex import CodexSessionTools
-            except ImportError:
-                # Task 7 lands CodexSessionTools; until then a Codex coding session gets no overlay.
-                self._overlays.pop(session_id, None)
-                return
+            from server.sessions.tools.codex import CodexSessionTools
             self.register_overlay(session_id, CodexSessionTools.build(ctx))
             return
         from server.sessions.tools.server import build_session_server
@@ -1376,7 +1371,8 @@ class SessionOrchestrator:
             from server.codex.driver import CodexAgentDriverFactory
             factories[AgentEngine.CODEX] = CodexAgentDriverFactory(
                 self._codex, self._registry, self._launch_model_for_session,
-                self._codex_assistant_overlay_for_session)
+                self._codex_assistant_overlay_for_session,
+                self._codex_session_tools_for_session)
         return factories
 
     def _launch_model_for_session(self, session_id: str) -> str | None:
@@ -1406,6 +1402,19 @@ class SessionOrchestrator:
 
         overlay = getattr(self, "_overlays", {}).get(session_id)
         return overlay if isinstance(overlay, CodexAssistantOverlay) else None
+
+    def _codex_session_tools_for_session(self, session_id: str):
+        """The Codex coding-session tool surface registered for *session_id*, if any.
+
+        Type-checked for the same reason as its assistant sibling above: ``_overlays``
+        holds whichever overlay the session's kind and engine built — a Claude options
+        dict, an assistant overlay or this — and handing the wrong one to the Codex
+        driver is the single mistake this seam can make.
+        """
+        from server.sessions.tools.codex import CodexSessionTools
+
+        overlay = getattr(self, "_overlays", {}).get(session_id)
+        return overlay if isinstance(overlay, CodexSessionTools) else None
 
     def _engine_supports(self, engine: AgentEngine | str, capability: str) -> bool:
         """True iff this host's driver for *engine* declares *capability*.

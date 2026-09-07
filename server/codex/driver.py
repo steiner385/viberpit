@@ -56,7 +56,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from ccswitch import paths
 from server.aio import cancel_and_reap
@@ -96,6 +96,10 @@ from server.sessions.engine import (
 from server.sessions.permissions import PermissionRegistry
 from server.sessions.questions import QuestionRegistry
 from server.sessions.status import SEEDABLE_STATUSES, StatusSignals, derive_status
+
+if TYPE_CHECKING:  # imported for typing only — `server.sessions.tools` reaches back
+    # into the orchestrator's record accessor, and this module is imported by it.
+    from server.sessions.tools.codex import CodexSessionTools
 
 logger = logging.getLogger(__name__)
 
@@ -309,6 +313,7 @@ class CodexAgentDriver:
         on_context_usage: Any = None,
         clock: Callable[[], float] | None = None,
         assistant_overlay: CodexAssistantOverlay | None = None,
+        session_tools: CodexSessionTools | None = None,
     ) -> None:
         self.session_id = session_id
         self.account = account
@@ -336,6 +341,13 @@ class CodexAgentDriver:
         #: surface and a neutral cwd, it is never resumed, its permission mode is
         #: pinned, and every built-in approval is declined without a card.
         self._assistant = assistant_overlay
+        #: Set for a CODING session when the session-tools flag is on
+        #: (server/sessions/tools/codex.py). Unlike ``_assistant`` it changes exactly
+        #: ONE thing about this driver: a fresh `thread/start` declares the ccswitch
+        #: tools. The profile, the resume path and every approval card stay whatever
+        #: the session's own mode says — a coding session that gained two tools is
+        #: still a coding session.
+        self._session_tools = session_tools
 
         # An assistant thread's authority comes from its overlay, not from the
         # session's permission mode: the mode is a coding-session concept and the
@@ -501,6 +513,20 @@ class CodexAgentDriver:
                 )
             response = await client.start_thread(overlay.thread_start_params())
         elif self.resume:
+            if self._session_tools is not None:
+                # Stated once, per resumed session, because it is a real capability
+                # gap rather than a warning: `thread/resume` has no `dynamicTools`
+                # field on the pinned contract (and an unknown one is ignored, not
+                # refused — see the 2026-09-06 spike), so this thread comes back
+                # without the ccswitch tools. A coding session cannot answer that
+                # the way the assistant does — by restarting — because its thread
+                # carries the work.
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "codex.driver.session_tools_unavailable_on_resume",
+                    session=self.session_id,
+                )
             response = (
                 await client.resume_thread(
                     schema.ThreadResumeParams(
@@ -526,6 +552,14 @@ class CodexAgentDriver:
                     developer_instructions=marker_instructions(
                         self_model_switch=False
                     ),
+                    # The coding session's ccswitch tool surface, or nothing at
+                    # all: an empty tuple emits no `dynamicTools` field, so a
+                    # session with the flag off looks exactly as it did before.
+                    dynamic_tools=(
+                        ()
+                        if self._session_tools is None
+                        else self._session_tools.dynamic_tools
+                    ),
                 )
             )
         thread_id = response.thread.id
@@ -550,7 +584,14 @@ class CodexAgentDriver:
             events=self._on_event,
             approvals=self._on_approval,
             user_input=self._on_user_input,
-            dynamic_tools=None if overlay is None else self._on_dynamic_tool,
+            # Registered when EITHER surface declared tools. Left unregistered
+            # otherwise so an `item/tool/call` on a thread with no host tool
+            # surface takes the protocol's own fail-closed path.
+            dynamic_tools=(
+                None
+                if (overlay is None and self._session_tools is None)
+                else self._on_dynamic_tool
+            ),
         )
         self._closing = False
         self._pump = asyncio.create_task(
@@ -1159,9 +1200,15 @@ class CodexAgentDriver:
     async def _on_dynamic_tool(
         self, params: schema.DynamicToolCallParams
     ) -> schema.DynamicToolCallResponse:
-        """Run one ccswitch tool the assistant thread declared as a `dynamicTool`.
+        """Run one ccswitch tool this thread declared as a `dynamicTool`.
 
-        This is the Codex half of the drawer's tool surface, and it is
+        Serves BOTH surfaces — the assistant drawer's tools and a coding session's
+        (``server/sessions/tools/codex.py``) — with no branch between them: they are
+        never mounted together, and each answers the same three questions
+        (``declares``, ``mcp_name``, ``run_tool``). One gate, two surfaces, rather
+        than a second copy of this policy per surface.
+
+        This is the Codex half of that tool surface, and it is
         deliberately the same *decision* as the Claude half rather than a
         parallel one: the call is gated through
         ``PermissionRegistry.request`` under the canonical
@@ -1173,7 +1220,9 @@ class CodexAgentDriver:
         the overlay declared, and `run_tool` refuses a name that is not in its
         table.
         """
-        overlay = self._assistant
+        overlay: CodexAssistantOverlay | CodexSessionTools | None = (
+            self._assistant or self._session_tools
+        )
         thread_id = self._thread_id
         generation = self._manager.generation_for(self.account)
         if (
@@ -2015,11 +2064,15 @@ class CodexAgentDriverFactory(AgentDriverFactory):
         assistant_overlay_for_session: (
             Callable[[str], CodexAssistantOverlay | None] | None
         ) = None,
+        session_tools_for_session: (
+            Callable[[str], "CodexSessionTools | None"] | None
+        ) = None,
     ) -> None:
         self._manager = manager
         self._permission_registry = permission_registry
         self._model_for_session = model_for_session
         self._assistant_overlay_for_session = assistant_overlay_for_session
+        self._session_tools_for_session = session_tools_for_session
 
     def create(self, config: AgentDriverConfig) -> CodexAgentDriver:
         model = (
@@ -2035,6 +2088,13 @@ class CodexAgentDriverFactory(AgentDriverFactory):
             None
             if self._assistant_overlay_for_session is None
             else self._assistant_overlay_for_session(config.session_id)
+        )
+        # Same seam, same reason: the surface closes over a LIVE accessor for this
+        # session's record, so it can be neither persisted nor sent over RPC.
+        session_tools = (
+            None
+            if self._session_tools_for_session is None
+            else self._session_tools_for_session(config.session_id)
         )
         return CodexAgentDriver(
             config.session_id,
@@ -2054,4 +2114,5 @@ class CodexAgentDriverFactory(AgentDriverFactory):
             on_context_usage=config.on_context_usage,
             clock=config.clock,
             assistant_overlay=overlay,
+            session_tools=session_tools,
         )
