@@ -1096,3 +1096,65 @@ async def test_timeout_cleans_up_temp_profile(tmp_path, monkeypatch):
     assert m.status("primary").state == "timeout"
     assert not temp_profile.exists(), "timeout must remove the temp profile directory"
     assert m._state._temp_profile is None
+
+
+# --- setup-token scope fallback ---------------------------------------------
+# The paste-code reauth now asks for `user:profile` so the minted token can read
+# the usage endpoint. That scope is unverified against the long-lived grant, and
+# this is the fleet's last-resort recovery path, so a refusal must degrade to the
+# old narrow scope rather than leave the user unable to re-authenticate at all.
+
+@pytest.mark.asyncio
+async def test_scope_refusal_reissues_challenge_at_the_narrow_scope(monkeypatch):
+    from ccswitch import setup_token_oauth as sto
+
+    mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
+    await mgr.start("alpha", "tester", mode="setup_token")
+    assert mgr._setup_challenge.scope == sto.DEFAULT_SCOPE
+
+    def refuse_scope(code, challenge):
+        raise sto.SetupTokenInvalidCode("nope", body='{"error":"invalid_scope"}')
+
+    monkeypatch.setattr(sto, "exchange", refuse_scope)
+    state = await mgr.submit_code("alpha", "abc#def")
+
+    # Not an error state: the user gets a fresh link at the narrow scope.
+    assert state.state == "awaiting_code"
+    assert mgr._setup_challenge.scope == sto.FALLBACK_SCOPE
+    assert f"scope={sto.FALLBACK_SCOPE.replace(':', '%3A')}" in state.auth_url \
+        or "user%3Ainference" in state.auth_url
+    assert "usage" in (state.message or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_scope_fallback_fires_at_most_once(monkeypatch):
+    """A second refusal is a real failure — never an endless re-issue loop."""
+    from ccswitch import setup_token_oauth as sto
+
+    mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
+    await mgr.start("alpha", "tester", mode="setup_token")
+
+    def refuse_scope(code, challenge):
+        raise sto.SetupTokenInvalidCode("nope", body='{"error":"invalid_scope"}')
+
+    monkeypatch.setattr(sto, "exchange", refuse_scope)
+    assert (await mgr.submit_code("alpha", "abc#def")).state == "awaiting_code"
+    second = await mgr.submit_code("alpha", "abc#def")
+    assert second.state == "error"
+
+
+@pytest.mark.asyncio
+async def test_expired_code_does_not_trigger_the_scope_fallback(monkeypatch):
+    """An ordinary invalid_grant must fail plainly, not send the user in circles."""
+    from ccswitch import setup_token_oauth as sto
+
+    mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
+    await mgr.start("alpha", "tester", mode="setup_token")
+
+    def expired(code, challenge):
+        raise sto.SetupTokenInvalidCode("nope", body='{"error":"invalid_grant"}')
+
+    monkeypatch.setattr(sto, "exchange", expired)
+    state = await mgr.submit_code("alpha", "abc#def")
+    assert state.state == "error"
+    assert mgr._setup_challenge.scope == sto.DEFAULT_SCOPE  # unchanged
