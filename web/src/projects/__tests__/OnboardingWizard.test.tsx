@@ -22,6 +22,11 @@ const BASE_COUNTS = {
   openUnclassifiedCount: 30, pendingProposalCount: 0,
 }
 
+const MAP_PR = {
+  branch: 'pm/feature-map-ccswitch',
+  url: 'https://github.com/o/r/pulls?q=is%3Apr+head%3Apm%2Ffeature-map-ccswitch',
+}
+
 function renderWizard() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
@@ -36,6 +41,7 @@ describe('OnboardingWizard', () => {
     fetchOnboarding.mockResolvedValueOnce({
       state: 'map_merged', action: { type: 'classify' },
       counts: BASE_COUNTS,
+      mapPr: null,
     })
     renderWizard()
     await waitFor(() =>
@@ -50,6 +56,7 @@ describe('OnboardingWizard', () => {
     fetchOnboarding.mockResolvedValueOnce({
       state: 'registered', action: { type: 'propose_map' },
       counts: BASE_COUNTS,
+      mapPr: null,
     })
     renderWizard()
     await waitFor(() =>
@@ -63,6 +70,7 @@ describe('OnboardingWizard', () => {
     fetchOnboarding.mockResolvedValueOnce({
       state: 'registered', action: { type: 'propose_map' },
       counts: BASE_COUNTS,
+      mapPr: null,
     })
     proposeMap.mockRejectedValueOnce(
       new ApiRequestError(409, { detail: { message: 'nope' } }))
@@ -77,6 +85,7 @@ describe('OnboardingWizard', () => {
     fetchOnboarding.mockResolvedValueOnce({
       state: 'map_merged', action: { type: 'classify' },
       counts: BASE_COUNTS,
+      mapPr: null,
     })
     classify.mockRejectedValueOnce(
       new ApiRequestError(409, { detail: { message: 'nope' } }))
@@ -91,6 +100,7 @@ describe('OnboardingWizard', () => {
     fetchOnboarding.mockResolvedValueOnce({
       state: 'map_proposed', action: { type: 'await_map_pr' },
       counts: BASE_COUNTS,
+      mapPr: MAP_PR,
     })
     renderWizard()
     await waitFor(() =>
@@ -103,6 +113,7 @@ describe('OnboardingWizard', () => {
       state: 'registered',
       action: { type: 'needs_human', reason: 'GitHub App not installed' },
       counts: BASE_COUNTS,
+      mapPr: null,
     })
     renderWizard()
     await waitFor(() =>
@@ -115,6 +126,7 @@ describe('OnboardingWizard', () => {
     fetchOnboarding.mockResolvedValueOnce({
       state: 'live', action: { type: 'live' },
       counts: BASE_COUNTS,
+      mapPr: null,
     })
     const { container } = renderWizard()
     // Give the query time to resolve, then assert the wizard is absent
