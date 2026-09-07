@@ -49,6 +49,8 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("list_accounts", ToolClass.READ, "List accounts"),
     ToolSpec("list_hosts", ToolClass.READ, "List fleet hosts"),
     ToolSpec("list_prs", ToolClass.READ, "List pull requests"),
+    # Pack G — GitHub (spec v2 §4.6): PR detail built on the poller's own fetchers.
+    ToolSpec("get_pr", ToolClass.READ, "Get pull request detail"),
     ToolSpec("get_pipeline_health", ToolClass.READ, "Get CI check health"),
     ToolSpec("list_repos", ToolClass.READ, "List repositories"),
     ToolSpec("list_branches", ToolClass.READ, "List branches"),
@@ -187,6 +189,19 @@ def _slug(s: str, *, field: str = "slug") -> str:
     if not _SLUG.match(s):
         raise ToolArgError(f"{field} must be lowercase letters, digits and dashes")
     return s
+
+
+def _owner_name(repo: Any) -> tuple[str, str]:
+    """Split a ``"owner/name"`` repo string for a path-segment URL. The route it
+    feeds (``GET /api/prs/{owner}/{name}/{number}``) needs two clean segments,
+    unlike every other repo-taking tool here which passes the whole string as a
+    body/query value — so this is the one tool that validates the format."""
+    if not isinstance(repo, str) or repo.count("/") != 1:
+        raise ToolArgError("repo must be 'owner/name'")
+    owner, _, name = repo.partition("/")
+    if not owner or not name:
+        raise ToolArgError("repo must be 'owner/name'")
+    return owner, name
 
 
 def _nonempty(s: Any, *, field: str) -> str:
@@ -553,6 +568,16 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     async def list_prs(args: dict[str, Any]) -> Any:
         rows = await api.get("/api/prs")
         return [p for p in rows if not args.get("repo") or p.get("repo") == args["repo"]]
+
+    @spec_tool("get_pr",
+               "One pull request's detail: check runs with conclusions and urls, review "
+               "state per reviewer, live mergeability, and the ccswitch session that "
+               "authored it (if any). Use after list_prs to drill into one PR — repo is "
+               "'owner/name'.", {"repo": str, "number": int})
+    @guarded
+    async def get_pr(args: dict[str, Any]) -> Any:
+        owner, name = _owner_name(args.get("repo"))
+        return await api.get(f"/api/prs/{owner}/{name}/{int(args['number'])}")
 
     @spec_tool("get_pipeline_health", "Slowest and flakiest CI checks for a repo over a window "
                "(24h, 7d, 14d, 30d).", _schema(("repo",), repo=str, window=str))
@@ -1340,7 +1365,8 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
 
     base_tools = [list_sessions, get_session, get_session_transcript, get_tool_result,
             export_session, search_sessions,
-            list_archived_sessions, list_accounts, list_hosts, list_prs, get_pipeline_health,
+            list_archived_sessions, list_accounts, list_hosts, list_prs, get_pr,
+            get_pipeline_health,
             list_automations, get_automation_events, get_deploy_status,
             list_adoptable_sessions, suggest_next_prompt,
             list_notification_channels, list_notification_rules, get_quiet_hours,

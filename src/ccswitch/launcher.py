@@ -11,6 +11,7 @@ from . import accounts
 from .config import load_config
 from .crypto import read_oauth_token
 from .detect import detect_limit_in_jsonl_line
+from .env_compat import mirror_legacy_env
 from .engines import AgentEngine, InvalidAgentEngine, parse_agent_engine
 from .selector import at_ceiling, binding_window, usage_known
 
@@ -97,6 +98,7 @@ def _binding_pct(u):
 
 
 def main(argv: list[str] | None = None) -> int:
+    mirror_legacy_env()  # VIBERPIT_* <-> CCSWITCH_*, before any setting is read
     parser = argparse.ArgumentParser(prog="ccmax", add_help=False)
     parser.add_argument("--confirm-switch", action="store_true")
     parser.add_argument("--poll-interval", type=float, default=None)

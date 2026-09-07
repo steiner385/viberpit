@@ -54,42 +54,42 @@
 # script's behavior (including section 1's own systemctl check) is unchanged.
 set -uo pipefail
 
-SOCK="${CCSWITCH_SESSIOND_SOCKET:-/run/ccswitch/sessiond.sock}"
-LEDGER="${CCSWITCH_LEDGER:-/home/tony/.claude-accounts/ledger.json}"
-DISK_PATH="${CCSWITCH_DISK_PATH:-/}"
-DISK_WARN_PCT="${CCSWITCH_DISK_WARN_PCT:-85}"
-MEM_WARN_BYTES="${CCSWITCH_MEM_WARN_BYTES:-11811160064}"   # 11 GiB (below the 12G MemoryMax)
-PROBE_RETRIES="${CCSWITCH_PROBE_RETRIES:-3}"
-PROBE_TIMEOUT="${CCSWITCH_PROBE_TIMEOUT:-5}"
-RESTART_COOLDOWN="${CCSWITCH_RESTART_COOLDOWN:-300}"        # >=1 auto-restart per 5 min
-STARTUP_GRACE="${CCSWITCH_STARTUP_GRACE:-60}"              # don't restart a still-booting daemon
-DRAIN_WAIT="${CCSWITCH_DRAIN_WAIT:-20}"                    # how long a wedge-restarted daemon gets to exit on its own before SIGKILL
-ALERT_WEBHOOK="${CCSWITCH_ALERT_WEBHOOK:-}"
-STATE_DIR="${CCSWITCH_HEALTH_STATE_DIR:-/var/lib/ccswitch/health}"
+SOCK="${VIBERPIT_SESSIOND_SOCKET:-${CCSWITCH_SESSIOND_SOCKET:-/run/ccswitch/sessiond.sock}}"
+LEDGER="${VIBERPIT_LEDGER:-${CCSWITCH_LEDGER:-/home/tony/.claude-accounts/ledger.json}}"
+DISK_PATH="${VIBERPIT_DISK_PATH:-${CCSWITCH_DISK_PATH:-/}}"
+DISK_WARN_PCT="${VIBERPIT_DISK_WARN_PCT:-${CCSWITCH_DISK_WARN_PCT:-85}}"
+MEM_WARN_BYTES="${VIBERPIT_MEM_WARN_BYTES:-${CCSWITCH_MEM_WARN_BYTES:-11811160064}}"   # 11 GiB (below the 12G MemoryMax)
+PROBE_RETRIES="${VIBERPIT_PROBE_RETRIES:-${CCSWITCH_PROBE_RETRIES:-3}}"
+PROBE_TIMEOUT="${VIBERPIT_PROBE_TIMEOUT:-${CCSWITCH_PROBE_TIMEOUT:-5}}"
+RESTART_COOLDOWN="${VIBERPIT_RESTART_COOLDOWN:-${CCSWITCH_RESTART_COOLDOWN:-300}}"        # >=1 auto-restart per 5 min
+STARTUP_GRACE="${VIBERPIT_STARTUP_GRACE:-${CCSWITCH_STARTUP_GRACE:-60}}"              # don't restart a still-booting daemon
+DRAIN_WAIT="${VIBERPIT_DRAIN_WAIT:-${CCSWITCH_DRAIN_WAIT:-20}}"                    # how long a wedge-restarted daemon gets to exit on its own before SIGKILL
+ALERT_WEBHOOK="${VIBERPIT_ALERT_WEBHOOK:-${CCSWITCH_ALERT_WEBHOOK:-}}"
+STATE_DIR="${VIBERPIT_HEALTH_STATE_DIR:-${CCSWITCH_HEALTH_STATE_DIR:-/var/lib/ccswitch/health}}"
 
 # --- Remote-daemon mode config (all opt-in; empty DAEMON_ENDPOINT == section 5 is a no-op) --
 # CCSWITCH_DAEMON_ENDPOINT is health-check-specific; falls back to the edge's own
 # CCSWITCH_SESSIOND_ENDPOINT (server/ipc/paths.py's sessiond_endpoint()) since a cross-host
 # install already sets that for the edge process and EnvironmentFile= sources the same file
 # here. Only an https:// value turns remote mode on — unix:// / unset stays local-only.
-DAEMON_ENDPOINT="${CCSWITCH_DAEMON_ENDPOINT:-${CCSWITCH_SESSIOND_ENDPOINT:-}}"
-DAEMON_SSH_HOST="${CCSWITCH_DAEMON_SSH_HOST:-}"
-CLIENT_CERT="${CCSWITCH_SESSIOND_CLIENT_CERT:-}"
-CLIENT_KEY="${CCSWITCH_SESSIOND_CLIENT_KEY:-}"
-CLIENT_CA="${CCSWITCH_SESSIOND_CLIENT_CA:-}"
+DAEMON_ENDPOINT="${VIBERPIT_DAEMON_ENDPOINT:-${CCSWITCH_DAEMON_ENDPOINT:-${VIBERPIT_SESSIOND_ENDPOINT:-${CCSWITCH_SESSIOND_ENDPOINT:-}}}}"
+DAEMON_SSH_HOST="${VIBERPIT_DAEMON_SSH_HOST:-${CCSWITCH_DAEMON_SSH_HOST:-}}"
+CLIENT_CERT="${VIBERPIT_SESSIOND_CLIENT_CERT:-${CCSWITCH_SESSIOND_CLIENT_CERT:-}}"
+CLIENT_KEY="${VIBERPIT_SESSIOND_CLIENT_KEY:-${CCSWITCH_SESSIOND_CLIENT_KEY:-}}"
+CLIENT_CA="${VIBERPIT_SESSIOND_CLIENT_CA:-${CCSWITCH_SESSIOND_CLIENT_CA:-}}"
 # Space-separated mountpoints the daemon host must have live+readable (default: the rocky
 # sshfs cutover's three mounts — account store, shared ~/.claude, archive volume).
-REMOTE_MOUNTS="${CCSWITCH_HEALTH_REMOTE_MOUNTS:-/home/tony/.claude-accounts /home/tony/.claude /mnt/hdd-storage}"
+REMOTE_MOUNTS="${VIBERPIT_HEALTH_REMOTE_MOUNTS:-${CCSWITCH_HEALTH_REMOTE_MOUNTS:-/home/tony/.claude-accounts /home/tony/.claude /mnt/hdd-storage}}"
 # Database host:port as reachable FROM the daemon host — deliberately separate from
 # CCSWITCH_DB_URL, whose host is typically 127.0.0.1 (the edge's own loopback to a
 # same-host Postgres), which is meaningless from a remote daemon host.
-REMOTE_PG_HOST="${CCSWITCH_HEALTH_REMOTE_PG_HOST:-100.102.11.121}"
-REMOTE_PG_PORT="${CCSWITCH_HEALTH_REMOTE_PG_PORT:-5432}"
-SSH_CONNECT_TIMEOUT="${CCSWITCH_SSH_CONNECT_TIMEOUT:-5}"
-SSH_TIMEOUT="${CCSWITCH_SSH_TIMEOUT:-15}"          # overall budget per ssh invocation
+REMOTE_PG_HOST="${VIBERPIT_HEALTH_REMOTE_PG_HOST:-${CCSWITCH_HEALTH_REMOTE_PG_HOST:-100.102.11.121}}"
+REMOTE_PG_PORT="${VIBERPIT_HEALTH_REMOTE_PG_PORT:-${CCSWITCH_HEALTH_REMOTE_PG_PORT:-5432}}"
+SSH_CONNECT_TIMEOUT="${VIBERPIT_SSH_CONNECT_TIMEOUT:-${CCSWITCH_SSH_CONNECT_TIMEOUT:-5}}"
+SSH_TIMEOUT="${VIBERPIT_SSH_TIMEOUT:-${CCSWITCH_SSH_TIMEOUT:-15}}"          # overall budget per ssh invocation
 # Local checkout used to read this build's PROTOCOL_VERSION (defaults to this script's repo).
-HEALTH_REPO_ROOT="${CCSWITCH_HEALTH_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-HEALTH_PYTHON="${CCSWITCH_HEALTH_PYTHON:-}"
+HEALTH_REPO_ROOT="${VIBERPIT_HEALTH_REPO_ROOT:-${CCSWITCH_HEALTH_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}}"
+HEALTH_PYTHON="${VIBERPIT_HEALTH_PYTHON:-${CCSWITCH_HEALTH_PYTHON:-}}"
 if [ -z "$HEALTH_PYTHON" ]; then
   if [ -x "$HEALTH_REPO_ROOT/.venv/bin/python3" ]; then
     HEALTH_PYTHON="$HEALTH_REPO_ROOT/.venv/bin/python3"
@@ -179,7 +179,7 @@ fi
 # registry (no CCSWITCH_DB_URL, DB down, missing deps) returns non-zero so the
 # split-brain guard fails CLOSED — it keeps its teeth when we cannot tell.
 local_daemon_is_registered_fleet_host() {
-  [ -n "${CCSWITCH_DB_URL:-}" ] || return 1
+  [ -n "${VIBERPIT_DB_URL:-${CCSWITCH_DB_URL:-}}" ] || return 1
   local eps ep
   eps=$(cd "$HEALTH_REPO_ROOT" 2>/dev/null && timeout 15 "$HEALTH_PYTHON" - <<'PY' 2>/dev/null
 import asyncio, os
@@ -187,7 +187,7 @@ import asyncio, os
 async def main() -> None:
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
-    engine = create_async_engine(os.environ["CCSWITCH_DB_URL"])
+    engine = create_async_engine(os.environ.get("VIBERPIT_DB_URL") or os.environ["CCSWITCH_DB_URL"])
     try:
         async with engine.connect() as conn:
             for (ep,) in await conn.execute(text("SELECT endpoint FROM hosts WHERE enabled")):
@@ -478,7 +478,7 @@ fi
 #                 actually happened, from any host. Non-zero here with zero torn reads
 #                 means some other host still has the cached mount profile.
 # Any non-zero count in the last hour is worth an alert: the healthy steady state is 0.
-CONFIG_TORN_WARN="${CCSWITCH_CONFIG_TORN_WARN:-1}"
+CONFIG_TORN_WARN="${VIBERPIT_CONFIG_TORN_WARN:-${CCSWITCH_CONFIG_TORN_WARN:-1}}"
 config_counts=$(cd "$HEALTH_REPO_ROOT" 2>/dev/null && timeout 15 "$HEALTH_PYTHON" - <<'PY' 2>/dev/null
 from ccswitch import accounts, configdir
 from server.sessions.scratch_config import recent_torn_reads

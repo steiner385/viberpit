@@ -4,8 +4,8 @@
 set -euo pipefail
 
 PASS="${1:?usage: ccswitch-pg-provision.sh <password>}"
-DB="${CCSWITCH_PG_DB:-ccswitch}"
-ROLE="${CCSWITCH_PG_ROLE:-ccswitch}"
+DB="${VIBERPIT_PG_DB:-${CCSWITCH_PG_DB:-ccswitch}}"
+ROLE="${VIBERPIT_PG_ROLE:-${CCSWITCH_PG_ROLE:-ccswitch}}"
 
 psql -v ON_ERROR_STOP=1 <<SQL
 DO \$\$ BEGIN
