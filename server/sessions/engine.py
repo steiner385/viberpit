@@ -76,6 +76,15 @@ class AgentCapabilities:
     #: nor `dynamicTools`); this flips to True on its own the moment the vendor
     #: contract gains them.
     durable_tool_surface: bool = False
+    #: ccswitch's Library surface (``server/library/scan.py`` and ``mutate.py``)
+    #: can browse and edit this engine's plugins, skills, commands and MCP
+    #: servers. This is a SHARED, filesystem-scannable config directory, not a
+    #: single session's live catalog (that's ``vendor_commands``/``vendor_skills``
+    #: above) — an engine can expose one without the other. False means the
+    #: Library surface does not manage this engine at all yet, so a consumer
+    #: must show an honest "not supported" rather than an empty or silently
+    #: wrong result (#1285).
+    library_management: bool = False
 
 
 def capabilities_to_wire(caps: AgentCapabilities) -> dict[str, bool]:
