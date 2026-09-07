@@ -152,6 +152,19 @@ async def daemon_lifespan(app, orchestrator):
         ),
         name="codex-doctor",
     )
+    # Reap `claude` CLIs the PREVIOUS incarnation left running (#1379) — before
+    # anything below can rehydrate or resume. KillMode=mixed lets the old unit's
+    # children outlive it ("Unit process … (claude) remains running after unit
+    # stopped" on every deploy); a survivor keeps editing files and can push, while
+    # the freshly-resumed session has no idea it exists. Same placement and same
+    # never-fatal contract as the Codex and X11 orphan sweeps around it.
+    try:
+        reaped = await orchestrator.reap_orphan_clis()
+        if reaped:
+            log.warning("daemon startup: reaped %d orphaned claude CLI(s) left by a "
+                        "previous daemon", reaped)
+    except Exception:
+        log.warning("daemon startup: orphan CLI reap failed", exc_info=True)
     try:
         await orchestrator.rehydrate()
     except Exception as exc:
