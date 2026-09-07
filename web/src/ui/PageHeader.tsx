@@ -2,6 +2,7 @@ import * as React from 'react'
 import { cn } from '@/lib/utils'
 import { setBaseTitle, releaseBaseTitle } from '@/shell/documentTitle'
 import { useInteractive } from '@/shell/InteractionContext'
+import { useToastAnchor } from '@/shell/toastInsets'
 
 export interface PageHeaderProps {
   title: string
@@ -37,6 +38,10 @@ export function PageHeader({ title, documentTitle, meta, actions, className }: P
   // what the display is FOR.
   const interactive = useInteractive()
 
+  // A toast must never cover the title or the action cluster: the header
+  // publishes its bottom edge and the toaster starts below it (toastInsets).
+  const clearRef = useToastAnchor('clear')
+
   // Claim/update this instance's slot on every title change...
   const base = documentTitle ?? title
   React.useEffect(() => {
@@ -53,7 +58,7 @@ export function PageHeader({ title, documentTitle, meta, actions, className }: P
   }, [token])
 
   return (
-    <header className={cn('shrink-0 flex items-center gap-3 px-4 py-3 md:px-6 md:py-4 border-b border-edge', className)}>
+    <header ref={clearRef} className={cn('shrink-0 flex items-center gap-3 px-4 py-3 md:px-6 md:py-4 border-b border-edge', className)}>
       <div className="min-w-0 flex-1">
         <h1 className="text-lg font-semibold text-ink truncate">{title}</h1>
         {meta && <div className="text-sm text-ink-muted">{meta}</div>}

@@ -30,6 +30,7 @@ import { useOpenItem, useOpenSessionId } from './openSessionId'
 import { SessionGestureProvider, useSessionGestureHandle } from './sessionGestures'
 import { overlayIsOpen } from './useOverlayState'
 import { useShortcuts } from './useShortcuts'
+import { useToastAnchor } from './toastInsets'
 import { useAppBanners } from './useAppBanners'
 import { ViewportProvider, useViewport, type LayoutMode } from './useViewport'
 import { ContextList } from './regions/ContextList'
@@ -314,6 +315,11 @@ function AppShellInner() {
   // than the region, so the dock inside it survives — see `PageHost`.
   const pageHidden = listVisible && mode !== 'desktop'
 
+  // The list+main wrapper is the toaster's band: below the TopBar and banners,
+  // right of the rail, left of a pushed drawer. Toasts sit at its top edge and
+  // never on the chrome around it (`shell/toastInsets.ts`).
+  const toastBandRef = useToastAnchor('band')
+
   return (
     <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-canvas text-ink">
       {shows('app.banners') && (
@@ -329,6 +335,7 @@ function AppShellInner() {
             lives inside `app.main` and must stay under the content, never
             beside it. */}
         <div
+          ref={toastBandRef}
           className={cn(
             'flex min-w-0 min-h-0 flex-1',
             mode === 'desktop' ? 'flex-row' : 'flex-col',
