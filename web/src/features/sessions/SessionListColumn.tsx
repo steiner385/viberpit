@@ -42,6 +42,7 @@ import { DaemonHealthIndicator } from '@/components/DaemonHealthIndicator'
 import { NO_FILTERS, isFiltered as hasActiveFilters } from '@/session/listFilters'
 import type { ListScope } from '@/session/sessionNavState'
 import type { Account } from '@/api/types'
+import { useToastAnchor } from '@/shell/toastInsets'
 import { ArchivedScopeBody } from './ArchivedScopeBody'
 import { ScopeBody } from './ScopeBody'
 import { ScopeSegment } from './ScopeSegment'
@@ -104,6 +105,10 @@ export function SessionListColumn({
   // The live poll is untouched either way: two queries, never merged (D4).
   const { data: archived = [] } = useArchivedSessions()
 
+  // On a phone this column IS the content band, so the scope switch is the
+  // header a toast must clear (`shell/toastInsets.ts`).
+  const clearRef = useToastAnchor('clear')
+
   return (
     // `overflow-hidden`: this column is a stack of `shrink-0` bands around one
     // scroll band, and at a short enough viewport (a phone with the keyboard up
@@ -118,7 +123,7 @@ export function SessionListColumn({
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {/* Fixed head: the scope switch stays above the scroll band in both
           scopes, so switching never moves the control that switched. */}
-      <div className="shrink-0 p-2">
+      <div ref={clearRef} className="shrink-0 p-2">
         <ScopeSegment
           scope={scope}
           activeCount={state.sessions.length}

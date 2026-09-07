@@ -58,6 +58,7 @@ import { SessionGoalText } from '@/components/session/SessionGoalText'
 import { SessionActions } from '@/components/session/SessionActions'
 import { useSessionNeighbors } from '@/session/useSessionNeighbors'
 import { engineBadge, tierLabel } from '@/session/modelName'
+import { useToastAnchor } from '@/shell/toastInsets'
 import { RenameDialog } from './RenameDialog'
 
 export interface SessionHeaderProps {
@@ -125,8 +126,13 @@ export function SessionHeader({
   // both-null (single/unknown session) or both-set (wraparound), never one null.
   const hasNeighbors = prevId !== null || nextId !== null
 
+  // Back, the chevrons, the rename title and the actions menu all live here, so
+  // a toast starts below this bar (`shell/toastInsets.ts`).
+  const clearRef = useToastAnchor('clear')
+
   return (
     <div
+      ref={clearRef}
       data-region="session.header"
       className={cn(
         'flex items-center gap-2 px-3 py-2 flex-shrink-0',
