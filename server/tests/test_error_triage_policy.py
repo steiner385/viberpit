@@ -94,3 +94,20 @@ def test_recurrence_comment():
     assert "5 more occurrence(s) since 2026-09-06 08:00 UTC" in text
     assert "last at 2026-09-07 13:40 UTC" in text
     assert "`a1b2c3d4e5f60718`" in text
+
+
+def test_issue_body_worst_case_sample_stays_under_cap():
+    from server.automations.error_triage import issue_body
+    from server.github.ci_issues import BODY_MAX_CHARS
+
+    # Extreme case 1: very long sample message
+    body1 = issue_body(_row(sample_message="\n" * 4000, sample_exc="y" * 20000),
+                       regression_of=None, repo="o/r")
+    assert len(body1) <= BODY_MAX_CHARS
+    assert body1.rstrip().endswith("Fingerprint: `a1b2c3d4e5f60718`")
+
+    # Extreme case 2: long message with repeated lines
+    body2 = issue_body(_row(sample_message="line\n" * 1000, sample_exc="z" * 15000),
+                       regression_of=None, repo="o/r")
+    assert len(body2) <= BODY_MAX_CHARS
+    assert body2.rstrip().endswith("Fingerprint: `a1b2c3d4e5f60718`")

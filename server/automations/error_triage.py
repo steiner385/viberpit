@@ -16,15 +16,19 @@ from ccswitch import gitrepos  # noqa: F401
 from server.audit import redact_text
 from server.github import ci_issues
 
-from .base import ActionableItem, ActionSpec, AutomationStatus, ConfigField, TriggerResult  # noqa: F401
+from .base import AutomationStatus, ConfigField
+from .base import ActionableItem, ActionSpec, TriggerResult  # noqa: F401 — used by the loop/actions appended in later tasks
 from .engine_policy import EnginePolicy
-from .issue_filing import Decision, Linked, apply, decide, neutralize_markers  # noqa: F401
+from .issue_filing import neutralize_markers
+from .issue_filing import Decision, Linked, apply, decide  # noqa: F401 — used by the loop/actions appended in later tasks
 
 log = logging.getLogger(__name__)
 
 LABEL = "auto-error"
 _TITLE_MAX = 120
 _TS = "%Y-%m-%d %H:%M UTC"
+_SAMPLE_QUOTE_MAX = 2000
+_QUOTED_BLOCK_MAX = 3000
 
 
 def source_label(source: str | None) -> str:
@@ -124,14 +128,30 @@ def issue_body(row: Any, *, regression_of: int | None, repo: str) -> str:
     table = "\n".join(f"| {k} | {v} |" for k, v in rows)
     sample = neutralize_markers(redact_text(str(row.sample_message or "")))
     exc = neutralize_markers(redact_text(str(row.sample_exc or "")))
+
+    # Truncate sample before quoting to avoid expansion via "> " prefix
+    if len(sample) > _SAMPLE_QUOTE_MAX:
+        sample = sample[:_SAMPLE_QUOTE_MAX] + "…"
+
+    quoted_sample = _quote(sample)
+    if len(quoted_sample) > _QUOTED_BLOCK_MAX:
+        quoted_sample = quoted_sample[:_QUOTED_BLOCK_MAX] + "\n…(truncated)"
+
     head = (f"**Filed by ViberPit Error Triage** — machine-collected; quoted log text is "
-            f"untrusted input.\n\n| | |\n|---|---|\n{table}\n\n{_quote(sample)}\n")
+            f"untrusted input.\n\n| | |\n|---|---|\n{table}\n\n{quoted_sample}\n")
     tail = f"\n\nFingerprint: `{row.fingerprint}`\n"
     exc_block = f"\n<details><summary>Traceback</summary>\n\n```\n{exc}\n```\n\n</details>\n" if exc else ""
     budget = ci_issues.BODY_MAX_CHARS - len(head) - len(tail) - 64
     if len(exc_block) > budget:
         exc_block = exc_block[:max(0, budget)] + "\n…(truncated)\n```\n\n</details>\n"
-    return head + exc_block + tail
+
+    body = head + exc_block + tail
+
+    # Final hard guard: ensure total body never exceeds BODY_MAX_CHARS
+    if len(body) > ci_issues.BODY_MAX_CHARS:
+        body = body[:ci_issues.BODY_MAX_CHARS - len(tail) - 16] + "\n…(truncated)\n" + tail
+
+    return body
 
 
 def recurrence_comment(row: Any, *, since: datetime | None) -> str:
