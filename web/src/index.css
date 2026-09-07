@@ -1,5 +1,22 @@
 @import "tailwindcss";
 
+/* `short:` — the viewport is too short to afford optional chrome.
+   In practice: a phone with the software keyboard up, or a phone in landscape.
+
+   index.html opts into `interactive-widget=resizes-content`, so the Android
+   keyboard shrinks the LAYOUT viewport rather than overlaying it (that is what
+   keeps the header on screen — see viewportMeta.test.ts). The cost is that the
+   whole shell really does reflow into ~480px, and a region whose fixed chrome
+   does not fit overflows its own box and paints under the next opaque region.
+   `short:hidden` is how a region sheds the chrome it can do without.
+
+   Named once here rather than written as an arbitrary `[@media(max-height:…)]`
+   at each use, so the threshold is a decision with one home. 560px sits above a
+   keyboard-open phone (~420–500) and below a real laptop window (~600+). It is
+   a CSS variant and not a `useViewport()` field on purpose: nothing branches on
+   it in JS, and `useViewport` stays the only JS reader of a layout query. */
+@custom-variant short (@media (max-height: 560px));
+
 /* ───────────────────────────────────────────────────────────────────────────
    Design tokens — the ONLY place a color, layer, radius, target size or type
    size is defined (spec: docs/superpowers/specs/2026-09-02-ui-foundation-tokens-primitives-design.md).

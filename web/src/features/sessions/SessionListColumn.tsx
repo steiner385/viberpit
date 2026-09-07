@@ -105,7 +105,17 @@ export function SessionListColumn({
   const { data: archived = [] } = useArchivedSessions()
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    // `overflow-hidden`: this column is a stack of `shrink-0` bands around one
+    // scroll band, and at a short enough viewport (a phone with the keyboard up
+    // — see the `short:` variant in index.css) the bands alone are taller than
+    // the box the shell gives it. Without a clip the surplus paints OUTSIDE the
+    // column, and `app.main` — an opaque later flex item, so it paints on top —
+    // covers it: the visible bug was a stray sliver of whichever control
+    // straddled the dock's top border. Nothing this hides was reachable anyway;
+    // `short:hidden` on the controls strip is what actually buys back the room.
+    // Safe for the row menus: they are `absolute` inside the scroll band, which
+    // already clips them with `overflow-y-auto`.
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {/* Fixed head: the scope switch stays above the scroll band in both
           scopes, so switching never moves the control that switched. */}
       <div className="shrink-0 p-2">

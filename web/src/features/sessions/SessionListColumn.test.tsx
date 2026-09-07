@@ -441,6 +441,54 @@ describe('SessionListColumn — scope switch', () => {
   })
 })
 
+/**
+ * The keyboard-open squeeze.
+ *
+ * `interactive-widget=resizes-content` (index.html) means the Android keyboard
+ * shrinks the LAYOUT viewport, so on a phone the whole shell reflows into
+ * ~480px. Everything in this column except the scroll band is `shrink-0`: the
+ * scope segment, the controls strip, the daemon line and New Session. Their
+ * combined height exceeds what is left, the band collapses to a few pixels, and
+ * the surplus overflows the column's own box — where `app.dock` (opaque, and a
+ * LATER flex item, so it paints on top) covers it. The visible symptom was a
+ * stray sliver of whichever control happened to straddle the dock's top border,
+ * with all 13 sessions unreachable behind it.
+ *
+ * Two independent contracts, hence two tests: the column must not paint outside
+ * itself (clipping), and it must give the band room to exist (shedding the
+ * strip). Clipping alone would only have made the buried controls vanish
+ * tidily. jsdom does no layout and evaluates no media query, so both are pinned
+ * on the class that carries them — the same convention as `PageHost.test.tsx`.
+ */
+describe('SessionListColumn — the short-viewport squeeze', () => {
+  it('clips its own overflow so nothing paints under the dock', () => {
+    const { container } = renderColumn({ sessions: [session()] })
+    expect(container.firstElementChild?.className).toContain('overflow-hidden')
+  })
+
+  it('sheds the controls strip when the viewport is too short to afford it', () => {
+    renderColumn({ sessions: [session()] })
+    expect(screen.getByTestId('session-list-controls').className).toContain('short:hidden')
+  })
+
+  it('sheds it in the archived scope too — the same squeeze, the same strip', () => {
+    renderColumn({
+      sessions: [],
+      scope: 'archived',
+      archived: [archivedSession({ id: 'arc-1', name: 'Old work' })],
+    })
+    expect(screen.getByTestId('session-list-controls').className).toContain('short:hidden')
+  })
+
+  it('still shows the strip at a normal height (the hiding is the exception)', () => {
+    renderColumn({ sessions: [session()] })
+    // jsdom reports no media match, so this is the un-squeezed rendering: the
+    // filters are present and only the variant would remove them.
+    expect(screen.getByLabelText('Status')).toBeInTheDocument()
+    expect(screen.getByLabelText('Sort by')).toBeInTheDocument()
+  })
+})
+
 describe('SessionListColumn — accessibility', () => {
   it('has no axe violations with every section mounted', async () => {
     const { container } = renderColumn({
