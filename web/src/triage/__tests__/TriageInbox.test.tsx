@@ -258,7 +258,7 @@ describe('TriageInbox', () => {
   it('renders the queue with a no_fit suggested name and per-project depth', async () => {
     await renderInbox([
       ...ROWS,
-      proposal({ id: 'p3', workItemId: 'w3', number: 3, title: 'Third', projectSlug: 'kindash' }),
+      proposal({ id: 'p3', workItemId: 'w3', number: 3, title: 'Third', projectSlug: 'example-product' }),
       proposal({ id: 'p4', workItemId: 'w4', number: 4, title: 'Fourth', projectSlug: null }),
     ])
 
@@ -267,7 +267,7 @@ describe('TriageInbox', () => {
     expect(screen.getByText(/offline-mode/)).toBeInTheDocument()
     // header depth comes from the server's projectSlug, NOT from the repo
     expect(screen.getByText('ccswitch: 2')).toBeInTheDocument()
-    expect(screen.getByText('kindash: 1')).toBeInTheDocument()
+    expect(screen.getByText('example-product: 1')).toBeInTheDocument()
     expect(screen.getByText('unknown: 1')).toBeInTheDocument()
   })
 

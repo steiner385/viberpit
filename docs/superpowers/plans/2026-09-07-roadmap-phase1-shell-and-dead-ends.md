@@ -45,6 +45,8 @@
 Deviations from spec §5, with reasons:
 - `ui/Breadcrumb` is **not** built here. It would have no consumer until Phase 3 (the current pages are all top-level), and the repo forbids dead code. Phase 3 builds it with its first consumer.
 - The wizard's `register` state gets honest copy, not an add-repo form. A product cannot be created without a repo (`POST /pm/projects` returns 422 `no_repos`), so the state is unreachable through the API; product editing, including repos, is Phase 3's product header.
+- Spec §5 item 3 (a workspace hook per list section) is not added: with one list section, `useSessionsWorkspace` is that hook, and `ListColumnSources` in `shell/listColumns.tsx` is the seam a second one plugs into. Phase 3 adds the Products hook there.
+- Spec §5 items 1–2 landed as side tables (`shell/listColumns.tsx`, `shell/openItems.ts`) rather than `NavDef.list` / `NavDef.openItem` fields: `navDefs.ts` is a data-only `.ts` module that tests load under the node environment and cannot hold JSX. `listColumns.test.tsx` pins `LIST_SECTIONS` to `hasList` so the two halves cannot drift.
 
 ---
 

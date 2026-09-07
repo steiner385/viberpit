@@ -37,15 +37,16 @@
 import { useLocation, useParams } from 'react-router-dom'
 import { navDefForPath } from './navDefs'
 import { OPEN_ITEM_RESOLVERS } from './openItems'
+import type { OpenItem } from './openItems'
 
-export type { OpenItem } from './openItems'
+export type { OpenItem }
 
 /**
  * The open item, or null. See the module docstring for why one function must
  * answer for all three consumers. The per-section rule lives in
  * `openItems.ts`; this only picks the section from the path.
  */
-export function useOpenItem() {
+export function useOpenItem(): OpenItem | null {
   const params = useParams()
   const { pathname } = useLocation()
   const def = navDefForPath(pathname)

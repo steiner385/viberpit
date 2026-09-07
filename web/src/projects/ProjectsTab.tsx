@@ -10,7 +10,7 @@ import { useCreateProject, useProjects, useSyncProject, useTriage } from '@/api/
 import type { Project } from '@/api/pm'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { NAV_BY_ID } from '@/shell/navDefs'
-import { PRODUCT, onboardingStateLabel } from '@/features/products/vocab'
+import { CAPABILITY, PRODUCT, onboardingStateLabel } from '@/features/products/vocab'
 import { PageHeader } from '@/ui/PageHeader'
 import { PageContent } from '@/ui/PageContent'
 import { Button } from '@/ui/Button'
@@ -82,7 +82,7 @@ function ProjectCard({ project }: { project: Project }) {
       </ul>
       <div className="pm-counts">
         <span>{project.workItemCount} work items</span>
-        <span>{project.featureCount} features</span>
+        <span>{project.featureCount} {CAPABILITY.plural.toLowerCase()}</span>
       </div>
       {project.slug && <OnboardingWizard slug={project.slug} />}
       {project.slug && <DependencyPanel slug={project.slug} />}
