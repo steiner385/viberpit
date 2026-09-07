@@ -15,21 +15,33 @@ propose*. Each tier declares the tools its response session may use.
 
 A note on how ``tools`` is enforced
 -----------------------------------
-ccswitch's ``create_session`` has no per-session tool allowlist — the SDK's
+``permission_mode`` is the real enforcement; ``tools`` describes what that mode
+lets through, and the loader keeps the two consistent.
+
+ccswitch has no *arbitrary* per-session tool allowlist. The SDK's
 ``allowed_tools`` is only reachable on the one-shot query path
 (``nudge_composer``, ``autopilot_decider``), which cannot host a repo
-investigation. A tier's ``tools`` list is therefore a **prompt-level binding
-constraint**: the monitor states it verbatim in the response session's seed
-prompt. That is a real constraint on a cooperative agent and it is honest about
-what it is; the *hard* limits on the same session are the ones ccswitch actually
-enforces — its ``permission_mode``, the managed deny rules in
-``.claude/managed-settings.json`` (``server.sdlc.governance.MANAGED_DENY``), and
-the prod-deploy gate hook. Do not read ``tools`` as a sandbox.
+investigation, and ``Session.tool_allowlist`` is a dormant column with no readers
+(``server/api/sessions.py`` says so at its only writer). What ccswitch *does*
+enforce is the permission mode, and one mode — ``allowlist`` — is exactly a
+read-only gate: ``PermissionRegistry.READ_ONLY`` auto-approves, everything else
+prompts, and an unattended session has nobody to answer a prompt. So a tier on
+``allowlist`` genuinely cannot mutate anything: it fails closed.
 
-``permission_mode`` IS enforced, and the loader rejects ``interactive`` for any
-tier that spawns: an unattended session that asks a human for permission blocks
-forever on a prompt nobody will answer (#750). That check is why the mode belongs
-in this validated schema rather than in a free-form config blob.
+Two load-time checks make that hold:
+
+* A tier that spawns may not be ``interactive`` — an unattended session would
+  block forever on the very first tool (#750).
+* A tier on ``allowlist`` may only declare tools that mode actually
+  auto-approves. Declaring ``Bash`` there would not grant it; it would hang the
+  session on a permission prompt at the moment it tried, which is the same
+  failure wearing a more confusing hat.
+
+For a tier on a *permissive* mode (``full-auto``), ``tools`` is only a
+prompt-level constraint on a cooperative agent — the hard limits there are the
+managed deny rules (``server.sdlc.governance.MANAGED_DENY``) and the
+prod-deploy-gate hook. That is a real trade the policy file makes explicitly, per
+tier, in a reviewable diff. Do not read ``tools`` as a sandbox on such a tier.
 """
 from __future__ import annotations
 
@@ -40,6 +52,7 @@ from typing import Any
 import yaml
 
 from server.sdlc.control_bands import DIRECTIONS, METRIC_SOURCES
+from server.sessions.permissions import PermissionRegistry
 from server.sessions.types import VALID_SESSION_MODES
 
 #: The packaged policy file. Committed next to this module so the config and the
@@ -161,6 +174,18 @@ def _parse_tier(name: str, raw: Any) -> BandTier:
         raise BandsConfigError(
             f"tier {name!r}: a 'log' tier spawns no session, so its tools list must "
             "be empty — a non-empty one would document a constraint nothing applies")
+    if mode == "allowlist":
+        # `allowlist` auto-approves PermissionRegistry.READ_ONLY and PROMPTS on
+        # everything else. Declaring anything outside that set does not grant it;
+        # it hangs the unattended session the moment it reaches for it.
+        ungranted = [t for t in tools if t not in PermissionRegistry.READ_ONLY]
+        if ungranted:
+            raise BandsConfigError(
+                f"tier {name!r}: permission_mode 'allowlist' auto-approves only "
+                f"{sorted(PermissionRegistry.READ_ONLY)}, so declaring {ungranted} "
+                "would not grant them — it would stall the unattended session on a "
+                "permission prompt. Drop them, or choose a permissive mode and "
+                "accept that the tool list is then only a prompt-level constraint")
     return BandTier(name=name, sigma=sigma, response=response, tools=tools,
                     permission_mode=mode)
 

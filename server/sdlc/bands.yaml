@@ -14,11 +14,9 @@ version: 1
 
 # Response tiers: 1σ log · 2σ diagnose (read-only) · 3σ propose.
 #
-# `tools` is a PROMPT-LEVEL binding constraint stated verbatim to the response
-# session — ccswitch has no per-session tool allowlist (see server/sdlc/bands.py's
-# module docstring). The hard limits on these sessions are `permission_mode`, the
-# managed deny rules, and the prod-deploy gate hook. Do not read `tools` as a
-# sandbox.
+# `permission_mode` is what ccswitch actually ENFORCES; `tools` describes what
+# that mode lets through, and the loader refuses a policy where the two disagree.
+# See server/sdlc/bands.py's module docstring for exactly how far each reaches.
 tiers:
   log:
     sigma: 1
@@ -31,21 +29,24 @@ tiers:
   diagnose:
     sigma: 2
     response: diagnose
-    # Read-only investigation. `full-auto` rather than `interactive` because the
-    # session is unattended and would otherwise block forever on a permission
-    # prompt (#750); read-only-ness comes from the tool list and from the fact
-    # that this tier's prompt forbids commits, pushes and PRs outright.
-    permission_mode: full-auto
+    # Genuinely read-only, not read-only by request. `allowlist` auto-approves
+    # PermissionRegistry.READ_ONLY and prompts on everything else — and an
+    # unattended session has nobody to answer a prompt, so any attempt to edit,
+    # commit or shell out fails closed instead of succeeding. That is the right
+    # default for a tier whose entire contract is "change nothing".
+    #
+    # The cost is real and deliberate: without Bash this session cannot run
+    # `git log` or `gh`, so it correlates a breach from the working tree alone.
+    # An operator who wants history correlation changes this to `full-auto` in a
+    # reviewed diff and accepts that read-only then rests on the seed prompt
+    # rather than on the permission engine. Safety is the default; the escape
+    # hatch is explicit.
+    permission_mode: allowlist
     tools:
       - Read
       - Grep
       - Glob
-      - WebFetch
-      - Bash(git log:*)
-      - Bash(git show:*)
-      - Bash(git diff:*)
-      - Bash(gh pr view:*)
-      - Bash(gh run view:*)
+      - LS
 
   propose:
     sigma: 3

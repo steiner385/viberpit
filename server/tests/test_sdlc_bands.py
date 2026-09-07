@@ -18,6 +18,7 @@ from server.sdlc.bands import (
     load_bands_text,
 )
 from server.sdlc.control_bands import METRIC_SOURCES
+from server.sessions.permissions import PermissionRegistry
 from server.sessions.types import VALID_SESSION_MODES
 
 _VALID = textwrap.dedent("""
@@ -159,6 +160,53 @@ def test_a_spawning_tier_may_not_be_interactive():
         """))
 
 
+def test_an_allowlist_tier_may_only_declare_tools_that_mode_auto_approves():
+    """Declaring `Bash` under `allowlist` would not grant it — it would stall the
+    unattended session on a permission prompt the first time it reached for it."""
+    with pytest.raises(BandsConfigError, match="would not grant them"):
+        load_bands_text(textwrap.dedent("""
+            version: 1
+            tiers:
+              d:
+                sigma: 2
+                response: diagnose
+                permission_mode: allowlist
+                tools: [Read, Bash]
+            metrics: []
+        """))
+
+
+def test_an_allowlist_tier_with_only_read_only_tools_loads():
+    cfg = load_bands_text(textwrap.dedent("""
+        version: 1
+        tiers:
+          d:
+            sigma: 2
+            response: diagnose
+            permission_mode: allowlist
+            tools: [Read, Grep, Glob, LS]
+        metrics: []
+    """))
+    assert cfg.tiers[0].tools == ("Read", "Grep", "Glob", "LS")
+
+
+def test_a_permissive_tier_may_declare_anything_because_nothing_gates_it():
+    """The check is about a mode that would STALL, not about taste: on a
+    permissive mode the tool list is only a prompt-level constraint, and the
+    policy file is where that trade is made explicitly."""
+    cfg = load_bands_text(textwrap.dedent("""
+        version: 1
+        tiers:
+          p:
+            sigma: 3
+            response: propose
+            permission_mode: full-auto
+            tools: [Read, Write, Bash]
+        metrics: []
+    """))
+    assert "Bash" in cfg.tiers[0].tools
+
+
 def test_an_unknown_permission_mode_is_rejected():
     with pytest.raises(BandsConfigError, match="not a valid session mode"):
         load_bands_text(textwrap.dedent("""
@@ -227,13 +275,18 @@ def test_the_committed_policy_declares_the_three_designed_tiers():
     assert by_sigma[3].response == "propose"
 
 
-def test_the_committed_diagnose_tier_grants_no_mutating_tool():
-    """The 2σ tier is read-only by design; a bare `Bash`, `Write` or `Edit` in its
-    allowlist would contradict the prompt that tells the session not to change
-    anything."""
+def test_the_committed_diagnose_tier_is_read_only_by_ENFORCEMENT_not_by_request():
+    """The 2σ tier's read-only-ness must not rest on the seed prompt alone.
+
+    `allowlist` auto-approves PermissionRegistry.READ_ONLY and prompts on
+    everything else; an unattended session has nobody to answer a prompt, so a
+    mutation fails closed. Shipping this tier on a permissive mode would silently
+    downgrade "cannot change anything" to "asked not to"."""
     cfg = load_bands()
     (tier,) = [t for t in cfg.tiers if t.response == "diagnose"]
+    assert tier.permission_mode == "allowlist"
     assert tier.tools, "a diagnose tier with no tools would spawn a session that can do nothing"
+    assert set(tier.tools) <= PermissionRegistry.READ_ONLY
     for tool in tier.tools:
         assert tool not in ("Bash", "Write", "Edit", "NotebookEdit"), tool
         assert not tool.startswith(("Write(", "Edit("))
