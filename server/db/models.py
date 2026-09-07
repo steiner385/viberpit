@@ -193,6 +193,12 @@ class Session(Base):
     # the host a session ran on is a fact about that session, not about current
     # config — the same mistake archive_root exists to prevent.
     host: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Where this session's GUI renders: "native" (the runner host's real X display)
+    # or "virtual" (a pooled Xvfb display viewed over VNC). Decided once at spawn from
+    # the requesting client's locality and honoured on every rehydrate. NULL = created
+    # before this column existed → treated as virtual. Nullable so init_db backfills
+    # without a migration. Design: docs/superpowers/specs/2026-09-06-native-display-routing-design.md
+    display_mode: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Snapshot of the decision features at AUTO-archive time ({repo, goal, goal_source,
     # pr_state, reason}); copied into an `archive_reversed` autopilot event on unarchive so
     # the auto-archive algorithm can learn which sessions it wrongly archived. none_as_null

@@ -68,6 +68,8 @@ def build_daemon(orchestrator=None):
     if orchestrator is None:
         orchestrator = SessionOrchestrator()
     orchestrator._x11 = build_x11_manager(get_settings())
+    from server.sessions.native_display import build_native_display
+    orchestrator._native = build_native_display(get_settings())
     from server.sessions.copilot_proxy import build_copilot_proxy_manager
     from server.sessions.copilot_auth import CopilotAuthManager
     from ccswitch import paths as _ccswitch_paths
@@ -93,7 +95,7 @@ def build_daemon(orchestrator=None):
     # handle through which to publish `engines` at all.
     app.state.orchestrator = orchestrator
     app.state.x11 = orchestrator._x11
-    register_x11(app, app.state.x11)
+    register_x11(app, app.state.x11, orchestrator=orchestrator)
     app.state.reauth = ReauthManager(
         timeout_s=get_settings().reauth_timeout_s,
         x11=lambda: app.state.x11,
@@ -244,6 +246,13 @@ async def daemon_lifespan(app, orchestrator):
                 await asyncio.wait_for(x11.stop_all(), timeout=_DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S)
             except Exception:
                 log.warning("daemon shutdown: x11 teardown failed", exc_info=True)
+        native = getattr(orchestrator, "_native", None)
+        if native is not None:
+            try:
+                await asyncio.wait_for(
+                    native.stop_all(), timeout=_DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S)
+            except Exception:
+                log.warning("daemon shutdown: native display teardown failed", exc_info=True)
         try:
             await app.state.reauth.shutdown()
         except Exception:

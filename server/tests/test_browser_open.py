@@ -34,6 +34,13 @@ def _make_client(fake_x11):
     with patch.dict(os.environ, _ENV_PATCH):
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
         app = create_app(orchestrator=orch)
+        # The route delegates to orchestrator.open_browser(), which reads the
+        # orchestrator's OWN _x11 (that is where the native/virtual branch lives —
+        # one implementation shared with the daemon's x11_open_browser RPC). Injecting
+        # only app.state.x11 would leave the orchestrator with x11=None, so every
+        # request would 409 "no display for session". app.state.x11 stays set because
+        # other routes still read it.
+        orch._x11 = fake_x11
         app.state.x11 = fake_x11
         return TestClient(app, raise_server_exceptions=False)
 
@@ -60,6 +67,9 @@ def test_open_browser_capped():
         headers=_IDENTITY_HEADERS,
     )
     assert r.status_code == 409
+    # reason "cap" — the display exists, launch_browser refused.
+    assert r.json()["detail"] == "browser cap reached"
+    assert fake.calls == [("S", None)]
 
 
 def test_open_browser_no_display():
@@ -71,6 +81,9 @@ def test_open_browser_no_display():
         headers=_IDENTITY_HEADERS,
     )
     assert r.status_code == 409
+    # reason "no_display" — no lease, so launch_browser is never reached.
+    assert r.json()["detail"] == "no display for session"
+    assert fake.calls == []
 
 
 def test_open_browser_no_x11():
@@ -80,6 +93,8 @@ def test_open_browser_no_x11():
     with patch.dict(os.environ, _ENV_PATCH):
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory(), poll_interval=9999.0)
         app = create_app(orchestrator=orch)
+        # Neither the orchestrator nor app.state has an X11 manager.
+        assert orch._x11 is None
         app.state.x11 = None
         client = TestClient(app, raise_server_exceptions=False)
     r = client.post(
@@ -88,3 +103,4 @@ def test_open_browser_no_x11():
         headers=_IDENTITY_HEADERS,
     )
     assert r.status_code == 409
+    assert r.json()["detail"] == "no display for session"
