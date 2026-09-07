@@ -378,7 +378,17 @@ def test_replay_batch_leads_with_reset_on_every_attach(ws_env):
         assert any(e.get("type") in ("textDelta", "toolCall") for e in batch1), (
             "expected replayed transcript content after the reset"
         )
-        _drain_events(ws, until_type="replayComplete")
+        # replayComplete rides the SAME queue as the replay it closes
+        # (server/bridge/ws.py, "replayComplete rides the queue too"), so whether
+        # it lands in THIS batch frame or a later one is pure batcher timing.
+        # Draining unconditionally only worked by accident: an unstubbed helper
+        # door was spawning a real `claude` subprocess, and that latency split the
+        # sequence across frames. With the loop free the whole thing coalesces
+        # into one frame, `_first_batch_events` consumes the replayComplete, and
+        # `_drain_events` blocks forever — its receive_text() has no timeout, so
+        # an unmatched predicate outlives the `timeout` argument (#1383).
+        if not any(e.get("type") == "replayComplete" for e in batch1):
+            _drain_events(ws, until_type="replayComplete")
 
     # Reconnect = a brand-new socket re-attaching the same session. The replay
     # re-runs (fresh server-side live_tasks), and the reset must lead it again.
