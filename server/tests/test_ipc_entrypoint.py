@@ -7,6 +7,7 @@ from server.ipc.client import DaemonClient
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow
 async def test_entrypoint_serves_ping_over_uds():
     tmpdir = tempfile.mkdtemp(prefix="ccsd-ep-")
     sock = os.path.join(tmpdir, "d.sock")
