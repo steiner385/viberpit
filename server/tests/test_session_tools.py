@@ -115,9 +115,18 @@ def test_server_is_named_from_the_brand():
     assert cfg["type"] == "sdk" and cfg["name"] == brand.MCP_SERVER_NAME
 
 
-def test_instruction_names_the_tool_and_the_rules():
+def test_instruction_is_an_index_and_the_tool_description_carries_the_rules():
+    """The system-prompt paragraph is deliberately an index (task-8 review): it names
+    the tool, but the RULES (never a bug in the project, keep working) live only in
+    the tool's own description, which rides the tool schema whenever it is mounted —
+    a second copy in the paragraph is the parallel-implementation anti-pattern this
+    module's docstring warns about, and it was the WEAKER copy."""
     from server.sessions.tools.instruction import session_instructions
+    from server.sessions.tools.tools import build_session_tools
     s = session_instructions(session_tools=True, signalling_tools=False,
                              self_model_switch=False)
     assert "report_feedback" in s and "session_context" in s
-    assert "never a bug in the project" in s and "keep working" in s.lower()
+
+    desc = {t.name: t.description for t in build_session_tools(_ctx())}
+    assert "never a bug in the project" in desc["report_feedback"]
+    assert "keep working" in desc["report_feedback"].lower()

@@ -561,15 +561,16 @@ class CodexAgentDriver:
                     # no matching guard — `ThreadResumeParams` carries no
                     # `developerInstructions` at all.
                     #
-                    # signalling_tools reads `self.capabilities.durable_tool_surface`
-                    # rather than a literal False: that capability is what says a
-                    # declared surface does not survive `thread/resume` (§5), so the
-                    # day it flips True this call flips with it instead of disagreeing
-                    # with the capability that already answers the question.
+                    # Both flags read `self.capabilities` rather than a literal — the
+                    # capability is what says a declared surface does not survive
+                    # `thread/resume` (§5) and that this engine cannot act on a model
+                    # request, so the day either flips this call flips with it instead
+                    # of disagreeing with the capability that already answers the
+                    # question.
                     developer_instructions=session_instructions(
                         session_tools=self._session_tools is not None,
                         signalling_tools=self.capabilities.durable_tool_surface,
-                        self_model_switch=False,
+                        self_model_switch=self.capabilities.self_model_switch,
                     ),
                     # The coding session's ccswitch tool surface, or nothing at
                     # all: an empty tuple emits no `dynamicTools` field, so a

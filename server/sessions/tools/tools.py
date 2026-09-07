@@ -18,7 +18,7 @@ from server.sessions.feedback import CATEGORIES, IMPACTS, record_feedback, valid
 from server.sessions.model_request import MODEL_TIERS, parse_request_model
 
 from .context import SessionToolContext, context_snapshot
-from .registry import SESSION_TOOL_SPECS, mounted_signal_names
+from .registry import SESSION_TOOL_SPECS, mounted_names
 
 log = logging.getLogger(__name__)
 
@@ -45,12 +45,12 @@ async def _audit_tool_call(ctx: SessionToolContext, spec: ToolSpec, ok: bool, ms
 
 
 def mounted_tool_names(ctx: SessionToolContext) -> tuple[str, ...]:
-    """The tool names THIS context gets, in declaration order. THE predicate:
-    `build_session_tools` builds from it and the system-prompt paragraph names from
-    it (via `mounted_signal_names` for the SIGNAL half), so a session can never be
-    told about a tool it was not declared."""
-    return ("session_context", "report_feedback") + mounted_signal_names(
-        signalling_tools=ctx.signalling_tools, self_model_switch=ctx.self_model_switch)
+    """The tool names THIS context gets, in declaration order. A thin ctx-unpacking
+    adapter over `registry.mounted_names` — THE predicate, also read by the
+    system-prompt paragraph in `tools/instruction.py` — so `build_session_tools` and
+    the paragraph can never disagree about which tool a session was declared."""
+    return mounted_names(signalling_tools=ctx.signalling_tools,
+                         self_model_switch=ctx.self_model_switch)
 
 
 def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
@@ -136,7 +136,9 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                "decided not to open one. An objective that asked for a code change is NOT "
                "finished by investigating it — discovering the work is larger than expected, "
                "recommending a spec, or offering to continue is a hand-back: say what you "
-               "found, ask how to proceed, and call nothing. note: one short sentence.",
+               "found, ask how to proceed, and call nothing. Never call this in the same turn "
+               "as a question to the user: if you need an answer, ask and withhold the call. "
+               "note: one short sentence.",
                {"type": "object",
                 "properties": {"resolution": {"type": "string", "enum": list(NO_PR_RESOLUTIONS)},
                                "note": {"type": "string"}},

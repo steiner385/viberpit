@@ -194,7 +194,7 @@ def met_bar(goal: str, goal_source: str, facts: PrFacts,
             "the objective is a code change, but no PR exists and the transcript does "
             "not show the goal is already met. Either finish the work (open a PR and arm "
             "auto-merge), or — if you need a decision from the user — ask it as a direct "
-            "question and emit no completion marker.", "low")
+            "question and do not signal completion until you have an answer.", "low")
     if facts.has_repo and _is_code_goal(goal):
         return BarVerdict(False, "code goal but no PR opened",
                           "open a PR and arm auto-merge before finishing", "low")

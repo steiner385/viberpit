@@ -13,56 +13,40 @@ from __future__ import annotations
 from ccswitch import brand
 
 from ..completion import marker_instructions
-from .registry import mounted_signal_names
+from .registry import mounted_names
 
-#: The two READ tools every session with the surface mounted gets, regardless of engine
-#: or capability — unlike the SIGNAL tools, these are never gated on `signalling_tools`.
-_ALWAYS_ON_BLURBS: tuple[tuple[str, str], ...] = (
-    ("session_context",
-     "how you were dispatched (repo, branch, originating automation and issue, goal)"),
-    ("report_feedback",
-     f"a problem with {brand.NAME} ITSELF — contradictory or wrong instructions, an "
-     "ambiguous dispatch prompt, an interrupt or model/account switch at a bad moment, a "
-     "broken worktree, credential or tool it provides — never a bug in the project you are "
-     "working on or a choice the user made. One report per distinct problem, at most three "
-     "per session. A report never waits for a reply: keep working."),
-)
-
-#: What each SIGNAL tool replaces, told as an instruction "INSTEAD of a marker" — a
-#: session with these mounted is never also taught the marker spelling for the same signal.
-_SIGNAL_BLURBS: dict[str, str] = {
-    "mark_complete":
-        "you have FULLY accomplished the objective of this session. Call it only when "
-        "the work is genuinely complete — never for an interim step, never while you are "
-        "still working or waiting on something, and never in the same turn as a question "
-        "to the user: if you need an answer, ask and do not call this.",
-    "mark_no_pr":
-        "the work is genuinely finished but NO pull request is appropriate — the objective "
-        "is already satisfied without a code change, or the work was cancelled. Call it "
-        "INSTEAD of mark_complete.",
-    "request_model":
-        "the work has turned out materially harder or easier than it looked and you want "
-        "to run the rest of it on a different model tier.",
+#: One clause per tool, deliberately thin: this paragraph is an index, not a spec (see
+#: the module docstring). The tool's OWN description — sent with the tool schema, so it
+#: is in context whenever the tool is mounted — is the single authority for the rules
+#: (when to call it, what NOT to combine it with); a second, near-verbatim copy here is
+#: the parallel-implementation anti-pattern this module exists to avoid, and it is
+#: always the WEAKER copy that ends up in the system prompt (task-8 review, prod
+#: fdc6b27a). Every name in `registry.mounted_names`'s possible output must have an
+#: entry here — `test_session_tools_instruction.py` asserts coverage so a fourth
+#: `ToolSpec` without one fails a test rather than crashing every Claude spawn.
+_BLURBS: dict[str, str] = {
+    "session_context": "how you were dispatched (repo, branch, origin, goal).",
+    "report_feedback": f"a problem with {brand.NAME} itself, never the project.",
+    "mark_complete": "you have fully accomplished this session's objective.",
+    "mark_no_pr": "the work is finished but no pull request is appropriate.",
+    "request_model": "you want to run the rest of the work on a different model tier.",
 }
 
 
 def _session_tools_instruction(*, signalling_tools: bool, self_model_switch: bool) -> str:
     """The paragraph naming exactly the tools THIS session was mounted with.
 
-    Built from ``mounted_signal_names`` — the same predicate ``build_session_tools`` and
-    ``tools.mounted_tool_names`` select from — so the list, and its count, can never drift
-    from what was actually declared. This replaced a hand-typed "two MCP tools" that
-    stopped being true the day a third tool was added.
+    Built from ``registry.mounted_names`` — THE predicate ``build_session_tools`` and
+    ``tools.mounted_tool_names`` also select from — so the list, and its count, can
+    never drift from what was actually declared. This replaced a hand-typed "two MCP
+    tools" that stopped being true the day a third tool was added.
     """
-    names = ("session_context", "report_feedback") + mounted_signal_names(
-        signalling_tools=signalling_tools, self_model_switch=self_model_switch)
-    blurbs = dict(_ALWAYS_ON_BLURBS)
-    blurbs.update(_SIGNAL_BLURBS)
-    plural = "tool" if len(names) == 1 else "tools"
-    lines = "\n".join(f"`{name}`: {blurbs[name]}" for name in names)
+    names = mounted_names(signalling_tools=signalling_tools,
+                          self_model_switch=self_model_switch)
+    lines = "\n".join(f"`{name}`: {_BLURBS[name]}" for name in names)
     return (
         f"{brand.NAME} is the harness that dispatched and supervises this session; it "
-        f"exposes {len(names)} MCP {plural} under the `{brand.MCP_SERVER_NAME}` server.\n"
+        f"exposes {len(names)} MCP tools under the `{brand.MCP_SERVER_NAME}` server.\n"
         f"{lines}"
     )
 

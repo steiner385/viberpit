@@ -18,13 +18,21 @@ def _build_append_string() -> str:
     switching (``AgentCapabilities.self_model_switch``), so it is the one engine that
     passes both flags through as True when the surface is on: a Claude session with
     tools mounted is told about the tools and never about the markers they replace.
+
+    ``signalling_tools`` reads ``ClaudeAgentDriver.capabilities.durable_tool_surface``
+    rather than trusting ``session_tools_enabled`` alone — the same reasoning that made
+    the Codex call read its own capability instead of a literal ``False``: the flag on
+    its own says only that SOME overlay is mounted, not that it is the kind a
+    signalling-tools paragraph could truthfully describe.
     """
     from server.config import get_settings
+    from server.sessions.claude_driver import ClaudeAgentDriver
     from server.sessions.tools.instruction import session_instructions
     cfg = get_settings()
     return session_instructions(
         session_tools=cfg.session_tools_enabled,
-        signalling_tools=cfg.session_tools_enabled,
+        signalling_tools=(cfg.session_tools_enabled
+                          and ClaudeAgentDriver.capabilities.durable_tool_surface),
         self_model_switch=cfg.self_model_switch_enabled)
 
 # Inline flag-settings payload (--settings layer, highest priority).  Auto-approves any

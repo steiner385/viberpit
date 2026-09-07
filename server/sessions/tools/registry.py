@@ -29,13 +29,16 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
 SIGNAL_TOOL_NAMES: frozenset[str] = frozenset(
     name for name, spec in SESSION_TOOL_SPECS.items() if spec.tool_class is ToolClass.SIGNAL)
 
+#: THE ordered set of READ tool names, derived the same way as ``SIGNAL_TOOL_NAMES``
+#: rather than hand-typed at each call site. A fourth READ tool added to the table
+#: above is picked up here — and therefore by ``mounted_names`` below — automatically.
+READ_TOOL_NAMES: tuple[str, ...] = tuple(
+    name for name, spec in SESSION_TOOL_SPECS.items() if spec.tool_class is ToolClass.READ)
+
 
 def mounted_signal_names(*, signalling_tools: bool, self_model_switch: bool) -> tuple[str, ...]:
-    """Which SIGNAL tool names are mounted, in declaration order — THE predicate for the
-    signalling half of a session's tool surface. ``tools.mounted_tool_names`` (the full
-    predicate, READ tools included) and ``tools/instruction.py``'s system-prompt paragraph
-    both build from this rather than re-deriving "which tools does this session get": two
-    copies of that condition is how a session ends up told about a tool it does not have.
+    """Which SIGNAL tool names are mounted, in declaration order — the signalling half
+    of ``mounted_names`` below.
 
     ``request_model`` is named only when ``self_model_switch`` — declaring it otherwise
     offers a call whose result is silently dropped (no engine capability to honour it).
@@ -46,6 +49,18 @@ def mounted_signal_names(*, signalling_tools: bool, self_model_switch: bool) -> 
     if self_model_switch:
         names.append("request_model")
     return tuple(names)
+
+
+def mounted_names(*, signalling_tools: bool, self_model_switch: bool) -> tuple[str, ...]:
+    """THE full predicate for which tool names a session gets, in declaration order —
+    READ_TOOL_NAMES (unconditional) followed by the SIGNAL half. ``tools.mounted_tool_names``
+    (the ctx-unpacking adapter used by ``build_session_tools``) and ``tools/instruction.py``'s
+    system-prompt paragraph both call this SAME function rather than each re-deriving "which
+    tools does this session get": two copies of that condition is how a session ends up
+    told about a tool it does not have, or declared one it was never told about.
+    """
+    return READ_TOOL_NAMES + mounted_signal_names(
+        signalling_tools=signalling_tools, self_model_switch=self_model_switch)
 
 
 register_surface("session", SESSION_TOOL_SPECS)

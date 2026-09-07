@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from server.sessions.completion import COMPLETION_MARKER, marker_instructions
 from server.sessions.tools.instruction import session_instructions
+from server.sessions.tools.registry import READ_TOOL_NAMES, SIGNAL_TOOL_NAMES, mounted_names
 
 
 def test_a_tools_session_is_never_also_told_about_markers():
@@ -31,10 +32,45 @@ def test_the_surface_off_entirely_is_exactly_the_marker_contract():
 
 
 def test_the_paragraph_never_hardcodes_a_tool_count():
-    """It said 'two MCP tools' when there were two. Generated from the mounted set
-    so it cannot drift from what was declared."""
-    assert "two MCP tools" not in session_instructions(
-        session_tools=True, signalling_tools=True, self_model_switch=True)
+    """It said 'two MCP tools' when there were two. Checked at the READ-only call
+    (session_tools=True, signalling_tools=False) rather than the 5-tool call: there,
+    the literal count really is 2, so a hardcoded 'two MCP tools' would pass an
+    absence check just as well as the generated text does. Asserting the rendered
+    count equals `len(mounted_names(...))` is the only version that can actually
+    fail if the count is ever hand-typed again."""
+    names = mounted_names(signalling_tools=False, self_model_switch=False)
+    s = session_instructions(session_tools=True, signalling_tools=False,
+                             self_model_switch=False)
+    assert f"exposes {len(names)} MCP tools" in s
+
+
+def test_every_mounted_name_has_a_blurb():
+    """`instruction.py:_BLURBS[name]` is a spawn-time KeyError, not a test failure,
+    if a name `mounted_names` can produce is missing — i.e. every Claude session
+    spawn would crash. Enumerate every combination the flags can actually produce."""
+    from server.sessions.tools.instruction import _BLURBS
+    for signalling_tools in (False, True):
+        for self_model_switch in (False, True):
+            names = mounted_names(signalling_tools=signalling_tools,
+                                  self_model_switch=self_model_switch)
+            assert set(names) <= set(_BLURBS), (signalling_tools, self_model_switch)
+    # And the registry's own sources of truth, independent of the flag sweep above.
+    assert set(READ_TOOL_NAMES) <= set(_BLURBS)
+    assert SIGNAL_TOOL_NAMES <= set(_BLURBS)
+
+
+def test_session_tools_off_ignores_signalling_tools_regardless_of_its_value():
+    """Pins the branch order: `session_tools=False` must short-circuit to the marker
+    contract even when `signalling_tools=True` is passed alongside it — safe today
+    only because `session_tools` is checked first, and nothing guarded it before this
+    test. A future reorder that checked `signalling_tools` first would teach a session
+    about tools it does not have declared at all."""
+    assert session_instructions(session_tools=False, signalling_tools=True,
+                                self_model_switch=False) == marker_instructions(
+        self_model_switch=False)
+    assert session_instructions(session_tools=False, signalling_tools=True,
+                                self_model_switch=True) == marker_instructions(
+        self_model_switch=True)
 
 
 def test_no_marker_session_still_gets_the_read_tools_paragraph():

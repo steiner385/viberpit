@@ -59,6 +59,19 @@ def test_request_model_is_declared_only_when_the_engine_can_honour_it():
     assert {"mark_complete", "mark_no_pr"} <= off
 
 
+def test_mark_no_pr_description_carries_both_hardened_rules():
+    """The system-prompt paragraph is deliberately an index now (task-8 review): the
+    tool's OWN description is the single authority for the hand-back rule and the
+    no-question rule, both hardened for prod session fdc6b27a (2026-09-06), where a
+    session researched, wrote no code, recommended a spec, and self-certified past
+    the completion bar. mark_complete already carried the no-question rule; this
+    guards mark_no_pr from silently dropping either one."""
+    desc = {t.name: t.description for t in build_session_tools(_ctx(signalling_tools=True))}
+    no_pr = desc["mark_no_pr"].lower()
+    assert "hand-back" in no_pr and "call nothing" in no_pr
+    assert "never call this in the same turn as a question" in no_pr
+
+
 @pytest.mark.parametrize("signalling_tools,self_model_switch",
                          list(itertools.product([False, True], repeat=2)))
 def test_mounted_tool_names_agrees_with_build_session_tools(signalling_tools, self_model_switch):
