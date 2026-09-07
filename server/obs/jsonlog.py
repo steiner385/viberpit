@@ -152,4 +152,12 @@ def configure_logging(*, process: str = "edge") -> None:
     # Suppress CancelledError pool-reset noise from sqlalchemy.pool (expected during
     # shutdown/cancellation; ~400 per rotation at ERROR level — not actionable).
     logging.getLogger("sqlalchemy.pool").addFilter(_PoolCancelledFilter())
+
+    # Error-triage capture (spec 2026-09-07 §4): WARNING+ records → error_signatures.
+    # Installed here so the edge and the daemon get it from the same call; the
+    # flusher is started by each process's lifespan once the DB is up.
+    if bool(getattr(settings, "error_sink_enabled", True)):
+        from server.obs.errsink import install_error_sink
+        install_error_sink(source=process)
+
     _configured = True
