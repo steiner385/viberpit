@@ -32,7 +32,8 @@ async def test_project_mcp_server_and_ccswitch_server_coexist(tmp_path):
     opts = ClaudeAgentOptions(
         cwd=str(tmp_path), permission_mode="default", can_use_tool=can_use_tool,
         settings=json.dumps({"enableAllProjectMcpServers": True}),
-        mcp_servers={"ccswitch": build_session_server(ctx)}, max_turns=2,
+        mcp_servers={"ccswitch": build_session_server(ctx)}, max_turns=6,
+        disallowed_tools=["ToolSearch"],
         **cli_path_kwargs())
     used: list[str] = []
     async with ClaudeSDKClient(options=opts) as client:

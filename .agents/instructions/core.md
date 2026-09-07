@@ -294,5 +294,5 @@ system-prompt half and the scan half cannot drift).
 ## Session tool surface
 
 Every coding session mounts an in-process `ccswitch` MCP server (`server/sessions/tools/`) with `session_context`/`report_feedback`, both READ-class (no permission card).
-The coding overlay is exactly `{"mcp_servers": …}` — never add `strict_mcp_config` or `system_prompt`. Kill switch `CCSWITCH_SESSION_TOOLS_ENABLED`.
+The coding overlay is exactly `{"mcp_servers": …}` — never add `strict_mcp_config` or `system_prompt`. Kill switch `CCSWITCH_SESSION_TOOLS_ENABLED`. Registry primitives live in `server/mcp_spec.py`; add a tool by adding a `ToolSpec` + handler + eval case.
 Spec: `docs/superpowers/specs/2026-09-06-session-feedback-to-backlog-design.md`.
