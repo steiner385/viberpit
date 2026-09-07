@@ -128,6 +128,15 @@ report that SHA, then inspect authenticated `/healthz`, `startup_report`, and
 `resume_recovery_status`. A controller warning is not proof that sessions restored.
 Do not advance while the controller is still rolling out or awaiting its self-restart.
 
+Before stopping the credential authority, verify its configured native binary is
+present and executable under the service UID and effective sandbox, and run the
+real version/schema probe against the deployed pins. A healthy running authority
+can outlive a missing or incompatible restart-time dependency. Use the existing
+[Codex pin procedure](codex-credential-authority.md#6-upgrading-the-codex-cli) and
+[startup doctor guidance](../../deploy/README.md#startup-doctor); do not weaken the
+probe or change the private auth UID/storage to make startup pass. Back up any
+required dependency repair separately from the naming rollback.
+
 The installed-host tool preserves the exact installed unit bodies, all dropins
 (including `system.control` limits), owners, modes, boot dependencies, and state
 inodes. It does not replace customized units with repository templates. Its default
@@ -147,7 +156,9 @@ and any discovered service/timer that is not fully inactive with zero main/contr
 PIDs. The mount unit is explicitly excluded from both migration and stopped checks.
 It owns SSHFS child processes even while its systemd state is `active (exited)`.
 
-Perform the following on **rocky first**, verify it, then repeat on dobby:
+Normally perform the following on **rocky first**, verify it, then repeat on dobby.
+If rocky is still busy, dobby may go first after its own drain is ready; record the
+changed order and wait for rocky to become ready before stopping it:
 
 1. Capture unit identity/policy, path inode/ownership/modes, mount topology and
    sanitized session IDs/statuses. Record which services/timers are active and
@@ -216,9 +227,10 @@ a completed canonical reversal.
 The runtime/unit work addresses [#1370](https://github.com/steiner385/viberpit/issues/1370)
 and [#1371](https://github.com/steiner385/viberpit/issues/1371); the host operation is
 tracked by [#1372](https://github.com/steiner385/viberpit/issues/1372). This runbook and
-an offline test establish a procedure, not a claim that the live flip has happened.
+an offline test establish the procedure; the dated receipts below record the live
+operations separately.
 
-## Live receipt — 2026-09-07, America/New_York
+## Live additive receipt — 2026-09-07, America/New_York
 
 Applied rocky first, then dobby, against deployed application SHA `3dd25c7e`.
 Both authenticated daemon health endpoints and dobby's edge remained healthy.
@@ -260,3 +272,63 @@ Before/after host snapshots and origin-URL rollback records live under
 and rocky's runtime checkout, now use `https://github.com/steiner385/viberpit.git`.
 This also updates the main checkout's linked worktrees through shared Git config;
 no managed clone or historical worktree directory was moved.
+
+## Live canonical receipt — 2026-09-07, America/New_York
+
+[PR #1424](https://github.com/steiner385/viberpit/pull/1424) merged as `d8757ee6`,
+with both PR checks and exact-merge CI green. The audited `POST /api/deploy/start`
+request was accepted; both daemons and dobby's edge now report that SHA.
+The canonical operation ran on dobby first while two rocky Claude turns continued,
+then on rocky once ready. Each daemon had zero busy/condensing sessions before its
+graceful stop; there were no forced stops or remounts.
+
+The reviewed, pinned host scripts applied 89 operations on dobby and 48 on rocky.
+Canonical config/state/runtime paths are `/etc/viberpit`, `/var/lib/viberpit`, and
+`/run/viberpit`; runtime checkouts are `/home/tony/GitHub/viberpit-deploy` on dobby
+and `/home/tony/GitHub/viberpit` on rocky. Migrated units use canonical `viberpit`
+names and retain their old aliases. Both hosts passed effective security/resource
+policy, environment-file source, directory device/inode/owner/mode, and boot-link
+comparisons. Dobby's health timer is active again; rocky's ensure timer remains
+inactive without boot enablement. Rocky's mount retains its `ccswitch-mounts`
+identity and `viberpit-mounts` alias, with unchanged PID, cgroup, invocation,
+children, and mount topology.
+
+The offline editable refresh updated no runtime dependencies; both CLI paths
+passed on each host. Rocky's existing fleet `repoPath` was updated through the
+fleet API; dobby's unset override stayed unset. Private authority user/group
+`ccswitch-auth` and `/var/lib/ccswitch-codex-auth` retained their identity,
+inode, and permissions. Legacy package/environment/DB/account namespaces,
+historical native/Git paths, and the shared physical archive remain as described
+above.
+
+Restart exposed a pre-existing missing authority binary at `/usr/bin/codex` on
+dobby. Only its binary setting was repaired to
+`/usr/local/lib/viberpit/codex/0.153.2/codex`, using byte-identical native bytes from
+rocky's installed npm package. The real version and schema probes matched the
+pins, and the authority is active. Preserve this dependency repair across a
+naming rollback: its binary is outside the moved trees, and the private env backup
+and `authority-native-fix.json` record it separately.
+
+Dobby's canonical restore restored two sessions with zero failed or replayed.
+Rocky restored three and retained two recovery notices: one session has a verified
+native owner and current lease on dobby, so rocky correctly refused a duplicate;
+the other was removed from active records, with its archive entry and 638-turn
+transcript verified. The recovery list was **not wholly clear**. During the earlier
+compatibility rollout, the controller's rocky restore RPC timed out, but the daemon
+completed it afterwards and consumed the snapshot. The GitHub deployment-status
+publication returned a nonfatal 403 warning.
+
+Fresh rocky Claude and Codex turns each returned `VIBERPIT_OK` without tools at
+10:04:23 and 10:04:33 EDT; their temporary sessions were removed. Fresh assistant
+output was observed in an existing dobby native session at 10:05:52 EDT. Dobby's
+new-session capacity was full, so no additional session was forced. Final
+checks found both daemon health endpoints healthy and the expected services active.
+
+Each host's private canonical rollback bundle is
+`/root/viberpit-canonical-20260907/rollback`. Its parent holds the reviewed `tools/`,
+`live-before-canonical.json`, and the separate authority repair record on dobby;
+`rollback/editable-install.tar` preserves editable metadata. Sanitized verification
+receipts and snapshots live under `~/.local/state/viberpit-cutover/` on the relevant
+host; exact process identities, artifact digests, and recovery details belong in
+those host-local records. Use the canonical rollback procedure above, preserving
+the independent authority dependency repair.
