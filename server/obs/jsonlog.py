@@ -100,16 +100,22 @@ class JSONFormatter(logging.Formatter):
 
 
 _configured = False
+# Which process this is ("edge" | "daemon"); set by configure_logging(). The error
+# sink (errsink.py) tags every captured signature with it.
+PROCESS = "edge"
 
 
-def configure_logging() -> None:
+def configure_logging(*, process: str = "edge") -> None:
     """Attach JSON stdout + rotating-file handlers to the root logger. Idempotent.
 
-    Never raises: a bad log dir degrades to stdout-only with one warning.
+    ``process`` names the caller ("edge" for server/app.py, "daemon" for
+    server/ipc/serve.py) and is exposed as ``PROCESS``. Never raises: a bad log
+    dir degrades to stdout-only with one warning.
     """
-    global _configured
+    global _configured, PROCESS
     if _configured:
         return
+    PROCESS = process
 
     from server.config import get_settings
 

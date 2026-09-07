@@ -16,6 +16,7 @@ from server.ipc.drain_on_signal import install_drain_on_sigterm
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 from server.ipc.reauth_rpc import register_reauth
 from server.ipc.x11_rpc import register_x11
+from server.obs.jsonlog import configure_logging
 from server.reauth import ReauthManager
 from server.ipc.paths import Endpoint, sessiond_endpoint
 from server.ipc.tls import DaemonTLSFiles, daemon_tls_files, daemon_ssl_context_factory, client_allowlist
@@ -286,6 +287,10 @@ async def daemon_lifespan(app, orchestrator):
 
 
 def serve(socket_path: str | None = None) -> None:
+    # #1423: the daemon owns the orchestrator in remote mode, so it is most of the
+    # app's diagnostic surface — and it never configured logging, so every INFO
+    # was dropped and WARNING+ leaked as bare text. Same call the edge makes.
+    configure_logging(process="daemon")
     # Back-compat: an explicit socket_path arg forces a unix bind at that path.
     endpoint = Endpoint("unix", path=socket_path) if socket_path else sessiond_endpoint()
     app, orchestrator = build_daemon()
