@@ -9,11 +9,13 @@ def test_restart_edge_restarts_only_the_edge_unit(monkeypatch):
     monkeypatch.setenv("CCSWITCH_DAEMON_SSH_HOST", "tony@rocky")
     order = []
     def run(cmd, **kw):
+        if "show" in cmd:
+            return SimpleNamespace(returncode=0, stdout="LoadState=loaded\n")
         order.append(cmd)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
     units = steps.restart_edge(run=run)
-    assert units == ["ccswitch.service"]
-    assert order == [["sudo", "systemctl", "restart", "ccswitch.service"]]
+    assert units == ["viberpit.service"]
+    assert order == [["sudo", "systemctl", "restart", "viberpit.service"]]
 
 
 def test_health_requires_both_status_and_sha():

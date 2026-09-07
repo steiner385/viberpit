@@ -1,0 +1,20 @@
+[Unit]
+Description=ViberPit daemon health watchdog — probe, auto-restart on wedge, alert
+# Pairs with viberpit-health.timer. Recovers the "process alive but control-plane
+# socket wedged" failure that systemd's Restart=on-failure cannot see.
+After=viberpit-daemon.service
+Documentation=https://github.com/steiner385/viberpit
+
+[Service]
+Type=oneshot
+User=tony
+SyslogIdentifier=viberpit-health
+# Optional: CCSWITCH_ALERT_WEBHOOK (ntfy/webhook URL) + threshold overrides.
+EnvironmentFile=-/etc/viberpit/viberpit.env
+# On the host this is rewritten to the live deploy worktree path
+# (/home/tony/GitHub/viberpit-deploy/scripts/...), matching how
+# viberpit-daemon.service is installed. See deploy/README.md.
+ExecStart=/home/tony/GitHub/viberpit-deploy/scripts/viberpit-health-check.sh
+
+[Install]
+Alias=ccswitch-health.service

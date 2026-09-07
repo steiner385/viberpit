@@ -6,7 +6,7 @@ run by a human, in order, with the go/no-go checklist (below) gating the point o
 
 ## Hard precondition: the authoritative `--apply` MUST run after writers are stopped
 
-`scripts/ccswitch-sqlite-to-pg.py --apply` copies rows with
+`scripts/viberpit-sqlite-to-pg.py --apply` copies rows with
 `INSERT ... ON CONFLICT DO NOTHING`. That means it only ever **inserts** — it never updates a row
 that already exists in the Postgres target. If any ccswitch writer (edge, deploy-controller,
 daemon) is still running while `--apply` executes, any row copied early keeps its **old** value
@@ -39,7 +39,7 @@ are smaller than SQLite's total.
 - Tasks 1–4 merged and deployed (schema/model changes, migration script, provisioning script, and
   Postgres-only test suite already exist on this checkout).
 - `ccswitch` Postgres role and database provisioned:
-  `sudo -u postgres bash scripts/ccswitch-pg-provision.sh '<password>'`
+  `sudo -u postgres bash scripts/viberpit-pg-provision.sh '<password>'`
   (idempotent — safe to re-run; creates/updates the `ccswitch` role and `ccswitch` database, owner
   `ccswitch`, and grants `ALL ON SCHEMA public`).
 - `CCSWITCH_TEST_PG_URL` pointed at a scratch database and
@@ -53,7 +53,7 @@ are smaller than SQLite's total.
 ### Optional: pre-warm (safe to run any time before stopping services)
 
 ```bash
-PYTHONPATH=. .venv/bin/python scripts/ccswitch-sqlite-to-pg.py --apply --pg-url "$PG_URL"
+PYTHONPATH=. .venv/bin/python scripts/viberpit-sqlite-to-pg.py --apply --pg-url "$PG_URL"
 ```
 
 This is safe to run repeatedly while ccswitch is live — it only ever adds rows, never mutates
@@ -64,13 +64,13 @@ existing ones — but per the precondition above, it does **not** replace the au
 1. **Stop services — edge and deploy-controller BEFORE the daemon.** Stopping in this order means
    nothing can accept a new write while the daemon is still draining in-flight session state:
    ```bash
-   sudo systemctl stop ccswitch.service ccswitch-deploy-controller.service
-   sudo systemctl stop ccswitch-daemon.service
+   sudo systemctl stop viberpit.service viberpit-deploy-controller.service
+   sudo systemctl stop viberpit-daemon.service
    ```
 
 2. **Confirm nothing is live:**
    ```bash
-   systemctl is-active ccswitch.service ccswitch-deploy-controller.service ccswitch-daemon.service
+   systemctl is-active viberpit.service viberpit-deploy-controller.service viberpit-daemon.service
    ```
    Expect `inactive` (or `failed`, never `active`) for all three before proceeding.
 
@@ -114,7 +114,7 @@ existing ones — but per the precondition above, it does **not** replace the au
 
 4. **Migrate — the authoritative run:**
    ```bash
-   PYTHONPATH=. .venv/bin/python scripts/ccswitch-sqlite-to-pg.py --apply --pg-url "$PG_URL"
+   PYTHONPATH=. .venv/bin/python scripts/viberpit-sqlite-to-pg.py --apply --pg-url "$PG_URL"
    ```
    Expected, non-alarming output — do not mistake these for failures:
    - A line like `automation_event.session_id: 296 orphaned reference(s) to sessions.id will be
@@ -133,7 +133,7 @@ existing ones — but per the precondition above, it does **not** replace the au
 5. **Verify — row counts AND sequences, run as a separate invocation** (`--apply` and `--verify`
    are mutually exclusive on one run):
    ```bash
-   PYTHONPATH=. .venv/bin/python scripts/ccswitch-sqlite-to-pg.py --verify --pg-url "$PG_URL"
+   PYTHONPATH=. .venv/bin/python scripts/viberpit-sqlite-to-pg.py --verify --pg-url "$PG_URL"
    ```
    Two things must both be true — row counts matching is **not** sufficient on its own:
    - Every table line reads `OK  <table>  sqlite=N  pg=N`. A `DIFF` here, **with services stopped**,
@@ -156,7 +156,7 @@ existing ones — but per the precondition above, it does **not** replace the au
 Tick every box before switching `CCSWITCH_DB_URL`. If any item is unchecked or failed, **STOP and
 do not switch the URL** — roll back per the section below instead.
 
-- [ ] `ccswitch.service`, `ccswitch-deploy-controller.service`, `ccswitch-daemon.service` all
+- [ ] `viberpit.service`, `viberpit-deploy-controller.service`, `viberpit-daemon.service` all
       confirmed `inactive`/`failed` (step 2).
 - [ ] SQLite backup taken **after** services stopped, via checkpoint + `VACUUM INTO` (step 3), and
       confirmed present and restorable (`ls -la /mnt/hdd-storage/ccswitch.db.pre-pg` and the
@@ -170,14 +170,14 @@ do not switch the URL** — roll back per the section below instead.
 
 ## Activate the URL
 
-6. Edit `/etc/ccswitch/ccswitch.env`: uncomment the Postgres `CCSWITCH_DB_URL=postgresql+asyncpg://
+6. Edit `/etc/viberpit/viberpit.env`: uncomment the Postgres `CCSWITCH_DB_URL=postgresql+asyncpg://
    ccswitch:<password>@<host>/ccswitch` line and comment out the SQLite one.
 
 7. **Start services** — reverse of the stop order, daemon first so the edge/controller find it
    already up:
    ```bash
-   sudo systemctl start ccswitch-daemon.service
-   sudo systemctl start ccswitch.service ccswitch-deploy-controller.service
+   sudo systemctl start viberpit-daemon.service
+   sudo systemctl start viberpit.service viberpit-deploy-controller.service
    ```
 
 ## Post-cutover verification
@@ -194,7 +194,7 @@ INSERT without an explicit id:
    end, including relationships/FKs).
 3. Daemon and edge logs show no `DataError` or `duplicate key`:
    ```bash
-   journalctl -u ccswitch-daemon.service -u ccswitch.service -n 200 --no-pager | \
+   journalctl -u viberpit-daemon.service -u viberpit.service -n 200 --no-pager | \
      grep -iE 'dataerror|duplicate key' || echo "clean"
    ```
 4. **Exercise a write path** — create a new session (or trigger any action that inserts a row,
@@ -212,10 +212,10 @@ rollback is a config revert, not a data restore:
 
 1. Stop services:
    ```bash
-   sudo systemctl stop ccswitch.service ccswitch-deploy-controller.service
-   sudo systemctl stop ccswitch-daemon.service
+   sudo systemctl stop viberpit.service viberpit-deploy-controller.service
+   sudo systemctl stop viberpit-daemon.service
    ```
-2. Restore the SQLite `CCSWITCH_DB_URL` line in `/etc/ccswitch/ccswitch.env` (re-comment the
+2. Restore the SQLite `CCSWITCH_DB_URL` line in `/etc/viberpit/viberpit.env` (re-comment the
    Postgres line, uncomment the SQLite one).
 3. Start services (daemon first, as in step 7).
 
@@ -227,9 +227,9 @@ is called, the more real user data a rollback discards. Decide quickly.
 
 ## Known gotchas
 
-- **Stale daemon socket.** `/run/ccswitch/sessiond.sock` survives a `systemctl stop`
-  (`RuntimeDirectoryPreserve=yes` on `ccswitch-daemon.service` and
-  `ccswitch-deploy-controller.service`) and trips the split-brain guard at `server/app.py:350`.
+- **Stale daemon socket.** `/run/viberpit/sessiond.sock` survives a `systemctl stop`
+  (`RuntimeDirectoryPreserve=yes` on `viberpit-daemon.service` and
+  `viberpit-deploy-controller.service`) and trips the split-brain guard at `server/app.py:350`.
   Harmless for the real services on restart (the daemon recreates and rebinds it), but if you run
   `pytest` on this host while services are stopped, set
   `CCSWITCH_SESSIOND_SOCKET=/nonexistent/ccswitch-test.sock` first or the test process will refuse

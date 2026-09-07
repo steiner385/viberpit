@@ -20,8 +20,8 @@ this doc, not the other way around.
 |---|---|---|
 | Role | web edge, Postgres, canonical credentials | session daemon — owns every live `claude` process |
 | Identity | tailnet `dobby`, `100.102.11.121` | tailnet `rocky.tail0dd570.ts.net`, `100.69.70.109` |
-| `ccswitch.service` (edge) | active | not installed |
-| `ccswitch-daemon.service` | **stopped + disabled** | active + enabled |
+| `viberpit.service` (edge) | active | not installed |
+| `viberpit-daemon.service` | **stopped + disabled** | active + enabled |
 | Postgres | binds `localhost` + `100.102.11.121` only — **no LAN listener** | client only (asyncpg over tailnet) |
 | `~/.claude-accounts` (account store, credentials, ledger) | canonical | sshfs mount from dobby |
 | `~/.claude` (shared skills/commands/hooks/plugins/projects) | canonical | sshfs mount from dobby |
@@ -30,17 +30,17 @@ this doc, not the other way around.
                          tailnet (WireGuard)
                                │
   ┌─────────────────── dobby (100.102.11.121) ────────────────────┐
-  │  ccswitch.service (edge, :8787)                                │
+  │  viberpit.service (edge, :8787)                                │
   │    │ CCSWITCH_SESSIOND_ENDPOINT=https://rocky.tail0dd570.ts.net:9443
-  │    │ client cert/key/CA in /etc/ccswitch/tls/                  │
+  │    │ client cert/key/CA in /etc/viberpit/tls/                  │
   │  Postgres :5432 — listen_addresses = localhost,100.102.11.121  │
   │    pg_hba: host ccswitch ccswitch 100.69.70.109/32 scram-sha-256
-  │  ccswitch-daemon.service — STOPPED, DISABLED (split-brain guard)
+  │  viberpit-daemon.service — STOPPED, DISABLED (split-brain guard)
   │  ~/.claude-accounts, ~/.claude — canonical, exported via sshfs │
   └─────────────────────────────┬───────────────────────────────────┘
                                  │ mTLS (mutual, CERT_REQUIRED)
   ┌────────────── rocky (100.69.70.109 / rocky.tail0dd570.ts.net) ─┐
-  │  ccswitch-daemon.service — https://…:9443                     │
+  │  viberpit-daemon.service — https://…:9443                     │
   │    claude PTYs, MCP fleet, Xvfb (browser reauth)               │
   │    Postgres client → dobby, over the tailnet                   │
   │  ~/.claude-accounts  ← sshfs from dobby (creds, ledger)         │
@@ -51,16 +51,16 @@ this doc, not the other way around.
 ```
 
 **Why the tailnet, not the LAN:** `rocky` resolves to a LAN address via mDNS (pre-existing, outside
-ccswitch's control). A cert or endpoint minted for `rocky.lan` describes a path the edge never
+ViberPit's control). A cert or endpoint minted for `rocky.lan` describes a path the edge never
 actually uses once it's pointed at the tailnet name, and produces the exact "certificate does not
 match the server name" failure this doc's troubleshooting section covers. Always use the tailnet
 identity (`rocky.tail0dd570.ts.net` / `100.69.70.109`), never the bare `rocky` hostname or a
-`.lan` name, anywhere in ccswitch config.
+`.lan` name, anywhere in ViberPit config.
 
 ## 2. How to tell where a session is running
 
 ```bash
-# On rocky — expect ccswitch-managed claude processes here
+# On rocky — expect ViberPit-managed claude processes here
 ssh tony@rocky 'pgrep -af "claude_agent_sdk/_bundled/claude"'
 
 # On dobby — expect NOTHING
@@ -68,22 +68,22 @@ pgrep -af "claude_agent_sdk/_bundled/claude"
 ```
 
 **Do not use a bare `pgrep claude`** to check this. The user's own interactive `claude` CLI running
-on dobby's desktop is unrelated to ccswitch and will still show up in a bare `pgrep claude` on
-either host — only the `_bundled` path in the process command line identifies a ccswitch-managed
+on dobby's desktop is unrelated to ViberPit and will still show up in a bare `pgrep claude` on
+either host — only the `_bundled` path in the process command line identifies a ViberPit-managed
 session. If `_bundled/claude` ever shows up on dobby, the edge is talking to a local (in-process or
 stale local-daemon) orchestrator instead of rocky — treat as an incident (see §9).
 
 ## 3. mTLS enforcement check
 
-Run from dobby, using the client material at `/etc/ccswitch/tls/`:
+Run from dobby, using the client material at `/etc/viberpit/tls/`:
 
 ```bash
 # WITHOUT a client cert — must FAIL
-curl -sS --cacert /etc/ccswitch/tls/ca.pem https://rocky.tail0dd570.ts.net:9443/info; echo "exit=$?"
+curl -sS --cacert /etc/viberpit/tls/ca.pem https://rocky.tail0dd570.ts.net:9443/info; echo "exit=$?"
 
 # WITH the client cert — must return the daemon's /info JSON
-curl -sS --cacert /etc/ccswitch/tls/ca.pem \
-     --cert /etc/ccswitch/tls/client.pem --key /etc/ccswitch/tls/client.key \
+curl -sS --cacert /etc/viberpit/tls/ca.pem \
+     --cert /etc/viberpit/tls/client.pem --key /etc/viberpit/tls/client.key \
      https://rocky.tail0dd570.ts.net:9443/info; echo
 ```
 
@@ -134,7 +134,7 @@ ssh tony@rocky 'findmnt -t fuse.sshfs'   # confirm both are back
 ```
 
 After remounting, restart the daemon so any process that opened a file handle across the drop picks
-up a fresh view: `ssh tony@rocky 'sudo systemctl restart ccswitch-daemon.service'`. The daemon drains
+up a fresh view: `ssh tony@rocky 'sudo systemctl restart viberpit-daemon.service'`. The daemon drains
 in-flight turns on SIGTERM before it exits (up to ~3 min, ~10 min if a session is mid-compaction —
 see `deploy/README.md` § "Stopping / restarting the daemon"), so the command blocks while sessions
 finish; that is expected, not a hang.
@@ -156,8 +156,8 @@ Rocky's daemon unit therefore pins Codex homes to systemd's host-local state
 directory:
 
 ```
-Environment=XDG_STATE_HOME=%S/ccswitch/state
-# → per-account homes under /var/lib/ccswitch/state/ccswitch/codex/<account>/
+Environment=XDG_STATE_HOME=%S/viberpit/state
+# → per-account homes under /var/lib/viberpit/state/ccswitch/codex/<account>/
 ```
 
 This is belt-and-braces, not the only guard: `assert_local_filesystem` refuses a
@@ -168,9 +168,9 @@ locality explicit.
 
 ```bash
 # Both must hold on rocky. Expect a local fstype, and no credential cache.
-ssh tony@rocky 'findmnt -no FSTYPE -T /var/lib/ccswitch/state'   # ext4/xfs, never fuse.*
-ssh tony@rocky 'find /var/lib/ccswitch/state/ccswitch/codex -name auth.json'   # no output
-ssh tony@rocky 'cd /home/tony/GitHub/ccswitch && .venv/bin/python -m server.codex.doctor'
+ssh tony@rocky 'findmnt -no FSTYPE -T /var/lib/viberpit/state'   # ext4/xfs, never fuse.*
+ssh tony@rocky 'find /var/lib/viberpit/state/ccswitch/codex -name auth.json'   # no output
+ssh tony@rocky 'cd /home/tony/GitHub/viberpit && .venv/bin/python -m server.codex.doctor'
 ```
 
 Rocky is a **worker** (`CCSWITCH_DAEMON_ROLE`), and Codex changes nothing about
@@ -189,7 +189,7 @@ remote, in a `runners` phase that runs before the edge restart (`server/deploy/r
    only if `pyproject.toml`/`uv.lock` changed, then `sync`. dobby's own daemon uses the
    controller's checkout, already updated.
 3. Only when the diff was daemon-changing: drain (same caps as before), then
-   `sudo -n systemctl restart ccswitch-daemon.service`.
+   `sudo -n systemctl restart viberpit-daemon.service`.
 4. Verify `/info` reports the target (`checkoutSha`, and `sha` after a restart); `restore_deploy`.
 
 At most two runners are in flight at once. A runner the probe could not **reach** is skipped
@@ -204,7 +204,7 @@ A runner fenced by the skew gate is still a deploy **target** — reachable, jus
 commit — so the next deploy tries it again. To clear one by hand without a deploy:
 
 ```bash
-ssh <host> sudo systemctl restart ccswitch-daemon.service   # blocks while turns drain
+ssh <host> sudo systemctl restart viberpit-daemon.service   # blocks while turns drain
 ```
 
 The unit's `ExecStartPre` runs `runner_sync` (§5.1), which fast-forwards the checkout to
@@ -215,7 +215,7 @@ Fleet "Update" button does the same thing over SSH.
 must load the service environment first:
 
 ```bash
-set -a; source /etc/ccswitch/ccswitch.env; set +a
+set -a; source /etc/viberpit/viberpit.env; set +a
 python -m server.deploy --once
 ```
 
@@ -236,12 +236,12 @@ two fields in the Fleet UI for every remote runner (the deploy fails loudly with
 `ExecStartPre=… -m server.deploy.runner_sync` on the daemon unit fast-forwards the checkout to
 `deploy_state.deployed_sha` when the runner is behind (clean tree, ff-only, pip if the
 lockfile changed, `sync`). It always exits 0: a dirty or diverged checkout is logged at ERROR
-(`journalctl -u ccswitch-daemon | grep runner_sync`) and the daemon starts anyway, fenced by
+(`journalctl -u viberpit-daemon | grep runner_sync`) and the daemon starts anyway, fenced by
 the skew gate until you apply the reset recipe below.
 
 **One-time bootstrap on an existing runner:** apply the reset recipe (below), install the
-unit file with the new `ExecStartPre` (`sudo cp deploy/ccswitch-daemon-remote.service
-/etc/systemd/system/ccswitch-daemon.service && sudo systemctl daemon-reload`), and restart
+unit file with the new `ExecStartPre` (`sudo cp deploy/viberpit-daemon-remote.service
+/etc/systemd/system/viberpit-daemon.service && sudo systemctl daemon-reload`), and restart
 the daemon when the Sessions page shows nothing mid-turn.
 
 ### A hotfixed remote host cannot fast-forward
@@ -264,8 +264,8 @@ git show origin/master:src/ccswitch/ledger.py            | grep -c 'os.replace'
 Then reset the host and restart it:
 
 ```bash
-ssh tony@rocky 'cd /home/tony/GitHub/ccswitch   && git fetch -q origin && git checkout -q master   && git reset --hard origin/master && git branch -D <hotfix-branch>'
-ssh tony@rocky 'sudo systemctl restart ccswitch-daemon'   # blocks while in-flight turns drain
+ssh tony@rocky 'cd /home/tony/GitHub/viberpit   && git fetch -q origin && git checkout -q master   && git reset --hard origin/master && git branch -D <hotfix-branch>'
+ssh tony@rocky 'sudo systemctl restart viberpit-daemon'   # blocks while in-flight turns drain
 ```
 
 Check for local work first (`git log --branches --not --remotes`, `git stash list`) —
@@ -277,14 +277,14 @@ will not make that decision for you.
 Server/client certs are valid **825 days**, the CAs **3650 days**. The SAN embedded in the server
 cert must stay the tailnet identity, never `rocky.lan`.
 
-**Do NOT re-run `scripts/ccswitch-mint-mtls.sh` to renew** — it mints a brand-new CA (and since
+**Do NOT re-run `scripts/viberpit-mint-mtls.sh` to renew** — it mints a brand-new CA (and since
 issue #841 refuses to run when a fleet CA already exists). Renew by signing a fresh cert with the
 existing signing CA per the onboarding runbook, Step 3 Option A
 (`docs/runbooks/onboarding-a-session-runner.md`) — that runbook's CA table is the source of truth.
 Summary of the fleet CA state (since 2026-08-30, issue #841):
 
 - **Server-cert renewals** (rocky, dobby, any runner): sign with `ca2.key`
-  (`/etc/ccswitch/tls/ca2.key` on dobby, root-only). The edge verifies server certs against
+  (`/etc/viberpit/tls/ca2.key` on dobby, root-only). The edge verifies server certs against
   `ca-bundle.pem` (original `ca.pem` + `ca2.pem`), so old and new certs coexist.
 - **Client-cert renewal** (`CN=edge`): every daemon verifies it against its
   `CCSWITCH_SESSIOND_TLS_CA` — currently the ORIGINAL `ca.pem`. Either sign with the original CA
@@ -296,18 +296,18 @@ Distribute renewed material and clean up:
 
 ```bash
 # server material → the runner being renewed (e.g. rocky)
-scp /tmp/mtls-rocky/{server.pem,server.key} tony@rocky:/etc/ccswitch/tls/
+scp /tmp/mtls-rocky/{server.pem,server.key} tony@rocky:/etc/viberpit/tls/
 # renewed client material → dobby (edge)
-sudo cp /tmp/mtls-edge/{client.pem,client.key} /etc/ccswitch/tls/
-sudo chmod 600 /etc/ccswitch/tls/*.key
+sudo cp /tmp/mtls-edge/{client.pem,client.key} /etc/viberpit/tls/
+sudo chmod 600 /etc/viberpit/tls/*.key
 rm -rf /tmp/mtls-*   # never leave cert material in /tmp
 ```
 
 Then restart both daemons that read TLS material: `ssh tony@rocky 'sudo systemctl restart
-ccswitch-daemon.service'`, then `sudo systemctl restart ccswitch.service` on dobby (the edge holds
+viberpit-daemon.service'`, then `sudo systemctl restart viberpit.service` on dobby (the edge holds
 the client cert). Confirm with §3's mTLS check afterward.
 
-Do not commit `.pem`/`.key` files. Only `scripts/ccswitch-mint-mtls.sh` itself belongs in the repo.
+Do not commit `.pem`/`.key` files. Only `scripts/viberpit-mint-mtls.sh` itself belongs in the repo.
 
 ## 7. Rollback to dobby
 
@@ -317,26 +317,26 @@ database at once** (the 2026-06-23 "Ready while working" split-brain).
 
 ```bash
 # 1. Stop rocky's daemon so it cannot compete with dobby's once re-enabled
-ssh tony@rocky 'sudo systemctl stop ccswitch-daemon.service'
+ssh tony@rocky 'sudo systemctl stop viberpit-daemon.service'
 
 # 2. Re-enable and start dobby's local daemon
-sudo systemctl enable --now ccswitch-daemon.service
-systemctl is-active ccswitch-daemon.service   # expect: active
+sudo systemctl enable --now viberpit-daemon.service
+systemctl is-active viberpit-daemon.service   # expect: active
 
-# 3. Point the edge back at the local Unix socket — edit /etc/ccswitch/ccswitch.env:
+# 3. Point the edge back at the local Unix socket — edit /etc/viberpit/viberpit.env:
 #      comment out CCSWITCH_SESSIOND_ENDPOINT and the CCSWITCH_SESSIOND_CLIENT_* lines
-#      uncomment (or add) CCSWITCH_SESSIOND_SOCKET=/run/ccswitch/sessiond.sock
+#      uncomment (or add) CCSWITCH_SESSIOND_SOCKET=/run/viberpit/sessiond.sock
 #      also comment out CCSWITCH_DAEMON_SSH_HOST so future deploys restart the local unit
-sudo -e /etc/ccswitch/ccswitch.env
+sudo -e /etc/viberpit/viberpit.env
 
 # 4. Also flip the systemd drop-in that pins the edge's daemon endpoint back to the socket.
 #    A pre-rocky copy is preserved for exactly this: restore it over the live one.
-sudo cp /etc/systemd/system/ccswitch.service.d/remote.conf.pre-rocky \
-        /etc/systemd/system/ccswitch.service.d/remote.conf
+sudo cp /etc/systemd/system/viberpit.service.d/remote.conf.pre-rocky \
+        /etc/systemd/system/viberpit.service.d/remote.conf
 sudo systemctl daemon-reload
 
 # 5. Restart the edge
-sudo systemctl restart ccswitch.service
+sudo systemctl restart viberpit.service
 
 # 6. Verify
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8787/api/health   # expect 200
@@ -373,37 +373,37 @@ it as one.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `curl: certificate does not match the server name` (or similar SAN error) from the edge to the daemon | Server cert SAN doesn't match `CCSWITCH_SESSIOND_ENDPOINT`'s host — e.g. cert minted for `rocky.lan` while the endpoint uses `rocky.tail0dd570.ts.net` | Re-mint with `scripts/ccswitch-mint-mtls.sh <outdir> rocky.tail0dd570.ts.net 100.69.70.109` (§6); verify the SAN before distributing |
+| `curl: certificate does not match the server name` (or similar SAN error) from the edge to the daemon | Server cert SAN doesn't match `CCSWITCH_SESSIOND_ENDPOINT`'s host — e.g. cert minted for `rocky.lan` while the endpoint uses `rocky.tail0dd570.ts.net` | Re-mint with `scripts/viberpit-mint-mtls.sh <outdir> rocky.tail0dd570.ts.net 100.69.70.109` (§6); verify the SAN before distributing |
 | Edge refuses to attach to rocky's daemon / RPC calls fail after a deploy | Protocol-version mismatch — dobby and rocky are running different commits | Compare `curl .../info`'s `"protocol"` field against `python -c "from server.ipc import protocol; print(protocol.PROTOCOL_VERSION)"` on both hosts; they must match. Fix by deploying rocky to the same SHA as dobby (§5 — daemon first, then edge) |
 | New sessions fail with reauth/credential errors for accounts that are otherwise fine; or sessions on rocky run with the wrong/old skillset | An sshfs mount dropped | §4 — check `findmnt -t fuse.sshfs` on rocky, remount both, restart the daemon |
-| Sessions double-spawn, or the UI shows "Ready" for a session that's actually mid-turn | Both `ccswitch-daemon.service` units are active at once — split-brain over one database (the 2026-06-23 incident) | `systemctl is-active ccswitch-daemon.service` on **both** hosts — exactly one must be `active`. Stop and `disable` (not just stop) the one that shouldn't be running |
-| Rocky's daemon won't start, or is up but can't reach Postgres | Tailscale is down on rocky — the unit declares `Requires=tailscaled.service`, and the DB is only reachable over the tailnet (no LAN listener) | `ssh tony@rocky 'systemctl status tailscaled.service ccswitch-daemon.service'`; fix tailscale first, the daemon unit will follow via its `Requires=` |
-| Rocky's daemon logs Postgres auth/connection failures specifically (not a tailnet-down symptom) | `pg_hba.conf` on dobby only allows `100.69.70.109/32` for role `ccswitch`/db `ccswitch` — a password change, IP change (if rocky's tailnet IP is ever reassigned), or role/db typo will be rejected | Confirm rocky's current tailnet IP (`tailscale ip -4` on rocky) matches the `pg_hba` entry on dobby; confirm `CCSWITCH_DB_URL` in rocky's `/etc/ccswitch/ccswitch.env` matches the role/password/db name dobby's Postgres actually has |
-| The mTLS no-cert curl (§3) unexpectedly returns JSON | mTLS is not enforced — `CCSWITCH_SESSIOND_TLS_CA` misconfigured, or the daemon isn't requiring client certs | Treat as a security incident (§3). Check rocky's `ccswitch.env` TLS vars and `server/ipc/tls.py`'s `CERT_REQUIRED` wiring before touching anything else |
+| Sessions double-spawn, or the UI shows "Ready" for a session that's actually mid-turn | Both `viberpit-daemon.service` units are active at once — split-brain over one database (the 2026-06-23 incident) | `systemctl is-active viberpit-daemon.service` on **both** hosts — exactly one must be `active`. Stop and `disable` (not just stop) the one that shouldn't be running |
+| Rocky's daemon won't start, or is up but can't reach Postgres | Tailscale is down on rocky — the unit declares `Requires=tailscaled.service`, and the DB is only reachable over the tailnet (no LAN listener) | `ssh tony@rocky 'systemctl status tailscaled.service viberpit-daemon.service'`; fix tailscale first, the daemon unit will follow via its `Requires=` |
+| Rocky's daemon logs Postgres auth/connection failures specifically (not a tailnet-down symptom) | `pg_hba.conf` on dobby only allows `100.69.70.109/32` for role `ccswitch`/db `ccswitch` — a password change, IP change (if rocky's tailnet IP is ever reassigned), or role/db typo will be rejected | Confirm rocky's current tailnet IP (`tailscale ip -4` on rocky) matches the `pg_hba` entry on dobby; confirm `CCSWITCH_DB_URL` in rocky's `/etc/viberpit/viberpit.env` matches the role/password/db name dobby's Postgres actually has |
+| The mTLS no-cert curl (§3) unexpectedly returns JSON | mTLS is not enforced — `CCSWITCH_SESSIOND_TLS_CA` misconfigured, or the daemon isn't requiring client certs | Treat as a security incident (§3). Check rocky's `viberpit.env` TLS vars and `server/ipc/tls.py`'s `CERT_REQUIRED` wiring before touching anything else |
 
 ## Reference: live config (as of the 2026-08-20 cutover)
 
-Rocky's `/etc/ccswitch/ccswitch.env` (secrets redacted):
+Rocky's `/etc/viberpit/viberpit.env` (secrets redacted):
 ```
 CCSWITCH_DB_URL=postgresql+asyncpg://ccswitch:<redacted>@100.102.11.121:5432/ccswitch
 CCSWITCH_MASTER_KEY=<redacted>
 CCSWITCH_SESSIOND_ENDPOINT=https://rocky.tail0dd570.ts.net:9443
-CCSWITCH_SESSIOND_TLS_CERT=/etc/ccswitch/tls/server.pem
-CCSWITCH_SESSIOND_TLS_KEY=/etc/ccswitch/tls/server.key
-CCSWITCH_SESSIOND_TLS_CA=/etc/ccswitch/tls/ca.pem
+CCSWITCH_SESSIOND_TLS_CERT=/etc/viberpit/tls/server.pem
+CCSWITCH_SESSIOND_TLS_KEY=/etc/viberpit/tls/server.key
+CCSWITCH_SESSIOND_TLS_CA=/etc/viberpit/tls/ca.pem
 CCSWITCH_SESSIOND_CLIENT_ALLOWLIST=edge
 CCSWITCH_ENABLE_XVFB=true
 ```
 
-Dobby's `/etc/ccswitch/ccswitch.env` additions for the cutover (secrets redacted):
+Dobby's `/etc/viberpit/viberpit.env` additions for the cutover (secrets redacted):
 ```
 CCSWITCH_SESSIOND_ENDPOINT=https://rocky.tail0dd570.ts.net:9443
-CCSWITCH_SESSIOND_CLIENT_CERT=/etc/ccswitch/tls/client.pem
-CCSWITCH_SESSIOND_CLIENT_KEY=/etc/ccswitch/tls/client.key
-CCSWITCH_SESSIOND_CLIENT_CA=/etc/ccswitch/tls/ca.pem
+CCSWITCH_SESSIOND_CLIENT_CERT=/etc/viberpit/tls/client.pem
+CCSWITCH_SESSIOND_CLIENT_KEY=/etc/viberpit/tls/client.key
+CCSWITCH_SESSIOND_CLIENT_CA=/etc/viberpit/tls/ca.pem
 CCSWITCH_DAEMON_SSH_HOST=tony@rocky
 ```
 
-`deploy/ccswitch-daemon-remote.service` is installed on rocky as `/etc/systemd/system/ccswitch-daemon.service`
-(dobby keeps its own `deploy/ccswitch-daemon.service` for the pre-cutover/rollback local case — the
+`deploy/viberpit-daemon-remote.service` is installed on rocky as `/etc/systemd/system/viberpit-daemon.service`
+(dobby keeps its own `deploy/viberpit-daemon.service` for the pre-cutover/rollback local case — the
 two files are not interchangeable, don't install the remote unit on dobby or vice versa).

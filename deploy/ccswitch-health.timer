@@ -1,13 +1,1 @@
-[Unit]
-Description=Run the ccswitch daemon health watchdog every 60s
-Documentation=https://github.com/steiner385/cc-account-switcher
-
-[Timer]
-# First run shortly after boot, then every 60s. AccuracySec keeps it cheap.
-OnBootSec=60
-OnUnitActiveSec=60
-AccuracySec=10s
-Unit=ccswitch-health.service
-
-[Install]
-WantedBy=timers.target
+viberpit-health.timer

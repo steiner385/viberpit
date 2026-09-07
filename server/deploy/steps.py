@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from server.host_units import resolve_unit
 import json
 import os
 import logging
@@ -153,11 +155,7 @@ def deploy_code_changed(changed_files: list[str] | None) -> bool:
 # Units a deploy restarts on THIS host: the edge, the local runner daemon, and the
 # controller itself (deferred, when deploy code changed). Remote runners are checked by
 # their own host's controller, not from here.
-RESTARTABLE_UNITS: tuple[str, ...] = (
-    "ccswitch.service",
-    "ccswitch-daemon.service",
-    "ccswitch-deploy-controller.service",
-)
+RESTARTABLE_ROLES = ("edge", "daemon", "controller")
 
 # `systemctl show -p ExecStart <unit>` renders as:
 #   ExecStart={ path=/x/.venv/bin/python ; argv[]=/x/.venv/bin/python -m server.ipc ; ... }
@@ -200,7 +198,7 @@ def check_unit_interpreters(units: tuple[str, ...] | None = None,
     renaming or rebuilding the other checkout takes this unit down with no warning.
     """
     problems: list[str] = []
-    for unit in (units if units is not None else RESTARTABLE_UNITS):
+    for unit in (units if units is not None else tuple(resolve_unit(role, run=run) for role in RESTARTABLE_ROLES)):
         try:
             proc = run(["systemctl", "show", "-p", "ExecStart", unit],
                        check=False, capture_output=True, text=True)
@@ -231,7 +229,7 @@ def check_unit_interpreters(units: tuple[str, ...] | None = None,
                 venv_path = os.path.join(root, ".venv")
                 resolved_venv = os.path.realpath(venv_path)
                 if (resolved_venv != venv_path
-                    and not resolved_venv.startswith(root + os.sep)):
+                    and not resolved_venv.startswith(os.path.realpath(root) + os.sep)):
                     problems.append(
                         f"{unit}: ExecStart binary {path} uses venv {venv_path}, which "
                         f"resolves to {resolved_venv}, outside checkout {root} — the venv "
@@ -241,7 +239,7 @@ def check_unit_interpreters(units: tuple[str, ...] | None = None,
 
 
 def schedule_controller_restart(*, run: Run = subprocess.run, delay_s: int = 10) -> bool:
-    """Schedule a DEFERRED restart of ccswitch-deploy-controller.service.
+    """Schedule a DEFERRED restart of the installed deploy controller.
 
     Deferred on purpose: the controller is the process performing the deploy, so
     an inline restart would kill the deploy that asked for it. systemd-run
@@ -255,8 +253,8 @@ def schedule_controller_restart(*, run: Run = subprocess.run, delay_s: int = 10)
     """
     try:
         run(["sudo", "systemd-run", f"--on-active={delay_s}s",
-             "--unit=ccswitch-controller-refresh",
-             "systemctl", "restart", "ccswitch-deploy-controller.service"],
+             "--unit=viberpit-controller-refresh",
+             "systemctl", "restart", resolve_unit("controller", run=run)],
             check=True, capture_output=True)
         return True
     except Exception:
@@ -405,21 +403,20 @@ SSH_REPO_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
 # A git rev passed to `git merge --ff-only`. Hex only, never a ref expression.
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
-# One source of truth for the local daemon-unit restart argv: server.deploy.runners
-# imports this as its own LOCAL_RESTART rather than re-literalling the same list.
-LOCAL_DAEMON_RESTART: list[str] = ["sudo", "systemctl", "restart", "ccswitch-daemon.service"]
 
 
 def restart_edge(*, run: Run = subprocess.run) -> list[str]:
     """Restart the edge unit. Runner (daemon) restarts — local AND remote — are owned by
     ``server.deploy.runners`` and run BEFORE this (daemon-before-edge order is load-bearing:
     the browser reconnect-flush race, #190). Returns the units restarted."""
-    run(["sudo", "systemctl", "restart", "ccswitch.service"], check=True, capture_output=True)
-    return ["ccswitch.service"]
+    unit = resolve_unit("edge", run=run)
+    run(["sudo", "systemctl", "restart", unit], check=True, capture_output=True)
+    return [unit]
 
 
 def restart_local_daemon(*, run: Run = subprocess.run) -> None:
-    run(LOCAL_DAEMON_RESTART, check=True, capture_output=True)
+    run(["sudo", "systemctl", "restart", resolve_unit("daemon", run=run)],
+        check=True, capture_output=True)
 
 
 def _default_fetch(url: str) -> str:

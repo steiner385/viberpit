@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the viberpit daemon health watchdog every 60s
+Documentation=https://github.com/steiner385/viberpit
+
+[Timer]
+# First run shortly after boot, then every 60s. AccuracySec keeps it cheap.
+OnBootSec=60
+OnUnitActiveSec=60
+AccuracySec=10s
+Unit=viberpit-health.service
+
+[Install]
+WantedBy=timers.target
+Alias=ccswitch-health.timer

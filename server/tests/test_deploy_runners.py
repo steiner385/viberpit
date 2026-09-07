@@ -13,6 +13,8 @@ DOBBY = R.RunnerTarget(name="dobby", endpoint="https://dobby:9443", enabled=True
 
 def _recorder(calls, fail_on=None):
     def run(argv, **kw):
+        if "show" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="LoadState=loaded\n", stderr="")
         calls.append(list(argv))
         rc = 1 if (fail_on and any(fail_on in a for a in argv)) else 0
         return subprocess.CompletedProcess(argv, rc, stdout="", stderr="boom")
@@ -111,7 +113,7 @@ def test_remote_daemon_changing_deploy_full_sequence():
         SSH + ["/home/tony/GitHub/ccswitch/.venv/bin/python", "-m", "pip", "install", "-e",
                "'/home/tony/GitHub/ccswitch[server]'", "--quiet"],
         SSH + ["sync"],
-        SSH + ["sudo", "-n", "systemctl", "restart", "ccswitch-daemon.service"],
+        SSH + ["sudo", "-n", "systemctl", "restart", "viberpit-daemon.service"],
     ]
     # snapshot before the update, drain + close_events before the restart, restore after verify
     assert rpc == ["snapshot_deploy", "begin_drain", "drain_status", "close_events_connections",
@@ -164,7 +166,7 @@ def test_local_runner_restarts_locally_and_never_touches_the_checkout():
     st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=True, deps_changed=True,
                                local_daemon_enabled=True))
     assert st.state == "done" and st.moved is False
-    assert calls == [["sudo", "systemctl", "restart", "ccswitch-daemon.service"]]
+    assert calls == [["sudo", "systemctl", "restart", "viberpit-daemon.service"]]
     assert "begin_drain" in rpc
 
 
@@ -224,7 +226,7 @@ def test_skew_fenced_runner_is_a_deploy_target():
     st = asyncio.run(rd.deploy(target_sha="abc1234", daemon_changed=True, deps_changed=False,
                                local_daemon_enabled=True))
     assert st.state == "done" and st.moved
-    assert [c[-1] for c in calls] == ["origin", "abc1234", "sync", "ccswitch-daemon.service"]
+    assert [c[-1] for c in calls] == ["origin", "abc1234", "sync", "viberpit-daemon.service"]
     assert rpc == ["snapshot_deploy", "begin_drain", "drain_status", "close_events_connections",
                    "restore_deploy"]
 
@@ -312,7 +314,7 @@ def test_rewind_only_moved_hosts_and_uses_reset_hard():
     joined = [c for k, c in timeline if k == "run"]
     assert any("reset --hard 01d0000" in j and "rocky" in j for j in joined)
     assert not any("other" in j for j in joined)
-    assert joined[-1].endswith("sudo -n systemctl restart ccswitch-daemon.service")
+    assert joined[-1].endswith("sudo -n systemctl restart viberpit-daemon.service")
     # Shared timeline: only this proves the drain happens BEFORE the restart, not merely
     # that both happened (the ssh argv and the RPC list are asserted separately elsewhere).
     restart = next(i for i, e in enumerate(timeline)
@@ -472,6 +474,6 @@ def test_close_events_precedes_the_restart():
                                local_daemon_enabled=True))
     assert st.state == "done"
     assert ("rpc", "close_events_connections") in timeline
-    assert ("run", "ccswitch-daemon.service") in timeline
+    assert ("run", "viberpit-daemon.service") in timeline
     assert timeline.index(("rpc", "close_events_connections")) < \
-        timeline.index(("run", "ccswitch-daemon.service"))
+        timeline.index(("run", "viberpit-daemon.service"))

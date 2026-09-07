@@ -1,0 +1,24 @@
+[Unit]
+Description=ViberPit deploy controller (poll origin/master + user-triggered deploys)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tony
+EnvironmentFile=/etc/viberpit/viberpit.env
+# Paths match the sibling units (viberpit.service / viberpit-daemon.service). Adjust
+# the checkout path at install time if this host's deploy checkout differs (e.g. the
+# live host uses .../viberpit-deploy). serve.py defaults CCSWITCH_DEPLOY_REPO
+# to WorkingDirectory, so keep the two in sync.
+WorkingDirectory=/home/tony/GitHub/viberpit-deploy
+Environment=CCSWITCH_DEPLOY_REPO=/home/tony/GitHub/viberpit-deploy
+RuntimeDirectory=viberpit
+RuntimeDirectoryPreserve=yes
+ExecStart=/home/tony/GitHub/viberpit-deploy/.venv/bin/python -m server.deploy serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+Alias=ccswitch-deploy-controller.service

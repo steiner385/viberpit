@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_edge_unit_bounds_graceful_shutdown():
-    unit = (ROOT / "deploy" / "ccswitch.service").read_text()
+    unit = (ROOT / "deploy" / "viberpit.service").read_text()
     assert "ExecStart=" in unit and "server.app:app" in unit
     exec_start_line = next(
         line for line in unit.splitlines() if line.startswith("ExecStart=")
