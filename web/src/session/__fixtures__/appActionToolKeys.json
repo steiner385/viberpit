@@ -23,6 +23,7 @@
   "get_initiative",
   "get_onboarding_status",
   "get_pipeline_health",
+  "get_pr",
   "get_pr_doctor_consolidation",
   "get_pr_doctor_job",
   "get_priority_queue",

@@ -9315,6 +9315,54 @@ class SessionOrchestrator:
 
         return await asyncio.to_thread(_do)
 
+    async def pr_detail(self, repo: str, number: int) -> "dict | None":
+        """PR detail (SPEC v2 Pack G): the cached population entry for
+        ``(repo, number)`` — same join `all_prs` renders on the board, so
+        `session`/`node_states`/etc. come for free — composed with a live
+        checks+reviews+mergeability fetch (the population poll never fetches
+        reviews, and its own checks fetch has no per-check url). Returns None
+        when the PR isn't in the cached population; the route 404s on that."""
+        match = None
+        for p in await self.all_prs():
+            if p.pr.repo == repo and p.pr.number == number:
+                match = p
+                break
+        if match is None:
+            return None
+        out = match.to_dict()
+        out["sessionId"] = match.session_id
+        out.update(await self._fetch_pr_detail(repo, number))
+        return out
+
+    async def _fetch_pr_detail(self, repo: str, number: int) -> dict:
+        """The live half of `pr_detail`: one `gh api graphql` call for the fields
+        the cached population never carries (reviews) or carries without a url
+        (checks). Fails open to the empty triple — a live-fetch hiccup must not
+        blank the whole detail view, only its freshest fields."""
+        import json as _json
+
+        from server.github.pr_status import build_pr_detail_query, parse_pr_detail_response
+
+        def _do() -> dict:
+            query = build_pr_detail_query(repo, number)
+            owner = repo.partition("/")[0]
+            try:
+                proc = self._gh_run(
+                    ["api", "graphql", "-f", f"query={query}"],
+                    gitrepos.app_token_for_owner(owner), timeout=15,
+                )
+            except Exception:
+                return {"checks": [], "reviews": [], "mergeable": None}
+            if proc.returncode != 0:
+                return {"checks": [], "reviews": [], "mergeable": None}
+            try:
+                data = _json.loads(proc.stdout or "{}")
+            except (ValueError, TypeError):
+                return {"checks": [], "reviews": [], "mergeable": None}
+            return parse_pr_detail_response(data)
+
+        return await asyncio.to_thread(_do)
+
     # ------------------------------------------------------------------
     # Deploy environment config + status (SPEC §3)
     # ------------------------------------------------------------------

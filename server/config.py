@@ -4,8 +4,16 @@ Reads settings from environment variables. Copy .env.example → .env and fill i
 """
 import os
 from pathlib import Path
+from typing import Any
 
+from ccswitch.env_compat import mirror_legacy_env
 from server import hostpaths
+
+# Every alias below spells the legacy prefix, and this module reads os.environ in its
+# body. Mirror before any of that, so a host whose env file has already moved to
+# VIBERPIT_* still configures the process. Idempotent: a no-op after the entrypoint's
+# call (server/__init__.py for the server, main() for the CLIs).
+mirror_legacy_env()
 
 
 def env_float(name: str, default: float, *, minimum: float | None = None) -> float:
@@ -60,6 +68,11 @@ try:
 
     class Settings(BaseSettings):
         """Application settings loaded from environment variables."""
+
+        def __init__(self, **kwargs: Any) -> None:
+            # Fill either prefix from the other before pydantic reads the aliases.
+            mirror_legacy_env()
+            super().__init__(**kwargs)
 
         host: str = Field(default="127.0.0.1", alias="CCSWITCH_HOST")
         port: int = Field(default=8787, alias="CCSWITCH_PORT")
@@ -594,6 +607,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
             return result
 
     def get_settings() -> Settings:  # type: ignore[misc]
+        # The dataclass reads os.environ in its default_factory calls, i.e. during
+        # __init__ — mirror before constructing, as the pydantic branch does.
+        mirror_legacy_env()
         return Settings()
 
 

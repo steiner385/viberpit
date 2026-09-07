@@ -17,8 +17,11 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from ccswitch.env_compat import mirror_legacy_env
 from server.db.models import Base
 from server.config import get_settings
+
+mirror_legacy_env()  # VIBERPIT_* <-> CCSWITCH_*, before CCSWITCH_DB_URL is read below
 
 config = context.config
 
