@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import type { ReactNode } from 'react'
 
 import { pushOverlay, popOverlay, resetOverlayState } from '@/shell/useOverlayState'
@@ -227,9 +228,12 @@ async function flush() {
   await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
 }
 
-async function renderInbox(rows: triage.TriageProposal[] = ROWS) {
+async function renderInbox(rows: triage.TriageProposal[] = ROWS, path = '/triage') {
   mocked.fetchTriage.mockResolvedValue(rows)
-  const view = render(<TriageInbox />, { wrapper })
+  const view = render(
+    <MemoryRouter initialEntries={[path]}><TriageInbox /></MemoryRouter>,
+    { wrapper },
+  )
   if (rows.length) {
     await waitFor(() => expect(screen.getByText(rows[0].title!)).toBeInTheDocument())
   } else {
@@ -254,7 +258,7 @@ describe('TriageInbox', () => {
   it('renders the queue with a no_fit suggested name and per-project depth', async () => {
     await renderInbox([
       ...ROWS,
-      proposal({ id: 'p3', workItemId: 'w3', number: 3, title: 'Third', projectSlug: 'kindash' }),
+      proposal({ id: 'p3', workItemId: 'w3', number: 3, title: 'Third', projectSlug: 'example-product' }),
       proposal({ id: 'p4', workItemId: 'w4', number: 4, title: 'Fourth', projectSlug: null }),
     ])
 
@@ -263,8 +267,20 @@ describe('TriageInbox', () => {
     expect(screen.getByText(/offline-mode/)).toBeInTheDocument()
     // header depth comes from the server's projectSlug, NOT from the repo
     expect(screen.getByText('ccswitch: 2')).toBeInTheDocument()
-    expect(screen.getByText('kindash: 1')).toBeInTheDocument()
+    expect(screen.getByText('example-product: 1')).toBeInTheDocument()
     expect(screen.getByText('unknown: 1')).toBeInTheDocument()
+  })
+
+  it('scopes the queue to ?projectSlug= and shows a clearable scope chip', async () => {
+    await renderInbox(ROWS, '/triage?projectSlug=example-product')
+    expect(mocked.fetchTriage).toHaveBeenCalledWith('example-product')
+    expect(screen.getByText(/scope: example-product/i)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /clear/i })).toHaveAttribute('href', '/triage')
+  })
+
+  it('names the scope in the empty state', async () => {
+    await renderInbox([], '/triage?projectSlug=example-product')
+    expect(screen.getByText(/inbox zero for example-product/i)).toBeInTheDocument()
   })
 
   it('`a` accepts the row under the cursor (optimistic, calls the API)', async () => {

@@ -2,11 +2,6 @@
    .prdash-root in plotroom.css, which wraps this board — so these rules only add
    layout, never re-declare colors. */
 .init-board { padding: 12px 14px; }
-.init-board-head {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 12px; margin-bottom: 12px;
-}
-.init-board-title { font-size: 16px; font-weight: 700; color: var(--text); margin: 0; }
 
 .init-empty { color: var(--muted); font-size: 13px; }
 

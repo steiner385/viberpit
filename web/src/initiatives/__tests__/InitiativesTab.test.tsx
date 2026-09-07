@@ -106,8 +106,9 @@ describe('InitiativesTab', () => {
     render(<InitiativesTab />, { wrapper })
 
     const btn = await screen.findByRole('button', { name: /Advance/ })
-    // design → plan is the next gate.
-    expect(btn).toHaveTextContent('plan')
+    // design → plan is the next gate, and the button says what the track node
+    // says ("Plan"), not the raw stage id.
+    expect(btn).toHaveTextContent('Advance → Plan')
     fireEvent.click(btn)
     await waitFor(() =>
       expect(mocked.advanceInitiative).toHaveBeenCalledWith('ai-native-sdlc'))

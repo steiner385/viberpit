@@ -36,28 +36,22 @@
 // route that isn't Sessions.
 import { useLocation, useParams } from 'react-router-dom'
 import { navDefForPath } from './navDefs'
+import { OPEN_ITEM_RESOLVERS } from './openItems'
+import type { OpenItem } from './openItems'
 
-/** What the current route has open, if anything. */
-export type OpenItem =
-  | { kind: 'session'; id: string }
-  | { kind: 'archived'; id: string }
+export type { OpenItem }
 
 /**
  * The open item, or null. See the module docstring for why one function must
- * answer for all three consumers.
+ * answer for all three consumers. The per-section rule lives in
+ * `openItems.ts`; this only picks the section from the path.
  */
 export function useOpenItem(): OpenItem | null {
-  const { id, archivedId } = useParams()
+  const params = useParams()
   const { pathname } = useLocation()
-  // Deliberately asymmetric: `archivedId` returns before the section check,
-  // while `id` is gated on `navDefForPath(pathname)?.id === 'sessions'`. Only
-  // the Sessions section's route table declares an `archivedId` param today,
-  // so this is a known hazard rather than an oversight — a future route
-  // outside Sessions that happened to name a param `archivedId` would report
-  // `kind: 'archived'` here with no section check to catch it.
-  if (archivedId) return { kind: 'archived', id: archivedId }
-  if (id && navDefForPath(pathname)?.id === 'sessions') return { kind: 'session', id }
-  return null
+  const def = navDefForPath(pathname)
+  if (!def) return null
+  return OPEN_ITEM_RESOLVERS[def.id]?.(params) ?? null
 }
 
 /** The open LIVE session's id, or null — unchanged signature/behaviour, now

@@ -236,3 +236,4 @@ class InProcessOrchestratorAdapter:
     async def pm_onboard_spawn_map(self, *a, **k): return await _maybe_await(self._orch.pm_onboard_spawn_map(*a, **k))
     async def pm_classify_run(self, *a, **k): return await _maybe_await(self._orch.pm_classify_run(*a, **k))
     async def pm_advance_map_merged(self, *a, **k): return await _maybe_await(self._orch.pm_advance_map_merged(*a, **k))
+    async def pm_advance_live(self, *a, **k): return await _maybe_await(self._orch.pm_advance_live(*a, **k))

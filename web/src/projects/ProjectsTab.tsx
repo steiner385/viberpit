@@ -10,6 +10,10 @@ import { useCreateProject, useProjects, useSyncProject, useTriage } from '@/api/
 import type { Project } from '@/api/pm'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { NAV_BY_ID } from '@/shell/navDefs'
+import { CAPABILITY, PRODUCT, onboardingStateLabel } from '@/features/products/vocab'
+import { PageHeader } from '@/ui/PageHeader'
+import { PageContent } from '@/ui/PageContent'
+import { Button } from '@/ui/Button'
 
 import { DependencyPanel } from './DependencyPanel'
 import { OnboardingWizard } from './OnboardingWizard'
@@ -35,7 +39,7 @@ function NewProjectForm({ onClose }: { onClose: () => void }) {
       <label>
         Name
         <input value={name} onChange={(e) => setName(e.target.value)}
-               placeholder="KinDash" />
+               placeholder="My product" />
       </label>
       <label>
         Primary repo
@@ -44,13 +48,13 @@ function NewProjectForm({ onClose }: { onClose: () => void }) {
       </label>
       {create.isError && (
         <p role="alert" className="pm-error">
-          {extractMutationErrorMessage(create.error, 'Could not create project')}
+          {extractMutationErrorMessage(create.error, 'Could not create product')}
         </p>
       )}
       <div className="pm-form-actions">
         <button type="button" onClick={onClose}>Cancel</button>
         <button type="submit" disabled={!canSubmit || create.isPending}>
-          {create.isPending ? 'Creating…' : 'Add project'}
+          {create.isPending ? 'Creating…' : 'Add product'}
         </button>
       </div>
     </form>
@@ -64,7 +68,7 @@ function ProjectCard({ project }: { project: Project }) {
       <div className="pm-project-head">
         <h3>{project.name ?? project.slug}</h3>
         <span className={`pm-state pm-state-${project.onboardingState ?? 'registered'}`}>
-          {project.onboardingState ?? 'registered'}
+          {onboardingStateLabel(project.onboardingState ?? 'registered')}
         </span>
       </div>
       <ul className="pm-repos">
@@ -78,7 +82,7 @@ function ProjectCard({ project }: { project: Project }) {
       </ul>
       <div className="pm-counts">
         <span>{project.workItemCount} work items</span>
-        <span>{project.featureCount} features</span>
+        <span>{project.featureCount} {CAPABILITY.plural.toLowerCase()}</span>
       </div>
       {project.slug && <OnboardingWizard slug={project.slug} />}
       {project.slug && <DependencyPanel slug={project.slug} />}
@@ -124,22 +128,21 @@ export function ProjectsTab() {
   const { data: projects, isLoading } = useProjects()
   const [showForm, setShowForm] = useState(false)
   return (
-    <div className="pm-projects">
-      <div className="pm-projects-toolbar">
-        <h2>Products</h2>
-        <button onClick={() => setShowForm(true)}>New project</button>
-      </div>
-      {showForm && <NewProjectForm onClose={() => setShowForm(false)} />}
-      {isLoading && <p className="pm-muted">Loading…</p>}
-      {!isLoading && (projects ?? []).length === 0 && (
-        <p className="pm-muted">
-          No projects yet. Add one to start mirroring its backlog.
-        </p>
-      )}
-      <div className="pm-project-grid">
-        {(projects ?? []).map((p) => <ProjectCard key={p.id} project={p} />)}
-      </div>
-      <TriageCta />
+    <div className="flex flex-col h-full min-h-0" data-page-variant="standard">
+      <PageHeader
+        title={PRODUCT.plural}
+        actions={<Button size="sm" onClick={() => setShowForm(true)}>{PRODUCT.new}</Button>}
+      />
+      <PageContent busy={isLoading} className="pm-projects">
+        {showForm && <NewProjectForm onClose={() => setShowForm(false)} />}
+        {!isLoading && (projects ?? []).length === 0 && (
+          <p className="pm-muted">{PRODUCT.empty}</p>
+        )}
+        <div className="pm-project-grid">
+          {(projects ?? []).map((p) => <ProjectCard key={p.id} project={p} />)}
+        </div>
+        <TriageCta />
+      </PageContent>
     </div>
   )
 }

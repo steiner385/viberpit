@@ -5,21 +5,14 @@ import { SidebarResizer } from '@/components/SidebarResizer'
 import { useSidebarWidth } from '@/lib/useSidebarWidth'
 import { navDefForPath } from '@/shell/navDefs'
 import { useViewport } from '@/shell/useViewport'
-import {
-  SessionListColumn,
-  type SessionListColumnProps,
-} from '@/features/sessions/SessionListColumn'
 
 export interface ContextListProps {
   /**
-   * Props for the Sessions list column. Sessions is the only section with a
-   * list today (`NAV_DEFS[…].hasList`); a section that grows one adds a sibling
-   * field here and a branch below, and nothing else in the shell changes.
-   *
-   * The state handle comes from `useSessionListState()` ABOVE this region,
-   * because the prompt bar drives the same cursor — see that hook's header.
+   * The section's column, chosen by `shell/listColumns.ts` from the workspace
+   * sources `AppShell` holds. The region itself only decides WHETHER a column
+   * renders (`navDefForPath(pathname)?.hasList`) and names the landmark.
    */
-  sessions: SessionListColumnProps
+  column: React.ReactNode
 }
 
 /**
@@ -64,14 +57,14 @@ export interface ContextListProps {
  * sits INSIDE the landmark (see the comment at its call site) and `listWidth` is
  * therefore the width of the column INCLUDING its handle.
  */
-export function ContextList({ sessions }: ContextListProps) {
+export function ContextList({ column }: ContextListProps) {
   const { pathname } = useLocation()
   const { width: tier } = useViewport()
   const [listWidth, setListWidth] = useSidebarWidth()
   const headingId = React.useId()
 
   const def = navDefForPath(pathname)
-  if (!def?.hasList) return null
+  if (!def?.hasList || column == null) return null
 
   const resizable = tier === 'desktop' || tier === 'wide'
 
@@ -89,7 +82,7 @@ export function ContextList({ sessions }: ContextListProps) {
         <h2 id={headingId} className="sr-only">
           {def.label}
         </h2>
-        <SessionListColumn {...sessions} />
+        {column}
       </div>
       {/* The drag handle is INSIDE the landmark, not a sibling of it. It is a
           focusable `role="separator"`, so as a sibling it was page content

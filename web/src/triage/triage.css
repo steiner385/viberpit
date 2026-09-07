@@ -6,8 +6,6 @@
   flex-direction: column;
   gap: 2px;
   padding: 8px;
-  overflow-y: auto;
-  height: 100%;
 }
 
 .triage-header {

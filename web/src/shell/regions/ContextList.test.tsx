@@ -47,6 +47,7 @@ import { ViewportProvider } from '@/shell/useViewport'
 import { SIDEBAR_MAX, SIDEBAR_STORAGE_KEY } from '@/lib/sidebarWidth'
 import { listScopeForPath } from '@/session/sessionNavState'
 import { useSessionListState } from '@/features/sessions/useSessionListState'
+import { SessionListColumn } from '@/features/sessions/SessionListColumn'
 import { ContextList } from './ContextList'
 import { anthropicUsage } from '@/test/factories'
 
@@ -110,21 +111,23 @@ function Harness({ sessions = SESSIONS }: { sessions?: Session[] }) {
   const id = matchPath('/sessions/:id', pathname)?.params.id ?? null
   return (
     <ContextList
-      sessions={{
-        // Scope comes from the route, exactly as `AppShell` derives it.
-        scope: listScopeForPath(pathname),
-        state,
-        accounts: ACCOUNTS,
-        selectedId: id,
-        newSelected: id === null,
-        onNew: noop,
-        onOpen: noop,
-        onRename: noop,
-        onClose: noop,
-        onDelete: noop,
-        onQuickResume: noop,
-        onReviewSession: noop,
-      }}
+      column={
+        <SessionListColumn
+          // Scope comes from the route, exactly as `AppShell` derives it.
+          scope={listScopeForPath(pathname)}
+          state={state}
+          accounts={ACCOUNTS}
+          selectedId={id}
+          newSelected={id === null}
+          onNew={noop}
+          onOpen={noop}
+          onRename={noop}
+          onClose={noop}
+          onDelete={noop}
+          onQuickResume={noop}
+          onReviewSession={noop}
+        />
+      }
     />
   )
 }

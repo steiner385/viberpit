@@ -28,7 +28,7 @@ import {
 } from './sdlc'
 import {
   fetchProjects, createProject, requestProjectSync,
-  fetchOnboarding, proposeMap, runClassify,
+  fetchOnboarding, proposeMap, runClassify, advanceMap, advanceLive,
   type Project, type CreateProjectInput, type OnboardingView,
 } from './pm'
 import {
@@ -1543,7 +1543,12 @@ export function useSyncProject() {
   const qc = useQueryClient()
   return useMutation<{ requested: boolean }, ApiRequestError, string>({
     mutationFn: (slug) => requestProjectSync(slug),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.projects }),
+    onSuccess: (_d, slug) => {
+      // The endpoint is a 202 — the loop picks the request up on its next
+      // tick — so without this the button read as "nothing happened".
+      toast.success(`Sync requested for ${slug}`)
+      void qc.invalidateQueries({ queryKey: QK.projects })
+    },
     meta: PM_MUTATION_META,
   })
 }
@@ -1580,6 +1585,32 @@ export function useClassify() {
     onSuccess: (_d, slug) => {
       void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
       void qc.invalidateQueries({ queryKey: QK.triage })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** The wizard's "map merged" tap (map_proposed → map_merged). */
+export function useAdvanceMap() {
+  const qc = useQueryClient()
+  return useMutation<{ onboardingState: string }, ApiRequestError, string>({
+    mutationFn: (slug) => advanceMap(slug),
+    onSuccess: (_d, slug) => {
+      void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
+      void qc.invalidateQueries({ queryKey: QK.projects })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** The wizard's "go live" tap (map_merged|classifying → live). */
+export function useAdvanceLive() {
+  const qc = useQueryClient()
+  return useMutation<{ onboardingState: string }, ApiRequestError, string>({
+    mutationFn: (slug) => advanceLive(slug),
+    onSuccess: (_d, slug) => {
+      void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
+      void qc.invalidateQueries({ queryKey: QK.projects })
     },
     meta: PM_MUTATION_META,
   })

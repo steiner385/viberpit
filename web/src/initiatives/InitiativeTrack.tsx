@@ -7,23 +7,11 @@
 // MetroTrack it maps the SDLC lifecycle stages, not PR StageResult substates.
 import { Fragment } from 'react'
 import { INITIATIVE_STAGES, type InitiativeEpic, type InitiativeStage } from '@/api/sdlc'
+import { STAGE_LABEL } from '@/features/products/vocab'
 import '../pipeline/plotroom.css'
 
 export type NodeStatus = 'done' | 'active' | 'fail' | 'pending' | 'parked'
 export interface TrackNode { label: string; status: NodeStatus }
-
-/** Friendly per-stage label; the first three surface the artifact they commit
- *  (intent/spec/plan → Intent/Spec/Plan) so the chain reads as the playbook's
- *  intent→spec→plan→build progression. */
-const STAGE_LABEL: Record<InitiativeStage, string> = {
-  intake: 'Intent',
-  design: 'Spec',
-  plan: 'Plan',
-  build: 'Build',
-  deploy: 'Deploy',
-  maintain: 'Maintain',
-  done: 'Done',
-}
 
 const GLYPH: Partial<Record<NodeStatus, string>> = { done: '✓', fail: '✗', parked: '!' }
 

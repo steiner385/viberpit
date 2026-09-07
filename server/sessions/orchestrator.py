@@ -6783,13 +6783,7 @@ class SessionOrchestrator:
             backfill_done_count=sum(1 for r in repos if r.backfill_done),
             feature_count=int(feature_count),
             open_unclassified_count=int(open_unclassified),
-            pending_proposal_count=int(pending),
-            map_pr_open=False, map_pr_merged=False)
-
-    # NOTE on map_pr_open / map_pr_merged: phase 2 does not correlate the map PR's
-    # live state into the counts view. They are left False — the engine treats
-    # map_proposed with neither flag as "re-offer ProposeMap", which is the correct
-    # resumable behavior. Wiring PR-state correlation is a phase-3 enrichment.
+            pending_proposal_count=int(pending))
 
     async def pm_advance_map_merged(self, slug: str) -> None:
         """Advance a project from ``map_proposed`` to ``map_merged`` after the
@@ -6803,6 +6797,19 @@ class SessionOrchestrator:
                 Project.slug == slug))).scalar_one_or_none()
             if proj is not None and proj.onboarding_state == "map_proposed":
                 proj.onboarding_state = "map_merged"
+                await db.commit()
+
+    async def pm_advance_live(self, slug: str) -> None:
+        """Advance a project from ``map_merged``/``classifying`` to ``live`` once
+        the human has drained the triage queue. The wizard's tap calls this; the
+        pm-triage loop keeps classifying new items in the live loop regardless."""
+        from sqlalchemy import select
+        from server.db.models import Project
+        async with db_session() as db:
+            proj = (await db.execute(select(Project).where(
+                Project.slug == slug))).scalar_one_or_none()
+            if proj is not None and proj.onboarding_state in ("map_merged", "classifying"):
+                proj.onboarding_state = "live"
                 await db.commit()
 
     # ------------------------------------------------------------------

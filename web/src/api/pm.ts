@@ -83,10 +83,18 @@ export interface OnboardingCounts {
   pendingProposalCount: number
 }
 
+export interface OnboardingMapPr {
+  /** The deterministic branch the map-synthesis session pushes to. */
+  branch: string
+  /** A GitHub PR search for that branch on the primary repo. */
+  url: string
+}
+
 export interface OnboardingView {
   state: OnboardingState | string
   action: OnboardingAction
   counts: OnboardingCounts
+  mapPr: OnboardingMapPr | null
 }
 
 export function fetchOnboarding(slug: string): Promise<OnboardingView> {
@@ -103,6 +111,18 @@ export function proposeMap(slug: string): Promise<{ sessionId: string | null }> 
 export function runClassify(slug: string): Promise<{ dispatched: number }> {
   return api.post<{ dispatched: number }>(
     `/pm/projects/${encodeURIComponent(slug)}/classify`)
+}
+
+/** Human gate: the capability-map PR is merged → map_merged. */
+export function advanceMap(slug: string): Promise<{ onboardingState: string }> {
+  return api.post<{ onboardingState: string }>(
+    `/pm/projects/${encodeURIComponent(slug)}/advance-map`)
+}
+
+/** Human gate: the triage queue is drained → live. */
+export function advanceLive(slug: string): Promise<{ onboardingState: string }> {
+  return api.post<{ onboardingState: string }>(
+    `/pm/projects/${encodeURIComponent(slug)}/advance-live`)
 }
 
 // ── Phase A: dependency mirror + drift audit ──────────────────────────────────

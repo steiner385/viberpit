@@ -64,7 +64,10 @@ interface PageContractRow {
 
 /** Pages that conform to sub-spec C §2.3. Add a row when a page migrates. */
 const PAGES: readonly PageContractRow[] = [
-  { nav: 'settings', path: '/settings/general', variant: 'split', title: 'Settings' },
+  { nav: 'settings',    path: '/settings/general', variant: 'split',    title: 'Settings' },
+  { nav: 'initiatives', path: '/initiatives',      variant: 'standard', title: 'Initiatives' },
+  { nav: 'projects',    path: '/projects',         variant: 'standard', title: 'Products' },
+  { nav: 'triage',      path: '/triage',           variant: 'standard', title: 'Triage' },
 ]
 
 describe('page contract', () => {
