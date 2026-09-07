@@ -143,7 +143,6 @@ def test_edges():
 # Phase-2 tests: onboarding wizard + propose-map/classify + triage
 # ---------------------------------------------------------------------------
 
-import asyncio  # noqa: E402 — appended after the phase-1 block
 
 
 @contextmanager
@@ -198,8 +197,12 @@ def _register(c, name, repo="o/r", primary=True):
     return r.json()
 
 
-def _seed_map_merged(slug):
-    """Drive a project to map_merged with a feature + open unclassified items."""
+def _seed_map_merged(c, slug):
+    """Drive a project to map_merged with a feature + open unclassified items.
+
+    Seeded through the app's OWN event loop (``c.portal``), like every other DB
+    access in this module — see the note on :func:`_seed_one_pending`.
+    """
     from server.db import db_session
     from sqlalchemy import select
     from server.db.models import Feature, Project, ProjectRepo, WorkItem
@@ -215,7 +218,7 @@ def _seed_map_merged(slug):
                            state="live", summary="Session mgr."))
             db.add(WorkItem(repo="o/r", number=1, kind="issue", title="x",
                             state="open", triage_state="unclassified"))
-    asyncio.run(_run())
+    c.portal.call(_run)
 
 
 def test_onboarding_state_reflects_engine():
@@ -250,7 +253,6 @@ def test_classify_409_when_not_eligible():
 def test_advance_map_transitions_state():
     """advance-map: 200 in map_proposed → onboardingState becomes map_merged;
     409 when state is wrong; classify becomes available after."""
-    import asyncio
     from server.db import db_session
     from sqlalchemy import select
     from server.db.models import Project, ProjectRepo
@@ -271,7 +273,7 @@ def test_advance_map_transitions_state():
                 p.onboarding_state = "map_proposed"
                 (await db.execute(select(ProjectRepo).where(
                     ProjectRepo.project_id == p.id))).scalar_one().backfill_done = True
-        asyncio.run(_set_proposed())
+        c.portal.call(_set_proposed)
 
         # advance succeeds
         r = c.post("/api/pm/projects/ccswitch/advance-map", headers=IDENTITY_HEADERS)
@@ -284,14 +286,14 @@ def test_advance_map_transitions_state():
                 p = (await db.execute(select(Project).where(
                     Project.slug == "ccswitch"))).scalar_one()
                 assert p.onboarding_state == "map_merged"
-        asyncio.run(_check())
+        c.portal.call(_check)
 
 
 def test_classify_dispatches_and_is_idempotent():
     # Full narrated flow: register → force map_merged → classify → accept.
     with _client_with_stubbed_seams() as c:
         _register(c, "Ccswitch", repo="o/r")
-        _seed_map_merged("ccswitch")
+        _seed_map_merged(c, "ccswitch")
 
         r = c.post("/api/pm/projects/ccswitch/classify", headers=IDENTITY_HEADERS)
         assert r.status_code == 202, r.text
@@ -326,7 +328,7 @@ def test_triage_accept_and_reject_flow():
                 db.add(TriageProposal(work_item_id=w2.id, no_fit_suggestion="billing",
                                       rationale="no fit", confidence_level="low",
                                       status="pending"))
-        asyncio.run(_seed_props())
+        c.portal.call(_seed_props)
 
         listed = c.get("/api/pm/triage", headers=IDENTITY_HEADERS)
         assert listed.status_code == 200, listed.text
@@ -358,7 +360,7 @@ def test_triage_accept_and_reject_flow():
                 # classified_by is the constant "human", NOT the tailnet identity.
                 assert w1.classified_by == "human"
                 assert w2.triage_state == "needs_human"
-        asyncio.run(_check())
+        c.portal.call(_check)
 
 
 def test_triage_accept_applies_edits_body():
@@ -386,7 +388,7 @@ def test_triage_accept_applies_edits_body():
                                       reach=3, impact=2, effort=1, confidence=2,
                                       rationale="fits", confidence_level="high",
                                       status="pending"))
-        asyncio.run(_seed_one())
+        c.portal.call(_seed_one)
 
         listed = c.get("/api/pm/triage", headers=IDENTITY_HEADERS).json()
         pid = listed[0]["id"]
@@ -403,7 +405,7 @@ def test_triage_accept_applies_edits_body():
                 assert w.impact == 5 and w.effort == 4      # edits applied
                 assert w.reach == 3                          # untouched copy
                 assert w.classified_by == "human"
-        asyncio.run(_check())
+        c.portal.call(_check)
 
 
 def test_triage_accept_unknown_404():
@@ -518,10 +520,21 @@ def test_remote_pm_onboarding_counts_returns_dataclass():
 # ---------------------------------------------------------------------------
 
 
-def _seed_one_pending(*, feature_slug=None, no_fit_suggestion=None, repo="o/r",
+def _seed_one_pending(c, *, feature_slug=None, no_fit_suggestion=None, repo="o/r",
                       number=1, project_slug="ccswitch"):
     """Seed (optionally) a Feature plus a WorkItem and a pending TriageProposal
-    against the already-registered project. Returns (proposalId, workItemId)."""
+    against the already-registered project. Returns (proposalId, workItemId).
+
+    Seeded through the app's OWN event loop (same idiom as
+    test_cicd_findings_api._seed). A bare ``asyncio.run(_run())`` runs on a throwaway
+    loop while the app holds the module-level ``server.db._engine`` on the TestClient
+    portal loop. Both share one AsyncAdaptedQueuePool, and that pool's
+    ``asyncio.Queue`` binds to whichever loop first *awaits* a checkout —
+    ``get_nowait()`` never checks loop affinity, which is why an idle pool tolerates
+    the cross-loop seed. Once the orchestrator's control loops saturate the
+    5-connection pool at startup, the foreign-loop checkout has to await and dies with
+    "Queue ... is bound to a different event loop".
+    """
     from sqlalchemy import select
 
     from server.db import db_session
@@ -550,7 +563,7 @@ def _seed_one_pending(*, feature_slug=None, no_fit_suggestion=None, repo="o/r",
             db.add(tp)
             await db.flush()
             return tp.id, w.id
-    return asyncio.run(_run())
+    return c.portal.call(_run)
 
 
 def test_accept_bulk_copies_overlay():
@@ -563,7 +576,7 @@ def test_accept_bulk_copies_overlay():
 
     with _client() as c:
         _register(c, "Ccswitch", repo="o/r")
-        pid, wid = _seed_one_pending(feature_slug="sessions")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
 
         r = c.post("/api/pm/triage/accept-bulk",
                    json={"ids": [pid, "ghost"]}, headers=IDENTITY_HEADERS)
@@ -590,7 +603,7 @@ def test_accept_bulk_copies_overlay():
                 assert w.classified_by == "human"
                 assert w.feature_id is not None
                 assert (w.reach, w.impact, w.effort, w.confidence) == (3, 2, 1, 2)
-        asyncio.run(_check())
+        c.portal.call(_check)
 
         # the accepted proposal has left the pending queue
         listed = c.get("/api/pm/triage", headers=IDENTITY_HEADERS)
@@ -601,7 +614,7 @@ def test_accept_bulk_copies_overlay():
 def test_overlay_patch_manual_classify():
     with _client() as c:
         _register(c, "Ccswitch", repo="o/r")
-        _pid, wid = _seed_one_pending(feature_slug="sessions")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
 
         r = c.patch(f"/api/pm/work-items/{wid}/overlay",
                     json={"reach": 5, "triageState": "classified"},
@@ -663,7 +676,7 @@ def test_drift_accept_reproposes_orphaned_siblings():
                     await db.flush()
                     ids.append((tp.id, w.id))
                 return ids
-        (pid1, wid1), (pid2, _wid2) = asyncio.run(_seed())
+        (pid1, wid1), (pid2, _wid2) = c.portal.call(_seed)
 
         r = c.post("/api/pm/triage/accept-bulk", json={"ids": [pid1]},
                    headers=IDENTITY_HEADERS)
@@ -678,7 +691,7 @@ def test_drift_accept_reproposes_orphaned_siblings():
                     WorkItem.id == wid1))).scalar_one()
                 return (sib.status, sib.proposed_feature_id,
                         sib.no_fit_suggestion, accepted_item.feature_id)
-        status_, fid, no_fit, accepted_fid = asyncio.run(_check())
+        status_, fid, no_fit, accepted_fid = c.portal.call(_check)
         # the sibling stays pending but now points at the newly-merged feature
         assert status_ == "pending"
         assert fid is not None
@@ -721,7 +734,7 @@ def test_drift_accept_handles_two_siblings_in_one_batch():
                     await db.flush()
                     ids.append((tp.id, w.id))
                 return ids
-        (pid1, wid1), (pid2, wid2) = asyncio.run(_seed())
+        (pid1, wid1), (pid2, wid2) = c.portal.call(_seed)
 
         r = c.post("/api/pm/triage/accept-bulk", json={"ids": [pid1, pid2]},
                    headers=IDENTITY_HEADERS)
@@ -734,7 +747,7 @@ def test_drift_accept_handles_two_siblings_in_one_batch():
                 items = (await db.execute(select(WorkItem).where(
                     WorkItem.id.in_([wid1, wid2])))).scalars().all()
                 return {w.id: w.feature_id for w in items}
-        by_id = asyncio.run(_check())
+        by_id = c.portal.call(_check)
         assert by_id[wid1] is not None
         assert by_id[wid1] == by_id[wid2]
 
@@ -772,7 +785,7 @@ def test_drift_accept_via_single_accept_route():
                     await db.flush()
                     ids.append((tp.id, w.id))
                 return ids
-        (pid1, wid1), (pid2, _wid2) = asyncio.run(_seed())
+        (pid1, wid1), (pid2, _wid2) = c.portal.call(_seed)
 
         r = c.post(f"/api/pm/triage/{pid1}/accept", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
@@ -784,7 +797,7 @@ def test_drift_accept_via_single_accept_route():
                 sib = (await db.execute(select(TriageProposal).where(
                     TriageProposal.id == pid2))).scalar_one()
                 return w.feature_id, sib.proposed_feature_id, sib.no_fit_suggestion
-        fid, sib_fid, sib_no_fit = asyncio.run(_check())
+        fid, sib_fid, sib_no_fit = c.portal.call(_check)
         assert fid is not None
         assert sib_fid == fid
         assert sib_no_fit is None
@@ -827,7 +840,7 @@ def test_drift_accept_never_binds_another_projects_feature():
                     out[f"p{n}"] = tp.id
                     out[f"w{n}"] = w.id
                 return out
-        seeded = asyncio.run(_seed())
+        seeded = c.portal.call(_seed)
 
         r = c.post("/api/pm/triage/accept-bulk",
                    json={"ids": [seeded["p1"]]}, headers=IDENTITY_HEADERS)
@@ -840,7 +853,7 @@ def test_drift_accept_never_binds_another_projects_feature():
                 sib = (await db.execute(select(TriageProposal).where(
                     TriageProposal.id == seeded["p2"]))).scalar_one()
                 return w.feature_id, sib.proposed_feature_id, sib.no_fit_suggestion
-        fid, sib_fid, sib_no_fit = asyncio.run(_check())
+        fid, sib_fid, sib_no_fit = c.portal.call(_check)
         # NEVER alpha's feature — beta owns no matching feature, so no link at all.
         assert fid != seeded["alphaFeatureId"]
         assert fid is None
@@ -862,8 +875,8 @@ def test_accept_bulk_one_failure_does_not_roll_back_the_batch():
 
     with _client() as c:
         _register(c, "Ccswitch", repo="o/r")
-        pid1, wid1 = _seed_one_pending(feature_slug="sessions", number=1)
-        pid2, wid2 = _seed_one_pending(feature_slug="queue", number=2)
+        pid1, wid1 = _seed_one_pending(c, feature_slug="sessions", number=1)
+        pid2, wid2 = _seed_one_pending(c, feature_slug="queue", number=2)
 
         real_apply = pm_api._apply_accept
 
@@ -893,7 +906,7 @@ def test_accept_bulk_one_failure_does_not_roll_back_the_batch():
                         TriageProposal.id.in_([pid1, pid2])))).scalars().all()}
                 return ((items[wid1].triage_state, props[pid1].status),
                         (items[wid2].triage_state, props[pid2].status))
-        first, second = asyncio.run(_check())
+        first, second = c.portal.call(_check)
         assert first == ("classified", "accepted")      # survived the sibling's failure
         assert second == ("unclassified", "pending")    # rolled back to itself only
 
@@ -901,7 +914,7 @@ def test_accept_bulk_one_failure_does_not_roll_back_the_batch():
 def test_overlay_patch_rejects_out_of_range_rice_values():
     with _client() as c:
         _register(c, "Ccswitch", repo="o/r")
-        _pid, wid = _seed_one_pending(feature_slug="sessions")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
 
         for payload in ({"effort": 0}, {"effort": -1}, {"reach": -1},
                         {"impact": 10001}, {"confidence": -5}):
@@ -926,7 +939,7 @@ def test_overlay_patch_with_empty_body_is_a_no_op():
 
     with _client() as c:
         _register(c, "Ccswitch", repo="o/r")
-        _pid, wid = _seed_one_pending(feature_slug="sessions")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
 
         async def _mark_ai():
             async with db_session() as db:
@@ -934,7 +947,7 @@ def test_overlay_patch_with_empty_body_is_a_no_op():
                     WorkItem.id == wid))).scalar_one()
                 w.classified_by = "ai"
                 w.classified_at = None
-        asyncio.run(_mark_ai())
+        c.portal.call(_mark_ai)
 
         r = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
                     headers=IDENTITY_HEADERS)
@@ -949,7 +962,7 @@ def test_overlay_patch_with_empty_body_is_a_no_op():
                 audits = (await db.execute(select(AuditEvent).where(
                     AuditEvent.type == "pm.workitem.overlay"))).scalars().all()
                 return w.classified_by, w.classified_at, len(audits)
-        by, at, n_audit = asyncio.run(_check())
+        by, at, n_audit = c.portal.call(_check)
         assert (by, at, n_audit) == ("ai", None, 0)
 
 
@@ -958,9 +971,9 @@ def test_triage_rows_carry_project_slug():
     server-side via ProjectRepo.repo → Project.slug (the client must not guess)."""
     with _client() as c:
         _register(c, "Ccswitch", repo="o/r")
-        _seed_one_pending(feature_slug="sessions", repo="o/r", number=1)
+        _seed_one_pending(c, feature_slug="sessions", repo="o/r", number=1)
         # an item whose repo belongs to no project → projectSlug is null
-        _seed_one_pending(feature_slug=None, repo="other/unowned", number=7)
+        _seed_one_pending(c, feature_slug=None, repo="other/unowned", number=7)
 
         rows = c.get("/api/pm/triage", headers=IDENTITY_HEADERS)
         assert rows.status_code == 200, rows.text

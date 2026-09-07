@@ -5,7 +5,6 @@ seeding via db_session(), CCSWITCH_DEV=1 + empty allowlist auth bypass.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import tempfile
 from contextlib import contextmanager
@@ -47,7 +46,19 @@ def _client():
                     os.environ[k] = v
 
 
-def _seed_rows() -> None:
+def _seed_rows(c) -> None:
+    """Seed through the app's OWN event loop (same idiom as
+    test_cicd_findings_api._seed).
+
+    A bare ``asyncio.run(_seed_async())`` runs on a throwaway loop while the app
+    holds the module-level ``server.db._engine`` on the TestClient portal loop.
+    Both share one AsyncAdaptedQueuePool, and that pool's ``asyncio.Queue`` binds
+    to whichever loop first *awaits* a checkout — ``get_nowait()`` never checks
+    loop affinity, which is why an idle pool tolerates the cross-loop seed. Once
+    the orchestrator's control loops saturate the 5-connection pool at startup,
+    the foreign-loop checkout has to await and dies with
+    "Queue ... is bound to a different event loop".
+    """
     from datetime import datetime, timezone
 
     from server.db import db_session
@@ -78,12 +89,13 @@ def _seed_rows() -> None:
             await db.run_sync(_seed_sync)
             await db.commit()
 
-    asyncio.run(_seed_async())
+    assert c.portal is not None
+    c.portal.call(_seed_async)
 
 
 def test_journal_endpoint_lists_and_counts():
     with _client() as c:
-        _seed_rows()
+        _seed_rows(c)
 
         resp = c.get("/api/pm/reconcile/journal?state=parked", headers=IDENTITY_HEADERS)
         assert resp.status_code == 200, resp.text
@@ -109,7 +121,7 @@ def test_journal_endpoint_lists_and_counts():
 
 def test_journal_endpoint_no_state_filter_returns_all():
     with _client() as c:
-        _seed_rows()
+        _seed_rows(c)
 
         resp = c.get("/api/pm/reconcile/journal", headers=IDENTITY_HEADERS)
         assert resp.status_code == 200, resp.text
@@ -125,7 +137,7 @@ def test_journal_endpoint_requires_identity():
     Asserted explicitly because the endpoint takes no path parameter and reads a table
     no other test route touches: a missing Depends here would fail silently."""
     with _client() as c:
-        _seed_rows()
+        _seed_rows(c)
         assert c.get("/api/pm/reconcile/journal").status_code == 401
         assert c.get("/api/pm/reconcile/journal?state=applied").status_code == 401
         # ... and the same request WITH an identity succeeds, so 401 is the gate
@@ -136,7 +148,7 @@ def test_journal_endpoint_requires_identity():
 
 def test_journal_endpoint_limit_clamped():
     with _client() as c:
-        _seed_rows()
+        _seed_rows(c)
 
         resp = c.get("/api/pm/reconcile/journal?limit=10000", headers=IDENTITY_HEADERS)
         assert resp.status_code == 200, resp.text
