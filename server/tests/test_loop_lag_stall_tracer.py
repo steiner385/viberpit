@@ -76,6 +76,7 @@ async def test_no_tracer_calls_when_dump_after_is_unset():
     assert wd._tracer is None
 
 
+@pytest.mark.slow
 def test_thread_tracer_dumps_a_stack_while_the_thread_is_blocked():
     """The real tracer must capture a stack *during* a synchronous block.
 
@@ -100,6 +101,7 @@ def test_thread_tracer_dumps_a_stack_while_the_thread_is_blocked():
     )
 
 
+@pytest.mark.slow
 def test_thread_tracer_fires_only_once_until_rearmed():
     """``repeat=False`` semantics: a single stall yields exactly one dump."""
     with tempfile.NamedTemporaryFile("w+", suffix=".txt") as f:
@@ -127,6 +129,7 @@ def test_thread_tracer_rearm_and_idle_cancel_are_safe():
         assert f.read() == "", "no dump should be written when the deadline never passes"
 
 
+@pytest.mark.slow
 def test_thread_tracer_can_be_rearmed_after_cancel():
     """cancel() stops the thread; a later arm() must transparently restart it."""
     with tempfile.NamedTemporaryFile("w+", suffix=".txt") as f:
