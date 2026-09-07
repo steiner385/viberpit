@@ -181,7 +181,6 @@ class ErrorTriageLoop:
         self._run = run
         self._clock = clock
         self._lock = asyncio.Lock()
-        self._last_filed_number: int | None = None
 
     async def tick(self) -> None:
         async with self._lock:
@@ -366,7 +365,6 @@ class ErrorTriageLoop:
         async with db_session() as db:
             await db.execute(update(ES).where(ES.fingerprint == fp)
                              .values(issue_number=applied.issue_number))
-        self._last_filed_number = applied.issue_number
         return applied.issue_number
 
     # -- card actions ---------------------------------------------------------
@@ -401,6 +399,14 @@ class ErrorTriageLoop:
         return items
 
     async def action(self, fingerprint: str, kind: str) -> str:
+        return (await self.action_result(fingerprint, kind))[0]
+
+    async def action_result(self, fingerprint: str, kind: str) -> tuple[str, int | None]:
+        """Like ``action``, but also returns the issue number freshly filed by
+        *this call* (``None`` unless the status is ``"filed"``). Deliberately
+        not shared instance state — a concurrent trigger on another fingerprint,
+        or the periodic tick's own filing, must never leak its number into this
+        call's caller."""
         from sqlalchemy import select, update
         from server.db import db_session
         from server.db.models import ErrorSignature as ES
@@ -409,23 +415,23 @@ class ErrorTriageLoop:
         async with db_session() as db:
             row = (await db.execute(select(ES).where(ES.fingerprint == fingerprint))).scalars().one_or_none()
             if row is None:
-                return "not_found"
+                return "not_found", None
             if kind == "mute":
                 await db.execute(update(ES).where(ES.fingerprint == fingerprint).values(
                     status="muted", muted_at=now, muted_by="operator"))
-                return "muted"
+                return "muted", None
             if kind == "unmute":
                 back = "filed" if row.issue_number else "observed"
                 await db.execute(update(ES).where(ES.fingerprint == fingerprint).values(
                     status=back, muted_at=None, muted_by=None))
-                return "unmuted"
+                return "unmuted", None
             if kind != "file_now":
-                return "failed"
+                return "failed", None
             if mode == "off":
-                return "off"
+                return "off", None
             repo = str(config.get("target_repo") or "")
             if not ci_issues.valid_repo(repo) or row.status not in ("observed", "resolved", "filed"):
-                return "failed"
+                return "failed", None
             regression_of = row.issue_number if row.status == "resolved" else None
             title = issue_title(row, regression=regression_of is not None)
             body = issue_body(row, regression_of=regression_of, repo=repo)
@@ -439,11 +445,11 @@ class ErrorTriageLoop:
         if issue_number is None:
             await self._ctx.emit("warn", f"File now failed — will retry: {title}",
                                  kind="file_failed", target=fingerprint)
-            return "failed"
+            return "failed", None
         await self._ctx.emit("info", f"filed #{issue_number} (File now): {title}",
                              kind="filed", target=fingerprint,
                              detail={"url": ci_issues.issue_url(repo, issue_number)})
-        return "filed"
+        return "filed", issue_number
 
 
 # ---------------------------------------------------------------------------
@@ -477,8 +483,8 @@ class ErrorTriageActionProvider:
         return await self._loop.actionable_items()
 
     async def trigger(self, item_id: str, kind: str) -> TriggerResult:
-        status = await self._loop.action(item_id, kind)
+        status, number = await self._loop.action_result(item_id, kind)
         level, message = _ACTION_STATUS.get(status, ("error", "Action failed — see the feed"))
-        if status == "filed" and self._loop._last_filed_number:
-            message = f"Issue filed: #{self._loop._last_filed_number}"
+        if status == "filed" and number is not None:
+            message = f"Issue filed: #{number}"
         return TriggerResult(status=status, level=level, message=message)

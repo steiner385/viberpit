@@ -55,6 +55,15 @@ def test_file_now_reports_failure_and_stays_retryable(tmp_path):
     _run(body, tmp_path)
 
 
+def test_action_result_returns_the_filed_number(tmp_path):
+    async def body():
+        await _seed()
+        loop = _loop(AutomationContext("error-triage"), FakeGh())
+        assert await loop.action_result("fp1", "file_now") == ("filed", 42)
+        assert await loop.action_result("fp1", "mute") == ("muted", None)
+    _run(body, tmp_path)
+
+
 def test_mute_and_unmute(tmp_path):
     async def body():
         await _seed(fingerprint="a")
