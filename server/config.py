@@ -258,6 +258,14 @@ try:
         # are parked for a human instead. Bounds a session driving itself in circles.
         self_model_switch_cap: int = Field(
             default=3, alias="CCSWITCH_SELF_MODEL_SWITCH_CAP")
+        # Per-session in-process MCP surface for coding sessions (session tools spec §3).
+        # Off = no in-process server is mounted and no instruction is appended.
+        session_tools_enabled: bool = Field(
+            default=True, alias="CCSWITCH_SESSION_TOOLS_ENABLED")
+        # How many report_feedback rows one session may file (spec §4). Further reports
+        # are recorded as "capped": visible, never filed.
+        session_feedback_cap: int = Field(
+            default=3, alias="CCSWITCH_SESSION_FEEDBACK_CAP")
         # Verification-phase test-run slot cap (#822): max sessions per host that
         # may simultaneously hold a "running the full server suite" slot. Keeps a
         # Backlog Runner burst from piling up N concurrent full pytest runs (the
@@ -546,6 +554,12 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         self_model_switch_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_SELF_MODEL_SWITCH_CAP", "")) and v.isdigit() else 3
+        )
+        session_tools_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_SESSION_TOOLS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        session_feedback_cap: int = dataclasses.field(
+            default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_SESSION_FEEDBACK_CAP", "")) and v.isdigit() else 3
         )
         test_slot_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_TEST_SLOT_CAP", "")) and v.isdigit() else 1

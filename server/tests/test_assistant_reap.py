@@ -219,7 +219,7 @@ async def test_resume_after_reap_rebuilds_the_assistant_overlay(
         orch.note_user_interaction(a.id)
         t0 = orch.get_session(a.id).last_activity_at
         assert await orch._reap_idle_assistants_once(now=t0 + 101) == [a.id]
-        assert a.id not in orch._assistant_overlays, "reap must drop the stale overlay"
+        assert a.id not in orch._overlays, "reap must drop the stale overlay"
 
         driver = await orch.ensure_driver(a.id, "u@x")
         assert driver is not None
@@ -381,7 +381,7 @@ async def test_reap_publishes_its_teardown_in_releasing(isolated_db, tmp_path, m
         async def _sample_during_stop(sid):
             await asyncio.sleep(0)      # a real yield, like the real stop_display
             during["releasing"] = orch._releasing.get(sid)
-            during["overlay"] = sid in orch._assistant_overlays
+            during["overlay"] = sid in orch._overlays
             during["status"] = orch.get_session(sid).status
             during["driver"] = sid in orch._drivers
 
@@ -418,7 +418,7 @@ async def test_reap_publishes_its_teardown_in_releasing(isolated_db, tmp_path, m
 def test_all_three_driver_teardowns_route_through_one_helper():
     """close_session, archive_session and the assistant reap ran three VERBATIM copies
     of the same "stop the X11 display + six dict pops + aclose()" block. The third copy
-    had already drifted harmfully (it additionally dropped `_assistant_overlays`, which
+    had already drifted harmfully (it additionally dropped `_overlays`, which
     is what turned every post-reap resume into an unrestricted coding session).
 
     Consolidated into `_teardown_driver_state`. This guards the consolidation the only

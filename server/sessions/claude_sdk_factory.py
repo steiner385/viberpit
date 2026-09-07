@@ -16,11 +16,18 @@ def _build_append_string() -> str:
     switching (``AgentCapabilities.self_model_switch``), so it is also the one
     engine that passes the flag through; every other engine asks
     ``marker_instructions`` for the completion/no-PR pair alone.
+
+    Also appends the session-tools paragraph when the surface is mounted (session
+    tools spec §3.3), so a session is never told about tools it does not have —
+    through the shared ``append_session_tools``, which the Codex driver's fresh
+    ``thread/start`` calls for the same purpose.
     """
     from server.config import get_settings
-    return marker_instructions(
-        self_model_switch=get_settings().self_model_switch_enabled
-    )
+    from server.sessions.tools.instruction import append_session_tools
+    cfg = get_settings()
+    return append_session_tools(
+        marker_instructions(self_model_switch=cfg.self_model_switch_enabled),
+        enabled=cfg.session_tools_enabled)
 
 # Inline flag-settings payload (--settings layer, highest priority).  Auto-approves any
 # project-scoped `.mcp.json` MCP server so the CLI's trust gate (LX1 → "pending" → prompt)
@@ -59,11 +66,12 @@ def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None
                      on_pre_compact=None, options_overlay=None):
     """Build the real ``ClaudeSDKClient`` for one session.
 
-    *options_overlay* (assistant sessions only — see ``server/assistant/options.py``)
+    *options_overlay*: the assistant's overlay (see ``server/assistant/options.py``)
     replaces individual ``ClaudeAgentOptions`` kwargs wholesale, including
-    ``system_prompt``: the ccswitch marker instructions appended below are coding-session
-    contracts (completion marker, PR marker, self-directed model request) and mean
-    nothing to the assistant.
+    ``system_prompt``; a coding session's overlay (``server/sessions/tools/``) is
+    exactly ``mcp_servers`` and must never carry ``system_prompt`` or
+    ``strict_mcp_config`` — the first would erase the marker contracts appended below,
+    the second would drop the repo's own ``.mcp.json`` servers.
     """
     ClaudeSDKClient, ClaudeAgentOptions = _import_sdk()
     env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir)

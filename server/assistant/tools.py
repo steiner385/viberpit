@@ -8,7 +8,6 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from enum import Enum
 from typing import Any
 from urllib.parse import urlparse
 
@@ -16,28 +15,19 @@ from claude_agent_sdk import SdkMcpTool, tool
 from mcp.types import ToolAnnotations
 
 from ccswitch import brand
+
+# The registry primitives live in server.mcp_spec, which every surface shares — this
+# module owns the drawer's TOOL_SPECS table and nothing else. MCP_PREFIX/annotation_for
+# are re-exported because callers (and the brand wire-contract gate) still read them
+# from here; both are the mcp_spec objects, not a second copy.
+from server.mcp_spec import (MCP_PREFIX, ToolArgError, ToolClass, ToolSpec,  # noqa: F401 - re-exported
+                             annotation_for, annotations_for, register_surface, tool_err)
 from server.github import ci_issues
 from server.obs.metrics import assistant_gap_reports_total, assistant_tool_calls_total
 
 from .client import AssistantApi, AssistantApiError
 
 log = logging.getLogger(__name__)
-
-MCP_PREFIX = brand.MCP_TOOL_PREFIX
-
-
-class ToolClass(str, Enum):
-    READ = "read"
-    MUTATION = "mutation"
-    DESTRUCTIVE = "destructive"
-
-
-@dataclass(frozen=True)
-class ToolSpec:
-    name: str
-    tool_class: ToolClass
-    title: str          # human label for permission cards ("Archive session")
-
 
 TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("list_sessions", ToolClass.READ, "List sessions"),
@@ -149,6 +139,8 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("start_reauth", ToolClass.MUTATION, "Start account re-auth"),
 ]}
 
+register_surface("assistant", TOOL_SPECS)
+
 # Operator-tier tool names (spec v2 §7, Task 9.2): omitted from `build_tools()` and
 # rejected by `route_allowed()` unless `operator_tools_enabled(db)` is true. Kept as a
 # frozenset (not derived from tool_class) because DESTRUCTIVE/MUTATION also covers
@@ -156,11 +148,6 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
 OPERATOR_TOOLS: frozenset[str] = frozenset({
     "start_deploy", "upgrade_host", "refresh_account", "set_account_enabled", "start_reauth",
 })
-
-
-class ToolArgError(ValueError):
-    """An argument a handler rejects LOCALLY, before any HTTP call — so the model gets a
-    corrective message without the API ever seeing the request (spec §4.4)."""
 
 
 # Matches the allowlist's initiative-, product- and automation-id character class
@@ -250,19 +237,6 @@ def _int_list(v: Any, *, field: str) -> list[int]:
         raise ToolArgError(f"{field} must contain only whole numbers") from None
 
 
-def annotation_for(mcp_name: str) -> ToolSpec | None:
-    """The spec for *mcp_name* under EITHER brand prefix, or None if it is not ours.
-
-    Accepting the pre-rebrand prefix is load-bearing, not cosmetic: this is what
-    the permission registry consults to decide whether a tool auto-allows, offers
-    a rememberable card, or always prompts. A resumed thread or a replayed
-    transcript still carries `mcp__ccswitch__*` names, and a None here downgrades
-    a DESTRUCTIVE tool to the mutation branch — a card that offers "Always allow".
-    """
-    stem = brand.mcp_tool_stem(mcp_name)
-    return None if stem is None else TOOL_SPECS.get(stem)
-
-
 # Batch tools (spec v2 B4): each takes `ids` + `titles` (equal length, capped) and acts
 # on every id in one confirmed action.
 BATCH_TOOLS: frozenset[str] = frozenset({"archive_sessions", "unarchive_sessions",
@@ -296,13 +270,7 @@ def _batch_args(args: dict[str, Any]) -> list[str]:
 
 
 def _annotations(spec: ToolSpec) -> ToolAnnotations:
-    return ToolAnnotations(
-        title=spec.title,
-        readOnlyHint=spec.tool_class is ToolClass.READ,
-        destructiveHint=spec.tool_class is ToolClass.DESTRUCTIVE,
-        idempotentHint=spec.tool_class is ToolClass.READ,
-        openWorldHint=False,
-    )
+    return annotations_for(spec)
 
 
 _TAG = re.compile(r"<(?=/?[A-Za-z!?])")
@@ -349,7 +317,7 @@ def _ok(data: Any, truncated: int = 0) -> dict[str, Any]:
 
 
 def _err(msg: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": msg}], "is_error": True}
+    return tool_err(msg)
 
 
 # Matches the LIVE-session wire shape from `_record_to_dict`

@@ -24,7 +24,7 @@ import time
 import uuid
 from pathlib import Path
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, cast
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -766,11 +766,13 @@ class SessionOrchestrator:
         # (SessionRecord stays a plain mirror-the-DB-row dataclass; this is transient
         # process state, not a session field).
         self._pending_notices: dict[str, list[dict]] = {}
-        # session_id → ClaudeAgentOptions overlay for an assistant-kind session
-        # (see register_assistant_overlay). In-memory only: the overlay holds a live
+        # session_id → options overlay for ANY kind (see register_overlay): the
+        # assistant's full overlay (a ClaudeAgentOptions dict for Claude, a
+        # CodexAssistantOverlay for Codex) or a coding session's
+        # `{"mcp_servers": {<brand.MCP_SERVER_NAME>: …}}`. In-memory only: the overlay holds a live
         # in-process MCP server bound to that session, so it is neither persisted nor
         # sent over RPC — a restart rebuilds it with the session.
-        self._assistant_overlays: dict[str, dict] = {}
+        self._overlays: dict[str, Any] = {}
         # Cap-purge poison tracking (#825): consecutive permanent_delete failures per
         # session, and the set that has crossed _ARCHIVE_PURGE_MAX_STRIKES and is now
         # skipped during selection so one un-deletable archive can't wedge the whole
@@ -1259,17 +1261,19 @@ class SessionOrchestrator:
         """
         return None if is_assistant_kind(kind) else self._suggester
 
-    def register_assistant_overlay(self, session_id: str, overlay: dict) -> None:
-        """Register the ``ClaudeAgentOptions`` overlay an assistant session spawns with.
+    def register_overlay(self, session_id: str, overlay: Any) -> None:
+        """Register the options overlay a session spawns with.
 
         Kept out of the spawn signature because the overlay carries a live in-process
-        MCP server bound to THIS session (``server.assistant.server.build_server``), so
-        it can neither be persisted on the row nor round-tripped over RPC. The caller
-        registers it, then creates the session; ``_session_factory`` picks it up.
+        MCP server bound to THIS session (``server.assistant.server.build_server`` for
+        an assistant, ``server.sessions.tools.server.build_session_server`` for a
+        coding session), so it can neither be persisted on the row nor round-tripped
+        over RPC. The caller registers it, then creates the session;
+        ``_session_factory`` picks it up.
         """
-        overlays = getattr(self, "_assistant_overlays", None)
+        overlays = getattr(self, "_overlays", None)
         if overlays is None:
-            overlays = self._assistant_overlays = {}
+            overlays = self._overlays = {}
         overlays[session_id] = overlay
 
     async def _setup_assistant_overlay(self, session_id: str, *, identity: str,
@@ -1323,10 +1327,59 @@ class SessionOrchestrator:
         # unused copy of the tool table whose drift nothing would catch.
         server = (build_server(api, operator=operator)
                   if selected is AgentEngine.CLAUDE_CODE else None)
-        self.register_assistant_overlay(session_id, assistant_overlay_for(
+        self.register_overlay(session_id, assistant_overlay_for(
             selected, api=api, server=server, max_turns=cfg.assistant_max_turns,
             model=model or cfg.assistant_model, operator=operator))
         return api
+
+    async def _setup_session_overlay(self, session_id: str, *, identity: str,
+                                     kind: str | None = None,
+                                     engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+                                     ) -> None:
+        """Arm a CODING session's in-process MCP surface (session tools spec §3.3).
+
+        The overlay is exactly ``{"mcp_servers": {<brand.MCP_SERVER_NAME>: server}}``: never
+        ``strict_mcp_config`` (it would drop the repo's own .mcp.json servers) and never
+        ``system_prompt`` (the factory's append carries the marker contracts). Rebuilt
+        at every driver build like the assistant's — the server closes over this
+        orchestrator's live record accessor, and ``_teardown_driver_state`` drops it.
+        """
+        from server.config import get_settings
+        from server.sessions.tools.context import SessionToolContext
+        if not get_settings().session_tools_enabled:
+            self._overlays.pop(session_id, None)
+            return
+        selected = parse_agent_engine(engine, legacy_default=True)
+        ctx = SessionToolContext(
+            session_id=session_id, identity=identity, kind=kind, engine=selected.value,
+            record=lambda: self._records.get(session_id), host=self_host_name())
+        if selected is AgentEngine.CODEX:
+            from server.sessions.tools.codex import CodexSessionTools
+            self.register_overlay(session_id, CodexSessionTools.build(ctx))
+            return
+        from server.mcp_spec import SERVER_NAME
+        from server.sessions.tools.server import build_session_server
+        self.register_overlay(
+            session_id, {"mcp_servers": {SERVER_NAME: build_session_server(ctx)}})
+
+    async def _setup_overlay_for_kind(self, session_id: str, *, kind: str | None, identity: str,
+                                      model: str | None,
+                                      engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+                                      ) -> "AssistantApi | None":
+        """THE overlay arming call every driver-build site makes (spawn, ensure_driver,
+        _reassign_locked, adopt_session). Returns the AssistantApi for an assistant
+        kind, else None.
+
+        One helper with four callers on purpose: an overlay is per-PROCESS state, and
+        arming it only on the create path is the bug shape recorded in
+        ``docs/superpowers/fix-patterns/2026-09-04-per-process-state-armed-only-on-the-create-path.md``.
+        """
+        if is_assistant_kind(kind):
+            return await self._setup_assistant_overlay(
+                session_id, identity=identity, model=model, engine=engine)
+        await self._setup_session_overlay(session_id, identity=identity, kind=kind,
+                                          engine=engine)
+        return None
 
     def _display_env(self, session_id: str) -> dict[str, str]:
         """The DISPLAY/XAUTHORITY env for this session's process — the one place it
@@ -1346,19 +1399,23 @@ class SessionOrchestrator:
         Forwards ``on_pre_compact`` to the base factory so the real SDK factory can
         register the hook; fake factories accept and ignore it.
 
-        An assistant session additionally carries an ``options_overlay`` (registered by
-        ``register_assistant_overlay``). It is passed ONLY when present, so every
-        existing factory — including the test fakes — keeps its current signature.
+        A session additionally carries an ``options_overlay`` (registered by
+        ``register_overlay``): the assistant's full overlay, or a coding session's
+        ``{"mcp_servers": {<brand.MCP_SERVER_NAME>: …}}``. It is passed only when present (an assistant,
+        or a coding session with the flag on), so a factory that never sees one (flag off,
+        Codex) keeps its current signature, and fakes that do must accept
+        ``options_overlay=None``.
         """
         base = self._sdk_factory
         def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
             extra = {**self._display_env(session_id), **self._oat_env(session_id)}
             kw: dict = {"on_pre_compact": on_pre_compact}
-            overlay = getattr(self, "_assistant_overlays", {}).get(session_id)
-            # `dict` and not merely "not None": the Codex overlay for an assistant
-            # session lands in the same registry and is a different type entirely
-            # (server/assistant/options_codex.CodexAssistantOverlay). It is read by
-            # `_codex_assistant_overlay_for_session`, never by this factory.
+            overlay = getattr(self, "_overlays", {}).get(session_id)
+            # `dict` and not merely "not None": every kind's overlay lands in the same
+            # registry, and a Codex session's is a different type entirely
+            # (server/assistant/options_codex.CodexAssistantOverlay). Those are read by
+            # the Codex getters, never by this factory. A coding session's Claude
+            # overlay IS a dict, so it passes through here unchanged.
             if isinstance(overlay, dict):
                 kw["options_overlay"] = overlay
             if extra:
@@ -1398,7 +1455,8 @@ class SessionOrchestrator:
             from server.codex.driver import CodexAgentDriverFactory
             factories[AgentEngine.CODEX] = CodexAgentDriverFactory(
                 self._codex, self._registry, self._launch_model_for_session,
-                self._codex_assistant_overlay_for_session)
+                self._codex_assistant_overlay_for_session,
+                self._codex_session_tools_for_session)
         return factories
 
     def _launch_model_for_session(self, session_id: str) -> str | None:
@@ -1418,16 +1476,29 @@ class SessionOrchestrator:
     def _codex_assistant_overlay_for_session(self, session_id: str):
         """The Codex assistant overlay registered for *session_id*, if any.
 
-        Type-checked rather than assumed: ``_assistant_overlays`` holds whichever
-        overlay ``assistant_overlay_for`` built, and the two engines' overlays are
-        different types on purpose. Handing a Claude options dict to the Codex
+        Type-checked rather than assumed: ``_overlays`` is the registry for EVERY
+        kind, so it holds whichever overlay was built — and the two engines' overlays
+        are different types on purpose. Handing a Claude options dict to the Codex
         driver — or the reverse — is the one mistake this seam can make, so it is
         made unrepresentable here instead of guarded at each use.
         """
         from server.assistant.options_codex import CodexAssistantOverlay
 
-        overlay = getattr(self, "_assistant_overlays", {}).get(session_id)
+        overlay = getattr(self, "_overlays", {}).get(session_id)
         return overlay if isinstance(overlay, CodexAssistantOverlay) else None
+
+    def _codex_session_tools_for_session(self, session_id: str):
+        """The Codex coding-session tool surface registered for *session_id*, if any.
+
+        Type-checked for the same reason as its assistant sibling above: ``_overlays``
+        holds whichever overlay the session's kind and engine built — a Claude options
+        dict, an assistant overlay or this — and handing the wrong one to the Codex
+        driver is the single mistake this seam can make.
+        """
+        from server.sessions.tools.codex import CodexSessionTools
+
+        overlay = getattr(self, "_overlays", {}).get(session_id)
+        return overlay if isinstance(overlay, CodexSessionTools) else None
 
     def _engine_supports(self, engine: AgentEngine | str, capability: str) -> bool:
         """True iff this host's driver for *engine* declares *capability*.
@@ -3275,16 +3346,14 @@ class SessionOrchestrator:
         driver: AgentDriver | None = None
         row_persisted = False
         try:
-            # An assistant-kind session gets its ClaudeAgentOptions overlay (system
-            # prompt, in-process `ccswitch` MCP server, no builtin tools) registered
-            # BEFORE the driver is built: _session_factory picks it up from
-            # self._assistant_overlays the moment the SDK factory closure runs inside
-            # driver.start() below.
-            assistant_api = None
-            if is_assistant_kind(kind):
-                assistant_api = await self._setup_assistant_overlay(
-                    session_id, identity=identity, model=model,
-                    engine=selected_engine)
+            # Every session gets its options overlay registered BEFORE the driver is
+            # built — an assistant's full overlay (system prompt, in-process `ccswitch`
+            # MCP server, no builtin tools) or a coding session's `ccswitch` MCP
+            # surface: _session_factory picks it up from self._overlays the moment the
+            # SDK factory closure runs inside driver.start() below.
+            assistant_api = await self._setup_overlay_for_kind(
+                session_id, kind=kind, identity=identity, model=model,
+                engine=selected_engine)
 
             driver = self._create_driver(
                 engine=selected_engine,
@@ -3416,7 +3485,8 @@ class SessionOrchestrator:
                             if assistant_api is not None:
                                 with contextlib.suppress(Exception):
                                     await assistant_api.aclose()
-                    self._assistant_overlays.pop(session_id, None)
+                    # The overlay is dropped by _teardown_driver_state above — it is
+                    # per-driver state, released on every teardown path.
                     rollback_record = (self._records.pop(session_id)
                                        if session_id in self._records else None)
                     await self._cleanup_session_paths(session_id, rollback_record)
@@ -3566,8 +3636,8 @@ class SessionOrchestrator:
         The single source of truth for "this session no longer has a running driver",
         shared by ``close_session``, ``archive_session`` and the assistant idle reap.
         Three verbatim copies of this block existed before; the third had already
-        drifted (it also dropped the assistant options overlay, which turned every
-        resume after a reap into an UNRESTRICTED coding session).
+        drifted (only IT dropped the assistant options overlay, so a resume after a
+        close/archive kept a stale one — the overlay pop now lives here, once).
 
         Two things deliberately stay with the CALLER, because they legitimately differ:
 
@@ -3590,6 +3660,12 @@ class SessionOrchestrator:
         self._turn_restart_at.pop(session_id, None)
         self._self_model_state.pop(session_id, None)
         self._handled_model_requests.pop(session_id, None)
+        # The options overlay is per-DRIVER state: it holds a live in-process MCP
+        # server (and, for an assistant, an AssistantApi whose httpx client the
+        # caller's aclose() is about to shut down). Released here so all three
+        # teardown paths drop it, and re-armed by _setup_overlay_for_kind at every
+        # driver build — never preserved across one.
+        self._overlays.pop(session_id, None)
         self._pending_initial_prompt.pop(session_id, None)
 
         # Release this session's claim on its account's Codex app-server (a no-op
@@ -3770,21 +3846,22 @@ class SessionOrchestrator:
             # finds `_ensure_lock` free, `_swapping` empty, `_releasing` EMPTY and a
             # status that is not yet "ended", and starts a SECOND claude process on the
             # same claude_session_id. The sweep would then resume and delete that
-            # rebuild's overlay (`_session_factory` re-reads `_assistant_overlays` on
-            # every factory call, so the next model switch or recoverable-failure
-            # respawn would come back with no tools=[] and no denylist — Critical 1
-            # again, by the back door) and stamp the live session "ended".
+            # rebuild's overlay (`_session_factory` re-reads `_overlays` on every
+            # factory call, so the next model switch or recoverable-failure respawn
+            # would come back with no tools=[] and no denylist — Critical 1 again, by
+            # the back door) and stamp the live session "ended".
             #
             # Only `_records` is deliberately left alone: the row surviving IS
             # resume-on-reopen (spec §4.7).
 
-            # Drop the options overlay. Correct BECAUSE ensure_driver rebuilds it (see
-            # _setup_assistant_overlay): the overlay captures an AssistantApi whose
+            # The options overlay is dropped by the `_teardown_driver_state` call
+            # below — which pops it before its own first await, so it is still inside
+            # this atomic claim. Correct BECAUSE ensure_driver rebuilds it (see
+            # _setup_overlay_for_kind): the overlay captures an AssistantApi whose
             # httpx client driver.aclose() below is about to close, so a preserved
             # overlay would hand the resumed session dead MCP tools. It must not simply
             # be LEAKED either — a resume that found no overlay would build a plain,
             # unrestricted coding agent out of the drawer.
-            self._assistant_overlays.pop(rec.id, None)
             rec.status = "ended"
 
             # Publish the teardown in `_releasing` rather than awaiting aclose() inline.
@@ -10791,23 +10868,24 @@ class SessionOrchestrator:
             # would raise CodexRunnerUnavailable on its first call.
             await self._ensure_codex_runner(resume_engine, rec.account)
 
-            # An assistant's options overlay is rebuilt for EVERY driver build here, not
-            # just at spawn: it is what makes the session an assistant, and the idle
-            # reap drops it along with the driver. See _setup_assistant_overlay for why
-            # it must be rebuilt rather than preserved (the old one holds a closed
-            # loopback client and a token that may already have expired). Rebuilt per
-            # _build() call, so the fresh-start fallback below — which acloses the first
-            # driver, and with it the first AssistantApi — also gets a live one.
+            # A session's options overlay is rebuilt for EVERY driver build here, not
+            # just at spawn: for an assistant it is what makes the session an assistant,
+            # for a coding session it is its `ccswitch` MCP surface — and every teardown
+            # (close, archive, idle reap) drops it along with the driver. See
+            # _setup_assistant_overlay for why it must be rebuilt rather than preserved
+            # (the old one holds a closed loopback client and a token that may already
+            # have expired). Rebuilt per _build() call, so the fresh-start fallback
+            # below — which acloses the first driver, and with it the first
+            # AssistantApi — also gets a live one.
             built_assistant_apis: list[AssistantApi] = []
 
             async def _build(resume_arg):
-                assistant_api = None
-                if is_assistant(rec):
-                    # Must run before _create_driver: the SDK factory reads
-                    # self._assistant_overlays[session_id] when it builds the client.
-                    assistant_api = await self._setup_assistant_overlay(
-                        session_id, identity=identity, model=rec.model,
-                        engine=resume_engine)
+                # Must run before _create_driver: the SDK factory reads
+                # self._overlays[session_id] when it builds the client.
+                assistant_api = await self._setup_overlay_for_kind(
+                    session_id, kind=getattr(rec, "kind", None), identity=identity,
+                    model=rec.model, engine=resume_engine)
+                if assistant_api is not None:
                     built_assistant_apis.append(assistant_api)
                 return self._create_driver(
                     engine=resume_engine,
@@ -10913,16 +10991,15 @@ class SessionOrchestrator:
                             await driver.aclose()
                         raise
             except BaseException:
-                # The resume failed and no driver was registered: release what
-                # _setup_assistant_overlay allocated, mirroring _spawn_session's own
-                # start()-failure path. Leaving the overlay behind would let an
-                # unrelated later build for this id pick up a stale one holding a
-                # closed loopback client, and the httpx clients would leak.
-                if built_assistant_apis:
-                    self._assistant_overlays.pop(session_id, None)
-                    for _api in built_assistant_apis:
-                        with contextlib.suppress(Exception):
-                            await _api.aclose()
+                # The resume failed and no driver was registered, so no teardown path
+                # will run: release what _setup_overlay_for_kind allocated, mirroring
+                # _spawn_session's own start()-failure path. Leaving the overlay behind
+                # would let an unrelated later build for this id pick up a stale one
+                # holding a closed loopback client, and the httpx clients would leak.
+                self._overlays.pop(session_id, None)
+                for _api in built_assistant_apis:
+                    with contextlib.suppress(Exception):
+                        await _api.aclose()
                 raise
             finally:
                 if self._swapping.get(session_id) is swap_done:
@@ -11200,22 +11277,41 @@ class SessionOrchestrator:
                 suggester=self._suggester,
             )
 
+        # The FOURTH driver-build site (see the fix-pattern doc named on
+        # _setup_overlay_for_kind). An adopted process is always a coding session —
+        # never an assistant — so this arms its `ccswitch` MCP surface, which the
+        # system-prompt append tells every Claude session it has. Re-armed for the
+        # fresh-start rebuild below, like ensure_driver's `_build`.
+        await self._setup_overlay_for_kind(
+            session_id, kind=None, identity=identity, model=None,
+            engine=AgentEngine.CLAUDE_CODE)
+
         # Resume the conversation; fall back to a fresh session if resume fails so
         # the adopted record stays usable (prior transcript still shows via replay).
         resumed = True
-        driver = _build(claude_session_id)
         try:
-            await driver.start()
-        except Exception:
-            log.warning("adopt.resume_failed sid=%s; starting fresh",
-                        claude_session_id, exc_info=True)
+            driver = _build(claude_session_id)
             try:
-                await driver.aclose()
+                await driver.start()
             except Exception:
-                pass
-            driver = _build(None)
-            await driver.start()
-            resumed = False
+                log.warning("adopt.resume_failed sid=%s; starting fresh",
+                            claude_session_id, exc_info=True)
+                try:
+                    await driver.aclose()
+                except Exception:
+                    pass
+                await self._setup_overlay_for_kind(
+                    session_id, kind=None, identity=identity, model=None,
+                    engine=AgentEngine.CLAUDE_CODE)
+                driver = _build(None)
+                await driver.start()
+                resumed = False
+        except BaseException:
+            # The adoption failed with no driver registered, so no teardown path will
+            # release the overlay armed above — and this session_id is discarded, so a
+            # leaked entry could never be reclaimed.
+            self._overlays.pop(session_id, None)
+            raise
         self._drivers[session_id] = driver
 
         # The transcript mtime is the adopted session's real last-response time — seed the
@@ -13230,18 +13326,19 @@ class SessionOrchestrator:
             # up before a driver can attach to it, exactly as a fresh spawn or a
             # detached resume already requires (see ensure_driver).
             await self._ensure_codex_runner(record.engine, new_account)
-            # An assistant-kind session's overlay carries an AssistantApi whose MCP
-            # tool handlers close over a live httpx.AsyncClient. old_driver.aclose()
-            # above already closed that client (it belonged to old_driver), so every
-            # mcp__ccswitch__* call on the rebuilt driver would raise against a dead
-            # connection unless a FRESH AssistantApi is minted here and re-registered
-            # under record.id before the new AgentDriver is built — the same
-            # _setup_assistant_overlay the spawn and the resume use (#1125).
-            assistant_api = None
-            if is_assistant_kind(getattr(record, "kind", None)):
-                assistant_api = await self._setup_assistant_overlay(
-                    record.id, identity=identity, model=record.model,
-                    engine=record.engine)
+            # This is the THIRD driver-build site, so it re-arms the overlay too. It
+            # matters most for an assistant, whose overlay carries an AssistantApi
+            # whose MCP tool handlers close over a live httpx.AsyncClient:
+            # old_driver.aclose() above already closed that client (it belonged to
+            # old_driver), so every mcp__ccswitch__* call on the rebuilt driver would
+            # raise against a dead connection unless a FRESH AssistantApi is minted
+            # here and re-registered under record.id before the new AgentDriver is
+            # built — the same _setup_overlay_for_kind the spawn and the resume use
+            # (#1125). A coding session's `ccswitch` surface is rebuilt for the same
+            # reason: the rotation drops the driver the overlay belonged to.
+            assistant_api = await self._setup_overlay_for_kind(
+                record.id, kind=getattr(record, "kind", None), identity=identity,
+                model=record.model, engine=record.engine)
             new_driver = self._create_driver(
                 engine=record.engine,
                 session_id=record.id,
@@ -13267,8 +13364,11 @@ class SessionOrchestrator:
             try:
                 await new_driver.start()
             except Exception:
+                # No driver was registered, so no teardown path will release the
+                # overlay this build armed — drop it here rather than leave a stale
+                # one for the next build to inherit.
+                self._overlays.pop(record.id, None)
                 if assistant_api is not None:
-                    self._assistant_overlays.pop(record.id, None)
                     await assistant_api.aclose()
                 raise
             self._install_driver(record.id, new_driver)

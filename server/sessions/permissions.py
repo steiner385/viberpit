@@ -2,8 +2,8 @@ from __future__ import annotations
 import asyncio, os, time, uuid as _uuid
 from pathlib import Path
 
-from ccswitch import brand
 from ccswitch import paths as _paths
+from server.mcp_spec import is_mcp_tool
 
 # File-writing tools whose target is a single path argument.
 _FILE_WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
@@ -135,15 +135,27 @@ class PermissionRegistry:
         # tool's ANNOTATION (read/mutation/destructive), not on session mode, so
         # this branch sits ABOVE both the full-auto/bypassPermissions shortcut and
         # the generic mcp__ auto-allow: a destructive tool must prompt
-        # even in full-auto. Local import avoids a module-load-order cycle with
-        # server.assistant.tools (which itself does not import server.sessions,
-        # but keeping this import lazy is cheap insurance).
-        if brand.is_mcp_tool(tool):
-            from server.assistant import tools as assistant_tools
-            ann = assistant_tools.annotation_for(tool)
-            if ann is not None and ann.tool_class == assistant_tools.ToolClass.READ:
+        # even in full-auto. `is_mcp_tool` accepts BOTH brand prefixes, so a
+        # resumed thread or a replayed transcript naming a tool the pre-rebrand
+        # way is still gated by its annotation instead of falling through to the
+        # generic `mcp__` auto-allow.
+        #
+        # The lookup goes through `server.mcp_spec`, which consults EVERY
+        # registered surface — the assistant drawer AND a coding session's own
+        # tools. Reading `server.assistant.tools.annotation_for` here instead
+        # would resolve only the drawer's table, so a session tool would arrive
+        # with a None annotation. Both surface modules are imported (lazily, to
+        # keep the module-load order free of a server.assistant ↔ server.sessions
+        # edge) purely for their `register_surface` side effect: an unregistered
+        # surface answers None, and None fails OPEN into the mutation branch.
+        if is_mcp_tool(tool):
+            from server.assistant import tools as _assistant_tools  # noqa: F401 - registers surface
+            from server.mcp_spec import ToolClass, annotation_for
+            from server.sessions.tools import registry as _session_registry  # noqa: F401 - registers surface
+            ann = annotation_for(tool)
+            if ann is not None and ann.tool_class == ToolClass.READ:
                 return None, _resolved(True), True
-            if ann is not None and ann.tool_class == assistant_tools.ToolClass.DESTRUCTIVE:
+            if ann is not None and ann.tool_class == ToolClass.DESTRUCTIVE:
                 # Never consults the grant cache, in ANY mode — a destructive
                 # ccswitch action always surfaces a card, and that card never
                 # offers "Always allow" (always_allowed=False on the pending

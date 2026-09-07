@@ -222,6 +222,15 @@ assistant_gap_reports_total = Counter(
     "assistant_gap_reports_total", "Capability gaps the assistant reported",
     labelnames=("capability",))
 
+# Session tool surface (session tools spec §3, §4). Same shape as the assistant's
+# counters so one Grafana row can compare the two surfaces.
+session_tool_calls_total = Counter(
+    "session_tool_calls_total", "Coding-session ccswitch tool calls",
+    labelnames=("tool", "class", "outcome"))
+session_feedback_total = Counter(
+    "session_feedback_total", "Feedback reports coding sessions made about ccswitch",
+    labelnames=("category",))
+
 # Codex boundary metrics (plan Task 6.1: "engine/provider/host/version/method
 # latency, active threads/turns, restarts, auth generation/health, quota age, and
 # approval latency").
