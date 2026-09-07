@@ -121,3 +121,41 @@ def test_links_list_with_malformed_item_skips_bad_keeps_good():
     doc = parse_feature_doc(text)
     assert len(doc.links) == 1
     assert doc.links[0] == FeatureLinkRef("powered_by", "p", "f")
+
+
+WITH_PARENT = """---
+slug: server-side-stt
+title: Server-side STT
+state: delivering
+parent: dictation
+---
+## Problem
+
+Whisper on the edge.
+"""
+
+
+def test_parse_parent_slug():
+    doc = parse_feature_doc(WITH_PARENT)
+    assert doc.parent == "dictation"
+
+
+def test_parse_missing_or_blank_parent_is_root():
+    assert parse_feature_doc(VALID).parent is None
+    blank = VALID.replace("state: live\n", "state: live\nparent: '  '\n")
+    assert parse_feature_doc(blank).parent is None
+
+
+def test_parent_equal_to_self_is_rejected():
+    bad = WITH_PARENT.replace("parent: dictation", "parent: server-side-stt")
+    with pytest.raises(FeatureDocError):
+        parse_feature_doc(bad)
+
+
+def test_serialize_round_trips_parent():
+    doc = parse_feature_doc(WITH_PARENT)
+    text = serialize_feature_doc(doc)
+    assert "parent: dictation" in text
+    assert parse_feature_doc(text).parent == "dictation"
+    # A root doc must not gain a `parent:` line.
+    assert "parent:" not in serialize_feature_doc(parse_feature_doc(VALID))

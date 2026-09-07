@@ -256,7 +256,6 @@ _FK_LINKS: dict[str, dict[str, str]] = {
     "feature_links": {"src_feature_id": "features", "dst_feature_id": "features"},
     "work_items": {"feature_id": "features"},
     "triage_proposals": {"work_item_id": "work_items", "proposed_feature_id": "features"},
-    "initiative_repos": {"initiative_id": "initiatives"},
     "initiative_features": {"initiative_id": "initiatives", "feature_id": "features"},
     # spec 003 Phase A mirror tables: point FK columns at live parent rows so the
     # datetime sweep can insert them in FK order (sorted_tables already handles ordering).

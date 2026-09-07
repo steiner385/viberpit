@@ -32,6 +32,7 @@ class FeatureDoc:
     state: str
     links: tuple[FeatureLinkRef, ...]
     body: str
+    parent: str | None = None
 
 
 def parse_feature_doc(text: str) -> FeatureDoc:
@@ -58,6 +59,11 @@ def parse_feature_doc(text: str) -> FeatureDoc:
     if state not in FEATURE_LIFECYCLE_STATES:
         raise FeatureDocError(f"state {state!r} not in {FEATURE_LIFECYCLE_STATES}")
 
+    parent_raw = meta.get("parent")
+    parent = str(parent_raw).strip() if parent_raw is not None else ""
+    if parent == slug:
+        raise FeatureDocError("parent cannot be the doc itself")
+
     links: list[FeatureLinkRef] = []
     raw_links = meta.get("links")
     # Tolerate an archaeology-style evidence dict (links: {code: [...], prs: [...]})
@@ -77,11 +83,15 @@ def parse_feature_doc(text: str) -> FeatureDoc:
             ))
 
     body = "\n".join(lines[close + 1:]).lstrip("\n")
-    return FeatureDoc(slug=slug, title=title, state=state, links=tuple(links), body=body)
+    return FeatureDoc(
+        slug=slug, title=title, state=state, links=tuple(links), body=body, parent=parent or None
+    )
 
 
 def serialize_feature_doc(doc: FeatureDoc) -> str:
     meta: dict = {"slug": doc.slug, "title": doc.title, "state": doc.state}
+    if doc.parent:
+        meta["parent"] = doc.parent
     if doc.links:
         meta["links"] = [
             {"kind": link.kind, "project": link.project, "feature": link.feature}

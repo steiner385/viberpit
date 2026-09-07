@@ -430,3 +430,120 @@ def test_triage_queue_is_empty_before_any_band_breaches():
         r = c.get("/api/sdlc/triage", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
         assert r.json() == {"items": []}
+
+
+def test_create_with_capabilities_links_and_derives_product():
+    """Seed the product + capabilities into the SAME db_url the TestClient will use,
+    in one asyncio.run() BEFORE the client (and its own event loop) is opened —
+    mirrors test_list_includes_artifact_chain above. Seeding via a separate
+    asyncio.run() *inside* the `with _client():` block would run against a
+    different db_url and race the app's own loop over the aiosqlite pool."""
+    from server.db import db_session
+    from server.db.models import Feature, Project
+
+    async def _seed(db_url: str) -> tuple[str, str, str]:
+        from server.db import init_db
+        await init_db(db_url)
+        async with db_session() as db:
+            p = Project(slug="example-product", name="Example product")
+            db.add(p)
+            await db.flush()
+            root = Feature(project_id=p.id, slug="sessions", title="Sessions", state="live")
+            db.add(root)
+            await db.flush()
+            child = Feature(project_id=p.id, slug="dictation", title="Dictation",
+                            state="delivering", parent_feature_id=root.id)
+            db.add(child)
+            await db.commit()
+            return p.id, root.id, child.id
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _, root_id, child_id = asyncio.run(_seed(db_url))
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
+                                     "CCSWITCH_DEV": "1",
+                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.tests.fakes.fake_factory import fake_sdk_factory
+            from server.app import create_app
+            from fastapi.testclient import TestClient
+
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            app = create_app(orchestrator=orch)
+            with TestClient(app, raise_server_exceptions=False) as c:
+                r = c.post("/api/sdlc/initiatives", json={
+                    "title": "Whisper on the edge", "repo": "o/r",
+                    "primaryCapabilityId": child_id, "capabilityIds": [root_id]},
+                    headers=IDENTITY_HEADERS)
+                assert r.status_code == 201, r.text
+                body = r.json()
+                assert body["projectSlug"] == "example-product"
+                assert body["primaryCapability"] == {"id": child_id, "slug": "dictation", "title": "Dictation"}
+                assert sorted((x["slug"], x["isPrimary"]) for x in body["capabilities"]) == [
+                    ("dictation", True), ("sessions", False)]
+
+                listed = c.get("/api/sdlc/initiatives", headers=IDENTITY_HEADERS).json()
+                assert listed[0]["primaryCapability"]["slug"] == "dictation"
+                detail = c.get("/api/sdlc/initiatives/whisper-on-the-edge", headers=IDENTITY_HEADERS).json()
+                assert detail["projectSlug"] == "example-product"
+                assert len(detail["capabilities"]) == 2
+
+
+def test_create_with_unknown_capability_is_422():
+    with _client() as c:
+        r = c.post("/api/sdlc/initiatives", json={
+            "title": "X", "repo": "o/r", "capabilityIds": ["nope"]}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 422
+        assert r.json()["detail"]["error"] == "capability_not_found"
+
+
+def test_create_with_capabilities_spanning_products_is_422():
+    """A capability set touching two products is rejected: an initiative has one
+    projectSlug (derived from its capabilities' project), so a cross-product set
+    would leave that derivation ambiguous."""
+    from server.db import db_session
+    from server.db.models import Feature, Project
+
+    async def _seed(db_url: str) -> tuple[str, str]:
+        from server.db import init_db
+        await init_db(db_url)
+        async with db_session() as db:
+            p1 = Project(slug="product-one", name="Product one")
+            p2 = Project(slug="product-two", name="Product two")
+            db.add_all([p1, p2])
+            await db.flush()
+            f1 = Feature(project_id=p1.id, slug="alpha", title="Alpha", state="live")
+            f2 = Feature(project_id=p2.id, slug="beta", title="Beta", state="live")
+            db.add_all([f1, f2])
+            await db.commit()
+            return f1.id, f2.id
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        f1_id, f2_id = asyncio.run(_seed(db_url))
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
+                                     "CCSWITCH_DEV": "1",
+                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.tests.fakes.fake_factory import fake_sdk_factory
+            from server.app import create_app
+            from fastapi.testclient import TestClient
+
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            app = create_app(orchestrator=orch)
+            with TestClient(app, raise_server_exceptions=False) as c:
+                r = c.post("/api/sdlc/initiatives", json={
+                    "title": "Cross product", "repo": "o/r",
+                    "capabilityIds": [f1_id, f2_id]}, headers=IDENTITY_HEADERS)
+                assert r.status_code == 422, r.text
+                assert r.json()["detail"]["error"] == "capabilities_span_products"
+
+
+def test_initiative_without_capabilities_has_null_fields():
+    with _client() as c:
+        r = c.post("/api/sdlc/initiatives", json={"title": "Plain", "repo": "o/r"},
+                   headers=IDENTITY_HEADERS)
+        body = r.json()
+        assert body["projectSlug"] is None
+        assert body["primaryCapability"] is None
+        assert body["capabilities"] == []

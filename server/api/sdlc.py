@@ -13,9 +13,12 @@ from server.auth.middleware import current_identity
 from server.db import get_db
 from server.db.models import (
     TRIAGE_STATUSES,
+    Feature,
     GhProjectItem,
     Initiative,
     InitiativeArtifact,
+    InitiativeFeature,
+    Project,
     Session as DbSession,
     TriageItem,
     WorkItem,
@@ -53,6 +56,50 @@ def _initiative_to_dict(i: Initiative) -> dict:
         "createdAt": i.created_at.isoformat() if i.created_at else None,
         "updatedAt": i.updated_at.isoformat() if i.updated_at else None,
     }
+
+
+async def _project_slugs(db, initiatives: list[Initiative]) -> dict[str, str | None]:
+    """initiative.id → owning product slug (None when unlinked)."""
+    ids = {i.project_id for i in initiatives if i.project_id}
+    slug_by_project: dict[str, str | None] = {}
+    if ids:
+        slug_by_project = {p.id: p.slug for p in (await db.execute(
+            select(Project).where(Project.id.in_(ids)))).scalars().all()}
+    return {i.id: slug_by_project.get(i.project_id) if i.project_id else None for i in initiatives}
+
+
+async def _capabilities_batch(db, initiatives: list[Initiative]) -> dict[str, tuple[list[dict], dict | None]]:
+    """initiative.id → ([{id, slug, title, isPrimary}…], primary {id, slug, title} | None),
+    in a fixed two queries regardless of how many initiatives are passed."""
+    result: dict[str, tuple[list[dict], dict | None]] = {i.id: ([], None) for i in initiatives}
+    if not initiatives:
+        return result
+    rows = (await db.execute(select(InitiativeFeature).where(
+        InitiativeFeature.initiative_id.in_([i.id for i in initiatives])))).scalars().all()
+    if not rows:
+        return result
+    features = {f.id: f for f in (await db.execute(select(Feature).where(
+        Feature.id.in_({r.feature_id for r in rows})))).scalars().all()}
+    for r in rows:
+        f = features.get(r.feature_id)
+        if f is None:
+            continue
+        entry = {"id": f.id, "slug": f.slug, "title": f.title, "isPrimary": bool(r.is_primary)}
+        caps, primary = result[r.initiative_id]
+        caps.append(entry)
+        if r.is_primary:
+            primary = {"id": f.id, "slug": f.slug, "title": f.title}
+        result[r.initiative_id] = (caps, primary)
+    return result
+
+
+async def _decorate(db, initiatives: list[Initiative], dicts: list[dict]) -> None:
+    """Attach projectSlug / primaryCapability / capabilities to already-built dicts."""
+    slugs = await _project_slugs(db, initiatives)
+    caps = await _capabilities_batch(db, initiatives)
+    for i, d in zip(initiatives, dicts):
+        d["projectSlug"] = slugs.get(i.id)
+        d["capabilities"], d["primaryCapability"] = caps[i.id]
 
 
 async def _epic_progress_batch(
@@ -174,6 +221,8 @@ class InitiativeCreateBody(BaseModel):
     slug: str | None = None
     origin: str | None = None
     originRef: str | None = None
+    primaryCapabilityId: str | None = None
+    capabilityIds: list[str] = []
 
 
 @router.get("/initiatives")
@@ -212,6 +261,7 @@ async def list_initiatives(
         d["artifacts"] = [_artifact_to_dict(a) for a in by_init.get(i.id, [])]
         d["epic"] = epics.get(i.id)
         result.append(d)
+    await _decorate(db, rows, result)
     return result
 
 
@@ -231,14 +281,42 @@ async def create_initiative(
             status_code=status.HTTP_409_CONFLICT,
             detail={"error": "slug_conflict", "message": f"Initiative '{slug}' already exists"},
         )
+
+    wanted = list(dict.fromkeys(body.capabilityIds
+                                + ([body.primaryCapabilityId] if body.primaryCapabilityId else [])))
+    features: dict[str, Feature] = {}
+    if wanted:
+        features = {f.id: f for f in (await db.execute(
+            select(Feature).where(Feature.id.in_(wanted)))).scalars().all()}
+        missing = [fid for fid in wanted if fid not in features]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"error": "capability_not_found",
+                        "message": f"unknown capability id(s): {', '.join(missing)}"})
+        if len({f.project_id for f in features.values()}) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"error": "capabilities_span_products",
+                        "message": "all capabilities must belong to one product"})
+    project_id = None
+    if wanted:
+        anchor = features[body.primaryCapabilityId] if body.primaryCapabilityId else features[wanted[0]]
+        project_id = anchor.project_id
+
     ini = Initiative(
         slug=slug,
         repo=body.repo,
         title=body.title,
         origin=body.origin,
         origin_ref=body.originRef,
+        project_id=project_id,
     )
     db.add(ini)
+    await db.flush()
+    for fid in wanted:
+        db.add(InitiativeFeature(initiative_id=ini.id, feature_id=fid,
+                                 is_primary=(fid == body.primaryCapabilityId)))
     await db.flush()
     await record_audit(
         db=db,
@@ -246,7 +324,9 @@ async def create_initiative(
         identity=identity,
         detail={"slug": slug, "title": body.title},
     )
-    return _initiative_to_dict(ini)
+    d = _initiative_to_dict(ini)
+    await _decorate(db, [ini], [d])
+    return d
 
 
 @router.get("/initiatives/{slug}")
@@ -310,6 +390,7 @@ async def get_initiative(
     result["buildSessions"] = build_sessions
     result["nextAction"] = _action_to_dict(action)
     result["epic"] = (await _epic_progress_batch(db, [ini]))[ini.id]
+    await _decorate(db, [ini], [result])
     return result
 
 
@@ -339,7 +420,9 @@ async def advance_initiative(
         identity=identity,
         detail={"slug": slug, "stage": ini.stage},
     )
-    return _initiative_to_dict(ini)
+    d = _initiative_to_dict(ini)
+    await _decorate(db, [ini], [d])
+    return d
 
 
 # --------------------------------------------------------------------------- #

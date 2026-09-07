@@ -1234,11 +1234,6 @@ class Initiative(Base):
     # Owning project; nullable so pre-PM initiatives keep working unlinked.
     project_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("projects.id"), nullable=True, index=True)
-    # RICE-lite score inputs (spec §8: score = reach×impact×confidence/effort).
-    reach: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    impact: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    effort: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # timezone=True to match the newer tables: both default to _utcnow() (AWARE),
     # which asyncpg rejects into a naive `timestamp without time zone` column.
     created_at: Mapped[datetime] = mapped_column(
@@ -1491,6 +1486,10 @@ class Feature(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     project_id: Mapped[str] = mapped_column(
         String, ForeignKey("projects.id"), nullable=True, index=True)
+    # Capability tree (roadmap spec D2): one parent per capability, from the doc's
+    # `parent:` frontmatter. NULL = root. Cycles are broken at index time.
+    parent_feature_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("features.id"), nullable=True, index=True)
     slug: Mapped[str | None] = mapped_column(String, nullable=True)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     state: Mapped[str | None] = mapped_column(String, nullable=True)  # FEATURE_LIFECYCLE_STATES
@@ -1713,25 +1712,8 @@ class TriageProposal(Base):
         DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
-class InitiativeRepo(Base):
-    """Initiative↔repo M2M — phase-1 groundwork for cross-project initiatives
-    (spec §3). ``Initiative.repo`` remains the primary repo until phase 4
-    folds it in; rows here are additive."""
-
-    __tablename__ = "initiative_repos"
-    __table_args__ = (UniqueConstraint("initiative_id", "repo", name="uq_initiative_repo"),)
-
-    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
-    initiative_id: Mapped[str] = mapped_column(
-        String, ForeignKey("initiatives.id"), nullable=True, index=True)
-    repo: Mapped[str | None] = mapped_column(String, nullable=True)
-    is_primary: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow)
-
-
 class InitiativeFeature(Base):
-    """Which features an initiative creates/changes (spec §3)."""
+    """Which capabilities an initiative creates or changes (roadmap spec §10)."""
 
     __tablename__ = "initiative_features"
     __table_args__ = (
@@ -1742,5 +1724,8 @@ class InitiativeFeature(Base):
         String, ForeignKey("initiatives.id"), nullable=True, index=True)
     feature_id: Mapped[str] = mapped_column(
         String, ForeignKey("features.id"), nullable=True, index=True)
+    # The capability an initiative lives under in the tree; the others it touches
+    # render as link chips. Exactly one row per initiative should be primary.
+    is_primary: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
