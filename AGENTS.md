@@ -87,6 +87,12 @@ auto-merge-armed PR, disable auto-merge first and immediately re-read merged sta
 - CI runs the server suite as `pytest server/tests/ -n auto --dist loadfile --timeout=300`. Serial
   it takes ~25 min; run it in the background with output tee'd to `/tmp/`, and never two full runs
   at once — the load spike gets the Bash call SIGKILLed (exit 137).
+- **Test-run slot cap (#822):** before a full `pytest server/tests/` run on rocky, acquire via `/api/test-slots` (`CCSWITCH_TEST_SLOT_CAP`, default 1/host; fail-open in `server/api/test_slots.py`). **Put the pytest command in the SAME Bash call / shell as the acquire loop and trap** — run the acquire as its own call and that shell exits the moment it finishes, firing the EXIT trap and freeing the slot before pytest ever starts, so the cap is a no-op:
+  ```bash
+  sid="${CCSWITCH_SESSION_ID:-$$}"; host="$(hostname -s)"; trap 'curl -sf -X POST http://127.0.0.1:8787/api/test-slots/release -H "Content-Type: application/json" -d "{\"sessionId\":\"$sid\"}" >/dev/null 2>&1||true' EXIT
+  while :; do resp="$(curl -sf -X POST http://127.0.0.1:8787/api/test-slots/acquire -H 'Content-Type: application/json' -d "{\"sessionId\":\"$sid\",\"host\":\"$host\"}" 2>/dev/null)" || { echo "test-slot API unreachable — proceeding (fail-open)"; break; }; echo "$resp" | grep -qE '"granted": *true' && break; echo "$resp" | grep -qE '"degraded": *true' && { echo "test-slot control plane degraded — proceeding unchecked"; break; }; echo "waiting for test slot, $(echo "$resp" | grep -oE '"ahead": *[0-9]+' | grep -oE '[0-9]+') ahead"; sleep 15; done
+  pytest server/tests/ …   # inside this same block: the trap releases only when THIS shell exits
+  ```
 - **Unset `CCSWITCH_SESSIOND_*` and `CCSWITCH_DAEMON_ROLE` before running `server/tests/` locally.**
   `server/app.py` builds the app at import; a live shell's sessiond client-cert vars make it demand
   certs, and a worker `CCSWITCH_DAEMON_ROLE` turns ~90 tests into "No session with id" failures.

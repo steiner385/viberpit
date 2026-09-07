@@ -230,6 +230,10 @@ _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
     # token_hash are NOT NULL with no synthesizable default (set at mint time).
     "assistant_tokens": {"identity": "dtcheck@example.invalid", "scope": "read",
                           "token_hash": "0" * 64},
+    # test_run_slots joins the sweep via requested_at (DateTime); session_id is a
+    # caller-supplied opaque holder key (a String PK, NOT FK-linked — see the model),
+    # so it must be supplied here. host is NOT NULL with no synthesizable default.
+    "test_run_slots": {"host": "dtcheck-host", "session_id": "dtcheck-test-run-slot"},
 }
 
 # FK columns that must be filled from a parent row inserted earlier in this

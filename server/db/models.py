@@ -476,6 +476,32 @@ class SessionQueue(Base):
     params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
 
+class TestRunSlot(Base):
+    """Verification-phase test-run slot (#822): one row per session that is
+    holding or waiting for a "running the full server-test suite" slot on a
+    host. Capacity (rows with status='holding' per host) is enforced by
+    server.sessions.test_run_slots against server.config.Settings.test_slot_cap;
+    this table only records state — it enforces nothing on its own.
+
+    Deleted when the session releases (or gives up); releasing a 'holding' row
+    promotes the oldest 'waiting' row for the same host to 'holding'.
+    """
+
+    __tablename__ = "test_run_slots"
+
+    # Opaque holder key (a real sessions.id, OR a shell PID for the curl-based
+    # recipe in .agents/instructions/core.md) — deliberately NOT a foreign key
+    # into `sessions`. A real FK made acquire() raise IntegrityError for any
+    # non-session holder id, and the API layer's fail-open handling turned
+    # that into a silent "always granted" (#822 final review finding).
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    host: Mapped[str] = mapped_column(String, nullable=False)
+    # "holding" (counts against the cap) | "waiting" (queued, no slot yet)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="waiting")
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
 class NotificationChannel(Base):
     """A user-defined delivery channel for notifications (#602). v1 kind is
     'webhook' — a POST to a user-supplied URL (covers ntfy/Slack/Discord).
