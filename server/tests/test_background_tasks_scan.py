@@ -46,6 +46,17 @@ def _assistant_text(text):
                         "content": [{"type": "text", "text": text}]}}
 
 
+def _tool_result(tid, text="ok"):
+    """The CLI's journal entry for a tool's result: a ``type:"user"`` record carrying a
+    ``tool_result`` block plus a top-level ``toolUseResult`` — the exact shape observed
+    in a live transcript (dobby, 2026-09-07). Mid-turn: nobody typed it and the
+    assistant keeps going after it."""
+    return {"type": "user", "toolUseResult": text,
+            "message": {"role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": tid,
+                                     "content": text}]}}
+
+
 def _write(tmp_path, lines):
     p = tmp_path / "t.jsonl"
     p.write_text("\n".join(json.dumps(o) for o in lines) + "\n")
@@ -158,6 +169,40 @@ def test_pending_wakeup_armed_when_last_turn_scheduled(tmp_path):
                         {"delaySeconds": 1200, "reason": "watching CI"}),
     ])
     assert scan_pending_wakeup(path) is True
+
+
+def test_pending_wakeup_armed_survives_its_own_tool_result(tmp_path):
+    # The shape every real transcript has (dobby, 2026-09-07): the ScheduleWakeup
+    # tool_use is followed by the CLI's tool_result entry — journaled as `type:"user"`
+    # — and then the agent's closing prose. That tool_result is NOT a new turn: nobody
+    # typed it. Treating it as one wiped the armed state, so a session parked on a
+    # wakeup persisted `done` ("Your turn") with nothing for the user to do.
+    path = _write(tmp_path, [
+        _user("poll the PRs until they merge"),
+        _assistant_tool("toolu_w1", "ScheduleWakeup",
+                        {"delaySeconds": 1200, "reason": "watching CI"}),
+        _tool_result("toolu_w1", "Wakeup scheduled in 1200s"),
+        _assistant_text("No conflict to resolve. I'll confirm CI goes green on the next check-in."),
+    ])
+    assert scan_pending_wakeup(path) is True
+    assert is_parked(path) is True
+
+
+def test_pending_wakeup_false_when_fired_after_tool_result_and_not_rearmed(tmp_path):
+    # Same real shape, then the wakeup fires (isMeta prompt re-injection) and the
+    # post-fire turn does not re-arm → the loop ended, nothing pending. Guards that
+    # ignoring tool_result entries does not also blind us to a real turn boundary.
+    path = _write(tmp_path, [
+        _user("watch the deploy"),
+        _assistant_tool("toolu_w1", "ScheduleWakeup", {"delaySeconds": 1200, "reason": "x"}),
+        _tool_result("toolu_w1"),
+        _assistant_text("Waiting on CI."),
+        _user("<<autonomous-loop-dynamic>>", is_meta=True),          # wakeup fired
+        _assistant_tool("toolu_done", "Bash", {"command": "echo done"}),  # no re-arm
+        _tool_result("toolu_done", "done"),
+        _assistant_text("Merged; loop over."),
+    ])
+    assert scan_pending_wakeup(path) is False
 
 
 def test_pending_wakeup_false_when_no_wakeup(tmp_path):

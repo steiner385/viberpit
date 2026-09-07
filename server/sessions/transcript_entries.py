@@ -18,6 +18,10 @@ Not a human prompt:
   Observed 2026-09-02: a fresh Fable session's transcript opened with exactly those
   three and the titler named it "Set model to Fable".
 * ``[Request interrupted by user…]`` — the interrupt marker.
+* A tool's result — the CLI feeds every ``tool_result`` back to the model as a
+  ``type:"user"`` entry (``toolUseResult`` at top level, ``tool_result`` blocks in
+  the content). Unlike the rest of this list it is not even a turn boundary: the
+  assistant is mid-turn and keeps going after it. See :func:`is_tool_result_entry`.
 """
 from __future__ import annotations
 
@@ -34,6 +38,20 @@ _PLUMBING_PREFIXES: tuple[str, ...] = (
 def is_cli_plumbing_text(text: str) -> bool:
     """True when *text* (a user entry's joined text) is CLI/harness bookkeeping."""
     return text.lstrip().startswith(_PLUMBING_PREFIXES)
+
+
+def is_tool_result_entry(entry: dict) -> bool:
+    """True when the ``type:"user"`` transcript *entry* is the CLI journaling a tool's
+    result back to the model, not anything that starts a turn.
+
+    Observed shape (live transcript, 2026-09-07): top-level ``toolUseResult`` plus a
+    ``message.content`` list of ``tool_result`` blocks. Either alone is accepted so a
+    transcript from a CLI that drops one of the two still classifies correctly."""
+    if "toolUseResult" in entry:
+        return True
+    content = (entry.get("message") or {}).get("content")
+    return isinstance(content, list) and any(
+        isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
 
 
 def is_harness_user_entry(entry: dict, text: str) -> bool:

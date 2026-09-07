@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
+from .transcript_entries import is_tool_result_entry
+
 _TUID = re.compile(r"<tool-use-id>(.*?)</tool-use-id>")
 _STATUS = re.compile(r"<status>(.*?)</status>")
 # completed/failed = the task finished on its own; killed = interrupted (we re-arm it).
@@ -223,12 +225,20 @@ def scan_pending_wakeup(jsonl_path: str, *, now: datetime | None = None) -> bool
     whose scheduled fire time (``armed_at + delaySeconds``) passed by more than
     ``_WAKEUP_GRACE_SEC`` is treated as lost, not pending.
 
+    Not every ``type:"user"`` entry starts a turn: the CLI journals each tool's
+    result as one too (``transcript_entries.is_tool_result_entry``), and the
+    ``ScheduleWakeup`` call's own result lands right after the ``tool_use`` — before the
+    agent's closing prose. Counting that as a boundary wiped the armed state for every
+    real transcript, so a parked session persisted ``done`` ("Your turn") with nothing
+    for the user to do. A fired wakeup arrives as a plain prompt (``isMeta`` string
+    content, no ``tool_result``), so it still resets.
+
     Pure given ``now`` (defaults to the current UTC time); side-effect-free otherwise.
     """
     armed_at: datetime | None = None
     delay: float | None = None
     for o in _iter_jsonl(jsonl_path):
-        if o.get("type") == "user":
+        if o.get("type") == "user" and not is_tool_result_entry(o):
             armed_at, delay = None, None   # a fresh prompt / fired wakeup starts a new turn
         else:
             d = _wakeup_delay_seconds(o)
