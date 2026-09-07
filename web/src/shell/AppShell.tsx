@@ -25,6 +25,7 @@ import {
 import { useDrawerName, useOpenDrawer, type DrawerName } from './drawerParam'
 import { InteractionProvider } from './InteractionContext'
 import { readKioskConfig } from './kiosk'
+import { listColumnFor } from './listColumns'
 import { NAV_BY_ID, navDefForPath } from './navDefs'
 import { useOpenItem, useOpenSessionId } from './openSessionId'
 import { SessionGestureProvider, useSessionGestureHandle } from './sessionGestures'
@@ -334,7 +335,9 @@ function AppShellInner() {
             mode === 'desktop' ? 'flex-row' : 'flex-col',
           )}
         >
-          {listVisible && <ContextList sessions={workspace.list} />}
+          {listVisible && (
+            <ContextList column={listColumnFor(def?.id, { sessions: workspace.list })} />
+          )}
           <PageHost
             pageHidden={pageHidden}
             dock={shows('app.dock') ? <PromptDock {...workspace.dock} /> : undefined}
