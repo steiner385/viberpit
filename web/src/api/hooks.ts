@@ -21,7 +21,7 @@ import type {
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import {
-  fetchInitiatives, advanceInitiative, createInitiative,
+  fetchInitiatives, fetchInitiative, advanceInitiative, createInitiative,
   fetchIncidents, actOnIncident,
   type Initiative, type CreateInitiativeInput,
   type Incident, type IncidentActionInput,
@@ -31,6 +31,10 @@ import {
   fetchOnboarding, proposeMap, runClassify, advanceMap, advanceLive,
   type Project, type CreateProjectInput, type OnboardingView,
 } from './pm'
+import {
+  fetchRoadmapMap, fetchLeaves, fetchQueue, fetchProject,
+  type RoadmapMap, type Leaf, type LeavesScope, type QueueView,
+} from './roadmap'
 import {
   fetchTriage, acceptProposal, rejectProposal, acceptBulk, updateOverlay,
   type TriageProposal, type OverlayEdits, type AcceptBulkResult, type WorkItemOverlay,
@@ -91,6 +95,10 @@ export const QK = {
   projects: ['pm', 'projects'] as const,
   triage: ['pm', 'triage'] as const,          // phase 2 OWNS this key
   onboarding: (slug: string) => ['pm', 'onboarding', slug] as const,
+  roadmapMap: ['pm', 'map'] as const,
+  leaves: (scope: string) => ['pm', 'leaves', scope] as const,
+  queue: ['pm', 'queue'] as const,
+  project: (slug: string) => ['pm', 'project', slug] as const,
 }
 
 /**
@@ -1478,6 +1486,7 @@ export function useAdvanceInitiative() {
     onSuccess: (updated) => {
       void qc.invalidateQueries({ queryKey: QK.initiatives })
       void qc.invalidateQueries({ queryKey: QK.initiative(updated.slug) })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
     },
     meta: PM_MUTATION_META,
   })
@@ -1487,7 +1496,10 @@ export function useCreateInitiative() {
   const qc = useQueryClient()
   return useMutation<Initiative, ApiRequestError, CreateInitiativeInput>({
     mutationFn: (input) => createInitiative(input),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.initiatives }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.initiatives })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+    },
     meta: PM_MUTATION_META,
   })
 }
@@ -1570,6 +1582,63 @@ export function useOnboarding(slug: string) {
     queryKey: QK.onboarding(slug),
     queryFn: () => fetchOnboarding(slug),
     enabled: !!slug,
+    staleTime: 5_000,
+    refetchInterval: 15_000,
+  })
+}
+
+// ── Roadmap (spec 2026-09-07 §10) ────────────────────────────────────────────
+
+/** The whole product → capability → initiative map with server-computed tiers. */
+export function useRoadmapMap() {
+  return useQuery<RoadmapMap>({
+    queryKey: QK.roadmapMap,
+    queryFn: fetchRoadmapMap,
+    staleTime: 5_000,
+    refetchInterval: 15_000,
+  })
+}
+
+/** Issues under one capability or initiative; `null` scope = not mounted yet. */
+export function useLeaves(scope: LeavesScope | null) {
+  const key = scope === null ? 'none'
+    : scope.capability !== undefined ? `capability:${scope.capability}` : `initiative:${scope.initiative}`
+  return useQuery<Leaf[]>({
+    queryKey: QK.leaves(key),
+    queryFn: () => fetchLeaves(scope as LeavesScope),
+    enabled: scope !== null,
+    staleTime: 5_000,
+    refetchInterval: 30_000,
+  })
+}
+
+/** The ranked cross-product queue — the same query the runner will read (spec 003 C1). */
+export function useQueue() {
+  return useQuery<QueueView>({
+    queryKey: QK.queue,
+    queryFn: fetchQueue,
+    staleTime: 5_000,
+    refetchInterval: 30_000,
+  })
+}
+
+/** One initiative with children, sessions and next action. */
+export function useInitiative(slug: string | null) {
+  return useQuery<Initiative>({
+    queryKey: QK.initiative(slug ?? ''),
+    queryFn: () => fetchInitiative(slug as string),
+    enabled: slug !== null && slug !== '',
+    staleTime: 5_000,
+    refetchInterval: 15_000,
+  })
+}
+
+/** One project: repos and edges (the list payload's counts are not here). */
+export function useProject(slug: string | null) {
+  return useQuery<Project>({
+    queryKey: QK.project(slug ?? ''),
+    queryFn: () => fetchProject(slug as string),
+    enabled: slug !== null && slug !== '',
     staleTime: 5_000,
     refetchInterval: 15_000,
   })

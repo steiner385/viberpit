@@ -60,6 +60,22 @@ export interface InitiativeEpic {
   children?: InitiativeEpicChild[]
 }
 
+/** A capability an initiative is linked to (`initiative_features`). */
+export interface InitiativeCapabilityRef {
+  id: string
+  slug: string
+  title: string | null
+  isPrimary?: boolean
+}
+
+/** What the stage engine says should happen next (detail endpoint only). */
+export interface InitiativeNextAction {
+  type: 'propose' | 'await_approval' | 'handoff_to_build' | 'done' | 'needs_human' | 'unknown' | string
+  kind?: string
+  issue?: string
+  reason?: string
+}
+
 export interface Initiative {
   slug: string
   repo: string | null
@@ -77,6 +93,13 @@ export interface Initiative {
   // null when the initiative has no epic pointer, an InitiativeEpic (with
   // `children` present only from the detail route) otherwise.
   epic: InitiativeEpic | null
+  /** Phase 2 fields — every initiative endpoint emits them. */
+  projectSlug: string | null
+  primaryCapability: InitiativeCapabilityRef | null
+  capabilities: InitiativeCapabilityRef[]
+  /** Detail endpoint only. */
+  buildSessions?: { id: string; status: string | null; branch: string | null }[]
+  nextAction?: InitiativeNextAction
 }
 
 export interface CreateInitiativeInput {
@@ -85,6 +108,8 @@ export interface CreateInitiativeInput {
   repo: string          // required by the backend create body (`repo: str`)
   origin?: string
   originRef?: string
+  primaryCapabilityId?: string
+  capabilityIds?: string[]
 }
 
 export function fetchInitiatives(): Promise<Initiative[]> {

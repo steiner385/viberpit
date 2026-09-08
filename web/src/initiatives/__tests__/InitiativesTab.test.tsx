@@ -46,6 +46,7 @@ const INIT: sdlc.Initiative = {
   stage: 'design', status: 'active', origin: 'human', originRef: null,
   epicRepo: null, epicNumber: null, epic: null,
   createdAt: null, updatedAt: null,
+  projectSlug: null, primaryCapability: null, capabilities: [],
   artifacts: [
     {
       id: 'a1', kind: 'intent', repoPath: 'docs/sdlc/x/intent.md', commitSha: 'abc1234',
