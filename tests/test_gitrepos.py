@@ -64,6 +64,25 @@ class CloneTests(unittest.TestCase):
             self.root / ".ccswitch" / "clones" / "cairnea" / "kindash",
         )
 
+    def test_is_clone_path_matches_only_the_clones_subtree(self) -> None:
+        # Segment-based on purpose (like the purge's dot-dir guard): the
+        # answer must not depend on the CURRENT repo_root, so a repo_root move
+        # cannot turn an old clone into something a purge is allowed to rmtree.
+        clone = gitrepos.clones_base(str(self.root)) / "cairnea" / "KinDash"
+        dot_dir = gitrepos.clones_base(str(self.root)).parent
+        self.assertTrue(gitrepos.is_clone_path(str(clone)))
+        self.assertTrue(gitrepos.is_clone_path(str(clone / "src" / "nested")))
+        self.assertTrue(gitrepos.is_clone_path(
+            str(gitrepos.clones_base("/elsewhere") / "o" / "n")))
+        self.assertFalse(gitrepos.is_clone_path(
+            str(dot_dir / "worktrees" / "KinDash" / "03c991f1")))
+        self.assertFalse(gitrepos.is_clone_path(str(dot_dir / "scratch" / "abc")))
+        # `clones` only counts directly under the managed dot-dir — a user repo
+        # that happens to have a `clones/` directory is not a managed clone.
+        self.assertFalse(gitrepos.is_clone_path(str(self.root / "clones" / "x")))
+        self.assertFalse(gitrepos.is_clone_path(
+            str(dot_dir / "worktrees" / "clones" / "x")))
+
     def test_clone_path_rejects_illegal_components(self) -> None:
         for bad in ("<owner>/name", "acme/../escape", "acme/../../etc", "acme/wid get"):
             with self.assertRaises(ValueError, msg=bad):

@@ -547,7 +547,7 @@ def test_permanent_delete_new_style_removes_worktree(tmp_path):
 
 
 def test_permanent_delete_leaves_non_viberpit_cwd_in_place(tmp_path):
-    """Containment guard: a cwd outside any .ccswitch segment is never deleted —
+    """Containment guard: a cwd outside any managed dot-dir segment is never deleted —
     the row is purged but the directory is left alone (misconfigured row must
     not cost the user a real directory)."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
@@ -578,6 +578,46 @@ def test_permanent_delete_leaves_non_viberpit_cwd_in_place(tmp_path):
     assert deleted is True
     assert db_row is None
     assert (cwd / "precious.txt").exists()  # directory untouched
+
+
+def test_permanent_delete_never_removes_a_shared_clone_root(tmp_path):
+    """Containment guard: a cwd that IS the shared clone root is never deleted.
+
+    A queued session (and a backlog dispatch that never got to spawn) records the
+    repo's shared clone (``<dot-dir>/clones/<owner>/<name>``) as its cwd because
+    the per-session worktree is only created at spawn time. On 2026-09-08 deleting
+    one such queued-then-obsolete row rmtree'd the whole KinDash clone, orphaned
+    77 worktrees and made every queued pm session fail at spawn with "Working
+    directory does not exist". The row must still be purged; the clone must stay.
+    """
+    db_url, _archive_base, orch = _make_orch(tmp_path)
+    clone = tmp_path / "GitHub" / ".ccswitch" / "clones" / "cairnea" / "KinDash"
+
+    async def run():
+        clone.mkdir(parents=True)
+        (clone / ".git").mkdir()
+        (clone / "README.md").write_text("shared clone — every worktree hangs off me")
+
+        await init_db(db_url=db_url)
+        await _seed([
+            dict(id="q1", name="pm map-diff kindash", account_name="acc1",
+                 engine_session_id=None, status="archived",
+                 cwd=str(clone), archive_root=None),
+        ])
+        result = await orch.permanent_delete("q1")
+
+        from sqlalchemy import select as sa_select
+        async with db_session() as db:
+            row = (await db.execute(
+                sa_select(DbSession).where(DbSession.id == "q1")
+            )).scalars().first()
+        return result, row
+
+    deleted, db_row = asyncio.run(run())
+    assert deleted is True
+    assert db_row is None
+    assert (clone / "README.md").exists()  # the shared clone is untouched
+    assert (clone / ".git").is_dir()
 
 
 def test_permanent_delete_returns_false_for_unknown(tmp_path):
