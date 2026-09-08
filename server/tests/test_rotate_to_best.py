@@ -58,8 +58,9 @@ def _orch(monkeypatch, rec, *, pick="b", with_driver=True):
     o._pause_session = _pause_session
     seen = {}
 
-    def select_account(exclude=frozenset(), load=None, **k):
+    def select_account(exclude=frozenset(), load=None, soft_exclude=frozenset(), **k):
         seen["exclude"] = exclude
+        seen["soft_exclude"] = soft_exclude
         if isinstance(pick, Exception):
             raise pick
         return Picked(pick)
@@ -80,7 +81,11 @@ async def test_rotates_stalled_session_replays_and_unpins(monkeypatch):
     assert await o.rotate_to_best("s1", "user@x") == "rotated"
     assert ("reassign", "b", "manual_rotate", True) in o.calls
     assert ("pin", False) in o.calls and rec.account_pinned is False
-    assert o.seen["exclude"] == frozenset({"q", "a"})      # quarantined + current
+    # The current account is HARD-excluded and the quarantined one only soft-excluded.
+    # Merging them let the selection fallback relax the current account back in, and
+    # "rotate to best" returned the same account it was asked to move off (2026-09-08).
+    assert o.seen["exclude"] == frozenset({"a"})           # current — never relaxed
+    assert o.seen["soft_exclude"] == frozenset({"q"})      # quarantined — relaxable
     assert o.rotations == []                                # never counts toward the cap
     assert o._drivers["s1"].identity == "user@x"
 

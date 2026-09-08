@@ -154,3 +154,99 @@ def test_pick_account_detailed_respects_weekly_reserve(monkeypatch):
          patch("ccswitch.ledger.weekly_reserves", return_value={"hot": 90.0}), \
          patch("ccswitch.ledger.reserve"):
         assert accounts.pick_account_detailed(Config()).name == "cool"
+
+
+# --- Caller exclusions are hard; quarantine/reservations stay relaxable -------
+#
+# Production incident 2026-09-08: sessions rotated tony_steinonline.net →
+# tony_steinonline.net (same account) on reason=rate_limit, burned the
+# 3-rotations-per-300s cap, and parked as `rotation_cap` — which
+# `is_usage_stalled` renders as "parked for lack of usage headroom", while
+# tony_kindash.com sat at 46% weekly. The account the caller was rotating AWAY
+# from was under the 100% ceiling (Anthropic 429s before reported usage hits
+# 100%, and the snapshot is up to 60s stale), so once the tiered fallback
+# dropped `exclude` it was the best-scoring candidate and came straight back.
+
+def _at_ceiling():
+    from tests.helpers import usage
+    return usage(session=100.0)
+
+
+def _healthy():
+    from tests.helpers import usage
+    return usage(session=10.0, weekly=20.0)
+
+
+def _patched_ledger(reserved=frozenset(), quarantined=frozenset()):
+    """Ledger stubs: every account enabled and 'ok', none reserved."""
+    return [
+        patch("ccswitch.ledger.get_status", return_value="ok"),
+        patch("ccswitch.ledger.is_account_enabled", return_value=True),
+        patch("ccswitch.ledger.reservation_active",
+              side_effect=lambda led, n, ts: n in reserved),
+        patch("ccswitch.ledger.reserve"),
+        patch("ccswitch.ledger.weekly_reserves", return_value={}),
+        patch("ccswitch.ledger.extra_usage_allowed", return_value=frozenset()),
+    ]
+
+
+def _pick(monkeypatch, usages, **kwargs):
+    import contextlib
+    monkeypatch.setattr(accounts, "_account_names", lambda: list(usages))
+    with contextlib.ExitStack() as stack:
+        for p in _patched_ledger(reserved=kwargs.pop("reserved", frozenset())):
+            stack.enter_context(p)
+        stack.enter_context(patch.object(accounts, "usage_for",
+                                         side_effect=lambda n: usages[n]))
+        return accounts.pick_account_detailed(Config(), **kwargs)
+
+
+def test_exclude_is_never_relaxed_back_onto_the_excluded_account(monkeypatch):
+    """`exclude` is the caller's own knowledge ("this one just failed on me").
+    It must survive every fallback tier, even when it leaves nothing pickable."""
+    from ccswitch.selector import AllAccountsBusy
+    import pytest
+    usages = {"current": _healthy(), "other": _at_ceiling()}
+    with pytest.raises(AllAccountsBusy) as ei:
+        _pick(monkeypatch, usages, exclude={"current"})
+    assert ei.value.earliest_reset is not None
+
+
+def test_soft_exclude_is_relaxed_when_nothing_else_is_available(monkeypatch):
+    """Quarantine IS relaxable — a rate-limited account may have reset since, and
+    returning it beats starving the session. This is the tier the incident fix
+    must preserve."""
+    usages = {"quarantined": _healthy(), "other": _at_ceiling()}
+    picked = _pick(monkeypatch, usages, soft_exclude={"quarantined"})
+    assert picked.name == "quarantined"
+
+
+def test_soft_exclude_still_loses_to_an_available_account(monkeypatch):
+    """Relaxation is last-resort: a quarantined account is only picked when no
+    un-quarantined account has headroom."""
+    usages = {"quarantined": _healthy(), "free": _healthy()}
+    picked = _pick(monkeypatch, usages, soft_exclude={"quarantined"})
+    assert picked.name == "free"
+
+
+def test_reservations_are_relaxed_but_exclude_still_is_not(monkeypatch):
+    """A stale soft reservation must not starve the pick, yet relaxing it may
+    never resurrect the excluded account."""
+    usages = {"current": _healthy(), "reserved": _healthy()}
+    picked = _pick(monkeypatch, usages, exclude={"current"},
+                   reserved=frozenset({"reserved"}))
+    assert picked.name == "reserved"
+
+
+def test_a_growing_exclude_set_is_honoured_in_full(monkeypatch):
+    """The ccrun/ccmax retry loops (`runner.py`, `launcher.py`) pass an
+    accumulating `exclude=tried` set. Relaxing it re-picked an account already
+    tried, so `len(tried)` stopped growing and the "all accounts tried" exit was
+    never reached — the loop respawned on a failing account instead of raising
+    AllAccountsBusy for the --wait branch to sleep on."""
+    from ccswitch.selector import AllAccountsBusy
+    import pytest
+    usages = {"a": _healthy(), "b": _healthy(), "c": _at_ceiling()}
+    assert _pick(monkeypatch, usages, exclude={"a"}).name == "b"
+    with pytest.raises(AllAccountsBusy):
+        _pick(monkeypatch, usages, exclude={"a", "b"})

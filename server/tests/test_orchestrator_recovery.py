@@ -126,7 +126,8 @@ def test_rotate_away_pauses_when_all_accounts_busy(monkeypatch):
     o._reassign = spy_reassign
     from datetime import datetime, timezone
     reset = datetime(2026, 6, 23, tzinfo=timezone.utc)
-    def boom(exclude=frozenset(), load=None, *, engine=AgentEngine.CLAUDE_CODE):
+    def boom(exclude=frozenset(), load=None, *, soft_exclude=frozenset(),
+             engine=AgentEngine.CLAUDE_CODE):
         assert engine is AgentEngine.CLAUDE_CODE
         raise AllAccountsBusy(reset)
     monkeypatch.setattr(orch_mod, "select_account", boom)
@@ -155,15 +156,20 @@ def test_rotate_away_excludes_quarantined_and_reassigns(monkeypatch):
     o._reassign = spy_reassign
     o._recovery.quarantine("secondary", until=2000.0)
     seen_exclude = {}
-    def pick(exclude=frozenset(), load=None, *, engine=AgentEngine.CLAUDE_CODE):
+    def pick(exclude=frozenset(), load=None, *, soft_exclude=frozenset(),
+             engine=AgentEngine.CLAUDE_CODE):
         assert engine is AgentEngine.CLAUDE_CODE
         seen_exclude["v"] = set(exclude)
+        seen_exclude["soft"] = set(soft_exclude)
         return Picked("primary")
     monkeypatch.setattr(orch_mod, "select_account", pick)
     asyncio.run(o._rotate_away(rec, reason="rate_limit"))
     assert reassigned == [("s1", "primary")]
-    # excludes both the quarantined account and the current account
-    assert {"kindash", "secondary"} <= seen_exclude["v"]
+    # The current account is excluded HARD — no selection fallback may relax it back
+    # in (2026-09-08: one did, and sessions rotated A→A into the rotation cap). The
+    # quarantined account is only a soft hint, still relaxable as a last resort.
+    assert seen_exclude["v"] == {"kindash"}
+    assert seen_exclude["soft"] == {"secondary"}
 
 
 def test_process_crash_reassigns_same_account():
