@@ -352,17 +352,17 @@ def test_the_quiet_window_clears_the_longest_caller_budget():
     """The quiet window must outlast the slowest legitimate RPC (#744, follow-up).
 
     ``_WEDGE_QUIET_S`` gates BOTH the pool-wide "nobody served" clock and the distinct-
-    turnover signal. ``automation_*`` calls pass ``AUTOMATION_RPC_TIMEOUT`` (90s), so a
-    single connection can be legitimately ACTIVE that long while completing nothing. A
-    window shorter than that reports a healthy lockstep automation fan-out as exhaustion
-    and makes an in-flight slow RPC look like a strand — a false positive on the one
-    diagnostic an operator is asked to trust.
+    turnover signal. Spawn-shaped calls (``create_session``, ``automation_*``) pass
+    ``SPAWN_RPC_TIMEOUT`` (90s), so a single connection can be legitimately ACTIVE that
+    long while completing nothing. A window shorter than that reports a healthy lockstep
+    automation fan-out as exhaustion and makes an in-flight slow RPC look like a strand
+    — a false positive on the one diagnostic an operator is asked to trust.
     """
-    from server.sessions.remote import AUTOMATION_RPC_TIMEOUT
+    from server.sessions.remote import SPAWN_RPC_TIMEOUT
 
-    assert ipc_client._WEDGE_QUIET_S > AUTOMATION_RPC_TIMEOUT, (
+    assert ipc_client._WEDGE_QUIET_S > SPAWN_RPC_TIMEOUT, (
         f"_WEDGE_QUIET_S={ipc_client._WEDGE_QUIET_S} must exceed the longest caller "
-        f"budget AUTOMATION_RPC_TIMEOUT={AUTOMATION_RPC_TIMEOUT}")
+        f"budget SPAWN_RPC_TIMEOUT={SPAWN_RPC_TIMEOUT}")
 
 
 @pytest.mark.asyncio

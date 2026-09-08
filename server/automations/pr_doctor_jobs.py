@@ -3,7 +3,7 @@
 The manual "Fix CI" / "Resolve conflicts" actions run a clone → model-assess →
 session-spawn pipeline that takes 12–41 s (8 instances observed in prod logs).
 Rather than block the edge→daemon RPC for that entire window — it was only
-surviving because ``AUTOMATION_RPC_TIMEOUT`` had been stretched to 90 s (PR #568)
+surviving because ``SPAWN_RPC_TIMEOUT`` had been stretched to 90 s (PR #568)
 — the trigger creates a ``Job`` here, returns its id immediately, and a
 background task advances the job through its phases. The UI polls
 ``GET /automations/pr-doctor/jobs/{job_id}`` to show the live phase and, on

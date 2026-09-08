@@ -38,14 +38,18 @@ log = logging.getLogger(__name__)
 # nested pair that could fire in the wrong order.
 USAGE_RPC_TIMEOUT = 3.0
 
-# The opposite extreme: automation_consolidate / automation_trigger run the whole
-# clone→model-pick→spawn pipeline INLINE inside the daemon RPC and legitimately
-# take longer than the 30s client default (a healthy fetch + Haiku model pick +
-# worktree create + claude start). Without headroom the edge times out and 503s a
-# spawn the daemon actually completes — and a user retry then hits `duplicate`
-# (issue #567). Bound it well above that worst case, which the origin-only fetch
-# and the assess_model timeout already cap.
-AUTOMATION_RPC_TIMEOUT = 90.0
+# The opposite extreme: every RPC that runs the clone→worktree→spawn pipeline INLINE
+# inside the daemon — create_session for a user, automation_consolidate /
+# automation_trigger / backlog_runner_dispatch for automations — legitimately takes
+# longer than the 30s client default (a healthy fetch + model pick + worktree create +
+# claude start; 12–41s observed for automations, see pr_doctor_jobs). Without
+# headroom the edge times out and 503s a spawn the daemon actually completes — and a
+# retry then makes a second one. #567 fixed that for the automation calls; the user
+# create was left on the default, so on 2026-09-07 the edge gave up at 30s, the
+# daemon's session row landed 2s later, and the user's retry spawned a duplicate for
+# the same prompt. ONE budget for every spawn-shaped call, bound well above the worst
+# case (the origin-only fetch and the assess_model timeout already cap it).
+SPAWN_RPC_TIMEOUT = 90.0
 
 
 class _WireEvent:
@@ -493,12 +497,12 @@ class RemoteOrchestrator:
         """Trigger a manual action for an item on *automation_id*, via the daemon."""
         return await self._client.call("automation_trigger", automation_id=automation_id,
                                        item_id=item_id, kind=kind,
-                                       timeout=AUTOMATION_RPC_TIMEOUT)
+                                       timeout=SPAWN_RPC_TIMEOUT)
 
     async def pr_doctor_job(self, job_id: str) -> dict | None:
         """Current state of an async pr-doctor trigger job, via the daemon (issue
         #668). A quick read — the default RPC timeout is fine (unlike the trigger,
-        which needed AUTOMATION_RPC_TIMEOUT while it blocked on clone+spawn)."""
+        which needed SPAWN_RPC_TIMEOUT while it blocked on clone+spawn)."""
         return await self._client.call("pr_doctor_job", job_id=job_id)
 
     async def consolidation_candidates(self, repo: str | None = None) -> dict:
@@ -508,7 +512,7 @@ class RemoteOrchestrator:
     async def automation_consolidate(self, repo: str, numbers: list[int]) -> dict:
         """Spawn a consolidation session for the selected PRs, via the daemon."""
         return await self._client.call("automation_consolidate", repo=repo, numbers=numbers,
-                                       timeout=AUTOMATION_RPC_TIMEOUT)
+                                       timeout=SPAWN_RPC_TIMEOUT)
 
     async def backlog_candidates(self) -> "list[dict]":
         """Current eligible issue candidates for manual dispatch, via the daemon."""
@@ -518,7 +522,7 @@ class RemoteOrchestrator:
     async def backlog_runner_dispatch(self, refs: "list[str]") -> dict:
         """Manually claim + spawn a batch for *refs*, via the daemon."""
         return await self._client.call("backlog_runner_dispatch", refs=refs,
-                                       timeout=AUTOMATION_RPC_TIMEOUT)
+                                       timeout=SPAWN_RPC_TIMEOUT)
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
         r = await self._client.call("get_session", session_id=session_id)
@@ -556,7 +560,10 @@ class RemoteOrchestrator:
         # the message alone is the whole contract — so reconstruction only
         # needs the type name.
         try:
-            return await self._client.call("create_session", **kwargs)
+            # The spawn budget, not the 30s default: this RPC blocks on worktree
+            # create + claude start (see SPAWN_RPC_TIMEOUT for the duplicate it made).
+            return await self._client.call("create_session", timeout=SPAWN_RPC_TIMEOUT,
+                                           **kwargs)
         except DaemonError as exc:
             if exc.err_type == "AllAccountsBusy":
                 data = exc.data or {}
@@ -1132,12 +1139,12 @@ class RemoteOrchestrator:
     async def pm_onboard_spawn_map(self, slug: str, **kwargs) -> dict | None:
         """Spawn the archaeology map-synthesis session, via the daemon."""
         return await self._client.call("pm_onboard_spawn_map", slug=slug, **kwargs,
-                                       timeout=AUTOMATION_RPC_TIMEOUT)
+                                       timeout=SPAWN_RPC_TIMEOUT)
 
     async def pm_classify_run(self, slug: str, **kwargs) -> int:
         """Spawn one backlog-classification session, via the daemon."""
         r = await self._client.call("pm_classify_run", slug=slug, **kwargs,
-                                    timeout=AUTOMATION_RPC_TIMEOUT)
+                                    timeout=SPAWN_RPC_TIMEOUT)
         return int(r) if r is not None else 0
 
     async def pm_advance_map_merged(self, slug: str) -> None:
