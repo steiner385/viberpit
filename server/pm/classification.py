@@ -147,7 +147,11 @@ def build_map_synthesis_prompt(
             "metrics / Non-goals / Notes / Evidence). Justify it with the "
             "driving item numbers and relevant file paths in the Evidence "
             "section. Do NOT re-run whole-repo archaeology.\n\n"
-            "Requirements — propose-only, follow exactly:\n"
+            # NOT "propose-only": in this repo that term means "a human merges"
+            # (see the SDLC chain), which is the very claim step 4 retires. The
+            # surviving guarantee is one of SCOPE — feature docs only — so say
+            # that instead of implying a merge gate that no longer exists.
+            "Requirements — docs-only, follow exactly:\n"
             f"1. Branch off `origin/{default_branch}` (never local "
             f"`{default_branch}`).\n"
             f"2. Commit only under `{FEATURE_DOCS_DIR}/`.\n"

@@ -245,6 +245,12 @@ def test_diff_prompt_keeps_its_other_propose_guarantees():
     assert "ONE" in p and "non-draft" in p.lower()
     assert "origin/main" in p
     assert "Co-Authored-By" in p
+    # ...but the surviving guarantee is SCOPE, not a merge gate. "propose-only"
+    # is a term of art here (the SDLC chain uses it for "a human merges"), so
+    # leaving it on a prompt that arms auto-merge re-states the false claim this
+    # change exists to delete.
+    assert "propose-only" not in p.lower()
+    assert "docs-only" in p.lower()
 
 
 def test_initial_and_critic_prompts_still_withhold_auto_merge():
