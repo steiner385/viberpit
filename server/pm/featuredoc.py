@@ -3,6 +3,14 @@
 YAML frontmatter carries the machine-readable index fields; the markdown body
 is the human artifact (spec §3). Pure functions, no I/O — the sync loop feeds
 file text in and upserts Feature rows from the result.
+
+Canonical frontmatter is ``slug``/``title``/``state`` — what
+:func:`serialize_feature_doc` writes. Reading is deliberately wider than
+writing: ``capability`` is accepted for ``slug``, ``status`` for ``state``, and
+a missing ``title`` falls back to the body's first H1. Docs written by an agent
+from a prose template land in that dialect, and dropping them is worse than
+indexing them, because the skip is silent and an unindexed capability cannot
+latch the pm-triage drift branch (see ``server/pm/engine.py``).
 """
 from __future__ import annotations
 
@@ -35,6 +43,18 @@ class FeatureDoc:
     parent: str | None = None
 
 
+def _title_from_body(body: str) -> str:
+    """The first markdown H1 in *body*, or ``""``.
+
+    Only ``# `` at the start of a line counts, and the search stops at the
+    first one — a later ``#`` inside a fenced block cannot supply a title.
+    """
+    for line in body.splitlines():
+        if line.startswith("# "):
+            return line[2:].strip()
+    return ""
+
+
 def parse_feature_doc(text: str) -> FeatureDoc:
     if not text.startswith("---"):
         raise FeatureDocError("missing frontmatter fence")
@@ -51,9 +71,19 @@ def parse_feature_doc(text: str) -> FeatureDoc:
     if not isinstance(meta, dict):
         raise FeatureDocError("frontmatter is not a mapping")
 
-    slug = str(meta.get("slug") or "").strip()
-    title = str(meta.get("title") or "").strip()
-    state = str(meta.get("state") or "").strip()
+    body = "\n".join(lines[close + 1:]).lstrip("\n")
+
+    # Accept the `capability:`/`status:` spelling and an H1-only title.
+    # Agent-authored docs converge on that shape because the prompt that asks
+    # for a feature doc describes the BODY sections and never the frontmatter,
+    # so the writer invents keys. Rejecting them is technically correct and
+    # operationally terrible: the doc is unambiguous, the parse failure is
+    # silent, and an unindexed capability can never latch the triage loop's
+    # drift branch — which is how one repo ran fourteen docs, zero indexed
+    # features, and ~40 duplicate "propose this capability" sessions.
+    slug = str(meta.get("slug") or meta.get("capability") or "").strip()
+    title = str(meta.get("title") or "").strip() or _title_from_body(body)
+    state = str(meta.get("state") or meta.get("status") or "").strip()
     if not slug or not title:
         raise FeatureDocError("slug and title are required")
     if state not in FEATURE_LIFECYCLE_STATES:
@@ -82,7 +112,6 @@ def parse_feature_doc(text: str) -> FeatureDoc:
                 feature=str(item.get("feature") or "").strip(),
             ))
 
-    body = "\n".join(lines[close + 1:]).lstrip("\n")
     return FeatureDoc(
         slug=slug, title=title, state=state, links=tuple(links), body=body, parent=parent or None
     )

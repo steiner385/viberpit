@@ -159,3 +159,69 @@ def test_serialize_round_trips_parent():
     assert parse_feature_doc(text).parent == "dictation"
     # A root doc must not gain a `parent:` line.
     assert "parent:" not in serialize_feature_doc(parse_feature_doc(VALID))
+
+
+# --- Alias dialect ---------------------------------------------------------- #
+# Agent-authored docs use `capability:`/`status:` and carry the title only as an
+# H1, because the prompt that asks for a feature doc describes the body sections
+# and never the frontmatter. Reading is wider than writing: a silent skip leaves
+# the capability off the map, which un-latches the pm-triage drift branch and
+# re-proposes it forever.
+
+ALIAS = """---
+capability: flaky-test-triage
+status: proposed
+area: ci-infrastructure
+owner: engineering
+---
+
+# Flaky test triage
+
+## Problem
+
+Stale re-detections cost a triage session each.
+"""
+
+
+def test_capability_and_status_aliases_parse():
+    doc = parse_feature_doc(ALIAS)
+    assert doc.slug == "flaky-test-triage"
+    assert doc.state == "proposed"
+
+
+def test_title_falls_back_to_first_h1():
+    assert parse_feature_doc(ALIAS).title == "Flaky test triage"
+
+
+def test_canonical_keys_win_over_aliases():
+    text = ("---\nslug: real\ncapability: alias\ntitle: Real\n"
+            "state: live\nstatus: proposed\n---\n# Ignored\nbody\n")
+    doc = parse_feature_doc(text)
+    assert (doc.slug, doc.title, doc.state) == ("real", "Real", "live")
+
+
+def test_explicit_title_wins_over_h1():
+    text = "---\nslug: a\ntitle: From Frontmatter\nstate: proposed\n---\n# From H1\n"
+    assert parse_feature_doc(text).title == "From Frontmatter"
+
+
+def test_no_title_and_no_h1_still_raises():
+    with pytest.raises(FeatureDocError):
+        parse_feature_doc("---\ncapability: a\nstatus: proposed\n---\nno heading here\n")
+
+
+def test_h2_is_not_a_title():
+    # Only `# ` counts; a doc whose first heading is `##` has no title.
+    with pytest.raises(FeatureDocError):
+        parse_feature_doc("---\ncapability: a\nstatus: proposed\n---\n## Problem\n")
+
+
+def test_alias_doc_round_trips_into_canonical_form():
+    # serialize always writes the canonical keys, so a re-parse is stable.
+    doc = parse_feature_doc(ALIAS)
+    assert parse_feature_doc(serialize_feature_doc(doc)) == doc
+
+
+def test_bad_state_via_status_alias_still_raises():
+    with pytest.raises(FeatureDocError):
+        parse_feature_doc(ALIAS.replace("status: proposed", "status: bogus"))
