@@ -75,6 +75,15 @@ server-validated.
   `block`. A gated model creates a driverless `pending_approval` row (`pending_model` set, no
   capacity slot) until an admin approves or denies; mid-session `set_model` respects the same gate
   and swaps at the next turn boundary (#876, #538, #857).
+- **"Default" is gated on what it launches.** Both gates judge `model_policy.launch_model()`, not
+  the raw request: a session that names no model (or the picker's `default` row) still launches on
+  the model the `claude` binary reads for itself — `ANTHROPIC_MODEL`, then the `model` key of the
+  shared `settings.local.json` / `settings.json` that every account's config dir symlinks from
+  `paths.shared_base()`. A `/model` pick in any session rewrites that key fleet-wide, so "Default"
+  was silently whatever the last pick left behind (Fable 5.1, 2026-09-08). When the inherited
+  default is gated the hold carries its concrete id in `pending_model` with a
+  `pending_model_reason` saying nobody chose it, so the approver can counter-offer; when it is
+  allowed the session still records `model=None` (account default). Codex never inherits.
 
 **Evidence** — Functional non-prompting permission modes + unified SDK mapping (#758); exiting plan
 mode restores the prior permission mode (#875); adopted sessions honour the default permission mode

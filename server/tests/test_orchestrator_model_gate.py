@@ -726,3 +726,157 @@ def test_resolve_without_pending_raises(tmp_path):
     assert isinstance(raised_value, ValueError)  # nothing pending
     assert isinstance(raised_bad, ValueError)    # bad decision
     assert isinstance(raised_key, KeyError)      # unknown session
+
+
+# ---------------------------------------------------------------------------
+# Inherited default — a session that names NO model still launches on one: the
+# `claude` binary reads the shared settings.json `model` key (symlinked into every
+# account's config dir), so "Default" is whatever the last `/model` pick wrote
+# there. The gate must judge THAT model, not wave None through (2026-09-08:
+# Fable 5.1 sessions launched with no approval because "Default" was fable[1m]).
+# ---------------------------------------------------------------------------
+
+
+def _pin_shared_default(tmp_path, model: str) -> None:
+    (tmp_path / "dot-claude" / "settings.json").write_text(
+        __import__("json").dumps({"model": model}))
+
+
+def test_inherited_gated_default_holds_pending(tmp_path):
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+        _pin_shared_default(tmp_path, "claude-fable-5-1[1m]")
+
+        async def _run():
+            from server.db.models import Session as DbSession
+            orch = await h.make_orch()
+            try:
+                rec = await orch.create_session(name="s", account=None, model=None)
+                async with db_session() as db:
+                    row = (await db.execute(
+                        select(DbSession).where(DbSession.id == rec.id))).scalar_one()
+                return rec, orch._drivers.get(rec.id), row
+            finally:
+                await orch.stop()
+
+        rec, driver, row = asyncio.run(_run())
+
+    assert rec.status == "pending_approval"
+    assert rec.pending_model == "claude-fable-5-1[1m]"
+    assert rec.model is None
+    assert rec.pending_model_reason  # the approver is told this was inherited
+    assert driver is None
+    assert row.status == "pending_approval"
+    assert row.pending_model == "claude-fable-5-1[1m]"
+    assert row.pending_model_reason == rec.pending_model_reason
+
+
+def test_inherited_default_alias_is_gated_like_no_model(tmp_path):
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+        _pin_shared_default(tmp_path, "fable")
+
+        async def _run():
+            orch = await h.make_orch()
+            try:
+                rec = await orch.create_session(name="s", account=None, model="default")
+                return rec.status, rec.pending_model
+            finally:
+                await orch.stop()
+
+        status, pending = asyncio.run(_run())
+
+    assert status == "pending_approval"
+    assert pending == "fable"
+
+
+def test_inherited_ungated_default_spawns_as_account_default(tmp_path):
+    """An inherited opus default is not gated, and the session still records
+    model=None — it runs on the account default, which is not a selection."""
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+        _pin_shared_default(tmp_path, "opus")
+
+        async def _run():
+            orch = await h.make_orch()
+            try:
+                rec = await orch.create_session(name="s", account=None, model=None)
+                return rec.status, rec.model, rec.pending_model, (rec.id in orch._pending_approvals)
+            finally:
+                await orch.stop()
+
+        status, model, pending, in_pending = asyncio.run(_run())
+
+    assert status != "pending_approval"
+    assert model is None
+    assert pending is None
+    assert in_pending is False
+
+
+def test_set_model_default_with_gated_inherited_default_holds(tmp_path):
+    """Mid-session, switching back to "Default" would hand the binary the same
+    shared settings default — so it is gated on that model too."""
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+        _pin_shared_default(tmp_path, "claude-fable-5-1[1m]")
+
+        async def _run():
+            from server.db.models import Session as DbSession
+            orch = await h.make_orch()
+            try:
+                sid = "s-live"
+                async with db_session() as db:
+                    db.add(DbSession(id=sid, name="n", account_name="alpha",
+                                     engine_session_id="c1", status="idle",
+                                     cwd="/tmp", model="opus"))
+                driver = _RecordingDriver(turn_active=False)
+                rec = _running_orch(orch, driver, session_id=sid, model="opus")
+                await orch.set_model_for_session(sid, "default", identity="user@x")
+                async with db_session() as db:
+                    row = (await db.execute(
+                        select(DbSession).where(DbSession.id == sid))).scalar_one()
+                return rec, driver, row
+            finally:
+                await orch.stop()
+
+        rec, driver, row = asyncio.run(_run())
+
+    assert rec.pending_model == "claude-fable-5-1[1m]"
+    assert rec.model == "opus"
+    assert driver.set_model_calls == []
+    assert row.pending_model == "claude-fable-5-1[1m]"
+    assert row.model == "opus"
+
+
+def test_set_model_default_with_ungated_inherited_default_applies(tmp_path):
+    env, comp, trust, sel, h = _harness(tmp_path)
+    with env, comp, trust, sel:
+        _seed_account("alpha")
+        _pin_shared_default(tmp_path, "sonnet")
+
+        async def _run():
+            from server.db.models import Session as DbSession
+            orch = await h.make_orch()
+            try:
+                sid = "s-live"
+                async with db_session() as db:
+                    db.add(DbSession(id=sid, name="n", account_name="alpha",
+                                     engine_session_id="c1", status="idle",
+                                     cwd="/tmp", model="opus"))
+                driver = _RecordingDriver(turn_active=False)
+                rec = _running_orch(orch, driver, session_id=sid, model="opus")
+                await orch.set_model_for_session(sid, "default", identity="user@x")
+                return rec, driver
+            finally:
+                await orch.stop()
+
+        rec, driver = asyncio.run(_run())
+
+    # Not gated → applies exactly as before: the binary is told "default".
+    assert driver.set_model_calls == ["default"]
+    assert rec.model == "default"
+    assert rec.pending_model is None

@@ -2335,21 +2335,34 @@ class SessionOrchestrator:
         # here (status 'pending_approval', no driver, no capacity slot) rather than
         # spawned; a blocked one is refused outright. Runs BEFORE the capacity check
         # so a parked session never has to compete for a runtime slot it won't use.
-        from server.sessions.model_policy import resolve_model_policy
+        #
+        # Judged on launch_model(), not the raw request: a request naming no model
+        # (or "default") still launches on one — the shared Claude settings default
+        # the binary reads for itself — and that is the model the denylist must see.
+        # Gating None as "allow" let every "Default" session run on whatever the last
+        # /model pick wrote there, Fable included (2026-09-08). When the inherited
+        # default is gated the hold carries THAT id in pending_model so the approver
+        # sees exactly what would run and can counter-offer; when it is allowed the
+        # spawn proceeds with the original `model` (None), so the record still says
+        # "account default" — nothing was selected.
+        from server.sessions.model_policy import (
+            INHERITED_DEFAULT_REASON, launch_model, resolve_model_policy)
+        gate_model = launch_model(model, engine=selected_engine)
         async with db_session() as _db:
-            _policy = await resolve_model_policy(_db, model=model, account=account)
+            _policy = await resolve_model_policy(_db, model=gate_model, account=account)
         if _policy == "block":
-            raise ModelBlockedError(model)
+            raise ModelBlockedError(gate_model)
         if _policy == "require_approval":
             return await self._hold_for_approval(
                 session_id, name=name, account=account, initial_prompt=initial_prompt,
                 cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
                 identity=identity, permission_mode=permission_mode,
                 attachment_ids=attachment_ids, name_is_auto=name_is_auto,
-                origin=origin, origin_ref=origin_ref, model=model,
+                origin=origin, origin_ref=origin_ref, model=gate_model,
                 reasoning_effort=reasoning_effort, kind=kind,
                 owner_identity=owner_identity, engine=selected_engine,
-                client_node=client_node, display=display)
+                client_node=client_node, display=display,
+                model_reason=INHERITED_DEFAULT_REASON if gate_model != model else None)
 
         # Global active-session cap: at/over the cap the session is created as a
         # queued row (real session, no worktree/account/driver yet) and started
@@ -2495,7 +2508,8 @@ class SessionOrchestrator:
                                  name_is_auto, origin, origin_ref, model,
                                  client_node=None, display=None,
                                  reasoning_effort=None, kind=None, owner_identity=None,
-                                 engine=AgentEngine.CLAUDE_CODE) -> SessionRecord:
+                                 engine=AgentEngine.CLAUDE_CODE,
+                                 model_reason: str | None = None) -> SessionRecord:
         """Park a model-gated session at 'pending_approval': persist a driverless row
         with the requested model in `pending_model`, no queue entry, no capacity slot.
 
@@ -2504,6 +2518,10 @@ class SessionOrchestrator:
         the requested_by/at provenance columns set. The full spawn kwargs are kept in
         self._pending_approvals so the approve path (Task 10) can spawn cleanly; that
         map is in-memory only — a restart rebuilds the row-backed record via rehydrate.
+
+        *model_reason* fills `pending_model_reason` — set when *model* is not what
+        the requester asked for but the shared default their "no model" request would
+        have launched on, so the approver knows nobody picked it.
 
         Like _enqueue_session, the display decision is resolved and persisted HERE:
         an approval can sit for as long as a human takes to act on it (far longer
@@ -2524,14 +2542,15 @@ class SessionOrchestrator:
                 cwd=cwd or "", repo=repo, branch=None,
                 permission_mode=permission_mode, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref,
-                model=None, pending_model=model,
+                model=None, pending_model=model, pending_model_reason=model_reason,
                 pending_model_requested_by=identity, pending_model_requested_at=now,
                 initial_prompt=initial_prompt, host=host,
                 kind=kind, owner_identity=owner_identity,
                 display_mode=display_mode))
             await record_audit(db, type="model_approval.requested", identity=identity,
                                detail={"session_id": session_id, "model": model,
-                                       "account": account})
+                                       "account": account,
+                                       "inherited_default": model_reason is not None})
         # Keep full spawn kwargs for a clean approve path (attachments included).
         # Restart-durable minus attachments: rebuilt from the row if lost.
         self._pending_approvals[session_id] = dict(
@@ -2548,6 +2567,7 @@ class SessionOrchestrator:
             status="pending_approval", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
             model=None, reasoning_effort=reasoning_effort, pending_model=model, host=host,
+            pending_model_reason=model_reason,
             kind=kind, owner_identity=owner_identity,
             display_mode=display_mode, permission_mode=permission_mode)
         self._records[session_id] = rec
@@ -2593,12 +2613,15 @@ class SessionOrchestrator:
             raise KeyError(session_id)
 
         # Counter-offer: only `block` may refuse it. Checked DIRECTLY here rather than
-        # by routing through the gated set_model_for_session (see docstring).
+        # by routing through the gated set_model_for_session (see docstring). A
+        # "default" counter-offer is resolved to the shared settings default it would
+        # launch on (launch_model), so the hold is settled on a concrete id.
         requested_model = rec.pending_model
         if (model is not None and requested_model is not None
                 and model != requested_model and decision == "approve"):
             from server.sessions.model_catalog import model_tier
-            from server.sessions.model_policy import resolve_model_policy
+            from server.sessions.model_policy import launch_model, resolve_model_policy
+            model = launch_model(model, engine=rec.engine) or model
             async with db_session() as _db:
                 _p = await resolve_model_policy(_db, model=model, account=rec.account)
             if _p == "block":
@@ -13552,20 +13575,30 @@ class SessionOrchestrator:
         # NB: rotation re-applies an already-approved model via the LOW-LEVEL
         # driver.set_model() in _reassign, NOT this method, so it never re-triggers
         # approval.
+        # Judged on launch_model(): switching back to "default" hands the binary the
+        # shared settings default, so the gate sees that id, not the alias — and a
+        # gated one is parked under its concrete id so approval applies exactly it.
         record = self._records.get(session_id)
         _account = record.account if record is not None else None
-        from server.sessions.model_policy import resolve_model_policy
+        _engine = record.engine if record is not None else AgentEngine.CLAUDE_CODE
+        from server.sessions.model_policy import (
+            INHERITED_DEFAULT_REASON, launch_model, resolve_model_policy)
+        gate_model = launch_model(model, engine=_engine)
         async with db_session() as _db:
-            _policy = await resolve_model_policy(_db, model=model, account=_account)
+            _policy = await resolve_model_policy(_db, model=gate_model, account=_account)
         if _policy == "block":
-            raise ModelBlockedError(model)
+            raise ModelBlockedError(gate_model)
         if _policy == "require_approval":
+            park_kwargs = (
+                {"reason": INHERITED_DEFAULT_REASON} if gate_model != model else {})
             await self._park_model(
-                session_id, model, identity=identity,
-                audit_detail={"session_id": session_id, "model": model,
-                              "account": _account})
+                session_id, gate_model, identity=identity,
+                audit_detail={"session_id": session_id, "model": gate_model,
+                              "account": _account,
+                              "inherited_default": gate_model != model},
+                **park_kwargs)
             log.info("session.model_approval_requested id=%s model=%s by=%s",
-                     session_id, model, identity)
+                     session_id, gate_model, identity)
             return False
         restarted = False
         pending = False
