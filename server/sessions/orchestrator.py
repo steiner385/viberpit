@@ -4170,8 +4170,8 @@ class SessionOrchestrator:
         # card shows time since the last real turn, not a reset on every re-arm.
         completed_turn = status == "done"
         if completed_turn:
-            from .background_tasks import text_awaits_user
             from .completion import strip_markers
+            from .open_question import completion_awaits_user
             if await self._session_is_parked(session_id):
                 # A parked `done` turn normally reads "Waiting…". But if the turn handed
                 # a question/decision back to the user in prose (no structured
@@ -4183,9 +4183,24 @@ class SessionOrchestrator:
                 # marker (here, a self-directed model request — the one kind a `done`
                 # turn can carry) trails the message, so an unstripped tail check can
                 # never see the closing "?" behind it. Two prose paths, one reading.
+                #
+                # ...and one JUDGE. `text_awaits_user` is the recall FLOOR, not the
+                # verdict: a deliberately broad phrase list whose own comment calls a
+                # false "Answer needed" harmless. It is not. Prod 2026-09-08: a session
+                # parked on a Monitor closed by naming a decision it would defer on IF a
+                # flake recurred ("that's your call"), which is an _ASK_PHRASES hit and
+                # not a question; the card sat under NEEDS YOU, and the session answered
+                # the user's "what do you need?" with "Nothing". Worse, that disclaimer
+                # quotes the phrase it disowns, so the tail scan re-fires on it and the
+                # session cannot talk its way out of the badge. `completion_awaits_user`
+                # runs the floor first and only ever NARROWS it (never invents a hold),
+                # degrading to the floor's own True whenever the helper lane is down — so
+                # this is strictly the completion gate's judgement, which this path was
+                # missing while _completion_open_question had it all along.
                 prose = strip_markers(self._last_assistant_prose(session_id))
-                status = ("waiting_question" if text_awaits_user(prose)
-                          else "waiting_external")
+                awaits = await completion_awaits_user(
+                    prose, cwd=getattr(rec, "cwd", None))
+                status = "waiting_question" if awaits else "waiting_external"
         # Advance the "active … ago" clock ONLY when the assistant hands output back —
         # a finished or user-paused turn (ACTIVITY_STATUSES). Bumping it on every status
         # (in_progress) or incidental row write is the bug that pinned every card to

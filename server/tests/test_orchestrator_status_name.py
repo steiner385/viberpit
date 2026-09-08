@@ -135,9 +135,12 @@ def _parked_asking_transcript(tmp_path):
     return p
 
 
-def test_persist_status_done_parked_but_asking_user_is_answer_needed(tmp_path):
+def test_persist_status_done_parked_but_asking_user_is_answer_needed(
+        tmp_path, monkeypatch):
     """A parked turn whose final message hands a prose question/decision back to the
     user must read "Answer needed" (needs-you), not be masked as "Waiting…"."""
+    _stub_classifier(monkeypatch, True)
+
     async def run():
         orch = await _build_orch(tmp_path, name_is_auto=False)
         orch.transcript_path = lambda sid: str(_parked_asking_transcript(tmp_path))
@@ -168,10 +171,15 @@ def _parked_asking_with_marker_transcript(tmp_path):
     return p
 
 
-def test_persist_status_parked_question_is_not_masked_by_a_trailing_marker(tmp_path):
+def test_persist_status_parked_question_is_not_masked_by_a_trailing_marker(
+        tmp_path, monkeypatch):
     """A trailing marker must not hide the closing "?" from the parked overlay.
     Both prose paths judge the same text the same way — this one used to skip the
     strip and silently demote a real question to "Waiting…"."""
+    from ccswitch import brand
+    seen: list[str] = []
+    _stub_classifier(monkeypatch, True, seen)
+
     async def run():
         orch = await _build_orch(tmp_path, name_is_auto=False)
         orch.transcript_path = lambda sid: str(
@@ -179,6 +187,72 @@ def test_persist_status_parked_question_is_not_masked_by_a_trailing_marker(tmp_p
         await orch._persist_status("s1", "done")
         return orch.record("s1").status
     assert asyncio.run(run()) == "waiting_question"
+    # The strip happens BEFORE the judge, so the marker never reaches it and the
+    # closing "?" is the last character it sees.
+    assert seen and f"{brand.SLUG}:model=" not in seen[0]
+    assert seen[0].rstrip().endswith("?")
+
+
+def _stub_classifier(monkeypatch, verdict, seen=None):
+    """Pin the gated LLM narrowing to *verdict*, recording the prose it judged.
+
+    The parked overlay routes through ``open_question.completion_awaits_user``, so
+    leaving it unstubbed would let a test fall through to the helper lane and pass
+    only via its degrade-to-True path — green for the wrong reason."""
+    import server.sessions.open_question as oq_mod
+
+    async def _stub(text, **kw):
+        if seen is not None:
+            seen.append(text)
+        return verdict
+
+    monkeypatch.setattr(oq_mod, "completion_awaits_user", _stub)
+
+
+def _parked_hypothetical_transcript(tmp_path):
+    """Parked on a background task, and the closing prose names a decision that does
+    NOT yet exist ("if it flakes again … that's your call"). Verbatim shape of the
+    prod report (2026-09-08): the tail carries an _ASK_PHRASES hit ("your call") while
+    asking the user nothing, so the raw heuristic alone says "Answer needed"."""
+    import json
+    text = ("Both requested fixes are complete and pushed. The remaining step is "
+            "mechanical — shard 2 turning green so the armed auto-merge lands PR "
+            "#1461 — and I'll report the outcome when the monitor fires. If shard 2 "
+            "flakes again, the options are another re-run or an admin merge, but "
+            "that's your call rather than something I'd do unasked.")
+    p = tmp_path / "claude-s1.jsonl"
+    p.write_text(
+        '{"type":"user","message":{"role":"user","content":"ship #1461"}}\n'
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1",'
+        '"name":"Bash","input":{"command":"gh pr checks","run_in_background":true}}]}}\n'
+        + json.dumps({"type": "assistant", "message": {
+            "content": [{"type": "text", "text": text}]}}) + "\n"
+    )
+    return p
+
+
+def test_persist_status_parked_prose_ask_is_narrowed_by_the_classifier(
+        tmp_path, monkeypatch):
+    """The parked overlay must NARROW the prose heuristic through the same gated
+    classifier the completion gate uses, not trust the raw substring scan.
+
+    ``text_awaits_user`` is the recall FLOOR — deliberately broad, and its phrase list
+    fires on any tail containing "your call". Prod 2026-09-08: a session parked on a
+    Monitor closed by naming a hypothetical it would defer on, sat under NEEDS YOU as
+    "Answer needed", and when the user asked what was needed it answered "Nothing — I
+    don't need an answer from you". Only one of the two prose paths was narrowed; this
+    is the other one."""
+    seen: list[str] = []
+    _stub_classifier(monkeypatch, False, seen)
+
+    async def run():
+        orch = await _build_orch(tmp_path, name_is_auto=False)
+        orch.transcript_path = lambda sid: str(_parked_hypothetical_transcript(tmp_path))
+        await orch._persist_status("s1", "done")
+        return orch.record("s1").status
+
+    assert asyncio.run(run()) == "waiting_external"
+    assert seen and "your call" in seen[0], "the classifier must judge the prose itself"
 
 
 def _killed_only_transcript(tmp_path):

@@ -5,8 +5,16 @@ Sessions sometimes emit the completion marker in the same message that poses a
 question ("Want me to take on Phase 2 next, or pause here? <marker>") — prod
 auto-archived two such sessions on 2026-08-19, burying the questions. The status
 pipeline already outranks ``complete`` with *structured* pending questions
-(``derive_status``); this module covers the prose case at the one decision point
-where it matters: the completion auto-archive gate.
+(``derive_status``); this module covers the prose case.
+
+It is THE judge for both prose decision points: the completion auto-archive gate
+(``_completion_open_question``) and the parked-turn overlay in ``_persist_status``,
+which chooses "Answer needed" over "Waiting…" for a `done` turn sitting on a monitor
+or armed wakeup. The overlay used to read the raw heuristic instead, so it got the
+recall floor's breadth with none of its narrowing — prod 2026-09-08: a session parked
+on a Monitor closed by naming a decision it would defer on *if* a flake recurred
+("that's your call"), sat under NEEDS YOU, and answered the user's "what do you need
+from me?" with "Nothing". Two paths asking one question must ask it of one judge.
 
 Mirrors ``automations.pr_intent`` — injected ``query_fn`` so the real model is
 NEVER called in tests; routed through ``helper_call.run_helper_call`` (backoff +
@@ -49,6 +57,12 @@ _SYSTEM = (
     "even when phrased as an optional offer, the user is being asked to reply. NOT "
     "open: polite closings with no question ('let me know if anything looks off'), "
     "rhetorical or already-answered questions, and plain statements of completion. "
+    "Also NOT open: a decision named as CONDITIONAL or hypothetical, which would only "
+    "arise if some future event happens ('if CI fails again, whether to re-run or "
+    "merge past it is your call') — the assistant is flagging what it would come back "
+    "for, not asking now; and a message that explicitly disclaims needing a reply, "
+    "even where it quotes the very phrasing it is walking back. Decide by what the "
+    "message ASKS, never by whether decision-flavoured wording appears in it. "
     'Reply with ONLY a JSON object {"open_question": bool} — no prose, no code '
     "fences."
 )
