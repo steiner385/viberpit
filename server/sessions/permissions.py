@@ -1,9 +1,11 @@
 from __future__ import annotations
-import asyncio, os, time, uuid as _uuid
+import asyncio, logging, os, time, uuid as _uuid
 from pathlib import Path
 
 from ccswitch import paths as _paths
 from server.mcp_spec import is_mcp_tool
+
+log = logging.getLogger(__name__)
 
 # File-writing tools whose target is a single path argument.
 _FILE_WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
@@ -115,6 +117,23 @@ class PermissionRegistry:
             return f"{tool}:{input.get('url') or input.get('query', '')}"
         return tool
 
+    def _pend(self, session_id, turn_id, tool, input, *, mode, identity, always_allowed,
+              items) -> tuple[str, asyncio.Future]:
+        """Register a card and log it. The ONE place a pending record is created, so
+        every card — destructive ccswitch tool, mutation tool, or an ordinary tool the
+        session mode gates — leaves the same line naming the mode the registry saw.
+        That line is what distinguishes "the operator chose a prompting mode" from
+        "a full-auto driver was rebuilt as interactive" (2026-09-07), which no other
+        signal exposes: the card itself looks identical either way."""
+        pid = _uuid.uuid4().hex
+        fut = asyncio.get_running_loop().create_future()
+        self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
+                              "tool": tool, "input": input, "turn_id": turn_id,
+                              "always_allowed": always_allowed, "items": items}
+        log.info("permission.card session=%s tool=%s mode=%s perm_id=%s always_allowed=%s",
+                 session_id, tool, mode, pid, always_allowed)
+        return pid, fut
+
     def is_granted(self, session_id, tool, input, now) -> bool:
         key = (session_id, self.fingerprint(tool, input))
         exp = self._grants.get(key)
@@ -163,11 +182,8 @@ class PermissionRegistry:
                 # ccswitch action always surfaces a card, and that card never
                 # offers "Always allow" (always_allowed=False on the pending
                 # record; resolve() below refuses to persist a grant for it).
-                pid = _uuid.uuid4().hex
-                fut = asyncio.get_running_loop().create_future()
-                self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
-                                      "tool": tool, "input": input, "turn_id": turn_id,
-                                      "always_allowed": False, "items": items}
+                pid, fut = self._pend(session_id, turn_id, tool, input, mode=mode,
+                                      identity=identity, always_allowed=False, items=items)
                 return pid, fut, False
             # MUTATION, or an unknown/not-yet-registered ccswitch tool (treated
             # conservatively as mutation-like rather than raising on a None
@@ -179,11 +195,8 @@ class PermissionRegistry:
             # is trusting the APP, not accepting session-mode risk.
             if self.is_granted(session_id, tool, input, now):
                 return None, _resolved(True), True
-            pid = _uuid.uuid4().hex
-            fut = asyncio.get_running_loop().create_future()
-            self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
-                                  "tool": tool, "input": input, "turn_id": turn_id,
-                                  "always_allowed": True, "items": items}
+            pid, fut = self._pend(session_id, turn_id, tool, input, mode=mode,
+                                  identity=identity, always_allowed=True, items=items)
             return pid, fut, True
         if mode in ("full-auto", "bypassPermissions"):
             # Full auto / bypass-permissions — incl. shell: approve everything
@@ -230,11 +243,8 @@ class PermissionRegistry:
             # its own worktree proceeds without a human, while shell/network calls — a
             # materially larger blast radius — remain gated.
             return None, _resolved(True), True
-        pid = _uuid.uuid4().hex
-        fut = asyncio.get_running_loop().create_future()
-        self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
-                              "tool": tool, "input": input, "turn_id": turn_id,
-                              "always_allowed": True, "items": items}
+        pid, fut = self._pend(session_id, turn_id, tool, input, mode=mode,
+                              identity=identity, always_allowed=True, items=items)
         return pid, fut, True
 
     async def request_external(self, session_id, turn_id, tool, input, *, identity,

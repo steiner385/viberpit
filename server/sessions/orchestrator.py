@@ -2483,7 +2483,7 @@ class SessionOrchestrator:
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
             model=model, reasoning_effort=reasoning_effort, host=host,
             kind=kind, owner_identity=owner_identity,
-            display_mode=display_mode)
+            display_mode=display_mode, permission_mode=permission_mode)
         self._records[session_id] = rec
         log.info("session.queued id=%s priority=%d origin=%s",
                  session_id, priority, origin)
@@ -2549,7 +2549,7 @@ class SessionOrchestrator:
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
             model=None, reasoning_effort=reasoning_effort, pending_model=model, host=host,
             kind=kind, owner_identity=owner_identity,
-            display_mode=display_mode)
+            display_mode=display_mode, permission_mode=permission_mode)
         self._records[session_id] = rec
         log.info("session.pending_approval id=%s model=%s origin=%s",
                  session_id, model, origin)
@@ -2838,7 +2838,8 @@ class SessionOrchestrator:
                 pending_model=model, host=host,
                 kind=kwargs.get("kind"),
                 owner_identity=kwargs.get("owner_identity"),
-                display_mode=prior_mode)
+                display_mode=prior_mode,
+                permission_mode=kwargs.get("permission_mode") or "interactive")
         except Exception:
             # Never let the recovery path mask the real spawn error.
             log.exception("session.model_approval_hold_restore_failed id=%s",
@@ -2995,6 +2996,7 @@ class SessionOrchestrator:
                             origin_ref=params.get("origin_ref"),
                             model=params.get("model"),
                             reasoning_effort=params.get("reasoning_effort"),
+                            permission_mode=params.get("permission_mode") or "interactive",
                         )
                     else:
                         self._records[sid].status = "ended"
@@ -3432,6 +3434,13 @@ class SessionOrchestrator:
             kind=kind, owner_identity=owner_identity,
             last_activity_at=time.monotonic(),
             display_mode=display_mode,
+            # The in-memory record is what every later driver REBUILD reads its mode
+            # from (ensure_driver after a completion release / idle reap / detach,
+            # _reassign's driverless path). Seeding it without the mode left the
+            # dataclass default — "interactive" — while the row said "full-auto", so
+            # a full-auto session prompted on its first Bash call after mark_complete
+            # until a daemon restart rebuilt the record from the row (2026-09-07).
+            permission_mode=permission_mode,
         )
         self._records[session_id] = _pre_record
         # Track the spawn from the pre-seed until the driver is registered (or the
