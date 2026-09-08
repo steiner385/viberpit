@@ -48,7 +48,7 @@ six tools:
 
 `session_context` and `report_feedback` are `ToolClass.READ` in `server/mcp_spec.py`'s shared
 registry — read-only in effect, since neither changes anything the user can see. `mark_complete`,
-`mark_no_pr` and `request_model` are the newer `ToolClass.SIGNAL` (below): also no permission
+`mark_no_pr`, `hand_back` and `request_model` are the newer `ToolClass.SIGNAL` (below): also no permission
 card, but not annotated read-only, because each one moves something the user does see (a status
 badge, a completion-bar verdict, a pending model approval). `PermissionRegistry` resolves both
 classes silently in every session mode, never raising a permission card (pinned by
@@ -68,12 +68,12 @@ only to the Phase 2 filer).
 ## The `SIGNAL` tool class, and why it renders no card
 
 `ToolClass.SIGNAL` (`server/mcp_spec.py`) exists for a tool that reports the session's OWN state
-back to the harness — completion, a no-PR resolution, a model request — as opposed to `READ`
+back to the harness — completion, a no-PR resolution, a hand-back, a model request — as opposed to `READ`
 (changes nothing) or `MUTATION`/`DESTRUCTIVE` (changes something in the project or account). Two
 things distinguish it from `READ`:
 
 - **No permission card**, same as `READ` (`server/sessions/permissions.py:159` short-circuits both
-  classes together). This is the *conservative* choice, not the permissive one: these three tools
+  classes together). This is the *conservative* choice, not the permissive one: these four tools
   replace HTML-comment markers, which had no gate whatsoever, and a card at the end of every
   session would block an unattended run's completion behind a prompt nobody is there to answer.
 - **Not annotated read-only.** `annotations_for` sets `readOnlyHint=False` for `SIGNAL` (only
@@ -83,7 +83,7 @@ things distinguish it from `READ`:
 
 ## Where the signal is read — the Translator, not the handler
 
-A tool **handler** for `mark_complete` / `mark_no_pr` / `request_model` only validates its
+A tool **handler** for `mark_complete` / `mark_no_pr` / `hand_back` / `request_model` only validates its
 arguments (via the shared parsers in `server/sessions/completion.py` and
 `server/sessions/model_request.py`) and returns `{"acknowledged": true, ...}`. It does **not** act
 on the signal. The authoritative read is the Claude **Translator** (`server/sessions/translator.py`)
