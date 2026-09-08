@@ -262,6 +262,42 @@ describe('pre-spawn partition (DEC-3)', () => {
   })
 })
 
+// ── the attention partition: quiet maintenance rows leave for Background ─────
+
+describe('attention partition (Background scope)', () => {
+  const quiet = mk('quietM', { status: 'in_progress', repo: 'o/a', host: 'dobby', origin: 'pm-classify', workClass: 'maintenance' })
+  const queuedM = mk('queuedM', { status: 'queued', queuePosition: 2, origin: 'pm-onboard', workClass: 'maintenance' })
+  const asking = mk('askingM', { status: 'waiting_input', repo: 'o/a', host: 'dobby', origin: 'pr-doctor', workClass: 'maintenance' })
+  const dev = mk('devB', { status: 'in_progress', repo: 'o/a', host: 'dobby', origin: 'backlog-runner', workClass: 'development' })
+
+  it('holds quiet maintenance sessions out of EVERY Active-scope field', async () => {
+    const h = await mountReady([...ALL, quiet, queuedM, asking, dev])
+    expect(ids(h.result.current.background).sort()).toEqual(['queuedM', 'quietM'])
+    // `sessions` is what the controls gate and the Active count read.
+    expect(ids(h.result.current.sessions)).not.toContain('quietM')
+    expect(ids(h.result.current.sessions)).not.toContain('queuedM')
+    // A queued maintenance row is not in Active's QueuedSection either.
+    expect(ids(h.result.current.queued)).toEqual(['queuedA'])
+    expect(ids(h.result.current.ordering.orderedSessions)).not.toContain('quietM')
+    expect(ids(h.result.current.ordering.allOrderedSessions)).not.toContain('quietM')
+  })
+
+  it('lifts a maintenance session that needs a human, and keeps development-class ones', async () => {
+    const h = await mountReady([...ALL, quiet, asking, dev])
+    expect(ids(h.result.current.background)).toEqual(['quietM'])
+    expect(ids(h.result.current.ordering.orderedSessions)).toContain('askingM')
+    expect(ids(h.result.current.ordering.orderedSessions)).toContain('devB')
+  })
+
+  it('drops a lifted session back to Background once it is resolved', async () => {
+    const h = mount({ sessions: [...ALL, asking], sessionsLoading: false })
+    await waitFor(() => expect(ids(h.result.current.ordering.orderedSessions)).toContain('askingM'))
+    h.rerender({ sessions: [...ALL, { ...asking, status: 'in_progress' }], sessionsLoading: false })
+    expect(ids(h.result.current.background)).toEqual(['askingM'])
+    expect(ids(h.result.current.ordering.orderedSessions)).not.toContain('askingM')
+  })
+})
+
 // ── R6: filters narrow the visible list, never the advance fallback ──────────
 
 describe('advance fallback (R6)', () => {

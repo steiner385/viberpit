@@ -24,6 +24,7 @@ _ROLLUP_BATCH = 10_000
 class CicdDoctor:
     id = "cicd-doctor"
     name = "CI/CD Doctor"
+    work_class = "maintenance"
     description = ("Watches CI health across repos: flaky tests, advisory-check "
                    "stability and graduation, and workflow waste.")
     modes: tuple[str, ...] = ("off", "propose")

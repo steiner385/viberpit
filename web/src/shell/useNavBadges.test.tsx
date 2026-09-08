@@ -151,6 +151,20 @@ describe('useNavBadges', () => {
     expect(result.current.sessions).toBe(2)
   })
 
+  it('leaves quiet maintenance sessions out of the count, but counts one that needs you', () => {
+    // The badge is the eye-drawing surface; Background exists so these rows do
+    // not draw the eye. A maintenance session that lifts into Active is counted.
+    useSessions.mockReturnValue({
+      data: [
+        session({ id: 'a', name: 'a', status: 'idle' }),
+        session({ id: 'm1', name: 'pm map', status: 'in_progress', origin: 'pm-onboard', workClass: 'maintenance' }),
+        session({ id: 'm2', name: 'pr-doctor fix', status: 'waiting_input', origin: 'pr-doctor', workClass: 'maintenance' }),
+      ],
+    })
+    const { result } = renderHook(() => useNavBadges())
+    expect(result.current.sessions).toBe(2)
+  })
+
   it('pipeline counts in-flight PRs; automations counts its own data', () => {
     const prs: PullRequestInfo[] = [
       { number: 1, url: 'https://example/pr/1', state: 'open', checks: 'pending', title: 't', deployed: false },

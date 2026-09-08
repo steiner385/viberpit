@@ -35,8 +35,10 @@ function renderCard(session: Session) {
 }
 
 describe('SessionCard provenance badge', () => {
-  it('shows "Created by PR Doctor" badge when origin is pr-doctor', () => {
-    renderCard({ ...base, origin: 'pr-doctor' })
+  it('shows "Created by PR Doctor" from the server-supplied originLabel', () => {
+    // The label is the automation registry's display name, published on the
+    // session; the card keeps no id→name map of its own.
+    renderCard({ ...base, origin: 'pr-doctor', originLabel: 'PR Doctor' })
     const badge = screen.getByTestId('card-provenance')
     expect(badge).toBeInTheDocument()
     expect(badge).toHaveTextContent('Created by PR Doctor')
@@ -48,7 +50,7 @@ describe('SessionCard provenance badge', () => {
     expect(badge).toHaveAttribute('href', '/automation')
   })
 
-  it('shows raw origin name for unknown automations', () => {
+  it('falls back to the raw origin id when no label was published', () => {
     renderCard({ ...base, origin: 'custom-bot' })
     const badge = screen.getByTestId('card-provenance')
     expect(badge).toHaveTextContent('Created by custom-bot')
@@ -67,7 +69,7 @@ describe('SessionCard provenance badge', () => {
 
 describe('SessionCard assisted-by badge', () => {
   it('shows an emerald provenance badge when autopilot is actively guiding the session', () => {
-    renderCard({ ...base, assistedBy: 'autopilot' })
+    renderCard({ ...base, assistedBy: 'autopilot', assistedByLabel: 'Autopilot' })
     const badge = screen.getByTestId('card-provenance')
     expect(badge).toHaveTextContent('Assisted by Autopilot')
     expect(badge).toHaveAttribute('title', 'Assisted by automation: autopilot')
@@ -92,5 +94,30 @@ describe('SessionCard assisted-by badge', () => {
   it('no badge when neither origin nor assistedBy is set', () => {
     renderCard(base)
     expect(screen.queryByTestId('card-provenance')).not.toBeInTheDocument()
+  })
+})
+
+describe('SessionCard maintenance chip', () => {
+  // A maintenance session is in the Active list only because it needs a human,
+  // so the automation's name sits on line 1 beside the title — not demoted to
+  // the line-3 icon marker like ordinary provenance.
+  it('names the automation on line 1 for a maintenance-class session', () => {
+    renderCard({ ...base, origin: 'pm-classify', originLabel: 'PM Classification', workClass: 'maintenance' })
+    const chip = screen.getByTestId('card-maintenance-chip')
+    expect(chip).toHaveTextContent('PM Classification')
+    expect(chip).toHaveAttribute('title', 'Maintenance session created by PM Classification')
+    expect(chip.className).toMatch(/flex-shrink-0/)
+  })
+
+  it('falls back to the origin id without a label', () => {
+    renderCard({ ...base, origin: 'custom-bot', workClass: 'maintenance' })
+    expect(screen.getByTestId('card-maintenance-chip')).toHaveTextContent('custom-bot')
+  })
+
+  it('renders no chip for a development-class automation session or a human one', () => {
+    renderCard({ ...base, origin: 'backlog-runner', originLabel: 'Backlog Runner', workClass: 'development' })
+    expect(screen.queryByTestId('card-maintenance-chip')).not.toBeInTheDocument()
+    renderCard({ ...base, id: '2' })
+    expect(screen.queryByTestId('card-maintenance-chip')).not.toBeInTheDocument()
   })
 })

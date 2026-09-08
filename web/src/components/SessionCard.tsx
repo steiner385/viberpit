@@ -27,17 +27,9 @@ import type { Session, Account } from '@/api/types'
 // used — narrow cards keep the triage essentials and nothing else.
 const markerBase = 'hidden @md:inline-flex items-center flex-shrink-0'
 
-// Human-readable labels for automation ids in the provenance marker — one map for
-// spawned-by and assisted-by (the pr-doctor special case previously lived inline).
-const AUTOMATION_LABELS: Record<string, string> = {
-  'pr-doctor': 'PR Doctor',
-  'backlog-runner': 'Backlog Runner',
-  autopilot: 'Autopilot',
-}
-
-function automationLabel(id: string): string {
-  return AUTOMATION_LABELS[id] ?? id
-}
+// Provenance labels come from the server (`originLabel` / `assistedByLabel`,
+// the automation registry's display names) — the card keeps no id→name map of
+// its own. The id is the fallback for a payload from an older server.
 
 /**
  * Tooltip for the model chip: the current model plus whichever transitional
@@ -291,6 +283,25 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               <span className="sr-only">
                 {autopilotLive ? 'Autopilot active, working now' : 'Guided by Autopilot'}
               </span>
+            </span>
+          )}
+          {/* Maintenance chip — the one provenance marker that is NOT demoted
+              to an icon on line 3. A maintenance session is only in the Active
+              list because it needs a human, and the reader has to see at a
+              glance that "PR Doctor" is asking, not their own work; in the
+              Background scope it says which automation the row belongs to.
+              Non-interactive (the line-3 marker is the link), fixed width so
+              the title still owns the row's remainder. */}
+          {session.workClass === 'maintenance' && (
+            <span
+              data-testid="card-maintenance-chip"
+              className={cn(
+                'flex-shrink-0 max-w-[9rem] truncate rounded px-1.5 py-0.5 text-[11px] font-medium leading-4',
+                'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
+              )}
+              title={`Maintenance session created by ${session.originLabel ?? session.origin ?? 'an automation'}`}
+            >
+              {session.originLabel ?? session.origin ?? 'Maintenance'}
             </span>
           )}
           <span
@@ -592,8 +603,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             <Bot size={12} aria-hidden="true" />
             <span className="sr-only">
               {session.origin
-                ? `Created by ${automationLabel(session.origin)}`
-                : `Assisted by ${automationLabel(session.assistedBy!)}`}
+                ? `Created by ${session.originLabel ?? session.origin}`
+                : `Assisted by ${session.assistedByLabel ?? session.assistedBy}`}
             </span>
           </Link>
         )}

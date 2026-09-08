@@ -73,6 +73,7 @@ class PendingItemView:
 class PmTriage:
     id = "pm-triage"
     name = "PM Triage"
+    work_class = "maintenance"
     description = (
         "Continuously curates the product model: classifies new backlog items "
         "into features, auto-links mechanical PRs, clusters map drift into a "

@@ -52,6 +52,7 @@ def _to_views(ini: dict, artifacts: list[dict]) -> tuple[InitiativeView, list[Ar
 class SdlcSynthesizer:
     id = "sdlc-synthesizer"
     name = "SDLC Synthesizer"
+    work_class = "development"
     description = "Carries initiatives intent→spec→plan as artifact PRs (propose-only v1)."
     modes: tuple[str, ...] = ("off", "propose", "auto")
     # Audited engine ceiling (Phase 7, Task 7.3; widened by #1266). Same gate and

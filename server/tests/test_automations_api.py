@@ -38,6 +38,11 @@ def test_list_includes_pr_doctor():
         pd = next(a for a in r.json() if a["id"] == "pr-doctor")
         assert pd["modes"][0] == "off"
         assert "configSchema" in pd and "status" in pd
+        # The sessions list's foreground/background split reads this, published
+        # rather than re-derived so the rule lives only in `work_class_of`.
+        assert pd["workClass"] == "maintenance"
+        br = next(a for a in r.json() if a["id"] == "backlog-runner")
+        assert br["workClass"] == "development"
 
 
 def test_list_status_reflects_live_ctx_counts():

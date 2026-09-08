@@ -62,6 +62,7 @@ class RepoSyncView:
 class PmSync:
     id = "pm-sync"
     name = "PM Sync"
+    work_class = "maintenance"
     description = (
         "Mirrors onboarded projects' GitHub issues/PRs into the work-item index "
         "and refreshes the feature index from merged docs. Read-only toward "

@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from server.auth.middleware import current_identity
-from server.automations.base import operator_triggered, validate_config
+from server.automations.base import operator_triggered, validate_config, work_class_of
 from server.automations.context import AutomationContext
 from server.automations.engine_policy import policy_for
 from server.automations.registry import registry
@@ -98,6 +98,9 @@ async def list_automations(request: Request, _identity: str = Depends(current_id
             # enable. Published rather than re-derived in the browser so the
             # rule lives only in ``automations.base.operator_triggered``.
             "operatorTriggered": operator_triggered(a),
+            # "development" | "maintenance": whether this origin's sessions are
+            # new work or housekeeping the sessions list keeps in the background.
+            "workClass": work_class_of(a),
             "config": row.config or {},
             "schedule": row.schedule or None,
             "lastActiveAt": row.last_active_at.isoformat() if row.last_active_at else None,

@@ -1,7 +1,7 @@
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { subAgentTreeFromSummaries, type SubAgentNode } from '@/session/selectors'
-import { subAgentPath } from '@/session/sessionNavState'
+import { listScopeForPath, subAgentPath } from '@/session/sessionNavState'
 import type { SubAgentSummary } from '@/api/types'
 
 const DOT: Record<string, string> = {
@@ -12,11 +12,15 @@ const DOT: Record<string, string> = {
 
 function Row({ sessionId, node, depth }: { sessionId: string; node: SubAgentNode; depth: number }) {
   const navigate = useNavigate()
+  // Stay in the list scope the card is in (Background rows are live sessions
+  // under `/sessions/background/…`), so opening a sub-agent does not flip the
+  // list column to Active.
+  const scope = listScopeForPath(useLocation().pathname)
   return (
     <>
       <button
         type="button"
-        onClick={() => navigate(subAgentPath(sessionId, node.agentId))}
+        onClick={() => navigate(subAgentPath(sessionId, node.agentId, scope))}
         style={{ paddingLeft: 12 + Math.min(depth, 6) * 16 }}
         className={cn(
           'flex w-full items-center gap-2 py-1.5 pr-2 text-left text-xs min-h-[36px] rounded',

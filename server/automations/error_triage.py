@@ -38,6 +38,7 @@ def source_label(source: str | None) -> str:
 class ErrorTriage:
     id = "error-triage"
     name = "Error Triage"
+    work_class = "maintenance"
     description = ("Turns ViberPit's own warnings and errors — edge, daemon and "
                    "browser — into deduplicated backlog issues.")
     modes: tuple[str, ...] = ("off", "file")

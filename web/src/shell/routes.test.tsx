@@ -21,7 +21,7 @@
 //
 // ## Two harnesses, on purpose
 //
-// Everything above the "48-cell matrix" divider mounts the table under
+// Everything above the "60-cell matrix" divider mounts the table under
 // `TestLayout`, a stand-in that renders an `<Outlet/>` and the URL. That keeps
 // the redirect and page tests about the TABLE.
 //
@@ -64,6 +64,8 @@ vi.mock('@/components/ReviewView', () => ({
 // `/sessions/archived`'s PAGE is the empty state beside the list column — the
 // archived list itself is a scope of that column, not a page.
 vi.mock('@/features/sessions/ArchivedWelcome', () => ({ ArchivedWelcome: stub('archived') }))
+// Likewise `/sessions/background`: the background list is a scope of the column.
+vi.mock('@/features/sessions/BackgroundWelcome', () => ({ BackgroundWelcome: stub('background') }))
 vi.mock('@/pipeline/PipelineTab', () => ({ PipelineTab: stub('pipeline') }))
 vi.mock('@/automations/AutomationsTab', () => ({ AutomationsTab: stub('automations') }))
 vi.mock('@/initiatives/InitiativesTab', () => ({ InitiativesTab: stub('initiatives') }))
@@ -299,6 +301,10 @@ describe('route table — pages', () => {
     ['/insights', 'page-insights'],
     ['/sessions/archived', 'page-archived'],
     ['/sessions/archived/abc', 'page-review'],
+    ['/sessions/background', 'page-background'],
+    // Background detail routes reuse the LIVE pages: a background session is live.
+    ['/sessions/background/abc', 'page-session-detail'],
+    ['/sessions/background/abc/agents/x', 'page-subagent'],
     ['/settings/general', 'page-settings'],
     ['/settings', 'page-settings'],
   ])('%s renders %s without redirecting', (path, testid) => {
@@ -369,6 +375,12 @@ describe('route table — pages', () => {
     expect(screen.getByTestId('page-archived')).toBeInTheDocument()
     expect(screen.queryByTestId('page-session-detail')).not.toBeInTheDocument()
   })
+
+  it('ranks the static background route above the session detail route too', () => {
+    renderAt('/sessions/background')
+    expect(screen.getByTestId('page-background')).toBeInTheDocument()
+    expect(screen.queryByTestId('page-session-detail')).not.toBeInTheDocument()
+  })
 })
 
 // ── the drift guard ──────────────────────────────────────────────────────────
@@ -389,7 +401,7 @@ describe('route table — every nav destination exists', () => {
   )
 })
 
-// ── the 48-cell matrix: every route × every layout mode ──────────────────────
+// ── the 60-cell matrix: every route × every layout mode ──────────────────────
 //
 // Umbrella §9: "Every route in §6 renders the same page at 390, 820, 1440 and
 // `?kiosk=1`." This is the jsdom half — 12 non-redirect paths × 4 layout modes.
@@ -421,7 +433,7 @@ describe('route table — every nav destination exists', () => {
 // visibility here would encode "phone shows the welcome pane over its own list"
 // as the requirement, which is the opposite of the layout.
 
-/** The 12 non-redirect paths, each with the page it must land on. */
+/** The 15 non-redirect paths, each with the page it must land on. */
 const MATRIX_PATHS: ReadonlyArray<readonly [path: string, testid: string]> = [
   ['/sessions', 'page-sessions'],
   ['/sessions/abc', 'page-session-detail'],
@@ -434,6 +446,9 @@ const MATRIX_PATHS: ReadonlyArray<readonly [path: string, testid: string]> = [
   ['/insights', 'page-insights'],
   ['/sessions/archived', 'page-archived'],
   ['/sessions/archived/abc', 'page-review'],
+  ['/sessions/background', 'page-background'],
+  ['/sessions/background/abc', 'page-session-detail'],
+  ['/sessions/background/abc/agents/x', 'page-subagent'],
   ['/settings/general', 'page-settings'],
 ]
 
@@ -520,8 +535,8 @@ describe('every route renders in every layout mode', () => {
     })
 
     expect([...new Set(covered)].sort()).toEqual([...pageRoutes].sort())
-    expect(pageRoutes).toHaveLength(12)
-    expect(MATRIX_PATHS).toHaveLength(12)
+    expect(pageRoutes).toHaveLength(15)
+    expect(MATRIX_PATHS).toHaveLength(15)
   })
 
   /**
@@ -560,11 +575,11 @@ describe('every route renders in every layout mode', () => {
     }),
   )
 
-  it('the matrix is 48 cells', () => {
-    expect(CELLS).toHaveLength(48)
+  it('the matrix is 60 cells', () => {
+    expect(CELLS).toHaveLength(60)
   })
 
-  // The ten refused cells are exactly the kiosk rows for a section that is not
+  // The thirteen refused cells are exactly the kiosk rows for a section that is not
   // kiosk-safe — pinned so a `showInKiosk` flip has to come here and say so.
   // `/triage` is the newest of them, and the least negotiable: the inbox accepts
   // and bulk-accepts on a single unconfirmed keystroke.
@@ -573,7 +588,9 @@ describe('every route renders in every layout mode', () => {
     expect(refused.map(([, path]) => path)).toEqual([
       '/sessions', '/sessions/abc', '/sessions/abc/agents/x',
       '/automations', '/initiatives', '/triage', '/projects',
-      '/sessions/archived', '/sessions/archived/abc', '/settings/general',
+      '/sessions/archived', '/sessions/archived/abc',
+      '/sessions/background', '/sessions/background/abc', '/sessions/background/abc/agents/x',
+      '/settings/general',
     ])
     expect(refused.every(([, , testid, url]) => testid === 'page-pipeline' && url === '/pipeline')).toBe(true)
   })

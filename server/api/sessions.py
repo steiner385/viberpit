@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from ccswitch import accounts as _accounts
 from ccswitch import gitrepos
 from server.auth.middleware import current_client_node, current_identity
+from server.automations.registry import assisted_by_label, origin_label, work_class_for_origin
 from server.sessions.search import parse_terms, session_matches
 from server.sessions.types import ASSISTANT_KIND, RESUME_ELIGIBLE_STATUSES, is_assistant
 from server.sessions.usage_stall import is_usage_stalled
@@ -233,6 +234,13 @@ def _record_to_dict(
         "origin": getattr(record, "origin", None),
         "originRef": getattr(record, "origin_ref", None),
         "assistedBy": getattr(record, "assisted_by", None),
+        # Derived at the edge from the automation registry, so the browser
+        # never keeps its own id→name map or its own list of which origins
+        # are housekeeping. "development" for a human session or an id the
+        # registry does not know (fail visible — see `work_class_of`).
+        "workClass": work_class_for_origin(getattr(record, "origin", None)),
+        "originLabel": origin_label(getattr(record, "origin", None)),
+        "assistedByLabel": assisted_by_label(getattr(record, "assisted_by", None)),
         "status": record.status,
         "nameIsAuto": getattr(record, "name_is_auto", True),
         "detached": record.detached,

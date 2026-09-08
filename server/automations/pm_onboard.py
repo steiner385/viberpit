@@ -27,6 +27,7 @@ from .engine_policy import EnginePolicy
 class PmOnboard:
     id = "pm-onboard"
     name = "PM Onboarding"
+    work_class = "maintenance"
     description = (
         "Feature-map synthesis and its independent completeness critic — the "
         "product-archaeology half of project onboarding. Propose-only: both "

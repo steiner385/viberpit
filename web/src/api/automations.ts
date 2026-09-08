@@ -1,4 +1,5 @@
 import { api } from './client'
+import type { WorkClass } from './types'
 
 export interface AutomationStatus {
   text: string
@@ -42,6 +43,10 @@ export interface Automation {
   lastActiveAt: string | null
   /** Count of sessions this automation spawned that are still live (not ended/archived). */
   activeSessions: number
+  /** Whether this origin's sessions are new work or housekeeping the sessions
+   *  list keeps in its Background scope. Decided server-side in
+   *  `automations.base.work_class_of`; optional so older fixtures still compile. */
+  workClass?: WorkClass
 }
 
 export interface AutomationEvent {
