@@ -16,6 +16,7 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     # missing from this table fails open into the mutation branch.
     ToolSpec("mark_complete", ToolClass.SIGNAL, "Mark this session complete"),
     ToolSpec("mark_no_pr", ToolClass.SIGNAL, "Finish without a pull request"),
+    ToolSpec("hand_back", ToolClass.SIGNAL, "Hand this session back to the user"),
     ToolSpec("request_model", ToolClass.SIGNAL, "Request a different model"),
 ]}
 
