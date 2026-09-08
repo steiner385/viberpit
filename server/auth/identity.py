@@ -141,11 +141,13 @@ def _peer_is_trusted(request: Request | WebSocket) -> bool:
     return False
 
 
-def _whois_identity(request: Request | WebSocket) -> str | None:
-    """Try to resolve identity via `tailscale whois <peer-ip>`.
+def _whois(request: Request | WebSocket) -> dict | None:
+    """Run `tailscale whois --json` against the request's verified peer address.
 
-    Wraps the subprocess call in try/except so any failure returns None gracefully.
-    This is a best-effort fallback; the header path is preferred.
+    Returns the parsed JSON document, or None on any failure. This is the ONLY
+    subprocess wrapper for whois: identity (LoginName) and client locality
+    (Node.ComputedName) are both projections over it, so they can never disagree
+    about which peer was asked.
     """
     import json
     try:
@@ -173,10 +175,39 @@ def _whois_identity(request: Request | WebSocket) -> str | None:
         )
         if result.returncode != 0:
             return None
-        # tailscale whois --json → {"UserProfile": {"LoginName": "user@example.com", ...}}
         data = json.loads(result.stdout)
-        login = (data.get("UserProfile") or {}).get("LoginName")
-        return login or None
+        return data if isinstance(data, dict) else None
     except Exception:
-        pass
-    return None
+        return None
+
+
+def _whois_identity(request: Request | WebSocket) -> str | None:
+    """Try to resolve identity via `tailscale whois <peer-ip>`.
+
+    Best-effort fallback; the header path is preferred.
+    tailscale whois --json → {"UserProfile": {"LoginName": "user@example.com", ...}}
+    """
+    data = _whois(request)
+    if not data:
+        return None
+    login = (data.get("UserProfile") or {}).get("LoginName")
+    return login or None
+
+
+def client_node_name(request: Request | WebSocket) -> str | None:
+    """The tailnet machine the caller's browser is on, or None if unknowable.
+
+    ``Node.ComputedName`` is the MagicDNS short name ("dobby"), which is also the
+    first label of the kernel hostname and therefore what ``server.hostname
+    .self_host_name()`` returns on that machine — the comparison the display
+    router makes. Lower-cased so the comparison is case-insensitive. Never raises;
+    a loopback peer with no forwarded address has no whois entry and resolves to
+    None, so a local ``curl 127.0.0.1`` never masquerades as the operator's desktop.
+    """
+    data = _whois(request)
+    if not data:
+        return None
+    name = (data.get("Node") or {}).get("ComputedName")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return name.strip().lower()

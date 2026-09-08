@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ClipboardPaste } from 'lucide-react'
+import { ClipboardPaste, Monitor } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { VncClient, type VncState } from '../vnc/vncClient'
 import { useZoom } from '../vnc/useZoom'
@@ -27,9 +27,12 @@ interface Props {
   sessionId: string
   statusState: string
   initialState?: VncState
+  displayMode?: 'native' | 'virtual' | null
+  host?: string | null
 }
 
-export function BrowserTab({ sessionId, statusState, initialState }: Props) {
+export function BrowserTab({ sessionId, statusState, initialState, displayMode, host }: Props) {
+  const native = displayMode === 'native'
   const canvasRef = useRef<HTMLDivElement>(null)
   const panRef = useRef<HTMLDivElement>(null)
   const [state, setState] = useState<VncState>(initialState ?? 'connecting')
@@ -111,7 +114,7 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
   }
 
   useEffect(() => {
-    if (initialState) return // test/storybook injection — skip real connect
+    if (initialState || native) return // test/storybook injection or native display — skip real connect
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
     const url = `${proto}://${location.host}/ws/vnc?session=${encodeURIComponent(sessionId)}`
     const c = new VncClient(url)
@@ -121,7 +124,7 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
     c.on('disconnect', (s) => setState(s))
     if (canvasRef.current) c.connect(canvasRef.current)
     return () => c.disconnect()
-  }, [sessionId, initialState])
+  }, [sessionId, initialState, native])
 
   // Re-fit the VNC view when the pan container resizes (debounced ~150ms).
   useEffect(() => {
@@ -147,7 +150,9 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
         setOpenError(
           body?.detail === 'browser cap reached'
             ? 'Too many browser windows are already open for this session.'
-            : "Couldn't open a browser for this session.",
+            : body?.detail === 'native display unavailable'
+              ? 'The host desktop is not available right now (is anyone logged in?).'
+              : "Couldn't open a browser for this session.",
         )
       }
     } catch {
@@ -178,6 +183,21 @@ export function BrowserTab({ sessionId, statusState, initialState }: Props) {
             : state === 'nodisplay'
               ? { copy: statusTier(statusState) === 'busy' ? COPY.nodisplayBusy : COPY.nodisplayIdle }
               : null
+
+  if (native) {
+    const where = host ? `${host}'s desktop` : "the server's desktop"
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-gray-600 dark:text-gray-300">
+        <Monitor size={28} aria-hidden="true" className="text-gray-400" />
+        <p>This session opens windows on {where}. There is nothing to stream here.</p>
+        <button type="button" onClick={openBrowser}
+          className="rounded-md border border-edge px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
+          Open a browser
+        </button>
+        {openError && <p role="alert" className="text-xs text-red-600">{openError}</p>}
+      </div>
+    )
+  }
 
   return (
     <div className="relative h-full w-full overflow-hidden">

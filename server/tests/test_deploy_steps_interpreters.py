@@ -193,8 +193,7 @@ def test_every_unit_is_checked_and_all_problems_reported(tmp_path):
 
 def test_default_units_cover_what_a_deploy_restarts():
     """The edge, the local daemon and the controller are all restarted by a deploy."""
-    assert set(steps.RESTARTABLE_UNITS) == {
-        "ccswitch.service", "ccswitch-daemon.service", "ccswitch-deploy-controller.service"}
+    assert set(steps.RESTARTABLE_ROLES) == {"edge", "daemon", "controller"}
 
 
 @pytest.mark.asyncio
@@ -216,3 +215,15 @@ async def test_preflight_refuses_before_any_change_when_interpreter_is_broken():
     assert st.phases["preflight"] == PhaseState.FAILED.value
     assert calls.restarted == [] and calls.rolled_back is False
     assert rc.deploy_kwargs is None, "nothing fanned out to the fleet"
+
+
+def test_checkout_rename_alias_keeps_its_own_venv(tmp_path):
+    checkout = tmp_path / 'viberpit'
+    executable = checkout / '.venv/bin/python'
+    executable.parent.mkdir(parents=True)
+    executable.write_text('#!/bin/sh\n')
+    executable.chmod(0o755)
+    alias = tmp_path / 'ccswitch'
+    alias.symlink_to(checkout, target_is_directory=True)
+    run = _fake_run({'viberpit.service': _execstart(str(alias / '.venv/bin/python'))})
+    assert steps.check_unit_interpreters(('viberpit.service',), run=run) == []

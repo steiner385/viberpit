@@ -16,6 +16,11 @@ vi.mock('@/api/sdlc', async (importOriginal) => {
     fetchInitiatives: vi.fn(),
     advanceInitiative: vi.fn(),
     createInitiative: vi.fn(),
+    // The board mounts IncidentQueue (#804), which fetches on render. Unmocked,
+    // every test here would fire a real request. IncidentQueue's own behaviour
+    // is covered in IncidentQueue.test.tsx; here it just has to stay quiet.
+    fetchIncidents: vi.fn(),
+    actOnIncident: vi.fn(),
   }
 })
 
@@ -27,6 +32,8 @@ const mocked = sdlc as unknown as {
   fetchInitiatives: ReturnType<typeof vi.fn>
   advanceInitiative: ReturnType<typeof vi.fn>
   createInitiative: ReturnType<typeof vi.fn>
+  fetchIncidents: ReturnType<typeof vi.fn>
+  actOnIncident: ReturnType<typeof vi.fn>
 }
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -50,6 +57,7 @@ const INIT: sdlc.Initiative = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mocked.fetchIncidents.mockResolvedValue([])
 })
 
 describe('InitiativesTab', () => {
@@ -98,8 +106,9 @@ describe('InitiativesTab', () => {
     render(<InitiativesTab />, { wrapper })
 
     const btn = await screen.findByRole('button', { name: /Advance/ })
-    // design → plan is the next gate.
-    expect(btn).toHaveTextContent('plan')
+    // design → plan is the next gate, and the button says what the track node
+    // says ("Plan"), not the raw stage id.
+    expect(btn).toHaveTextContent('Advance → Plan')
     fireEvent.click(btn)
     await waitFor(() =>
       expect(mocked.advanceInitiative).toHaveBeenCalledWith('ai-native-sdlc'))

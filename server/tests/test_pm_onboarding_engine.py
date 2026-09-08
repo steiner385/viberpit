@@ -28,61 +28,45 @@ from server.pm.onboarding import (
 def _view(**kw) -> ProjectOnboardingView:
     base = dict(state="syncing", repo_count=1, backfill_done_count=0,
                 feature_count=0, open_unclassified_count=0,
-                pending_proposal_count=0, map_pr_open=False, map_pr_merged=False)
+                pending_proposal_count=0)
     base.update(kw)
     return ProjectOnboardingView(**base)  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------- #
-# registered: nothing attached yet → Register (needs at least one repo)        #
+# registered / syncing: nothing attached → Register; backfill in flight → wait; #
+# all repos done → propose the map. `syncing` is never written by any loop      #
+# (only map_proposed/map_merged/classifying are), so `registered` MUST offer    #
+# the same ladder or a new product never reaches the propose step.             #
 # --------------------------------------------------------------------------- #
 
-def test_registered_with_no_repos_is_register():
-    v = _view(state="registered", repo_count=0)
+@pytest.mark.parametrize("state", ["registered", "syncing"])
+def test_no_repos_is_register(state):
+    v = _view(state=state, repo_count=0)
     assert next_onboarding_action(v) == Register()
 
 
-def test_registered_with_repos_awaits_backfill():
-    # A registered project with repos is waiting for pm-sync to backfill.
-    v = _view(state="registered", repo_count=1, backfill_done_count=0)
+@pytest.mark.parametrize("state", ["registered", "syncing"])
+def test_partial_backfill_awaits(state):
+    v = _view(state=state, repo_count=2, backfill_done_count=1)
     assert next_onboarding_action(v) == AwaitBackfill()
 
 
-# --------------------------------------------------------------------------- #
-# syncing: backfill in flight → wait; all repos done → propose the map         #
-# --------------------------------------------------------------------------- #
-
-def test_syncing_partial_backfill_awaits():
-    v = _view(state="syncing", repo_count=2, backfill_done_count=1)
-    assert next_onboarding_action(v) == AwaitBackfill()
-
-
-def test_syncing_all_backfilled_proposes_map():
-    v = _view(state="syncing", repo_count=2, backfill_done_count=2)
+@pytest.mark.parametrize("state", ["registered", "syncing"])
+def test_all_backfilled_proposes_map(state):
+    v = _view(state=state, repo_count=2, backfill_done_count=2)
     assert next_onboarding_action(v) == ProposeMap()
 
 
 # --------------------------------------------------------------------------- #
-# map_proposed: PR open → wait; PR merged → the human advance moves state on    #
+# map_proposed: the state itself means a synthesis session was spawned, so the  #
+# wizard waits for the human to merge and advance. The wizard offers "propose  #
+# again" beside the wait for the died-session case; the engine does not guess. #
 # --------------------------------------------------------------------------- #
 
-def test_map_proposed_pr_open_awaits():
-    v = _view(state="map_proposed", backfill_done_count=1, map_pr_open=True)
+def test_map_proposed_awaits_pr():
+    v = _view(state="map_proposed", backfill_done_count=1)
     assert next_onboarding_action(v) == AwaitMapPr()
-
-
-def test_map_proposed_pr_merged_still_awaits_human_advance():
-    # Merge is the gate; the engine never advances the state itself (propose-only
-    # parity with the SDLC engine). It keeps offering AwaitMapPr until advanced.
-    v = _view(state="map_proposed", backfill_done_count=1,
-              map_pr_open=False, map_pr_merged=True)
-    assert next_onboarding_action(v) == AwaitMapPr()
-
-
-def test_map_proposed_no_pr_yet_reproposes():
-    # Re-entering the state with no PR (e.g. session died) re-offers ProposeMap.
-    v = _view(state="map_proposed", map_pr_open=False, map_pr_merged=False)
-    assert next_onboarding_action(v) == ProposeMap()
 
 
 # --------------------------------------------------------------------------- #

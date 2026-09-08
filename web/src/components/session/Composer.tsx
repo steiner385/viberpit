@@ -36,9 +36,13 @@ interface Props {
   sessionId?: string
   /** Called while the user types — drives autopilot human-deference (throttled in the ws client). */
   onActivity?: () => void
+  /** Prefill the draft from outside (e.g. a NoticeCard's "Ask about it"). A fresh object
+   *  each time — even identical text twice in a row — so the effect re-fires; the user
+   *  can still edit or clear it before sending. */
+  externalDraft?: { text: string } | null
 }
 
-export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity }: Props) {
+export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, queued, onCancelQueued, chatArmed, commands = [], onCommand, autoFocusKey, suggestions, onRequestSuggestions, history = [], sessionId, onActivity, externalDraft }: Props) {
   const draft = useSessionDraft(sessionId)
   const [text, setText] = useState(draft.initial.text)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -116,6 +120,17 @@ export function Composer({ status, onPrompt, onInterrupt, onInterruptAndPrompt, 
     histPosRef.current = pos
     setText(value)
   }, [])
+
+  // External prefill (e.g. a NoticeCard's "Ask about it"). Runs whenever the caller
+  // hands in a new object — including the identical text twice — which is why
+  // `externalDraft` itself, not its text, is the dependency.
+  useEffect(() => {
+    if (!externalDraft) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- overwrite the draft the moment a new prefill arrives
+    recallTo(0, externalDraft.text)
+    textareaRef.current?.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalDraft])
 
   // Auto-grow textarea: reset height then set to scrollHeight (capped at 8 rows ~192px)
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {

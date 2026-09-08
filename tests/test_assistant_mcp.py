@@ -217,7 +217,10 @@ def test_stdio_subprocess_serves_a_real_jsonrpc_session():
             pytest.fail(f"non-JSON line on the JSON-RPC stream: {line!r} ({exc})")
     by_id = {f.get("id"): f for f in frames}
     assert 2 in by_id, f"no tools/list reply. stdout={lines!r} stderr={stderr}"
-    assert by_id[1]["result"]["serverInfo"]["name"] == "ccswitch"
+    # The MCP server's wire name, flipped in rebrand Phase 2a. Safe to flip outright:
+    # a stdio server's tools are advertised BARE, and it is the client's own config
+    # key — not serverInfo.name — that a client namespaces them under.
+    assert by_id[1]["result"]["serverInfo"]["name"] == "viberpit"
     tools = {t["name"]: t for t in by_id[2]["result"]["tools"]}
     assert "list_sessions" in tools and "archive_session" not in tools
     assert tools["get_session"]["inputSchema"]["properties"] == {"id": {"type": "string"}}

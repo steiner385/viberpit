@@ -142,6 +142,17 @@ async def test_ready_merge_delegates():
 
 
 @pytest.mark.asyncio
+async def test_pr_detail_delegates():
+    """GET /api/prs/{owner}/{name}/{number} must work in in-process mode."""
+    orch = _pipeline_orch()
+    orch.pr_detail = mock.AsyncMock(return_value={"number": 7, "checks": []})
+    f = InProcessOrchestratorAdapter(orch)
+    result = await f.pr_detail("repo/a", 7)
+    assert result == {"number": 7, "checks": []}
+    orch.pr_detail.assert_awaited_once_with("repo/a", 7)
+
+
+@pytest.mark.asyncio
 async def test_deploy_config_methods_delegate():
     """GET/PUT /api/pipeline/deploy-config + deploy_status must work in-process."""
     orch = mock.MagicMock()

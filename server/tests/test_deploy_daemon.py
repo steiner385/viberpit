@@ -4,10 +4,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_daemon_unit_has_required_keys():
-    unit = (ROOT / "deploy" / "ccswitch-daemon.service").read_text()
-    assert "RuntimeDirectory=ccswitch" in unit
+    unit = (ROOT / "deploy" / "viberpit-daemon.service").read_text()
+    assert "RuntimeDirectory=viberpit" in unit
     assert "ExecStart=" in unit and "server.ipc" in unit
-    assert "EnvironmentFile=/etc/ccswitch/ccswitch.env" in unit
+    assert "EnvironmentFile=/etc/viberpit/viberpit.env" in unit
     assert "WantedBy=multi-user.target" in unit
 
 

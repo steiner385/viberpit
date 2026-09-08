@@ -15,13 +15,17 @@
  * embedding a list of its own.
  */
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 
 import {
   useAcceptBulk, useAcceptProposal, useRejectProposal, useTriage, useTriageLive,
   useUpdateOverlay,
 } from '@/api/hooks'
 import type { OverlayEdits, TriageProposal } from '@/api/triage'
+import { NAV_BY_ID } from '@/shell/navDefs'
 import { overlayIsOpen } from '@/shell/useOverlayState'
+import { PageHeader } from '@/ui/PageHeader'
+import { PageContent } from '@/ui/PageContent'
 
 import {
   inboxReducer, initialInboxState, isTypingTarget, resolveCursorIndex, scoreInputValue,
@@ -49,12 +53,14 @@ function scoreOf(p: TriageProposal): OverlayEdits {
   }
 }
 
-export function TriageInbox() {
+function InboxBody() {
   useTriageLive()
-  const { data: rows = [], isLoading } = useTriage()
-  const accept = useAcceptProposal()
-  const reject = useRejectProposal()
-  const acceptBulk = useAcceptBulk()
+  const [params] = useSearchParams()
+  const projectSlug = params.get('projectSlug') || undefined
+  const { data: rows = [], isLoading } = useTriage(projectSlug)
+  const accept = useAcceptProposal(projectSlug)
+  const reject = useRejectProposal(projectSlug)
+  const acceptBulk = useAcceptBulk(projectSlug)
   const updateOverlay = useUpdateOverlay()
 
   const [state, dispatch] = useReducer(inboxReducer, initialInboxState)
@@ -207,12 +213,24 @@ export function TriageInbox() {
   }, [editValues, overlayMutateAsync, acceptOne])
 
   if (isLoading) return <div className="triage-empty">Loading…</div>
-  if (!rows.length) return <div className="triage-empty">Inbox zero — nothing to triage.</div>
+  if (!rows.length) {
+    return (
+      <div className="triage-empty">
+        {projectSlug
+          ? <>Inbox zero for {projectSlug}. <Link to={NAV_BY_ID.triage.path}>Show every product</Link></>
+          : 'Inbox zero — nothing to triage.'}
+      </div>
+    )
+  }
 
   return (
     <div className="triage-inbox">
       <header className="triage-header">
-        <span className="triage-hint">j/k move · a accept · e edit · r reject · x select · A accept selected</span>
+        {projectSlug && (
+          <span className="triage-depth">
+            Scope: {projectSlug} <Link to={NAV_BY_ID.triage.path}>Clear</Link>
+          </span>
+        )}
         {depths.map(([slug, n]) => (
           <span key={slug} className="triage-depth">{slug}: {n}</span>
         ))}
@@ -307,6 +325,20 @@ export function TriageInbox() {
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+export function TriageInbox() {
+  return (
+    <div className="flex flex-col h-full min-h-0" data-page-variant="standard">
+      <PageHeader
+        title="Triage"
+        meta={<span className="triage-hint">j/k move · a accept · e edit · r reject · x select · A accept selected</span>}
+      />
+      <PageContent>
+        <InboxBody />
+      </PageContent>
     </div>
   )
 }

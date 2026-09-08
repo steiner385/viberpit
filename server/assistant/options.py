@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ccswitch import brand
 from .prompt import (ASSISTANT_SYSTEM_PROMPT, OPERATOR_TOOLS_DISABLED_LINE,
                      OPERATOR_TOOLS_ENABLED_LINE)
 
@@ -47,7 +48,8 @@ def assistant_options(*, server: Any, max_turns: int, model: str,
 
     *server* is the in-process MCP server config from
     ``server.assistant.server.build_server`` (an ``McpSdkServerConfig`` mapping); it is
-    mounted under the wire name ``ccswitch`` so the CLI sees ``mcp__ccswitch__*`` tools.
+    mounted under ``brand.MCP_SERVER_NAME`` so the CLI sees ``mcp__viberpit__*`` tools
+    (pre-rebrand threads keep ``mcp__ccswitch__*``; every reader accepts both).
 
     *operator* must match the ``operator`` flag *server* was built with
     (``operator_tools_enabled(db)``, spec v2 §7, Task 9.3) — it only selects which frozen
@@ -62,7 +64,7 @@ def assistant_options(*, server: Any, max_turns: int, model: str,
             OPERATOR_TOOLS_ENABLED_LINE if operator else OPERATOR_TOOLS_DISABLED_LINE),
         "tools": [],
         "disallowed_tools": list(DISALLOWED_BUILTINS),
-        "mcp_servers": {"ccswitch": server},
+        "mcp_servers": {brand.MCP_SERVER_NAME: server},
         # Hide the account's own configured MCP servers (the operator has ~10).
         "strict_mcp_config": True,
         "max_turns": max_turns,

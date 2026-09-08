@@ -10,6 +10,9 @@ fencing the primary lease and churning the live ``sessions`` table.
 """
 import os
 import tempfile
+from pathlib import Path
+
+import pytest
 
 from server.tests.conftest import (
     _REAL_HOME,
@@ -89,3 +92,48 @@ def test_guard_redirects_inherited_postgres_prod_url(monkeypatch):
     result = os.environ["CCSWITCH_DB_URL"]
     assert result != prod
     assert result.startswith("sqlite")
+
+
+@pytest.mark.parametrize("repo_root", [None, "/home/tony/GitHub", "/srv/repos", "/tmp-live/repos"])
+def test_guard_isolates_repo_root_even_when_store_and_db_are_isolated(
+    tmp_path, monkeypatch, repo_root,
+):
+    monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "store"))
+    monkeypatch.setenv("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.delenv("CCSWITCH_ARCHIVE_HOME", raising=False)
+    monkeypatch.delenv("VIBERPIT_REPO_ROOT", raising=False)
+    if repo_root is None:
+        monkeypatch.delenv("CCSWITCH_REPO_ROOT", raising=False)
+    else:
+        monkeypatch.setenv("CCSWITCH_REPO_ROOT", repo_root)
+
+    _redirect_state_off_production()
+
+    from server.sessions.orchestrator import SessionOrchestrator
+
+    root = Path(SessionOrchestrator()._repo_root)
+    assert root.is_relative_to(Path(tempfile.gettempdir()).resolve())
+    assert root.is_dir()
+    assert str(root) != repo_root
+
+
+def test_guard_preserves_explicit_temporary_repo_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("CCSWITCH_REPO_ROOT", str(tmp_path))
+    _redirect_state_off_production()
+    assert os.environ["CCSWITCH_REPO_ROOT"] == str(tmp_path)
+
+
+def test_guard_preserves_new_prefix_temporary_repo_root(tmp_path, monkeypatch):
+    monkeypatch.delenv("CCSWITCH_REPO_ROOT", raising=False)
+    monkeypatch.setenv("VIBERPIT_REPO_ROOT", str(tmp_path))
+    _redirect_state_off_production()
+    assert os.environ["CCSWITCH_REPO_ROOT"] == str(tmp_path)
+    assert os.environ["VIBERPIT_REPO_ROOT"] == str(tmp_path)
+
+
+def test_guard_fences_unsafe_new_prefix_with_safe_legacy_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("CCSWITCH_REPO_ROOT", str(tmp_path))
+    monkeypatch.setenv("VIBERPIT_REPO_ROOT", "/srv/live-repos")
+    _redirect_state_off_production()
+    assert os.environ["CCSWITCH_REPO_ROOT"] == str(tmp_path)
+    assert os.environ["VIBERPIT_REPO_ROOT"] == str(tmp_path)

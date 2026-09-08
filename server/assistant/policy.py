@@ -94,6 +94,14 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/accounts"),
         ("GET", r"/api/fleet/hosts"),
         ("GET", r"/api/prs"),
+        # PR detail (spec v2 §4.6, Pack G, Task 7.5).
+        ("GET", r"/api/prs/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/\d+"),
+        # GitHub writes (spec v2 §4.6, Pack G, Task 7.6). These are the assistant's only
+        # PUBLIC side effects — everything else it can reach mutates ccswitch's own
+        # state — so both are MUTATION-class (a permission card) and both carry an
+        # authorship trailer on the way out.
+        ("POST", r"/api/prs/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/\d+/comments"),
+        ("POST", r"/api/github/issues"),
         ("GET", r"/api/pipeline/insights/checks"),
         ("GET", r"/api/pipeline/repos"),
         ("GET", r"/api/github/repos"),
@@ -112,6 +120,11 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/automations/pr-doctor/consolidation"),
         ("GET", r"/api/automations/pr-doctor/jobs/[A-Za-z0-9-]+"),
         ("POST", r"/api/automations/schedule/preview"),
+        # Session-start conveniences (spec v2 §4.5, Pack C).
+        ("GET", r"/api/presets"),
+        ("GET", r"/api/templates"),
+        ("POST", r"/api/templates/[A-Za-z0-9-]+/render"),
+        ("GET", r"/api/permission-profiles"),
         # Fan-out half (Task 6.4), each DESTRUCTIVE: they start unattended sessions.
         ("POST", r"/api/automations/[A-Za-z0-9_-]+/trigger"),
         ("POST", r"/api/automations/backlog-runner/dispatch"),
@@ -132,9 +145,13 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/pm/projects/[a-z0-9-]+/onboarding"),
         ("GET", r"/api/pm/queue"),
         ("GET", r"/api/pm/triage"),
+        ("GET", r"/api/pm/map"),
+        ("GET", r"/api/pm/leaves"),
         ("POST", r"/api/pm/projects/[a-z0-9-]+/sync"),
         ("POST", r"/api/pm/triage/[A-Za-z0-9-]+/(accept|reject)"),
         ("POST", r"/api/sessions"),
+        # Batch tools (spec v2 B4) — each acts on up to 20 session ids in one call.
+        ("POST", r"/api/sessions/batch/(archive|unarchive|resume|rotate|permanent-delete)"),
         ("POST", _S + r"/prompt"),
         ("POST", _S + r"/interrupt"),
         ("POST", _S + r"/questions/[A-Za-z0-9-]+"),
@@ -204,4 +221,4 @@ def route_allowed(method: str, path: str, *, operator: bool = False) -> bool:
 # render). The conformance test (server/tests/test_assistant_conformance.py) lets a
 # READ tool use POST only when it is listed here. Later tasks add names to this set.
 READ_POSTS: frozenset[str] = frozenset({"test_notification", "preview_schedule",
-                                        "suggest_next_prompt"})
+                                        "suggest_next_prompt", "render_template"})

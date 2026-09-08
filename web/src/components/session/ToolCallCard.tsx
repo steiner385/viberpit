@@ -47,7 +47,7 @@ function kindIcon(kind: ToolKind) {
 }
 
 // App-action rows read as a completed action ("Listed sessions"), not the raw
-// mcp__ccswitch__ name — the operator shouldn't have to know the MCP plumbing.
+// mcp__viberpit__ name — the operator shouldn't have to know the MCP plumbing.
 function toolDisplayName(kind: ToolKind, name: string): string {
   if (kind !== 'app_action') return name
   return appActionTitle(name) ?? name

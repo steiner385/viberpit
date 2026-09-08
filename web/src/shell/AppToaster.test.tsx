@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AppToaster } from './AppToaster'
+import { TOAST_INSET_VARS } from './toastInsets'
 
 // Capture the props handed to sonner instead of rendering its DOM: the
 // contract under test is the configuration, not sonner's internals.
@@ -18,18 +19,27 @@ function toasterProps(): Record<string, unknown> {
   return JSON.parse(screen.getByTestId('toaster').dataset.props ?? '{}')
 }
 
+type Offset = Record<'top' | 'left' | 'right' | 'bottom', string | undefined>
+
 describe('AppToaster — placement', () => {
-  it('sits top-right on desktop, off the page title', () => {
+  it('sits top-right, at the top of the content band', () => {
     expect(toasterProps().position).toBe('top-right')
   })
 
-  it('pins the phone strip to the safe-area top, over the TopBar band', () => {
-    const offset = toasterProps().mobileOffset as Record<string, string>
-    expect(offset.top).toContain('env(safe-area-inset-top)')
-    // Side insets keep the strip off the screen edge; bottom is sonner's default.
-    expect(offset.left).toBeTruthy()
-    expect(offset.right).toBeTruthy()
-    expect(offset.bottom).toBeUndefined()
+  it('measures every edge from the band and header insets, on desktop and on a phone', () => {
+    const props = toasterProps()
+    for (const offset of [props.offset, props.mobileOffset] as Offset[]) {
+      expect(offset.top).toContain(`var(${TOAST_INSET_VARS.top}`)
+      expect(offset.left).toContain(`var(${TOAST_INSET_VARS.left}`)
+      expect(offset.right).toContain(`var(${TOAST_INSET_VARS.right}`)
+      // Never the bottom band: NavBar, dock and bottom-sheet dialogs live there.
+      expect(offset.bottom).toBeUndefined()
+    }
+  })
+
+  it('falls back to the safe-area top when the shell (and its insets) are gone', () => {
+    const offset = toasterProps().mobileOffset as Offset
+    expect(offset.top).toMatch(/max\(.*env\(safe-area-inset-top/)
   })
 
   it('offers a close button so a toast never has to be waited out', () => {

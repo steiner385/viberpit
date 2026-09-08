@@ -80,7 +80,7 @@ async def test_reassign_rebuilds_assistant_api_for_assistant_kind(monkeypatch):
     old_overlay = {"stale": True}
     orch._records = {"s1": rec}
     orch._drivers = {"s1": _OldDriver()}
-    orch._assistant_overlays = {"s1": old_overlay}
+    orch._overlays = {"s1": old_overlay}
     orch._last_prompt = {}
     orch._turn_restart_at = {}
     orch._swapping = {}
@@ -100,4 +100,4 @@ async def test_reassign_rebuilds_assistant_api_for_assistant_kind(monkeypatch):
     assert assistant_api._client.is_closed is False
     # The overlay registered for the new driver must wrap the FRESH client, not the
     # stale one old_driver.aclose() already tore down.
-    assert orch._assistant_overlays["s1"] is not old_overlay
+    assert orch._overlays["s1"] is not old_overlay

@@ -61,9 +61,53 @@ CODEX_ENGINE: Final = AgentEngine.CODEX
 #: stays declared-but-unsupported: no MCP server is wired up for a Codex thread
 #: yet, so no live session can ever raise it.
 #:
-#: The ``False`` entries are equally deliberate: ccswitch's fork, adopt,
-#: self-directed model switching and subagent surfaces are all implemented against
-#: the Claude CLI's private state and have no app-server equivalent in v1.
+#: ``subagents`` stays False too, but — like ``questions`` before #1271 closed
+#: it — this was found declared-but-unwired, not absent (#1274). The app-server
+#: has two real collaboration events: `subAgentActivity` (`agentPath`,
+#: `agentThreadId`, a `kind` lifecycle of started/interacted/interrupted/
+#: completed) and `collabAgentToolCall` (`tool` — spawnAgent/sendInput/wait/
+#: interruptAgent/etc. — plus `senderThreadId`, `receiverThreadIds` and an
+#: `agentsStates` map of each collaborator's own status/message). Both are
+#: already normalized into ordinary `Task` `ToolCall`/`ToolResult` events
+#: (`server/codex/translator.py`), which `server/sessions/subagents.py`
+#: already recognizes by tool name — so a Codex session's collaboration
+#: activity already renders as generic Task cards and would already populate
+#: the dashboard's sub-agent summary once this flag is on. What is NOT yet
+#: verified against a live binary, and so keeps this False per the "keep
+#: unavailable capabilities visibly gated until verified" rule: whether a real
+#: multi-call collab sequence (spawn → sendInput/wait → close) collapses into
+#: one dashboard entry or fans out into several unrelated-looking ones (there
+#: is no shared "agent id" in the wire payload to key on — `receiverThreadIds`/
+#: `agentsStates` carry the real identity but their values are native thread
+#: ids, which per `test_sub_agent_activity_never_carries_the_native_agent_thread_id`
+#: must not ride in a generic wire payload), and there is no transcript-drill-down
+#: for a child agent's own conversation (no fetch-by-thread-id surface exists
+#: yet, though `CodexThreadReplay` over the already-wired `thread/read` RPC is
+#: the natural mechanism once that is designed). Flipping this flag is
+#: therefore the next step, not this one.
+#:
+#: ``adopt`` is False for a subtler reason (#1272): unlike Claude, where
+#: ``server/sessions/adopt.py`` finds externally-launched CLI processes by scanning
+#: `/proc` (there is no listing RPC to ask a CLI for its siblings), the pinned
+#: app-server protocol genuinely declares session-enumeration and resume-by-id
+#: methods — `thread/list`, `thread/search`, `thread/resume`
+#: (`server/tests/fixtures/codex_app_server/0.153.2/method_index.json`,
+#: `server/codex/schema.py`). None of `thread/list`/`thread/search` are in
+#: `SUPPORTED_CLIENT_REQUESTS`, and even if ccswitch called them, the answer would
+#: still be empty across the boundary that matters: `ensure_codex_home`
+#: (server/codex/process.py) forces every account's `codex app-server` into its
+#: own ccswitch-private `CODEX_HOME`, so a runner's own app-server process only
+#: ever enumerates threads it started itself — never a user's independently
+#: launched `codex` CLI (default `~/.codex`, a disjoint database) or another
+#: account's runner. There is no cross-boundary orphan to discover, so
+#: `orchestrator.adopt_session` (server/sessions/orchestrator.py) is hardcoded to
+#: `AgentEngine.CLAUDE_CODE` rather than capability-dispatched. Architectural, not
+#: a gap to close later, same as ``account_rotation`` below — verified against the
+#: pinned protocol fixture, not assumed.
+#:
+#: The remaining ``False`` entries (ccswitch's fork and self-directed model switching
+#: surfaces) are equally deliberate: they are implemented against the Claude CLI's
+#: private state and have no app-server equivalent in v1.
 #: ``account_rotation`` is False because rotation composes the target account's
 #: Claude config dir and syncs Claude credentials back; a Codex session is refused
 #: by that path rather than rebuilt as some other engine's driver. That refusal is
@@ -98,6 +142,35 @@ CODEX_CAPABILITIES: Final[AgentCapabilities] = AgentCapabilities(
     # session is: this catalog, plus the app-owned commands below.
     vendor_commands=True,
     vendor_skills=True,
+    # The pinned `thread/resume` carries neither `developerInstructions` nor
+    # `dynamicTools` (codex-cli 0.153.2, verified against the schema, not
+    # assumed — see server/sessions/tools/codex.py's module docstring and
+    # docs/superpowers/spikes/2026-09-06-codex-resume-dynamic-tools.md). A
+    # resumed Codex coding session therefore keeps whatever instructions it
+    # started with and loses whatever tools it declared, with nothing sendable
+    # to correct either — so a session told "call mark_complete" would be
+    # unable to signal at all past its first resume. Codex keeps the marker
+    # contract instead; this flips True on its own once the vendor contract
+    # carries both fields on resume.
+    durable_tool_surface=False,
+    # Deferred by design (docs/superpowers/specs/2026-09-04-native-openai-codex-
+    # integration-design.md §11.2), not merely unimplemented: each Codex
+    # account's configuration lives under a credential-authority-owned
+    # CODEX_HOME (server/codex/process.py), never a shared directory the way
+    # CLAUDE_CONFIG_DIR is, so ccswitch's Library surface has nothing analogous
+    # to scan or mutate there. See CODEX_LIBRARY_UNSUPPORTED_DETAIL (#1285).
+    library_management=False,
+)
+
+#: Human-readable reason the Library surface (`GET /api/library/engines`)
+#: reports for Codex's `library_management=False` — see the comment above
+#: `CODEX_CAPABILITIES` for why this is a scope decision, not a probe result.
+CODEX_LIBRARY_UNSUPPORTED_DETAIL: Final = (
+    "Codex configuration-library management is deferred (design doc "
+    "docs/superpowers/specs/2026-09-04-native-openai-codex-integration-design.md "
+    "§ 11.2). Each Codex account's configuration lives under a "
+    "credential-authority-owned CODEX_HOME rather than a shared, scannable "
+    "directory, so ccswitch's Library surface neither reads nor writes it."
 )
 
 #: What an unavailable engine advertises. Not "unknown" — *nothing*.

@@ -19,6 +19,7 @@ import { describe, it, expect } from 'vitest'
  */
 // Vitest runs with cwd at the web/ package root, where index.html lives.
 const indexHtml = readFileSync(path.resolve(process.cwd(), 'index.html'), 'utf-8')
+const indexCss = readFileSync(path.resolve(process.cwd(), 'src/index.css'), 'utf-8')
 
 describe('index.html viewport meta', () => {
   it('opts into interactive-widget=resizes-content so the keyboard shrinks dvh (header stays visible on Android)', () => {
@@ -29,5 +30,35 @@ describe('index.html viewport meta', () => {
   it('keeps viewport-fit=cover so safe-area insets still clear the gesture bar (#329)', () => {
     const viewport = indexHtml.match(/<meta[^>]*name="viewport"[^>]*>/s)?.[0] ?? ''
     expect(viewport).toContain('viewport-fit=cover')
+  })
+})
+
+/**
+ * The other half of `resizes-content`: opting the keyboard into shrinking the
+ * LAYOUT viewport keeps the header on screen, but it also means every region
+ * really does get squeezed — on a phone the whole shell reflows into ~480px.
+ * Regions that carry optional chrome need a way to drop it at that height, and
+ * `short:` is that way. One named variant so the threshold is defined once
+ * rather than re-typed as an arbitrary `[@media(max-height:…)]` at each use.
+ *
+ * It is a CSS variant, not a `useViewport()` field, deliberately: this is a
+ * pure show/hide with no JS branch behind it, and the responsive-variant idiom
+ * (`hidden sm:block`) is already how this codebase expresses that. `useViewport`
+ * stays the only JS reader of a layout query — see its own guard test.
+ */
+describe('index.css `short` variant', () => {
+  it('defines a named max-height variant so regions can shed optional chrome', () => {
+    expect(indexCss).toMatch(/@custom-variant\s+short\s*\(\s*@media\s*\(max-height:\s*\d+px\)\s*\)/)
+  })
+
+  it('sets the threshold above a keyboard-open phone and below a real window', () => {
+    const px = Number(
+      indexCss.match(/@custom-variant\s+short\s*\(\s*@media\s*\(max-height:\s*(\d+)px\)\s*\)/)?.[1],
+    )
+    // A phone with the keyboard up measures ~420–500 CSS px tall; a laptop
+    // window with browser chrome is ~600+. Anything outside this band either
+    // misses the case it exists for or strips the chrome off a real desktop.
+    expect(px).toBeGreaterThanOrEqual(500)
+    expect(px).toBeLessThanOrEqual(600)
   })
 })

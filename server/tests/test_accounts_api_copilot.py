@@ -76,6 +76,42 @@ def test_get_accounts_copilot_provider_field():
 
 
 # ---------------------------------------------------------------------------
+# POST /api/accounts/{name}/refresh — re-reads the proxy, cold if need be
+# ---------------------------------------------------------------------------
+
+
+class _FakeSessions:
+    """Only what the refresh route touches; records the forced quota read."""
+
+    def __init__(self) -> None:
+        from unittest.mock import AsyncMock
+        self.process_quota_refresh = AsyncMock(return_value=None)
+        self.usage = AsyncMock(return_value=None)
+        self.live_session_counts = AsyncMock(return_value={})
+
+    def daemon_epoch(self):
+        return None
+
+
+def test_refresh_forces_a_process_backed_quota_read():
+    """Copilot quota is process-backed: the poller only reads what the refresher
+    persisted, so the refresh button must ask the daemon to read the proxy NOW
+    (starting it when no session has one up) — the list read never forces."""
+    with temp_env():
+        _seed_copilot_account("copilot-work")
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
+            client = _make_client()
+        fake = _FakeSessions()
+        client.app.state.sessions = fake
+        with client:
+            client.get("/api/accounts", headers=IDENTITY_HEADERS)
+            fake.process_quota_refresh.assert_not_awaited()
+            resp = client.post("/api/accounts/copilot-work/refresh", headers=IDENTITY_HEADERS)
+    assert resp.status_code == 200
+    fake.process_quota_refresh.assert_awaited_once_with("copilot-work", force=True)
+
+
+# ---------------------------------------------------------------------------
 # DELETE /api/accounts/{name} — copilot token-dir accepted (not 404)
 # ---------------------------------------------------------------------------
 

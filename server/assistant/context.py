@@ -5,6 +5,8 @@ import re
 from typing import Any, NotRequired, TypedDict   # Python 3.12 — NotRequired is stdlib
 from xml.sax.saxutils import quoteattr, unescape
 
+from ccswitch import brand
+
 # \Z (not $): `$` matches just before a single trailing "\n" too, so a route or
 # sessionId with a smuggled newline would pass validation and reach the wire
 # (UserMessage.context) unescaped — quoteattr only protects the SDK-bound header.
@@ -54,24 +56,30 @@ def render_context_header(ctx: PromptContext, host: str | None) -> str:
         parts.append(f"session={quoteattr(ctx['sessionId'])}")
     if host is not None:
         parts.append(f"host={quoteattr(host)}")
-    return f"<ccswitch-context {' '.join(parts)} />"
+    return f"<{brand.SLUG}-context {' '.join(parts)} />"
 
 
 # The rendered header, as it appears at the head of a JSONL user entry. Anchored to the
 # start and to a single line: the header is always emitted as one line followed by "\n"
-# and the user's own text, and a `<ccswitch-context` occurring anywhere else is the
+# and the user's own text, and a `<…-context` occurring anywhere else is the
 # user's own words, not ours.
-_HEADER_LINE = re.compile(r"\A<ccswitch-context ([^\n>]*?)\s*/>(?:\n|\Z)")
+#
+# Both brand spellings are matched, permanently. The CLI journalled the DECORATED text,
+# so every assistant thread that ran before the rebrand has `<ccswitch-context …/>` lines
+# sitting in its JSONL; replay re-parses them on every reload, and a parser that only
+# knew the new name would show those users a raw header line above their own prompt
+# forever — exactly the artifact this function exists to prevent.
+_HEADER_LINE = re.compile(rf"\A<{brand.EITHER_SLUG_RE}-context ([^\n>]*?)\s*/>(?:\n|\Z)")
 _ATTR = re.compile(r'([A-Za-z]+)="([^"]*)"')
 
 
 def strip_context_header(text: str) -> tuple[str, PromptContext | None]:
-    """Split a leading ``<ccswitch-context …/>`` header off a REPLAYED user prompt.
+    """Split a leading ``<viberpit-context …/>`` header off a REPLAYED user prompt.
 
     ``driver._start_turn`` prepends the header to the copy of the text handed to the SDK
     (never to the live ``UserMessage``), so the CLI journals the DECORATED text. Replay
     rebuilds ``UserMessage`` straight from that JSONL, which without this would show the
-    user a literal ``<ccswitch-context route="/sessions/abc" … />`` line above their own
+    user a literal ``<viberpit-context route="/sessions/abc" … />`` line above their own
     prompt on every reload — the same artifact class as the #1000 owner-prompt prefix —
     and would carry no ``context`` for the client to render the chip from.
 

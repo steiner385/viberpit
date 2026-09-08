@@ -158,8 +158,6 @@ def test_upload_writes_audit_row(tmp_path, monkeypatch):
                         files={"file": ("shot.png", PNG, "image/png")})
         assert r.status_code == 201
 
-        import asyncio
-
         async def _check():
             async with db_session() as db:
                 rows = (await db.execute(
@@ -167,7 +165,11 @@ def test_upload_writes_audit_row(tmp_path, monkeypatch):
                 )).scalars().all()
             return rows
 
-        rows = asyncio.run(_check())
+        # Read on the app's OWN loop, not a throwaway `asyncio.run` one: both
+        # share the module-level engine's pool, whose asyncio.Queue is loop-bound
+        # the moment a saturated pool has to await a checkout.
+        assert client.portal is not None
+        rows = client.portal.call(_check)
     assert len(rows) == 1
     assert rows[0].detail["type"] == "image/png"
     # Audit detail must never carry the raw bytes.

@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { cn } from '@/lib/utils'
+import type { LayoutMode } from '@/shell/useViewport'
 
 export interface BannerStackItem {
   id: string
@@ -8,6 +9,19 @@ export interface BannerStackItem {
   /** Used by the shell to filter the stack (kiosk shows `danger` only).
    *  Optional so existing call sites keep compiling; treated as 'info'. */
   tone?: 'info' | 'warning' | 'danger'
+  /**
+   * Layout modes this banner is too costly to show in — applied by
+   * `bannersForMode`. A phone's banner strip competes with the content it sits
+   * above, so a tall banner that has a home elsewhere in the app (deploy →
+   * Settings › Deploy) names `'phone'` here.
+   *
+   * Declared on the ITEM rather than inside the banner component on purpose:
+   * `useAppBanners` is the one place the stack is described, so "where does this
+   * banner appear" stays answerable by reading that list. A component that hid
+   * itself with `hidden md:block` would be invisible to every rule and test that
+   * reasons about the stack — and would still occupy the stack's `gap`.
+   */
+  hideOn?: readonly LayoutMode[]
 }
 
 /**

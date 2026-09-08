@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import types
 
+import pytest
 from sqlalchemy import select as sa_select
 
 from server.db import db_session, init_db
@@ -48,6 +49,45 @@ def test_complete_with_marker_persists_resolution(tmp_path):
     assert rec.pr_resolution == "not-needed"
     assert rec.pr_resolution_source == "marker"
     assert row.pr_resolution == "not-needed"
+    assert row.pr_resolution_source == "marker"
+
+
+@pytest.mark.parametrize("source", ["marker", "tool"])
+def test_complete_persists_the_source_the_driver_reports(tmp_path, source):
+    """The row records the transport the resolution actually arrived on — a
+    `mark_no_pr` tool call must not be filed as a marker (and vice versa). Both the
+    in-memory record and the DB row must agree; they are two separate writes."""
+    async def run():
+        orch = await _build_orch(tmp_path)
+        orch._drivers["s1"] = types.SimpleNamespace(
+            last_pr_resolution="not-needed", last_pr_resolution_source=source)
+        await orch._persist_status("s1", "complete")
+        rec = orch.record("s1")
+        row = await _db_row(tmp_path)
+        return rec, row
+    rec, row = asyncio.run(run())
+
+    assert rec.pr_resolution == "not-needed"
+    assert rec.pr_resolution_source == source
+    assert row.pr_resolution == "not-needed"
+    assert row.pr_resolution_source == source
+
+
+def test_a_driver_without_a_source_attribute_persists_as_marker(tmp_path):
+    """`getattr(driver, "last_pr_resolution_source", None) or "marker"`: a partial
+    driver stub, and the Codex driver (which keeps the marker contract by design and
+    leaves TurnEnd.pr_resolution_source None), must persist "marker", never None."""
+    async def run():
+        orch = await _build_orch(tmp_path)
+        orch._drivers["s1"] = types.SimpleNamespace(
+            last_pr_resolution="not-needed", last_pr_resolution_source=None)
+        await orch._persist_status("s1", "complete")
+        rec = orch.record("s1")
+        row = await _db_row(tmp_path)
+        return rec, row
+    rec, row = asyncio.run(run())
+
+    assert rec.pr_resolution_source == "marker"
     assert row.pr_resolution_source == "marker"
 
 

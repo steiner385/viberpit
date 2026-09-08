@@ -11,7 +11,8 @@ from server.tests.ipc_harness import serve_daemon_uds
 
 
 def test_default_socket_path_and_env_override():
-    assert DEFAULT_SOCKET_PATH == "/run/ccswitch/sessiond.sock"
+    from server import hostpaths
+    assert DEFAULT_SOCKET_PATH == hostpaths.SESSIOND_SOCKET
     with mock.patch.dict(os.environ, {}, clear=False):
         os.environ.pop("CCSWITCH_SESSIOND_SOCKET", None)
         os.environ.pop("CCSWITCH_SESSIOND_ENDPOINT", None)

@@ -304,7 +304,8 @@ async def test_pr_fix_spawn_passes_pinned_model():
             "o/r", "fix-lint", _INFO, "failing_ci", None)
     assert (status, sid) == ("spawned", "new-sess")
     assert captured["model"] == "opus"
-    assert captured["detail"] == {"model": "opus", "model_source": "pinned"}
+    assert captured["detail"] == {
+        "engine": "claude_code", "model": "opus", "model_source": "pinned"}
 
 
 @pytest.mark.asyncio
@@ -321,4 +322,6 @@ async def test_pr_fix_spawn_auto_fails_open_without_model_access():
             "o/r", "fix-lint", _INFO, "failing_ci", None)
     assert status == "spawned"
     assert captured["model"] is None
-    assert captured["detail"] is None
+    # detail always carries the resolved engine now (Phase 7, #1267), even
+    # when there is no model to report.
+    assert captured["detail"] == {"engine": "claude_code"}

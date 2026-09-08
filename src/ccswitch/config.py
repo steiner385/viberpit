@@ -10,6 +10,12 @@ class Config:
     soft_threshold: float = 0.90
     hard_ceiling: float = 1.00
     usage_cache_ttl_sec: int = 60
+    # Freshness window for PROCESS-BACKED quota (Copilot proxy, Codex app-server).
+    # Those providers have no REST usage endpoint: reading them cold means starting
+    # a process, so the server refreshes them on this cadence
+    # (server/usage/process_quota.py) and the ledger keeps the reading fresh for
+    # the same span. Anthropic stays on usage_cache_ttl_sec.
+    process_quota_ttl_sec: int = 600
     poll_interval_sec: int = 60
     reservation_ttl_sec: int = 120
     expiry_skew_sec: int = 300

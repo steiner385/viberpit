@@ -18,7 +18,9 @@
  * unmount can neither clobber a newer claim (it isn't the top) nor blank the
  * title when an older claim is still underneath (releasing just exposes it).
  */
-export const APP_NAME = 'ccswitch'
+import { BRAND_NAME } from '@/brand'
+
+export const APP_NAME = BRAND_NAME
 
 interface BaseEntry {
   token: symbol

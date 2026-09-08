@@ -4,6 +4,7 @@ from __future__ import annotations
 from claude_agent_sdk import create_sdk_mcp_server
 from claude_agent_sdk.types import McpSdkServerConfig
 
+from ccswitch import brand
 from server.version import running_git_sha
 
 from .client import AssistantApi
@@ -24,5 +25,5 @@ def build_server(api: AssistantApi, *, operator: bool = False,
         tools = [t for t in tools if TOOL_SPECS[t.name].tool_class is ToolClass.READ]
     # `running_git_sha()` is the one version identity the server already exposes
     # (/healthz, deploy gate); an MCP `version` string may be any text.
-    return create_sdk_mcp_server(name="ccswitch", version=running_git_sha()[:12] or "dev",
+    return create_sdk_mcp_server(name=brand.MCP_SERVER_NAME, version=running_git_sha()[:12] or "dev",
                                  tools=tools)

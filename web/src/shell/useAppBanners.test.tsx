@@ -45,6 +45,21 @@ describe('useAppBanners', () => {
     expect(result.current.some((i) => i.id === 'input-hold')).toBe(true)
   })
 
+  // The deploy panel is the tallest banner in the stack — a title row, a CI
+  // reason, a Deploy button, and an expandable commit list — and a phone has
+  // the least room to spare. It moves to Settings › Deploy there.
+  it('hides only the deploy banner on phone', () => {
+    const { result } = renderHook(() => useAppBanners(NONE))
+    const phoneHidden = result.current.filter((i) => i.hideOn?.includes('phone')).map((i) => i.id)
+    expect(phoneHidden).toEqual(['deploy'])
+  })
+
+  it('keeps the deploy banner on tablet, desktop and kiosk', () => {
+    const { result } = renderHook(() => useAppBanners(NONE))
+    const deploy = result.current.find((i) => i.id === 'deploy')
+    expect(deploy?.hideOn).toEqual(['phone'])
+  })
+
   it('renders no all-limited node until a reset time is supplied', () => {
     const { result } = renderHook(() => useAppBanners(NONE))
     expect(result.current.find((i) => i.id === 'all-limited')?.node).toBeNull()

@@ -16,6 +16,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
+from ccswitch import brand
+
 log = logging.getLogger("server.github.app_auth")
 
 JWT_BACKDATE_S = 60
@@ -78,7 +80,7 @@ def default_app_rest(method: str, path: str, jwt: str) -> Any:
             headers={
                 "authorization": f"Bearer {jwt}",
                 "accept": "application/vnd.github+json",
-                "user-agent": "ccswitch",
+                "user-agent": brand.SLUG,
             },
         )
     if res.status_code // 100 != 2:

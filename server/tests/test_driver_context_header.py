@@ -5,7 +5,7 @@ the `UserMessage` the transcript bubble renders — and only on a page CHANGE, s
 follow-up in the same view does not repeat it.
 
 `test_driver.py` covers the once-per-change dedupe against the *route* attribute only
-(`startswith('<ccswitch-context route=…')`). What lives here is the rendering of the
+(`startswith('<viberpit-context route=…')`). What lives here is the rendering of the
 whole header — `session=` and especially `host=`, which no other test asserts.
 """
 from __future__ import annotations
@@ -50,7 +50,7 @@ def test_context_header_renders_a_host_and_only_on_a_page_change(monkeypatch):
             await asyncio.sleep(0.05)
             first = _sent(d)[0]
             assert first.startswith(
-                '<ccswitch-context route="/sessions/abc-123" '
+                '<viberpit-context route="/sessions/abc-123" '
                 'session="abc-123-def-456" host="dobby" />\n')
             assert first.endswith("what is this?")
 
@@ -63,7 +63,7 @@ def test_context_header_renders_a_host_and_only_on_a_page_change(monkeypatch):
             # A page CHANGE re-announces.
             await d.send_prompt("now?", context={"route": "/pipeline"})
             await asyncio.sleep(0.05)
-            assert _sent(d)[2] == '<ccswitch-context route="/pipeline" host="dobby" />\nnow?'
+            assert _sent(d)[2] == '<viberpit-context route="/pipeline" host="dobby" />\nnow?'
         finally:
             await d.aclose()
 

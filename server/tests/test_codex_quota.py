@@ -40,7 +40,7 @@ def test_codex_uses_the_canonical_provider_neutral_quota_dto() -> None:
 
 
 def test_codex_quota_feeds_the_canonical_ledger_and_usage_path() -> None:
-    from server.codex.quota import persist_quota_snapshot
+    from server.usage.process_quota import persist_quota_snapshot
 
     with temp_env():
         account_registry.register_account(

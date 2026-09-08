@@ -1,12 +1,1 @@
-[Unit]
-Description=Weekly Tailscale cert renewal for ccswitch
-Documentation=https://tailscale.com/kb/1153/enabling-https/
-
-[Timer]
-# Let's Encrypt certs are 90 days; weekly checks give ~12 renewal
-# opportunities before expiry.
-OnCalendar=weekly
-Persistent=true
-
-[Install]
-WantedBy=timers.target
+viberpit-cert-renew.timer

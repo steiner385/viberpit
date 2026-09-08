@@ -31,6 +31,8 @@ from typing import Iterator
 from ccswitch.clone_doctor import clone_dir_from_gitdir, read_gitdir_pointer
 from ccswitch.worktrees import remove_worktree
 
+from . import brand
+
 log = logging.getLogger(__name__)
 
 # A dirty worktree older than this is eligible for stash-eviction when no
@@ -133,10 +135,10 @@ def _git_stash(wt: str) -> str | None:
     """
     r = _run([
         "git", "-C", wt,
-        "-c", "user.email=ccswitch-janitor@local",
-        "-c", "user.name=ccswitch-janitor",
+        "-c", f"user.email={brand.SLUG}-janitor@local",
+        "-c", f"user.name={brand.SLUG}-janitor",
         "stash", "push", "-u",
-        "-m", "ccswitch-janitor: max-age eviction",
+        "-m", f"{brand.SLUG}-janitor: max-age eviction",
     ])
     if r.returncode != 0:
         return None
@@ -281,8 +283,8 @@ def _emit_orphan_alert(orphaned: int, clones: set[str]) -> None:
         return
     log.critical(
         "worktree-janitor: orphaned=%d worktree(s) reference missing clone(s) %s — "
-        "working files are intact; recover with `ccswitch clones repair`",
-        orphaned, ", ".join(sorted(clones)),
+        "working files are intact; recover with `%s clones repair`",
+        orphaned, ", ".join(sorted(clones)), brand.CLI_NAME,
     )
 
 

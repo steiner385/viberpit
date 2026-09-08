@@ -1,7 +1,7 @@
 """A deploy that changes deploy code must restart the deploy controller.
 
-A deploy restarts ccswitch.service (steps.restart_edge) and every fleet daemon
-(server.deploy.runners) — never ccswitch-deploy-controller.service. So the process
+A deploy restarts viberpit.service (steps.restart_edge) and every fleet daemon
+(server.deploy.runners) — never viberpit-deploy-controller.service. So the process
 that RUNS deploys keeps executing whatever code it started with.
 
 Observed 2026-08-21: #719 taught the (then) restart_units to update a remote daemon's
@@ -22,6 +22,9 @@ from server.deploy import steps
 
 def _recorder(calls):
     def run(cmd, **kw):
+        if "show" in cmd:
+            from types import SimpleNamespace
+            return SimpleNamespace(returncode=0, stdout="LoadState=loaded\n")
         calls.append(list(cmd))
         class R:
             returncode = 0
@@ -58,10 +61,10 @@ def test_restart_is_deferred_not_inline():
     calls: list[list[str]] = []
     assert steps.schedule_controller_restart(run=_recorder(calls)) is True
     flat = " ".join(" ".join(c) for c in calls)
-    assert "ccswitch-deploy-controller" in flat
+    assert "viberpit-deploy-controller" in flat
     # Deferred via systemd-run --on-active, never a bare `systemctl restart`.
     assert "systemd-run" in flat and "--on-active" in flat
-    assert ["sudo", "systemctl", "restart", "ccswitch-deploy-controller.service"] not in calls
+    assert ["sudo", "systemctl", "restart", "viberpit-deploy-controller.service"] not in calls
 
 
 def test_scheduling_failure_is_reported_not_raised():

@@ -77,6 +77,12 @@ RECONCILE_EXEMPT: set[str] = {
     "assistant_tokens.scope",       # required at mint; "read" | "act"
     "assistant_tokens.token_hash",  # required at mint; sha256 of the minted token
     "assistant_tokens.expires_at",  # required at mint; computed from ttlDays, no sane default
+    # test_run_slots: a NEW table (create_all builds it fully-formed on dev SQLite;
+    # Alembic 0030_test_run_slots builds it on prod). host is part of the initial
+    # CREATE TABLE, never ALTER-added to a populated table, and mandatory at INSERT
+    # (a slot row is meaningless without the host it was requested on), so no
+    # synthesizable default.
+    "test_run_slots.host",
 }
 
 

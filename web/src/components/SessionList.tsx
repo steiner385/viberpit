@@ -88,7 +88,7 @@ export function SessionList({
     bulkArchive.mutate(ids, { onSuccess: () => clearSelection() })
   }
 
-  function handleArchiveDone() {
+  function handleArchiveComplete() {
     const ids = sessions.filter((s) => ARCHIVABLE_STATUSES.has(s.status)).map((s) => s.id)
     if (ids.length === 0) return
     bulkArchive.mutate(ids, {
@@ -96,7 +96,7 @@ export function SessionList({
     })
   }
 
-  const archivableDoneCount = sessions.filter((s) => ARCHIVABLE_STATUSES.has(s.status)).length
+  const archivableCompleteCount = sessions.filter((s) => ARCHIVABLE_STATUSES.has(s.status)).length
   const resumableIds = sessions.filter((s) => s.resumable).map((s) => s.id)
   const handleResumeInterrupted = () => {
     if (resumableIds.length > 0) resumeInterrupted.mutate(resumableIds)
@@ -204,15 +204,15 @@ export function SessionList({
             Rotate stalled ({stalledIds.length})
           </button>
         )}
-        {!selectMode && archivableDoneCount > 0 && (
+        {!selectMode && archivableCompleteCount > 0 && (
           <button
             type="button"
-            onClick={handleArchiveDone}
+            onClick={handleArchiveComplete}
             disabled={bulkArchive.isPending}
             className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 py-1"
           >
             <Archive size={12} aria-hidden="true" />
-            Archive done ({archivableDoneCount})
+            Archive complete ({archivableCompleteCount})
           </button>
         )}
         <button
@@ -231,16 +231,16 @@ export function SessionList({
           clearLabel="Done"
           onClear={clearSelection}
         >
-          {archivableDoneCount > 0 && (
+          {archivableCompleteCount > 0 && (
             <Button
               type="button"
               variant="secondary"
-              onClick={handleArchiveDone}
+              onClick={handleArchiveComplete}
               disabled={bulkArchive.isPending}
               className="min-h-[44px] text-xs"
             >
               <Archive size={14} className="mr-1" aria-hidden="true" />
-              Archive done ({archivableDoneCount})
+              Archive complete ({archivableCompleteCount})
             </Button>
           )}
           {selection.count > 0 && (

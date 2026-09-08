@@ -9,27 +9,34 @@ import { extractMutationErrorMessage } from '@/api/queryClient'
 import { useSessionSocket } from '@/ws/client'
 import { INITIATIVE_STAGES, type Initiative, type InitiativeArtifact } from '@/api/sdlc'
 import { fileUrl, commitUrl, prUrl } from '@/lib/githubUrl'
+import { initiativeStatusLabel, stageLabel } from '@/features/products/vocab'
+import { PageHeader } from '@/ui/PageHeader'
+import { PageContent } from '@/ui/PageContent'
+import { Button } from '@/ui/Button'
 import { InitiativeTrack } from './InitiativeTrack'
+import { IncidentQueue } from './IncidentQueue'
 import '../pipeline/plotroom.css'
 import './initiatives.css'
 
 /** Live nudge: the artifact chain moves when SDLC-spawned sessions change state,
  *  so invalidate the board on `/ws` status frames (the same socket the rest of
  *  the app already holds open) rather than polling hard. Baseline polling in
- *  useInitiatives covers the gaps. */
+ *  useInitiatives covers the gaps.
+ *
+ *  Incidents ride the same nudge: a 2σ breach spawns a diagnosis session, and
+ *  SDLC Intake adopting a queued incident spawns another — both of which move a
+ *  row in the queue and both of which arrive as status frames. */
 function useInitiativesLive() {
   const qc = useQueryClient()
   const { on, off } = useSessionSocket()
   useEffect(() => {
-    const nudge = () => void qc.invalidateQueries({ queryKey: QK.initiatives })
+    const nudge = () => {
+      void qc.invalidateQueries({ queryKey: QK.initiatives })
+      void qc.invalidateQueries({ queryKey: QK.incidents })
+    }
     on('status', nudge)
     return () => off('status', nudge)
   }, [on, off, qc])
-}
-
-const STATUS_LABEL: Record<string, string> = {
-  proposed: 'Proposed', active: 'Active', awaiting_human: 'Awaiting human',
-  blocked: 'Blocked', done: 'Done',
 }
 
 function nextStage(stage: string | null): string | null {
@@ -73,7 +80,7 @@ function InitiativeRow({ init }: { init: Initiative }) {
             <span className="init-slug">{init.slug}</span>
             {init.repo && <span className="init-repo">{init.repo}</span>}
             <span className={`init-status init-status-${init.status}`}>
-              {STATUS_LABEL[init.status ?? ''] ?? init.status}
+              {initiativeStatusLabel(init.status)}
             </span>
           </div>
         </div>
@@ -82,9 +89,9 @@ function InitiativeRow({ init }: { init: Initiative }) {
           className="btn-ghost init-advance"
           disabled={!nxt || advance.isPending}
           onClick={() => advance.mutate(init.slug)}
-          title={nxt ? `Advance the gate to “${nxt}”` : 'Already at the final stage'}
+          title={nxt ? `Advance the gate to ${stageLabel(nxt)}` : 'Already at the final stage'}
         >
-          {nxt ? `Advance → ${nxt}` : 'Complete'}
+          {nxt ? `Advance → ${stageLabel(nxt)}` : 'Complete'}
         </button>
       </header>
       {advance.isError && (
@@ -108,9 +115,8 @@ function InitiativeRow({ init }: { init: Initiative }) {
   )
 }
 
-function NewInitiativeForm() {
+function NewInitiativeForm({ onClose }: { onClose: () => void }) {
   const create = useCreateInitiative()
-  const [open, setOpen] = useState(false)
   const [slug, setSlug] = useState('')
   const [title, setTitle] = useState('')
   const [repo, setRepo] = useState('')
@@ -118,13 +124,6 @@ function NewInitiativeForm() {
   // so a blank one would 422; gate submission on it rather than surprise the user.
   const canSubmit =
     slug.trim().length > 0 && title.trim().length > 0 && repo.trim().length > 0 && !create.isPending
-  if (!open) {
-    return (
-      <button type="button" className="btn-ghost" onClick={() => setOpen(true)}>
-        + New initiative
-      </button>
-    )
-  }
   return (
     <form
       className="init-new-form"
@@ -133,7 +132,7 @@ function NewInitiativeForm() {
         if (!canSubmit) return
         create.mutate(
           { slug: slug.trim(), title: title.trim(), repo: repo.trim(), origin: 'human' },
-          { onSuccess: () => { setSlug(''); setTitle(''); setRepo(''); setOpen(false) } },
+          { onSuccess: onClose },
         )
       }}
     >
@@ -144,7 +143,7 @@ function NewInitiativeForm() {
       <input aria-label="repo" placeholder="owner/repo"
              value={repo} onChange={(e) => setRepo(e.target.value)} />
       <button type="submit" className="btn-ghost" disabled={!canSubmit}>Create</button>
-      <button type="button" className="btn-ghost" onClick={() => setOpen(false)}>Cancel</button>
+      <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
       {create.isError && (
         <p role="alert" className="init-error">
           {extractMutationErrorMessage(create.error, 'Could not create initiative')}
@@ -157,20 +156,30 @@ function NewInitiativeForm() {
 export function InitiativesTab() {
   useInitiativesLive()
   const { data: initiatives, isLoading, isError } = useInitiatives()
+  const [creating, setCreating] = useState(false)
   return (
-    <div className="prdash-root init-board flex-1 min-h-0 overflow-y-auto">
-      <div className="init-board-head">
-        <h2 className="init-board-title">Initiatives</h2>
-        <NewInitiativeForm />
-      </div>
-      {isLoading && <p role="status">Loading initiatives…</p>}
-      {isError && <p className="stale" role="status">Could not load initiatives.</p>}
-      {!isLoading && !isError && (initiatives?.length ?? 0) === 0 && (
-        <p className="init-empty">
-          No initiatives yet. Create one, or let the SDLC automations open the first intent.
-        </p>
-      )}
-      {initiatives?.map((init) => <InitiativeRow key={init.slug} init={init} />)}
+    <div className="flex flex-col h-full min-h-0 prdash-root" data-page-variant="standard">
+      <PageHeader
+        title="Initiatives"
+        actions={
+          <Button variant="ghost" size="sm" onClick={() => setCreating(true)}>
+            + New initiative
+          </Button>
+        }
+      />
+      <PageContent busy={isLoading} className="init-board">
+        {creating && <NewInitiativeForm onClose={() => setCreating(false)} />}
+        {/* The back of the SDLC loop sits above its front: an open incident is the
+            thing most likely to become the next initiative on this board. */}
+        <IncidentQueue />
+        {isError && <p className="stale" role="status">Could not load initiatives.</p>}
+        {!isLoading && !isError && (initiatives?.length ?? 0) === 0 && (
+          <p className="init-empty">
+            No initiatives yet. Create one, or let the SDLC automations open the first intent.
+          </p>
+        )}
+        {initiatives?.map((init) => <InitiativeRow key={init.slug} init={init} />)}
+      </PageContent>
     </div>
   )
 }

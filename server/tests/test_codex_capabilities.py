@@ -10,6 +10,7 @@ from server.codex import schema
 from server.codex.capabilities import (
     CODEX_CAPABILITIES,
     CODEX_ENGINE,
+    CODEX_LIBRARY_UNSUPPORTED_DETAIL,
     NO_CAPABILITIES,
     CodexAvailability,
     CodexUnavailableReason,
@@ -29,8 +30,20 @@ def test_capability_set_covers_every_declared_field():
         "models", "reasoning_effort", "steer", "interrupt", "approvals",
         "questions", "fork", "adopt", "self_model_switch", "subagents", "attachments",
         "account_rotation", "account_switch_new_thread",
-        "vendor_commands", "vendor_skills",
+        "vendor_commands", "vendor_skills", "durable_tool_surface",
+        "library_management",
     }
+
+
+def test_codex_does_not_and_therefore_keeps_the_markers():
+    """``thread/resume`` carries neither ``developerInstructions`` nor
+    ``dynamicTools`` (codex-cli 0.153.2), so a resumed Codex thread keeps its
+    original instructions and loses its tools — with nothing sendable to correct
+    it. Codex must therefore keep the marker contract rather than be told about
+    tools it will lose on the second turn."""
+    from server.codex.driver import CodexAgentDriver
+
+    assert CodexAgentDriver.capabilities.durable_tool_surface is False
 
 
 def test_the_driver_binds_this_declaration_rather_than_restating_it():
@@ -50,9 +63,17 @@ def test_codex_advertises_the_planned_controls():
     assert CODEX_CAPABILITIES.questions
     # Claude-CLI-private surfaces have no app-server equivalent in v1.
     assert not CODEX_CAPABILITIES.fork
-    assert not CODEX_CAPABILITIES.adopt
     assert not CODEX_CAPABILITIES.self_model_switch
+    # `subAgentActivity`/`collabAgentToolCall` are real (#1274) and already
+    # normalized to `Task` events, but multi-call identity collapsing and
+    # transcript drill-down are unverified against a live binary — stays
+    # gated per "keep unavailable capabilities visibly gated until verified".
     assert not CODEX_CAPABILITIES.subagents
+    # `adopt` is False for a different reason (#1272): the app-server DOES declare
+    # thread/list + thread/resume (test_codex_schema.py pins this against the
+    # vendor fixture), but CODEX_HOME isolation means a runner's own process only
+    # ever sees threads it started — there is no cross-boundary orphan to adopt.
+    assert not CODEX_CAPABILITIES.adopt
     # Rotation composes the target account's CLAUDE config dir — a Codex
     # session is refused by that path.
     assert not CODEX_CAPABILITIES.account_rotation
@@ -65,6 +86,10 @@ def test_codex_advertises_the_planned_controls():
     # False rather than borrow Claude's slash syntax (#1286).
     assert CODEX_CAPABILITIES.vendor_commands
     assert CODEX_CAPABILITIES.vendor_skills
+    # Deferred by design (#1285): CODEX_HOME is credential-authority-owned and
+    # per-account, never a shared directory the Library surface could scan.
+    assert not CODEX_CAPABILITIES.library_management
+    assert "CODEX_HOME" in CODEX_LIBRARY_UNSUPPORTED_DETAIL
 
 
 def test_no_capabilities_is_all_false():

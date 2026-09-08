@@ -18,6 +18,20 @@ describe('AssistantText', () => {
     expect(document.querySelector('strong')).toBeNull()
   })
 
+  it('hides a harness marker while streaming', () => {
+    // The settled render drops it (react-markdown, no rehype-raw); the streaming
+    // branch used to print it verbatim at the tail of every completed session.
+    render(<AssistantText text={'all set\n<!-- viberpit:complete -->'} streaming={true} />)
+    expect(screen.getByText('all set')).toBeInTheDocument()
+    expect(screen.queryByText(/viberpit:complete/)).toBeNull()
+  })
+
+  it('does not render a harness marker once settled either', async () => {
+    render(<AssistantText text={'all set\n<!-- viberpit:complete -->'} streaming={false} />)
+    expect(await screen.findByText('all set')).toBeInTheDocument()
+    expect(screen.queryByText(/viberpit:complete/)).toBeNull()
+  })
+
   it('renders markdown as HTML when not streaming', async () => {
     render(<AssistantText text="**bold text**" streaming={false} />)
     // ReactMarkdown renders <strong>

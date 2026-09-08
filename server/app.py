@@ -20,6 +20,7 @@ from server.stt.engine import WhisperEngine, is_available as stt_available
 from server.stt.ws import build_stt_ws_router
 from server.db import init_db
 from server.ipc.client import DaemonUnavailable, DaemonError
+from ccswitch import brand
 from server.reauth import REAUTH_DISPLAY_KEY, ReauthManager
 from server.sessions.orchestrator import SessionOrchestrator
 from server.version import running_git_sha
@@ -48,6 +49,8 @@ from server.api.snapshots import router as snapshots_router
 from server.api.dispatch import router as dispatch_router
 from server.api.sdlc import router as sdlc_router
 from server.api.pm import router as pm_router
+from server.api.pm_tree import router as pm_tree_router
+from server.api.test_slots import router as test_slots_router
 from server.assistant.api import router as assistant_router
 
 
@@ -207,6 +210,13 @@ async def _lifespan(app: FastAPI):
 
     db_url = os.environ.get("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
+
+    # Error-triage capture: the sink itself was installed by configure_logging();
+    # its flusher needs the DB, so it starts here and stops in the shutdown branch.
+    from server.obs.errsink import get_error_sink as _get_error_sink
+    _error_sink = _get_error_sink()
+    if _error_sink is not None:
+        _error_sink.start()
 
     # Seed fleet hosts declared in CCSWITCH_FLEET_HOSTS (insert-if-absent by name).
     # Runs before ensure_default_host so a declared fleet is already present when
@@ -491,6 +501,9 @@ async def _lifespan(app: FastAPI):
             _t.cancel()
             await bounded_wait(_t, timeout=_SHUTDOWN_PHASE_TIMEOUT_S,
                                phase=f"shutdown:{_phase}")
+    if _error_sink is not None:
+        await bounded_wait(_error_sink.stop(), timeout=_SHUTDOWN_PHASE_TIMEOUT_S,
+                           phase="shutdown:error-sink")
     with contextlib.suppress(Exception):
         app.state.auth_failure_auditor.stop()
     if getattr(app.state, "daemon_health", None) is not None:
@@ -559,6 +572,14 @@ async def _lifespan(app: FastAPI):
             except Exception:
                 log.warning("shutdown: reauth x11 sweep incomplete", exc_info=True)
 
+        _nd = getattr(app.state, "native_display", None)
+        if _nd is not None:
+            try:
+                await asyncio.wait_for(_nd.stop_all(), timeout=_SHUTDOWN_SWEEP_TIMEOUT_S)
+            except Exception:
+                _logging.getLogger("server").warning(
+                    "shutdown: native display sweep incomplete", exc_info=True)
+
         await bounded_wait(app.state.orchestrator.stop(),
                            timeout=_SHUTDOWN_STOP_TIMEOUT_S,
                            phase="shutdown:orchestrator-stop")
@@ -617,7 +638,7 @@ def create_app(
     orchestrator: SessionOrchestrator | None = None,
     reauth_manager: ReauthManager | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="ccswitch", version="0.1.0", lifespan=_lifespan)
+    app = FastAPI(title=brand.NAME, version="0.1.0", lifespan=_lifespan)
 
     # Attach the session facade. CCSWITCH_SESSIOND_ENDPOINT (https/unix URL) or the
     # legacy CCSWITCH_SESSIOND_SOCKET selects remote mode: the edge drives an
@@ -696,18 +717,24 @@ def create_app(
         if orchestrator is not None:
             orchestrator._x11 = app.state.x11
 
+    # Native display — the host desktop as a session target. Same ownership rule as
+    # x11: in remote mode the daemon has it, the edge only proxies.
+    from server.sessions.native_display import build_native_display
+    if getattr(app.state, "remote_mode", False):
+        app.state.native_display = None
+    else:
+        app.state.native_display = build_native_display(_gs())
+        if orchestrator is not None:
+            orchestrator._native = app.state.native_display
+
     # Copilot proxy manager — None when proxy binary absent or feature disabled.
     if not getattr(app.state, "remote_mode", False) and orchestrator is not None:
         from server.sessions.copilot_proxy import build_copilot_proxy_manager
         from server.sessions.copilot_auth import CopilotAuthManager
         from ccswitch import paths as _ccswitch_paths
-        from ccswitch.accounts import set_copilot_usage_reader
         orchestrator._copilot = build_copilot_proxy_manager(_gs())
         orchestrator._copilot_auth = CopilotAuthManager(
             token_dir_for=_ccswitch_paths.copilot_token_dir
-        )
-        set_copilot_usage_reader(
-            lambda name: orchestrator._copilot.usage(name) if orchestrator._copilot else None
         )
 
     # Reauth ALWAYS runs here, on the master — never proxied to a worker daemon.
@@ -743,6 +770,21 @@ def create_app(
     # in-process (never raised there).
     @app.exception_handler(DaemonUnavailable)
     async def _daemon_unavailable_handler(_request, _exc):  # noqa: ANN001
+        if _exc.outcome_unknown:
+            # The daemon was reached and may have completed the request after we
+            # stopped waiting — a create_session that times out at the edge still
+            # finishes on the daemon. "System is restarting, try again shortly" is
+            # the exact prompt that produced every same-prompt duplicate pair of
+            # 2026-09-05..07; say what actually happened instead.
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": ("The session runner did not answer in time — it may still "
+                               "be finishing your request, so the session may still "
+                               "appear. Check the session list before trying again."),
+                    "code": "daemon_outcome_unknown",
+                },
+            )
         return JSONResponse(
             status_code=503,
             content={
@@ -842,6 +884,8 @@ def create_app(
     app.include_router(dispatch_router)
     app.include_router(sdlc_router)
     app.include_router(pm_router)
+    app.include_router(pm_tree_router)
+    app.include_router(test_slots_router)
     app.include_router(assistant_router)
 
     # WebSocket bridge
@@ -924,6 +968,15 @@ def create_app(
 
     from fastapi import Body, HTTPException  # noqa: PLC0415 — local import avoids top-level churn
 
+    # Shared by both branches of open_browser() below — the daemon RPC and the
+    # in-process orchestrator call return the same {"ok", "reason"} shape (Task 6),
+    # so one mapping keeps the HTTP detail text in sync across both modes.
+    _OPEN_BROWSER_DETAIL = {
+        "no_display": "no display for session",
+        "cap": "browser cap reached",
+        "native_unavailable": "native display unavailable",
+    }
+
     @app.post("/api/sessions/{session_id}/browser/open")
     async def open_browser(
         session_id: str,
@@ -932,16 +985,11 @@ def create_app(
     ) -> dict:
         if getattr(app.state, "remote_mode", False):
             res = await app.state.sessions.x11_open_browser(session_id, payload.get("url"))
-            if not res.get("ok"):
-                detail = "no display for session" if res.get("reason") == "no_display" else "browser cap reached"
-                raise HTTPException(status_code=409, detail=detail)
-            return {"ok": True}
-        x11 = getattr(app.state, "x11", None)
-        if x11 is None or x11.display_for(session_id) is None:
-            raise HTTPException(status_code=409, detail="no display for session")
-        ok = await x11.launch_browser(session_id, payload.get("url"))
-        if not ok:
-            raise HTTPException(status_code=409, detail="browser cap reached")
+        else:
+            res = await app.state.sessions.open_browser(session_id, payload.get("url"))
+        if not res.get("ok"):
+            raise HTTPException(status_code=409, detail=_OPEN_BROWSER_DETAIL.get(
+                res.get("reason"), "browser cap reached"))
         return {"ok": True}
 
     # SPA static files with client-side-routing fallback — optional; guarded so a

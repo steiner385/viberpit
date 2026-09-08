@@ -16,6 +16,7 @@ from server.ipc.drain_on_signal import install_drain_on_sigterm
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 from server.ipc.reauth_rpc import register_reauth
 from server.ipc.x11_rpc import register_x11
+from server.obs.jsonlog import configure_logging
 from server.reauth import ReauthManager
 from server.ipc.paths import Endpoint, sessiond_endpoint
 from server.ipc.tls import DaemonTLSFiles, daemon_tls_files, daemon_ssl_context_factory, client_allowlist
@@ -68,16 +69,14 @@ def build_daemon(orchestrator=None):
     if orchestrator is None:
         orchestrator = SessionOrchestrator()
     orchestrator._x11 = build_x11_manager(get_settings())
+    from server.sessions.native_display import build_native_display
+    orchestrator._native = build_native_display(get_settings())
     from server.sessions.copilot_proxy import build_copilot_proxy_manager
     from server.sessions.copilot_auth import CopilotAuthManager
     from ccswitch import paths as _ccswitch_paths
-    from ccswitch.accounts import set_copilot_usage_reader
     orchestrator._copilot = build_copilot_proxy_manager(get_settings())
     orchestrator._copilot_auth = CopilotAuthManager(
         token_dir_for=_ccswitch_paths.copilot_token_dir
-    )
-    set_copilot_usage_reader(
-        lambda name: orchestrator._copilot.usage(name) if orchestrator._copilot else None
     )
     # git clone/fetch authenticate with a per-owner App installation token, and repo
     # enumeration lists the App's installation repos, rather than the machine's ambient
@@ -93,7 +92,7 @@ def build_daemon(orchestrator=None):
     # handle through which to publish `engines` at all.
     app.state.orchestrator = orchestrator
     app.state.x11 = orchestrator._x11
-    register_x11(app, app.state.x11)
+    register_x11(app, app.state.x11, orchestrator=orchestrator)
     app.state.reauth = ReauthManager(
         timeout_s=get_settings().reauth_timeout_s,
         x11=lambda: app.state.x11,
@@ -111,6 +110,12 @@ async def daemon_lifespan(app, orchestrator):
     at startup, so a daemon start does not respawn every session at once."""
     db_url = os.environ.get("CCSWITCH_DB_URL", "sqlite+aiosqlite:///:memory:")
     await init_db(db_url=db_url)
+
+    from server.obs.errsink import get_error_sink
+    error_sink = get_error_sink()
+    if error_sink is not None:
+        error_sink.start()
+
     # Wire the Codex app-server manager BEFORE anything can spawn a session
     # (rehydrate/auto_resume below both can). It is built here rather than in
     # build_daemon() because deciding availability probes the real binary, which is
@@ -152,6 +157,19 @@ async def daemon_lifespan(app, orchestrator):
         ),
         name="codex-doctor",
     )
+    # Reap `claude` CLIs the PREVIOUS incarnation left running (#1379) — before
+    # anything below can rehydrate or resume. KillMode=mixed lets the old unit's
+    # children outlive it ("Unit process … (claude) remains running after unit
+    # stopped" on every deploy); a survivor keeps editing files and can push, while
+    # the freshly-resumed session has no idea it exists. Same placement and same
+    # never-fatal contract as the Codex and X11 orphan sweeps around it.
+    try:
+        reaped = await orchestrator.reap_orphan_clis()
+        if reaped:
+            log.warning("daemon startup: reaped %d orphaned claude CLI(s) left by a "
+                        "previous daemon", reaped)
+    except Exception:
+        log.warning("daemon startup: orphan CLI reap failed", exc_info=True)
     try:
         await orchestrator.rehydrate()
     except Exception as exc:
@@ -244,6 +262,13 @@ async def daemon_lifespan(app, orchestrator):
                 await asyncio.wait_for(x11.stop_all(), timeout=_DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S)
             except Exception:
                 log.warning("daemon shutdown: x11 teardown failed", exc_info=True)
+        native = getattr(orchestrator, "_native", None)
+        if native is not None:
+            try:
+                await asyncio.wait_for(
+                    native.stop_all(), timeout=_DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S)
+            except Exception:
+                log.warning("daemon shutdown: native display teardown failed", exc_info=True)
         try:
             await app.state.reauth.shutdown()
         except Exception:
@@ -258,6 +283,11 @@ async def daemon_lifespan(app, orchestrator):
             loop_lag_task = None
         if loop_lag_task is not None:
             await cancel_and_reap(loop_lag_task, phase="daemon.loop-lag")
+        if error_sink is not None:
+            try:
+                await asyncio.wait_for(error_sink.stop(), timeout=_DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S)
+            except Exception:  # noqa: BLE001 — never let the sink block daemon shutdown
+                log.warning("daemon shutdown: error sink stop failed", exc_info=True)
         # A daemon stopped within seconds of boot can still have the doctor waiting
         # on the authority's 20 s admin deadline; reap it the same way, never with a
         # hand-rolled cancel (#1164).
@@ -268,6 +298,10 @@ async def daemon_lifespan(app, orchestrator):
 
 
 def serve(socket_path: str | None = None) -> None:
+    # #1423: the daemon owns the orchestrator in remote mode, so it is most of the
+    # app's diagnostic surface — and it never configured logging, so every INFO
+    # was dropped and WARNING+ leaked as bare text. Same call the edge makes.
+    configure_logging(process="daemon")
     # Back-compat: an explicit socket_path arg forces a unix bind at that path.
     endpoint = Endpoint("unix", path=socket_path) if socket_path else sessiond_endpoint()
     app, orchestrator = build_daemon()

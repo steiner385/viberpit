@@ -135,8 +135,10 @@ def test_shipped_case_file_has_around_fifty_cases():
     # conformance rule "one eval case per tool" means every new tool RAISES the count, so a
     # ceiling pinned near the current size turns each new tool into an unrelated failure
     # here. Two Phase-5/8 branches hit the old ceiling within an hour of each other; Phase 6
-    # alone adds 22 more tools.
-    assert 45 <= len(_SHIPPED_CASES) <= 120
+    # alone adds 22 more tools — and then #1353/#1355 hit the 120 ceiling at 121 (master red
+    # for three commits, 2026-09-06). Truncation shows up as a count near zero and
+    # duplication as a doubled count, so a generous ceiling loses nothing.
+    assert 45 <= len(_SHIPPED_CASES) <= 400
 
 
 def test_shipped_case_file_has_at_least_six_injection_cases():

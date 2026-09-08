@@ -267,6 +267,35 @@ describe('bannersForMode — the matrix D cell', () => {
   it.each(['phone', 'tablet', 'desktop'] as const)('is the identity in %s', (mode) => {
     expect(bannersForMode(ITEMS, mode)).toEqual(ITEMS)
   })
+
+  // `hideOn` is the second rule this filter carries: a banner that costs more
+  // screen than it earns on a small viewport declares that in `useAppBanners`,
+  // rather than the shell hard-coding its id or the banner wrapping itself in a
+  // `hidden md:block` that no rule can see.
+  describe('hideOn', () => {
+    const PHONE_HIDDEN: BannerStackItem[] = [
+      { id: 'keep', priority: 10, tone: 'info', node: <p>keep</p> },
+      { id: 'bulky', priority: 10, tone: 'info', node: <p>bulky</p>, hideOn: ['phone'] },
+    ]
+
+    it('drops an item on a mode it lists', () => {
+      expect(bannersForMode(PHONE_HIDDEN, 'phone').map((i) => i.id)).toEqual(['keep'])
+    })
+
+    it.each(['tablet', 'desktop'] as const)('keeps it on %s', (mode) => {
+      expect(bannersForMode(PHONE_HIDDEN, mode).map((i) => i.id)).toEqual(['keep', 'bulky'])
+    })
+
+    // Kiosk's tone filter is the stricter rule and already drops this item; the
+    // two must compose rather than one shadowing the other.
+    it('still applies the kiosk tone filter to an item hidden on phone', () => {
+      const items: BannerStackItem[] = [
+        { id: 'danger-phone-hidden', priority: 10, tone: 'danger', node: <p>d</p>, hideOn: ['phone'] },
+      ]
+      expect(bannersForMode(items, 'kiosk').map((i) => i.id)).toEqual(['danger-phone-hidden'])
+      expect(bannersForMode(items, 'phone')).toEqual([])
+    })
+  })
 })
 
 // ── the shell at ?kiosk=1 ────────────────────────────────────────────────────

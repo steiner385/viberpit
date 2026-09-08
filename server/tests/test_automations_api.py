@@ -107,7 +107,6 @@ def test_events_endpoint_empty_ok():
 
 def test_sessions_endpoint_returns_only_origin_matched():
     """GET /api/automations/{id}/sessions returns only sessions with matching origin."""
-    import asyncio
     from server.db import db_session
     from server.db.models import Session as DbSession
 
@@ -132,8 +131,12 @@ def test_sessions_endpoint_returns_only_origin_matched():
             ))
 
     with _client() as c:
-        # Seed rows now that init_db has run (in-memory DB is alive)
-        asyncio.run(_seed())
+        # Seed on the app's OWN loop now that init_db has run. A bare
+        # `asyncio.run` would touch the module-level engine's pool from a second
+        # loop; that pool's asyncio.Queue binds to whichever loop first *awaits*
+        # a checkout, so it only fails once startup saturates the pool.
+        assert c.portal is not None
+        c.portal.call(_seed)
 
         r = c.get("/api/automations/pr-doctor/sessions", headers=H)
         assert r.status_code == 200
@@ -150,7 +153,6 @@ def test_sessions_endpoint_returns_only_origin_matched():
 
 def test_list_reports_active_spawned_session_count():
     """GET /api/automations reports activeSessions = spawned sessions not ended/archived."""
-    import asyncio
     from server.db import db_session
     from server.db.models import Session as DbSession
 
@@ -170,7 +172,8 @@ def test_list_reports_active_spawned_session_count():
                              status="idle", origin="backlog-runner"))
 
     with _client() as c:
-        asyncio.run(_seed())
+        assert c.portal is not None
+        c.portal.call(_seed)  # the app's own loop — see the note above
         automations = c.get("/api/automations", headers=H).json()
         pd = next(a for a in automations if a["id"] == "pr-doctor")
         assert pd["activeSessions"] == 2

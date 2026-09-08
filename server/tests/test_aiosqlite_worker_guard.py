@@ -211,6 +211,7 @@ def test_install_registers_the_pre_join_shutdown_hook():
     assert registered.count(stop_orphaned_workers) == 1, registered
 
 
+@pytest.mark.slow
 def test_interpreter_exits_when_an_orphaned_connection_is_held_to_the_end():
     """The end-to-end guarantee, in a real subprocess: a connection whose loop
     died and which is never garbage collected must not hang process exit."""
@@ -275,6 +276,7 @@ def test_make_engine_installs_the_guard(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------- #
 # End to end — the CI signature itself                                         #
 # --------------------------------------------------------------------------- #
+@pytest.mark.slow
 def test_connection_survives_its_loop_closing_mid_operation(tmp_path):
     """Reproduce #1134's signature end to end: an operation still executing in
     the worker thread when its loop closes under an abandoned borrower."""

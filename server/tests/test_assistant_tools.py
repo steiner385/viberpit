@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 
 import httpx
+
+from ccswitch.brand import MCP_TOOL_PREFIX as MCP_PREFIX
 import jsonschema
 import pytest
 from mcp.types import ListToolsRequest
@@ -11,7 +13,7 @@ from server.assistant.client import (AssistantApi, AssistantApiError,  # noqa: F
                                      TOOL_CALL_CAPACITY)
 from server.assistant.server import build_server
 from server.assistant.tools import (OPERATOR_TOOLS, ToolClass, TOOL_SPECS, annotation_for,
-                                    build_tools, wrap_untrusted)
+                                    batch_items, build_tools, wrap_untrusted)
 
 
 def _api(handler):
@@ -54,7 +56,7 @@ async def test_list_sessions_trims_and_frames():
 async def test_transcript_tail_truncates_and_escapes():
     def handler(req):
         return httpx.Response(200, json={"events": [
-            {"type": "user", "text": "<ccswitch-context route=\"/x\"/> hi"},
+            {"type": "user", "text": "<viberpit-context route=\"/x\"/> hi"},
             {"type": "textDelta", "text": "A" * 5000},
             {"type": "toolCall", "name": "Bash", "input": {"command": "ls"}},
         ], "earliestTurn": 0, "totalTurns": 1})
@@ -62,8 +64,8 @@ async def test_transcript_tail_truncates_and_escapes():
     tools = build_tools(_api(handler))
     out = await _tool(tools, "get_session_transcript").handler({"id": "abc", "last_n": 5})
     text = out["content"][0]["text"]
-    assert "<ccswitch-context" not in text
-    assert "&lt;ccswitch-context" in text
+    assert "<viberpit-context" not in text
+    assert "&lt;viberpit-context" in text
     assert len(text) < 4000
 
 
@@ -230,7 +232,7 @@ async def test_advance_initiative_rejects_bad_slug():
 
 def test_specs_and_annotations():
     assert TOOL_SPECS["list_sessions"].tool_class is ToolClass.READ
-    assert annotation_for("mcp__ccswitch__list_sessions").tool_class is ToolClass.READ
+    assert annotation_for(MCP_PREFIX + "list_sessions").tool_class is ToolClass.READ
     assert annotation_for("mcp__other__list_sessions") is None
     for t in build_tools(_api(lambda r: httpx.Response(200, json={}))):
         assert t.name in TOOL_SPECS, f"tool {t.name} has no ToolSpec"
@@ -308,7 +310,8 @@ _MUTATION_CALLS = [
       "permission_mode": "interactive", "account": "acct"},
      "POST", "/api/sessions",
      {"name": None, "initialPrompt": "fix the flake", "repo": "o/r", "model": "opus",
-      "permissionMode": "interactive", "account": "acct"}),
+      "permissionMode": "interactive", "account": "acct", "branch": None,
+      "presetId": None, "permissionProfileId": None}),
     ("send_prompt", {"id": _SID, "text": "carry on", "interrupt": True},
      "POST", f"/api/sessions/{_SID}/prompt", {"text": "carry on", "interrupt": True}),
     ("send_prompt", {"id": _SID, "text": "carry on"},
@@ -952,7 +955,7 @@ def test_product_tool_classes():
         assert TOOL_SPECS[name].tool_class is ToolClass.READ
     for name in ("resolve_triage", "request_product_sync"):
         assert TOOL_SPECS[name].tool_class is ToolClass.MUTATION
-        assert annotation_for(f"mcp__ccswitch__{name}").tool_class is ToolClass.MUTATION
+        assert annotation_for(f"{MCP_PREFIX}{name}").tool_class is ToolClass.MUTATION
 
 
 # --- Automation read tools (plan Task 6.3, Pack A) -----------------------------------
@@ -1089,8 +1092,101 @@ def test_automation_read_tool_classes_and_the_read_post_escape_hatch():
                  "list_backlog_candidates", "get_backlog_groups", "get_cicd_findings",
                  "get_pr_doctor_consolidation", "get_pr_doctor_job", "preview_schedule"):
         assert TOOL_SPECS[name].tool_class is ToolClass.READ
-        assert annotation_for(f"mcp__ccswitch__{name}").tool_class is ToolClass.READ
+        assert annotation_for(f"{MCP_PREFIX}{name}").tool_class is ToolClass.READ
     assert "preview_schedule" in READ_POSTS
+
+
+# --- Session-start conveniences (plan Task 7.3, Pack C) ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_presets_reads_the_presets_route():
+    def h(req: httpx.Request):
+        assert req.method == "GET"
+        assert req.url.path == "/api/presets"
+        return httpx.Response(200, json=[{"id": "p1", "name": "review"}])
+
+    out = await _tool(build_tools(_api(h)), "list_presets").handler({})
+    assert "is_error" not in out
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert data == [{"id": "p1", "name": "review"}]
+
+
+@pytest.mark.asyncio
+async def test_list_templates_passes_tag_only_when_given():
+    seen = {}
+
+    def h(req: httpx.Request):
+        seen["params"] = dict(req.url.params)
+        return httpx.Response(200, json=[{"id": "t1", "name": "standup", "tags": ["bugfix"]}])
+
+    out = await _tool(build_tools(_api(h)), "list_templates").handler({"tag": "bugfix"})
+    assert "is_error" not in out
+    assert seen["params"] == {"tag": "bugfix"}
+
+    seen.clear()
+    await _tool(build_tools(_api(h)), "list_templates").handler({})
+    assert seen["params"] == {}, "an unset tag must let the server return everything"
+
+
+@pytest.mark.asyncio
+async def test_render_template_is_a_read_shaped_post():
+    from server.assistant.policy import READ_POSTS
+
+    def h(req: httpx.Request):
+        assert req.method == "POST"
+        assert req.url.path == "/api/templates/t1/render"
+        assert json.loads(req.content) == {"variables": {"name": "x"}}
+        return httpx.Response(200, json={"rendered": "hi x"})
+
+    out = await _tool(build_tools(_api(h)), "render_template").handler(
+        {"id": "t1", "vars": {"name": "x"}})
+    assert "is_error" not in out
+    assert json.loads(out["content"][0]["text"])["data"] == {"rendered": "hi x"}
+    assert TOOL_SPECS["render_template"].tool_class is ToolClass.READ
+    assert "render_template" in READ_POSTS
+
+
+@pytest.mark.asyncio
+async def test_render_template_defaults_vars_to_an_empty_object():
+    def h(req: httpx.Request):
+        assert json.loads(req.content) == {"variables": {}}
+        return httpx.Response(200, json={"rendered": ""})
+
+    out = await _tool(build_tools(_api(h)), "render_template").handler({"id": "t1"})
+    assert "is_error" not in out
+
+
+@pytest.mark.asyncio
+async def test_render_template_rejects_a_bad_id_locally():
+    calls: list[str] = []
+
+    def h(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={"rendered": ""})
+
+    out = await _tool(build_tools(_api(h)), "render_template").handler(
+        {"id": "../templates", "vars": {}})
+    assert out["is_error"] is True
+    assert calls == [], "a locally-rejected template id must never reach the API"
+
+    out = await _tool(build_tools(_api(h)), "render_template").handler(
+        {"id": "not a valid id", "vars": {}})
+    assert out["is_error"] is True
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_list_permission_profiles_reads_the_permission_profiles_route():
+    def h(req: httpx.Request):
+        assert req.method == "GET"
+        assert req.url.path == "/api/permission-profiles"
+        return httpx.Response(200, json=[{"id": "pp1", "name": "read-only"}])
+
+    out = await _tool(build_tools(_api(h)), "list_permission_profiles").handler({})
+    assert "is_error" not in out
+    data = json.loads(out["content"][0]["text"])["data"]
+    assert data == [{"id": "pp1", "name": "read-only"}]
 
 
 # --- Automation fan-out tools (plan Task 6.4, Pack A) --------------------------------
@@ -1134,7 +1230,7 @@ def test_fan_out_tools_are_destructive():
     the class off `annotation_for`, so both lookups have to agree."""
     for name in _FAN_OUT_TOOLS:
         assert TOOL_SPECS[name].tool_class is ToolClass.DESTRUCTIVE
-        assert annotation_for(f"mcp__ccswitch__{name}").tool_class is ToolClass.DESTRUCTIVE
+        assert annotation_for(f"{MCP_PREFIX}{name}").tool_class is ToolClass.DESTRUCTIVE
 
 
 def test_fan_out_tool_descriptions_say_the_work_is_unattended():
@@ -1227,4 +1323,137 @@ async def test_consolidate_prs_rejects_an_empty_number_list_locally():
     out = await _tool(build_tools(_api(handler)), "consolidate_prs").handler(
         {"repo": "acme/billing", "numbers": []})
     assert out["is_error"] is True
+
+
+# ---------------------------------------------------------------------------
+# Batch tools (spec v2 B4): archive_sessions, unarchive_sessions, resume_sessions,
+# rotate_sessions, delete_sessions.
+# ---------------------------------------------------------------------------
+
+def test_batch_items_returns_titles():
+    assert batch_items(MCP_PREFIX + "archive_sessions",
+                       {"ids": ["a"], "titles": ["Fix auth"]}) == ["Fix auth"]
+    assert batch_items(MCP_PREFIX + "archive_session", {"id": "a"}) is None
+    assert batch_items(MCP_PREFIX + "list_sessions", {}) is None
+    # Malformed titles yield an empty list rather than raising — the tool handler's
+    # own validation (_batch_args) is what turns that into a corrective error.
+    assert batch_items(MCP_PREFIX + "delete_sessions", {"ids": ["a"]}) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,path", [
+    ("archive_sessions", "/api/sessions/batch/archive"),
+    ("unarchive_sessions", "/api/sessions/batch/unarchive"),
+    ("resume_sessions", "/api/sessions/batch/resume"),
+    ("rotate_sessions", "/api/sessions/batch/rotate"),
+    ("delete_sessions", "/api/sessions/batch/permanent-delete"),
+])
+async def test_batch_tools_post_ids_to_their_endpoint(name, path):
+    seen = {}
+
+    def handler(req: httpx.Request):
+        seen["path"] = req.url.path
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, json={"succeeded": [], "failed": []})
+
+    tools = build_tools(_api(handler))
+    ids = ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]
+    out = await _tool(tools, name).handler({"ids": ids, "titles": ["A", "B"]})
+    assert out.get("is_error") is not True
+    assert seen == {"path": path, "body": {"ids": ids}}
+
+
+@pytest.mark.asyncio
+async def test_archive_sessions_batch_validates_titles_and_size():
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={"succeeded": [], "failed": []})
+
+    tools = build_tools(_api(handler))
+    ids = ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]
+
+    # titles must name every id, in the same order.
+    bad = await _tool(tools, "archive_sessions").handler({"ids": ids, "titles": ["A"]})
+    assert bad["is_error"] is True
+
+    # at most 20 sessions per batch.
+    too_many = await _tool(tools, "archive_sessions").handler(
+        {"ids": ids * 11, "titles": ["x"] * 22})
+    assert too_many["is_error"] is True
+
+    assert calls == [], "a rejected batch must never reach the API"
     assert calls == []
+
+
+# --------------------------------------------------------------------------- #
+# Pack G writes (Task 7.6): comment_on_pr / create_issue                        #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_comment_on_pr_posts_to_the_pr_comments_route():
+    seen: dict = {}
+
+    def handler(req: httpx.Request):
+        seen["call"] = (req.method, req.url.path, json.loads(req.content))
+        return httpx.Response(201, json={"url": "https://c/1"})
+
+    out = await _tool(build_tools(_api(handler)), "comment_on_pr").handler(
+        {"repo": "acme/billing", "number": 42, "body": "  needs a rollback plan  "})
+    assert out.get("is_error") is not True
+    assert seen["call"] == ("POST", "/api/prs/acme/billing/42/comments",
+                            {"body": "needs a rollback plan"})
+
+
+@pytest.mark.asyncio
+async def test_create_issue_posts_repo_title_body_and_optional_labels():
+    seen: list[tuple] = []
+
+    def handler(req: httpx.Request):
+        seen.append((req.method, req.url.path, json.loads(req.content)))
+        return httpx.Response(201, json={"number": 21, "url": "https://i/21"})
+
+    tools = build_tools(_api(handler))
+    await _tool(tools, "create_issue").handler(
+        {"repo": "acme/billing", "title": "Flaky test", "body": "fails 1 in 5",
+         "labels": ["bug"]})
+    # labels is optional and must be omitted entirely when unset, so the endpoint's
+    # "no labels" default applies rather than an empty list meaning something else.
+    await _tool(tools, "create_issue").handler(
+        {"repo": "acme/billing", "title": "Flaky test", "body": "fails 1 in 5"})
+
+    assert seen[0] == ("POST", "/api/github/issues",
+                       {"repo": "acme/billing", "title": "Flaky test",
+                        "body": "fails 1 in 5", "labels": ["bug"]})
+    assert "labels" not in seen[1][2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,args", [
+    ("comment_on_pr", {"repo": "acme", "number": 1, "body": "b"}),
+    ("comment_on_pr", {"repo": "acme/billing", "number": 1, "body": "   "}),
+    ("comment_on_pr", {"repo": "acme/billing", "number": 1, "body": "x" * 10001}),
+    ("create_issue", {"repo": "acme/billing/extra", "title": "t", "body": "b"}),
+    ("create_issue", {"repo": "acme/billing", "title": "", "body": "b"}),
+    ("create_issue", {"repo": "acme/billing", "title": "t", "body": "x" * 10001}),
+])
+async def test_github_write_tools_reject_bad_args_locally(name, args):
+    """A public write must be refused BEFORE it reaches the API — a 422 comes back to the
+    model as an opaque API error, where a local ToolArgError names the field to fix."""
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(201, json={})
+
+    out = await _tool(build_tools(_api(handler)), name).handler(args)
+    assert out["is_error"] is True
+    assert calls == []
+
+
+def test_github_write_tools_are_mutation_class():
+    """Not READ (they leave ccswitch) and not DESTRUCTIVE (nothing is lost); MUTATION is
+    what puts a confirmation card in front of a public post."""
+    for name in ("comment_on_pr", "create_issue"):
+        assert TOOL_SPECS[name].tool_class is ToolClass.MUTATION

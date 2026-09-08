@@ -38,14 +38,18 @@ log = logging.getLogger(__name__)
 # nested pair that could fire in the wrong order.
 USAGE_RPC_TIMEOUT = 3.0
 
-# The opposite extreme: automation_consolidate / automation_trigger run the whole
-# clone→model-pick→spawn pipeline INLINE inside the daemon RPC and legitimately
-# take longer than the 30s client default (a healthy fetch + Haiku model pick +
-# worktree create + claude start). Without headroom the edge times out and 503s a
-# spawn the daemon actually completes — and a user retry then hits `duplicate`
-# (issue #567). Bound it well above that worst case, which the origin-only fetch
-# and the assess_model timeout already cap.
-AUTOMATION_RPC_TIMEOUT = 90.0
+# The opposite extreme: every RPC that runs the clone→worktree→spawn pipeline INLINE
+# inside the daemon — create_session for a user, automation_consolidate /
+# automation_trigger / backlog_runner_dispatch for automations — legitimately takes
+# longer than the 30s client default (a healthy fetch + model pick + worktree create +
+# claude start; 12–41s observed for automations, see pr_doctor_jobs). Without
+# headroom the edge times out and 503s a spawn the daemon actually completes — and a
+# retry then makes a second one. #567 fixed that for the automation calls; the user
+# create was left on the default, so on 2026-09-07 the edge gave up at 30s, the
+# daemon's session row landed 2s later, and the user's retry spawned a duplicate for
+# the same prompt. ONE budget for every spawn-shaped call, bound well above the worst
+# case (the origin-only fetch and the assess_model timeout already cap it).
+SPAWN_RPC_TIMEOUT = 90.0
 
 
 class _WireEvent:
@@ -374,6 +378,12 @@ class RemoteOrchestrator:
         r = await self._client.call("all_prs")
         return [PipelinePr.from_dict(d) for d in (r.get("prs") or [])]
 
+    async def pr_detail(self, repo: str, number: int) -> "dict | None":
+        """Resolve one PR's detail (checks, reviews, mergeability, session) via
+        the daemon (already JSON-safe)."""
+        r = await self._client.call("pr_detail", repo=repo, number=number)
+        return (r or {}).get("detail")
+
     async def all_repos_stage_models(self) -> "dict":
         """Resolve per-repo StageModels from the daemon."""
         from server.pipeline.track import StageModel
@@ -487,12 +497,12 @@ class RemoteOrchestrator:
         """Trigger a manual action for an item on *automation_id*, via the daemon."""
         return await self._client.call("automation_trigger", automation_id=automation_id,
                                        item_id=item_id, kind=kind,
-                                       timeout=AUTOMATION_RPC_TIMEOUT)
+                                       timeout=SPAWN_RPC_TIMEOUT)
 
     async def pr_doctor_job(self, job_id: str) -> dict | None:
         """Current state of an async pr-doctor trigger job, via the daemon (issue
         #668). A quick read — the default RPC timeout is fine (unlike the trigger,
-        which needed AUTOMATION_RPC_TIMEOUT while it blocked on clone+spawn)."""
+        which needed SPAWN_RPC_TIMEOUT while it blocked on clone+spawn)."""
         return await self._client.call("pr_doctor_job", job_id=job_id)
 
     async def consolidation_candidates(self, repo: str | None = None) -> dict:
@@ -502,7 +512,7 @@ class RemoteOrchestrator:
     async def automation_consolidate(self, repo: str, numbers: list[int]) -> dict:
         """Spawn a consolidation session for the selected PRs, via the daemon."""
         return await self._client.call("automation_consolidate", repo=repo, numbers=numbers,
-                                       timeout=AUTOMATION_RPC_TIMEOUT)
+                                       timeout=SPAWN_RPC_TIMEOUT)
 
     async def backlog_candidates(self) -> "list[dict]":
         """Current eligible issue candidates for manual dispatch, via the daemon."""
@@ -512,7 +522,7 @@ class RemoteOrchestrator:
     async def backlog_runner_dispatch(self, refs: "list[str]") -> dict:
         """Manually claim + spawn a batch for *refs*, via the daemon."""
         return await self._client.call("backlog_runner_dispatch", refs=refs,
-                                       timeout=AUTOMATION_RPC_TIMEOUT)
+                                       timeout=SPAWN_RPC_TIMEOUT)
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
         r = await self._client.call("get_session", session_id=session_id)
@@ -527,7 +537,14 @@ class RemoteOrchestrator:
         r = await self._client.call("find_assistant", owner_identity=owner_identity)
         return SessionRecord.from_dict(r["session"]) if r["session"] is not None else None
 
-    async def create_session(self, **kwargs) -> SessionRecord:
+    async def _call_create_session(self, kwargs: dict) -> dict:
+        """RPC ``create_session`` call plus the in-process error reconstruction.
+
+        Isolated so the SAME reconstruction runs whether *kwargs* is the
+        original request or the stripped rolling-upgrade retry — a DaemonError
+        surfacing from the retry (e.g. a genuine AllAccountsBusy from the old
+        daemon) must not skip this and propagate raw.
+        """
         # Faithfully reconstruct the in-process error contract across the RPC
         # boundary: the edge's create handler renders a clear "all accounts at
         # limit, resets <date>" message only if it catches AllAccountsBusy by
@@ -542,6 +559,24 @@ class RemoteOrchestrator:
         # AllAccountsBusy these carry no structured ``error_data`` payload —
         # the message alone is the whole contract — so reconstruction only
         # needs the type name.
+        try:
+            # The spawn budget, not the 30s default: this RPC blocks on worktree
+            # create + claude start (see SPAWN_RPC_TIMEOUT for the duplicate it made).
+            return await self._client.call("create_session", timeout=SPAWN_RPC_TIMEOUT,
+                                           **kwargs)
+        except DaemonError as exc:
+            if exc.err_type == "AllAccountsBusy":
+                data = exc.data or {}
+                reset = data.get("earliest_reset")
+                earliest = datetime.fromisoformat(reset) if reset else None
+                raise AllAccountsBusy(earliest, data.get("kind", "at_ceiling")) from exc
+            if exc.err_type in ("CloneError", "GhError"):
+                from ccswitch import gitrepos
+                exc_cls = gitrepos.CloneError if exc.err_type == "CloneError" else gitrepos.GhError
+                raise exc_cls(exc.message) from exc
+            raise
+
+    async def create_session(self, **kwargs) -> SessionRecord:
         if "engine" in kwargs:
             engine = parse_agent_engine(kwargs["engine"])
             if engine is AgentEngine.CLAUDE_CODE:
@@ -556,18 +591,25 @@ class RemoteOrchestrator:
                 # this — the branch above returns before the round trip.
                 await self._require_engine(engine)
         try:
-            r = await self._client.call("create_session", **kwargs)
+            r = await self._call_create_session(kwargs)
         except DaemonError as exc:
-            if exc.err_type == "AllAccountsBusy":
-                data = exc.data or {}
-                reset = data.get("earliest_reset")
-                earliest = datetime.fromisoformat(reset) if reset else None
-                raise AllAccountsBusy(earliest, data.get("kind", "at_ceiling")) from exc
-            if exc.err_type in ("CloneError", "GhError"):
-                from ccswitch import gitrepos
-                exc_cls = gitrepos.CloneError if exc.err_type == "CloneError" else gitrepos.GhError
-                raise exc_cls(exc.message) from exc
-            raise
+            if (exc.err_type == "TypeError"
+                    and ("'client_node'" in exc.message or "'display'" in exc.message)
+                    and ("client_node" in kwargs or "display" in kwargs)):
+                # Rolling upgrade: this daemon predates display routing and rejects
+                # the additive kwargs at call binding, before any work. Retry without
+                # them — the session is virtual there, which is what it would have
+                # been anyway. Same posture as the protocol-v1 `engine` pop above.
+                # Routed through _call_create_session again so a genuine error from
+                # the retry (AllAccountsBusy/CloneError/GhError) still reconstructs
+                # instead of propagating as a raw DaemonError.
+                log.warning("daemon predates display routing; creating without "
+                            "client_node/display (session will use a virtual display)")
+                stripped = {k: v for k, v in kwargs.items()
+                            if k not in ("client_node", "display")}
+                r = await self._call_create_session(stripped)
+            else:
+                raise
         return SessionRecord.from_dict(r["session"])
 
     async def send_prompt(self, session_id: str, text: str, images=None, *,
@@ -749,6 +791,15 @@ class RemoteOrchestrator:
 
     async def pop_pending_initial_attachment_ids(self, session_id):
         return await self._client.call("pop_pending_initial_attachment_ids", session_id=session_id)
+
+    async def post_notice(self, identity: str, notice: dict) -> bool:
+        """Deliver a proactive watch notice into identity's assistant drawer, via
+        the daemon (Task 8.4). See SessionOrchestrator.post_notice."""
+        return bool(await self._client.call("post_notice", identity=identity, notice=notice))
+
+    async def pop_pending_notices(self, session_id):
+        r = await self._client.call("pop_pending_notices", session_id=session_id)
+        return r if isinstance(r, list) else []
 
     async def command_catalog(self, session_id):
         return await self._client.call("command_catalog", session_id=session_id)
@@ -979,18 +1030,24 @@ class RemoteOrchestrator:
         """Cancel an in-flight device-flow login for a copilot account, via the daemon."""
         return await self._client.call("copilot_add_cancel", account=account)
 
-    async def copilot_usage(self, account: str) -> dict | None:
-        """Return the proxy /usage payload for a copilot account, via the daemon."""
-        return await self._client.call("copilot_usage", account=account)
+    async def process_quota_refresh(
+        self, account: str, *, force: bool = False, persist: bool = True
+    ) -> dict | None:
+        """Fresh-enough Copilot/Codex quota (a snapshot dict or None), via the daemon."""
+        return await self._client.call(
+            "process_quota_refresh", account=account, force=force, persist=persist
+        )
 
     async def codex_models(self, account: str, refresh: bool = False) -> dict:
         """Model options for an OpenAI account, from the daemon's app-server."""
         return await self._client.call("codex_models", account=account, refresh=refresh)
 
-    async def codex_account_status(self, account: str, *, persist: bool = True) -> dict:
+    async def codex_account_status(
+        self, account: str, *, persist: bool = True, force: bool = False
+    ) -> dict:
         """Quota, runner count and auth health for an OpenAI account, via the daemon."""
         return await self._client.call(
-            "codex_account_status", account=account, persist=persist
+            "codex_account_status", account=account, persist=persist, force=force
         )
 
     async def codex_validate_model(
@@ -1076,25 +1133,27 @@ class RemoteOrchestrator:
                 feature_count=0,
                 open_unclassified_count=0,
                 pending_proposal_count=0,
-                map_pr_open=False,
-                map_pr_merged=False,
             )
         return ProjectOnboardingView(**result)
 
     async def pm_onboard_spawn_map(self, slug: str, **kwargs) -> dict | None:
         """Spawn the archaeology map-synthesis session, via the daemon."""
         return await self._client.call("pm_onboard_spawn_map", slug=slug, **kwargs,
-                                       timeout=AUTOMATION_RPC_TIMEOUT)
+                                       timeout=SPAWN_RPC_TIMEOUT)
 
     async def pm_classify_run(self, slug: str, **kwargs) -> int:
         """Spawn one backlog-classification session, via the daemon."""
         r = await self._client.call("pm_classify_run", slug=slug, **kwargs,
-                                    timeout=AUTOMATION_RPC_TIMEOUT)
+                                    timeout=SPAWN_RPC_TIMEOUT)
         return int(r) if r is not None else 0
 
     async def pm_advance_map_merged(self, slug: str) -> None:
         """Advance map_proposed → map_merged, via the daemon."""
         await self._client.call("pm_advance_map_merged", slug=slug)
+
+    async def pm_advance_live(self, slug: str) -> None:
+        """Advance map_merged/classifying → live, via the daemon."""
+        await self._client.call("pm_advance_live", slug=slug)
 
     async def aclose(self) -> None:
         if self._global_pump is not None and not self._global_pump.done():

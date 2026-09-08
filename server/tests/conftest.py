@@ -85,14 +85,35 @@ def _redirect_state_off_production():
     home = os.environ.get("CCSWITCH_HOME")
     db = os.environ.get("CCSWITCH_DB_URL")
     archive = os.environ.get("CCSWITCH_ARCHIVE_HOME")
+    # The startup janitor uses repo_root, independently of the account store.
+    # Its empty test session registry cannot protect real sessions' worktrees.
+    # Fence both prefixes: a later entrypoint mirror must not restore a live root.
+    repo_vars = ("CCSWITCH_REPO_ROOT", "VIBERPIT_REPO_ROOT")
+    unsafe_repo_vars = [
+        name for name in repo_vars
+        if not os.environ.get(name)
+        or not Path(os.environ[name]).expanduser().resolve().is_relative_to(
+            Path(tempfile.gettempdir()).resolve()
+        )
+    ]
     home_is_prod = home is None or Path(home).resolve() == _REAL_HOME
     db_is_prod = _db_is_production(db)
     archive_is_prod = _archive_home_is_production(archive)
-    if not home_is_prod and not db_is_prod and not archive_is_prod:
+    if not home_is_prod and not db_is_prod and not archive_is_prod and not unsafe_repo_vars:
         return  # caller already isolated everything — respect it
 
     session_home = Path(tempfile.mkdtemp(prefix="ccswitch-tests-"))
     atexit.register(shutil.rmtree, session_home, ignore_errors=True)
+    if unsafe_repo_vars:
+        # Preserve an explicitly isolated harness root, including new-prefix-only
+        # configuration; otherwise allocate an empty root owned by this run.
+        repo_root = next(
+            (os.environ[name] for name in repo_vars if name not in unsafe_repo_vars),
+            str(session_home / "repos"),
+        )
+        Path(repo_root).mkdir(parents=True, exist_ok=True)
+        for name in unsafe_repo_vars:
+            os.environ[name] = repo_root
     if home_is_prod:
         os.environ["CCSWITCH_HOME"] = str(session_home)
     if db_is_prod:
@@ -197,7 +218,11 @@ import pytest
 # Test modules that exercise the daemon/IPC layer itself assert on the real
 # DEFAULT_SOCKET_PATH (value, precedence, live-socket probing), so the redirect
 # below must NOT apply to them. They manage their own daemon/socket state.
-_DAEMON_LAYER_MODULE_PREFIXES = ("test_ipc_", "test_remote_", "test_daemon_")
+# test_hostpaths asserts server.ipc.paths.DEFAULT_SOCKET_PATH `is` the
+# server.hostpaths.SESSIOND_SOCKET string it aliases — an identity check the
+# monkeypatch below would defeat.
+_DAEMON_LAYER_MODULE_PREFIXES = ("test_ipc_", "test_remote_", "test_daemon_",
+                                 "test_hostpaths")  # exact module; identity test on ipc_paths.DEFAULT_SOCKET_PATH
 
 
 @pytest.fixture(autouse=True)
@@ -250,6 +275,11 @@ def isolated_db(tmp_path, monkeypatch):
 def pytest_configure(config):
     config.addinivalue_line(
         "markers", "asyncio: mark test as async"
+    )
+    config.addinivalue_line(
+        "markers",
+        "slow: real-time waits (watchdog timers, subprocess spawns) — excluded from "
+        "the fast local default (`pytest -m 'not slow'`), always run in CI (#823)",
     )
 
 
@@ -454,6 +484,100 @@ def _install_no_real_grouping_guard():
 
 
 _install_no_real_grouping_guard()
+
+
+# --------------------------------------------------------------------------- #
+# No-real-SDK-subprocess guard at the SHARED door (issue #1383).               #
+#                                                                              #
+# The two guards above each close ONE call site. The doors are plural and      #
+# growing: nine modules define their own `_default_query_fn` (goal_inference,  #
+# title_generator, prompt_refiner, open_question, autopilot_decider,           #
+# model_pick, pr_intent, nudge_composer, backlog_grouping) and                 #
+# claude_sdk_factory builds three ClaudeSDKClients (session, suggester,        #
+# summarizer). Every one of them carries some variant of the comment "lazy —   #
+# not available in tests", and every one of them is WRONG: claude-agent-sdk is #
+# a hard dependency, so the import succeeds, the SDK falls back to its own     #
+# bundled `claude` binary, and the call spends 14-75s discovering it is        #
+# `Not logged in`.                                                             #
+#                                                                              #
+# That is the mechanism behind #1383. A WS test injects a fake only at the     #
+# DRIVER door (`SessionOrchestrator(sdk_factory=...)`); the auxiliary paths    #
+# the same orchestrator drives — auto-name, suggestions, summaries, goal       #
+# inference — reach the SDK by direct module import and escape the fake. On    #
+# the 2-vCPU shard several of those serialize inside one test's window, which  #
+# is why `test_teardown_unsubscribes_even_with_an_auto_reattach_in_flight`     #
+# blew a 120s fence and then a 240s one, seven times, always on shard 2 and    #
+# always on a diff disjoint from WS teardown. The fence was never the variable.#
+#                                                                              #
+# Closing the doors one by one would fix today's flake and leave door #13      #
+# open. They all resolve their symbol off the `claude_agent_sdk` PACKAGE at    #
+# call time (that is what "lazy" buys), so replacing the two package           #
+# attributes here closes every existing and future door with one installer.    #
+#                                                                              #
+# Shape matters: the stubs fail exactly where the real ones do — `query` on    #
+# first iteration, `ClaudeSDKClient` on connect, not construction — so what    #
+# runs at each call site is its own existing degrade-on-failure path (return   #
+# None / [] and log), the same outcome CI already had, minus the minutes. The  #
+# message deliberately avoids every substring `sessions.failure.classify`      #
+# treats as transient, so `helper_call` classifies it "other" and does not     #
+# burn the retry ladder on it.                                                 #
+#                                                                              #
+# Opting back in: a test that wants real SDK behaviour replaces the attribute  #
+# for its own scope, exactly as test_sdk_factory.py and test_suggestions.py    #
+# already do with their own fakes.                                             #
+#                                                                              #
+# Expect this guard to EXPOSE tests that were green only because of the        #
+# latency it removes. It found one:                                            #
+# test_ws.py::test_replay_batch_leads_with_reset_on_every_attach drained for a #
+# `replayComplete` that, on a now-unloaded event loop, already arrived inside  #
+# the first batch frame — the batcher had been flushing mid-replay only        #
+# because a stray real spawn kept the loop busy. That is this same bug one     #
+# level down, not a defect in the guard; fix such a test, do not re-widen a    #
+# fence. `_drain_events`/`_drain_until` are where it will surface, because     #
+# their receive_text() has no timeout and so outlives their `timeout` arg.     #
+# --------------------------------------------------------------------------- #
+_NO_REAL_SDK_MSG = (
+    "server tests must not spawn a real SDK subprocess: this call site reached "
+    "claude_agent_sdk without an injected fake. Inject one (query_fn=/sdk_factory=/"
+    "monkeypatch the attribute) — see server/tests/conftest.py and issue #1383."
+)
+
+
+def _install_no_real_sdk_spawn_guard():
+    try:
+        import claude_agent_sdk as _sdk
+    except ImportError:  # pragma: no cover — nothing to spawn without the SDK
+        return
+    if getattr(getattr(_sdk, "query", None), "_no_real_sdk_guard", False):
+        return  # already guarded (conftest re-imported)
+
+    async def _blocked_query(*args, **kwargs):
+        raise RuntimeError(_NO_REAL_SDK_MSG)
+        yield  # pragma: no cover — makes this an async GENERATOR, like the real query
+
+    class _BlockedSDKClient:
+        """Constructs like the real client; refuses to spawn one."""
+
+        _no_real_sdk_guard = True
+
+        def __init__(self, *args, **kwargs):
+            self.options = kwargs.get("options")
+
+        async def connect(self, *args, **kwargs):
+            raise RuntimeError(_NO_REAL_SDK_MSG)
+
+        async def __aenter__(self):
+            await self.connect()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    _blocked_query._no_real_sdk_guard = True
+    _sdk.query = _blocked_query
+    _sdk.ClaudeSDKClient = _BlockedSDKClient
+
+
+_install_no_real_sdk_spawn_guard()
 
 
 # --------------------------------------------------------------------------- #

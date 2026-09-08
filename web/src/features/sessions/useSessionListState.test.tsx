@@ -219,7 +219,7 @@ describe('filterOptions', () => {
   it('status stays the full closed vocabulary under any filter', async () => {
     const h = await mountReady()
     const all = h.result.current.filterOptions.status.map((o) => o.value)
-    expect(all).toEqual(['needs-you', 'unreachable', 'error', 'your-turn', 'waiting', 'busy'])
+    expect(all).toEqual(['needs-you', 'unreachable', 'error', 'your-turn', 'complete', 'waiting', 'busy'])
     act(() => h.result.current.setFilters(filters({ status: 'busy' })))
     expect(h.result.current.filterOptions.status.map((o) => o.value)).toEqual(all)
   })

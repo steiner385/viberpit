@@ -18,7 +18,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable
 
-from ccswitch import gitrepos
+from ccswitch import brand, gitrepos
 
 from ..pm.queue import (
     IN_PROGRESS_LABEL,
@@ -566,7 +566,7 @@ def ensure_claim_labels(repos: Iterable[str], *, gh_run: GhRun = gitrepos._run_g
         for name in (IN_PROGRESS_LABEL, NEEDS_HUMAN_LABEL):
             try:
                 gh_run(["label", "create", name, "--repo", repo, "--color", "ededed",
-                        "--description", "ccswitch backlog-runner", "--force"],
+                        "--description", f"{brand.SLUG} backlog-runner", "--force"],
                       token=token)
             except Exception:  # pragma: no cover — provisioning must never raise
                 log.warning("backlog_github.ensure_label_failed repo=%s name=%s", repo, name)
@@ -866,7 +866,7 @@ def _escalate_issue(ref: str, reason: str, pr_link: str, *, gh_run: GhRun) -> No
     _issue_comment(
         ref,
         f"Batch PR {pr_link} merged, but this issue was **not** auto-closed: "
-        f"{reason}. Escalated to a human (`needs-human`) by ccswitch Backlog "
+        f"{reason}. Escalated to a human (`needs-human`) by {brand.NAME} Backlog "
         f"Runner — please complete the real work and close manually.",
         gh_run=gh_run)
     _issue_edit(ref, add=NEEDS_HUMAN_LABEL, remove=IN_PROGRESS_LABEL, gh_run=gh_run)
@@ -881,7 +881,7 @@ def _release_tracking_issue(ref: str, open_children: int, pr_link: str, *,
     _issue_comment(
         ref,
         f"PR {pr_link} merged but this is a tracking issue with {open_children} open "
-        f"sub-issue(s), so ccswitch Backlog Runner left it open (claim released). "
+        f"sub-issue(s), so {brand.NAME} Backlog Runner left it open (claim released). "
         f"It closes when its sub-issues do.",
         gh_run=gh_run)
     _issue_edit(ref, remove=IN_PROGRESS_LABEL, gh_run=gh_run)
@@ -933,7 +933,7 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
         return "retry"
     pr_link = getattr(info, "url", "") or f"PR #{pr_number}"
     comment = (f"Implemented by {pr_link} (merged) — "
-               f"closed by ccswitch Backlog Runner.")
+               f"closed by {brand.NAME} Backlog Runner.")
     # A verified-linked PR still must not falsely complete an action/ops issue or
     # be satisfied by a docs-only diff (#784). Fetch the diff once (same PR for
     # the whole batch), then gate each linked issue on its own signals.
@@ -961,7 +961,7 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
         _issue_comment(
             ref,
             f"Batch PR {pr_link} merged without referencing this issue — "
-            f"returned to the backlog pool (left open) by ccswitch Backlog Runner.",
+            f"returned to the backlog pool (left open) by {brand.NAME} Backlog Runner.",
             gh_run=gh_run)
         _issue_edit(ref, remove=IN_PROGRESS_LABEL, gh_run=gh_run)
     return "closed"
@@ -1070,7 +1070,7 @@ def heal_orphan_claims(refs: list[str], tracked: set[str], *,
                     healed.append((ref, "escalated"))
                     continue
                 comment = (f"Implemented by {pr_link} (merged) — closed by "
-                           f"ccswitch Backlog Runner (orphaned-claim heal).")
+                           f"{brand.NAME} Backlog Runner (orphaned-claim heal).")
                 if _close_issue(ref, comment, gh_run=gh_run):
                     _issue_edit(ref, remove=IN_PROGRESS_LABEL, gh_run=gh_run)
                     healed.append((ref, "closed"))

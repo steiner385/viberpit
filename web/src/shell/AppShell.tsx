@@ -25,11 +25,13 @@ import {
 import { useDrawerName, useOpenDrawer, type DrawerName } from './drawerParam'
 import { InteractionProvider } from './InteractionContext'
 import { readKioskConfig } from './kiosk'
+import { listColumnFor } from './listColumns'
 import { NAV_BY_ID, navDefForPath } from './navDefs'
 import { useOpenItem, useOpenSessionId } from './openSessionId'
 import { SessionGestureProvider, useSessionGestureHandle } from './sessionGestures'
 import { overlayIsOpen } from './useOverlayState'
 import { useShortcuts } from './useShortcuts'
+import { useToastAnchor } from './toastInsets'
 import { useAppBanners } from './useAppBanners'
 import { ViewportProvider, useViewport, type LayoutMode } from './useViewport'
 import { ContextList } from './regions/ContextList'
@@ -120,25 +122,34 @@ export const REGION_VISIBILITY: Record<RegionId, (c: RegionContext) => boolean> 
 }
 
 /**
- * The `D` cell of §4.2's matrix, as a function: kiosk keeps `app.banners`
- * MOUNTED and narrows what goes in it to `tone === 'danger'`.
+ * The `D` cell of §4.2's matrix, as a function. Two rules, both keeping
+ * `app.banners` MOUNTED and narrowing what goes in it.
  *
- * A wall display has nobody in front of it, so an advisory ("a new version is
- * available", "messages are held") is noise that occupies the top of a screen
- * read from ten feet away, possibly for days. Only the two things a passer-by
- * must act on — the daemon being down and every account being rate-limited,
- * both `danger` in `useAppBanners` — earn that space.
+ * **Kiosk narrows by tone.** A wall display has nobody in front of it, so an
+ * advisory ("a new version is available", "messages are held") is noise that
+ * occupies the top of a screen read from ten feet away, possibly for days. Only
+ * the two things a passer-by must act on — the daemon being down and every
+ * account being rate-limited, both `danger` in `useAppBanners` — earn that
+ * space.
  *
  * An item with no `tone` is documented as "treated as 'info'" by
  * `BannerStackItem`, and `!== 'danger'` gives it exactly that treatment: a new
  * banner declared without a tone is filtered OUT of kiosk rather than defaulting
  * onto a wall display unreviewed.
  *
- * Exported so the filter can be asserted as a rule, the same way
+ * **Every mode narrows by `hideOn`.** A banner names the modes where it costs
+ * more room than it earns; today only `deploy` does, naming `'phone'`, because
+ * it is the tallest item in the stack and has a full home at Settings › Deploy.
+ * The two rules COMPOSE — kiosk keeps a `danger` banner that also lists
+ * `'phone'`, since hiding it is a phone-sized-screen judgement, not a
+ * wall-display one.
+ *
+ * Exported so both filters can be asserted as rules, the same way
  * `REGION_VISIBILITY` is.
  */
 export function bannersForMode(items: BannerStackItem[], mode: LayoutMode): BannerStackItem[] {
-  return mode === 'kiosk' ? items.filter((i) => i.tone === 'danger') : items
+  const shown = mode === 'kiosk' ? items.filter((i) => i.tone === 'danger') : items
+  return shown.filter((i) => !i.hideOn?.includes(mode))
 }
 
 /**
@@ -161,7 +172,7 @@ export function AppShell() {
     <ViewportProvider kiosk={kiosk}>
       <InteractionProvider interactive={!kiosk.enabled}>
         {/* `Overlays` throws without this provider (it hosts `DeployOverlay`),
-            and `DeployPanel` — mounted from the Settings page — must share the
+            and `DeploySection` — mounted from the Settings page — must share the
             same controller instance, so it wraps the whole shell. */}
         <DeployControllerProvider>
           {/* The bridge the open session publishes its keyboard gestures through
@@ -305,6 +316,11 @@ function AppShellInner() {
   // than the region, so the dock inside it survives — see `PageHost`.
   const pageHidden = listVisible && mode !== 'desktop'
 
+  // The list+main wrapper is the toaster's band: below the TopBar and banners,
+  // right of the rail, left of a pushed drawer. Toasts sit at its top edge and
+  // never on the chrome around it (`shell/toastInsets.ts`).
+  const toastBandRef = useToastAnchor('band')
+
   return (
     <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-canvas text-ink">
       {shows('app.banners') && (
@@ -320,12 +336,15 @@ function AppShellInner() {
             lives inside `app.main` and must stay under the content, never
             beside it. */}
         <div
+          ref={toastBandRef}
           className={cn(
             'flex min-w-0 min-h-0 flex-1',
             mode === 'desktop' ? 'flex-row' : 'flex-col',
           )}
         >
-          {listVisible && <ContextList sessions={workspace.list} />}
+          {listVisible && (
+            <ContextList column={listColumnFor(def?.id, { sessions: workspace.list })} />
+          )}
           <PageHost
             pageHidden={pageHidden}
             dock={shows('app.dock') ? <PromptDock {...workspace.dock} /> : undefined}

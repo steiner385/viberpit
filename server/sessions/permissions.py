@@ -3,6 +3,7 @@ import asyncio, os, time, uuid as _uuid
 from pathlib import Path
 
 from ccswitch import paths as _paths
+from server.mcp_spec import is_mcp_tool
 
 # File-writing tools whose target is a single path argument.
 _FILE_WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
@@ -124,23 +125,40 @@ class PermissionRegistry:
             return False
         return True
 
-    async def request(self, session_id, turn_id, tool, input, *, mode, denylist, allowlist, identity):
+    async def request(self, session_id, turn_id, tool, input, *, mode, denylist, allowlist, identity,
+                      items: list[str] | None = None):
         now = time.time()
-        # ccswitch's own MCP server (`mcp__ccswitch__*`) is the app talking to
+        # Our own MCP server (`mcp__viberpit__*`, and `mcp__ccswitch__*` from
+        # before the rebrand) is the app talking to
         # itself, not a third-party integration trusted unconditionally like the
         # generic `mcp__` branch below — spec §4.4. Its cards are gated on the
         # tool's ANNOTATION (read/mutation/destructive), not on session mode, so
         # this branch sits ABOVE both the full-auto/bypassPermissions shortcut and
-        # the generic mcp__ auto-allow: a destructive ccswitch tool must prompt
-        # even in full-auto. Local import avoids a module-load-order cycle with
-        # server.assistant.tools (which itself does not import server.sessions,
-        # but keeping this import lazy is cheap insurance).
-        if tool.startswith("mcp__ccswitch__"):
-            from server.assistant import tools as assistant_tools
-            ann = assistant_tools.annotation_for(tool)
-            if ann is not None and ann.tool_class == assistant_tools.ToolClass.READ:
+        # the generic mcp__ auto-allow: a destructive tool must prompt
+        # even in full-auto. `is_mcp_tool` accepts BOTH brand prefixes, so a
+        # resumed thread or a replayed transcript naming a tool the pre-rebrand
+        # way is still gated by its annotation instead of falling through to the
+        # generic `mcp__` auto-allow.
+        #
+        # The lookup goes through `server.mcp_spec`, which consults EVERY
+        # registered surface — the assistant drawer AND a coding session's own
+        # tools. Reading `server.assistant.tools.annotation_for` here instead
+        # would resolve only the drawer's table, so a session tool would arrive
+        # with a None annotation. Both surface modules are imported (lazily, to
+        # keep the module-load order free of a server.assistant ↔ server.sessions
+        # edge) purely for their `register_surface` side effect: an unregistered
+        # surface answers None, and None fails OPEN into the mutation branch.
+        if is_mcp_tool(tool):
+            from server.assistant import tools as _assistant_tools  # noqa: F401 - registers surface
+            from server.mcp_spec import ToolClass, annotation_for
+            from server.sessions.tools import registry as _session_registry  # noqa: F401 - registers surface
+            ann = annotation_for(tool)
+            # READ and SIGNAL both auto-allow with no card. They differ in what they
+            # claim, not in how they are gated: READ changes nothing, SIGNAL changes
+            # only ccswitch's view of THIS session and replaces an ungated marker.
+            if ann is not None and ann.tool_class in (ToolClass.READ, ToolClass.SIGNAL):
                 return None, _resolved(True), True
-            if ann is not None and ann.tool_class == assistant_tools.ToolClass.DESTRUCTIVE:
+            if ann is not None and ann.tool_class == ToolClass.DESTRUCTIVE:
                 # Never consults the grant cache, in ANY mode — a destructive
                 # ccswitch action always surfaces a card, and that card never
                 # offers "Always allow" (always_allowed=False on the pending
@@ -149,7 +167,7 @@ class PermissionRegistry:
                 fut = asyncio.get_running_loop().create_future()
                 self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
                                       "tool": tool, "input": input, "turn_id": turn_id,
-                                      "always_allowed": False}
+                                      "always_allowed": False, "items": items}
                 return pid, fut, False
             # MUTATION, or an unknown/not-yet-registered ccswitch tool (treated
             # conservatively as mutation-like rather than raising on a None
@@ -165,7 +183,7 @@ class PermissionRegistry:
             fut = asyncio.get_running_loop().create_future()
             self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
                                   "tool": tool, "input": input, "turn_id": turn_id,
-                                  "always_allowed": True}
+                                  "always_allowed": True, "items": items}
             return pid, fut, True
         if mode in ("full-auto", "bypassPermissions"):
             # Full auto / bypass-permissions — incl. shell: approve everything
@@ -213,10 +231,10 @@ class PermissionRegistry:
             # materially larger blast radius — remain gated.
             return None, _resolved(True), True
         pid = _uuid.uuid4().hex
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        fut = asyncio.get_running_loop().create_future()
         self._pending[pid] = {"future": fut, "identity": identity, "session_id": session_id,
                               "tool": tool, "input": input, "turn_id": turn_id,
-                              "always_allowed": True}
+                              "always_allowed": True, "items": items}
         return pid, fut, True
 
     async def request_external(self, session_id, turn_id, tool, input, *, identity,
@@ -277,7 +295,8 @@ class PermissionRegistry:
         return True
 
     def pending(self, session_id) -> list[dict]:
-        return [{"permId": pid, "tool": r["tool"], "input": r["input"], "turn_id": r["turn_id"]}
+        return [{"permId": pid, "tool": r["tool"], "input": r["input"], "turn_id": r["turn_id"],
+                 "items": r.get("items")}
                 for pid, r in self._pending.items() if r["session_id"] == session_id]
 
     def rethread_identity(self, session_id, old, new) -> int:

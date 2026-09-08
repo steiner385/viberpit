@@ -9,9 +9,15 @@ links:
     - server/sdlc/review_policy.py
     - server/sdlc/prompts.py
     - server/sdlc/evals.py
+    - server/sdlc/control_bands.py
+    - server/sdlc/bands.py
+    - server/sdlc/bands.yaml
+    - server/sdlc/triage_store.py
     - server/api/sdlc.py
     - server/automations/sdlc_intake.py
     - server/automations/sdlc_synthesizer.py
+    - server/automations/control_band_monitor.py
+    - web/src/initiatives/IncidentQueue.tsx
     - .claude/REVIEW.md
     - evals/README.md
     - web/src/automations/AutomationsTab.tsx
@@ -54,7 +60,11 @@ incident becomes a regression eval.
 - Review findings conform to REVIEW.md (in-policy categories, nit cap ≤ 3, no self-approval).
 
 **Non-goals** — v1 is deliberately propose-only and human-gated: the SDLC automations do not
-auto-approve, auto-advance, or run the Maintain loop autonomously yet. The engine and
+auto-approve or auto-advance. The Maintain loop detects and files autonomously, but its
+strongest response is still to *queue* an incident so Intake opens an `intent.md` PR —
+which is itself a proposal behind the same human gate. Its own automation ships off, and
+`monitor` mode exists so an operator can watch the queue fill before letting any tier act.
+The engine and
 governance/review/eval cores are pure (no I/O) — they decide, they do not act; spawning,
 recording, and GitHub mutations live in the automations and API. Evals are not a substitute
 for CI tests; static eval checks run in CI, agent evals run out-of-band.
@@ -64,9 +74,10 @@ for CI tests; static eval checks run in CI, agent evals run out-of-band.
   review-policy chain is landed (Phase 2 design #808; stage engine + prompts #810; intake
   #812/#813; API + build-handoff correlation #814; governance & evals control plane #819
   closing Phase 3 epic #805; REVIEW.md policy + pr_doctor `@claude` wiring #824; web
-  Initiative board #818). But the **Maintain-loop epic #804 (control-band monitoring) is
-  still OPEN**, so the lifecycle's last stage is not yet delivered — hence delivering, not
-  live.
+  Initiative board #818), and the **Maintain loop (#804) now closes the cycle**. What still
+  holds the state back is **#832**, below: the governance gate meant to keep the loop honest
+  has a live correctness bug, and a loop that can now re-enter itself autonomously should not
+  be called `live` while the gate around it misfires.
 - **Open governance gap #832:** the PreToolUse governance gate false-positives on prose — it
   blocks the agent from filing issues and even from reading its own source. This is a live
   correctness bug in the very gate meant to keep the loop honest; it must be tightened before
@@ -103,5 +114,9 @@ for CI tests; static eval checks run in CI, agent evals run out-of-band.
   (/api/sdlc + build-handoff correlation), #819 (Phase 3 governance & evals control plane,
   closes #805), #824 (REVIEW.md policy + pr_doctor @claude-comment wiring), #818 (web
   Initiative board), #809 (Initiative + InitiativeArtifact spine, #796).
-- Open issues: #804 (Maintain-loop epic — still open, gates `live`), #832 (governance
-  PreToolUse false-positives on prose).
+- Maintain loop (#804): `server/sdlc/control_bands.py` (Western Electric detection),
+  `server/sdlc/bands.py` + `server/sdlc/bands.yaml` (the version-controlled tier policy),
+  `server/sdlc/triage_store.py`, `server/automations/control_band_monitor.py`,
+  `GET /api/sdlc/triage` + `POST /api/sdlc/triage/{id}/action`,
+  `web/src/initiatives/IncidentQueue.tsx`.
+- Open issues: #832 (governance PreToolUse false-positives on prose — now the gate on `live`).

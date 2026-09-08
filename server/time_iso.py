@@ -26,3 +26,28 @@ def iso_utc(dt: datetime | None) -> str | None:
     else:
         dt = dt.astimezone(timezone.utc)
     return dt.isoformat()
+
+
+def parse_iso_utc(value: str | None) -> datetime | None:
+    """The read direction of ``iso_utc``: an ISO-8601 string → aware UTC datetime.
+
+    Tolerates GitHub's trailing ``Z`` form (which ``datetime.fromisoformat``
+    rejects before Python 3.11) and offset-less strings, which are read as UTC for
+    the same reason ``iso_utc`` writes them that way — everything this app
+    persists is UTC. Returns ``None`` for ``None``, an empty string, or anything
+    unparseable, so a single corrupt row degrades to a skipped sample instead of
+    crashing the reader that found it.
+
+    Lives here, next to ``iso_utc``, rather than as another private
+    ``fromisoformat(s.replace("Z", "+00:00"))`` copy: this module is the app's
+    ISO boundary (constitution VI). Several older ``server/pipeline`` and
+    ``server/github`` modules still carry their own private variants returning
+    epoch seconds or milliseconds; consolidating those is a separate change.
+    """
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt

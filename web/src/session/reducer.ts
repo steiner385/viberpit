@@ -15,6 +15,11 @@ export const OPTIMISTIC_USER_ID = 'optimistic:user'
 const PENDING_ID_PREFIX = 'pending:'
 const pendingSeq = (p: { id: string }): number => Number(p.id.slice(PENDING_ID_PREFIX.length))
 
+/** Id prefix for a synthetic turn created by a `notice` event (see the `notice` case). */
+const NOTICE_TURN_PREFIX = 'notice-turn:'
+/** A notice turn older than this, relative to the newest arrival, collapses into a count. */
+const NOTICE_COLLAPSE_AGE_MS = 24 * 60 * 60 * 1000
+
 /** True for a turn that is a sent-but-unconfirmed prompt still awaiting its echo. */
 const isPendingTurn = (t: Turn): boolean => t.role === 'user' && t.id.startsWith(PENDING_ID_PREFIX)
 
@@ -25,11 +30,17 @@ export type Block =
   | { kind: 'thinking';   id: string; text: string; ts?: number }
   | { kind: 'image';      id: string; images: Array<{ url: string; mime: string; name: string }>; ts?: number }
   | { kind: 'tool';       id: string; toolId: string; name: string; toolKind: ToolKind; input: Record<string, unknown>; result?: { ok: boolean; payload: Record<string, unknown>; ts?: number }; ts?: number }
-  | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; ts?: number }
+  | { kind: 'permission'; id: string; permId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; items?: string[] | null; ts?: number }
   | { kind: 'question';   id: string; questionId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; live?: boolean; orphaned?: boolean; answered?: string[]; ts?: number }
   | { kind: 'notice';     id: string; text: string; ts?: number }
   | { kind: 'error';      id: string; code: string; message: string; resetsAt?: string | null; ts?: number }
   | { kind: 'recovering'; id: string; message: string; ts?: number }
+  // A proactive watch notice (see EvNotice) — distinct from the plain-text 'notice'
+  // banner above, which is a client-local transient (e.g. "Model → sonnet"). Named
+  // `noticeKind` (not `kind`) to avoid colliding with the block discriminant.
+  | { kind: 'noticeCard';      id: string; noticeKind: string; title: string; body: string; url?: string | null; watchId?: string | null; ts?: number }
+  // A run of older noticeCard turns folded into a count — see the `notice` case.
+  | { kind: 'noticeCollapsed'; id: string; count: number; ts?: number }
 
 // ── Turn ─────────────────────────────────────────────────────────────────────
 
@@ -801,7 +812,7 @@ export function transcriptReducer(
 
     // ── permissionRequest ─────────────────────────────────────────────────────
     case 'permissionRequest': {
-      const { permId, turnId, tool, toolKind, input, plan, alwaysAllowed } = ev
+      const { permId, turnId, tool, toolKind, input, plan, alwaysAllowed, items } = ev
       const [turns, idx] = ensureAssistantTurn(state.turns, turnId, ev.type)
       const turn = turns[idx]
 
@@ -810,7 +821,7 @@ export function transcriptReducer(
         return { ...state, turns }
       }
 
-      const newBlock: Block = { kind: 'permission', id: permId, permId, tool, toolKind, input, plan, alwaysAllowed, ts: ev.ts }
+      const newBlock: Block = { kind: 'permission', id: permId, permId, tool, toolKind, input, plan, alwaysAllowed, items, ts: ev.ts }
       const nextTurns = replaceTurn(turns, idx, (t) => ({
         ...t,
         blocks: [...t.blocks, newBlock],
@@ -1092,6 +1103,43 @@ export function transcriptReducer(
       return { ...state, turns }
     }
 
+    // ── notice ────────────────────────────────────────────────────────────────
+    case 'notice': {
+      const ts = ev.ts ?? Date.now()
+      const card: Block = {
+        kind: 'noticeCard', id: `${NOTICE_TURN_PREFIX}${ts}:n`,
+        noticeKind: ev.kind, title: ev.title, body: ev.body,
+        url: ev.url ?? null, watchId: ev.watchId ?? null, ts,
+      }
+      // Collapse the TRAILING run of consecutive notice-only turns older than 24h
+      // (relative to this arrival) into one running count, so a long-lived drawer
+      // doesn't accumulate dozens of full cards. Only the trailing run is ever
+      // touched — a conversation turn in between stops the scan, so nothing is
+      // reordered and no other turn's position changes.
+      let trailingStart = state.turns.length
+      while (trailingStart > 0 && state.turns[trailingStart - 1].id.startsWith(NOTICE_TURN_PREFIX)) trailingStart--
+      let collapsedCount = 0
+      const kept: Turn[] = []
+      for (const t of state.turns.slice(trailingStart)) {
+        const b = t.blocks[0]
+        if (b?.kind === 'noticeCard' && ts - (b.ts ?? ts) > NOTICE_COLLAPSE_AGE_MS) { collapsedCount += 1; continue }
+        if (b?.kind === 'noticeCollapsed' && ts - (b.ts ?? ts) > NOTICE_COLLAPSE_AGE_MS) { collapsedCount += b.count; continue }
+        kept.push(t)
+      }
+      const collapsedTurn: Turn[] = collapsedCount > 0
+        ? [{
+            id: `${NOTICE_TURN_PREFIX}collapsed`, role: 'assistant',
+            blocks: [{ kind: 'noticeCollapsed', id: `${NOTICE_TURN_PREFIX}collapsed:n`, count: collapsedCount, ts }],
+          }]
+        : []
+      const newTurn: Turn = { id: `${NOTICE_TURN_PREFIX}${ts}`, role: 'assistant', blocks: [card] }
+      return {
+        ...state,
+        turns: [...state.turns.slice(0, trailingStart), ...collapsedTurn, ...kept, newTurn],
+        openBlockId: null,
+      }
+    }
+
     // ── queueUpdate ───────────────────────────────────────────────────────────
     case 'queueUpdate': {
       return { ...state, queued: ev.items }
@@ -1172,6 +1220,12 @@ export function transcriptReducer(
         turns: [...state.turns, turn],
         pendingSent: capped,
         pendingSentSeq: state.pendingSentSeq + 1,
+        // Retire the banner: it always describes a turn that has already ended, and
+        // several of its messages (the interrupted-mid-tool one especially) literally
+        // tell the user to send another message. Sending is the acknowledgement. The
+        // inline `error` block stays in the transcript, so nothing is lost, and a
+        // condition that still holds raises a fresh error on this turn.
+        error: null,
       }
     }
 

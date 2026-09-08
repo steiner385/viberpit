@@ -51,6 +51,29 @@ Running re-auth on a worker — it must run on the master and stream the display
   for a ~1-year `sk-ant-oat01-…` setup-token, stored encrypted. `account_auth.py` turns that stored
   token into `CLAUDE_CODE_OAUTH_TOKEN` for every launch and helper call site — so an account with a
   dead browser-OAuth refresh token but a live setup-token authenticates everywhere.
+- Setup-token SCOPE decides whether the recovered account can report quota. `user:inference` alone
+  launches sessions but is refused by `GET /api/oauth/usage` — with a 429, not a 401 — so an account
+  recovered this way showed no usage at all and sat in a permanent usage-fetch backoff. `begin()`
+  now requests `user:inference user:profile` (`DEFAULT_SCOPE`); every working credential slot carries
+  `user:profile` and reads usage 200, while narrow-scope setup-tokens get 429 from the same host
+  seconds apart. A code is bound to the scope it was consented to, so a refusal cannot be retried at
+  exchange time: `_retry_at_fallback_scope` re-issues the challenge once at `FALLBACK_SCOPE`
+  (`user:inference`), costing one extra paste but never leaving re-auth worse than before.
+  `CCSWITCH_SETUP_TOKEN_SCOPE` pins the scope without a deploy — the only recovery for a refusal on
+  the *authorize* page, where no code is ever produced. A token already minted at the narrow scope
+  cannot gain the scope retroactively, so its account reports quota `UNSUPPORTED` (a permanent
+  capability gap, not a fetch failure) until it is re-minted.
+- The usage endpoint's 429 is NOT a scope signal on its own — it is the same status a genuine
+  throttle sends. The scope oracle is `GET /api/oauth/profile` (`oauth.has_usage_scope`): it guards
+  on the same `user:profile` scope and refuses a scope-less token with an explicit 403
+  `oauth_scope_insufficient`, while answering a `user:profile` token 200 (verified 2026-09-07). The
+  setup-token usage fallback confirms every failure against it: scope absent → `UNSUPPORTED` with
+  `reason=setup_token_scope`, which the Accounts page words as "re-authenticate"; scope present or
+  oracle unreachable → an ordinary bounded usage-fetch backoff, never a permanent verdict.
+  `submit_code` runs the same check at mint time so a token the authorize page silently narrowed is
+  reported on the reauth panel immediately (the log names the scope that was requested) rather than
+  as a blank quota badge later. Tokens minted before #1387 was deployed — the reauth ran against the
+  edge's *deployed* build, not the merged one — are narrow-scope and must simply be re-minted.
 - Browser re-auth alternative (#331): the reauth browser runs on a virtual X display viewable via
   web VNC; `auth_login.py` prepares a temp Chrome profile with Claude cookies stripped and cleans it
   up on cancel/timeout/error (#745).

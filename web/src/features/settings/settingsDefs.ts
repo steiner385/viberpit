@@ -2,6 +2,7 @@ import type * as React from 'react'
 import {
   SlidersHorizontal, Palette, Bell, Play, Bookmark, FileText, ShieldCheck, Workflow,
   Users, Server, Puzzle, Sparkles, SquareTerminal, Plug, Webhook, Camera, Info,
+  Rocket,
   type LucideIcon,
 } from 'lucide-react'
 import type { SettingsScope } from './scope'
@@ -9,6 +10,7 @@ import { GeneralSection } from './sections/GeneralSection'
 import { AppearanceSection } from './sections/AppearanceSection'
 import { SessionDefaultsSection } from './sections/SessionDefaultsSection'
 import { AboutSection } from './sections/AboutSection'
+import { DeploySection } from './sections/DeploySection'
 import { AccountsManager } from '@/components/AccountsManager'
 import { NotificationsSection } from '@/components/settings/NotificationsSection'
 import { HooksSection } from '@/components/settings/HooksSection'
@@ -35,7 +37,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroupDef[] = [
   { id: 'about', label: 'About' },
 ]
 
-export type SettingsBadgeKey = 'accountsAttention'
+export type SettingsBadgeKey = 'accountsAttention' | 'deployPending'
 
 interface SettingsDefShape {
   id: string
@@ -103,6 +105,12 @@ const DEFS = [
     description: 'Shell commands Claude Code runs on lifecycle events. They run on this host.' },
   { id: 'snapshots',     group: 'claude',    label: 'Snapshots',           icon: Camera,            scope: 'server',  component: SnapshotsSection,
     description: 'Point-in-time copies of the shared Claude config, with diff, restore, export and import.' },
+  // Sits in the About group beside the version it changes. It is also the phone's
+  // ONLY deploy surface — `shell/useAppBanners` hides the deploy banner there —
+  // so the badge is load-bearing rather than decorative: it is what tells a phone
+  // user there is anything here to look at.
+  { id: 'deploy',        group: 'about',     label: 'Deploy',              icon: Rocket,            scope: 'server',  component: DeploySection, ownsChassis: true, badge: 'deployPending',
+    description: 'Commits waiting to ship to this server, and how the last deploy went.', keywords: ['ship', 'release', 'pending', 'update'] },
   { id: 'about',         group: 'about',     label: 'About',               icon: Info,              scope: 'none',    component: AboutSection, ownsChassis: true,
     description: 'Version, host, and the server settings managed by environment variables.' },
 ] as const satisfies readonly SettingsDefShape[]

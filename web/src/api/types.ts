@@ -31,12 +31,21 @@ export interface UsageWindow {
 /** How much a snapshot's windows can be trusted. Anything other than 'available'
  *  means the read failed — the windows array is then EMPTY rather than holding a
  *  fabricated 0%. */
-export type UsageAvailability = 'available' | 'unknown' | 'auth_error'
+// Mirrors `quota.AVAILABILITIES` in src/ccswitch/quota.py — keep the two in step.
+// 'unsupported' means the credential/provider boundary cannot report quota at
+// all (an OpenAI account; an Anthropic account whose only live credential is a
+// narrow-scope setup-token). It is a PERMANENT answer, unlike 'unknown', which
+// is a read that failed and may succeed next time.
+export type UsageAvailability = 'available' | 'unknown' | 'auth_error' | 'unsupported'
 
 export interface AccountUsage {
   provider: string
   fetchedAt: string | null
   availability: UsageAvailability
+  /** WHY the read is not 'available', when the server knows — a `quota.REASON_*`
+   *  code such as 'setup_token_scope'. Absent/null on an available read and on
+   *  older payloads. `usageUnavailableReason` words it. */
+  reason?: string | null
   windows: UsageWindow[]
   // Whether the PROVIDER has extra usage enabled — read-only, set in the
   // Anthropic console. Distinct from `allowExtraUsage` below, which is this
@@ -264,12 +273,14 @@ export const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['complete', 'ende
 export const INACTIVE_SESSION_STATUSES: ReadonlySet<string> = new Set(['ended', 'archived'])
 
 /**
- * Archivable statuses: a resting, finished session a bulk "Archive done" action
- * may sweep. Narrower than TERMINAL (excludes already-'archived') and includes
- * 'done', which TERMINAL does not (a 'done' session is between turns, not finished).
+ * Archivable statuses: a finished session the bulk "Archive complete" action may
+ * sweep — exactly the Complete group (statusTier.ts), i.e. TERMINAL minus the
+ * already-'archived'. Deliberately EXCLUDES 'done': that is the turn ending with
+ * the agent waiting on the user (the "Your turn" group), and one click used to
+ * archive every such session mid-conversation.
  */
 export const ARCHIVABLE_STATUSES: ReadonlySet<SessionStatus> = new Set<SessionStatus>([
-  'done', 'complete', 'ended',
+  'complete', 'ended',
 ])
 
 /** A sub-agent (Task/Agent call) summary, nested under its session in the list. */
@@ -294,6 +305,10 @@ export interface Session {
   /** Fleet host that ran this session. Null for sessions created before the fleet
    *  existed, and for deployments whose endpoint is not in the host registry. */
   host?: string | null
+  /** Where the session's GUI renders: 'native' = the runner host's real desktop,
+   *  'virtual' = a pooled Xvfb display viewed over VNC. Null for pre-feature rows
+   *  (read as virtual). */
+  displayMode?: 'native' | 'virtual' | null
   status: SessionStatus
   createdAt: string
   /** Last-activity time. May be null/absent for a session with no recorded

@@ -22,11 +22,13 @@ import type {
 import { fetchDeployStatus, startDeploy } from './deploy'
 import {
   fetchInitiatives, advanceInitiative, createInitiative,
+  fetchIncidents, actOnIncident,
   type Initiative, type CreateInitiativeInput,
+  type Incident, type IncidentActionInput,
 } from './sdlc'
 import {
   fetchProjects, createProject, requestProjectSync,
-  fetchOnboarding, proposeMap, runClassify,
+  fetchOnboarding, proposeMap, runClassify, advanceMap, advanceLive,
   type Project, type CreateProjectInput, type OnboardingView,
 } from './pm'
 import {
@@ -38,6 +40,7 @@ import { extractMutationErrorMessage } from './queryClient'
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
+import { reconcileFlight } from '@/lib/promptFlight'
 import { isSessionsViewing, setSessionsViewing } from './sessionsViewing'
 import { reconcileSessions } from '@/session/reconcile'
 import { toast } from 'sonner'
@@ -82,6 +85,9 @@ export const QK = {
     ['library', 'content', kind, id, plugin ?? null] as const,
   initiatives: ['sdlc', 'initiatives'] as const,
   initiative: (slug: string) => ['sdlc', 'initiative', slug] as const,
+  // Control-band INCIDENTS (#804) — deliberately not `triage` below, which is the
+  // PM classification inbox. Same word, unrelated data.
+  incidents: ['sdlc', 'incidents'] as const,
   projects: ['pm', 'projects'] as const,
   triage: ['pm', 'triage'] as const,          // phase 2 OWNS this key
   onboarding: (slug: string) => ['pm', 'onboarding', slug] as const,
@@ -145,6 +151,14 @@ export function useSessions() {
     // patched to a newer revAt. reconcileSessions keeps the newer of cache vs poll per id.
     structuralSharing: (prev, next) => reconcileSessions(prev as Session[] | undefined, next as Session[]),
   })
+  // The poll is the durable second signal for the "Sent — starting…" list pill: a
+  // socket that was down while a turn ran never sees it start, and the resting
+  // status it sees afterwards is (rightly) not a clear on its own. The row's
+  // hand-back clock is — see lib/promptFlight. `query.data` is reference-stable
+  // across unchanged polls (reconcileSessions), so this is a no-op most ticks.
+  useEffect(() => {
+    if (query.data) reconcileFlight(query.data)
+  }, [query.data])
   const data = useMemo<Session[] | undefined>(() => {
     if (pending.length === 0) return query.data
     return [...(query.data ?? []), ...pending]
@@ -333,6 +347,10 @@ export interface CreateSessionInput {
   reasoningEffort?: string | null
   /** Optional runner preference. null → auto-rank; a name → that host first. */
   host?: string | null
+  /** Force where the GUI renders; omitted/'auto' → decided from client locality. */
+  display?: 'auto' | 'native' | 'virtual'
+  presetId?: string
+  permissionProfileId?: string
 }
 
 export function useCreateSession() {
@@ -1474,6 +1492,41 @@ export function useCreateInitiative() {
   })
 }
 
+/** The control-band incident queue (#804). Polled on the initiatives cadence —
+ *  the monitor's own tick is far slower (5 min) than either, and the board
+ *  invalidates this alongside the tracks on `/ws` status frames. */
+export function useIncidents() {
+  return useQuery<Incident[]>({
+    queryKey: QK.incidents,
+    queryFn: fetchIncidents,
+    staleTime: 5_000,
+    refetchInterval: 30_000,
+  })
+}
+
+/** Disposition one incident: triage now / schedule / dismiss.
+ *
+ *  NOT optimistic, unlike the PM triage inbox's accept/reject. Those remove a row
+ *  outright, so a rollback is invisible; here a disposition CHANGES a row that
+ *  stays on screen, and every failure mode is a server-side refusal with a reason
+ *  worth reading (a past `scheduledFor`, an incident Intake already adopted).
+ *  Showing the row's real state after the server answers is the honest rendering.
+ *
+ *  `initiatives` is invalidated too: `triage_now` is the tap that eventually
+ *  produces an Initiative, and dropping that would leave the board stale until
+ *  its own poll. */
+export function useIncidentAction() {
+  const qc = useQueryClient()
+  return useMutation<Incident, ApiRequestError, IncidentActionInput>({
+    mutationFn: (input) => actOnIncident(input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.incidents })
+      void qc.invalidateQueries({ queryKey: QK.initiatives })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
 // ── PM product layer (phase 1) ────────────────────────────────────────────────
 
 /** Projects registry list. Polled like initiatives (baseline liveness). */
@@ -1499,7 +1552,12 @@ export function useSyncProject() {
   const qc = useQueryClient()
   return useMutation<{ requested: boolean }, ApiRequestError, string>({
     mutationFn: (slug) => requestProjectSync(slug),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.projects }),
+    onSuccess: (_d, slug) => {
+      // The endpoint is a 202 — the loop picks the request up on its next
+      // tick — so without this the button read as "nothing happened".
+      toast.success(`Sync requested for ${slug}`)
+      void qc.invalidateQueries({ queryKey: QK.projects })
+    },
     meta: PM_MUTATION_META,
   })
 }
@@ -1536,6 +1594,32 @@ export function useClassify() {
     onSuccess: (_d, slug) => {
       void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
       void qc.invalidateQueries({ queryKey: QK.triage })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** The wizard's "map merged" tap (map_proposed → map_merged). */
+export function useAdvanceMap() {
+  const qc = useQueryClient()
+  return useMutation<{ onboardingState: string }, ApiRequestError, string>({
+    mutationFn: (slug) => advanceMap(slug),
+    onSuccess: (_d, slug) => {
+      void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
+      void qc.invalidateQueries({ queryKey: QK.projects })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** The wizard's "go live" tap (map_merged|classifying → live). */
+export function useAdvanceLive() {
+  const qc = useQueryClient()
+  return useMutation<{ onboardingState: string }, ApiRequestError, string>({
+    mutationFn: (slug) => advanceLive(slug),
+    onSuccess: (_d, slug) => {
+      void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
+      void qc.invalidateQueries({ queryKey: QK.projects })
     },
     meta: PM_MUTATION_META,
   })

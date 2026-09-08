@@ -12,6 +12,7 @@ import { ToolGroup } from './ToolGroup'
 import { QuestionCard } from './QuestionCard'
 import { ErrorCard } from './ErrorCard'
 import { RecoveringCard } from './RecoveringCard'
+import { NoticeCard } from './NoticeCard'
 import { BlockRow } from './BlockRow'
 import { PendingPromptNote } from './PendingPromptNote'
 
@@ -27,11 +28,17 @@ interface Props {
   subAgents?: Record<string, SubThread>
   /** The session's current model — threaded down to badge subagents on a different model. */
   sessionModel?: string | null
+  /** Mirrors TranscriptView's variant — a noticeCard only renders its rich card in the
+   *  assistant drawer; other variants (e.g. read-only ReviewView) fall back to a plain line. */
+  variant?: 'session' | 'assistant'
+  /** Wired to a noticeCard's "Ask about it" button. Absent in read-only views, where the
+   *  button hides (NoticeCard has nothing to hand the prefilled text to). */
+  onAsk?: (text: string) => void
 }
 
 export const Turn = memo(function Turn({
   turn, isLastTurn, toolDetailMode, thinkingCollapsed, streamingBlockId = null,
-  onAnswer, subAgents, sessionModel,
+  onAnswer, subAgents, sessionModel, variant = 'session', onAsk,
 }: Props) {
   const isUser = turn.role === 'user'
   // Suppress live questions and open permissions inline — they are rendered by the
@@ -101,6 +108,26 @@ export const Turn = memo(function Turn({
             return <BlockRow key={block.id} ts={rowTs}><ErrorCard code={block.code} message={block.message} resetsAt={block.resetsAt} /></BlockRow>
           case 'recovering':
             return <BlockRow key={block.id} ts={rowTs}><RecoveringCard message={block.message} /></BlockRow>
+          case 'noticeCard':
+            return (
+              <BlockRow key={block.id} ts={rowTs}>
+                {variant === 'assistant'
+                  ? <NoticeCard notice={block} onAsk={onAsk} />
+                  : (
+                    <div className="my-2 text-center text-xs text-gray-400 dark:text-gray-500 italic">
+                      {block.title}
+                    </div>
+                  )}
+              </BlockRow>
+            )
+          case 'noticeCollapsed':
+            return (
+              <BlockRow key={block.id} ts={rowTs}>
+                <div className="my-2 text-center text-xs text-gray-400 dark:text-gray-500 italic">
+                  {block.count} older notice{block.count === 1 ? '' : 's'}
+                </div>
+              </BlockRow>
+            )
           default:
             return null
         }

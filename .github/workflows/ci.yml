@@ -277,8 +277,8 @@ jobs:
         run: echo "No web/ files changed — frontend checks skipped."
 
   e2e:
-    # ADVISORY: intentionally NOT in branch-protection required checks. All 3
-    # specs mock the backend via page.route, so only the built frontend runs.
+    # ADVISORY: intentionally NOT in branch-protection required checks. Every
+    # spec mocks the backend via page.route, so only the built frontend runs.
     # The CI/CD Doctor tracks this job's stability and proposes graduation.
     # Not required ⇒ safe to skip the whole job when no web/ file changed.
     needs: changes

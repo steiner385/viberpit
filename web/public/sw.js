@@ -1,13 +1,13 @@
-// web/public/sw.js — ccswitch Web Push service worker (minimal).
+// web/public/sw.js — ViberPit Web Push service worker (minimal).
 self.addEventListener('push', (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch (_e) { data = {}; }
-  const title = data.title || 'ccswitch';
+  const title = data.title || 'ViberPit';
   const options = {
     body: data.body || '',
     data: { url: data.url || '/' },
     icon: '/favicon.svg',
-    tag: data.tag || 'ccswitch',
+    tag: data.tag || 'viberpit',
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });

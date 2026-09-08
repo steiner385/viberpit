@@ -1,6 +1,6 @@
 # Codex credential authority runbook
 
-Host procedures for `ccswitch-codex-auth.service` and the Codex runners it serves:
+Host procedures for `viberpit-codex-auth.service` and the Codex runners it serves:
 homes and permissions, its own PKI, onboarding a runner, reauth, backup/restore,
 version upgrades, rollback, and the kill switch.
 
@@ -22,7 +22,7 @@ They have the same *shape* (a `CODEX_HOME`, 0700, created by
 
 | | Authority managed home | Runner home |
 |---|---|---|
-| Path | `/var/lib/ccswitch-codex-auth/accounts/<account>/` | `/var/lib/ccswitch/state/ccswitch/codex/<account>/` |
+| Path | `/var/lib/ccswitch-codex-auth/accounts/<account>/` | `/var/lib/viberpit/state/ccswitch/codex/<account>/` |
 | Owner | `ccswitch-auth` | `tony` (the session-daemon user) |
 | Holds | `auth.json` — **refresh token** | thread SQLite + WAL, history, shell snapshots |
 | Written by | `codex login` / `logout`, driven by the authority | `codex app-server`, driven by the daemon |
@@ -41,7 +41,7 @@ Two standing invariants, both machine-checked:
   there, and #1005 is what a FUSE mount does to a format that assumes local
   locking.
 
-The daemon units pin the runner base with `Environment=XDG_STATE_HOME=%S/ccswitch/state`
+The daemon units pin the runner base with `Environment=XDG_STATE_HOME=%S/viberpit/state`
 so locality is a property of the unit rather than a hope about where
 `$HOME/.local/state` resolves on a given runner.
 
@@ -53,7 +53,7 @@ sudo -u tony test -r /var/lib/ccswitch-codex-auth/accounts && echo BROKEN || ech
 sudo ls -ld /var/lib/ccswitch-codex-auth          # expect drwx------ ccswitch-auth
 
 # No runner may hold a credential cache. Expect NO output, on every runner.
-find /var/lib/ccswitch/state/ccswitch/codex -name auth.json 2>/dev/null
+find /var/lib/viberpit/state/ccswitch/codex -name auth.json 2>/dev/null
 ```
 
 ---
@@ -78,11 +78,11 @@ A certificate presenting both identities is rejected outright.
 ### Mint the authority CA and server cert (once)
 
 Run on the authority host. Keep this CA in its own directory — it must not land in
-`/etc/ccswitch/tls/`, which is the session-daemon fleet CA.
+`/etc/viberpit/tls/`, which is the session-daemon fleet CA.
 
 ```bash
-sudo install -d -m 0700 -o root -g root /etc/ccswitch/codex-auth-ca
-cd /etc/ccswitch/codex-auth-ca
+sudo install -d -m 0700 -o root -g root /etc/viberpit/codex-auth-ca
+cd /etc/viberpit/codex-auth-ca
 sudo umask 077
 
 # 1. The authority's own CA (signs the SERVER cert runners verify).
@@ -103,10 +103,10 @@ printf 'subjectAltName=DNS:dobby.tail0dd570.ts.net,DNS:dobby\n' | sudo tee san.c
 sudo openssl x509 -req -in server.csr -CA server-ca.pem -CAkey server-ca.key \
      -CAcreateserial -out server.pem -days 825 -extfile san.cnf
 
-sudo install -d -m 0750 -o ccswitch-auth -g ccswitch-auth /etc/ccswitch/codex-auth
-sudo install -m 0640 -o ccswitch-auth -g ccswitch-auth server.pem  /etc/ccswitch/codex-auth/
-sudo install -m 0600 -o ccswitch-auth -g ccswitch-auth server.key  /etc/ccswitch/codex-auth/
-sudo install -m 0640 -o ccswitch-auth -g ccswitch-auth client-ca.pem /etc/ccswitch/codex-auth/
+sudo install -d -m 0750 -o ccswitch-auth -g ccswitch-auth /etc/viberpit/codex-auth
+sudo install -m 0640 -o ccswitch-auth -g ccswitch-auth server.pem  /etc/viberpit/codex-auth/
+sudo install -m 0600 -o ccswitch-auth -g ccswitch-auth server.key  /etc/viberpit/codex-auth/
+sudo install -m 0640 -o ccswitch-auth -g ccswitch-auth client-ca.pem /etc/viberpit/codex-auth/
 ```
 
 ### Mint a client identity (per caller)
@@ -114,7 +114,7 @@ sudo install -m 0640 -o ccswitch-auth -g ccswitch-auth client-ca.pem /etc/ccswit
 ```bash
 # ROLE is exactly the CN the allowlist pins: codex-edge, or codex-runner:<host>.
 ROLE=codex-runner:rocky
-cd /etc/ccswitch/codex-auth-ca
+cd /etc/viberpit/codex-auth-ca
 sudo openssl req -newkey rsa:2048 -nodes -keyout "${ROLE//:/-}.key" -out "${ROLE//:/-}.csr" \
      -subj "/CN=${ROLE}"
 sudo openssl x509 -req -in "${ROLE//:/-}.csr" -CA client-ca.pem -CAkey client-ca.key \
@@ -161,15 +161,15 @@ runner with none of this stays healthy and keeps taking Claude sessions.
 bash scripts/fetch-codex.sh
 
 # 2. Client identity for this host (mint on the authority host, § 2 above).
-sudo install -d -m 0750 -o tony -g tony /etc/ccswitch/codex-auth
+sudo install -d -m 0750 -o tony -g tony /etc/viberpit/codex-auth
 # copy codex-runner-<host>.pem/.key (0600, owned by tony) and server-ca.pem here
 
-# 3. Daemon env — /etc/ccswitch/ccswitch.env on this host
+# 3. Daemon env — /etc/viberpit/viberpit.env on this host
 CCSWITCH_CODEX_BIN=/home/tony/.local/lib/ccswitch/codex
 CCSWITCH_CODEX_AUTHORITY_ENDPOINT=https://dobby.tail0dd570.ts.net:8442
-CCSWITCH_CODEX_AUTHORITY_CLIENT_CERT=/etc/ccswitch/codex-auth/codex-runner-<host>.pem
-CCSWITCH_CODEX_AUTHORITY_CLIENT_KEY=/etc/ccswitch/codex-auth/codex-runner-<host>.key
-CCSWITCH_CODEX_AUTHORITY_CLIENT_CA=/etc/ccswitch/codex-auth/server-ca.pem
+CCSWITCH_CODEX_AUTHORITY_CLIENT_CERT=/etc/viberpit/codex-auth/codex-runner-<host>.pem
+CCSWITCH_CODEX_AUTHORITY_CLIENT_KEY=/etc/viberpit/codex-auth/codex-runner-<host>.key
+CCSWITCH_CODEX_AUTHORITY_CLIENT_CA=/etc/viberpit/codex-auth/server-ca.pem
 # Leave BOTH launch flags false until the launch bar in § 8 has passed.
 CCSWITCH_CODEX_ENABLED=false
 CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED=false
@@ -177,7 +177,7 @@ CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED=false
 # 4. Add this host's CN to the authority allowlist and restart the AUTHORITY.
 # 5. Check the whole boundary before restarting the daemon:
 sudo -u tony CCSWITCH_CODEX_ENABLED=true CCSWITCH_CODEX_EXTERNAL_AUTH_ENABLED=true \
-     /home/tony/GitHub/ccswitch/.venv/bin/python -m server.codex.doctor
+     /home/tony/GitHub/viberpit/.venv/bin/python -m server.codex.doctor
 ```
 
 The doctor exits 0 when nothing failed and prints one JSON object with six checks:
@@ -252,10 +252,10 @@ Back up **`/var/lib/ccswitch-codex-auth/state/`** and treat
 sudo tar -C /var/lib/ccswitch-codex-auth -cpf codex-auth-state.tar state/
 
 # Restore
-sudo systemctl stop ccswitch-codex-auth.service
+sudo systemctl stop viberpit-codex-auth.service
 sudo tar -C /var/lib/ccswitch-codex-auth -xpf codex-auth-state.tar
 sudo chown -R ccswitch-auth:ccswitch-auth /var/lib/ccswitch-codex-auth/state
-sudo systemctl start ccswitch-codex-auth.service
+sudo systemctl start viberpit-codex-auth.service
 ```
 
 There is **no failover in v1.** A second authority sharing the state directory
@@ -304,13 +304,13 @@ Copilot sessions.
 
 ```bash
 # Kill switch — one runner. Live Codex sessions end; Claude sessions are untouched.
-# In /etc/ccswitch/ccswitch.env on that host:
+# In /etc/viberpit/viberpit.env on that host:
 CCSWITCH_CODEX_ENABLED=false
-sudo systemctl restart ccswitch-daemon.service     # drains in-flight turns first
+sudo systemctl restart viberpit-daemon.service     # drains in-flight turns first
 
 # Kill switch — whole fleet, without touching any daemon. Stopping the authority
 # means no runner can obtain an envelope, so no Codex session can start or refresh.
-sudo systemctl stop ccswitch-codex-auth.service
+sudo systemctl stop viberpit-codex-auth.service
 
 # Rollback the binary: reinstall the previous pin from a checkout at that commit.
 git -C <checkout> checkout <previous-sha> -- server/codex/schema.py scripts/codex-cli.sha256
@@ -356,7 +356,7 @@ there, it distinguishes an edge problem from a runner problem in one step.
 | Authority refuses to start, complains about a key | `CCSWITCH_CODEX_AUTHORITY_*_KEY` is a session-daemon key | mint authority-specific material (§ 2) |
 | `doctor: mtls_identity/tls_material_unusable` | missing, unreadable, or shared-with-sessiond material | § 2 |
 | `doctor: authority/unreachable` | listener down, SAN mismatch, or CN not in the allowlist | check the SAN matches `CCSWITCH_CODEX_AUTHORITY_ENDPOINT` |
-| `doctor: runtime_home/network_filesystem` | `XDG_STATE_HOME` resolves onto a FUSE/NFS mount | confirm the unit's `Environment=XDG_STATE_HOME=%S/ccswitch/state` is installed and `daemon-reload`ed |
+| `doctor: runtime_home/network_filesystem` | `XDG_STATE_HOME` resolves onto a FUSE/NFS mount | confirm the unit's `Environment=XDG_STATE_HOME=%S/viberpit/state` is installed and `daemon-reload`ed |
 | Runner start refused, "credential cache appeared" | a runner is holding `auth.json` | do not work around it — this is the invariant; find what wrote it |
 | Envelopes rejected after a restore | the generation counter was rewound | § 5; bump past the generation runners are fencing on |
 | `sync_lease_lapsed` | the edge stopped renewing the authorization projection | `CCSWITCH_CODEX_AUTH_SYNC_INTERVAL_S` must be **below** `_LEASE_S` |

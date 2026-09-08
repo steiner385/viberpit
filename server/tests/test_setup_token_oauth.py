@@ -23,7 +23,7 @@ def test_begin_url_has_required_params():
     assert q["client_id"] == [sto.CLIENT_ID]
     assert q["response_type"] == ["code"]
     assert q["redirect_uri"] == [sto.REDIRECT_URI]
-    assert q["scope"] == [sto.SCOPE]
+    assert q["scope"] == [sto.DEFAULT_SCOPE]
     assert q["state"] == [c.state]
     assert q["code"] == ["true"]
 
@@ -110,3 +110,50 @@ def test_exchange_200_without_token_raises(monkeypatch):
     c, code, _ = _exchange_with_handler(monkeypatch, handler, None)
     with pytest.raises(sto.SetupTokenNoToken):
         sto.exchange(code, c)
+
+
+# --- scope selection --------------------------------------------------------
+# `user:inference` alone mints a token the usage endpoint refuses (429), which is
+# why setup-token accounts reported no quota. `user:profile` is what it reads.
+
+def test_default_scope_requests_profile_so_usage_is_readable():
+    assert "user:profile" in sto.DEFAULT_SCOPE
+    assert "user:inference" in sto.DEFAULT_SCOPE
+    # The fallback stays launch-capable but deliberately narrower.
+    assert sto.FALLBACK_SCOPE == "user:inference"
+    assert "user:profile" not in sto.FALLBACK_SCOPE
+
+
+def test_begin_honours_explicit_scope_and_records_it_on_the_challenge():
+    c = sto.begin(sto.FALLBACK_SCOPE)
+    q = parse_qs(urlparse(c.authorize_url).query)
+    assert q["scope"] == [sto.FALLBACK_SCOPE]
+    # The challenge carries the consented scope: a code is bound to it, so the
+    # caller needs it to decide whether a fallback is still available.
+    assert c.scope == sto.FALLBACK_SCOPE
+
+
+def test_scope_env_override_pins_the_scope_without_a_deploy(monkeypatch):
+    monkeypatch.setenv(sto.SCOPE_ENV, "user:inference")
+    assert sto.default_scope() == "user:inference"
+    assert parse_qs(urlparse(sto.begin().authorize_url).query)["scope"] == ["user:inference"]
+    # Blank/whitespace is not an override — it must not mint an empty scope.
+    monkeypatch.setenv(sto.SCOPE_ENV, "   ")
+    assert sto.default_scope() == sto.DEFAULT_SCOPE
+
+
+def test_invalid_code_distinguishes_a_scope_refusal_from_an_expired_code(monkeypatch):
+    def scope_refused(url, **kw):
+        return httpx.Response(400, json={"error": "invalid_scope"})
+    c, code, _ = _exchange_with_handler(monkeypatch, scope_refused, None)
+    with pytest.raises(sto.SetupTokenInvalidCode) as ei:
+        sto.exchange(code, c)
+    assert ei.value.is_scope_rejection is True
+
+    def code_expired(url, **kw):
+        return httpx.Response(400, json={"error": "invalid_grant"})
+    c, code, _ = _exchange_with_handler(monkeypatch, code_expired, None)
+    with pytest.raises(sto.SetupTokenInvalidCode) as ei:
+        sto.exchange(code, c)
+    # An ordinary expired code must NOT trigger the scope fallback.
+    assert ei.value.is_scope_rejection is False

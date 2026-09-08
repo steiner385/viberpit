@@ -217,6 +217,12 @@ def register_orchestrator_rpc(app, orch) -> None:
             items = await items
         return {"prs": [p.to_dict() for p in items]}
 
+    async def pr_detail(params: dict) -> dict:
+        result = orch.pr_detail(params["repo"], params["number"])
+        if inspect.isawaitable(result):
+            result = await result
+        return {"detail": result}
+
     async def all_repos_stage_models(params: dict) -> dict:
         models = orch.all_repos_stage_models()
         if inspect.isawaitable(models):
@@ -284,6 +290,7 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "prs_for_many", prs_for_many)
 
     register_rpc(app, "all_prs", all_prs)
+    register_rpc(app, "pr_detail", pr_detail)
     register_rpc(app, "all_repos_stage_models", all_repos_stage_models)
     register_rpc(app, "all_merge_trains", all_merge_trains)
     register_rpc(app, "latest_queue_entries", latest_queue_entries)
@@ -311,6 +318,9 @@ def register_orchestrator_rpc(app, orch) -> None:
         "has_transcript",
         "pending_questions", "orphaned_interaction", "pop_pending_initial_prompt",
         "pop_pending_initial_attachment_ids", "command_catalog", "run_command", "list_archived",
+        # Task 8.4 (spec v2 §4.7 Pack N): post_notice returns bool, pop_pending_notices
+        # returns list[dict] — both already JSON-safe, no bespoke handler needed.
+        "post_notice", "pop_pending_notices",
         "latest_suggestions", "latest_suggestions_many",
         "generate_suggestions_now", "seed_idle_suggestions",
         "latest_summary", "latest_summary_many",
@@ -321,7 +331,9 @@ def register_orchestrator_rpc(app, orch) -> None:
         "automation_statuses", "automation_trigger", "pr_doctor_job",
         "consolidation_candidates", "automation_consolidate",
         "backlog_candidates", "backlog_runner_dispatch",
-        "copilot_add_start", "copilot_add_status", "copilot_add_cancel", "copilot_usage",
+        "copilot_add_start", "copilot_add_status", "copilot_add_cancel",
+        # Process-backed (Copilot / Codex) quota: a snapshot dict or None.
+        "process_quota_refresh",
         # Codex (OpenAI): model list, quota windows, and the revocation fan-out.
         # All three return plain dicts of JSON scalars — no credential ever crosses
         # this transport (the runner gets its envelope from the authority directly,
@@ -335,6 +347,8 @@ def register_orchestrator_rpc(app, orch) -> None:
         "pm_classify_run",
         # advance map_proposed → map_merged (returns None, JSON-safe)
         "pm_advance_map_merged",
+        # advance map_merged/classifying → live (returns None, JSON-safe)
+        "pm_advance_live",
     ]
 
     def _make_simple(method_name):

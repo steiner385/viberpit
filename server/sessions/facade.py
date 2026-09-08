@@ -138,6 +138,11 @@ class InProcessOrchestratorAdapter:
     # falls back to it when transcript_path() is None; see the orchestrator method.
     async def engine_replay_window(self, *a, **k): return await _maybe_await(self._orch.engine_replay_window(*a, **k))
     async def interrupt(self, *a, **k): return await _maybe_await(self._orch.interrupt(*a, **k))
+    # "Open a browser" — the in-process route (server/app.py) calls this the same way
+    # the daemon RPC calls orchestrator.open_browser directly; the native-vs-virtual
+    # branch lives once on SessionOrchestrator (Task 6). Deliberately NOT added to
+    # RemoteOrchestrator — remote mode keeps using x11_open_browser.
+    async def open_browser(self, *a, **k): return await _maybe_await(self._orch.open_browser(*a, **k))
     async def set_permission_mode(self, *a, **k): return await _maybe_await(self._orch.set_permission_mode(*a, **k))
     async def set_model_for_session(self, *a, **k): return await _maybe_await(self._orch.set_model_for_session(*a, **k))
     async def cancel_queued(self, *a, **k): return await _maybe_await(self._orch.cancel_queued(*a, **k))
@@ -149,6 +154,8 @@ class InProcessOrchestratorAdapter:
     async def list_sessions(self, *a, **k): return await _maybe_await(self._orch.list_sessions(*a, **k))
     async def get_session(self, *a, **k): return await _maybe_await(self._orch.get_session(*a, **k))
     async def find_assistant(self, *a, **k): return await _maybe_await(self._orch.find_assistant(*a, **k))
+    async def post_notice(self, *a, **k): return await _maybe_await(self._orch.post_notice(*a, **k))
+    async def pop_pending_notices(self, *a, **k): return await _maybe_await(self._orch.pop_pending_notices(*a, **k))
     async def latest_suggestions(self, *a, **k): return await _maybe_await(self._orch.latest_suggestions(*a, **k))
     async def generate_suggestions_now(self, *a, **k): return await _maybe_await(self._orch.generate_suggestions_now(*a, **k))
     async def latest_summary(self, *a, **k): return await _maybe_await(self._orch.latest_summary(*a, **k))
@@ -183,6 +190,7 @@ class InProcessOrchestratorAdapter:
     async def live_session_counts(self): return await _maybe_await(self._orch.live_session_counts())
     def pr_for(self, repo, branch): return self._orch.pr_for(repo, branch)
     async def all_prs(self): return await _maybe_await(self._orch.all_prs())
+    async def pr_detail(self, *a, **k): return await _maybe_await(self._orch.pr_detail(*a, **k))
     async def all_repos_stage_models(self): return await _maybe_await(self._orch.all_repos_stage_models())
     async def request_pr_fix(self, *a, **k): return await _maybe_await(self._orch.request_pr_fix(*a, **k))
     async def automation_statuses(self, *a, **k): return await _maybe_await(self._orch.automation_statuses(*a, **k))
@@ -194,7 +202,7 @@ class InProcessOrchestratorAdapter:
     async def copilot_add_start(self, *a, **k): return await _maybe_await(self._orch.copilot_add_start(*a, **k))
     async def copilot_add_status(self, *a, **k): return await _maybe_await(self._orch.copilot_add_status(*a, **k))
     async def copilot_add_cancel(self, *a, **k): return await _maybe_await(self._orch.copilot_add_cancel(*a, **k))
-    async def copilot_usage(self, *a, **k): return await _maybe_await(self._orch.copilot_usage(*a, **k))
+    async def process_quota_refresh(self, *a, **k): return await _maybe_await(self._orch.process_quota_refresh(*a, **k))
     # --- codex (OpenAI) account surfaces: answered by the host that owns the app-server ---
     async def codex_models(self, *a, **k): return await _maybe_await(self._orch.codex_models(*a, **k))
     async def codex_account_status(self, *a, **k): return await _maybe_await(self._orch.codex_account_status(*a, **k))
@@ -228,3 +236,4 @@ class InProcessOrchestratorAdapter:
     async def pm_onboard_spawn_map(self, *a, **k): return await _maybe_await(self._orch.pm_onboard_spawn_map(*a, **k))
     async def pm_classify_run(self, *a, **k): return await _maybe_await(self._orch.pm_classify_run(*a, **k))
     async def pm_advance_map_merged(self, *a, **k): return await _maybe_await(self._orch.pm_advance_map_merged(*a, **k))
+    async def pm_advance_live(self, *a, **k): return await _maybe_await(self._orch.pm_advance_live(*a, **k))

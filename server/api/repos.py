@@ -12,9 +12,11 @@ import logging
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field, field_validator
 
 from ccswitch import gitrepos
 from server.auth.middleware import current_identity
+from server.github import ci_issues
 from server.ipc.client import DaemonError, DaemonUnavailable
 
 router = APIRouter(prefix="/api/github", tags=["github"])
@@ -91,6 +93,42 @@ async def list_github_branches(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except gitrepos.GhError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+class CreateIssueBody(BaseModel):
+    repo: str
+    title: str = Field(min_length=1, max_length=256)
+    body: str = Field(min_length=1, max_length=ci_issues.BODY_MAX_CHARS)
+    labels: list[str] | None = None
+
+    @field_validator("repo")
+    @classmethod
+    def _owner_name(cls, v: str) -> str:
+        if not ci_issues.valid_repo(v):
+            raise ValueError("repo must be 'owner/name'")
+        return v
+
+
+@router.post("/issues", status_code=201)
+async def create_github_issue(
+    payload: CreateIssueBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+) -> dict:
+    """File a GitHub issue on ``repo`` (spec v2 Pack G).
+
+    ``labels`` defaults to none at all rather than to `ci_issues.create_issue`'s own
+    default: that default is the CI/CD Doctor's ``ci-doctor`` label, and an issue filed
+    from here is not a doctor finding.
+    """
+    text = ci_issues.with_authorship(
+        payload.body, via=getattr(request.state, "via", None), identity=identity)
+    number = await asyncio.to_thread(
+        ci_issues.create_issue, payload.repo, payload.title, text,
+        labels=payload.labels or [])
+    if number is None:
+        raise HTTPException(status_code=502, detail="GitHub rejected the issue")
+    return {"number": number, "url": ci_issues.issue_url(payload.repo, number)}
 
 
 @router.get("/credential-alerts")

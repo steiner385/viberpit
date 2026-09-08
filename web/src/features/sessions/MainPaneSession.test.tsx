@@ -351,6 +351,39 @@ describe('MainPaneSession', () => {
     })
   })
 
+  it('error banner can be dismissed with its close button', async () => {
+    const user = userEvent.setup()
+    renderPane()
+
+    emitSessionEvent({ type: 'error', code: 'RATE_LIMITED', message: 'Too many requests' })
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(/Too many requests/)
+    })
+
+    // Reuses the shared Banner/IconButton dismiss chrome, hence the plain "Dismiss".
+    await user.click(within(screen.getByRole('alert')).getByRole('button', { name: /dismiss/i }))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('error banner retires itself when the next prompt is sent', async () => {
+    const user = userEvent.setup()
+    renderPane()
+
+    // The interrupted-turn error tells the user to send another message; the banner
+    // must not outlive the advice.
+    emitSessionEvent({ type: 'error', code: 'execution_error', message: 'The previous turn was interrupted' })
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(/previous turn was interrupted/)
+    })
+
+    await user.type(screen.getByRole('textbox', { name: 'Message' }), 'continue')
+    await user.click(screen.getByRole('button', { name: /send message/i }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole('alert')).toBeNull()
+    })
+  })
+
   it('I5: rotation divider shows reason when WsRotatedMsg includes reason', async () => {
     renderPane()
 

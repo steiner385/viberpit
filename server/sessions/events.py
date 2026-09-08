@@ -4,8 +4,10 @@ from enum import Enum
 import time
 from typing import TYPE_CHECKING
 
+from ccswitch import brand
+
 if TYPE_CHECKING:
-    # Typing-only, so this module's runtime imports stay stdlib-only. PromptContext is
+    # Typing-only, so this module's runtime imports stay free of server.* imports. PromptContext is
     # a leaf TypedDict (server/assistant/context.py imports nothing from
     # server.sessions), so this direction can never form a cycle.
     from server.assistant.context import PromptContext
@@ -26,17 +28,18 @@ _TOOL_KIND = {
     "LS": ToolKind.SEARCH, "WebFetch": ToolKind.WEB, "WebSearch": ToolKind.WEB,
     "Task": ToolKind.TASK,
 }
-# The ccswitch MCP server (server/assistant/tools.py) is the app talking to
+# Our own MCP server (server/assistant/tools.py) is the app talking to
 # itself, not a third-party integration — it gets its own kind so the web
 # presenter can render "Listed sessions" instead of the raw mcp__ name and the
 # permission card can apply its non-grantable-destructive rule (spec §4.4).
 # Checked before the generic "mcp__" branch so it wins the more specific match.
-_APP_ACTION_PREFIX = "mcp__ccswitch__"
 
 def tool_kind(name: str) -> ToolKind:
     # MCP tools are namespaced `mcp__<server>__<tool>`; the server/tool parts are
-    # open-ended, so match the prefix rather than enumerate every name.
-    if name.startswith(_APP_ACTION_PREFIX):
+    # open-ended, so match the prefix rather than enumerate every name. Both brand
+    # prefixes count as ours — a replayed transcript keeps the name it was written
+    # with, and demoting it to plain MCP would lose the "Listed sessions" row.
+    if brand.is_mcp_tool(name):
         return ToolKind.APP_ACTION
     if name.startswith("mcp__"):
         return ToolKind.MCP
@@ -75,6 +78,11 @@ class TurnEnd:
     turn_id: str; usage: dict | None = None; cost_usd: float | None = None
     src_uuid: str | None = None; parent_tool_use_id: str | None = None; outcome: str = "success"
     pr_resolution: str | None = None
+    # How `pr_resolution` was arrived at: "tool" (the session called mark_no_pr),
+    # "marker" (an HTML-comment marker in the turn text), or None when there is no
+    # resolution. Carried so the orchestrator records the real provenance instead of
+    # assuming "marker" — see SessionRecord.pr_resolution_source.
+    pr_resolution_source: str | None = None
     # Self-directed model request parsed from this turn's text, or None.
     # {"model": str, "reason": str | None}
     model_request: dict | None = None
@@ -82,6 +90,7 @@ class TurnEnd:
                                "costUsd": self.cost_usd, "srcUuid": self.src_uuid,
                                "parentToolUseId": self.parent_tool_use_id, "outcome": self.outcome,
                                "prResolution": self.pr_resolution,
+                               "prResolutionSource": self.pr_resolution_source,
                                "modelRequest": self.model_request}
 
 @dataclass
@@ -126,10 +135,14 @@ class PermissionRequest:
     # cards never offer "Always allow", so the client must hide the button
     # rather than infer it from toolKind (a mutation app_action IS grantable).
     always_allowed: bool = True
+    # Titles of every target a BATCH ccswitch tool (archive_sessions, delete_sessions…)
+    # would act on — the card must enumerate them, not just say "3 sessions" (spec v2
+    # B4). None for every other tool. Populated by `assistant_tools.batch_items`.
+    items: list[str] | None = None
     ts: float | None = field(default_factory=_now_ms)
     def to_wire(self): return {"type": "permissionRequest", "permId": self.perm_id, "turnId": self.turn_id,
                                "tool": self.tool, "toolKind": self.kind.value, "input": self.input, "plan": self.plan,
-                               "alwaysAllowed": self.always_allowed, "ts": self.ts}
+                               "alwaysAllowed": self.always_allowed, "items": self.items, "ts": self.ts}
 
 @dataclass
 class PermissionResolved:
@@ -274,6 +287,23 @@ class Suggestions:
     session_id: str; turn_id: str; items: list[str]
     def to_wire(self): return {"type": "suggestions", "sessionId": self.session_id,
                                "turnId": self.turn_id, "items": self.items}
+
+@dataclass
+class Notice:
+    """A proactive notice delivered into the assistant drawer from a fired watch
+    (a NotificationRule whose channel kind is "assistant" — spec v2 §4.7 Pack N,
+    Task 8.4). ``session_id`` identifies the assistant thread the notice belongs
+    to; it is bookkeeping only, mirroring every other driver-emitted event whose
+    wire frame gets its ``sessionId`` stamped by the WS forwarding layer
+    (``_forward_live``/the attach re-emit blocks) rather than by ``to_wire()``
+    itself. ``watch_id`` is the NotificationRule id that fired, so the client can
+    (eventually) let a user manage/delete the watch from its card."""
+    session_id: str; kind: str; title: str; body: str
+    url: str | None = None; watch_id: str | None = None
+    ts: float | None = field(default_factory=_now_ms)
+    def to_wire(self): return {"type": "notice", "kind": self.kind, "title": self.title,
+                               "body": self.body, "url": self.url, "watchId": self.watch_id,
+                               "ts": self.ts}
 
 @dataclass
 class ContextUsage:

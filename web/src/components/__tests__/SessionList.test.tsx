@@ -357,7 +357,7 @@ describe('SessionList', () => {
     // it looks like all sessions vanished.
     const groups = [
       { key: 'busy', label: 'Working', count: 1, sessions: [SESSIONS[0]] },
-      { key: 'your-turn', label: 'Done', count: 1, sessions: [SESSIONS[1]] },
+      { key: 'your-turn', label: 'Your turn', count: 1, sessions: [SESSIONS[1]] },
     ]
     render(
       <SessionList
@@ -371,7 +371,7 @@ describe('SessionList', () => {
     )
     // Both headers (and their counts) are still shown so the user can re-expand.
     expect(screen.getByRole('button', { name: /Working/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Done/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Your turn/i })).toBeInTheDocument()
     // Not the "no sessions" empty state.
     expect(screen.queryByRole('button', { name: /new session/i })).not.toBeInTheDocument()
   })
@@ -399,7 +399,7 @@ describe('SessionList', () => {
     const onToggleCollapse = vi.fn()
     const groups = [
       { key: 'busy', label: 'Working', count: 1, sessions: [SESSIONS[0]] },
-      { key: 'your-turn', label: 'Done', count: 1, sessions: [SESSIONS[1]] },
+      { key: 'your-turn', label: 'Your turn', count: 1, sessions: [SESSIONS[1]] },
     ]
     const { rerender } = render(
       <SessionList {...baseProps} groups={groups} collapsedKeys={new Set()} onToggleCollapse={onToggleCollapse} />,
@@ -836,5 +836,35 @@ describe('SessionList — select mode (live list bulk archive)', () => {
 
     await user.click(screen.getByRole('button', { name: 'Done' }))
     expect(screen.queryByRole('region', { name: 'Bulk actions' })).not.toBeInTheDocument()
+  })
+
+  it('"Archive complete" sweeps only finished sessions, never one waiting on a reply', async () => {
+    // `done` means the turn ended and the agent is waiting on the user — the
+    // "Your turn" group. It used to be bulk-archivable under an "Archive done"
+    // button, so one click could archive a session mid-conversation. Only the
+    // Complete group (complete / ended) is finished work.
+    const user = userEvent.setup()
+    const mixed: Session[] = [
+      session({ id: 'reply', name: 'Waiting on me', accountName: 'alice', status: 'done', createdAt: '2026-06-19T10:00:00Z' }),
+      session({ id: 'fresh', name: 'Never ran', accountName: 'alice', status: 'idle', createdAt: '2026-06-19T10:00:00Z' }),
+      session({ id: 'fin', name: 'Objective met', accountName: 'alice', status: 'complete', createdAt: '2026-06-19T10:00:00Z' }),
+      session({ id: 'gone', name: 'Process gone', accountName: 'alice', status: 'ended', createdAt: '2026-06-19T10:00:00Z' }),
+    ]
+    render(<SessionList {...sharedProps} sessions={mixed} />, { wrapper })
+
+    expect(screen.queryByRole('button', { name: /Archive done/i })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Archive complete (2)' }))
+    expect(bulkArchiveMutate).toHaveBeenCalledOnce()
+    const [ids] = bulkArchiveMutate.mock.calls[0]
+    expect(ids).toEqual(expect.arrayContaining(['fin', 'gone']))
+    expect(ids).toHaveLength(2)
+  })
+
+  it('offers no bulk archive when only your-turn sessions are on the board', () => {
+    const waiting: Session[] = [
+      session({ id: 'reply', name: 'Waiting on me', accountName: 'alice', status: 'done', createdAt: '2026-06-19T10:00:00Z' }),
+    ]
+    render(<SessionList {...sharedProps} sessions={waiting} />, { wrapper })
+    expect(screen.queryByRole('button', { name: /^Archive (complete|done)/i })).not.toBeInTheDocument()
   })
 })

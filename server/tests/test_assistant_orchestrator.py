@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+from ccswitch import brand
 from server.assistant.options import DISALLOWED_BUILTINS, assistant_options
 from server.assistant.prompt import (ASSISTANT_SYSTEM_PROMPT, OPERATOR_TOOLS_DISABLED_LINE,
                                      OPERATOR_TOOLS_ENABLED_LINE)
@@ -61,9 +62,11 @@ def test_overlay_disables_builtins():
     assert "Bash" in ov["disallowed_tools"] and "Read" in ov["disallowed_tools"]
     # MultiEdit is not a tool on CLI 2.1.259 — naming it logs a permission-rule warning.
     assert "MultiEdit" not in ov["disallowed_tools"]
-    assert set(ov["mcp_servers"]) == {"ccswitch"}
-    inner = ov["mcp_servers"]["ccswitch"]
-    assert inner["type"] == "sdk" and inner["name"] == "ccswitch"
+    # Via brand, not a literal: this test is about the overlay SHAPE, so pinning the
+    # wire name here would just make a brand flip look like an overlay regression.
+    assert set(ov["mcp_servers"]) == {brand.MCP_SERVER_NAME}
+    inner = ov["mcp_servers"][brand.MCP_SERVER_NAME]
+    assert inner["type"] == "sdk" and inner["name"] == brand.MCP_SERVER_NAME
     assert ov["strict_mcp_config"] is True
     assert ov["max_turns"] == 7 and ov["model"] == "sonnet" and ov["effort"] == "low"
     assert ov["system_prompt"] == ASSISTANT_SYSTEM_PROMPT + OPERATOR_TOOLS_DISABLED_LINE
@@ -704,7 +707,7 @@ def test_driver_config_helper_composes_then_trusts_then_isolates():
         "must be compose -> trust_project -> _isolated_dir_for")
 
 
-def test_register_assistant_overlay_reaches_the_sdk_factory(tmp_path):
+def test_register_overlay_reaches_the_sdk_factory(tmp_path):
     """_session_factory forwards a registered overlay as options_overlay=, and passes
     NOTHING extra for a normal session (so existing fakes keep their signature)."""
     seen: list[dict] = []
@@ -719,11 +722,11 @@ def test_register_assistant_overlay_reaches_the_sdk_factory(tmp_path):
     orch._sdk_factory = factory
     orch._x11 = None
     orch._records = {}
-    orch._assistant_overlays = {}
+    orch._overlays = {}
 
     orch._session_factory("plain")("/tmp", "/cfg", None, "interactive", None)
     assert seen[-1] == {}
 
-    orch.register_assistant_overlay("asst", {"model": "sonnet"})
+    orch.register_overlay("asst", {"model": "sonnet"})
     orch._session_factory("asst")("/tmp", "/cfg", None, "interactive", None)
     assert seen[-1] == {"options_overlay": {"model": "sonnet"}}

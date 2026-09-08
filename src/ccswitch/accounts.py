@@ -16,7 +16,7 @@ from .account_names import aliases_store_root
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
 from .engines import AgentEngine
-from .quota import QuotaSnapshot, unknown_snapshot
+from .quota import REASON_SETUP_TOKEN_SCOPE, UNSUPPORTED, QuotaSnapshot, unknown_snapshot
 from .selector import AllAccountsBusy, Picked, eligible_names, select_picked
 
 log = logging.getLogger(__name__)
@@ -49,47 +49,6 @@ def set_auth_failure_sink(fn: "Callable[[AuthFailure], None] | None") -> None:
     """
     global _auth_failure_sink
     _auth_failure_sink = fn
-
-
-_copilot_usage_reader: Callable[[str], "dict | None"] | None = None
-
-
-def set_copilot_usage_reader(fn: "Callable[[str], dict | None] | None") -> None:
-    """Register (or clear) the reader that fetches the proxy /usage payload for a copilot account.
-
-    The core stays transport-free: the daemon registers a reader at startup. When
-    unset (CLI usage) copilot usage_for returns None.
-    """
-    global _copilot_usage_reader
-    _copilot_usage_reader = fn
-
-
-def _copilot_usage_for(name: str) -> QuotaSnapshot | None:
-    reader = _copilot_usage_reader
-    if reader is None:
-        # Feature not configured — not a fetch failure, so no backoff.
-        return None
-    # Same ledger cooldown as the Anthropic path: a dead/idle proxy must not be
-    # re-hit on every sweep and every dashboard read.
-    with ledger.locked_ledger() as led:
-        if ledger.usage_fetch_cooldown_active(led, name, time.time()):
-            log.debug("usage_for(%s): fetch-failure cooldown active — skipping", name)
-            return None
-    try:
-        payload = reader(name)
-    except Exception:
-        log.warning("copilot usage read failed for %s", name, exc_info=True)
-        _note_usage_fetch_failure(name)
-        return None
-    now = datetime.now(timezone.utc)
-    u = copilot.usage_from_proxy(payload, now) if payload is not None else None
-    with ledger.locked_ledger() as led:
-        if u is not None:
-            ledger.record_usage(led, name, u, now)
-            ledger.set_status(led, name, "ok")
-        else:
-            ledger.note_usage_fetch_failure(led, name, time.time())
-    return u
 
 
 def emit_auth_failure(f: AuthFailure) -> None:
@@ -333,34 +292,78 @@ def _note_usage_fetch_failure(name: str) -> None:
         ledger.note_usage_fetch_failure(led, name, time.time())
 
 
-def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "QuotaSnapshot | None | object":
+def _setup_token_usage_fallback(name: str, now: datetime, retry_kw: dict) -> "QuotaSnapshot | object":
     """Auth fallback for accounts that hold a long-lived setup-token.
 
     A setup-token (``sk-ant-oat01``) makes the account launch-capable via
     ``CLAUDE_CODE_OAUTH_TOKEN`` even when the slot's browser-OAuth token is dead,
-    so the usage path must NOT flip such an account to needs-reauth. Best-effort
-    fetch usage with the setup-token; on any failure keep the account ``ok`` with
-    usage unknown — the orchestrator's in-session 401 path stays the authority on
-    a token that is genuinely dead for inference too. Returns ``_NO_SETUP_TOKEN``
-    when no token exists, so the caller proceeds to its normal needs-reauth flip.
-    NEVER logs the token.
+    so the usage path must NOT flip such an account to needs-reauth. Returns
+    ``_NO_SETUP_TOKEN`` when no token exists, so the caller proceeds to its normal
+    needs-reauth flip. NEVER logs the token.
+
+    A FAILED read here is one of two very different things, and the usage
+    endpoint's own answer cannot tell them apart — it refuses a setup-token
+    minted with the narrow ``user:inference`` scope with a 429, the same status
+    a genuine throttle sends. So the failure is confirmed against the profile
+    endpoint (``oauth.has_usage_scope``), which refuses a scope-less token
+    explicitly:
+
+    * scope absent → a permanent capability gap, not a transient fault: no amount
+      of retrying earns the token the ``user:profile`` scope it lacks (see
+      ``setup_token_oauth``). Record ``UNSUPPORTED`` with
+      ``REASON_SETUP_TOKEN_SCOPE`` so the UI can say "re-authenticate" rather
+      than leaving quota blank. ``record_usage`` caches it under the normal TTL,
+      so the doomed call stops repeating yet re-checks once the TTL lapses — a
+      re-minted, broader-scoped token recovers on its own.
+    * scope present, or the oracle could not answer → we genuinely do not know:
+      back off through the ledger-shared (bounded) cooldown exactly like every
+      other transient usage failure, and return None. Recording UNSUPPORTED
+      here would tell the user to re-authenticate an account whose credential
+      is fine.
+
+    ``selector.usage_known`` already treats ``UNSUPPORTED`` exactly as it
+    treated ``None``, so rotation is unchanged either way.
     """
     from . import crypto
     tok = crypto.read_oauth_token(name)
     if not tok:
         return _NO_SETUP_TOKEN
-    u: QuotaSnapshot | None = None
     try:
         u = oauth.fetch_usage(tok, **retry_kw)
     except (oauth.AuthError, oauth.UsageError, oauth.TransientError) as e:
-        log.warning("usage_for(%s): setup-token usage fetch failed (%s); keeping ok, usage unknown", name, e)
+        if not _setup_token_lacks_usage_scope(name, tok):
+            log.warning("usage_for(%s): setup-token usage fetch failed (%s) but the token "
+                        "carries the usage scope — transient, backing off", name, e)
+            with ledger.locked_ledger() as led:
+                ledger.note_usage_fetch_failure(led, name, time.time())
+                ledger.set_status(led, name, "ok")
+            return None
+        log.warning("usage_for(%s): setup-token lacks the user:profile scope (usage endpoint "
+                    "said: %s); keeping ok, quota UNSUPPORTED until the account is "
+                    "re-authenticated", name, e)
+        u = unknown_snapshot("anthropic", fetched_at=now, availability=UNSUPPORTED,
+                             reason=REASON_SETUP_TOKEN_SCOPE)
     with ledger.locked_ledger() as led:
-        if u is not None:
-            ledger.record_usage(led, name, u, now)
-        else:
-            ledger.note_usage_fetch_failure(led, name, time.time())
+        ledger.record_usage(led, name, u, now)
         ledger.set_status(led, name, "ok")
+    # Returned, not swallowed to None: the very next call reads this same snapshot
+    # back out of the cache, so returning None here would make the first call and
+    # the second disagree about the same state.
     return u
+
+
+def _setup_token_lacks_usage_scope(name: str, tok: str) -> bool:
+    """True only on the server's EXPLICIT scope refusal. NEVER logs the token.
+
+    Any other outcome — scope present, token dead, oracle unreachable — is False:
+    "could not confirm the gap" must fall through to the transient path, never
+    to a permanent UNSUPPORTED verdict.
+    """
+    try:
+        return not oauth.has_usage_scope(tok)
+    except (oauth.AuthError, oauth.TransientError, oauth.UsageError) as e:
+        log.debug("usage_for(%s): scope probe could not answer (%s)", name, e)
+        return False
 
 
 def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -> QuotaSnapshot | None:
@@ -384,18 +387,26 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
         # nobody.
         log.warning("usage_for(%s): not in the account manifest — usage unknown", name)
         return None
-    if provider == copilot.PROVIDER:
-        return _copilot_usage_for(name)
-    if provider == account_registry.PROVIDER_OPENAI:
-        # Codex quota is read through the daemon's authenticated app-server and
-        # persisted into the canonical ledger path there. This synchronous core
-        # must never look for an Anthropic credential slot that OpenAI accounts
-        # intentionally do not have.
+    if provider in (copilot.PROVIDER, account_registry.PROVIDER_OPENAI):
+        # Process-backed quota: the Copilot proxy's /usage and the Codex
+        # app-server's account/rateLimits/read are readable only through a process
+        # the server owns. server/usage/process_quota.py starts one on demand,
+        # reads, and persists into the canonical ledger path; this synchronous
+        # core (CLI, selector probes, the poller) only ever reads what it left,
+        # judged fresh on the process TTL (ledger.usage_cache_ttl_for). It must
+        # never look for an Anthropic credential slot these accounts do not have,
+        # and an empty ledger is "not read yet", never a fetch failure — arming
+        # the shared cooldown here would block the refresher's next attempt.
         cfg = load_config()
         now = datetime.now(timezone.utc)
         with ledger.locked_ledger() as led:
             cached = ledger.cached_usage(led, name, cfg, now)
-        return cached or unknown_snapshot(account_registry.PROVIDER_OPENAI, fetched_at=now)
+        if cached is not None or provider == copilot.PROVIDER:
+            # Copilot keeps None for "nothing fresh": the rotation monitor reads
+            # consecutive None polls as an unreachable account, and a proxy that
+            # cannot be started for a whole process TTL is exactly that.
+            return cached
+        return unknown_snapshot(account_registry.PROVIDER_OPENAI, fetched_at=now)
     if name in _dead_accounts:
         log.debug("usage_for(%s): refresh token known-dead (400) — skipping without network I/O", name)
         return None

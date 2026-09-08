@@ -21,6 +21,33 @@ def test_idle_detach_tears_down_after_grace():
     asyncio.run(go())
 
 
+def test_release_reaps_a_sessionless_proxy_after_grace():
+    """A cold quota read ensure()s a proxy nobody attaches to; release() must
+    hand it to the idle reaper, or it lives until daemon shutdown."""
+    async def go():
+        mgr, procs = _mgr(idle_grace_s=0.05)
+        await mgr.ensure("c1")
+        mgr.release("c1")
+        await asyncio.sleep(0.15)
+        assert mgr.port_for("c1") is None
+        assert procs[0][1].terminated
+    asyncio.run(go())
+
+
+def test_release_spares_a_proxy_a_session_attached_to():
+    """The reaper re-checks the ref-count when it fires, so a session that
+    attached during the read keeps its proxy."""
+    async def go():
+        mgr, procs = _mgr(idle_grace_s=0.05)
+        await mgr.ensure("c1")
+        mgr.attach("c1")
+        mgr.release("c1")
+        await asyncio.sleep(0.15)
+        assert mgr.port_for("c1") == 4142
+        assert not procs[0][1].terminated
+    asyncio.run(go())
+
+
 def test_stop_all_terminates_every_proxy():
     async def go():
         mgr, procs = _mgr()

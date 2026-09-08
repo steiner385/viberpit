@@ -63,6 +63,13 @@ DEFAULT_STOP_TIMEOUT_S: Final = 5.0
 #: Bytes of child stderr kept for crash diagnostics. Small on purpose: this is a
 #: post-mortem hint, not a log sink, and it is held per live runner.
 STDERR_TAIL_BYTES: Final = 4096
+#: `StreamReader` line limit for the app-server's stdout. asyncio's default is
+#: 64 KiB, and one `thread/read` reply is ONE JSON line carrying every item of
+#: the thread — tool output included — so a long thread overran it, the reader
+#: raised, and the client latched closed for good (#1444). Sized well past the
+#: Claude SDK's 1 MiB message cap; the reader allocates only what arrives, so
+#: the ceiling costs nothing until a frame actually needs it.
+APP_SERVER_STREAM_LIMIT: Final = 16 * 1024 * 1024
 
 #: Cap on the reported CLI version. A real one is ~18 characters; this bounds what
 #: a misbehaving binary can push into `/info`, the host row, and the Fleet table.
@@ -698,6 +705,7 @@ class CodexProcess:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=APP_SERVER_STREAM_LIMIT,
                 env=env,
                 cwd=str(self._home),
             )

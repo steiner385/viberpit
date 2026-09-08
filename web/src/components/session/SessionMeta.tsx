@@ -38,6 +38,8 @@ interface Props {
   engine?: AgentEngine | null
   /** Fleet host executing the session; null/absent = no host registry entry. */
   host?: string | null
+  /** Where the session's GUI renders; 'native' shows the desktop chip. */
+  displayMode?: 'native' | 'virtual' | null
   /** Engine-native reasoning choice (Codex); null = the model's own default. */
   reasoningEffort?: string | null
   /** Server-advertised `subagents` capability for this session's engine. False
@@ -94,7 +96,7 @@ const DOT_CLASS: Record<SubAgentStatus, string> = {
   failed: 'bg-red-500',
 }
 
-export function SessionMeta({ account, engine = null, host = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, mode, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
+export function SessionMeta({ account, engine = null, host = null, displayMode = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, mode, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
   const [open, setOpen] = useState(false)
   const agentCount = subAgentsSupported ? subAgents.length : 0
   const agentBadge = engineBadge(engine)
@@ -210,6 +212,13 @@ export function SessionMeta({ account, engine = null, host = null, reasoningEffo
             <span className="font-medium text-gray-900 dark:text-gray-100 truncate max-w-[10rem]">
               {host}
             </span>
+          </span>
+        )}
+
+        {displayMode === 'native' && (
+          <span className="inline-flex items-center gap-1" aria-label="Display" title="Windows open on the host's desktop">
+            <span className="text-gray-400 dark:text-gray-500">display</span>
+            <span className="font-medium text-gray-900 dark:text-gray-100">desktop</span>
           </span>
         )}
 

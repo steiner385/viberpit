@@ -142,6 +142,32 @@ class CodexThreadReplay:
             out.extend(self._events_for(turns[ordinal], ordinal))
         return ReplayWindow(events=out, earliest_turn=start, total_turns=total)
 
+    async def user_prompts(self) -> list[str]:
+        """Return the ordered, non-empty human prompts from every turn's
+        ``UserMessageItem``\\ s.
+
+        The engine-safe analogue of ``read_user_prompts_from_file`` for Claude
+        transcripts (``server/sessions/titles.py``): it goes through the same
+        supported ``thread/read`` call ``window()`` uses, rather than parsing
+        Codex's private rollout files. Used by the fallback titler
+        (``server/codex/titles.py``) since Codex has no on-disk transcript to
+        scan for an ``ai-title``-equivalent. Never raises — a read failure
+        yields no prompts, the same fail-open contract every other titling
+        input honors.
+        """
+        try:
+            thread = await self._read()
+        except Exception:
+            return []
+        return [
+            text
+            for turn in thread.turns
+            for item in turn.items
+            if isinstance(item, schema.UserMessageItem)
+            for text in (item.text.strip(),)
+            if text
+        ]
+
     def _session_meta(self, thread: schema.Thread) -> ev.SessionMeta | None:
         model = thread.model or self._model
         if model is None:

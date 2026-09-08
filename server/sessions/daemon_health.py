@@ -29,11 +29,10 @@ from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
 from server.aio import cancel_and_reap
+# Mirror the watchdog's default (scripts/ccswitch-health-check.sh: STATE_DIR).
+from server.hostpaths import HEALTH_STATE_DIR as _DEFAULT_HEALTH_STATE_DIR
 
 log = logging.getLogger("server.sessions.daemon_health")
-
-# Mirror the watchdog's default (scripts/ccswitch-health-check.sh: STATE_DIR).
-_DEFAULT_HEALTH_STATE_DIR = "/var/lib/ccswitch/health"
 
 
 def epoch_started_at_ms(epoch: str | None) -> int | None:

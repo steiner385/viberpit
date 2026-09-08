@@ -31,6 +31,7 @@ async def test_reports_nothing_when_the_loop_is_healthy():
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow
 async def test_warns_when_the_loop_is_blocked():
     log = _CapturingLog()
     wd = LoopLagWatchdog(interval=0.05, warn_after=0.2, _log=log)
@@ -117,6 +118,7 @@ def test_a_lag_below_the_threshold_never_arms_the_throttle():
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow
 async def test_two_real_stalls_produce_one_line():
     """End-to-end through run(): two blocks inside one window → a single warning."""
     log = _CapturingLog()

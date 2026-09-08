@@ -23,11 +23,15 @@ import sys
 import uuid
 from typing import Any
 
+from . import brand
+
+_P = brand.CLI_NAME
+
 DEFAULT_URL = "http://127.0.0.1:8787"
 DEFAULT_TOKEN_ENV = "CCSWITCH_ASSISTANT_TOKEN"
 
 _NEEDS_SERVER_EXTRA = (
-    "ccswitch mcp: the assistant tool table needs the server extra — "
+    f"{_P} mcp: the assistant tool table needs the server extra — "
     "install it with `pip install 'ccswitch[server]'`"
 )
 
@@ -82,10 +86,10 @@ async def serve(api: Any, *, allow_mutations: bool) -> None:
 
 def _banner(url: str, *, allow_mutations: bool) -> str:
     if allow_mutations:
-        return (f"ccswitch mcp: serving READ + MUTATION tools from {url}. Mutations run "
+        return (f"{_P} mcp: serving READ + MUTATION tools from {url}. Mutations run "
                 f"IMMEDIATELY — ccswitch shows no permission card for them on this path, "
                 f"so your MCP client is the only place a human can stop one.")
-    return (f"ccswitch mcp: serving read-only tools from {url} "
+    return (f"{_P} mcp: serving read-only tools from {url} "
             f"(pass --allow-mutations to also serve mutating tools). "
             f"Operator-tier tools are never served here.")
 
@@ -93,7 +97,7 @@ def _banner(url: str, *, allow_mutations: bool) -> str:
 def run(args: argparse.Namespace) -> int:
     token = os.environ.get(args.token_env, "").strip()
     if not token:
-        print(f"ccswitch mcp: no token in ${args.token_env} — mint one with "
+        print(f"{_P} mcp: no token in ${args.token_env} — mint one with "
               f"`POST /api/assistant/tokens` and export it", file=sys.stderr)
         return 2
 

@@ -47,7 +47,11 @@ export function useAppBanners({
         ? <UpdatePendingBanner queuedCount={inputHold.count} mode={inputHold.mode} />
         : null,
     },
-    { id: 'deploy', priority: 50, tone: 'info', node: <DeployPanel /> },
+    // `hideOn: ['phone']` — the tallest banner in the stack (title row, CI
+    // reason, Deploy button, expandable commit list) against the screen with the
+    // least room. Settings › Deploy is the full surface on a phone, and the
+    // Settings nav badge is what points at it.
+    { id: 'deploy', priority: 50, tone: 'info', hideOn: ['phone'], node: <DeployPanel /> },
     { id: 'update', priority: 30, tone: 'info', node: <GlobalUpdateBanner /> },
   ]
 }

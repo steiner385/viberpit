@@ -99,7 +99,7 @@ describe('SettingsPage', () => {
     expect(document.querySelector('[data-page-variant="split"]')).not.toBeNull()
     // The h1 stays "Settings" (one page, one name); the section qualifies the
     // TITLE only, so a tab strip of open Settings tabs is distinguishable.
-    expect(document.title).toBe('Defaults · Settings — ccswitch')
+    expect(document.title).toBe('Defaults · Settings — ViberPit')
   })
 
   it('desktop: the migrated Defaults section renders its own h2', async () => {

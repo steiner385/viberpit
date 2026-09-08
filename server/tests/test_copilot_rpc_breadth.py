@@ -15,7 +15,9 @@ _COPILOT_METHODS = [
     "copilot_add_start",
     "copilot_add_status",
     "copilot_add_cancel",
-    "copilot_usage",
+    # Copilot quota is read through the process-backed refresher (shared with
+    # Codex), not a Copilot-specific RPC.
+    "process_quota_refresh",
 ]
 
 
@@ -100,8 +102,9 @@ async def test_copilot_add_cancel_forwards_to_rpc():
 
 
 @pytest.mark.asyncio
-async def test_copilot_usage_forwards_to_rpc():
+async def test_process_quota_refresh_forwards_to_rpc():
     client = _make_fake_client()
     ro = RemoteOrchestrator(client)
-    await ro.copilot_usage(account="acct4")
-    client.call.assert_called_once_with("copilot_usage", account="acct4")
+    await ro.process_quota_refresh(account="acct4", force=True)
+    client.call.assert_called_once_with(
+        "process_quota_refresh", account="acct4", force=True, persist=True)

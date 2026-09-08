@@ -13,14 +13,14 @@ describe('page primitives', () => {
   it('PageHeader renders the h1 and sets document.title', () => {
     render(<PageHeader title="Automations" actions={<button>New</button>} />)
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Automations')
-    expect(document.title).toBe('Automations — ccswitch')
+    expect(document.title).toBe('Automations — ViberPit')
   })
 
   it('PageHeader can title the document differently from its h1', () => {
     // Settings: one page called "Settings", whose TAB says which section is open.
     render(<PageHeader title="Settings" documentTitle="Defaults · Settings" />)
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Settings')
-    expect(document.title).toBe('Defaults · Settings — ccswitch')
+    expect(document.title).toBe('Defaults · Settings — ViberPit')
   })
 
   it('PageHeader renders meta and actions', () => {
@@ -31,9 +31,9 @@ describe('page primitives', () => {
 
   it('PageHeader updates document.title when the title prop changes', () => {
     const { rerender } = render(<PageHeader title="Automations" />)
-    expect(document.title).toBe('Automations — ccswitch')
+    expect(document.title).toBe('Automations — ViberPit')
     rerender(<PageHeader title="Sessions" />)
-    expect(document.title).toBe('Sessions — ccswitch')
+    expect(document.title).toBe('Sessions — ViberPit')
   })
 
   it("a stale unmount does not clobber a newer PageHeader's title (route-transition race)", () => {
@@ -47,11 +47,11 @@ describe('page primitives', () => {
     // an unconditional-reset cleanup and passes only because the ownership
     // counter lets A's cleanup recognize it's been superseded.
     const a = render(<PageHeader title="Old Page" />)
-    expect(document.title).toBe('Old Page — ccswitch')
+    expect(document.title).toBe('Old Page — ViberPit')
     render(<PageHeader title="New Page" />)
-    expect(document.title).toBe('New Page — ccswitch')
+    expect(document.title).toBe('New Page — ViberPit')
     a.unmount()
-    expect(document.title).toBe('New Page — ccswitch')
+    expect(document.title).toBe('New Page — ViberPit')
   })
 
   it('an inner header unmounting restores the still-mounted outer header\'s title', () => {
@@ -60,11 +60,11 @@ describe('page primitives', () => {
     // screen. The title should return to A's, not fall back to the bare app
     // name.
     render(<PageHeader title="Alpha" />)
-    expect(document.title).toBe('Alpha — ccswitch')
+    expect(document.title).toBe('Alpha — ViberPit')
     const b = render(<PageHeader title="Beta" />)
-    expect(document.title).toBe('Beta — ccswitch')
+    expect(document.title).toBe('Beta — ViberPit')
     b.unmount()
-    expect(document.title).toBe('Alpha — ccswitch')
+    expect(document.title).toBe('Alpha — ViberPit')
   })
 
   it('PageContent exposes busy state and Skeleton is decorative', () => {
@@ -135,6 +135,6 @@ describe('PageHeader — read-only (kiosk) actions', () => {
     // "no New button" cannot be satisfied by a header that failed to render.
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Automations')
     expect(screen.getByText('3 active')).toBeInTheDocument()
-    expect(document.title).toBe('Automations — ccswitch')
+    expect(document.title).toBe('Automations — ViberPit')
   })
 })

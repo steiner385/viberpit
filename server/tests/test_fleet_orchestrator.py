@@ -289,6 +289,55 @@ async def test_create_cascades_on_spawn_failure(monkeypatch):
     assert rec.id == "s1" and rec.host == "rocky"
 
 @pytest.mark.asyncio
+async def test_create_does_not_cascade_when_the_first_host_outcome_is_unknown(monkeypatch):
+    """A read timeout or mid-response reset means the first daemon MAY have finished
+    the spawn — it did on 2026-09-07: the edge gave up at 30s and rocky's session row
+    landed 2s later. Cascading to the next host then starts a SECOND session for the
+    same prompt on another runner (the cross-host duplicate pairs of 2026-09-05).
+    An unknown outcome must propagate to the caller, never fail over."""
+    from server.ipc.client import DaemonTimeout
+    slow, spare = _FakeOrch("rocky"), _FakeOrch("dobby")
+    async def timed_out(self, **kw):
+        self.calls.append("create_session")
+        raise DaemonTimeout("create_session timed out", outcome_unknown=True)
+    async def ok(self, **kw):
+        self.calls.append("create_session")
+        return _Rec("s2")
+    slow.create_session = timed_out.__get__(slow); spare.create_session = ok.__get__(spare)
+    router = _FakeRouter({"rocky": slow, "dobby": spare})
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        return ["rocky", "dobby"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
+    with pytest.raises(DaemonTimeout):
+        await fo.create_session(name="n")
+    assert slow.calls == ["create_session"]
+    assert spare.calls == []
+
+
+@pytest.mark.asyncio
+async def test_create_cascades_when_the_first_host_was_never_reached(monkeypatch):
+    """The inverse: a connect failure (daemon down, never dialled) cannot have spawned
+    anything, so failing over is exactly what the fleet is for."""
+    from server.ipc.client import DaemonUnavailable
+    down, spare = _FakeOrch("rocky"), _FakeOrch("dobby")
+    async def unreachable(self, **kw):
+        raise DaemonUnavailable("connection refused")
+    async def ok(self, **kw):
+        return _Rec("s2")
+    down.create_session = unreachable.__get__(down); spare.create_session = ok.__get__(spare)
+    router = _FakeRouter({"rocky": down, "dobby": spare})
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        return ["rocky", "dobby"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
+    rec = await fo.create_session(name="n")
+    assert rec.id == "s2" and rec.host == "dobby"
+
+
+@pytest.mark.asyncio
 async def test_prefer_is_forwarded_not_passed_to_daemon(monkeypatch):
     rocky = _FakeOrch("rocky"); seen = {}
     async def create_session(self, **kw): seen.update(kw); return _Rec("s1")
@@ -464,7 +513,7 @@ def test_every_remote_method_is_classified():
     # Global/primary-routed: everything not per-session, fan-out, merge-all, or
     # explicit. Listed so adding a NEW method forces a conscious classification here.
     GLOBAL = {
-        "list_sessions", "list_archived", "pr_for", "prs_for", "all_prs",
+        "list_sessions", "list_archived", "pr_for", "prs_for", "all_prs", "pr_detail",
         "all_repos_stage_models", "all_merge_trains", "latest_queue_entries",
         "check_insights", "ready_merge", "deploy_config_list", "deploy_config_put",
         "deploy_status", "git_credential_alerts", "dismiss_git_credential_alert",
@@ -477,7 +526,14 @@ def test_every_remote_method_is_classified():
         # sessions to the primary, so no worker can hold the thread this looks for.
         # See test_find_assistant_asks_only_the_primary.
         "find_assistant",
-        "copilot_add_start", "copilot_add_status", "copilot_add_cancel", "copilot_usage",
+        # Same reasoning as find_assistant just above, and used together with it:
+        # post_notice's first arg is an identity, not a session_id, so it cannot
+        # use _make_per_session's calling convention either (Task 8.4).
+        "post_notice",
+        "copilot_add_start", "copilot_add_status", "copilot_add_cancel",
+        # Process-backed (Copilot / Codex) quota refresh: account-scoped, and a
+        # cold read starts ONE process, so the primary answers rather than every host.
+        "process_quota_refresh",
         # Codex: the model list and model+effort validation are account-scoped and
         # give the same answer on any host that can start the app-server, so asking
         # the primary starts ONE app-server instead of one per host.
@@ -493,7 +549,7 @@ def test_every_remote_method_is_classified():
         "daemon_sha", "daemon_pool_stats", "daemon_epoch", "startup_report",
         "maybe_start_queued",
         "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_classify_run",
-        "pm_advance_map_merged",
+        "pm_advance_map_merged", "pm_advance_live",
     }
     public = {n for n, _ in inspect.getmembers(RemoteOrchestrator, callable)
               if not n.startswith("_")}
@@ -525,7 +581,7 @@ class _AggOrch(_FakeOrch):
     async def session_queue_positions(self):
         if self._fail: raise RuntimeError(f"{self.name} down")
         return self._positions or {}
-    async def codex_account_status(self, account, *, persist=True):
+    async def codex_account_status(self, account, *, persist=True, force=False):
         self.codex_persist_flags.append(persist)
         return self._status
 
@@ -591,6 +647,35 @@ async def test_codex_status_fanout_has_one_edge_writer_and_no_runner_writer(monk
 
 
 @pytest.mark.asyncio
+async def test_codex_status_fanout_returns_but_never_persists_a_degraded_merge():
+    """Every host answered degraded (2026-09-07: rocky's app-server client had
+    latched closed, dobby had no runner). The page must still see the honest
+    "unknown", but writing it to the ledger every 30 s poll kept the entry
+    fresh, so no runner ever re-read and the account never recovered. Uses the
+    real persist helper: the refusal lives there, not in this caller."""
+    from ccswitch import account_registry, ledger
+    from tests.helpers import temp_env
+
+    degraded = {
+        "v": 2, "provider": "openai", "fetched_at": "2026-09-07T18:56:05+00:00",
+        "availability": "unknown", "extra_usage_enabled": False, "windows": [],
+    }
+    dobby = _AggOrch("dobby", status={"quota": degraded, "activeRunners": 0,
+                                      "degradedReason": None})
+    rocky = _AggOrch("rocky", status={"quota": degraded, "activeRunners": 1,
+                                      "degradedReason": None})
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+    with temp_env():
+        account_registry.register_account("chatgpt-pro", account_registry.PROVIDER_OPENAI,
+                                          engine="codex")
+        result = await fo.codex_account_status("chatgpt-pro")
+        assert result["quota"]["availability"] == "unknown"
+        assert result["activeRunners"] == 1
+        with ledger.locked_ledger() as led:
+            assert "usage" not in led["accounts"].get("chatgpt-pro", {})
+
+
+@pytest.mark.asyncio
 async def test_merge_all_skips_unreachable_worker_but_raises_on_primary():
     dobby = _AggOrch("dobby", load={"acctA": 1.0})
     rocky = _AggOrch("rocky", fail=True)  # a dead worker must not blank the total
@@ -629,7 +714,7 @@ def test_api_orchestrator_reads_are_all_classified():
     # is intentionally primary-scoped (adoptable candidates, deploy status, …). A
     # fan-out here would be wrong or redundant, so they are named explicitly.
     PRIMARY_LOCAL = {
-        "list_archived", "all_prs", "all_merge_trains", "all_repos_stage_models",
+        "list_archived", "all_prs", "pr_detail", "all_merge_trains", "all_repos_stage_models",
         "latest_queue_entries", "check_insights", "ready_merge", "deploy_config_list",
         "deploy_config_put", "deploy_status", "git_credential_alerts",
         "dismiss_git_credential_alert", "automation_statuses", "automation_actionable",
@@ -638,8 +723,9 @@ def test_api_orchestrator_reads_are_all_classified():
         "adopt_session", "migrate_archive_home", "cloned_repos", "usage",
         "resume_recovery_status", "pr_doctor_job", "maybe_start_queued",
         "copilot_add_start", "copilot_add_status", "copilot_add_cancel",
+        "process_quota_refresh",
         "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_classify_run",
-        "pm_advance_map_merged",
+        "pm_advance_map_merged", "pm_advance_live",
         # Account-scoped and identical on every host: the primary answers, and one
         # app-server is started rather than one per host.
         "codex_models", "codex_validate_model",
@@ -665,3 +751,96 @@ def test_api_orchestrator_reads_are_all_classified():
     assert not unclassified, (
         f"server/api reaches unclassified orchestrator methods: {sorted(unclassified)} — "
         f"classify each as per-session, merge-all, or PRIMARY_LOCAL")
+
+
+@pytest.mark.asyncio
+async def test_local_client_prefers_its_own_host(monkeypatch):
+    rocky, dobby = _FakeOrch("rocky"), _FakeOrch("dobby")
+    async def create_session(self, **kw): return _Rec(f"sess-{self.name}")
+    _FakeOrch.create_session = create_session
+    router = _FakeRouter({"rocky": rocky, "dobby": dobby}); got = {}
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        got["prefer"] = prefer; return ["dobby", "rocky"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
+    await fo.create_session(client_node="dobby")
+    assert got["prefer"] == "dobby"
+
+
+@pytest.mark.asyncio
+async def test_explicit_host_beats_the_nudge(monkeypatch):
+    """Pins the ``prefer is None`` guard: client_node="dobby" is a fleet host and
+    WOULD trigger the nudge on its own, but an explicit prefer must win. If the
+    ``prefer is None`` check were dropped, the nudge would clobber "rocky" with
+    "dobby" and this would fail."""
+    rocky, dobby = _FakeOrch("rocky"), _FakeOrch("dobby")
+    async def create_session(self, **kw): return _Rec("s")
+    _FakeOrch.create_session = create_session
+    router = _FakeRouter({"rocky": rocky, "dobby": dobby}); got = []
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        got.append(prefer); return ["rocky"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
+    await fo.create_session(prefer="rocky", client_node="dobby")
+    assert got == ["rocky"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_virtual_suppresses_the_nudge(monkeypatch):
+    """Pins the ``display != "virtual"`` guard: client_node="dobby" is a fleet
+    host and prefer is None, so the nudge WOULD fire, unless the explicit
+    "virtual" request suppresses it. If that guard were dropped, prefer would
+    become "dobby" and this would fail."""
+    rocky, dobby = _FakeOrch("rocky"), _FakeOrch("dobby")
+    async def create_session(self, **kw): return _Rec("s")
+    _FakeOrch.create_session = create_session
+    router = _FakeRouter({"rocky": rocky, "dobby": dobby}); got = []
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        got.append(prefer); return ["rocky"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
+    await fo.create_session(client_node="dobby", display="virtual")
+    assert got == [None]
+
+
+@pytest.mark.asyncio
+async def test_non_fleet_client_node_does_not_nudge(monkeypatch):
+    """Pins the ``client_node in self._router.names()`` guard: prefer is None
+    and display is not "virtual", so the nudge WOULD fire on any client_node,
+    unless "laptop" (not a fleet host) is excluded. If that membership check
+    were dropped, prefer would become "laptop" and this would fail."""
+    rocky, dobby = _FakeOrch("rocky"), _FakeOrch("dobby")
+    async def create_session(self, **kw): return _Rec("s")
+    _FakeOrch.create_session = create_session
+    router = _FakeRouter({"rocky": rocky, "dobby": dobby}); got = []
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        got.append(prefer); return ["rocky"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
+    await fo.create_session(client_node="laptop")          # not a fleet host
+    assert got == [None]
+
+
+@pytest.mark.asyncio
+async def test_client_node_match_is_case_insensitive(monkeypatch):
+    """The tailnet node name and the runner-registry name are one host spelled by
+    two independent sources, so the nudge must match the way resolve_display_mode
+    does — case-insensitively. Otherwise a "Dobby" client is routed native by the
+    policy and placed on some other host by the router, and the window opens on a
+    desktop nobody is sitting at. `prefer` must carry the REGISTRY's spelling,
+    since that is the key FleetRouter.get() looks up."""
+    rocky, dobby = _FakeOrch("rocky"), _FakeOrch("dobby")
+    async def create_session(self, **kw): return _Rec("s")
+    _FakeOrch.create_session = create_session
+    router = _FakeRouter({"rocky": rocky, "dobby": dobby}); got = []
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        got.append(prefer); return ["dobby", "rocky"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
+    await fo.create_session(client_node="Dobby")
+    assert got == ["dobby"]

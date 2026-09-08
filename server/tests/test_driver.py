@@ -312,10 +312,10 @@ def test_send_prompt_context_header_prepended_once_per_change():
         return sdk.queries, [e for e in events if isinstance(e, UserMessage)]
 
     queries, user_msgs = asyncio.run(run())
-    assert queries[0].startswith('<ccswitch-context route="/pipeline"')
+    assert queries[0].startswith('<viberpit-context route="/pipeline"')
     assert queries[0].endswith("\nhi")
     assert queries[1] == "again"
-    assert queries[2].startswith('<ccswitch-context route="/sessions"')
+    assert queries[2].startswith('<viberpit-context route="/sessions"')
     assert queries[2].endswith("\nthird")
     assert [m.text for m in user_msgs] == ["hi", "again", "third"]
     assert [m.context for m in user_msgs] == [
@@ -374,9 +374,9 @@ def test_queued_prompt_keeps_its_context_header():
         return sdk.queries, msgs
 
     queries, msgs = asyncio.run(run())
-    assert queries[0].startswith('<ccswitch-context route="/pipeline"')
+    assert queries[0].startswith('<viberpit-context route="/pipeline"')
     assert queries[0].endswith("\nprompt-one")
-    assert queries[1].startswith('<ccswitch-context route="/sessions"')
+    assert queries[1].startswith('<viberpit-context route="/sessions"')
     assert queries[1].endswith("\nprompt-two")
     # The chip rides the transcript event for the queued prompt too.
     assert [m.context for m in msgs] == [{"route": "/pipeline"}, {"route": "/sessions"}]
@@ -421,7 +421,7 @@ def test_interrupt_and_post_keeps_its_context_header():
         return sdk.queries
 
     queries = asyncio.run(run())
-    assert queries[-1].startswith('<ccswitch-context route="/insights"')
+    assert queries[-1].startswith('<viberpit-context route="/insights"')
     assert queries[-1].endswith("\nurgent")
 
 
@@ -473,7 +473,7 @@ def test_context_dedupe_only_advances_when_the_header_is_actually_sent():
         return sdk.queries
 
     queries = asyncio.run(run())
-    assert queries[-1].startswith('<ccswitch-context route="/sessions"')
+    assert queries[-1].startswith('<viberpit-context route="/sessions"')
 
 
 def test_fresh_session_resends_the_context_header_after_clear():
@@ -507,7 +507,7 @@ def test_fresh_session_resends_the_context_header_after_clear():
         return sdk.queries
 
     queries = asyncio.run(run())
-    assert queries[-1].startswith('<ccswitch-context route="/pipeline"')
+    assert queries[-1].startswith('<viberpit-context route="/pipeline"')
     assert queries[-1].endswith("\nafter")
 
 
@@ -541,8 +541,8 @@ def test_compaction_resends_the_context_header():
         return sdk.queries
 
     queries = asyncio.run(run())
-    assert queries[0].startswith('<ccswitch-context route="/pipeline"')
-    assert queries[-1].startswith('<ccswitch-context route="/pipeline"')
+    assert queries[0].startswith('<viberpit-context route="/pipeline"')
+    assert queries[-1].startswith('<viberpit-context route="/pipeline"')
     assert queries[-1].endswith("\nafter")
 
 

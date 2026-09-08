@@ -146,6 +146,41 @@ def test_persist_status_done_parked_but_asking_user_is_answer_needed(tmp_path):
     assert asyncio.run(run()) == "waiting_question"
 
 
+def _parked_asking_with_marker_transcript(tmp_path):
+    """Parked, and the closing question is trailed by a self-directed model-request
+    marker. The marker sits AFTER the "?", so a tail check that does not strip it
+    can never see the question — the same masking ``_completion_open_question``
+    already strips for, on the other prose path."""
+    import json
+
+    from ccswitch import brand
+    text = ('I can rebase onto master or revert the merge. Which of those '
+            'matches your intent?\n\n'
+            f'<!-- {brand.SLUG}:model=opus reason="conflict resolution" -->')
+    p = tmp_path / "claude-s1.jsonl"
+    p.write_text(
+        '{"type":"user","message":{"role":"user","content":"unblock the PRs"}}\n'
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1",'
+        '"name":"Bash","input":{"command":"gh pr checks","run_in_background":true}}]}}\n'
+        + json.dumps({"type": "assistant", "message": {
+            "content": [{"type": "text", "text": text}]}}) + "\n"
+    )
+    return p
+
+
+def test_persist_status_parked_question_is_not_masked_by_a_trailing_marker(tmp_path):
+    """A trailing marker must not hide the closing "?" from the parked overlay.
+    Both prose paths judge the same text the same way — this one used to skip the
+    strip and silently demote a real question to "Waiting…"."""
+    async def run():
+        orch = await _build_orch(tmp_path, name_is_auto=False)
+        orch.transcript_path = lambda sid: str(
+            _parked_asking_with_marker_transcript(tmp_path))
+        await orch._persist_status("s1", "done")
+        return orch.record("s1").status
+    assert asyncio.run(run()) == "waiting_question"
+
+
 def _killed_only_transcript(tmp_path):
     """A transcript whose only background poller was killed by a deploy → NOT parked
     (killed tasks are dead, re-armed under a new id), so is_parked() is False."""

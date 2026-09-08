@@ -14,7 +14,7 @@ function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
-        {[SESSIONS_PATH, SESSION_ROUTE, SUBAGENT_ROUTE, ARCHIVED_PATH, ARCHIVED_SESSION_ROUTE, '/pipeline'].map((p) => (
+        {[SESSIONS_PATH, SESSION_ROUTE, SUBAGENT_ROUTE, ARCHIVED_PATH, ARCHIVED_SESSION_ROUTE, '/pipeline', '/projects/:id'].map((p) => (
           <Route key={p} path={p} element={<Probe />} />
         ))}
       </Routes>
@@ -29,6 +29,7 @@ describe('useOpenItem', () => {
     ['/sessions/abc/agents/x', 'session:abc|abc'],
     ['/sessions/archived', 'none|-'],
     ['/pipeline', 'none|-'],
+    ['/projects/abc', 'none|-'],
   ])('%s → %s', (path, expected) => {
     renderAt(path)
     expect(screen.getByTestId('probe')).toHaveTextContent(expected)

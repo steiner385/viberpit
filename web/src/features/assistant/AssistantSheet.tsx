@@ -16,7 +16,7 @@
  * here so it can call `useSessionRuntimeContext()` — the provider's own descendant,
  * not the component that renders the provider.
  */
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAssistantSession, useAssistantStatus } from '@/api/assistant'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from '@/components/session/SessionRuntimeProvider'
@@ -68,6 +68,10 @@ function AssistantSheetBody() {
   const rt = useSessionRuntimeContext()
   const { pathname } = useLocation()
   const openSessionId = useOpenSessionId()
+  // A NoticeCard's "Ask about it" prefills the composer rather than sending outright
+  // (unlike a starter chip) — a fresh object on every ask, even for the same text
+  // twice, so Composer's prefill effect re-fires (see Composer.tsx's externalDraft).
+  const [draftSeed, setDraftSeed] = useState<{ text: string } | null>(null)
 
   // Publish this turn's liveness to `DrawerHost` so Escape can interrupt it before
   // closing the drawer, instead of abandoning an in-flight assistant turn silently.
@@ -96,12 +100,14 @@ function AssistantSheetBody() {
           earliestTurn={rt.state.earliestTurn}
           loadingOlder={rt.state.loadingOlder}
           onLoadOlder={rt.onLoadOlder}
+          onAsk={(text) => setDraftSeed({ text })}
         />
       </div>
       <SessionComposer
         rt={rt}
         hideModeSelector
         contextProvider={() => ({ route: pathname, ...(openSessionId ? { sessionId: openSessionId } : {}) })}
+        externalDraft={draftSeed}
       />
       <p className="border-t border-edge px-3 py-1 text-xs text-ink-muted">
         AI-generated. Actions ask for confirmation.

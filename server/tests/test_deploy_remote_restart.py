@@ -6,6 +6,9 @@ from server.deploy import steps
 
 def _recorder(calls):
     def run(cmd, **kw):
+        if "show" in cmd:
+            from types import SimpleNamespace
+            return SimpleNamespace(returncode=0, stdout="LoadState=loaded\n")
         calls.append(list(cmd))
         class R:
             returncode = 0
@@ -19,8 +22,8 @@ def test_restart_edge_restarts_only_the_edge_unit(monkeypatch):
     monkeypatch.setenv("CCSWITCH_DAEMON_SSH_HOST", "tony@rocky")   # must be ignored now
     calls: list[list[str]] = []
     units = steps.restart_edge(run=_recorder(calls))
-    assert calls == [["sudo", "systemctl", "restart", "ccswitch.service"]]
-    assert units == ["ccswitch.service"]
+    assert calls == [["sudo", "systemctl", "restart", "viberpit.service"]]
+    assert units == ["viberpit.service"]
 
 
 def test_steps_has_no_restart_units_anymore():
@@ -33,8 +36,8 @@ def test_rollback_to_resets_edge_and_restarts_local_daemon_when_changed(tmp_path
                       run=_recorder(calls))
     joined = [" ".join(c) for c in calls]
     assert joined[0] == f"git -C {tmp_path} reset --hard abc1234"
-    assert "sudo systemctl restart ccswitch-daemon.service" in joined
-    assert joined[-1] == "sudo systemctl restart ccswitch.service"
+    assert "sudo systemctl restart viberpit-daemon.service" in joined
+    assert joined[-1] == "sudo systemctl restart viberpit.service"
     assert not any(j.startswith("ssh") for j in joined)
 
 

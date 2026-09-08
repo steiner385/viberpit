@@ -207,7 +207,7 @@ def test_wedge_restart_still_fires_when_the_https_daemon_is_unresponsive(
         https_healthz_ok=False,
     )
     proc = _run(tmp_path, bindir, script_env={"CCSWITCH_SESSIOND_ENDPOINT": LOCAL_HTTPS})
-    assert "systemctl restart ccswitch-daemon.service" in _calls(state, "sudo-calls")
+    assert "systemctl restart viberpit-daemon.service" in _calls(state, "sudo-calls")
     assert "ALERT[daemon-wedged]" in proc.stdout
 
 
@@ -226,8 +226,8 @@ def test_wedged_daemon_that_ignores_sigterm_is_sigkilled_after_drain_wait(
         )
         proc = _run(tmp_path, bindir, script_env={})
         sudo_calls = _calls(state, "sudo-calls")
-        assert "systemctl restart ccswitch-daemon.service" in sudo_calls
-        assert "systemctl kill -s SIGKILL ccswitch-daemon.service" in sudo_calls, proc.stdout
+        assert "systemctl restart viberpit-daemon.service" in sudo_calls
+        assert "systemctl kill -s SIGKILL viberpit-daemon.service" in sudo_calls, proc.stdout
         assert "SIGKILLing the unit" in proc.stdout
         assert "ALERT[daemon-wedged]" in proc.stdout
     finally:
@@ -246,7 +246,7 @@ def test_daemon_that_exits_on_sigterm_is_not_sigkilled(tmp_path: Path) -> None:
     )
     proc = _run(tmp_path, bindir, script_env={})
     sudo_calls = _calls(state, "sudo-calls")
-    assert "systemctl restart ccswitch-daemon.service" in sudo_calls
+    assert "systemctl restart viberpit-daemon.service" in sudo_calls
     assert "SIGKILL" not in sudo_calls, proc.stdout
     assert "ALERT[daemon-wedged]" in proc.stdout
 
@@ -257,7 +257,7 @@ def test_uds_daemon_wedge_behavior_unchanged(tmp_path: Path) -> None:
     bindir, state = _make_shims(tmp_path, unit_active=True, uds_healthz_ok=False)
     proc = _run(tmp_path, bindir, script_env={})
     assert "--unix-socket" in _calls(state, "curl-calls")
-    assert "systemctl restart ccswitch-daemon.service" in _calls(state, "sudo-calls")
+    assert "systemctl restart viberpit-daemon.service" in _calls(state, "sudo-calls")
     assert "ALERT[daemon-wedged]" in proc.stdout
 
 

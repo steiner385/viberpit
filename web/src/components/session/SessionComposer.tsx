@@ -23,9 +23,11 @@ interface Props {
    *  effect yet — accepted so the assistant drawer can opt out ahead of that UI
    *  landing, without a follow-up prop-plumbing change. */
   hideModeSelector?: boolean
+  /** Prefill the draft from outside the composer (e.g. a NoticeCard's "Ask about it"). */
+  externalDraft?: { text: string } | null
 }
 
-export function SessionComposer({ rt, contextProvider, hideModeSelector: _hideModeSelector }: Props) {
+export function SessionComposer({ rt, contextProvider, hideModeSelector: _hideModeSelector, externalDraft }: Props) {
   // `hideModeSelector` is forward-compat only — Composer has no mode-selector UI to
   // hide today (see the Props doc above). Referenced here (no-op) so it isn't
   // flagged as unused; wire it up for real once that UI exists.
@@ -56,6 +58,7 @@ export function SessionComposer({ rt, contextProvider, hideModeSelector: _hideMo
       onRequestSuggestions={() => genSuggestions.mutateAsync({ id: rt.sessionId })}
       history={history}
       sessionId={rt.sessionId}
+      externalDraft={externalDraft}
     />
   )
 }

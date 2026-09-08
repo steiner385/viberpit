@@ -233,6 +233,8 @@ def _watch_dict(r: NotificationRule) -> dict:
         "eventClass": r.event_class,
         "scopeRepo": r.scope_repo,
         "scopeAutomation": r.scope_automation,
+        "scopeAccount": r.scope_account,
+        "scopeSessionId": r.scope_session_id,
         "once": bool(r.once),
         "ownerSessionId": r.owner_session_id,
         "expiresAt": r.expires_at.isoformat() if r.expires_at else None,
@@ -240,14 +242,22 @@ def _watch_dict(r: NotificationRule) -> dict:
     }
 
 
+# A kind="account" watch's target sentinel for "every account", not one in particular
+# (the "Notify me if any account gets limited" starter has no specific account to name).
+# Mapped to a NULL scope_account below — the wildcard `scope_matches` (notify_rules.py)
+# already gives any None scope field, rather than inventing a second wildcard convention
+# alongside event_class's "*".
+_ACCOUNT_WILDCARD_TARGETS: frozenset[str] = frozenset({"any", "*", "all"})
+
+
 @router.post("/watches", status_code=status.HTTP_201_CREATED)
 async def create_watch(body: WatchBody, request: Request,
                        identity: str = Depends(current_identity), db=Depends(get_db)):
-    """Create a proactive watch (spec v2 §4.7, Task 8.3): a `NotificationRule` scoped
-    to this identity's `assistant` channel, delivered into the drawer instead of an
-    outbound webhook. `kind`/`condition` are resolved against real, currently-emitted
-    event classes only — see `server/assistant/watches.py` for why `session`/`account`
-    kinds are not accepted."""
+    """Create a proactive watch (spec v2 §4.7, Task 8.3 + #1354): a `NotificationRule`
+    scoped to this identity's `assistant` channel, delivered into the drawer instead of
+    an outbound webhook. `kind`/`condition` are resolved against real, currently-emitted
+    event classes only — see `server/assistant/watches.py` for the full kind/condition
+    map."""
     try:
         event_class, scope_field = watch_conditions.resolve(body.kind, body.condition)
     except watch_conditions.UnknownWatchCondition as e:
@@ -263,11 +273,14 @@ async def create_watch(body: WatchBody, request: Request,
     if len(existing) >= cap:
         return _err("WATCH_CAP_EXCEEDED", f"at most {cap} watches per identity", 409)
 
+    scope_value: str | None = body.target
+    if body.kind == "account" and body.target.strip().lower() in _ACCOUNT_WILDCARD_TARGETS:
+        scope_value = None
     rule = NotificationRule(
         event_class=event_class, action="channel", channel_id=channel.id,
         once=body.once, owner_session_id=getattr(request.state, "assistant_session_id", None),
         expires_at=datetime.now(timezone.utc) + timedelta(hours=body.ttl_hours),
-        **{scope_field: body.target},
+        **{scope_field: scope_value},
     )
     db.add(rule)
     await db.flush()

@@ -32,7 +32,6 @@
 // scrollTop. With the provider scoped to the session pane, the list never
 // remounts and the position survives on its own.
 import { Plus } from 'lucide-react'
-import { cn } from '@/lib/utils'
 import { useArchivedSessions } from '@/api/hooks'
 import { SessionListControls } from '@/components/SessionListControls'
 import { PendingApprovalSection } from '@/components/PendingApprovalSection'
@@ -43,6 +42,7 @@ import { DaemonHealthIndicator } from '@/components/DaemonHealthIndicator'
 import { NO_FILTERS, isFiltered as hasActiveFilters } from '@/session/listFilters'
 import type { ListScope } from '@/session/sessionNavState'
 import type { Account } from '@/api/types'
+import { useToastAnchor } from '@/shell/toastInsets'
 import { ArchivedScopeBody } from './ArchivedScopeBody'
 import { ScopeBody } from './ScopeBody'
 import { ScopeSegment } from './ScopeSegment'
@@ -61,7 +61,8 @@ export interface SessionListColumnProps {
   isLoading?: boolean
   /** The open session, or null when the New Session slot is the target. */
   selectedId: string | null
-  /** True while the New Session slot is the target — marks the button. */
+  /** True while the New Session slot is the target. The dock is then already
+   *  the DispatchBar, so the foot button is NOT rendered (see the foot). */
   newSelected?: boolean
   /** `config.adoptionEnabled` — mounts AdoptPanel at the foot of the list. */
   adoptionEnabled?: boolean
@@ -104,11 +105,25 @@ export function SessionListColumn({
   // The live poll is untouched either way: two queries, never merged (D4).
   const { data: archived = [] } = useArchivedSessions()
 
+  // On a phone this column IS the content band, so the scope switch is the
+  // header a toast must clear (`shell/toastInsets.ts`).
+  const clearRef = useToastAnchor('clear')
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    // `overflow-hidden`: this column is a stack of `shrink-0` bands around one
+    // scroll band, and at a short enough viewport (a phone with the keyboard up
+    // — see the `short:` variant in index.css) the bands alone are taller than
+    // the box the shell gives it. Without a clip the surplus paints OUTSIDE the
+    // column, and `app.main` — an opaque later flex item, so it paints on top —
+    // covers it: the visible bug was a stray sliver of whichever control
+    // straddled the dock's top border. Nothing this hides was reachable anyway;
+    // `short:hidden` on the controls strip is what actually buys back the room.
+    // Safe for the row menus: they are `absolute` inside the scroll band, which
+    // already clips them with `overflow-y-auto`.
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {/* Fixed head: the scope switch stays above the scroll band in both
           scopes, so switching never moves the control that switched. */}
-      <div className="shrink-0 p-2">
+      <div ref={clearRef} className="shrink-0 p-2">
         <ScopeSegment
           scope={scope}
           activeCount={state.sessions.length}
@@ -148,20 +163,25 @@ export function SessionListColumn({
 
           Live scope only: `onNew` starts a LIVE session, and offering it beside
           a list of archived ones would start a session the list it sits under
-          can never show. */}
-      {scope === 'live' && (
+          can never show.
+
+          And only while a session is OPEN. With none open (`newSelected`) the
+          dock is already the DispatchBar — the very surface this button exists
+          to reveal — so the button would sit directly above a panel that makes
+          it redundant. It used to render highlighted in that state, to mark the
+          new-session slot as the target; the lit-up DispatchBar beneath it says
+          the same thing without a second control. On phone and tablet this is
+          every time the column is on screen at all: `app.list` is only shown
+          there with no item open, so the button was never useful on a phone. */}
+      {scope === 'live' && !newSelected && (
         <div className="shrink-0 p-2">
           <button
             type="button"
-            data-selected={newSelected}
             onClick={onNew}
-            className={cn(
-              'flex w-full min-h-target items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-              newSelected
-                ? 'border-accent bg-accent-wash text-accent'
-                : 'border-edge text-ink hover:bg-surface-raised',
-            )}
+            className={
+              'flex w-full min-h-target items-center gap-2 rounded-md border border-edge px-3 py-2 text-sm font-medium text-ink hover:bg-surface-raised ' +
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+            }
           >
             <Plus size={16} aria-hidden="true" />
             New Session

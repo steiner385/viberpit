@@ -5,22 +5,35 @@ import os
 
 from .account_auth import helper_env
 from .claude_bin import cli_path_kwargs as _cli_path_kwargs
-from .completion import marker_instructions
 from .permissions import to_sdk_permission_mode
 
 
 def _build_append_string() -> str:
-    """This engine's system-prompt append: the shared marker instructions.
+    """This engine's system-prompt append, through the shared ``session_instructions``
+    (session tools spec §9), which the Codex driver's fresh ``thread/start`` calls for
+    the same purpose.
 
-    Claude is the one engine whose driver implements self-directed model
-    switching (``AgentCapabilities.self_model_switch``), so it is also the one
-    engine that passes the flag through; every other engine asks
-    ``marker_instructions`` for the completion/no-PR pair alone.
+    Claude is the one engine whose capability is ``durable_tool_surface`` (its declared
+    tool surface survives a resume) and whose driver implements self-directed model
+    switching (``AgentCapabilities.self_model_switch``), so it is the one engine that
+    passes both flags through as True when the surface is on: a Claude session with
+    tools mounted is told about the tools and never about the markers they replace.
+
+    ``signalling_tools`` reads ``ClaudeAgentDriver.capabilities.durable_tool_surface``
+    rather than trusting ``session_tools_enabled`` alone — the same reasoning that made
+    the Codex call read its own capability instead of a literal ``False``: the flag on
+    its own says only that SOME overlay is mounted, not that it is the kind a
+    signalling-tools paragraph could truthfully describe.
     """
     from server.config import get_settings
-    return marker_instructions(
-        self_model_switch=get_settings().self_model_switch_enabled
-    )
+    from server.sessions.claude_driver import ClaudeAgentDriver
+    from server.sessions.tools.instruction import session_instructions
+    cfg = get_settings()
+    return session_instructions(
+        session_tools=cfg.session_tools_enabled,
+        signalling_tools=(cfg.session_tools_enabled
+                          and ClaudeAgentDriver.capabilities.durable_tool_surface),
+        self_model_switch=cfg.self_model_switch_enabled)
 
 # Inline flag-settings payload (--settings layer, highest priority).  Auto-approves any
 # project-scoped `.mcp.json` MCP server so the CLI's trust gate (LX1 → "pending" → prompt)
@@ -59,11 +72,12 @@ def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None
                      on_pre_compact=None, options_overlay=None):
     """Build the real ``ClaudeSDKClient`` for one session.
 
-    *options_overlay* (assistant sessions only — see ``server/assistant/options.py``)
+    *options_overlay*: the assistant's overlay (see ``server/assistant/options.py``)
     replaces individual ``ClaudeAgentOptions`` kwargs wholesale, including
-    ``system_prompt``: the ccswitch marker instructions appended below are coding-session
-    contracts (completion marker, PR marker, self-directed model request) and mean
-    nothing to the assistant.
+    ``system_prompt``; a coding session's overlay (``server/sessions/tools/``) is
+    exactly ``mcp_servers`` and must never carry ``system_prompt`` or
+    ``strict_mcp_config`` — the first would erase the marker contracts appended below,
+    the second would drop the repo's own ``.mcp.json`` servers.
     """
     ClaudeSDKClient, ClaudeAgentOptions = _import_sdk()
     env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir)

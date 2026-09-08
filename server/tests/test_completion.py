@@ -2,7 +2,9 @@ from server.sessions.completion import COMPLETION_MARKER, COMPLETION_INSTRUCTION
 
 
 def test_marker_is_html_comment():
-    assert COMPLETION_MARKER == "<!-- ccswitch:complete -->"
+    # Pinned as a literal, not derived from brand: this test IS the contract, and
+    # deriving the expected value from the constant it checks would assert nothing.
+    assert COMPLETION_MARKER == "<!-- viberpit:complete -->"
 
 
 def test_instruction_embeds_the_marker_verbatim():

@@ -88,6 +88,10 @@ logger = logging.getLogger(__name__)
 #: Phase 4 issues the call; the notice contract is fixed here so both halves of the
 #: recovery cannot drift.
 RECOVER_VIA_THREAD_READ: Final = "thread/read"
+#: The "exit code" `_await_runner_death` reports when the runner's client latched
+#: closed while its process was still alive (#1444). Negative like a signal
+#: death, and distinct from the -1 an unwaitable child gets.
+CLIENT_CLOSED_EXIT_CODE: Final = -2
 
 DEFAULT_IDLE_GRACE_S: Final = 300.0
 DEFAULT_MAX_RESTARTS: Final = 3
@@ -341,8 +345,15 @@ class CodexRunnerManager:
         return tuple(sorted(self._runners))
 
     def client_for(self, account: str) -> CodexAppServerClient | None:
+        """The account's live client, or None when it has none — including a
+        registered runner whose client has latched closed and is awaiting its
+        supervised replacement. Handing out the dead connection would make every
+        caller fail with the latched error while `running` still read as true
+        (#1444)."""
         runner = self._runners.get(account)
-        return runner.client if runner is not None else None
+        if runner is None or runner.client.closed:
+            return None
+        return runner.client
 
     def home_for(self, account: str) -> Path | None:
         runner = self._runners.get(account)
@@ -940,12 +951,7 @@ class CodexRunnerManager:
         """Watch one account's app-server and replace it, boundedly, when it dies."""
         try:
             while True:
-                try:
-                    code = await runner.process.wait()
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001 -- treat an unwaitable child as dead
-                    code = -1
+                code = await self._await_runner_death(runner)
                 if runner.stopping or self._runners.get(runner.account) is not runner:
                     return
                 runner.settled = False
@@ -968,10 +974,44 @@ class CodexRunnerManager:
             logger.exception("codex: supervisor for %s failed", runner.account)
             runner.settled = True
 
+    async def _await_runner_death(self, runner: _Runner) -> int:
+        """Block until this runner is unusable, whichever way it gets there.
+
+        Two things end a runner: its process exits, or its client latches closed
+        while the process is still alive — the shape of #1444, where one frame
+        over the stream limit killed the *connection* and nothing watched for
+        that, so the account served a dead client indefinitely. Returns the exit
+        code for the first, `CLIENT_CLOSED_EXIT_CODE` for the second; the caller's
+        `_discard` stops the still-live process on that path.
+        """
+        exited = asyncio.ensure_future(runner.process.wait())
+        latched = asyncio.ensure_future(runner.client.wait_closed())
+        try:
+            done, _ = await asyncio.wait(
+                {exited, latched}, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for waiter in (exited, latched):
+                if not waiter.done():
+                    await cancel_and_reap(
+                        waiter, phase=f"codex.supervisor.wait:{runner.account}"
+                    )
+        if exited in done:
+            try:
+                return exited.result()
+            except Exception:  # noqa: BLE001 -- treat an unwaitable child as dead
+                return -1
+        return CLIENT_CLOSED_EXIT_CODE
+
     async def _handle_exit(self, runner: _Runner, code: int) -> bool:
         """React to one unexpected exit. Returns True when a replacement is live."""
         interrupted = self.active_turns(runner.account)
-        detail = runner.process.stderr_tail()[-200:]
+        client_closed = code == CLIENT_CLOSED_EXIT_CODE
+        detail = (
+            (runner.client.closed_reason or "client closed")
+            if client_closed
+            else runner.process.stderr_tail()[-200:]
+        )
         log_event(
             logger,
             logging.ERROR,
@@ -979,6 +1019,7 @@ class CodexRunnerManager:
             account=runner.account,
             generation=runner.generation,
             exit_code=code,
+            reason="client_closed" if client_closed else "process_exited",
             interrupted_turns=len(interrupted),
         )
         # Announce the loss BEFORE attempting recovery: a thread driver must never
@@ -1088,7 +1129,13 @@ class CodexRunnerManager:
             await asyncio.sleep(0)
         while True:
             runner = self._runners.get(account)
-            if runner is None or runner.settled:
+            if runner is None:
+                return
+            # A runner whose client has latched is not "ready again" no matter
+            # what `settled` says: the supervisor's continuation may simply not
+            # have run yet. Waiting on the observable state, not on a scheduling
+            # heuristic, is what keeps this a barrier rather than a guess.
+            if runner.settled and not runner.client.closed:
                 return
             if loop.time() >= deadline:
                 raise TimeoutError(f"codex runner for {account} did not settle")

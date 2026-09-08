@@ -64,7 +64,10 @@ interface PageContractRow {
 
 /** Pages that conform to sub-spec C §2.3. Add a row when a page migrates. */
 const PAGES: readonly PageContractRow[] = [
-  { nav: 'settings', path: '/settings/general', variant: 'split', title: 'Settings' },
+  { nav: 'settings',    path: '/settings/general', variant: 'split',    title: 'Settings' },
+  { nav: 'initiatives', path: '/initiatives',      variant: 'standard', title: 'Initiatives' },
+  { nav: 'projects',    path: '/projects',         variant: 'standard', title: 'Products' },
+  { nav: 'triage',      path: '/triage',           variant: 'standard', title: 'Triage' },
 ]
 
 describe('page contract', () => {
@@ -84,7 +87,7 @@ describe('page contract', () => {
         const h1s = await screen.findAllByRole('heading', { level: 1 })
         expect(h1s).toHaveLength(1)
         expect(h1s[0]).toHaveTextContent(page.title)
-        expect(document.title).toMatch(new RegExp(`${page.title} — ccswitch$`))
+        expect(document.title).toMatch(new RegExp(`${page.title} — ViberPit$`))
         expect(document.querySelector(`[data-page-variant="${page.variant}"]`)).not.toBeNull()
 
         const root = document.getElementById('root') ?? document.body

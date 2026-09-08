@@ -154,6 +154,7 @@ class Harness:
         cwd: str | None = None,
         start: bool = True,
         assistant_overlay: Any = None,
+        session_tools: Any = None,
     ) -> CodexAgentDriver:
         self.manager = CodexRunnerManager(
             availability=CodexAvailability(available=True, binary_path="/usr/bin/codex"),
@@ -206,6 +207,7 @@ class Harness:
             on_context_usage=_on_context_usage,
             on_recoverable_failure=_on_recoverable_failure,
             assistant_overlay=assistant_overlay,
+            session_tools=session_tools,
         )
         self._collector = asyncio.create_task(self._collect())
         await asyncio.sleep(0)
@@ -299,6 +301,18 @@ async def test_the_driver_satisfies_the_agent_driver_protocol(harness):
     )
     assert caps.questions
     assert not caps.self_model_switch and not caps.fork
+
+
+@pytest.mark.asyncio
+async def test_full_auto_starts_sandboxed_but_still_able_to_ask_to_escalate(harness):
+    """``full-auto`` runs sandboxed work unattended, but a confined sandbox needs
+    an approval channel for the one thing it cannot do (commit, push, listen), or
+    every such command is silently rejected (how every Codex session on
+    2026-09-07 ended up unable to commit)."""
+    await harness.boot(mode="full-auto")
+    params = harness.params(schema.METHOD_THREAD_START)
+    assert params["sandbox"] == "workspace-write"
+    assert params["approvalPolicy"] == "on-request"
 
 
 @pytest.mark.asyncio

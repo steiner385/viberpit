@@ -62,7 +62,7 @@ def _orch():
     orch._sdk_factory = None
     orch._x11 = None
     orch._records = {}
-    orch._assistant_overlays = {}
+    orch._overlays = {}
     orch._clock = time.time
     return orch
 
@@ -87,7 +87,7 @@ def test_a_codex_overlay_is_never_handed_to_the_claude_sdk_factory(tmp_path,
 
     orch = _orch()
     orch._sdk_factory = factory
-    orch.register_assistant_overlay(
+    orch.register_overlay(
         "asst", assistant_codex_options(api=_api(), model="gpt-5.6-sol"))
     orch._session_factory("asst")("/tmp", "/cfg", None, "interactive", None)
     assert seen[-1] == {}
@@ -99,8 +99,8 @@ def test_the_codex_factory_seam_returns_only_codex_overlays(tmp_path, monkeypatc
                                                 assistant_codex_options)
 
     orch = _orch()
-    orch.register_assistant_overlay("claude-asst", {"model": "sonnet", "tools": []})
-    orch.register_assistant_overlay(
+    orch.register_overlay("claude-asst", {"model": "sonnet", "tools": []})
+    orch.register_overlay(
         "codex-asst", assistant_codex_options(api=_api(), model="gpt-5.6-sol"))
 
     assert orch._codex_assistant_overlay_for_session("claude-asst") is None
@@ -140,5 +140,5 @@ async def test_the_setup_helper_builds_the_overlay_for_the_session_engine(tmp_pa
         "s-codex", identity="u@example.com", model="gpt-5.6-sol",
         engine=AgentEngine.CODEX)
 
-    assert isinstance(orch._assistant_overlays["s-claude"], dict)
-    assert isinstance(orch._assistant_overlays["s-codex"], CodexAssistantOverlay)
+    assert isinstance(orch._overlays["s-claude"], dict)
+    assert isinstance(orch._overlays["s-codex"], CodexAssistantOverlay)

@@ -8,7 +8,9 @@ import asyncio
 import logging
 
 from ccswitch.quota import QuotaSnapshot
-from server.codex.quota import persist_quota_snapshot
+from server.ipc.client import DaemonUnavailable
+from server.usage.process_quota import persist_quota_snapshot
+from server.sessions.display_policy import DISPLAY_VIRTUAL
 from server.sessions.facade import _DEADLINE_ATTR
 from server.sessions.fleet_router import FleetRouter, NoHostAvailable
 from server.sessions.host_engines import expected_contract_sha256
@@ -116,6 +118,12 @@ _PER_SESSION: frozenset[str] = frozenset({
     "transcript_search_text", "has_transcript",
     "command_catalog", "run_command", "latest_suggestions", "generate_suggestions_now",
     "latest_summary", "pop_pending_initial_prompt", "pop_pending_initial_attachment_ids",
+    # Task 8.4: same "queued while detached, flushed on this session's own host's
+    # attach" shape as the two siblings above. `post_notice` is NOT here — its
+    # first arg is an identity, not a session_id, so it does not fit
+    # _make_per_session's calling convention; it falls through __getattr__ to the
+    # primary instead (assistant sessions are pinned to primary at create_session).
+    "pop_pending_notices",
     "request_pr_fix", "prs_for", "ring_covers", "ring_tail", "unarchive",
     "x11_open_browser", "resolve_model_approval", "resume_interrupted",
     "reload_session", "rotate_to_best", "set_account_pin",
@@ -216,6 +224,20 @@ class FleetOrchestrator:
         # placement would have neither. Overrides any caller preference.
         if is_assistant_kind(kwargs.get("kind")):
             prefer = self._primary
+        # A client sitting at a fleet host's own desktop should land there, or "route
+        # to the native display" can never hold. An explicit host still wins, and an
+        # explicit "virtual" request has no reason to move.
+        if prefer is None and kwargs.get("display") != DISPLAY_VIRTUAL:
+            # The tailnet node name and the runner-registry name are one host spelled
+            # by two independent sources, so match case-insensitively — the same
+            # comparison resolve_display_mode makes, or a "Dobby" client would be
+            # routed as native by the policy and placed elsewhere by the router. The
+            # registry's OWN spelling becomes `prefer`: it is the key every downstream
+            # FleetRouter.get() lookup uses.
+            _cn = (kwargs.get("client_node") or "").strip().lower()
+            if _cn:
+                prefer = next(
+                    (n for n in self._router.names() if n.strip().lower() == _cn), None)
         # Candidate selection now filters on the requested engine before scoring, so a
         # Codex launch is only ever offered runners that advertised a usable Codex
         # boundary. Raises NoEngineHostAvailable (a NoHostAvailable) when every healthy
@@ -227,6 +249,19 @@ class FleetOrchestrator:
         for host in order:
             try:
                 rec = await self._router.get(host).create_session(**kwargs)
+            except DaemonUnavailable as e:
+                if e.outcome_unknown:
+                    # The RPC reached the host and timed out or reset mid-response: the
+                    # daemon may still be spawning — or may already have persisted the
+                    # session (2026-09-07: it landed 2s after the edge gave up). Trying
+                    # the next host would start a SECOND session for the same prompt on
+                    # another runner (the cross-host duplicate pairs of 2026-09-05).
+                    # Propagate; the edge tells the user the session may still appear.
+                    log.warning("fleet.create_session host=%s outcome unknown (%s) — "
+                                "not cascading to the next host", host, e)
+                    raise
+                last_exc = e  # never reached the daemon → safe to try the next host
+                continue
             except Exception as e:  # spawn/clone/account errors → try next ranked host
                 last_exc = e
                 continue
@@ -413,13 +448,20 @@ class FleetOrchestrator:
                           name, account, exc_info=exc)
         return {"invalidated": invalidated, "failed": failed}
 
-    async def codex_account_status(self, account: str) -> dict:
-        """Merge every runner's status, then persist once from the edge."""
+    async def codex_account_status(self, account: str, *, force: bool = False) -> dict:
+        """Merge every runner's status, then persist once from the edge.
+
+        The merged reading is still returned degraded when no host could read
+        quota, but ``persist_quota_snapshot`` refuses to write it: an edge that
+        re-persisted "unknown" on every accounts-page poll kept the ledger
+        entry perpetually fresh, so no runner's refresher ever re-read the
+        app-server and the account stayed "Usage unavailable" for good.
+        """
 
         async def _one(host: str):
             try:
                 result = await self._router.get(host).codex_account_status(
-                    account, persist=False
+                    account, persist=False, force=force
                 )
                 return host, result, None
             except Exception as exc:  # noqa: BLE001 -- isolate worker read failure

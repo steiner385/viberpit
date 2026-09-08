@@ -111,6 +111,10 @@ class SessionRecord:
     # Ownership input for host-partitioned recovery (#852): a daemon must not
     # rotate/sweep a session whose driver lives on another live fleet host.
     host: str | None = None
+    # "native" | "virtual" | None — where this session's GUI renders (spec
+    # 2026-09-06-native-display-routing). Mirrors DB Session.display_mode; None on
+    # pre-feature rows and reads as virtual everywhere.
+    display_mode: str | None = None
     # Wall-clock time the user last steered this session (prompt/answer/permission/typing ping).
     # Drives autopilot human-deference + the cooldown badge. In-memory/process-local ONLY: NOT in
     # to_dict/from_dict, NOT a DB column — a 120s window is meaningless across a restart.
@@ -210,6 +214,7 @@ class SessionRecord:
             "prResolution": self.pr_resolution,
             "prResolutionSource": self.pr_resolution_source,
             "host": self.host,
+            "displayMode": self.display_mode,
             "usageUnverified": self.usage_unverified,
             "interruptedByRestart": self.interrupted_by_restart,
             "interruptedFromStatus": self.interrupted_from_status,
@@ -272,6 +277,7 @@ class SessionRecord:
             pr_resolution=d.get("prResolution"),
             pr_resolution_source=d.get("prResolutionSource"),
             host=d.get("host"),
+            display_mode=d.get("displayMode"),
             usage_unverified=d.get("usageUnverified", False),
             interrupted_by_restart=d.get("interruptedByRestart", False),
             interrupted_from_status=d.get("interruptedFromStatus"),

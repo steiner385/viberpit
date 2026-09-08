@@ -15,10 +15,10 @@ def test_rollback_resets_then_restarts_both():
         return SimpleNamespace(returncode=0, stdout="", stderr="")
     steps.rollback_to("/r", "lastgood", daemon_changed=True, daemon_enabled=True, run=run)
     assert seq[0] == ("reset", "lastgood")
-    assert ("restart", "ccswitch-daemon.service") in seq
-    assert ("restart", "ccswitch.service") in seq
+    assert ("restart", "viberpit-daemon.service") in seq
+    assert ("restart", "viberpit.service") in seq
     # daemon restarted before edge
-    assert seq.index(("restart", "ccswitch-daemon.service")) < seq.index(("restart", "ccswitch.service"))
+    assert seq.index(("restart", "viberpit-daemon.service")) < seq.index(("restart", "viberpit.service"))
 
 
 def test_rollback_build_failure_does_not_raise():

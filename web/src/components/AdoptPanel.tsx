@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { BRAND_NAME } from '@/brand'
 import { cn } from '@/lib/utils'
 import { relTime } from '@/lib/relativeTime'
 import { useAdoptable, useAdoptSession } from '@/api/hooks'
@@ -9,7 +10,7 @@ import type { AdoptionCandidate } from '@/api/types'
 /** Plain-language copy for skip reasons (UX SHOULD #5 — never show machine codes). */
 const SKIP_COPY: Record<string, string> = {
   unmapped: 'Not a managed account — running under an unmanaged config dir (e.g. ~/.claude).',
-  tracked: 'Already managed by ccswitch.',
+  tracked: `Already managed by ${BRAND_NAME}.`,
 }
 
 /** Middle-elide a long path so the repo basename stays visible. */
@@ -33,7 +34,7 @@ function ConfirmDialog({ candidate, onCancel, onConfirm }: ConfirmProps) {
   return (
     <Dialog open onClose={onCancel} title="Take over this session?" size="md" initialFocus={cancelRef}>
       <p className="text-sm text-ink-muted">
-        ccswitch will {active ? 'stop' : 'resume'} the <code>claude</code> process running in{' '}
+        {BRAND_NAME} will {active ? 'stop' : 'resume'} the <code>claude</code> process running in{' '}
         <b>{elide(candidate.cwd)}</b>
         {candidate.pid != null && active ? <> (PID {candidate.pid})</> : null} under{' '}
         <b>{candidate.account}</b> and resume the conversation <b>&ldquo;{candidate.name}&rdquo;</b>{' '}

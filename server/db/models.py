@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer,
-                        String, UniqueConstraint, text)
+                        String, Text, UniqueConstraint, text)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -147,7 +147,7 @@ class Session(Base):
     pending_model_requested_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     pending_model_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
     # Why the requester wants this model — free text from a session's own
-    # <!-- ccswitch:model=… reason="…" --> marker. Shown on the approval card.
+    # <!-- viberpit:model=… reason="…" --> marker. Shown on the approval card.
     pending_model_reason: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Active /goal condition for this session (the built-in Claude Code goal feature).
     # NULL = no active goal. Nullable so init_db backfills on dev SQLite without a migration.
@@ -193,6 +193,12 @@ class Session(Base):
     # the host a session ran on is a fact about that session, not about current
     # config — the same mistake archive_root exists to prevent.
     host: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Where this session's GUI renders: "native" (the runner host's real X display)
+    # or "virtual" (a pooled Xvfb display viewed over VNC). Decided once at spawn from
+    # the requesting client's locality and honoured on every rehydrate. NULL = created
+    # before this column existed → treated as virtual. Nullable so init_db backfills
+    # without a migration. Design: docs/superpowers/specs/2026-09-06-native-display-routing-design.md
+    display_mode: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # Snapshot of the decision features at AUTO-archive time ({repo, goal, goal_source,
     # pr_state, reason}); copied into an `archive_reversed` autopilot event on unarchive so
     # the auto-archive algorithm can learn which sessions it wrongly archived. none_as_null
@@ -476,6 +482,32 @@ class SessionQueue(Base):
     params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
 
+class TestRunSlot(Base):
+    """Verification-phase test-run slot (#822): one row per session that is
+    holding or waiting for a "running the full server-test suite" slot on a
+    host. Capacity (rows with status='holding' per host) is enforced by
+    server.sessions.test_run_slots against server.config.Settings.test_slot_cap;
+    this table only records state — it enforces nothing on its own.
+
+    Deleted when the session releases (or gives up); releasing a 'holding' row
+    promotes the oldest 'waiting' row for the same host to 'holding'.
+    """
+
+    __tablename__ = "test_run_slots"
+
+    # Opaque holder key (a real sessions.id, OR a shell PID for the curl-based
+    # recipe in .agents/instructions/core.md) — deliberately NOT a foreign key
+    # into `sessions`. A real FK made acquire() raise IntegrityError for any
+    # non-session holder id, and the API layer's fail-open handling turned
+    # that into a silent "always granted" (#822 final review finding).
+    session_id: Mapped[str] = mapped_column(String, primary_key=True)
+    host: Mapped[str] = mapped_column(String, nullable=False)
+    # "holding" (counts against the cap) | "waiting" (queued, no slot yet)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="waiting")
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
 class NotificationChannel(Base):
     """A user-defined delivery channel for notifications (#602). v1 kind is
     'webhook' — a POST to a user-supplied URL (covers ntfy/Slack/Discord).
@@ -509,11 +541,16 @@ class NotificationRule(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    # needs_input | session_ended | automation_error | automation_warn | pr_broke | pr_merged | *
+    # needs_input | session_ended | automation_error | automation_warn | pr_broke | pr_merged
+    # | account_limited | *
     event_class: Mapped[str] = mapped_column(String, nullable=False, default="*")
     scope_repo: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     scope_account: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     scope_automation: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # A `kind="session"` watch's target (#1354): scopes a `session_ended` rule to one
+    # session id, same shape as the other scope_* columns. Nullable — plain #602 rules
+    # and every other watch kind never set it.
+    scope_session_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     action: Mapped[str] = mapped_column(String, nullable=False, default="push")  # push|channel|ignore
     channel_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     # When true this rule's delivery ignores quiet hours (critical bypass).
@@ -774,6 +811,80 @@ class CiFinding(Base):
         DateTime(timezone=True), nullable=True, default=_utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None)
+
+
+class SessionFeedback(Base):
+    """A report a coding session made about ccswitch itself via the `report_feedback`
+    session tool (session tools spec §4–§5). Fingerprint-deduped; Phase 2's filer turns
+    `pending` rows into `session-feedback` GitHub issues and links `issue_number`.
+
+    Every column is nullable so `_reconcile_columns` adds the table's columns on both
+    dialects without a hand migration; `reported_at` is naive UTC like every other
+    timestamp column (DB clock rule, server/db/clock.py)."""
+
+    __tablename__ = "session_feedback"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    fingerprint: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    category: Mapped[str | None] = mapped_column(String, nullable=True)
+    impact: Mapped[str | None] = mapped_column(String, nullable=True)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Snapshot of the reporting session: repo, branch, origin, origin_ref, engine,
+    # model, host, account (display name only), session_url.
+    context: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    # pending | filed | merged | capped | throttled | dismissed (server/sessions/feedback.py)
+    status: Mapped[str | None] = mapped_column(String, nullable=True, default="pending")
+    issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    reported_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    filed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "fingerprint", name="uq_session_feedback_session_fp"),
+    )
+
+
+class ErrorSignature(Base):
+    """One kind of WARNING+ log record, deduplicated by fingerprint (error-triage
+    spec §5). The sink (server/obs/errsink.py) upserts counts and a recent sample;
+    the error-triage automation files issues and drives the status lattice
+    observed → filed → resolved, muted from any state.
+
+    Every column is nullable so `_reconcile_columns` adds the table on both
+    dialects; every timestamp is naive UTC (server/db/clock.py)."""
+
+    __tablename__ = "error_signatures"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    fingerprint: Mapped[str | None] = mapped_column(String, nullable=True, unique=True, index=True)
+    source: Mapped[str | None] = mapped_column(String, nullable=True)      # edge | daemon | client
+    level: Mapped[str | None] = mapped_column(String, nullable=True)       # WARNING | ERROR | CRITICAL
+    logger: Mapped[str | None] = mapped_column(String, nullable=True)
+    event: Mapped[str | None] = mapped_column(String, nullable=True)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    sample_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sample_exc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # request_id, proc_epoch, host, app_version, url of the sample + recent_sessions (≤5 ids)
+    sample_context: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    sample_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    count: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    # Occurrences since the last file or comment; the sink adds, the triage tick subtracts.
+    count_since_filed: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    # observed | filed | resolved | muted
+    status: Mapped[str | None] = mapped_column(String, nullable=True, default="observed", index=True)
+    issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    muted_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    first_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    filed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    last_commented_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    issue_closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    muted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -1123,11 +1234,6 @@ class Initiative(Base):
     # Owning project; nullable so pre-PM initiatives keep working unlinked.
     project_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("projects.id"), nullable=True, index=True)
-    # RICE-lite score inputs (spec §8: score = reach×impact×confidence/effort).
-    reach: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    impact: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    effort: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # timezone=True to match the newer tables: both default to _utcnow() (AWARE),
     # which asyncpg rejects into a naive `timestamp without time zone` column.
     created_at: Mapped[datetime] = mapped_column(
@@ -1160,6 +1266,106 @@ class InitiativeArtifact(Base):
     model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+# ---------------------------------------------------------------------------
+# SDLC Maintain loop — the triage queue (#795 Phase 2 / #804)
+#
+# One row per control-band incident: a deterministic breach detected by
+# server/sdlc/control_bands.py, filed by the control-band-monitor automation, and
+# dispositioned either by ccswitch (a 3σ breach queues itself for SDLC Intake) or
+# by a human (triage now / schedule / dismiss-with-reason).
+#
+# Why a table and not AutomationTargetState: that store holds per-target
+# state-machine COUNTERS (attempts, backoff, gave-up flags) — see the Initiative
+# block above, which deliberately uses it for exactly that. A triage item is
+# durable domain data with a human disposition, an ordering, an audit trail and
+# an API of its own, so it earns a row. The monitor's own retry/cap counters DO
+# still live in AutomationTargetState, unchanged.
+#
+# Same nullability rule as the Initiative block: every non-key column is nullable
+# so _reconcile_columns can ALTER-ADD it on any dialect. key/metric/status are
+# writer-side invariants (always set on insert).
+# ---------------------------------------------------------------------------
+
+# Lifecycle of a triage item. Single source of truth — import this rather than
+# re-inlining the strings (the API validator and the web client both read it).
+#
+#   open       — filed, awaiting a disposition (every 1σ item rests here)
+#   diagnosing — a read-only 2σ diagnosis session is attached (session_id)
+#   scheduled  — a human deferred it until scheduled_for
+#   queued     — queued for SDLC Intake; the intake seam picks these up
+#   intake     — Intake has spawned the intent session (initiative_slug set)
+#   dismissed  — a human closed it with a reason
+TRIAGE_STATUSES: tuple[str, ...] = (
+    "open", "diagnosing", "scheduled", "queued", "intake", "dismissed")
+
+# Statuses a re-detected breach may NOT overwrite: once a human (or Intake) has
+# acted on an incident, a later tick observing the same ongoing breach must not
+# silently reopen it. The monitor refreshes the measurements on these rows but
+# leaves the disposition alone.
+TRIAGE_TERMINAL_STATUSES: frozenset[str] = frozenset({"dismissed", "intake"})
+
+
+class TriageItem(Base):
+    """One control-band incident in the SDLC triage queue.
+
+    ``key`` is the breach's stable identity (``metric:rule:side``) and is unique,
+    so a breach that persists across ticks updates its row instead of filing a
+    duplicate every minute. The measurement columns are a snapshot of the
+    detection that filed it — the row is the audit record of what ccswitch saw,
+    so they are stored rather than recomputed on read.
+    """
+
+    __tablename__ = "triage_items"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    # Writer-side invariant: always set. Nullable + unique for the same reason
+    # Initiative.slug is — reconcile must be able to ALTER-ADD it, and a unique
+    # index over a nullable column permits many NULLs on both dialects.
+    key: Mapped[str | None] = mapped_column(String, nullable=True, unique=True, index=True)
+    metric: Mapped[str | None] = mapped_column(String, nullable=True)
+    source: Mapped[str | None] = mapped_column(String, nullable=True)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Detection snapshot: which rule fired, in which zone, on which side.
+    rule: Mapped[str | None] = mapped_column(String, nullable=True)
+    sigma: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    side: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The bands.yaml tier this breach selected, and what that tier does.
+    tier: Mapped[str | None] = mapped_column(String, nullable=True)
+    response: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Measurements (Float, not Numeric: these are display/diagnostic values, never
+    # money, and both dialects round-trip a double identically).
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    baseline_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
+    baseline_stddev: Mapped[float | None] = mapped_column(Float, nullable=True)
+    baseline_n: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Bucket label of the newest sample (a UTC date string, not a timestamp — it
+    # names a bucket, and re-parsing it as an instant would imply a precision the
+    # daily reduction does not have).
+    observed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The points that fired the rule: [{"at": "...", "value": 1.0}, ...].
+    evidence: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # Disposition. Writer-side invariant: always set (TRIAGE_STATUSES).
+    status: Mapped[str | None] = mapped_column(String, nullable=True, default="open",
+                                               index=True)
+    dismissed_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None)
+    # The 2σ diagnosis session, when one was spawned.
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Set once SDLC Intake adopts the item — the pointer that closes the loop back
+    # into Phase 1. A slug (not an FK): Intake creates the Initiative row lazily on
+    # its own tick, so the item names it before the row exists.
+    initiative_slug: Mapped[str | None] = mapped_column(String, nullable=True)
+    # How many times this breach has been re-observed while still open. Surfaced
+    # in the queue so a human can tell a one-off from a week-long regression.
+    occurrences: Mapped[int | None] = mapped_column(Integer, nullable=True, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -1280,6 +1486,10 @@ class Feature(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     project_id: Mapped[str] = mapped_column(
         String, ForeignKey("projects.id"), nullable=True, index=True)
+    # Capability tree (roadmap spec D2): one parent per capability, from the doc's
+    # `parent:` frontmatter. NULL = root. Cycles are broken at index time.
+    parent_feature_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("features.id"), nullable=True, index=True)
     slug: Mapped[str | None] = mapped_column(String, nullable=True)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     state: Mapped[str | None] = mapped_column(String, nullable=True)  # FEATURE_LIFECYCLE_STATES
@@ -1502,25 +1712,8 @@ class TriageProposal(Base):
         DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
-class InitiativeRepo(Base):
-    """Initiative↔repo M2M — phase-1 groundwork for cross-project initiatives
-    (spec §3). ``Initiative.repo`` remains the primary repo until phase 4
-    folds it in; rows here are additive."""
-
-    __tablename__ = "initiative_repos"
-    __table_args__ = (UniqueConstraint("initiative_id", "repo", name="uq_initiative_repo"),)
-
-    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
-    initiative_id: Mapped[str] = mapped_column(
-        String, ForeignKey("initiatives.id"), nullable=True, index=True)
-    repo: Mapped[str | None] = mapped_column(String, nullable=True)
-    is_primary: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utcnow)
-
-
 class InitiativeFeature(Base):
-    """Which features an initiative creates/changes (spec §3)."""
+    """Which capabilities an initiative creates or changes (roadmap spec §10)."""
 
     __tablename__ = "initiative_features"
     __table_args__ = (
@@ -1531,5 +1724,8 @@ class InitiativeFeature(Base):
         String, ForeignKey("initiatives.id"), nullable=True, index=True)
     feature_id: Mapped[str] = mapped_column(
         String, ForeignKey("features.id"), nullable=True, index=True)
+    # The capability an initiative lives under in the tree; the others it touches
+    # render as link chips. Exactly one row per initiative should be primary.
+    is_primary: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)

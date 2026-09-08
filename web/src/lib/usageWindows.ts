@@ -21,6 +21,38 @@ export function usageKnown(usage: AccountUsage | null | undefined): boolean {
   return usageWindows(usage).length > 0
 }
 
+/** Wording for the server's `quota.REASON_*` codes (src/ccswitch/quota.py). */
+const REASON_WORDING: Record<string, string> = {
+  setup_token_scope:
+    'Setup-token lacks the user:profile scope — re-authenticate to restore usage reporting',
+}
+
+/**
+ * Why there are no windows to render, or null when there are.
+ *
+ * Lives here rather than at a call site because "no windows" has several very
+ * different causes and a blank badge cannot tell them apart — which is exactly
+ * how a permanently unreadable account (setup-token credential, no `user:profile`
+ * scope) looked identical to one whose poll had simply not landed yet.
+ */
+export function usageUnavailableReason(usage: AccountUsage | null | undefined): string | null {
+  if (usageWindows(usage).length > 0) return null
+  if (!usage) return 'Usage not read yet'
+  // A specific reason from the server beats the availability wording: the same
+  // 'unsupported' covers "no quota API" (nothing to do) and "setup-token minted
+  // without user:profile" (re-authenticate). Unknown codes fall through.
+  const specific = usage.reason ? REASON_WORDING[usage.reason] : undefined
+  if (specific) return specific
+  switch (usage.availability) {
+    case 'unsupported':
+      return 'Quota not reported for this credential'
+    case 'auth_error':
+      return 'Credentials rejected — re-authenticate'
+    default:
+      return 'Usage unavailable'
+  }
+}
+
 /** One window by key ('session' | 'weekly' | 'premium' | …), or null. */
 export function windowByKey(
   usage: AccountUsage | null | undefined,

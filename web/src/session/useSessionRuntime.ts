@@ -86,6 +86,8 @@ export interface SessionRuntime {
    *  hands the model to the SDK without interrupting (applies on the next turn). */
   onSetModel: (id: string, when: 'now' | 'after_turn') => void
   dismissCommandResult: () => void
+  /** Close the error banner. The inline transcript card keeps the durable record. */
+  dismissError: () => void
   /** Fetch and prepend the previous window of older turns (lazy scrollback). */
   onLoadOlder: () => void
 }
@@ -385,6 +387,7 @@ export function useSessionRuntime(
   const onCommand = useCallback((name: string, args: string) => command(sessionId, name, args), [sessionId, command])
   const onActivity = useCallback(() => { activity?.(sessionId) }, [sessionId, activity])
   const dismissCommandResult = useCallback(() => setCommandResult(null), [])
+  const dismissError = useCallback(() => dispatch({ type: '_clearError' }), [])
 
   // Keep modeRef current so external keydown handlers can read the latest mode.
   useEffect(() => {
@@ -545,6 +548,7 @@ export function useSessionRuntime(
     onCommand,
     onSetModel,
     dismissCommandResult,
+    dismissError,
     onLoadOlder,
   }
 }

@@ -3,14 +3,14 @@
 
 Sibling of #765 / ``test_daemon_ensure_unit.py``. Same failure shape, one layer down.
 
-At 09:20 rocky came up after a watchdog reboot. ``ccswitch-mounts.service`` ran while
+At 09:20 rocky came up after a watchdog reboot. ``viberpit-mounts.service`` ran while
 tailscaled was still settling, and the FIRST sshfs attempt for
 ``/home/tony/.claude-accounts`` died with ``read: Connection reset by peer``. The unit
-exited 1, which cancelled ``ccswitch-daemon.service``'s start job outright
-(``Requires=ccswitch-mounts.service``) — and a cancelled start job never engages
+exited 1, which cancelled ``viberpit-daemon.service``'s start job outright
+(``Requires=viberpit-mounts.service``) — and a cancelled start job never engages
 ``Restart=always``. The mount unit's own ``Restart=on-failure`` recovered the mounts ten
 seconds later, but nothing re-tried the daemon; the fleet stayed down until
-``ccswitch-daemon-ensure.timer`` fired ~60s later.
+``viberpit-daemon-ensure.timer`` fired ~60s later.
 
 The ensure timer is the safety net and it worked. THIS file covers the trigger: the mount
 script must survive a not-yet-ready tailnet on its first invocation, so the dependency
@@ -21,13 +21,17 @@ grepping it for keywords — a retry loop that does not actually retry passes a 
 """
 
 import os
+import re
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "deploy" / "bin-ccswitch-mounts.sh"
-UNIT = ROOT / "deploy" / "ccswitch-mounts.service"
-DROP_IN = ROOT / "deploy" / "ccswitch-daemon.service.d" / "require-mounts.conf"
+SCRIPT = ROOT / "deploy" / "bin-viberpit-mounts.sh"
+UNIT = ROOT / "deploy" / "viberpit-mounts.service"
+DROP_IN = ROOT / "deploy" / "viberpit-daemon.service.d" / "require-mounts.conf"
 
 
 def _make_shims(tmp_path: Path, fail_times: int) -> Path:
@@ -100,7 +104,7 @@ def _opts_for(tmp_path: Path, path: str) -> str:
 
 
 def test_mount_script_is_owned_by_the_repo():
-    """The rocky-only copy at /home/tony/bin-ccswitch-mounts.sh was untracked drift."""
+    """The rocky-only copy at /home/tony/bin-viberpit-mounts.sh was untracked drift."""
     assert SCRIPT.exists(), f"{SCRIPT} missing — deploy/ must own the mount script"
 
 
@@ -168,8 +172,8 @@ def test_daemon_drop_in_still_requires_the_mounts():
     (OSError: [Errno 5] Input/output error on /home/tony/.claude-accounts).
     """
     drop_in = DROP_IN.read_text()
-    assert "Requires=ccswitch-mounts.service" in drop_in
-    assert "After=ccswitch-mounts.service" in drop_in
+    assert "Requires=viberpit-mounts.service" in drop_in
+    assert "After=viberpit-mounts.service" in drop_in
 
 
 # --- #1005: cache-profile split (coherent account store vs read-mostly archives) ------
@@ -251,3 +255,88 @@ def test_live_mount_is_still_left_alone_unless_a_remount_is_forced(tmp_path):
                          text=True, timeout=60)
     assert res.returncode == 0, f"{res.stdout}\n{res.stderr}"
     assert (tmp_path / "state" / "calls").exists(), "forced remount must re-run sshfs"
+
+
+def test_canonical_units_keep_legacy_aliases_without_duplicate_templates():
+    units = list((ROOT / "deploy").glob("viberpit*.service"))
+    units += list((ROOT / "deploy").glob("viberpit*.timer"))
+    assert len(units) == 12
+    for canonical in units:
+        legacy = canonical.with_name(canonical.name.replace("viberpit", "ccswitch", 1))
+        assert legacy.is_symlink(), legacy
+        assert legacy.resolve() == canonical
+        # Remote template is installed as viberpit-daemon.service on the runner.
+        alias = legacy.name.replace("-remote.service", ".service")
+        assert f"Alias={alias}" in canonical.read_text(), canonical
+
+
+def test_authority_identity_stays_private_across_unit_rename():
+    authority = (ROOT / "deploy/viberpit-codex-auth.service").read_text()
+    assert "User=ccswitch-auth" in authority
+    assert "Group=ccswitch-auth" in authority
+    assert "StateDirectory=ccswitch-codex-auth" in authority
+    assert "StateDirectoryMode=0700" in authority
+    assert "EnvironmentFile=/etc/viberpit/codex-auth.env" in authority
+
+
+def test_daemon_units_share_canonical_runtime_and_state_roots():
+    for name in ("viberpit-daemon.service", "viberpit-daemon-remote.service"):
+        unit = (ROOT / "deploy" / name).read_text()
+        assert "RuntimeDirectory=viberpit\n" in unit
+        assert "StateDirectory=viberpit\n" in unit
+        assert "EnvironmentFile=/etc/viberpit/viberpit.env" in unit
+        assert "Environment=XDG_STATE_HOME=%S/viberpit/state" in unit
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_canonical_templates_pass_real_systemd_parser(tmp_path, remote):
+    """Validate units/drop-ins with the real parser, without touching the host manager.
+
+    Fixture executables and dependency targets stand in for host installations;
+    this checks systemd syntax/dependency loading, not actual service startup.
+    """
+    analyzer = shutil.which("systemd-analyze")
+    if analyzer is None:
+        pytest.skip("systemd-analyze is not installed")
+    unit_dir = tmp_path / "etc/systemd/system"
+    unit_dir.mkdir(parents=True)
+    templates = list((ROOT / "deploy").glob("viberpit*.service"))
+    templates += list((ROOT / "deploy").glob("viberpit*.timer"))
+    for template in templates:
+        if template.name == "viberpit-daemon-remote.service":
+            continue
+        source = template
+        if remote and template.name == "viberpit-daemon.service":
+            source = template.with_name("viberpit-daemon-remote.service")
+        content = source.read_text()
+        (unit_dir / template.name).write_text(content)
+        for alias in re.findall(r"^Alias=(.+)$", content, re.MULTILINE):
+            (unit_dir / alias).symlink_to(template.name)
+        for command in re.findall(r"^Exec\w+=-?([^\s\\]+)", content, re.MULTILINE):
+            executable = tmp_path / command.lstrip("/") if command.startswith("/") else (
+                tmp_path / "usr/bin" / command
+            )
+            executable.parent.mkdir(parents=True, exist_ok=True)
+            executable.write_text("#!/bin/sh\nexit 0\n")
+            executable.chmod(0o755)
+        for env_file in re.findall(r"^EnvironmentFile=-?(.+)$", content, re.MULTILINE):
+            fixture_env = tmp_path / env_file.lstrip("/")
+            fixture_env.parent.mkdir(parents=True, exist_ok=True)
+            fixture_env.touch()
+    dropin_name = "viberpit-daemon.service.d" if remote else "viberpit.service.d"
+    shutil.copytree(ROOT / "deploy" / dropin_name, unit_dir / dropin_name)
+    for target in ("sysinit", "basic", "shutdown", "multi-user", "timers", "network-online"):
+        (unit_dir / f"{target}.target").write_text("[Unit]\nDescription=Fixture dependency\n")
+    (unit_dir / "tailscaled.service").write_text("[Service]\nExecStart=/usr/bin/true\n")
+    true = tmp_path / "usr/bin/true"
+    true.parent.mkdir(parents=True, exist_ok=True)
+    true.write_text("#!/bin/sh\nexit 0\n")
+    true.chmod(0o755)
+    result = subprocess.run(
+        [analyzer, f"--root={tmp_path}", "verify",
+         *map(str, unit_dir.glob("viberpit*.service")),
+         *map(str, unit_dir.glob("viberpit*.timer"))],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not result.stderr, result.stderr

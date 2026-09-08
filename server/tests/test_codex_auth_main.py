@@ -36,31 +36,31 @@ async def _async_value(value):
 
 
 def test_systemd_sandbox_exposes_only_read_only_runtime_mounts_outside_home():
-    unit = (Path(__file__).resolve().parents[2] / "deploy/ccswitch-codex-auth.service").read_text()
+    unit = (Path(__file__).resolve().parents[2] / "deploy/viberpit-codex-auth.service").read_text()
     assert "ProtectHome=yes" in unit
     assert "ProtectHome=read-only" not in unit
     assert "SupplementaryGroups=" not in unit
     assert (
-        "BindReadOnlyPaths=/home/tony/GitHub/cc-account-switcher-deploy:"
-        "/opt/ccswitch-codex-auth/app"
+        "BindReadOnlyPaths=/home/tony/GitHub/viberpit-deploy:"
+        "/opt/viberpit-codex-auth/app"
     ) in unit
     assert (
-        "BindReadOnlyPaths=/home/tony/GitHub/cc-account-switcher-deploy/.venv:"
-        "/opt/ccswitch-codex-auth/venv"
+        "BindReadOnlyPaths=/home/tony/GitHub/viberpit-deploy/.venv:"
+        "/opt/viberpit-codex-auth/venv"
     ) in unit
-    assert "WorkingDirectory=/opt/ccswitch-codex-auth/app" in unit
+    assert "WorkingDirectory=/opt/viberpit-codex-auth/app" in unit
     assert (
-        "Environment=PYTHONPATH=/opt/ccswitch-codex-auth/app:"
-        "/opt/ccswitch-codex-auth/app/src"
+        "Environment=PYTHONPATH=/opt/viberpit-codex-auth/app:"
+        "/opt/viberpit-codex-auth/app/src"
     ) in unit
     assert (
-        "ExecStart=/usr/bin/env /opt/ccswitch-codex-auth/venv/bin/python "
+        "ExecStart=/usr/bin/env /opt/viberpit-codex-auth/venv/bin/python "
         "-m server.codex.auth_main"
     ) in unit
 
 
 def test_systemd_start_limit_is_in_unit_section():
-    unit = (Path(__file__).resolve().parents[2] / "deploy/ccswitch-codex-auth.service").read_text()
+    unit = (Path(__file__).resolve().parents[2] / "deploy/viberpit-codex-auth.service").read_text()
     unit_section, service_section = unit.split("[Service]", maxsplit=1)
     assert "StartLimitBurst=5" in unit_section
     assert "StartLimitIntervalSec=120" in unit_section

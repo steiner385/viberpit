@@ -35,6 +35,7 @@ _PR_STATUS_MAP = {
     "clone_failed": ("error", "Clone failed — see the automation feed"),
     "spawn_failed": ("error", "Spawn failed — see the automation feed"),
     "failed": ("error", "Branch update failed — see the automation feed"),
+    "refused": ("warn", "Launch refused by engine policy — see the automation feed"),
 }
 
 

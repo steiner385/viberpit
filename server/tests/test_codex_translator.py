@@ -335,7 +335,12 @@ ITEM_CASES: list[tuple[dict[str, Any], str, ev.ToolKind, dict[str, Any]]] = [
         },
         "Task",
         ev.ToolKind.TASK,
-        {"agent": "agents/reviewer.md", "kind": "started"},
+        {
+            "agent": "agents/reviewer.md",
+            "kind": "started",
+            "subagent_type": "agents/reviewer.md",
+            "description": "started",
+        },
     ),
     (
         {
@@ -344,10 +349,18 @@ ITEM_CASES: list[tuple[dict[str, Any], str, ev.ToolKind, dict[str, Any]]] = [
             "tool": "ask",
             "status": "inProgress",
             "model": "gpt-5",
+            "senderThreadId": "th_parent_secret",
+            "receiverThreadIds": ["th_child_secret"],
+            "agentsStates": {},
         },
         "Task",
         ev.ToolKind.TASK,
-        {"tool": "ask", "model": "gpt-5"},
+        {
+            "tool": "ask",
+            "model": "gpt-5",
+            "subagent_type": "ask",
+            "description": "gpt-5",
+        },
     ),
     (
         {
@@ -408,6 +421,74 @@ def test_sub_agent_activity_never_carries_the_native_agent_thread_id() -> None:
     )
     assert isinstance(call, ev.ToolCall)
     assert "th_sub_secret" not in json.dumps(call.input)
+
+
+def test_collab_agent_tool_call_never_carries_a_native_thread_id() -> None:
+    """#1274 added real sender/receiver identity to the parsed item; the wire
+
+    `ToolCall.input` — a generic, client-rendered dict — must still never
+    carry it, matching the same rule `subAgentActivity` already follows.
+    """
+    translator, _ = _fresh()
+    (call,) = _item_started(
+        translator,
+        {
+            "type": "collabAgentToolCall",
+            "id": "it_k",
+            "tool": "spawnAgent",
+            "status": "inProgress",
+            "senderThreadId": "th_parent_secret",
+            "receiverThreadIds": ["th_child_secret"],
+            "agentsStates": {
+                "th_child_secret": {"status": "running", "message": "secret note"}
+            },
+        },
+    )
+    assert isinstance(call, ev.ToolCall)
+    dumped = json.dumps(call.input)
+    assert "th_parent_secret" not in dumped
+    assert "th_child_secret" not in dumped
+    assert "secret note" not in dumped
+
+
+def test_collab_agent_tool_call_result_counts_agent_states_never_leaks_them() -> None:
+    """`agentsStates` becomes an observability counter only (#1274) — the
+
+    counter is a plain int, and the result payload stays as bare as it was
+    before this item type carried any collaborator identity.
+    """
+    translator, _ = _fresh()
+    _item_started(
+        translator,
+        {
+            "type": "collabAgentToolCall",
+            "id": "it_k",
+            "tool": "wait",
+            "status": "inProgress",
+            "senderThreadId": "th_parent_secret",
+            "receiverThreadIds": ["th_child_secret"],
+            "agentsStates": {},
+        },
+    )
+    (result,) = _item_completed(
+        translator,
+        {
+            "type": "collabAgentToolCall",
+            "id": "it_k",
+            "tool": "wait",
+            "status": "completed",
+            "senderThreadId": "th_parent_secret",
+            "receiverThreadIds": ["th_child_secret"],
+            "agentsStates": {
+                "th_child_secret": {"status": "completed", "message": "secret note"}
+            },
+        },
+    )
+    assert isinstance(result, ev.ToolResult)
+    assert result.payload == {"status": "completed"}
+    assert "th_child_secret" not in json.dumps(result.payload)
+    assert "secret note" not in json.dumps(result.payload)
+    assert translator.counters.collab_agent_states_seen == 1
 
 
 def test_completed_item_pairs_a_result_with_the_call_that_started_it() -> None:

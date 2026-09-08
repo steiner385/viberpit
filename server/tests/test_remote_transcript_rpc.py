@@ -17,9 +17,11 @@ import pytest
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
 from server.ipc.client import DaemonClient
 from server.ipc.daemon import create_daemon_app
+from server.sessions.engine import AgentEngine
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.remote import RemoteOrchestrator
 from server.sessions.replay import ReplayWindow
+from server.sessions.types import SessionRecord
 from server.tests.ipc_harness import serve_daemon_uds
 from unittest import mock
 
@@ -87,6 +89,17 @@ async def test_transcript_window_over_real_daemon_uds(tmp_path):
     orch = SessionOrchestrator(sdk_factory=mock.MagicMock(), poll_interval=9999.0,
                                usage_fn=lambda name: None)
     orch.resolve_transcript_path = AsyncMock(return_value=str(jsonl))
+    # Pin "s1" as a known CLAUDE session. With neither a record nor a driver,
+    # engine dispatch falls through to `_row_engine_ref`, which reads the
+    # PROCESS-GLOBAL DB — so the engine read back here would be decided by
+    # whichever test file last called `init_db()`. Several files seed an
+    # `id="s1"` row with `engine="codex"`, and under `-n auto --dist loadfile`
+    # any of them can share this worker; the Codex adapter would then be chosen
+    # and this end-to-end Claude assertion would fail for a reason that has
+    # nothing to do with the RPC path it is testing.
+    orch._records["s1"] = SessionRecord(
+        id="s1", name="S", account="a", engine=AgentEngine.CLAUDE_CODE,
+        engine_session_id="cs1", cols=80, rows=24, cwd="/tmp")
     register_orchestrator_rpc(app, orch)
 
     async with serve_daemon_uds(app) as sock:
@@ -142,6 +155,17 @@ async def test_transcript_search_text_over_real_daemon_uds(tmp_path):
     orch = SessionOrchestrator(sdk_factory=mock.MagicMock(), poll_interval=9999.0,
                                usage_fn=lambda name: None)
     orch.resolve_transcript_path = AsyncMock(return_value=str(jsonl))
+    # Pin "s1" as a known CLAUDE session. With neither a record nor a driver,
+    # engine dispatch falls through to `_row_engine_ref`, which reads the
+    # PROCESS-GLOBAL DB — so the engine read back here would be decided by
+    # whichever test file last called `init_db()`. Several files seed an
+    # `id="s1"` row with `engine="codex"`, and under `-n auto --dist loadfile`
+    # any of them can share this worker; the Codex adapter would then be chosen
+    # and this end-to-end Claude assertion would fail for a reason that has
+    # nothing to do with the RPC path it is testing.
+    orch._records["s1"] = SessionRecord(
+        id="s1", name="S", account="a", engine=AgentEngine.CLAUDE_CODE,
+        engine_session_id="cs1", cols=80, rows=24, cwd="/tmp")
     register_orchestrator_rpc(app, orch)
 
     async with serve_daemon_uds(app) as sock:

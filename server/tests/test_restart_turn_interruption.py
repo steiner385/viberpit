@@ -154,7 +154,7 @@ def test_daemon_units_use_killmode_mixed():
     _shutting_down — the exact race behind the 2026-08-29 "Turn failed" batch.
     mixed sends SIGTERM only to the daemon; children are torn down in order by
     orchestrator.stop() (final SIGKILL still sweeps the cgroup at TimeoutStopSec)."""
-    for unit in ("ccswitch-daemon.service", "ccswitch-daemon-remote.service"):
+    for unit in ("viberpit-daemon.service", "viberpit-daemon-remote.service"):
         text = (REPO_ROOT / "deploy" / unit).read_text()
         assert "KillMode=mixed" in text, f"{unit} must use KillMode=mixed"
         assert "KillMode=control-group" not in text, (
@@ -178,7 +178,7 @@ def test_daemon_units_stop_budget_covers_the_sigterm_drain():
     now drains on SIGTERM (server/ipc/drain_on_signal.py) — pointless unless systemd
     waits for it: TimeoutStopSec must be at least the longest drain ceiling (a session
     mid-compaction) plus the ordinary shutdown budget."""
-    for unit in ("ccswitch-daemon.service", "ccswitch-daemon-remote.service"):
+    for unit in ("viberpit-daemon.service", "viberpit-daemon-remote.service"):
         text = (REPO_ROOT / "deploy" / unit).read_text()
         values = [int(line.split("=", 1)[1]) for line in text.splitlines()
                   if line.startswith("TimeoutStopSec=")]

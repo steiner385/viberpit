@@ -14,21 +14,21 @@ function sWithPr(id: string, status: string, checks: PullRequestInfo['checks']):
   } as unknown as Session
 }
 
-afterEach(() => { document.title = 'ccswitch' })
+afterEach(() => { document.title = 'ViberPit' })
 
 describe('useNeedsYouTitle', () => {
   it('sets a count when sessions need you', () => {
     renderHook(() => useNeedsYouTitle([s('a', 'waiting_input'), s('b', 'in_progress'), s('c', 'ready_review')]))
-    expect(document.title).toBe('(2) ccswitch — needs you')
+    expect(document.title).toBe('(2) ViberPit — needs you')
   })
 
   it('resets to plain title when none need you', () => {
     renderHook(() => useNeedsYouTitle([s('a', 'in_progress'), s('b', 'done')]))
-    expect(document.title).toBe('ccswitch')
+    expect(document.title).toBe('ViberPit')
   })
 
   it('counts a backgrounded session with a failing PR in the badge', () => {
     renderHook(() => useNeedsYouTitle([s('a', 'done'), sWithPr('b', 'done', 'failing')]))
-    expect(document.title).toBe('(1) ccswitch — needs you')
+    expect(document.title).toBe('(1) ViberPit — needs you')
   })
 })

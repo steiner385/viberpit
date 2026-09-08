@@ -35,3 +35,18 @@ def test_copilot_round_trip_keeps_exactly_one_window():
 def test_usage_to_dict_is_json_safe():
     json.dumps(anthropic_snapshot(1.0, None, 2.0, None, False, fetched_at=NOW).to_dict())
     json.dumps(copilot_snapshot(1.0, None, fetched_at=NOW).to_dict())
+
+
+def test_wire_dict_carries_the_reason_behind_an_unavailable_read():
+    """The accounts API must forward ``reason`` so the browser can say WHY an
+    account's quota is unreadable (re-authenticate vs. nothing to do)."""
+    from ccswitch.quota import REASON_SETUP_TOKEN_SCOPE, UNSUPPORTED, unknown_snapshot
+    from server.api.accounts import _usage_to_dict
+
+    gap = _usage_to_dict(unknown_snapshot("anthropic", fetched_at=NOW, availability=UNSUPPORTED,
+                                          reason=REASON_SETUP_TOKEN_SCOPE))
+    assert gap["availability"] == "unsupported"
+    assert gap["reason"] == REASON_SETUP_TOKEN_SCOPE
+    ok = _usage_to_dict(anthropic_snapshot(1.0, None, 2.0, None, fetched_at=NOW))
+    assert ok["reason"] is None
+    json.dumps(gap)

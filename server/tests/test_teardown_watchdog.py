@@ -13,6 +13,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -36,6 +37,7 @@ async def _never_finishes() -> None:
     await asyncio.Event().wait()
 
 
+@pytest.mark.slow
 def test_watchdog_dump_names_the_wedged_task():
     loop, thread = _loop_in_thread()
     try:
@@ -58,6 +60,7 @@ def test_watchdog_dump_names_the_wedged_task():
         _stop_loop(loop, thread)
 
 
+@pytest.mark.slow
 def test_watchdog_silent_and_cancelled_on_happy_path():
     loop, thread = _loop_in_thread()
     try:
@@ -72,6 +75,7 @@ def test_watchdog_silent_and_cancelled_on_happy_path():
         _stop_loop(loop, thread)
 
 
+@pytest.mark.slow
 def test_watchdog_falls_back_to_cross_thread_dump_when_loop_blocked():
     loop, thread = _loop_in_thread()
     try:
@@ -96,6 +100,7 @@ def test_watchdog_falls_back_to_cross_thread_dump_when_loop_blocked():
         _stop_loop(loop, thread)
 
 
+@pytest.mark.slow
 def test_testclient_exit_is_watched_end_to_end(monkeypatch, capfd):
     """The conftest wiring must arm the watchdog around a real TestClient exit.
 

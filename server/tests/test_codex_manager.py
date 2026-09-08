@@ -897,3 +897,68 @@ def test_teardown_detaches_codex_and_survives_a_failing_manager():
         assert "s2" not in orch2._drivers
 
     asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
+# a latched client is a dead runner (#1444)
+# ---------------------------------------------------------------------------
+
+
+async def _until(probe, timeout: float = 2.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not probe():
+        if loop.time() >= deadline:
+            raise TimeoutError("condition not met")
+        await asyncio.sleep(0.001)
+
+
+def _oversized_frame() -> bytes:
+    # Past the fake reader's 1 MiB limit: the client's read fails and latches,
+    # while the (fake) process stays alive — exactly the shape seen on rocky.
+    return b"x" * (2 * 1024 * 1024) + b"\n"
+
+
+def test_a_client_that_latches_closed_while_the_process_lives_is_restarted():
+    async def go():
+        manager, spawned = _manager()
+        await manager.ensure("a")
+        manager.attach("a", "s1")
+        seen = _notices(manager, "a")
+        first = spawned[0]
+        first.server.send_raw(_oversized_frame())
+        await _until(lambda: len(spawned) == 2)
+        await manager.wait_settled("a", timeout=2.0)
+        assert first.stopped, "the process behind a dead connection must not leak"
+        assert spawned[1].server.frames_for("initialize")
+        assert spawned[1].server.frames_for("account/login/start")
+        kinds = [n.kind for n in seen]
+        assert mgr_mod.RunnerNoticeKind.CRASHED in kinds
+        assert mgr_mod.RunnerNoticeKind.RESTARTED in kinds
+        live = manager.client_for("a")
+        assert live is not None and not live.closed
+        await manager.stop_all()
+
+    asyncio.run(go())
+
+
+def test_client_for_hides_a_latched_client_during_the_restart_window():
+    async def go():
+        resume = asyncio.Event()
+
+        async def sleep(seconds: float) -> None:
+            await resume.wait()
+
+        manager, spawned = _manager(sleep=sleep)
+        await manager.ensure("a")
+        assert manager.client_for("a") is not None
+        spawned[0].server.send_raw(_oversized_frame())
+        # Nobody may be handed the dead connection while the replacement is pending.
+        await _until(lambda: manager.client_for("a") is None)
+        resume.set()
+        await _until(lambda: len(spawned) == 2)
+        await manager.wait_settled("a", timeout=2.0)
+        assert manager.client_for("a") is not None
+        await manager.stop_all()
+
+    asyncio.run(go())

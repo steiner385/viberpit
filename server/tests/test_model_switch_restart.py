@@ -199,7 +199,7 @@ def test_ensure_driver_reapplies_persisted_model(tmp_path):
     session_id = "s-model"
     clients = []
 
-    def factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+    def factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None, options_overlay=None):
         c = FakeSDKClient([], on_can_use_tool=can_use_tool)
         clients.append(c)
         return c
@@ -239,7 +239,7 @@ def test_ensure_driver_no_persisted_model_skips_set_model(tmp_path):
     session_id = "s-no-model"
     clients = []
 
-    def factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
+    def factory(sdk_cwd, cfg_dir, can_use_tool, mode, resume, *, on_pre_compact=None, options_overlay=None):
         c = FakeSDKClient([], on_can_use_tool=can_use_tool)
         clients.append(c)
         return c

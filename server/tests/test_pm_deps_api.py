@@ -5,7 +5,6 @@ via db_session(), CCSWITCH_DEV=1 + empty allowlist auth bypass.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import tempfile
 from contextlib import contextmanager
@@ -110,7 +109,10 @@ def test_deps_endpoint_returns_edges_and_drift(tmp_path):  # noqa: ARG001
                 ))
                 await db.commit()
 
-        asyncio.run(_seed_async())
+        # Seed on the app's own loop: a bare asyncio.run shares the engine pool
+        # across two loops and dies once startup saturates it (#1386).
+        assert c.portal is not None
+        c.portal.call(_seed_async)
 
         resp = c.get("/api/pm/projects/ccswitch/deps", headers=IDENTITY_HEADERS)
         assert resp.status_code == 200, resp.text
@@ -169,7 +171,8 @@ def test_deps_endpoint_null_project_when_no_gh_project():
                 ))
                 await db.commit()
 
-        asyncio.run(_seed_async())
+        assert c.portal is not None
+        c.portal.call(_seed_async)  # the app's own loop — see the note above
 
         resp = c.get("/api/pm/projects/ccswitch/deps", headers=IDENTITY_HEADERS)
         assert resp.status_code == 200, resp.text

@@ -1,4 +1,11 @@
-from server.automations.completion_bar import PrFact, PrFacts, _has_explicit_arm_step, met_bar
+from server.automations.completion_bar import (
+    SELF_CERTIFIED_SOURCES,
+    PrFact,
+    PrFacts,
+    _has_explicit_arm_step,
+    is_unverified_self_resolution,
+    met_bar,
+)
 
 
 def _facts(prs=(), has_repo=True):
@@ -268,3 +275,48 @@ def test_classifier_not_needed_on_code_goal_is_met_high():
     v = met_bar(_CODE_GOAL, "inferred", _facts([], has_repo=True),
                 pr_resolution="not-needed", pr_resolution_source="classifier")
     assert v.met is True and v.confidence == "high"
+
+
+# ---------------------------------------------------------------------------
+# The transport changed (marker → `mark_no_pr` tool call); the trust boundary
+# did not. A session's own claim is a claim regardless of which wire carried it.
+# ---------------------------------------------------------------------------
+
+
+def test_a_tool_sourced_no_pr_claim_is_still_unverified():
+    """Session fdc6b27a (2026-09-06) researched, wrote no code, recommended a
+    spec and self-certified past the bar. Moving that claim from a marker to a tool
+    does not make the session a neutral judge of its own work."""
+    assert is_unverified_self_resolution(_CODE_GOAL, _facts([], has_repo=True),
+                                         "not-needed", "tool") is True
+
+
+def test_a_marker_sourced_claim_is_unchanged():
+    assert is_unverified_self_resolution(_CODE_GOAL, _facts([], has_repo=True),
+                                         "not-needed", "marker") is True
+
+
+def test_a_classifier_sourced_resolution_is_still_trusted():
+    """Something other than the claimant judged it, which is the whole point."""
+    assert is_unverified_self_resolution(_CODE_GOAL, _facts([], has_repo=True),
+                                         "not-needed", "classifier") is False
+
+
+def test_a_cancelled_resolution_stays_trusted_from_either_transport():
+    """`cancelled` is a decision, not a completion claim."""
+    for source in ("marker", "tool"):
+        assert is_unverified_self_resolution(_CODE_GOAL, _facts([], has_repo=True),
+                                             "cancelled", source) is False
+
+
+def test_every_source_a_session_can_set_itself_is_self_certifying():
+    """Enumerated so a fifth source cannot be added without deciding which side of
+    this line it falls on."""
+    assert SELF_CERTIFIED_SOURCES == frozenset({"marker", "tool"})
+
+
+def test_a_tool_sourced_not_needed_does_not_short_circuit_met_bar():
+    v = met_bar(_CODE_GOAL, "user", _facts([], has_repo=True), "not-needed",
+                pr_resolution_source="tool")
+    assert v.met is False
+    assert v.confidence != "high"

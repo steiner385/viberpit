@@ -193,6 +193,8 @@ _SSH_PREFIX = ["ssh", "-oBatchMode=yes", "-oConnectTimeout=10", "deploy@rocky"]
 
 def _recorder(calls, fail_on: str | None = None):
     def run(argv, **kw):
+        if "show" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="LoadState=loaded\n", stderr="")
         calls.append(argv)
         rc = 1 if (fail_on and fail_on in argv) else 0
         return subprocess.CompletedProcess(argv, rc, stdout="", stderr="boom")
@@ -235,7 +237,7 @@ def test_run_upgrade_targets_the_deployed_sha_and_runs_the_shared_sequence():
         _SSH_PREFIX + ["/srv/ccswitch/.venv/bin/python", "-m", "pip", "install", "-e",
                        "'/srv/ccswitch[server]'", "--quiet"],
         _SSH_PREFIX + ["sync"],
-        _SSH_PREFIX + ["sudo", "-n", "systemctl", "restart", "ccswitch-daemon.service"],
+        _SSH_PREFIX + ["sudo", "-n", "systemctl", "restart", "viberpit-daemon.service"],
     ]
     assert not any("bin/pip" in arg for call in calls for arg in call)
 

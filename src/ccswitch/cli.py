@@ -7,9 +7,12 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from . import accounts, assistant_ask, assistant_mcp, configdir
+from . import accounts, assistant_ask, assistant_mcp, brand, configdir
 from .config import load_config
+from .env_compat import mirror_legacy_env
 from .selector import AllAccountsBusy
+
+_P = brand.CLI_NAME
 
 
 def _fmt_reset(iso: str | None, tz: str) -> str:
@@ -54,7 +57,7 @@ def _cmd_accounts(args: argparse.Namespace) -> int:
         # (ManifestNotWritable) and "the existing file is unreadable, so writing
         # would destroy it" — both are operator-actionable, not tracebacks.
         except account_registry.AccountRegistryError as exc:
-            print(f"ccswitch: {exc}", file=sys.stderr)
+            print(f"{_P}: {exc}", file=sys.stderr)
             return 2
         for name in result.added:
             print(f"registered {name}")
@@ -67,7 +70,7 @@ def _cmd_accounts(args: argparse.Namespace) -> int:
                   f"user={e.user_auth_mode:<15} runner={e.runner_auth_mode:<24} "
                   f"enabled={e.enabled} gen={e.generation} health={e.health.state}")
         return 0
-    print(f"ccswitch accounts: unknown sub-command {args.accounts_cmd!r}", file=sys.stderr)
+    print(f"{_P} accounts: unknown sub-command {args.accounts_cmd!r}", file=sys.stderr)
     return 1
 
 
@@ -96,9 +99,9 @@ def _cmd_crypto(args: argparse.Namespace) -> int:
             source = "none"
 
         if source == "none":
-            print("ccswitch crypto: no master key configured — encryption DISABLED")
+            print(f"{_P} crypto: no master key configured — encryption DISABLED")
         else:
-            print(f"ccswitch crypto: key available via {source}")
+            print(f"{_P} crypto: key available via {source}")
 
         # Count encrypted vs plaintext store slots.
         store = paths.store_dir()
@@ -115,36 +118,36 @@ def _cmd_crypto(args: argparse.Namespace) -> int:
                         plain += 1
                 except Exception:
                     pass
-            print(f"ccswitch crypto: {enc} slot(s) encrypted, {plain} slot(s) plaintext")
+            print(f"{_P} crypto: {enc} slot(s) encrypted, {plain} slot(s) plaintext")
         else:
-            print("ccswitch crypto: no store slots found")
+            print(f"{_P} crypto: no store slots found")
         return 0
 
     if sub == "init":
         if key_available():
-            print("ccswitch crypto: a master key is already configured — nothing to do.")
+            print(f"{_P} crypto: a master key is already configured — nothing to do.")
             return 0
         key = generate_key()
         try:
             store_key_in_keyring(key)
         except RuntimeError as exc:
-            print(f"ccswitch crypto init: failed to store key in keyring: {exc}", file=sys.stderr)
+            print(f"{_P} crypto init: failed to store key in keyring: {exc}", file=sys.stderr)
             return 1
-        print("ccswitch crypto: master key generated and stored in keyring.")
-        print("ccswitch crypto: run `ccswitch crypto migrate` to encrypt existing slots.")
+        print(f"{_P} crypto: master key generated and stored in keyring.")
+        print(f"{_P} crypto: run `{_P} crypto migrate` to encrypt existing slots.")
         return 0
 
     if sub == "migrate":
         if not key_available():
             print(
-                "ccswitch crypto migrate: no master key configured — cannot encrypt.\n"
-                "Run `ccswitch crypto init` first.",
+                f"{_P} crypto migrate: no master key configured — cannot encrypt.\n"
+                f"Run `{_P} crypto init` first.",
                 file=sys.stderr,
             )
             return 1
         store = paths.store_dir()
         if not store.exists():
-            print("ccswitch crypto migrate: no store slots found.")
+            print(f"{_P} crypto migrate: no store slots found.")
             return 0
         migrated = skipped = errors = 0
         # Enumerate via the shared helper, not a second `*.cred.json` glob: a stray
@@ -164,16 +167,16 @@ def _cmd_crypto(args: argparse.Namespace) -> int:
                 write_credentials(slot, data)
                 migrated += 1
             except Exception as exc:
-                print(f"ccswitch crypto migrate: error on {name}: {exc}", file=sys.stderr)
+                print(f"{_P} crypto migrate: error on {name}: {exc}", file=sys.stderr)
                 errors += 1
         print(
-            f"ccswitch crypto migrate: {migrated} slot(s) encrypted, "
+            f"{_P} crypto migrate: {migrated} slot(s) encrypted, "
             f"{skipped} already encrypted, {errors} error(s)."
         )
         return 0 if errors == 0 else 1
 
     # Unknown crypto sub-subcommand (shouldn't reach here due to argparse)
-    print(f"ccswitch crypto: unknown sub-command {sub!r}", file=sys.stderr)
+    print(f"{_P} crypto: unknown sub-command {sub!r}", file=sys.stderr)
     return 1
 
 
@@ -212,7 +215,7 @@ def _cmd_clones(args: argparse.Namespace) -> int:
             ], indent=2))
             return 0
         if not reports:
-            print(f"ccswitch clones doctor: no session worktrees under {repo_root}")
+            print(f"{_P} clones doctor: no session worktrees under {repo_root}")
             return 0
         broken_total = 0
         for r in reports:
@@ -222,14 +225,14 @@ def _cmd_clones(args: argparse.Namespace) -> int:
                   f"{len(r.links)} worktree(s), {len(r.broken)} broken")
         if broken_total:
             print(f"\n{broken_total} orphaned worktree(s). Working files are intact; "
-                  "recover with: ccswitch clones repair")
+                  f"recover with: {_P} clones repair")
             return 1
         return 0
 
     if sub == "repair":
         results = clone_doctor.repair(repo_root, dry_run=args.dry_run, base_ref=args.base_ref)
         if not results:
-            print("ccswitch clones repair: nothing to repair")
+            print(f"{_P} clones repair: nothing to repair")
             return 0
         failed = 0
         for entry in results:
@@ -260,10 +263,10 @@ def _cmd_clones(args: argparse.Namespace) -> int:
                 force=args.force,
             )
         except ValueError as exc:
-            print(f"ccswitch clones remove: {exc}", file=sys.stderr)
+            print(f"{_P} clones remove: {exc}", file=sys.stderr)
             return 1
         except clone_doctor.CloneInUseError as exc:
-            print(f"ccswitch clones remove: {exc}", file=sys.stderr)
+            print(f"{_P} clones remove: {exc}", file=sys.stderr)
             print("Pass --force only if you accept killing those sessions' git metadata.",
                   file=sys.stderr)
             return 2
@@ -273,7 +276,7 @@ def _cmd_clones(args: argparse.Namespace) -> int:
             print(f"clone {result['repo']} is not present at {result['clone']}")
         return 0
 
-    print(f"ccswitch clones: unknown sub-command {sub!r}", file=sys.stderr)
+    print(f"{_P} clones: unknown sub-command {sub!r}", file=sys.stderr)
     return 1
 
 
@@ -290,8 +293,8 @@ def _cmd_reauth(args: argparse.Namespace) -> int:
 
     if not crypto.key_available():
         print(
-            "ccswitch reauth: no encryption key configured — refusing to store "
-            "plaintext credentials. Run `ccswitch crypto init` first.",
+            f"{_P} reauth: no encryption key configured — refusing to store "
+            f"plaintext credentials. Run `{_P} crypto init` first.",
             file=sys.stderr,
         )
         return 1
@@ -303,26 +306,27 @@ def _cmd_reauth(args: argparse.Namespace) -> int:
     try:
         token = setup_token_oauth.exchange(pasted, challenge)
     except setup_token_oauth.SetupTokenStateMismatch:
-        print("ccswitch reauth: code didn't match this request — restart and try again.", file=sys.stderr)
+        print(f"{_P} reauth: code didn't match this request — restart and try again.", file=sys.stderr)
         return 1
     except setup_token_oauth.SetupTokenInvalidCode:
-        print("ccswitch reauth: code invalid or expired — generate a new one.", file=sys.stderr)
+        print(f"{_P} reauth: code invalid or expired — generate a new one.", file=sys.stderr)
         return 1
     except setup_token_oauth.SetupTokenTransient as exc:
-        print(f"ccswitch reauth: couldn't reach the token service: {exc}", file=sys.stderr)
+        print(f"{_P} reauth: couldn't reach the token service: {exc}", file=sys.stderr)
         return 1
     except setup_token_oauth.SetupTokenError as exc:
-        print(f"ccswitch reauth: token service returned no token: {exc}", file=sys.stderr)
+        print(f"{_P} reauth: token service returned no token: {exc}", file=sys.stderr)
         return 1
 
     crypto.store_oauth_token(args.name, token)
     accounts.mark_reauthenticated(args.name)
-    print(f"ccswitch reauth: account {args.name!r} recovered — status ok.")
+    print(f"{_P} reauth: account {args.name!r} recovered — status ok.")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="ccswitch")
+    mirror_legacy_env()  # VIBERPIT_* <-> CCSWITCH_*, before any setting is read
+    parser = argparse.ArgumentParser(prog=_P)
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_list = sub.add_parser("list")
     p_list.add_argument("--no-refresh", action="store_true",
@@ -371,7 +375,7 @@ def main(argv: list[str] | None = None) -> int:
     p_mcp = sub.add_parser(
         "mcp", help="serve the ccswitch assistant tools to another agent over stdio MCP")
     p_mcp.add_argument("--url", default=assistant_mcp.DEFAULT_URL,
-                       help=f"ccswitch edge base URL (default: {assistant_mcp.DEFAULT_URL})")
+                       help=f"{_P} edge base URL (default: {assistant_mcp.DEFAULT_URL})")
     p_mcp.add_argument("--token-env", default=assistant_mcp.DEFAULT_TOKEN_ENV,
                        help="env var holding the ccas2: assistant token "
                             f"(default: {assistant_mcp.DEFAULT_TOKEN_ENV})")
@@ -382,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
         "ask", help="one-shot prompt to the ccswitch assistant thread")
     p_ask.add_argument("prompt", help="the question to ask the assistant")
     p_ask.add_argument("--url", default=assistant_ask.DEFAULT_URL,
-                       help=f"ccswitch edge base URL (default: {assistant_ask.DEFAULT_URL})")
+                       help=f"{_P} edge base URL (default: {assistant_ask.DEFAULT_URL})")
     p_ask.add_argument("--token-env", default=assistant_ask.DEFAULT_TOKEN_ENV,
                        help="env var holding the ccas2: assistant token "
                             f"(default: {assistant_ask.DEFAULT_TOKEN_ENV})")
@@ -422,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.name:
             known = {a["name"] for a in accounts.list_accounts()}
             if args.name not in known:
-                print(f"ccswitch: unknown account {args.name!r}", file=sys.stderr)
+                print(f"{_P}: unknown account {args.name!r}", file=sys.stderr)
                 return 1
             name = args.name
         else:
@@ -430,13 +434,13 @@ def main(argv: list[str] | None = None) -> int:
                 name = accounts.pick_account(cfg)  # most-headroom + soft reservation
             except AllAccountsBusy as busy:
                 when = busy.earliest_reset.astimezone(ZoneInfo(cfg.timezone)) if busy.earliest_reset else "unknown"
-                print(f"ccswitch: all accounts at usage ceiling (earliest reset: {when})", file=sys.stderr)
+                print(f"{_P}: all accounts at usage ceiling (earliest reset: {when})", file=sys.stderr)
                 return 2
         cfg_dir = configdir.compose(name)
         if args.dir:
             print(cfg_dir)
         else:
-            print(f"export CLAUDE_CONFIG_DIR={shlex.quote(str(cfg_dir))}  # ccswitch: {name}")
+            print(f"export CLAUDE_CONFIG_DIR={shlex.quote(str(cfg_dir))}  # {_P}: {name}")
         return 0
     if args.cmd == "accounts":
         return _cmd_accounts(args)

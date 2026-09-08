@@ -10,11 +10,25 @@ where it matters: the completion auto-archive gate.
 
 Mirrors ``automations.pr_intent`` — injected ``query_fn`` so the real model is
 NEVER called in tests; routed through ``helper_call.run_helper_call`` (backoff +
-per-account breaker). Degrades to the shared prose heuristic
-``background_tasks.text_awaits_user`` whenever the helper lane is unavailable
-(breaker open, no usable account, SDK/model failure, unparseable output) — the
-heuristic is deliberately broad, so during a helper outage a polite closing may
-linger as "Answer needed" rather than a real question being archived away.
+per-account breaker).
+
+The shared prose heuristic ``background_tasks.text_awaits_user`` is the RECALL
+FLOOR, not a fallback: it runs first and, when it sees no ask at all, the answer
+is False and no model is called. The classifier only ever NARROWS what the
+heuristic already flagged (a polite closing, a rhetorical question), so it can
+never invent a hold. Prod 2026-09-07: two completed sessions were flipped to
+waiting_question ("Answer needed") on final messages that asked nothing — one
+closed "No further action needed from me" — and the user opened each card to
+find no question anywhere; the pm-classify session's entire run was discarded
+because its ingest chain waits for a settled status. Both tails were "no ask"
+to the heuristic. Ordering it first also drops a Haiku call from every clean
+completion. The trade is explicit: recall is now bounded by
+``_ASK_PHRASES`` + a trailing "?" over that function's tail scan.
+
+Above the floor, the heuristic is still the degrade path whenever the helper
+lane is unavailable (breaker open, no usable account, SDK/model failure,
+unparseable output) — and there it is already known True, so a helper outage
+holds the session rather than archiving a question away.
 """
 from __future__ import annotations
 
@@ -76,11 +90,18 @@ async def completion_awaits_user(
     cwd: str | None = None,
 ) -> bool:
     """True when *text* (a marker-stripped final assistant message) still awaits
-    the user. LLM verdict when the helper lane is usable; the shared prose
-    heuristic otherwise. Never raises."""
+    the user. The shared prose heuristic gates the call (see module docstring);
+    above that floor it is the LLM verdict, or the heuristic's own True when the
+    helper lane is unusable. Never raises."""
     from .background_tasks import text_awaits_user
     if not (text or "").strip():
         return False
+    # Recall floor. Below it there is nothing for the classifier to narrow, so a
+    # "yes" from it could only ever be a false positive on a finished session.
+    if not text_awaits_user(text):
+        return False
+    # From here on the heuristic has already answered True, so every degrade path
+    # below returns True rather than re-scanning the same prose for the same answer.
     try:
         # Lazy options: construct SDK options ONLY on the real-model path, so an
         # injected query_fn (tests) never touches the SDK (pr_intent pattern).
@@ -89,7 +110,7 @@ async def completion_awaits_user(
             cfg = config_dir if config_dir is not None else (
                 os.environ.get("CLAUDE_CONFIG_DIR") or pick_helper_config_dir())
             if not cfg:
-                return text_awaits_user(text)  # no usable account — degrade
+                return True  # no usable account — degrade to the heuristic's verdict
             config_dir = cfg
             from claude_agent_sdk import ClaudeAgentOptions, query
             query_fn = query
@@ -99,16 +120,16 @@ async def completion_awaits_user(
                 allowed_tools=[], setting_sources=[], **cli_path_kwargs())
     except Exception as exc:
         log.warning("open_question.classify unavailable: %s", exc)
-        return text_awaits_user(text)
+        return True
 
     outcome = await run_helper_call(
         lambda: query_fn(prompt=_build_prompt(text), options=options),
         subsystem="open_question.classify", account_key=config_dir or "")
     if outcome.skipped:
-        return text_awaits_user(text)  # lane cooled-down — degrade, no call made
+        return True  # lane cooled-down — degrade, no call made
     if outcome.error is not None:
         log.warning("open_question.classify failed: %s", outcome.error)
-        return text_awaits_user(text)
+        return True
     parts: list[str] = []
     for msg in outcome.messages:
         content = getattr(msg, "content", None)
@@ -120,5 +141,5 @@ async def completion_awaits_user(
     verdict = _extract_verdict("".join(parts).strip())
     if verdict is None:
         log.warning("open_question.classify unparseable output — using heuristic")
-        return text_awaits_user(text)
+        return True
     return verdict

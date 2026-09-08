@@ -15,7 +15,6 @@ from server.db.models import (
     FeatureLink,
     Initiative,
     InitiativeFeature,
-    InitiativeRepo,
     Project,
     ProjectEdge,
     ProjectRepo,
@@ -111,17 +110,22 @@ async def test_feature_link(db_session):
 
 
 @pytest.mark.asyncio
-async def test_initiative_pm_extensions(db_session):
+async def test_initiative_capabilities_and_feature_parent(db_session):
     p = Project(slug="px", name="PX")
     db_session.add(p)
     await db_session.flush()
-    f = Feature(project_id=p.id, slug="fx", title="FX", state="delivering")
-    ini = Initiative(slug="do-fx", repo="steiner385/ccswitch", title="Do FX",
-                     project_id=p.id, reach=3, impact=2, effort=1, confidence=2)
-    db_session.add_all([f, ini])
+    root = Feature(project_id=p.id, slug="sessions", title="Sessions", state="live")
+    db_session.add(root)
     await db_session.flush()
-    db_session.add(InitiativeRepo(initiative_id=ini.id, repo="steiner385/ccswitch",
-                                  is_primary=True))
-    db_session.add(InitiativeFeature(initiative_id=ini.id, feature_id=f.id))
+    child = Feature(project_id=p.id, slug="dictation", title="Dictation",
+                    state="delivering", parent_feature_id=root.id)
+    ini = Initiative(slug="do-fx", repo="o/r", title="Do FX", project_id=p.id)
+    db_session.add_all([child, ini])
     await db_session.flush()
-    assert ini.project_id == p.id
+    db_session.add(InitiativeFeature(initiative_id=ini.id, feature_id=child.id, is_primary=True))
+    db_session.add(InitiativeFeature(initiative_id=ini.id, feature_id=root.id))
+    await db_session.flush()
+    rows = (await db_session.execute(
+        select(InitiativeFeature).where(InitiativeFeature.initiative_id == ini.id))).scalars().all()
+    assert {(r.feature_id, bool(r.is_primary)) for r in rows} == {(child.id, True), (root.id, False)}
+    assert not hasattr(Initiative, "reach")

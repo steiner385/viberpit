@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Sparkles, Loader2, Target, Wrench, Bot } from 'lucide-react'
+import { Pencil, Archive, Trash2, FolderGit2, ChevronRight, ChevronDown, Sparkles, Loader2, Target, Wrench, Bot, Monitor } from 'lucide-react'
 import { toast } from 'sonner'
 import { inGroup, matchShortcut } from '@/shell/shortcuts'
 import { QUICK_REPLIES } from '@/lib/quickReplies'
@@ -441,6 +441,16 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               title={`host ${session.host}`}
             >
               {session.host}
+            </span>
+          </>
+        )}
+        {session.displayMode === 'native' && (
+          <>
+            <Sep />
+            <span data-testid="card-desktop" className="flex-shrink-0 inline-flex items-center gap-1 text-gray-500 dark:text-gray-400"
+                  title="Windows open on the host's desktop">
+              <Monitor size={12} aria-hidden="true" />
+              <span>desktop</span>
             </span>
           </>
         )}

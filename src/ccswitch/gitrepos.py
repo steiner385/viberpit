@@ -98,8 +98,7 @@ _stale_credentials: dict[str, dict] = {}
 # happens to hold. The core cannot import the minting code: ``server.github``
 # depends on httpx/cryptography and the src/ -> server/ direction is never
 # imported (the CLI must run with no daemon). So the daemon registers a provider
-# at startup, exactly as it registers ``accounts.set_auth_failure_sink`` and
-# ``accounts.set_copilot_usage_reader``.
+# at startup, exactly as it registers ``accounts.set_auth_failure_sink``.
 
 _token_provider: "Callable[[str], str | None] | None" = None
 

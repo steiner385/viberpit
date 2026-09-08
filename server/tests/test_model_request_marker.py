@@ -59,5 +59,10 @@ def test_instruction_names_every_tier():
 
 
 def test_sdk_factory_appends_the_instruction():
+    """With the session-tools surface off, the marker instruction is appended
+    directly. With tools mounted (the default), `request_model` replaces it
+    instead — never both (task-8, marker-to-tool migration)."""
     from server.sessions.claude_sdk_factory import _build_append_string
-    assert MODEL_REQUEST_INSTRUCTION in _build_append_string()
+    append = _build_append_string()
+    assert "request_model" in append
+    assert MODEL_REQUEST_INSTRUCTION not in append

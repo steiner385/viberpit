@@ -25,8 +25,9 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from server.deploy import drain as _drain
+from server.host_units import resolve_unit
 from server.deploy.steps import (
-    LOCAL_DAEMON_RESTART, SSH_HOST_RE, SSH_REPO_RE, _SHA_RE, short_sha_match,
+    SSH_HOST_RE, SSH_REPO_RE, _SHA_RE, short_sha_match,
 )
 
 log = logging.getLogger("server.deploy.runners")
@@ -36,7 +37,6 @@ Fetch = Callable[[str], Awaitable[dict]]
 Progress = Callable[[str, "HostProgress"], None]
 
 SSH_OPTS = ("-oBatchMode=yes", "-oConnectTimeout=10")
-RUNNER_UNIT = "ccswitch-daemon.service"
 VERIFY_TIMEOUT_S = 90.0
 VERIFY_INTERVAL_S = 3.0
 DEFAULT_CONCURRENCY = 2
@@ -119,10 +119,6 @@ def remote_rewind_commands(repo_path: str, sha: str) -> list[tuple[str, list[str
     ]
 
 
-REMOTE_RESTART = ["sudo", "-n", "systemctl", "restart", RUNNER_UNIT]
-# The local daemon-restart argv lives in steps.LOCAL_DAEMON_RESTART (steps.py's own
-# restart_local_daemon uses it too) and is referenced directly at the call sites below, so
-# the two callers can never drift apart.
 
 
 def is_deployable(t: RunnerTarget) -> bool:
@@ -213,6 +209,19 @@ class RunnerDeploy:
         if r.returncode != 0:
             detail = (r.stderr or r.stdout or "").strip()[:500]
             raise RuntimeError(f"{step} failed (rc={r.returncode}): {detail}")
+
+    async def _restart(self, *, local: bool) -> None:
+        prefix: list[str] = []
+        if not local:
+            host = self.target.ssh_host
+            if not host or not SSH_HOST_RE.match(host):
+                raise RuntimeError(f"ssh_host {host!r} is not a valid [user@]host")
+            prefix = ["ssh", *SSH_OPTS, host]
+        unit = await asyncio.to_thread(resolve_unit, "daemon", run=self._run, prefix=prefix)
+        if local:
+            await self._local("restart", ["sudo", "systemctl", "restart", unit])
+        else:
+            await self._ssh("restart", ["sudo", "-n", "systemctl", "restart", unit])
 
     async def _close_quietly(self, client: Any) -> None:
         """Release a per-call daemon client — one helper, every call site.
@@ -325,10 +334,7 @@ class RunnerDeploy:
             if daemon_changed:
                 await self._drain_then()
                 self._mark(step="restart")
-                if local:
-                    await self._local("restart", LOCAL_DAEMON_RESTART)
-                else:
-                    await self._ssh("restart", REMOTE_RESTART)
+                await self._restart(local=local)
 
             sha = await self._verify(target_sha, require_process=daemon_changed)
             self.progress.sha = sha
@@ -367,7 +373,7 @@ class RunnerDeploy:
             if daemon_changed:
                 await self._drain_then()
                 self._mark(step="rewind:restart")
-                await self._ssh("restart", REMOTE_RESTART)
+                await self._restart(local=False)
             await self._verify(sha, require_process=daemon_changed)
             self._mark("done", sha=sha)
         except Exception as exc:  # noqa: BLE001

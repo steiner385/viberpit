@@ -1,0 +1,97 @@
+[Unit]
+Description=ViberPit session daemon — owns live claude sessions
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=viberpit-daemon
+User=tony
+RuntimeDirectory=viberpit
+RuntimeDirectoryPreserve=yes
+# Persistent state dir owned by User= (creates /var/lib/viberpit). The deploy
+# snapshot/restore (issue: user-controlled deploy) writes the live-session snapshot
+# under here; without it the non-root daemon can't create /var/lib/viberpit and
+# snapshot_deploy fails with PermissionError.
+StateDirectory=viberpit
+WorkingDirectory=/home/tony/GitHub/viberpit-deploy
+EnvironmentFile=/etc/viberpit/viberpit.env
+# Where per-account CODEX_HOMEs land: /var/lib/viberpit/state/ccswitch/codex.
+# `codex app-server` keeps SQLite + WAL, thread state and shell history under
+# CODEX_HOME, and the plan forbids that on a network filesystem — the 2026-09-03
+# sshfs torn-read incident (#1005) is what a shared mount does to a file format
+# that assumes local locking. Pinning it to StateDirectory= makes locality a
+# property of the unit instead of a hope about where $HOME/.local/state resolves
+# on a given runner. XDG_STATE_HOME has exactly ONE reader in this repo
+# (server/codex/manager.py:default_codex_home_base), so this moves nothing else.
+# The daemon refuses to start a runner whose home is not provably local anyway
+# (process.assert_local_filesystem), and `python -m server.codex.doctor` reports
+# it as `runtime_home` before it costs anyone a session.
+Environment=XDG_STATE_HOME=%S/viberpit/state
+# This entrypoint calls uvicorn.run() programmatically (server/ipc/serve.py) rather
+# than the uvicorn CLI, so --timeout-graceful-shutdown can't be passed here as a
+# flag; it's set as timeout_graceful_shutdown=10 in that call instead (same
+# transcript-audit V4 rationale as viberpit.service: bound SIGTERM so the daemon
+# lifespan shutdown — x11 teardown, reauth shutdown, orchestrator stop — actually
+# runs instead of being SIGKILLed).
+# Boot-time version reconcile (spec: fleet deploy fan-out §3): fast-forward this checkout to
+# deploy_state.deployed_sha when it is behind. Always exits 0 — a runner that cannot
+# reconcile still starts; the edge's skew gate keeps it out of dispatch until fixed.
+# The leading `-` makes systemd IGNORE a non-zero exit AND a missing module: a checkout that
+# predates server/deploy/runner_sync.py — the bootstrap window before this commit is deployed,
+# or a rollback that rewinds across it — would otherwise fail ExecStartPre and never start
+# the daemon at all.
+ExecStartPre=-/home/tony/GitHub/viberpit-deploy/.venv/bin/python -m server.deploy.runner_sync --repo /home/tony/GitHub/viberpit-deploy
+ExecStart=/home/tony/GitHub/viberpit-deploy/.venv/bin/python -m server.ipc
+# Startup budget: the ExecStartPre reconcile can fetch (60s) + pip install (600s) + sync (120s)
+# before ExecStart even begins, well past systemd's 90s default.
+TimeoutStartSec=900
+# Restart=always, NOT on-failure: an out-of-band SIGTERM (a stray kill/pkill, not a
+# `systemctl stop`) makes the daemon exit with Result=success, which on-failure does
+# NOT restart — the daemon then stays dead, the edge loops on "Connection refused",
+# and the UI shows no sessions. The health watchdog only covers the wedge case
+# (process alive, socket dead), so a fully-absent daemon fell between both guards.
+# `always` still honors an explicit `systemctl stop` (deploys are unaffected), and
+# StartLimitBurst/Interval still backstops a genuine crash-loop.
+Restart=always
+RestartSec=3
+# Shutdown budget. SIGTERM first DRAINS in-flight turns (server/ipc/drain_on_signal.py,
+# 2026-08-30: a bare `systemctl restart` killed five sessions mid-turn) — up to
+# CCSWITCH_DRAIN_TURN_CAP_SEC (180s) for an ordinary turn, or
+# CCSWITCH_DRAIN_CONDENSE_CAP_SEC (570s) while a session is mid-compaction — and only
+# then begins the ordinary shutdown: 10s (uvicorn graceful) + up to 15s (x11.stop_all
+# sweep, _DAEMON_SHUTDOWN_SWEEP_TIMEOUT_S in serve.py) + reauth shutdown/orchestrator
+# stop. 570 + 90 = 660. An idle daemon still stops in seconds; a WEDGED one (loop not
+# running, so the drain never starts) is what the health watchdog escalates with
+# SIGKILL after CCSWITCH_DRAIN_WAIT rather than waiting this out.
+TimeoutStopSec=660
+# mixed, NOT control-group: control-group SIGTERMs every live claude child in
+# parallel with the daemon, so their turns die with exit 143 BEFORE stop() can
+# set _shutting_down — each was persisted as needs_attention and survived the
+# restart as a spurious "Turn failed" card (2026-08-29). mixed SIGTERMs only the
+# daemon; orchestrator.stop() then tears children down in order, and the final
+# SIGKILL phase still sweeps the whole cgroup at TimeoutStopSec.
+KillMode=mixed
+# Shared with every `codex app-server` this daemon supervises (one per ACCOUNT,
+# not per session — server/codex/manager.py ref-counts them and reaps after
+# CCSWITCH_CODEX_IDLE_GRACE_S). Watch codex_threads_active / codex_turns_active
+# before raising this: a climbing app-server count with no turns means the idle
+# reaper is not firing, which is a bug to fix rather than headroom to buy.
+MemoryMax=12G
+# Soft limit below MemoryMax: at 10G the kernel applies reclaim pressure and throttles
+# the cgroup instead of hard-stopping it (OOMPolicy=stop) at 12G. Gives a restart-storm
+# of relaunched session+MCP fleets a chance to bleed off rather than killing the daemon
+# outright. The health watchdog (viberpit-health.timer) alerts before this is reached.
+MemoryHigh=10G
+# No pids ceiling: this daemon owns every live claude session, and each spawns a
+# Claude CLI + its MCP-server fleet + Xvfb + thread pools. TasksMax counts threads
+# too, so a low cap is hit fast (512 throttled ~900x in prod → fork/thread EAGAIN,
+# SIGABRT'd subprocesses, dead turns). MemoryMax=12G is the real backstop.
+TasksMax=infinity
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+Alias=ccswitch-daemon.service

@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-DEFAULT_SOCKET_PATH = "/run/ccswitch/sessiond.sock"
+from server.hostpaths import SESSIOND_SOCKET as DEFAULT_SOCKET_PATH
 
 
 @dataclass(frozen=True)

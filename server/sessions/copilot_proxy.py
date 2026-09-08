@@ -195,9 +195,27 @@ class CopilotProxyManager:
             return
         spec.sessions = max(0, spec.sessions - 1)
         if spec.sessions == 0:
-            t = asyncio.create_task(self._idle_teardown(account))
-            self._idle_tasks.add(t)
-            t.add_done_callback(self._idle_tasks.discard)
+            self._arm_idle_teardown(account)
+
+    def release(self, account: str) -> None:
+        """Hand a proxy that was ``ensure()``d without a session back to the idle reaper.
+
+        A cold quota read (server/usage/process_quota.py) starts a proxy nobody
+        attaches to. ``ensure()`` arms no timer of its own — a session's
+        ``detach`` does — so without this the proxy would live until daemon
+        shutdown. Arming the timer rather than stopping outright is deliberate:
+        a session that ``attach``ed during the read is safe, because the timer
+        re-checks the ref-count when it fires.
+        """
+        spec = self._specs.get(account)
+        if spec is None or spec.sessions:
+            return
+        self._arm_idle_teardown(account)
+
+    def _arm_idle_teardown(self, account: str) -> None:
+        t = asyncio.create_task(self._idle_teardown(account))
+        self._idle_tasks.add(t)
+        t.add_done_callback(self._idle_tasks.discard)
 
     async def _idle_teardown(self, account: str, timeout: float | None = None) -> None:
         await asyncio.sleep(timeout if timeout is not None else self._idle_grace_s)

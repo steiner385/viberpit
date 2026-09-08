@@ -1,5 +1,6 @@
 // web/src/components/DeployOverlay.tsx
 import { Fragment } from 'react'
+import { BRAND_NAME } from '@/brand'
 import { useDeployController } from '@/lib/deployController'
 import { useDeployStatus, usePendingDeploy } from '@/api/hooks'
 import { DEPLOY_PHASES, phaseState, deployProgress, hostRows } from '@/lib/deployPhases'
@@ -66,7 +67,7 @@ export function DeployOverlay() {
         </div>
       ) : (
         <div>
-          <h2 className="text-lg font-semibold text-ink">Upgrading ccswitch</h2>
+          <h2 className="text-lg font-semibold text-ink">Upgrading {BRAND_NAME}</h2>
           <p className="text-xs text-ink-muted">
             {count} change{count === 1 ? '' : 's'}{shortSha && <> · <span className="font-mono">{shortSha}</span></>}
           </p>

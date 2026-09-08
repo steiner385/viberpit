@@ -24,7 +24,7 @@
  * controls are identical at every width.
  *
  * What that changes here:
- *   - There is no `<h1>ccswitch</h1>`. `TopBar` renders the brand as plain text
+ *   - There is no `<h1>ViberPit</h1>`. `TopBar` renders the brand as plain text
  *     precisely so the page's own `PageHeader` owns the only `h1`.
  *   - Sections are a `nav` of links ("Sections"), not a `tablist` of tabs. The
  *     phone bar shows the first four and puts the rest behind "More".
@@ -148,7 +148,7 @@ test.describe('T044 — Dashboard', () => {
 
     // The phone shell is up: brand in the top rail, sections in the bottom one.
     // (Plain text, not a heading — see the viewport note.)
-    await expect(page.getByText('ccswitch', { exact: true })).toBeVisible()
+    await expect(page.getByText('ViberPit', { exact: true })).toBeVisible()
     await expect(page.getByRole('navigation', { name: /sections/i })).toBeVisible()
 
     // Session list loads. Scope the account-badge check to the session card —

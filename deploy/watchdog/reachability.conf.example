@@ -1,4 +1,4 @@
-# watchdog-reachability config — copy to /etc/ccswitch/watchdog-reachability.conf
+# watchdog-reachability config — copy to /etc/viberpit/watchdog-reachability.conf
 # (root:root, 0644) and edit for THIS host. Sourced by test-reachability.sh.
 #
 # This file is what turns the reachability watchdog ON. With no WDR_TARGETS the

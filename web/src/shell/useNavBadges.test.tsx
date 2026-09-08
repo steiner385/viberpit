@@ -8,12 +8,19 @@ const useAllPrs = vi.fn()
 const useAutomations = vi.fn()
 const useAccounts = vi.fn()
 
+const useDeployState = vi.fn()
+
 vi.mock('@/api/hooks', () => ({
   useSessions: () => useSessions(),
   useAllPrs: () => useAllPrs(),
   useAutomations: () => useAutomations(),
   useAccounts: () => useAccounts(),
 }))
+
+// Mocked at the DERIVED state, not at the two queries under it: the dot is a
+// function of `hasFailure`, and stubbing raw `pending`/`deploy` payloads here
+// would make this file a second place that knows how a failure is derived.
+vi.mock('@/lib/deployState', () => ({ useDeployState: () => useDeployState() }))
 
 import { useNavBadges } from './useNavBadges'
 import { NAV_DEFS, type NavBadgeKey } from './navDefs'
@@ -55,6 +62,7 @@ describe('useNavBadges', () => {
     useAllPrs.mockReturnValue({ data: [] })
     useAutomations.mockReturnValue({ data: [] })
     useAccounts.mockReturnValue({ data: [] })
+    useDeployState.mockReturnValue({ hasFailure: false, count: 0 })
   })
 
   it('every key it returns is a declared NavBadgeKey', () => {
@@ -100,6 +108,32 @@ describe('useNavBadges', () => {
     useAccounts.mockReturnValue({ data: [account({ status })] })
     const { result } = renderHook(() => useNavBadges())
     expect(result.current.settings).toBe(expected)
+  })
+
+  // The deploy banner is hidden on phone (`useAppBanners`, `hideOn: ['phone']`),
+  // so a failed deploy would otherwise be completely silent there — Settings ›
+  // Deploy holds the detail, but nothing would point at it. This dot is that
+  // pointer.
+  it('settings lights up when a deploy failed, with no account needing reauth', () => {
+    useDeployState.mockReturnValue({ hasFailure: true, count: 0 })
+    const { result } = renderHook(() => useNavBadges())
+    expect(result.current.settings).toBe(true)
+  })
+
+  // Pending commits are routine — master advances all day. Only a FAILURE earns
+  // the dot, or Settings would wear one permanently and stop meaning anything.
+  it('settings stays clear for commits merely pending deploy', () => {
+    useDeployState.mockReturnValue({ hasFailure: false, count: 7 })
+    const { result } = renderHook(() => useNavBadges())
+    expect(result.current.settings).toBeUndefined()
+  })
+
+  it('settings stays boolean when both a reauth and a deploy failure are live', () => {
+    useAccounts.mockReturnValue({ data: [account({ status: 'needs-reauth' })] })
+    useDeployState.mockReturnValue({ hasFailure: true, count: 3 })
+    const { result } = renderHook(() => useNavBadges())
+    expect(result.current.settings).toBe(true)
+    expect(typeof result.current.settings).toBe('boolean')
   })
 
   it('DEC-4: sessions counts every session in the section, including queued ones', () => {

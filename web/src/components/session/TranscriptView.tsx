@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react'
-import { useVirtualizer } from '@tanstack/react-virtual'
+import { useVirtualizer, elementScroll, type VirtualizerOptions } from '@tanstack/react-virtual'
 import type { Turn as TurnType, RotationMarker, SubThread } from '@/session/reducer'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { Turn } from './Turn'
@@ -33,6 +33,8 @@ interface Props {
    *  the assistant's own thread; none exist inline in this component today). Rendered
    *  as `data-variant` only; default 'session' keeps every existing caller unchanged. */
   variant?: 'session' | 'assistant'
+  /** Wired to a noticeCard's "Ask about it" button (assistant variant only — see Turn). */
+  onAsk?: (text: string) => void
 }
 
 /**
@@ -45,11 +47,13 @@ interface Props {
  *  - stick-to-bottom follows content all the way down while the user is at the
  *    bottom (a ResizeObserver on the spacer catches the virtualizer's async
  *    remeasurement — late markdown/font/image layout, expanding a tool group),
- *  - scrolling up to read history latches auto-pin off,
+ *  - scrolling up to read history latches auto-pin off — only a real user
+ *    gesture counts; our own pins and the virtualizer's row-remeasure scroll
+ *    adjustments both go through a programmatic-scroll guard,
  *  - scrolling near the top pages in older turns and the prior scroll anchor is
  *    restored so the viewport doesn't jump.
  */
-export function TranscriptView({ turns, rotations = [], model, toolDetailMode, thinkingCollapsed, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder, variant = 'session' }: Props) {
+export function TranscriptView({ turns, rotations = [], model, toolDetailMode, thinkingCollapsed, streamingBlockId = null, onAnswer, subAgents = {}, earliestTurn, loadingOlder, onLoadOlder, variant = 'session', onAsk }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   // Track whether the user is at/near the bottom so we auto-scroll only when appropriate.
@@ -73,6 +77,40 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
     [turns, rotations, loadingOlder, earliestTurn],
   )
 
+  // Flag the scroll event(s) of a scrollTop change we are about to make so they
+  // are not mistaken for a user scroll. Cleared on the next frame (not on the
+  // scroll event) so it still self-clears when the change is a no-op and fires
+  // no scroll event.
+  const markProgrammaticScroll = useCallback(() => {
+    programmaticScrollRef.current = true
+    requestAnimationFrame(() => { programmaticScrollRef.current = false })
+  }, [])
+
+  const scrollProgrammatically = useCallback((el: HTMLElement, top: number) => {
+    markProgrammaticScroll()
+    el.scrollTop = top
+  }, [markProgrammaticScroll])
+
+  // The virtualizer moves scrollTop on its own: when a row *above* the viewport
+  // measures for the first time (or is remeasured), virtual-core compensates
+  // the estimate→actual delta so the reader's viewport stays anchored on the
+  // same row. On entry that is every overscan row above the viewport at once,
+  // and since a "Thinking" row is ~40px against a 120px estimate the sum is
+  // easily a few hundred px. Left on the library default that scroll is
+  // indistinguishable from a user gesture: handleScroll reads "scrolled up",
+  // auto-pin latches off, and the session opens a little above the true bottom
+  // with the Scroll-to-bottom button showing. Owning scrollToFn is the one seam
+  // that routes every library-initiated scroll through the same guard as ours.
+  // While pinned, the bottom — not the anchored row — is the invariant, so after
+  // the library's move we snap straight back to it; the spacer ResizeObserver
+  // below then follows the committed height as usual.
+  const scrollToFn = useCallback<VirtualizerOptions<HTMLDivElement, Element>['scrollToFn']>((offset, opts, instance) => {
+    markProgrammaticScroll()
+    elementScroll(offset, opts, instance)
+    const el = containerRef.current
+    if (isNearBottomRef.current && el) el.scrollTop = el.scrollHeight
+  }, [markProgrammaticScroll])
+
   // @tanstack/react-virtual returns uncacheable functions by design; the React
   // Compiler skips memoizing this hook's result, which is correct here (we read
   // getTotalSize()/getVirtualItems() fresh every render).
@@ -85,18 +123,10 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
     // Key by stable row identity so cached row measurements survive prepends
     // (paging in older turns) — only the newly added rows fall back to estimate.
     getItemKey: (i) => rows[i].key,
+    scrollToFn,
   })
 
   const totalSize = virtualizer.getTotalSize()
-
-  // Move scrollTop ourselves without the resulting scroll event being mistaken
-  // for a user scroll. Cleared on the next frame (not on the scroll event) so it
-  // still self-clears when the assignment is a no-op and fires no scroll event.
-  const scrollProgrammatically = useCallback((el: HTMLElement, top: number) => {
-    programmaticScrollRef.current = true
-    el.scrollTop = top
-    requestAnimationFrame(() => { programmaticScrollRef.current = false })
-  }, [])
 
   // Update isNearBottom on scroll; trigger paging when near the top.
   function handleScroll() {
@@ -176,6 +206,8 @@ export function TranscriptView({ turns, rotations = [], model, toolDetailMode, t
             onAnswer={onAnswer}
             subAgents={subAgents}
             sessionModel={model}
+            variant={variant}
+            onAsk={onAsk}
           />
         )
     }

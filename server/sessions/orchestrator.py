@@ -24,7 +24,7 @@ import time
 import uuid
 from pathlib import Path
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, cast
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -32,14 +32,17 @@ if TYPE_CHECKING:
     from server.assistant.client import AssistantApi
     from server.automations.completion_bar import PrFacts
     from server.codex.driver import CodexAgentDriver
+    from server.codex.replay import CodexThreadReplay
     from server.github.merge_queue import QueueEntry
     from server.github.pr_status import PipelinePr
     from server.pipeline.merge_train import MergeTrainState
     from server.pipeline.track import StageModel
     from server.pm.onboarding import ProjectOnboardingView
+    from server.sessions.native_display import NativeDisplay
     from server.sessions.replay import EngineReplay
 
 from ccswitch import accounts as ccswitch_accounts
+from ccswitch import brand
 from ccswitch import configdir, copilot as _copilot_mod, crypto, gitrepos, worktrees
 from ccswitch.accounts import provider_or_none as _provider_of
 from ccswitch.account_names import (
@@ -66,6 +69,7 @@ from server.sessions import events as ev
 from server.sessions import host_heartbeat
 from server.sessions.liveness import heartbeat_interval_s
 from server.sessions import primary_lease
+from server.sessions import session_lease
 from server.sessions import push as push_mod
 from server.sessions.commands import catalog as cmd_catalog
 from server.sessions.commands import dispatcher as cmd_dispatcher
@@ -79,9 +83,11 @@ from server.sessions.engine import (
     AgentEngine,
     AgentEngineUnavailable,
     AsyncCloser,
+    InvalidAgentEngine,
     SuggestionProvider,
     parse_agent_engine,
 )
+from server.sessions import orphan_cli as _orphan_cli
 from server.sessions.orphaned_asks import orphaned_answer_prompt, orphaned_ask_kind
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
 from server.sessions import session_actions
@@ -97,6 +103,7 @@ from server.sessions.recovery import (
     STALL_TIMEOUT, STALL_TIMEOUT_THROTTLED,
 )
 from server.sessions.selection import AllAccountsBusy, Picked, select_account  # noqa: F401
+from server.sessions.display_policy import DISPLAY_NATIVE, DISPLAY_VIRTUAL, resolve_display_mode
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
 from server.obs.context import log_event, PROC_EPOCH
 from server.sessions.title_generator import generate_title
@@ -109,6 +116,11 @@ from server.sessions.usage_stall import is_usage_stalled
 from server.config import env_float
 from server.time_iso import iso_utc
 from server.usage.poller import UsagePoller
+from server.usage.process_quota import (
+    CodexQuotaSource,
+    CopilotQuotaSource,
+    ProcessQuotaRefresher,
+)
 from server.github.pr_status import PullRequestInfo
 from server.hostname import self_host_name  # noqa: F401 — re-exported; the fleet identity lives in server.hostname
 from server.sessions.pr_fix import build_conflict_fix_prompt, build_pr_fix_prompt
@@ -158,6 +170,14 @@ _STALLED_STATUSES = frozenset({"needs_attention", "limited"})
 # strand identically, so they belong here even though they're absent above.
 _RESTART_TRANSIENT_STATUSES = _ACTIVE_STATUSES | frozenset({"waiting_question", "ready_review"})
 
+# Wall-clock ceiling on one engine read of a session's open background work
+# (`_open_background_work`). Deliberately far below the Codex client's own
+# per-request timeout times its page cap: the read sits on the turn-end status write
+# and on the deploy drain, and neither may be held open by a slow app-server for the
+# sake of a "Waiting…" overlay. Exceeding it degrades to "nothing open", which the
+# next turn-end re-asks.
+_BG_WORK_READ_TIMEOUT_S = 15.0
+
 # Message surfaced to the user when auto-recovery gives up on a repeatedly-dropped turn.
 _TURN_DROPPED_GIVEUP = ("Auto-recovery gave up after repeated empty turns — the context "
                         "may be full. Send a message to retry, or /compact to free space.")
@@ -193,6 +213,11 @@ TURN_RESTART_DEFER_S: float = 60.0
 PUSH_STATUSES: frozenset[str] = frozenset(
     {"waiting_input", "waiting_question", "ready_review", "needs_attention"}
 )
+
+# Statuses that count as "this session finished" for a kind="session" assistant watch
+# (#1354): a turn handed back with nothing more expected, mirroring status.py's
+# ACTIVITY_STATUSES minus the "still needs you" ones already covered by PUSH_STATUSES.
+SESSION_FINISHED_STATUSES: frozenset[str] = frozenset({"done", "complete"})
 
 
 def is_push_worthy(status: str) -> bool:
@@ -310,6 +335,21 @@ class ModelBlockedError(Exception):
 
 class BranchSwitchError(Exception):
     """Raised when a git branch checkout fails."""
+
+
+class SessionLeaseHeld(RuntimeError):
+    """Another host holds this session's ownership lease — refuse to spawn (#1379).
+
+    Raised only by the spawn path; ``ensure_driver`` returns None instead, because
+    every one of its callers already handles a driverless session. Carries the id so
+    the daemon RPC layer surfaces which session was refused.
+    """
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(
+            f"session {session_id} is leased to another host — refusing to start a "
+            f"second CLI for it (see #1379)")
 
 
 class InsufficientStorageError(Exception):
@@ -430,11 +470,39 @@ SPAWN_WAIT_S = env_float("CCSWITCH_SPAWN_WAIT_S", 60.0, minimum=1.0)
 # of the real primary is never delayed by this.
 PRIMARY_LEASE_TTL_S = env_float("CCSWITCH_PRIMARY_LEASE_TTL_S", 300.0, minimum=10.0)
 
+# How stale a PER-SESSION lease's heartbeat may be before a different host may claim
+# that session (#1379). Deliberately far shorter than the primary lease: this one is
+# only held while a driver is actually live, it is released the moment the driver
+# goes away, and the TTL is the worst-case delay before a genuinely dead host's
+# sessions can be picked up elsewhere. Renewal cadence is TTL/5.
+SESSION_LEASE_TTL_S = env_float("CCSWITCH_SESSION_LEASE_TTL_S", 120.0, minimum=10.0)
+
+# Kill switch for the per-session lease gate. When false the lease is still taken and
+# renewed (so the DB shows who believes it owns what) but a LOSS no longer blocks a
+# driver build — the pre-#1379 behaviour, kept reachable for an operator who has to
+# force a takeover without waiting out the TTL.
+def session_lease_enforced() -> bool:
+    return os.environ.get("CCSWITCH_SESSION_LEASE_ENFORCE", "").strip().lower() \
+        not in {"0", "false", "no", "off"}
+
+
 # TTL for the cached enabled-hosts registry snapshot that backs session-ownership
 # decisions. Ownership only changes when an operator edits the fleet registry, so
 # a short cache is plenty — this bounds DB reads from the event-driven rotation
 # monitor, not correctness.
 _OWNERSHIP_HOSTS_TTL_S = 60.0
+
+
+async def _lease_state(session_id: str):
+    """``session_lease.current`` for a log line — None on any DB error.
+
+    Only ever used to name the holder in a warning; a second DB failure while
+    already handling a lost lease must not turn a refusal into an exception.
+    """
+    try:
+        return await session_lease.current(session_id)
+    except Exception:
+        return None
 
 
 def _limiting_window(usage, ceiling: float):
@@ -477,10 +545,19 @@ def daemon_role() -> str:
 _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
     "_backlog_task", "_sdlc_intake_task", "_pm_sync_task", "_pm_triage_task",
     "_gh_reconcile_task",
-    "_sdlc_synth_task",
+    "_sdlc_synth_task", "_control_band_task",
     "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
     "_archive_limit_task", "_recurring_task", "_mirror_task",
+    "_error_triage_task",
 })
+
+# How many raw rows a control-band metric reader pulls per repo (#804). Generous
+# enough to cover the longest configurable baseline several times over (a band
+# reads at most `baseline_points + 8` DAILY samples, and a busy repo merges a
+# handful of PRs a day), and bounded so a repo with years of history cannot turn
+# a detection tick into a full-table scan. Rows are ordered newest-first, so the
+# limit trims the ancient end — the end a rolling baseline discards anyway.
+_CONTROL_BAND_ROW_LIMIT = 2000
 
 
 def local_host_stamp() -> str | None:
@@ -562,6 +639,9 @@ class SessionOrchestrator:
         self._schedule_blocked: dict[str, bool] = {}
         self._sdk_factory = sdk_factory or real_sdk_factory
         self._x11 = x11  # X11Manager | None — per-session virtual displays
+        # NativeDisplay | None — the host's real X display; wired by app.py / ipc.serve
+        # exactly like _x11. Sessions created from that host's own desktop render here.
+        self._native: "NativeDisplay | None" = None
         self._copilot = copilot  # CopilotProxyManager | None — per-account translating proxy
         self._copilot_auth = copilot_auth  # CopilotAuthManager | None — device-flow auth manager
         # CodexRunnerManager | None — per-account `codex app-server` supervision.
@@ -704,11 +784,20 @@ class SessionOrchestrator:
         self._pending_initial_prompt: dict[str, str] = {}
         # Deferred attachment ids for the initial prompt, sent on first WS attach.
         self._pending_initial_attachment_ids: dict[str, list[str]] = {}
-        # session_id → ClaudeAgentOptions overlay for an assistant-kind session
-        # (see register_assistant_overlay). In-memory only: the overlay holds a live
+        # Proactive watch notices (Task 8.4, spec v2 §4.7 Pack N) queued because the
+        # target assistant thread had no live driver when post_notice fired. Flushed
+        # by the WS bridge's attach handler via pop_pending_notices — same in-memory,
+        # orchestrator-level, session_id-keyed shape as _pending_initial_prompt above
+        # (SessionRecord stays a plain mirror-the-DB-row dataclass; this is transient
+        # process state, not a session field).
+        self._pending_notices: dict[str, list[dict]] = {}
+        # session_id → options overlay for ANY kind (see register_overlay): the
+        # assistant's full overlay (a ClaudeAgentOptions dict for Claude, a
+        # CodexAssistantOverlay for Codex) or a coding session's
+        # `{"mcp_servers": {<brand.MCP_SERVER_NAME>: …}}`. In-memory only: the overlay holds a live
         # in-process MCP server bound to that session, so it is neither persisted nor
         # sent over RPC — a restart rebuilds it with the session.
-        self._assistant_overlays: dict[str, dict] = {}
+        self._overlays: dict[str, Any] = {}
         # Cap-purge poison tracking (#825): consecutive permanent_delete failures per
         # session, and the set that has crossed _ARCHIVE_PURGE_MAX_STRIKES and is now
         # skipped during selection so one un-deletable archive can't wedge the whole
@@ -749,6 +838,21 @@ class SessionOrchestrator:
             poll_interval=poll_interval,
             usage_fn=_poller_usage_fn,
         )
+        # Copilot and Codex quota is process-backed (no REST endpoint), so the
+        # poller above can only ever read what this refresher persisted: it
+        # starts an account's proxy / app-server cold when the ledger reading
+        # is older than the process TTL, reads once, and hands the process to
+        # the idle reaper — which is what lets those accounts show usage with
+        # no session open, as Anthropic accounts do. The managers are resolved
+        # lazily: app.py / ipc.serve install _copilot after construction and
+        # install_codex_manager swaps _codex in after the availability probe.
+        self._process_quota = ProcessQuotaRefresher(
+            (
+                CopilotQuotaSource(lambda: self._copilot),
+                CodexQuotaSource(lambda: self._codex, self._codex_quota_reader),
+            ),
+            sweep_interval=poll_interval,
+        )
         from server.github.pr_poller import PrStatusPoller
         from server.github.api_budget import PriorityGate
         # One gate shared by both GitHub pollers so the best-effort ETA fetch in
@@ -785,11 +889,13 @@ class SessionOrchestrator:
             PrDoctorActionProvider, BacklogRunnerActionProvider,
             CicdDoctorActionProvider,
         )
+        from server.automations.error_triage import ErrorTriageActionProvider
         from server.automations.base import ActionProvider
         self._action_providers: dict[str, ActionProvider] = {
             "pr-doctor": PrDoctorActionProvider(self),
             "backlog-runner": BacklogRunnerActionProvider(self),
             "cicd-doctor": CicdDoctorActionProvider(self),
+            "error-triage": ErrorTriageActionProvider(self),
         }
         # In-memory map: session_id → SessionRecord
         self._records: dict[str, SessionRecord] = {}
@@ -813,6 +919,13 @@ class SessionOrchestrator:
         # Session-ids currently in a push-worthy state (AUT-02 debounce): push fires once
         # on entry; cleared when the session transitions out so re-entry fires again.
         self._pushed: set[str] = set()
+        # Session-ids currently SESSION_FINISHED_STATUSES (#1354 kind="session" watch
+        # debounce): same on-entry/cleared-on-exit shape as `_pushed`.
+        self._session_finished_notified: set[str] = set()
+        # Account names currently notified "limited" (#1354 kind="account" watch
+        # debounce): fires once per account entering the rotation-trigger branch of
+        # `_rotation_monitor`; cleared on the recovery branch so a re-exhaustion re-fires.
+        self._account_limited_notified: set[str] = set()
         # Session-ids (any origin) we've scheduled a completion auto-archive for,
         # so repeated ``complete`` status emits schedule the archive exactly once.
         self._auto_archiving: set[str] = set()
@@ -1007,6 +1120,29 @@ class SessionOrchestrator:
             clock=time.monotonic,
         )
         self._sdlc_synth_task: asyncio.Task | None = None
+        # Control-Band Monitor control loop (#804): the BACK of the SDLC loop.
+        # Deterministic Western-Electric detection over ccswitch's own delivery
+        # metrics against the committed `server/sdlc/bands.yaml` policy; a breach
+        # files a triage item and, by tier, spawns a read-only diagnosis (2σ) or
+        # queues an incident for SDLC Intake (3σ) — which is what closes the loop
+        # back into Phase 1 via `_sdlc_intake_read_triggers`.
+        from server.automations.control_band_monitor import ControlBandMonitorLoop
+        from server.sdlc import triage_store as _triage_store
+        self._control_band_ctx = AutomationContext(
+            "control-band-monitor", create_session=self.create_session)
+        self._control_band_loop = ControlBandMonitorLoop(
+            self._control_band_ctx,
+            read_config=self._control_band_read_config,
+            read_bands=self._control_band_read_bands,
+            read_series=self._control_band_read_series,
+            file_item=self._control_band_file_item,
+            set_disposition=_triage_store.set_disposition,
+            spawn_diagnosis=self._control_band_spawn_diagnosis,
+            count_queued=_triage_store.count_queued,
+            release_due=_triage_store.release_due,
+            clock=time.monotonic,
+        )
+        self._control_band_task: asyncio.Task | None = None
         self._recurring_task: asyncio.Task | None = None
         # Autopilot control loop: advances every governed session through its stuck
         # states each tick (also nudged from _persist_status). All seams injected so
@@ -1059,6 +1195,13 @@ class SessionOrchestrator:
             clock=time.time,  # wall clock: created_ts from GitHub is epoch time
         )
         self._cicd_task: asyncio.Task | None = None
+        # Error Triage: WARNING+ log signatures → deduplicated backlog issues
+        # (spec 2026-09-07). Filing goes through the ambient gh path like the doctor.
+        from server.automations.error_triage import ErrorTriageLoop
+        self._error_triage_ctx = AutomationContext("error-triage")
+        self._error_triage_loop = ErrorTriageLoop(
+            self._error_triage_ctx, read_config=self._error_triage_read_config)
+        self._error_triage_task: asyncio.Task | None = None
         # Archive Audit control loop: periodic re-audit of recently-archived sessions.
         from server.automations.archive_audit import ArchiveAuditLoop, _real_gh, _real_gh_num
         from server.automations.archive_audit import list_recent_archived_rows
@@ -1099,6 +1242,12 @@ class SessionOrchestrator:
         # start(). None on workers and on an orchestrator that never start()ed.
         self._lease_task: asyncio.Task | None = None
         self._lease_fence: int | None = None
+        # Per-SESSION leases (#1379): session_id -> fence, for every session this
+        # daemon has claimed the right to run a CLI for. Populated by
+        # _claim_session at each driver build; reconciled (renewed / released) by
+        # _session_lease_loop against the live `_drivers` map.
+        self._session_lease_task: asyncio.Task | None = None
+        self._session_lease_fences: dict[str, int] = {}
         # Per-host fenced heartbeat (spec 002 FR-101): liveness is DERIVED from this
         # row's beat_at (server/sessions/liveness.py), never stored per-session.
         self._hb_task: asyncio.Task | None = None
@@ -1184,17 +1333,19 @@ class SessionOrchestrator:
         """
         return None if is_assistant_kind(kind) else self._suggester
 
-    def register_assistant_overlay(self, session_id: str, overlay: dict) -> None:
-        """Register the ``ClaudeAgentOptions`` overlay an assistant session spawns with.
+    def register_overlay(self, session_id: str, overlay: Any) -> None:
+        """Register the options overlay a session spawns with.
 
         Kept out of the spawn signature because the overlay carries a live in-process
-        MCP server bound to THIS session (``server.assistant.server.build_server``), so
-        it can neither be persisted on the row nor round-tripped over RPC. The caller
-        registers it, then creates the session; ``_session_factory`` picks it up.
+        MCP server bound to THIS session (``server.assistant.server.build_server`` for
+        an assistant, ``server.sessions.tools.server.build_session_server`` for a
+        coding session), so it can neither be persisted on the row nor round-tripped
+        over RPC. The caller registers it, then creates the session;
+        ``_session_factory`` picks it up.
         """
-        overlays = getattr(self, "_assistant_overlays", None)
+        overlays = getattr(self, "_overlays", None)
         if overlays is None:
-            overlays = self._assistant_overlays = {}
+            overlays = self._overlays = {}
         overlays[session_id] = overlay
 
     async def _setup_assistant_overlay(self, session_id: str, *, identity: str,
@@ -1213,7 +1364,7 @@ class SessionOrchestrator:
         and ``max_turns``, and the idle reap (spec §4.7) drops the driver — and its
         overlay — every 15 minutes. A resume that skipped this rebuilt the drawer as a
         plain Claude Code session with the operator's own MCP servers mounted and no tool
-        restrictions at all, while simultaneously losing its ``mcp__ccswitch__*`` tools.
+        restrictions at all, while simultaneously losing its ``mcp__viberpit__*`` tools.
 
         Also called from ``_reassign_locked`` (account rotation / 401 recompose / crash
         recovery), the THIRD site that builds an AgentDriver: a rotated assistant would
@@ -1248,10 +1399,81 @@ class SessionOrchestrator:
         # unused copy of the tool table whose drift nothing would catch.
         server = (build_server(api, operator=operator)
                   if selected is AgentEngine.CLAUDE_CODE else None)
-        self.register_assistant_overlay(session_id, assistant_overlay_for(
+        self.register_overlay(session_id, assistant_overlay_for(
             selected, api=api, server=server, max_turns=cfg.assistant_max_turns,
             model=model or cfg.assistant_model, operator=operator))
         return api
+
+    async def _setup_session_overlay(self, session_id: str, *, identity: str,
+                                     kind: str | None = None,
+                                     engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+                                     ) -> None:
+        """Arm a CODING session's in-process MCP surface (session tools spec §3.3).
+
+        The overlay is exactly ``{"mcp_servers": {<brand.MCP_SERVER_NAME>: server}}``: never
+        ``strict_mcp_config`` (it would drop the repo's own .mcp.json servers) and never
+        ``system_prompt`` (the factory's append carries the marker contracts). Rebuilt
+        at every driver build like the assistant's — the server closes over this
+        orchestrator's live record accessor, and ``_teardown_driver_state`` drops it.
+        """
+        from server.config import get_settings
+        from server.sessions.tools.context import SessionToolContext
+        if not get_settings().session_tools_enabled:
+            self._overlays.pop(session_id, None)
+            return
+        selected = parse_agent_engine(engine, legacy_default=True)
+        # `None` covers both "no factory for this engine" and "a factory that
+        # declares no capabilities" (a test double) — treated as no capabilities
+        # at all, the safe side: a session that gets markers when it could have
+        # had tools still works; the reverse does not.
+        registry = getattr(self, "_engine_registry", None)
+        caps = registry.capabilities_for(selected) if registry is not None else None
+        ctx = SessionToolContext(
+            session_id=session_id, identity=identity, kind=kind, engine=selected.value,
+            record=lambda: self._records.get(session_id), host=self_host_name(),
+            self_model_switch=bool(
+                caps is not None and caps.self_model_switch
+                and get_settings().self_model_switch_enabled),
+            signalling_tools=bool(caps is not None and caps.durable_tool_surface))
+        if selected is AgentEngine.CODEX:
+            from server.sessions.tools.codex import CodexSessionTools
+            self.register_overlay(session_id, CodexSessionTools.build(ctx))
+            return
+        from server.mcp_spec import SERVER_NAME
+        from server.sessions.tools.server import build_session_server
+        self.register_overlay(
+            session_id, {"mcp_servers": {SERVER_NAME: build_session_server(ctx)}})
+
+    async def _setup_overlay_for_kind(self, session_id: str, *, kind: str | None, identity: str,
+                                      model: str | None,
+                                      engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+                                      ) -> "AssistantApi | None":
+        """THE overlay arming call every driver-build site makes (spawn, ensure_driver,
+        _reassign_locked, adopt_session). Returns the AssistantApi for an assistant
+        kind, else None.
+
+        One helper with four callers on purpose: an overlay is per-PROCESS state, and
+        arming it only on the create path is the bug shape recorded in
+        ``docs/superpowers/fix-patterns/2026-09-04-per-process-state-armed-only-on-the-create-path.md``.
+        """
+        if is_assistant_kind(kind):
+            return await self._setup_assistant_overlay(
+                session_id, identity=identity, model=model, engine=engine)
+        await self._setup_session_overlay(session_id, identity=identity, kind=kind,
+                                          engine=engine)
+        return None
+
+    def _display_env(self, session_id: str) -> dict[str, str]:
+        """The DISPLAY/XAUTHORITY env for this session's process — the one place it
+        is chosen. Native records get the host desktop (no XAUTHORITY, see
+        NativeDisplay); everything else the Xvfb lease if one exists. A native record
+        whose desktop is gone gets {} — the same degrade an exhausted pool gives."""
+        rec = self._records.get(session_id)
+        if rec is not None and rec.display_mode == DISPLAY_NATIVE:
+            if self._native is not None and self._native.available():
+                return self._native.env()
+            return {}
+        return self._x11.env_for(session_id) if self._x11 else {}
 
     def _session_factory(self, session_id: str):
         """Return a factory closure injecting this session's DISPLAY and PreCompact hook.
@@ -1259,20 +1481,23 @@ class SessionOrchestrator:
         Forwards ``on_pre_compact`` to the base factory so the real SDK factory can
         register the hook; fake factories accept and ignore it.
 
-        An assistant session additionally carries an ``options_overlay`` (registered by
-        ``register_assistant_overlay``). It is passed ONLY when present, so every
-        existing factory — including the test fakes — keeps its current signature.
+        A session additionally carries an ``options_overlay`` (registered by
+        ``register_overlay``): the assistant's full overlay, or a coding session's
+        ``{"mcp_servers": {<brand.MCP_SERVER_NAME>: …}}``. It is passed only when present (an assistant,
+        or a coding session with the flag on), so a factory that never sees one (flag off,
+        Codex) keeps its current signature, and fakes that do must accept
+        ``options_overlay=None``.
         """
         base = self._sdk_factory
-        x11 = self._x11
         def _factory(cwd, config_dir, can_use_tool, mode, resume, *, on_pre_compact=None):
-            extra = {**(x11.env_for(session_id) if x11 else {}), **self._oat_env(session_id)}
+            extra = {**self._display_env(session_id), **self._oat_env(session_id)}
             kw: dict = {"on_pre_compact": on_pre_compact}
-            overlay = getattr(self, "_assistant_overlays", {}).get(session_id)
-            # `dict` and not merely "not None": the Codex overlay for an assistant
-            # session lands in the same registry and is a different type entirely
-            # (server/assistant/options_codex.CodexAssistantOverlay). It is read by
-            # `_codex_assistant_overlay_for_session`, never by this factory.
+            overlay = getattr(self, "_overlays", {}).get(session_id)
+            # `dict` and not merely "not None": every kind's overlay lands in the same
+            # registry, and a Codex session's is a different type entirely
+            # (server/assistant/options_codex.CodexAssistantOverlay). Those are read by
+            # the Codex getters, never by this factory. A coding session's Claude
+            # overlay IS a dict, so it passes through here unchanged.
             if isinstance(overlay, dict):
                 kw["options_overlay"] = overlay
             if extra:
@@ -1312,7 +1537,8 @@ class SessionOrchestrator:
             from server.codex.driver import CodexAgentDriverFactory
             factories[AgentEngine.CODEX] = CodexAgentDriverFactory(
                 self._codex, self._registry, self._launch_model_for_session,
-                self._codex_assistant_overlay_for_session)
+                self._codex_assistant_overlay_for_session,
+                self._codex_session_tools_for_session)
         return factories
 
     def _launch_model_for_session(self, session_id: str) -> str | None:
@@ -1332,16 +1558,29 @@ class SessionOrchestrator:
     def _codex_assistant_overlay_for_session(self, session_id: str):
         """The Codex assistant overlay registered for *session_id*, if any.
 
-        Type-checked rather than assumed: ``_assistant_overlays`` holds whichever
-        overlay ``assistant_overlay_for`` built, and the two engines' overlays are
-        different types on purpose. Handing a Claude options dict to the Codex
+        Type-checked rather than assumed: ``_overlays`` is the registry for EVERY
+        kind, so it holds whichever overlay was built — and the two engines' overlays
+        are different types on purpose. Handing a Claude options dict to the Codex
         driver — or the reverse — is the one mistake this seam can make, so it is
         made unrepresentable here instead of guarded at each use.
         """
         from server.assistant.options_codex import CodexAssistantOverlay
 
-        overlay = getattr(self, "_assistant_overlays", {}).get(session_id)
+        overlay = getattr(self, "_overlays", {}).get(session_id)
         return overlay if isinstance(overlay, CodexAssistantOverlay) else None
+
+    def _codex_session_tools_for_session(self, session_id: str):
+        """The Codex coding-session tool surface registered for *session_id*, if any.
+
+        Type-checked for the same reason as its assistant sibling above: ``_overlays``
+        holds whichever overlay the session's kind and engine built — a Claude options
+        dict, an assistant overlay or this — and handing the wrong one to the Codex
+        driver is the single mistake this seam can make.
+        """
+        from server.sessions.tools.codex import CodexSessionTools
+
+        overlay = getattr(self, "_overlays", {}).get(session_id)
+        return overlay if isinstance(overlay, CodexSessionTools) else None
 
     def _engine_supports(self, engine: AgentEngine | str, capability: str) -> bool:
         """True iff this host's driver for *engine* declares *capability*.
@@ -1488,6 +1727,7 @@ class SessionOrchestrator:
                 self._primary_lease_heartbeat(), name="primary-lease-heartbeat"
             )
         await self._poller.start()
+        await self._process_quota.start()
         await self._pr_poller.start()
         await self._pr_population.start()
         await self._deploy_watcher.start()
@@ -1504,6 +1744,12 @@ class SessionOrchestrator:
             self._goal_monitor(), name="goal-inference-monitor"
         )
         self._stall_task = asyncio.create_task(self._stall_loop(), name="stall-watchdog")
+        # Renew/release the per-session ownership leases this daemon holds (#1379).
+        # Unconditional (not role-gated like the primary lease): the duplicate-CLI
+        # bug is a WORKER-vs-primary race as much as a primary-vs-primary one.
+        self._session_lease_task = asyncio.create_task(
+            self._session_lease_loop(), name="session-lease-heartbeat"
+        )
         # Per-host fenced heartbeat: register our row (adopting any surviving fence)
         # and beat it on an interval. DB failure here must not kill boot (NFR-5).
         try:
@@ -1576,6 +1822,13 @@ class SessionOrchestrator:
             self._sdlc_synth_task = asyncio.create_task(
                 self._sdlc_synth_tick_loop(interval=60.0), name="sdlc-synthesizer-loop"
             )
+            # Control-Band Monitor: one detection pass per interval. Deliberately
+            # the slowest loop here — its series are bucketed by DAY, so a tick
+            # faster than the data moves would only re-derive the same verdict.
+            # A disabled row makes each tick a cheap no-op.
+            self._control_band_task = asyncio.create_task(
+                self._control_band_tick_loop(interval=300.0), name="control-band-loop"
+            )
             # Autopilot control loop: one tick per interval plus status-change nudges.
             self._autopilot_task = asyncio.create_task(
                 self._autopilot_tick_loop(interval=20.0), name="autopilot-loop"
@@ -1591,6 +1844,11 @@ class SessionOrchestrator:
             # and each tick costs several REST calls per repo.
             self._cicd_task = asyncio.create_task(
                 self._cicd_tick_loop(interval=900.0), name="cicd-doctor-loop"
+            )
+            # Error Triage: 60 s — issue state sync is one GraphQL call, filing is
+            # capped per day, so a fast cadence costs little and keeps the inbox fresh.
+            self._error_triage_task = asyncio.create_task(
+                self._error_triage_tick_loop(interval=60.0), name="error-triage-loop"
             )
             # Archive Audit: re-audit recently-archived sessions every 6 hours.
             self._archaudit_task = asyncio.create_task(
@@ -1647,6 +1905,159 @@ class SessionOrchestrator:
                     "on one host and that daemon restarts.",
                     state.holder if state else "<released>",
                 )
+
+    # ------------------------------------------------------------------
+    # Per-session ownership lease (#1379)
+    # ------------------------------------------------------------------
+
+    def _lease_fences(self) -> dict[str, int]:
+        """The held-lease map, created on demand.
+
+        Defensive like ``_startup_note`` / ``_ownership_hosts_cache``: rehydrate- and
+        teardown-shaped tests build orchestrators via ``SessionOrchestrator.__new__``
+        (no ``__init__``), and both the claim and the release run on paths those
+        tests drive.
+        """
+        fences = getattr(self, "_session_lease_fences", None)
+        if fences is None:
+            fences = {}
+            self._session_lease_fences = fences
+        return fences
+
+    async def _claim_session(self, session_id: str, *, why: str) -> bool:
+        """Win the right to run a CLI for *session_id* on THIS host, or refuse.
+
+        Called immediately before every driver build. The three outcomes:
+
+        * **won** — the lease row was absent, already ours, or held by a host whose
+          heartbeat lapsed past ``SESSION_LEASE_TTL_S``. The fence is remembered so
+          ``_session_lease_loop`` can renew it, and the build proceeds.
+        * **lost** — a DIFFERENT host holds it with a fresh heartbeat, i.e. a live
+          twin already owns this conversation. Log loudly and refuse: spawning here
+          is exactly the duplicate-CLI bug (#1379), and the caller treats a refusal
+          the same as any other failed build.
+        * **DB error** — fail OPEN. The lease is a safety net over a rare race; a
+          database blip must never stop a whole fleet from running sessions. The
+          loop re-attempts the claim on its next tick.
+        """
+        me = self_host_name()
+        try:
+            fence = await session_lease.acquire(
+                session_id, me, ttl_s=SESSION_LEASE_TTL_S)
+        except Exception:
+            log.warning("session-lease: acquire for %s failed (DB error) — allowing "
+                        "the build (fail-open)", session_id, exc_info=True)
+            return True
+        if fence is not None:
+            self._lease_fences()[session_id] = fence
+            return True
+        state = await _lease_state(session_id)
+        holder = state.holder if state is not None else "<unknown>"
+        age = f"{state.age_s:.0f}s ago" if state is not None else "recently"
+        if not session_lease_enforced():
+            log.warning(
+                "session-lease: %s is held by %r (renewed %s) but enforcement is "
+                "OFF — building a SECOND driver for it anyway (%s)",
+                session_id, holder, age, why)
+            return True
+        log.warning(
+            "session-lease: refusing to %s session %s — host %r holds its lease "
+            "(renewed %s). Two live CLIs on one conversation race on git and split "
+            "its worktree (#1379); leaving it to its owner.",
+            why, session_id, holder, age)
+        log_event(log, logging.WARNING, "session.lease_denied",
+                  session_id=session_id, holder=holder, reason=why)
+        return False
+
+    async def _release_session_lease(self, session_id: str) -> None:
+        """Drop our claim on *session_id* so another host need not wait out the TTL."""
+        fence = self._lease_fences().pop(session_id, None)
+        if fence is None:
+            return
+        try:
+            await session_lease.release(session_id, self_host_name(), fence)
+        except Exception:
+            log.debug("session-lease: release of %s failed (DB error) — it will go "
+                      "stale on its own", session_id, exc_info=True)
+
+    async def _session_lease_tick(self) -> None:
+        """One reconcile pass: renew the leases we still need, release the rest.
+
+        Reconciling against the live ``_drivers`` map rather than instrumenting every
+        teardown path is deliberate: drivers are dropped from a dozen places (close,
+        idle reap, rotation, crash recovery, shutdown) and a lease leaked by ONE
+        missed call site keeps a session pinned to a host that is not running it.
+        Here the absence of a driver IS the release signal, so the set self-heals.
+
+        A renew that returns False means the lease was fenced away — another host
+        now believes it owns this session while we are still driving it. That is the
+        split-brain this module exists to catch, so it is logged at CRITICAL with the
+        new holder; the running turn is left alone (killing a driver mid-turn has its
+        own failure modes) but the next build re-checks and loses.
+
+        Separate from the loop below so tests drive a pass directly instead of racing
+        a wall clock — a tight sleep-and-poll test is a flake on a loaded CI shard.
+        """
+        me = self_host_name()
+        for sid, fence in list(self._lease_fences().items()):
+            if sid not in self._drivers:
+                await self._release_session_lease(sid)
+                continue
+            try:
+                ok = await session_lease.renew(sid, me, fence)
+            except Exception:
+                log.debug("session-lease: renew of %s failed (DB error) — "
+                          "retrying next beat", sid, exc_info=True)
+                continue
+            if ok:
+                continue
+            self._lease_fences().pop(sid, None)
+            state = await _lease_state(sid)
+            log.critical(
+                "session-lease: LOST session %s (fenced takeover by %r) while a "
+                "driver for it is still live here — TWO hosts may now be running "
+                "this conversation (#1379).",
+                sid, state.holder if state is not None else "<released>")
+
+    async def _session_lease_loop(self) -> None:
+        """Beat :meth:`_session_lease_tick` at TTL/5 (#1379). Never dies on an error:
+        one bad pass must not stop every later renew and silently let the whole
+        host's session claims lapse."""
+        interval = max(SESSION_LEASE_TTL_S / 5.0, 2.0)
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._session_lease_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.warning("session-lease: reconcile pass failed", exc_info=True)
+
+    async def reap_orphan_clis(self) -> int:
+        """Kill `claude` CLIs a previous daemon incarnation left running on this host.
+
+        The other half of the duplicate-owner fix: the per-session lease stops a
+        second daemon from *starting* a twin, but an orphan that outlived its unit
+        holds no lease and answers to no daemon. Runs on the daemon boot path, before
+        anything can rehydrate or resume, and never raises — a diagnostic sweep may
+        not prevent a start. Returns the number of CLIs signalled.
+        """
+        try:
+            known = [a["name"] for a in ccswitch_accounts.list_accounts()]
+        except Exception:
+            log.warning("orphan-cli: account enumeration failed — skipping the reap",
+                        exc_info=True)
+            return 0
+        try:
+            reaped = await asyncio.to_thread(_orphan_cli.reap_orphans, known)
+        except Exception:
+            log.warning("orphan-cli: reap failed", exc_info=True)
+            return 0
+        for orphan in reaped:
+            log_event(log, logging.WARNING, "session.orphan_cli_reaped",
+                      pid=orphan.pid, account=orphan.account,
+                      resume=orphan.resume, cwd=orphan.cwd)
+        return len(reaped)
 
     async def _heartbeat_loop(self) -> None:
         """Stamp this host's fenced heartbeat every interval (spec 002 FR-101).
@@ -1779,11 +2190,11 @@ class SessionOrchestrator:
         for attr in ("_titling_task", "_goal_task", "_rotation_task", "_stall_task",
                      "_token_refresh_task", "_backlog_task", "_sdlc_intake_task",
                      "_pm_sync_task", "_pm_triage_task", "_gh_reconcile_task",
-                     "_sdlc_synth_task",
+                     "_sdlc_synth_task", "_control_band_task",
                      "_autopilot_task", "_mirror_task",
-                     "_cicd_task", "_archaudit_task", "_sweep_task",
+                     "_cicd_task", "_error_triage_task", "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_recurring_task",
-                     "_lease_task", "_hb_task", "_drain_timer"):
+                     "_lease_task", "_session_lease_task", "_hb_task", "_drain_timer"):
             # Default None: stop() must be safe on an orchestrator that never
             # start()ed (tests build one via __new__/without start).
             task = getattr(self, attr, None)
@@ -1817,6 +2228,8 @@ class SessionOrchestrator:
                                        phase=f"stop:driver-close:{sid}")
         await bounded_wait(self._poller.stop(), timeout=_STOP_TASK_TIMEOUT_S,
                            phase="stop:usage-poller")
+        await bounded_wait(self._process_quota.stop(), timeout=_STOP_TASK_TIMEOUT_S,
+                           phase="stop:process-quota")
         await bounded_wait(self._pr_poller.stop(), timeout=_STOP_TASK_TIMEOUT_S,
                            phase="stop:pr-poller")
         await bounded_wait(self._pr_population.stop(), timeout=_STOP_TASK_TIMEOUT_S,
@@ -1828,6 +2241,15 @@ class SessionOrchestrator:
         # primary immediately instead of waiting out the TTL. getattr: stop()
         # must be safe on a never-start()ed / __new__-built orchestrator. The
         # fenced release makes releasing after a takeover a harmless no-op.
+        # Same rule for the per-session leases (#1379), and for the same reason: the
+        # drivers were closed just above, so every session this daemon was running is
+        # now genuinely free. Releasing here means a planned restart hands its
+        # sessions over immediately instead of leaving them fenced off for a whole
+        # SESSION_LEASE_TTL_S — the drain-then-restart path the incident came from.
+        for sid in list(getattr(self, "_session_lease_fences", {})):
+            await bounded_wait(self._release_session_lease(sid),
+                               timeout=_STOP_TASK_TIMEOUT_S,
+                               phase=f"stop:session-lease-release:{sid}")
         fence = getattr(self, "_lease_fence", None)
         if fence is not None:
             self._lease_fence = None
@@ -1860,6 +2282,8 @@ class SessionOrchestrator:
         kind: str | None = None,
         owner_identity: str | None = None,
         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+        client_node: str | None = None,
+        display: str | None = None,
     ) -> SessionRecord:
         """Pick an account, start an AgentDriver, persist a DB row, return a SessionRecord.
 
@@ -1924,7 +2348,8 @@ class SessionOrchestrator:
                 attachment_ids=attachment_ids, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref, model=model,
                 reasoning_effort=reasoning_effort, kind=kind,
-                owner_identity=owner_identity, engine=selected_engine)
+                owner_identity=owner_identity, engine=selected_engine,
+                client_node=client_node, display=display)
 
         # Global active-session cap: at/over the cap the session is created as a
         # queued row (real session, no worktree/account/driver yet) and started
@@ -1940,7 +2365,8 @@ class SessionOrchestrator:
                 permission_mode=permission_mode, attachment_ids=attachment_ids,
                 name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref,
                 model=model, reasoning_effort=reasoning_effort, kind=kind,
-                owner_identity=owner_identity, engine=selected_engine)
+                owner_identity=owner_identity, engine=selected_engine,
+                client_node=client_node, display=display)
         return await self._spawn_session(
             session_id, name=name, account=account, initial_prompt=initial_prompt,
             cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
@@ -1948,7 +2374,8 @@ class SessionOrchestrator:
             attachment_ids=attachment_ids, name_is_auto=name_is_auto,
             origin=origin, origin_ref=origin_ref, model=model,
             reasoning_effort=reasoning_effort, kind=kind,
-            owner_identity=owner_identity, engine=selected_engine)
+            owner_identity=owner_identity, engine=selected_engine,
+            client_node=client_node, display=display)
 
     def _active_session_count(self) -> int:
         """Sessions consuming a runtime capacity slot (see CAPACITY_EXEMPT_STATUSES).
@@ -1967,10 +2394,24 @@ class SessionOrchestrator:
         val = getattr(s, "max_active_sessions", None) if s else None
         return max(1, val if val is not None else DEFAULT_MAX_ACTIVE_SESSIONS)
 
+    def _resolve_display_mode_for(self, display: str | None, client_node: str | None) -> str:
+        """The one call to ``resolve_display_mode`` for this daemon — used by the
+        spawn, enqueue and hold paths so the decision is made identically wherever a
+        session is born, not just where it happens to start a driver. A queued or
+        held session must persist this NOW, on the daemon that owns the request: the
+        client_node/display that produced it never survives into the shared queue
+        blob (see ``_enqueue_session``'s comment on why) or a restart, so waiting
+        until spawn time would silently lose it and fall back to virtual.
+        """
+        return resolve_display_mode(
+            requested=display, client_node=client_node, runner=self_host_name(),
+            native_available=self._native is not None and self._native.available())
+
     async def _enqueue_session(self, session_id: str, *, name, account,
                                initial_prompt, cols, rows, cwd, branch, repo,
                                identity, permission_mode, attachment_ids,
                                name_is_auto, origin, origin_ref, model,
+                               client_node=None, display=None,
                                reasoning_effort=None, kind=None, owner_identity=None,
                                engine=AgentEngine.CLAUDE_CODE) -> SessionRecord:
         from datetime import datetime
@@ -1978,6 +2419,23 @@ class SessionOrchestrator:
         now = datetime.utcnow()
         host = local_host_stamp()
         selected_engine = parse_agent_engine(engine)
+        # Resolve and persist the display decision NOW, on this daemon — the
+        # client_node/display that produced the request never survives into the
+        # shared `params` JSON blob below (mixed-daemon-version TypeError hazard,
+        # see the comment on that blob) or a restart, so this is the only place a
+        # queued session's native-vs-virtual choice can be captured durably.
+        #
+        # Same _prior precedence as _spawn_session: an approve-at-capacity re-enqueue
+        # (resolve_model_approval's approve branch, when the fleet is back at the cap)
+        # calls this with the SAME session_id a _hold_for_approval already decided —
+        # its placeholder row is gone by the time we get here (the approve path
+        # deletes it before calling _enqueue_session/_spawn_session to avoid a
+        # duplicate-PK insert), but the in-memory record survives on purpose (see
+        # resolve_model_approval's comment on why), so its persisted display_mode
+        # must win over a fresh re-resolution with client_node=None.
+        _prior = self._records.get(session_id)
+        display_mode = (getattr(_prior, "display_mode", None)
+                        or self._resolve_display_mode_for(display, client_node))
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
@@ -1987,7 +2445,8 @@ class SessionOrchestrator:
                 permission_mode=permission_mode, name_is_auto=name_is_auto,
                 origin=origin, origin_ref=origin_ref, model=model,
                 initial_prompt=initial_prompt, host=host,
-                kind=kind, owner_identity=owner_identity))
+                kind=kind, owner_identity=owner_identity,
+                display_mode=display_mode))
         params: dict = {
             "name": name, "account": account, "initial_prompt": initial_prompt,
             "cols": cols, "rows": rows, "cwd": cwd, "branch": branch,
@@ -2023,7 +2482,8 @@ class SessionOrchestrator:
             status="queued", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
             model=model, reasoning_effort=reasoning_effort, host=host,
-            kind=kind, owner_identity=owner_identity)
+            kind=kind, owner_identity=owner_identity,
+            display_mode=display_mode)
         self._records[session_id] = rec
         log.info("session.queued id=%s priority=%d origin=%s",
                  session_id, priority, origin)
@@ -2033,6 +2493,7 @@ class SessionOrchestrator:
                                  initial_prompt, cols, rows, cwd, branch, repo,
                                  identity, permission_mode, attachment_ids,
                                  name_is_auto, origin, origin_ref, model,
+                                 client_node=None, display=None,
                                  reasoning_effort=None, kind=None, owner_identity=None,
                                  engine=AgentEngine.CLAUDE_CODE) -> SessionRecord:
         """Park a model-gated session at 'pending_approval': persist a driverless row
@@ -2043,11 +2504,17 @@ class SessionOrchestrator:
         the requested_by/at provenance columns set. The full spawn kwargs are kept in
         self._pending_approvals so the approve path (Task 10) can spawn cleanly; that
         map is in-memory only — a restart rebuilds the row-backed record via rehydrate.
+
+        Like _enqueue_session, the display decision is resolved and persisted HERE:
+        an approval can sit for as long as a human takes to act on it (far longer
+        than a queue drain), so client_node/display must not depend on anything
+        in-memory-only surviving that wait.
         """
         from datetime import datetime
         now = datetime.utcnow()
         host = local_host_stamp()
         selected_engine = parse_agent_engine(engine)
+        display_mode = self._resolve_display_mode_for(display, client_node)
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
@@ -2060,7 +2527,8 @@ class SessionOrchestrator:
                 model=None, pending_model=model,
                 pending_model_requested_by=identity, pending_model_requested_at=now,
                 initial_prompt=initial_prompt, host=host,
-                kind=kind, owner_identity=owner_identity))
+                kind=kind, owner_identity=owner_identity,
+                display_mode=display_mode))
             await record_audit(db, type="model_approval.requested", identity=identity,
                                detail={"session_id": session_id, "model": model,
                                        "account": account})
@@ -2080,7 +2548,8 @@ class SessionOrchestrator:
             status="pending_approval", name_is_auto=name_is_auto,
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
             model=None, reasoning_effort=reasoning_effort, pending_model=model, host=host,
-            kind=kind, owner_identity=owner_identity)
+            kind=kind, owner_identity=owner_identity,
+            display_mode=display_mode)
         self._records[session_id] = rec
         log.info("session.pending_approval id=%s model=%s origin=%s",
                  session_id, model, origin)
@@ -2318,6 +2787,12 @@ class SessionOrchestrator:
         stands — this is recovery, not a new decision). Any failure here is swallowed
         so it cannot mask the original spawn exception the caller re-raises."""
         from datetime import datetime
+        # The display decision was made once, at _hold_for_approval time, and is not
+        # re-derivable here: `kwargs` carries no `display`/`client_node` (the approve
+        # path strips them), so a re-resolution would silently fall back to virtual.
+        # The failed _spawn_session leaves its pre-record in _records, which still
+        # carries the held mode — same _prior precedence as _enqueue_session.
+        prior_mode = getattr(self._records.get(session_id), "display_mode", None)
         try:
             async with db_session() as db:
                 # The failed spawn may or may not have INSERTed a row before raising;
@@ -2344,7 +2819,8 @@ class SessionOrchestrator:
                     pending_model_requested_at=requested_at,
                     initial_prompt=kwargs.get("initial_prompt"), host=host,
                     kind=kwargs.get("kind"),
-                    owner_identity=kwargs.get("owner_identity")))
+                    owner_identity=kwargs.get("owner_identity"),
+                    display_mode=prior_mode))
             restored = dict(kwargs)
             restored["model"] = model
             self._pending_approvals[session_id] = restored
@@ -2361,7 +2837,8 @@ class SessionOrchestrator:
                 model=None, reasoning_effort=kwargs.get("reasoning_effort"),
                 pending_model=model, host=host,
                 kind=kwargs.get("kind"),
-                owner_identity=kwargs.get("owner_identity"))
+                owner_identity=kwargs.get("owner_identity"),
+                display_mode=prior_mode)
         except Exception:
             # Never let the recovery path mask the real spawn error.
             log.exception("session.model_approval_hold_restore_failed id=%s",
@@ -2748,7 +3225,7 @@ class SessionOrchestrator:
                 f"could not be replayed — the work was never started.",
                 repo=getattr(row, "repo", None),
                 automation=getattr(row, "origin", None),
-                fanout_when_unconfigured=False)
+                fanout_when_unconfigured=False, orch=self)
         except Exception:  # pragma: no cover — surfacing must never break the reap
             log.warning("session_queue.orphan_announce_failed id=%s", row.id,
                         exc_info=True)
@@ -2812,6 +3289,8 @@ class SessionOrchestrator:
         preexisting_row: bool = False,
         resume: str | None = None,
         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+        client_node: str | None = None,
+        display: str | None = None,
     ) -> SessionRecord:
         """Start an AgentDriver, persist/update a DB row, return a SessionRecord.
 
@@ -2827,6 +3306,16 @@ class SessionOrchestrator:
         persisted before the assistant existed still replays cleanly (its
         params dict has neither key).
         """
+        # Claim the session BEFORE any of the work below (#1379). A brand-new id has
+        # no lease row so this is free for a fresh spawn; it matters for the paths
+        # that spawn OVER an existing conversation — a queue promotion, or the
+        # _prior_csid fallback further down — which are exactly the shapes another
+        # host may already be running. Doing it first means a refused spawn never
+        # checks out a worktree or touches the row for a session it will not run;
+        # a spawn that claims and then fails later has its lease reconciled away by
+        # _session_lease_tick (no driver ⇒ released).
+        if not await self._claim_session(session_id, why="spawn"):
+            raise SessionLeaseHeld(session_id)
         selected_engine = self._engine_registry.require(parse_agent_engine(engine))
         repo_root = await self._effective_repo_root()
 
@@ -2881,13 +3370,6 @@ class SessionOrchestrator:
             selected_engine, account, cwd, kind
         )
 
-        # Allocate a virtual X11 display for this session (if X11Manager wired in).
-        if self._x11 is not None:
-            try:
-                await self._x11.start_display(session_id)
-            except Exception:
-                log.exception("session.display_start_failed id=%s", session_id)
-
         # Ensure the Copilot proxy is running for copilot-backed accounts.
         if self._copilot is not None and _provider_of(account) == _copilot_mod.PROVIDER:
             await self._copilot.ensure(account)
@@ -2903,6 +3385,23 @@ class SessionOrchestrator:
         # A session promoted from the queue keeps its queue-time created_at (and
         # host stamp); a fresh spawn is born now, on this host (worker) / NULL.
         _prior = self._records.get(session_id)
+        # Decide where this session's GUI renders — ONCE, here — then either lease a
+        # virtual Xvfb display or leave the host's real one to _display_env. A
+        # previously-queued/resumed row keeps its persisted decision.
+        display_mode = (getattr(_prior, "display_mode", None)
+                        or self._resolve_display_mode_for(display, client_node))
+        if display_mode == DISPLAY_VIRTUAL and self._x11 is not None:
+            try:
+                await self._x11.start_display(session_id)
+            except Exception:
+                log.exception("session.display_start_failed id=%s", session_id)
+        elif display_mode == DISPLAY_NATIVE:
+            # self._native can still be None here: a queued/resumed row's persisted
+            # decision (via _prior) wins even if this host no longer has native
+            # display wired up. _display_env degrades that case to {} at inject time.
+            log.info("session.display_native id=%s client_node=%s display=%s",
+                     session_id, client_node,
+                     self._native.display if self._native is not None else None)
         _host = getattr(_prior, "host", None) or local_host_stamp()
         # Belt-and-suspenders for #1107: the queue-drain call site threads the
         # row's engine_session_id through `resume` explicitly, but if some future
@@ -2932,6 +3431,7 @@ class SessionOrchestrator:
             reasoning_effort=reasoning_effort, host=_host,
             kind=kind, owner_identity=owner_identity,
             last_activity_at=time.monotonic(),
+            display_mode=display_mode,
         )
         self._records[session_id] = _pre_record
         # Track the spawn from the pre-seed until the driver is registered (or the
@@ -2943,16 +3443,14 @@ class SessionOrchestrator:
         driver: AgentDriver | None = None
         row_persisted = False
         try:
-            # An assistant-kind session gets its ClaudeAgentOptions overlay (system
-            # prompt, in-process `ccswitch` MCP server, no builtin tools) registered
-            # BEFORE the driver is built: _session_factory picks it up from
-            # self._assistant_overlays the moment the SDK factory closure runs inside
-            # driver.start() below.
-            assistant_api = None
-            if is_assistant_kind(kind):
-                assistant_api = await self._setup_assistant_overlay(
-                    session_id, identity=identity, model=model,
-                    engine=selected_engine)
+            # Every session gets its options overlay registered BEFORE the driver is
+            # built — an assistant's full overlay (system prompt, in-process `ccswitch`
+            # MCP server, no builtin tools) or a coding session's `ccswitch` MCP
+            # surface: _session_factory picks it up from self._overlays the moment the
+            # SDK factory closure runs inside driver.start() below.
+            assistant_api = await self._setup_overlay_for_kind(
+                session_id, kind=kind, identity=identity, model=model,
+                engine=selected_engine)
 
             driver = self._create_driver(
                 engine=selected_engine,
@@ -3007,16 +3505,21 @@ class SessionOrchestrator:
                 self._pending_initial_attachment_ids[session_id] = list(attachment_ids)
 
             if preexisting_row:
-                # UPDATE the existing queued row → idle with resolved account/cwd/branch/model
+                # UPDATE the existing queued row → idle with resolved account/cwd/branch/model.
+                # display_mode only overwrites a NULL (legacy/pre-decision row) — a row
+                # that already carries a persisted decision (native or virtual) keeps it,
+                # matching the in-memory `display_mode` resolved above from `_prior`.
                 async with db_session() as db:
                     from sqlalchemy import update as sa_update
+                    from sqlalchemy import func as sa_func
                     await db.execute(
                         sa_update(DbSession)
                         .where(DbSession.id == session_id)
                         .values(status="idle", account_name=account,
                                 engine=selected_engine.value, cwd=cwd,
                                 branch=branch_name, model=model,
-                                reasoning_effort=reasoning_effort)
+                                reasoning_effort=reasoning_effort,
+                                display_mode=sa_func.coalesce(DbSession.display_mode, display_mode))
                     )
             else:
                 # Persist DB row (fresh session, not previously queued)
@@ -3042,6 +3545,7 @@ class SessionOrchestrator:
                         host=_host,
                         kind=kind,
                         owner_identity=owner_identity,
+                        display_mode=display_mode,
                     )
                     db.add(row)
             row_persisted = True
@@ -3078,7 +3582,8 @@ class SessionOrchestrator:
                             if assistant_api is not None:
                                 with contextlib.suppress(Exception):
                                     await assistant_api.aclose()
-                    self._assistant_overlays.pop(session_id, None)
+                    # The overlay is dropped by _teardown_driver_state above — it is
+                    # per-driver state, released on every teardown path.
                     rollback_record = (self._records.pop(session_id)
                                        if session_id in self._records else None)
                     await self._cleanup_session_paths(session_id, rollback_record)
@@ -3287,8 +3792,8 @@ class SessionOrchestrator:
         The single source of truth for "this session no longer has a running driver",
         shared by ``close_session``, ``archive_session`` and the assistant idle reap.
         Three verbatim copies of this block existed before; the third had already
-        drifted (it also dropped the assistant options overlay, which turned every
-        resume after a reap into an UNRESTRICTED coding session).
+        drifted (only IT dropped the assistant options overlay, so a resume after a
+        close/archive kept a stale one — the overlay pop now lives here, once).
 
         Two things deliberately stay with the CALLER, because they legitimately differ:
 
@@ -3311,6 +3816,12 @@ class SessionOrchestrator:
         self._turn_restart_at.pop(session_id, None)
         self._self_model_state.pop(session_id, None)
         self._handled_model_requests.pop(session_id, None)
+        # The options overlay is per-DRIVER state: it holds a live in-process MCP
+        # server (and, for an assistant, an AssistantApi whose httpx client the
+        # caller's aclose() is about to shut down). Released here so all three
+        # teardown paths drop it, and re-armed by _setup_overlay_for_kind at every
+        # driver build — never preserved across one.
+        self._overlays.pop(session_id, None)
         self._pending_initial_prompt.pop(session_id, None)
 
         # Release this session's claim on its account's Codex app-server (a no-op
@@ -3324,6 +3835,15 @@ class SessionOrchestrator:
             except Exception:
                 log.exception("session.codex_detach_failed id=%s", session_id)
 
+        # Hand back the per-session ownership lease (#1379). This is the same
+        # "no longer has a running driver" moment the display teardown uses, and the
+        # lease means exactly that — holding it after the CLI is gone would fence
+        # another host off this session for a whole SESSION_LEASE_TTL_S for nothing.
+        # _session_lease_loop would eventually reconcile it away; doing it here makes
+        # a close/archive/reap hand over immediately. Guarded for the same reason as
+        # the Codex detach: a DB blip must not stop a session being torn down.
+        await self._release_session_lease(session_id)
+
         # Teardown the virtual X11 display — runs unconditionally so orphaned
         # displays are never leaked even when the driver was never registered.
         if self._x11 is not None:
@@ -3331,7 +3851,32 @@ class SessionOrchestrator:
                 await self._x11.stop_display(session_id)
             except Exception:
                 log.exception("session.display_cleanup_failed id=%s", session_id)
+
+        if self._native is not None:
+            try:
+                await self._native.close(session_id)
+            except Exception:
+                log.exception("session.native_display_cleanup_failed id=%s", session_id)
         return driver
+
+    async def open_browser(self, session_id: str, url: str | None) -> dict:
+        """Launch a managed Chromium for this session on whichever display it owns.
+
+        Returns {"ok", "reason"}; reasons: no_display (no such live session / no lease),
+        cap (per-session browser limit), native_unavailable (the desktop went away).
+        The daemon RPC ``x11_open_browser`` and the in-process API route both call
+        this, so the native/virtual branch exists exactly once.
+        """
+        rec = self._records.get(session_id)
+        if rec is not None and rec.display_mode == DISPLAY_NATIVE:
+            if self._native is None or not self._native.available():
+                return {"ok": False, "reason": "native_unavailable"}
+            ok = await self._native.launch_browser(session_id, url)
+            return {"ok": bool(ok), "reason": None if ok else "cap"}
+        if self._x11 is None or self._x11.display_for(session_id) is None:
+            return {"ok": False, "reason": "no_display"}
+        ok = await self._x11.launch_browser(session_id, url)
+        return {"ok": bool(ok), "reason": None if ok else "cap"}
 
     async def _cleanup_session_paths(
         self, session_id: str, record: SessionRecord | None,
@@ -3457,21 +4002,22 @@ class SessionOrchestrator:
             # finds `_ensure_lock` free, `_swapping` empty, `_releasing` EMPTY and a
             # status that is not yet "ended", and starts a SECOND claude process on the
             # same claude_session_id. The sweep would then resume and delete that
-            # rebuild's overlay (`_session_factory` re-reads `_assistant_overlays` on
-            # every factory call, so the next model switch or recoverable-failure
-            # respawn would come back with no tools=[] and no denylist — Critical 1
-            # again, by the back door) and stamp the live session "ended".
+            # rebuild's overlay (`_session_factory` re-reads `_overlays` on every
+            # factory call, so the next model switch or recoverable-failure respawn
+            # would come back with no tools=[] and no denylist — Critical 1 again, by
+            # the back door) and stamp the live session "ended".
             #
             # Only `_records` is deliberately left alone: the row surviving IS
             # resume-on-reopen (spec §4.7).
 
-            # Drop the options overlay. Correct BECAUSE ensure_driver rebuilds it (see
-            # _setup_assistant_overlay): the overlay captures an AssistantApi whose
+            # The options overlay is dropped by the `_teardown_driver_state` call
+            # below — which pops it before its own first await, so it is still inside
+            # this atomic claim. Correct BECAUSE ensure_driver rebuilds it (see
+            # _setup_overlay_for_kind): the overlay captures an AssistantApi whose
             # httpx client driver.aclose() below is about to close, so a preserved
             # overlay would hand the resumed session dead MCP tools. It must not simply
             # be LEAKED either — a resume that found no overlay would build a plain,
             # unrestricted coding agent out of the drawer.
-            self._assistant_overlays.pop(rec.id, None)
             rec.status = "ended"
 
             # Publish the teardown in `_releasing` rather than awaiting aclose() inline.
@@ -3586,21 +4132,27 @@ class SessionOrchestrator:
         # Overlay: a turn that finished (`done`) but left the agent parked on an external
         # event — an open background task or an armed self-scheduled wakeup — is "Waiting…",
         # not "Your turn". Computed here (not in the pure `derive_status`) because it needs
-        # the transcript, like the `limited`/`ended` overlays. Scan only on `done` so the
+        # per-engine state, like the `limited`/`ended` overlays. Scan only on `done` so the
         # per-emit cost is paid once per turn-end. `waiting_external` is NOT in
         # ACTIVITY_STATUSES, so parking does NOT bump the "active … ago" clock below — the
         # card shows time since the last real turn, not a reset on every re-arm.
         completed_turn = status == "done"
         if completed_turn:
-            from .background_tasks import is_parked, last_turn_awaits_user
-            tpath = self.transcript_path(session_id)
-            if is_parked(tpath):
+            from .background_tasks import text_awaits_user
+            from .completion import strip_markers
+            if await self._session_is_parked(session_id):
                 # A parked `done` turn normally reads "Waiting…". But if the turn handed
                 # a question/decision back to the user in prose (no structured
                 # `pending_question`, which would already win in derive_status), it needs
                 # the user — not a timer/process — so surface "Answer needed" instead of
                 # masking it as waiting_external.
-                status = ("waiting_question" if last_turn_awaits_user(tpath)
+                #
+                # strip_markers FIRST, exactly as _completion_open_question does: a
+                # marker (here, a self-directed model request — the one kind a `done`
+                # turn can carry) trails the message, so an unstripped tail check can
+                # never see the closing "?" behind it. Two prose paths, one reading.
+                prose = strip_markers(self._last_assistant_prose(session_id))
+                status = ("waiting_question" if text_awaits_user(prose)
                           else "waiting_external")
         # Advance the "active … ago" clock ONLY when the assistant hands output back —
         # a finished or user-paused turn (ACTIVITY_STATUSES). Bumping it on every status
@@ -3612,6 +4164,13 @@ class SessionOrchestrator:
         # getattr (not attribute access): a driver may be absent, or a test/partial
         # driver stub without last_pr_resolution — neither should break status persist.
         resolution = getattr(driver, "last_pr_resolution", None)
+        # Provenance of that token. Only ClaudeAgentDriver latches it (the Codex
+        # driver keeps the marker contract by design and leaves
+        # TurnEnd.pr_resolution_source None), so the `or "marker"` default is
+        # load-bearing: any driver — or partial test stub — that reports a resolution
+        # without a source keeps the pre-provenance behaviour and persists "marker",
+        # never None.
+        resolution_source = getattr(driver, "last_pr_resolution_source", None) or "marker"
         if rec is not None:
             rec.status = status
             rec.updated_at = datetime.utcnow()   # row-write token; bumps on EVERY persist (see rev_at)
@@ -3621,7 +4180,7 @@ class SessionOrchestrator:
             # but never clobber a pre-existing value (e.g. from a classifier).
             if status == "complete" and resolution and rec.pr_resolution is None:
                 rec.pr_resolution = resolution
-                rec.pr_resolution_source = "marker"
+                rec.pr_resolution_source = resolution_source
             # The session is doing something again → the "interrupted by daemon restart,
             # re-send to resume" hint (issue #434) is resolved. Clear it on any non-idle
             # status so the card stops nagging once the user re-sends.
@@ -3647,11 +4206,11 @@ class SessionOrchestrator:
                 values["paused_until"] = None
             # Write pr_resolution to DB when the in-memory record was just set above;
             # rec.pr_resolution == resolution guards idempotency (won't overwrite a
-            # pre-existing classifier value that differs from the marker resolution).
+            # pre-existing classifier value that differs from the session's own).
             if (status == "complete" and resolution and rec is not None
                     and rec.pr_resolution == resolution):
                 values["pr_resolution"] = resolution
-                values["pr_resolution_source"] = "marker"
+                values["pr_resolution_source"] = resolution_source
             # Fold the in-memory slash-command catalog (cached during attach by
             # command_catalog(), which must not write from the cancellable attach path)
             # into this driver-loop write so it reaches the DB row for cross-restart
@@ -3819,11 +4378,13 @@ class SessionOrchestrator:
 
         Before ANY of that, the open-question hold: a completed session whose final
         hand-back still awaits the user — a prose question left in the marker message,
-        or a structured question/permission that raced this task — is not finished for
-        the user even when the bar is met. It flips back to ``waiting_question``
-        ("Answer needed") instead of archiving or nudging; the guard is cleared so the
-        answer's turn can complete cleanly later, and no completion nudge is consumed
-        (the cap bounds not-ready nudges — a held session did nothing wrong).
+        or a structured question/permission/plan that raced this task — is not finished
+        for the user even when the bar is met. It flips back to the status naming what
+        is actually open (``_completion_open_question`` returns it: "Answer needed",
+        "Permission needed" or "Approve plan") instead of archiving or nudging; the
+        guard is cleared so the answer's turn can complete cleanly later, and no
+        completion nudge is consumed (the cap bounds not-ready nudges — a held session
+        did nothing wrong).
 
         The app-wide kill switch gates the ARCHIVE step only. The question hold and
         the readiness gate (bar → refresh → salvage → nudge) run regardless: they are
@@ -3841,13 +4402,13 @@ class SessionOrchestrator:
         try:
             hold = await self._completion_open_question(session_id)
         except Exception:
-            hold = False  # gate is best-effort: never let it block a legitimate archive
+            hold = None  # gate is best-effort: never let it block a legitimate archive
             log.debug("completion.question_gate_failed sid=%s", session_id, exc_info=True)
         if hold:
             self._auto_archiving.discard(session_id)
-            log.info("completion.question_hold sid=%s", session_id)
+            log.info("completion.question_hold sid=%s status=%s", session_id, hold)
             try:
-                await self._persist_status(session_id, "waiting_question")
+                await self._persist_status(session_id, hold)
             except Exception:
                 log.warning("completion.question_hold_persist_failed sid=%s",
                             session_id, exc_info=True)
@@ -3957,8 +4518,9 @@ class SessionOrchestrator:
                 "info", f"archived completed run {session_id}",
                 kind="archived", session_id=session_id)
 
-    async def _completion_open_question(self, session_id: str) -> bool:
-        """True when a completed session's final hand-back still awaits the user.
+    async def _completion_open_question(self, session_id: str) -> str | None:
+        """The status a completed session must be handed back at because its final
+        hand-back still awaits the user — or None when nothing does.
 
         Two sources, checked cheapest-first: (1) a structured question/permission/
         plan still pending on the driver — free, and covers the register-after-persist
@@ -3966,39 +4528,115 @@ class SessionOrchestrator:
         LLM classifier (heuristic degrade) AFTER stripping the completion markers —
         the marker trails the message, so it masks a closing "?" from any tail check.
 
-        The prose text is read differently per engine: ``transcript_path`` only ever
-        resolves for Claude (Codex keeps no JSONL — see its docstring), so a Codex
-        session falls back to the driver's in-memory turn buffer, extracted the same
-        way ``suggestions.last_turn_context`` does for idle-suggestion seeding. Both
-        feed the SAME classifier below. Without this fallback, Codex's structurally
-        false ``pending_question`` (no AskUserQuestion equivalent) combined with a
-        None transcript path left it with NO prose safeguard at all.
+        A structured hold returns the status naming the card that is actually open,
+        derived through ``derive_status`` so the plan > question > permission
+        precedence is not re-listed here. Returning a bare "held" and persisting
+        waiting_question for all three is what put "Answer needed" on a session
+        whose only open card was a permission prompt. A prose hold is a question by
+        construction, so it is the one case that genuinely reads waiting_question.
+
+        The prose text comes from ``_last_assistant_prose`` (per-engine, one reader),
+        stripped of the completion markers before the classifier sees it.
         Raises only to the caller's best-effort catch (reads as 'no question')."""
+        from .status import STRUCTURED_HOLD_STATUSES, derive_status
         driver = getattr(self, "_drivers", {}).get(session_id)
         if driver is not None:
             try:
-                sig = driver._dash_signals()
-                if sig.pending_question or sig.pending_permission or sig.pending_plan:
-                    return True
+                held = derive_status(driver._dash_signals())
+                if held in STRUCTURED_HOLD_STATUSES:
+                    return held
             except Exception:
                 log.debug("completion.question_signals_failed sid=%s",
                           session_id, exc_info=True)
         from .completion import strip_markers
         from .open_question import completion_awaits_user
+        text = strip_markers(self._last_assistant_prose(session_id))
+        if not text:
+            return None
+        rec = self._records.get(session_id)
+        if await completion_awaits_user(text, cwd=getattr(rec, "cwd", None)):
+            return "waiting_question"
+        return None
+
+    def _last_assistant_prose(self, session_id: str) -> str:
+        """The last assistant message's prose, whichever engine produced it.
+
+        THE per-engine reader — both the completion classifier above and the parked
+        overlay in ``_persist_status`` ask this same question, and a second copy of
+        the branch is how one of them silently keeps working for only one engine.
+
+        ``transcript_path`` resolves for Claude only (Codex keeps no JSONL — see its
+        docstring), so a Codex session falls back to the driver's in-memory turn
+        buffer, extracted the same way ``suggestions.last_turn_context`` does for
+        idle-suggestion seeding. Empty when neither source is available — a detached
+        Codex session has no buffer to read, and inventing prose for it would be worse
+        than admitting we cannot see the message.
+        """
         tpath = self.transcript_path(session_id)
         if tpath:
             from .background_tasks import last_assistant_text
-            text = strip_markers(last_assistant_text(tpath))
-        elif driver is not None:
-            from .suggestions import last_turn_context
-            _, assistant_text = last_turn_context(list(getattr(driver, "_turn_buffer", [])))
-            text = strip_markers(assistant_text)
-        else:
-            return False
-        if not text:
-            return False
-        rec = self._records.get(session_id)
-        return await completion_awaits_user(text, cwd=getattr(rec, "cwd", None))
+            return last_assistant_text(tpath)
+        driver = getattr(self, "_drivers", {}).get(session_id)
+        if driver is None:
+            return ""
+        from .suggestions import last_turn_context
+        _, assistant_text = last_turn_context(list(getattr(driver, "_turn_buffer", [])))
+        return assistant_text
+
+    async def _session_is_parked(self, session_id: str) -> bool:
+        """True iff this session is waiting on work of its own rather than the user.
+
+        Engine-neutral by dispatch, because the two engines keep the answer in
+        genuinely different places and neither can be made to speak the other's:
+
+        * **Claude** — scanned out of the transcript ``.jsonl``: open ``Monitor`` /
+          ``run_in_background`` tool calls, or an armed ``ScheduleWakeup``. Needs no
+          driver, so it answers for a detached session too.
+        * **Codex** — a live `thread/backgroundTerminals/list` read through the
+          driver. No driver means no app-server, and no app-server means the
+          background terminals it owned are already dead — so **False** is the
+          correct answer for a detached Codex session, not a degraded one. That is
+          what un-parks a Codex session across a daemon restart (see
+          ``server/codex/background.py``). Codex has no wakeup half at all: its
+          ``clock.sleep`` blocks inside a turn, so a sleeping session is
+          ``in_progress`` and was never parked.
+
+        Never raises. A failed read reports "not parked": leaving a session pinned on
+        "Waiting…" because one RPC timed out is the worse failure — the next turn-end
+        asks again, while a stuck overlay needs a restart to clear.
+        """
+        if self._engine_of(session_id) is AgentEngine.CLAUDE_CODE:
+            from .background_tasks import is_parked
+            return await asyncio.to_thread(is_parked, self.transcript_path(session_id))
+        tasks = await self._open_background_work(session_id)
+        return bool(tasks)
+
+    async def _open_background_work(self, session_id: str) -> list[OpenBgTask]:
+        """This session's open background work, in the engine-neutral vocabulary.
+
+        The snapshot half of ``_session_is_parked`` — same two sources, but it hands
+        back the entries themselves so a drain can persist them. Returns ``[]`` on any
+        failure: a snapshot that cannot be taken must degrade to "nothing to report",
+        never to a partial one the restart would present as complete.
+        """
+        if self._engine_of(session_id) is AgentEngine.CLAUDE_CODE:
+            path = self.transcript_path(session_id)
+            if not path:
+                return []
+            return await asyncio.to_thread(scan_open_background_tasks, path)
+        driver = self._drivers.get(session_id)
+        reader = getattr(driver, "open_background_work", None)
+        if reader is None:
+            return []
+        try:
+            # Bounded independently of the engine client's own per-request timeout:
+            # this runs on the turn-end status write and on the deploy drain, and a
+            # paginated read of N pages inherits N times that timeout. A status
+            # overlay is not worth holding either path open for minutes.
+            return list(await asyncio.wait_for(reader(), _BG_WORK_READ_TIMEOUT_S))
+        except Exception:
+            log.debug("bg_work.read_failed sid=%s", session_id, exc_info=True)
+            return []
 
     async def _persist_context_usage(self, session_id: str, used_tokens: int, max_tokens: int) -> None:
         """Driver ``on_context_usage`` callback: persist the exact context-window occupancy.
@@ -4032,12 +4670,34 @@ class SessionOrchestrator:
                 rec = self._records.get(session_id)
                 name = rec.name if rec else session_id
                 await push_mod.notify_event(
-                    "needs_input", "ccswitch — needs you", f"{name}: {status}",
+                    "needs_input", f"{brand.NAME} — needs you", f"{name}: {status}",
                     repo=getattr(rec, "repo", None),
                     account=getattr(rec, "account_name", None),
-                    url=f"/session/{session_id}")
+                    url=f"/session/{session_id}", orch=self)
         else:
             self._pushed.discard(session_id)
+        await self._maybe_notify_session_finished(session_id, status)
+
+    async def _maybe_notify_session_finished(self, session_id: str, status: str) -> None:
+        """Fire `session_ended` when a session hands a turn back (#1354 kind="session"
+        watch). Same debounce shape as `_maybe_push`: fires once on entry into
+        SESSION_FINISHED_STATUSES, cleared on exit so the next completed turn re-fires
+        — harmless for a `once=True` watch (its NotificationRule already self-disables
+        after the first delivery) and correct for a recurring #602 routing rule.
+        """
+        if status in SESSION_FINISHED_STATUSES:
+            if session_id not in self._session_finished_notified:
+                self._session_finished_notified.add(session_id)
+                rec = self._records.get(session_id)
+                name = rec.name if rec else session_id
+                await push_mod.notify_event(
+                    "session_ended", f"{brand.NAME} — session finished", f"{name}: {status}",
+                    repo=getattr(rec, "repo", None),
+                    account=getattr(rec, "account_name", None),
+                    session_id=session_id,
+                    url=f"/session/{session_id}", orch=self)
+        else:
+            self._session_finished_notified.discard(session_id)
 
     # ------------------------------------------------------------------
     # Backlog Runner control-loop dependencies (injected into BacklogRunnerLoop)
@@ -4316,7 +4976,7 @@ class SessionOrchestrator:
         Posts a brief linking comment on each issue so a human sees who claimed
         it and can trace back to the runner via the ``origin_ref``."""
         from server.automations import backlog_github
-        comment = (f"Claimed by ccswitch Backlog Runner ({batch.primary}) — "
+        comment = (f"Claimed by {brand.NAME} Backlog Runner ({batch.primary}) — "
                    f"an implementation session is in progress.")
         return await asyncio.to_thread(
             backlog_github.claim_batch, batch, gh_run=self._gh_run, comment=comment)
@@ -4684,10 +5344,59 @@ class SessionOrchestrator:
             log_key="sdlc_intake")
 
     async def _sdlc_intake_read_triggers(self) -> list:
-        """Pending intake triggers. Empty until a trigger source is wired: the
-        Phase-2 triage queue (#804) and the /api/sdlc intake path (#802) feed
-        this seam. Returning [] keeps every tick a cheap no-op today."""
-        return []
+        """Pending intake triggers — the control-band triage queue (#804).
+
+        This is where the SDLC loop closes. The control-band monitor files an
+        incident and (at 3σ, or on a human's "triage now") queues it; Intake picks
+        it up here and turns it into the ``intent.md`` PR, using the exact same
+        path a human-originated trigger takes. Phase 2 feeds this seam rather than
+        forking a second intent writer (constitution VI).
+
+        Deliberately NOT stamped as ``origin_ref``: ``InitiativeView.issue`` is
+        built from ``Initiative.origin_ref``, so putting a breach key there would
+        hand ``HandoffToBuild`` a string that is not an issue. Provenance rides on
+        ``origin="control-band"`` plus the triage row's ``initiative_slug``
+        back-pointer instead.
+        """
+        from server.automations.sdlc_intake import Trigger
+        from server.sdlc import triage_store
+        from server.sdlc.control_bands import Baseline, Breach, Sample
+        from server.sdlc.prompts import build_breach_trigger
+
+        try:
+            items = await triage_store.queued_for_intake()
+        except Exception:  # pragma: no cover — a queue read must not crash the tick
+            log.warning("sdlc_intake.read_triggers_failed", exc_info=True)
+            return []
+
+        triggers = []
+        for item in items:
+            if not item.initiative_slug:
+                continue
+            # Rebuild the pure Breach view from the stored snapshot so the trigger
+            # text comes out of the ONE renderer both response tiers use, rather
+            # than a second ad-hoc format string here.
+            breach = Breach(
+                metric=item.metric or "", rule=item.rule or "",
+                sigma=int(item.sigma or 0), side=item.side or "high",
+                at=item.observed_at or "", value=float(item.value or 0.0),
+                baseline=Baseline(mean=float(item.baseline_mean or 0.0),
+                                  stddev=float(item.baseline_stddev or 0.0),
+                                  n=int(item.baseline_n or 0)),
+                points=tuple(Sample(at=str(p.get("at") or ""),
+                                    value=float(p.get("value") or 0.0))
+                             for p in (item.evidence or [])),
+            )
+            triggers.append(Trigger(
+                slug=item.initiative_slug,
+                text=build_breach_trigger(breach, repo=item.repo or "",
+                                          title=item.summary or ""),
+                title=f"Control-band incident: {item.metric}",
+                repo=item.repo or "",
+                origin="control-band",
+                origin_ref=None,
+            ))
+        return triggers
 
     async def _sdlc_intake_ensure_initiative(self, trigger):
         """Find-or-create the Initiative for *trigger* (idempotent by slug) at the
@@ -4729,6 +5438,15 @@ class SessionOrchestrator:
             db.add(InitiativeArtifact(
                 initiative_id=row.id, kind="intent", repo_path=repo_path,
                 session_id=session_id))
+        # A control-band incident stops being a queue item the moment its intent
+        # artifact exists — from here it is an Initiative, tracked on the board.
+        # Terminal for the monitor, so the still-breaching metric cannot re-queue
+        # it. A no-op for a human-originated trigger (no row carries that slug).
+        from server.sdlc import triage_store
+        try:
+            await triage_store.mark_intake(slug, session_id)
+        except Exception:  # pragma: no cover — the artifact row is what matters
+            log.warning("sdlc_intake.mark_intake_failed slug=%s", slug, exc_info=True)
 
     async def _sdlc_intake_spawn(self, trigger, prompt: str, engine: AgentEngine):
         """Spawn a de-duped intent session for *trigger*, seeded with *prompt*.
@@ -4788,6 +5506,195 @@ class SessionOrchestrator:
                 await self._bump_automation_active("sdlc-intake")
         except Exception:  # pragma: no cover — a heartbeat failure must not stall
             log.debug("sdlc_intake.bump_active_failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Control-Band Monitor control-loop dependencies (#804)
+    #
+    # Every seam here is a thin adapter: the DECISIONS live in the pure modules
+    # (server/sdlc/control_bands.py for detection, server/sdlc/bands.py for
+    # policy) and the WRITES live in server/sdlc/triage_store.py, which the API
+    # shares. Nothing in this block decides anything.
+    # ------------------------------------------------------------------
+
+    async def _control_band_read_config(self) -> tuple[str, dict]:
+        """The control-band-monitor row's (mode, config) merged onto schema
+        defaults. Off + pure defaults on an absent/invalid row, so a bad config
+        never spawns (mirrors ``_sdlc_intake_read_config``)."""
+        from server.automations.config_store import read_automation_config
+        from server.automations.control_band_monitor import ControlBandMonitor
+        return await read_automation_config(
+            "control-band-monitor", ControlBandMonitor.config_schema,
+            modes=("monitor", "propose"), log_key="control_band_monitor")
+
+    async def _control_band_read_bands(self):
+        """The committed ``server/sdlc/bands.yaml`` policy.
+
+        Read on every tick, off the event loop, rather than cached at
+        construction: the policy is a deployed file, and an operator who edits a
+        band should see it take effect on the next tick without restarting a
+        daemon that owns every live session."""
+        from server.sdlc.bands import load_bands
+        return await asyncio.to_thread(load_bands)
+
+    async def _control_band_read_series(self, band) -> list:
+        """One metric band's daily samples, oldest first.
+
+        The ``source`` switch is exhaustive over ``control_bands.METRIC_SOURCES``
+        by construction — the bands loader rejects any other value at load time,
+        so an unhandled source is a load error, never a silent empty series."""
+        from server.sdlc.control_bands import bucket_daily
+        if band.source == "pr_cycle_time_hours":
+            return bucket_daily(await self._control_band_pr_cycle_observations(band.repo))
+        if band.source == "ci_failure_rate":
+            return await self._control_band_ci_failure_series(band.repo)
+        raise ValueError(f"unhandled band source {band.source!r}")  # pragma: no cover
+
+    async def _control_band_pr_cycle_observations(self, repo: str) -> list:
+        """``(merged_at, hours_open)`` per merged PR — the raw input to bucketing.
+
+        Rows missing either endpoint are skipped rather than defaulted: an
+        unknown open time is not a zero-hour cycle, and one fabricated zero drags
+        a day's mean far enough to manufacture a low-side breach."""
+        from sqlalchemy import select
+        from server.db.models import MergedPr
+        from server.time_iso import parse_iso_utc
+        async with db_session() as db:
+            rows = (await db.execute(
+                select(MergedPr.created_at, MergedPr.merged_at)
+                .where(MergedPr.repo == repo)
+                .order_by(MergedPr.merged_at.desc())
+                .limit(_CONTROL_BAND_ROW_LIMIT))).all()
+        out = []
+        for created_iso, merged_iso in rows:
+            created = parse_iso_utc(created_iso)
+            merged = parse_iso_utc(merged_iso)
+            if created is None or merged is None or merged < created:
+                continue
+            out.append((merged, (merged - created).total_seconds() / 3600.0))
+        return out
+
+    async def _control_band_ci_failure_series(self, repo: str) -> list:
+        """Daily share of merge-group runs that ejected at least one check.
+
+        Not expressible through ``bucket_daily``: that reducer averages one value
+        per observation, and this metric is a ratio of two differently-shaped
+        populations. ``group_runs`` holds one row per fully-green run while
+        ``group_failures`` holds one row per failing CHECK, so failures are
+        counted by DISTINCT ``group_sha`` — three checks failing in one run is one
+        failed run, not three.
+        """
+        from sqlalchemy import select
+        from server.db.models import GroupFailure, GroupRun
+        from server.sdlc.control_bands import Sample
+        from server.time_iso import parse_iso_utc
+        async with db_session() as db:
+            green = (await db.execute(
+                select(GroupRun.completed_at).where(GroupRun.repo == repo)
+                .order_by(GroupRun.completed_at.desc())
+                .limit(_CONTROL_BAND_ROW_LIMIT))).scalars().all()
+            failed = (await db.execute(
+                select(GroupFailure.observed_at, GroupFailure.group_sha)
+                .where(GroupFailure.repo == repo)
+                .order_by(GroupFailure.observed_at.desc())
+                .limit(_CONTROL_BAND_ROW_LIMIT))).all()
+        green_by_day: dict[str, int] = {}
+        for iso in green:
+            at = parse_iso_utc(iso)
+            if at is not None:
+                day = at.date().isoformat()
+                green_by_day[day] = green_by_day.get(day, 0) + 1
+        failed_by_day: dict[str, set] = {}
+        for iso, sha in failed:
+            at = parse_iso_utc(iso)
+            if at is not None and sha:
+                failed_by_day.setdefault(at.date().isoformat(), set()).add(sha)
+        samples = []
+        for day in sorted(set(green_by_day) | set(failed_by_day)):
+            bad = len(failed_by_day.get(day, ()))
+            total = bad + green_by_day.get(day, 0)
+            if total:
+                samples.append(Sample(at=day, value=bad / total))
+        return samples
+
+    async def _control_band_file_item(self, band, breach, tier, slug):
+        """Upsert the breach into the triage queue (idempotent by breach key)."""
+        from server.automations.control_band_monitor import FiledItem
+        from server.sdlc import triage_store
+        filed = await triage_store.upsert_breach(
+            key=breach.key(), metric=band.id, source=band.source, repo=band.repo,
+            rule=breach.rule, sigma=breach.sigma, side=breach.side,
+            tier=tier.name, response=tier.response, value=breach.value,
+            baseline_mean=breach.baseline.mean,
+            baseline_stddev=breach.baseline.stddev, baseline_n=breach.baseline.n,
+            observed_at=breach.at, summary=breach.summary(),
+            evidence=[{"at": s.at, "value": s.value} for s in breach.points],
+            slug=slug)
+        return FiledItem(id=filed.id, key=filed.key, status=filed.status,
+                         created=filed.created)
+
+    async def _control_band_spawn_diagnosis(self, item_id: str, prompt: str,
+                                            band, tier):
+        """Spawn the 2σ read-only diagnosis session for a triage item.
+
+        Deduped on the ITEM id, not the metric: an incident gets exactly one
+        diagnosis session, and a second breach of the same metric weeks later is a
+        different item and earns its own. The tier's ``permission_mode`` is passed
+        explicitly (the loader has already refused ``interactive`` for a spawning
+        tier), so the policy file — not the automation fallback — decides how much
+        rope this session gets."""
+        from server.automations.control_band_monitor import ControlBandMonitor
+        origin_ref = f"triage:{item_id}"
+        plan = await self._control_band_ctx.launch_plan_or_refuse(origin_ref)
+        if plan is None:
+            return None
+        launch_engine, _config = plan
+        account = await self._automation_account_for(
+            self._control_band_ctx, origin_ref, engine=launch_engine)
+        cwd = None
+        if band.repo:
+            url = f"https://github.com/{band.repo}.git"
+            try:
+                cwd = await asyncio.to_thread(
+                    gitrepos.ensure_clone, await self._effective_repo_root(),
+                    band.repo, url)
+            except Exception:
+                log.warning("control_band.spawn.clone_failed repo=%s", band.repo,
+                            exc_info=True)
+        return await self._control_band_ctx.spawn_session(
+            origin_ref=origin_ref,
+            dedupe_key=origin_ref,
+            repo=band.repo or None,
+            cwd=cwd,
+            account=account,
+            engine=launch_engine,
+            permission_mode=tier.permission_mode,
+            name=f"diagnose {band.id}",
+            initial_prompt=prompt,
+            detail={"itemId": item_id, "metric": band.id, "tier": tier.name,
+                    "automation": ControlBandMonitor.id},
+        )
+
+    async def _control_band_tick_loop(self, interval: float) -> None:
+        """Periodic driver for the control-band loop (mirrors _sdlc_intake_tick_loop)."""
+        while True:
+            await self._control_band_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _control_band_tick_once(self) -> None:
+        """One control-band tick + an enabled-only ``last_active_at`` heartbeat.
+        Best-effort — neither the tick nor the heartbeat may crash the loop."""
+        if not await self._schedule_allows_tick("control-band-monitor"):
+            return
+        try:
+            await self._control_band_loop.tick()
+        except Exception:  # pragma: no cover — tick() already swallows; belt+braces
+            log.warning("control_band.tick_loop_error", exc_info=True)
+        try:
+            mode, _ = await self._control_band_read_config()
+            if mode != "off":
+                await self._bump_automation_active("control-band-monitor")
+        except Exception:  # pragma: no cover — a heartbeat failure must not stall
+            log.debug("control_band.bump_active_failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # PM Sync control-loop dependencies (injected into PmSyncLoop)
@@ -5071,16 +5978,27 @@ class SessionOrchestrator:
                 for f in rows]
 
     async def _pm_sync_apply_feature_plan(
-        self, project_id: str, plan, by_slug: dict
+        self, project_id: str, plan
     ) -> None:
-        """Write upserts/orphans from *plan* into the Feature table.
+        """Write upserts/orphans from *plan* into the Feature table, then the
+        capability tree (parent) and the project's outgoing feature links.
+
+        Parents resolve by slug within the project after every upsert row
+        exists, so a child listed before its parent still links. Links are
+        REWRITTEN each apply — the docs are truth, so a link that left the
+        frontmatter leaves the table — and resolve by (Project.slug,
+        Feature.slug); an unresolvable target is skipped with a warning rather
+        than failing the apply. Plan warnings (unknown parent, cycle) are
+        logged the same way.
 
         After upserting, if the project is in ``map_proposed`` and now has ≥1
         non-orphaned Feature, advance it to ``map_merged``.  This ties the
         transition to the observable "map merged & indexed" state — no PR
         webhook needed.  No other states are touched."""
-        from sqlalchemy import func, select
-        from server.db.models import Feature, Project
+        from sqlalchemy import delete, func, select
+        from server.db.models import Feature, FeatureLink, Project
+        for warning in plan.warnings:
+            log.warning("pm_sync.feature_index project=%s %s", project_id, warning)
         async with db_session() as db:
             for up in plan.upserts:
                 row = (await db.execute(
@@ -5106,6 +6024,40 @@ class SessionOrchestrator:
                 )).scalar_one_or_none()
                 if row is not None:
                     row.orphaned = True
+            await db.flush()
+
+            # Tree: parent by slug, within this project only.
+            mine = {f.slug: f for f in (await db.execute(
+                select(Feature).where(Feature.project_id == project_id))).scalars().all()}
+            for up in plan.upserts:
+                row = mine.get(up.slug)
+                if row is None:
+                    continue
+                parent = mine.get(up.parent_slug) if up.parent_slug else None
+                row.parent_feature_id = parent.id if parent is not None else None
+
+            # Links: rewrite every outgoing edge of this project's features.
+            src_ids = [f.id for f in mine.values()]
+            if src_ids:
+                await db.execute(delete(FeatureLink).where(FeatureLink.src_feature_id.in_(src_ids)))
+            wanted = list(dict.fromkeys(
+                (up.slug, link) for up in plan.upserts for link in up.links))
+            if wanted:
+                project_slugs = {link.project for _, link in wanted}
+                projects = {p.slug: p.id for p in (await db.execute(
+                    select(Project).where(Project.slug.in_(project_slugs)))).scalars().all()}
+                targets = {(f.project_id, f.slug): f.id for f in (await db.execute(
+                    select(Feature).where(Feature.project_id.in_(list(projects.values()))))).scalars().all()}
+                for src_slug, link in wanted:
+                    src = mine.get(src_slug)
+                    dst_project = projects.get(link.project)
+                    dst_id = targets.get((dst_project, link.feature)) if dst_project else None
+                    if src is None or dst_id is None:
+                        log.warning("pm_sync.feature_link_unresolved project=%s src=%s -> %s/%s",
+                                    project_id, src_slug, link.project, link.feature)
+                        continue
+                    db.add(FeatureLink(src_feature_id=src.id, dst_feature_id=dst_id, kind=link.kind))
+
             # Advance map_proposed → map_merged when ≥1 non-orphaned feature
             # exists after this upsert.  Other states are intentionally left alone.
             proj = (await db.execute(
@@ -6001,13 +6953,7 @@ class SessionOrchestrator:
             backfill_done_count=sum(1 for r in repos if r.backfill_done),
             feature_count=int(feature_count),
             open_unclassified_count=int(open_unclassified),
-            pending_proposal_count=int(pending),
-            map_pr_open=False, map_pr_merged=False)
-
-    # NOTE on map_pr_open / map_pr_merged: phase 2 does not correlate the map PR's
-    # live state into the counts view. They are left False — the engine treats
-    # map_proposed with neither flag as "re-offer ProposeMap", which is the correct
-    # resumable behavior. Wiring PR-state correlation is a phase-3 enrichment.
+            pending_proposal_count=int(pending))
 
     async def pm_advance_map_merged(self, slug: str) -> None:
         """Advance a project from ``map_proposed`` to ``map_merged`` after the
@@ -6021,6 +6967,19 @@ class SessionOrchestrator:
                 Project.slug == slug))).scalar_one_or_none()
             if proj is not None and proj.onboarding_state == "map_proposed":
                 proj.onboarding_state = "map_merged"
+                await db.commit()
+
+    async def pm_advance_live(self, slug: str) -> None:
+        """Advance a project from ``map_merged``/``classifying`` to ``live`` once
+        the human has drained the triage queue. The wizard's tap calls this; the
+        pm-triage loop keeps classifying new items in the live loop regardless."""
+        from sqlalchemy import select
+        from server.db.models import Project
+        async with db_session() as db:
+            proj = (await db.execute(select(Project).where(
+                Project.slug == slug))).scalar_one_or_none()
+            if proj is not None and proj.onboarding_state in ("map_merged", "classifying"):
+                proj.onboarding_state = "live"
                 await db.commit()
 
     # ------------------------------------------------------------------
@@ -6315,6 +7274,34 @@ class SessionOrchestrator:
         return sorted(r for r in rows if r)
 
     # ------------------------------------------------------------------
+    # Error Triage control loop
+    # ------------------------------------------------------------------
+    async def _error_triage_tick_loop(self, interval: float) -> None:
+        while True:
+            await self._error_triage_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _error_triage_tick_once(self) -> None:
+        if not await self._schedule_allows_tick("error-triage"):
+            return
+        await self._error_triage_loop.tick()
+        try:
+            mode, _ = await self._error_triage_read_config()
+            if mode != "off":
+                await self._bump_automation_active("error-triage")
+        except Exception:
+            log.debug("error_triage.heartbeat_failed", exc_info=True)
+
+    async def _error_triage_read_config(self) -> tuple[str, dict]:
+        """(effective mode, validated config); off + defaults on any bad row."""
+        from server.automations.error_triage import ErrorTriage
+        from server.automations.config_store import read_automation_config
+        active = tuple(m for m in ErrorTriage.modes if m != "off")
+        return await read_automation_config(
+            "error-triage", ErrorTriage.config_schema, modes=active, default_mode=active[0],
+            log_key="error_triage")
+
+    # ------------------------------------------------------------------
     # Archive Audit control-loop dependencies (injected into ArchiveAuditLoop)
     # ------------------------------------------------------------------
 
@@ -6438,8 +7425,20 @@ class SessionOrchestrator:
         session was created (or an equivalent one already existed) so the caller
         advances the watermark; False when the firing should be retried next tick
         (no account had headroom). ``origin_ref`` is the fire minute, so two ticks
-        landing in the same minute reuse the one session rather than double-spawn."""
+        landing in the same minute reuse the one session rather than double-spawn.
+
+        ``spec["engine"]``/``spec["reasoningEffort"]`` (#1270) are never used to
+        pick the engine directly — that would let a recurring spec bypass this
+        origin's audited ceiling (``engine_policy.policy_for``), the one thing
+        Phase 7 exists to prevent. Instead ``ctx.launch_plan()`` resolves the
+        engine the same way every other spawn does (registry ceiling, or
+        ``claude_only`` for an ad-hoc/dynamic id), and a spec that named an
+        engine is checked against that answer: a match forwards
+        ``reasoning_effort`` through the ordinary ``create_session`` contract, a
+        mismatch is refused out loud instead of silently running the wrong
+        engine."""
         from server.automations.context import AutomationContext
+        from server.automations.engine_policy import EnginePolicyViolation
         ref = fire_at.isoformat(timespec="minutes") if fire_at else "now"
         name = spec.get("name") or f"scheduled {automation_id}"
         ctx = AutomationContext(automation_id, create_session=self.create_session)
@@ -6447,6 +7446,46 @@ class SessionOrchestrator:
         for key in ("repo", "branch", "account", "model"):
             if spec.get(key):
                 kwargs[key] = spec[key]
+        expected_engine_raw = spec.get("engine")
+        effort = spec.get("reasoningEffort")
+        if expected_engine_raw or effort:
+            try:
+                engine, _config = await ctx.launch_plan()
+            except EnginePolicyViolation as exc:
+                await ctx.emit(
+                    "error", f"scheduled run refused ({name}): {exc.reason}",
+                    kind="engine_policy_refused", target=ref,
+                    detail={"policy": exc.policy.value})
+                return True  # unaudited/unsafe config; retrying won't fix it
+            if expected_engine_raw:
+                try:
+                    expected_engine = parse_agent_engine(expected_engine_raw)
+                except InvalidAgentEngine:
+                    await ctx.emit(
+                        "error",
+                        f"scheduled run refused ({name}): unknown engine "
+                        f"{expected_engine_raw!r}",
+                        kind="engine_policy_refused", target=ref)
+                    return True
+                if expected_engine is not engine:
+                    await ctx.emit(
+                        "error",
+                        f"scheduled run refused ({name}): recurring session expects "
+                        f"engine {expected_engine.value} but this origin is only "
+                        f"audited to run {engine.value}",
+                        kind="engine_policy_refused", target=ref,
+                        detail={"expected": expected_engine.value,
+                                "resolved": engine.value})
+                    return True
+            if effort:
+                if engine is not AgentEngine.CODEX:
+                    await ctx.emit(
+                        "error",
+                        f"scheduled run refused ({name}): reasoning effort requires "
+                        f"the codex engine, this origin resolves to {engine.value}",
+                        kind="engine_policy_refused", target=ref)
+                    return True
+                kwargs["reasoning_effort"] = effort
         try:
             await ctx.spawn_session(origin_ref=ref, dedupe_key=ref,
                                     detail={"fireAt": ref, "scheduled": True}, **kwargs)
@@ -7170,9 +8209,9 @@ class SessionOrchestrator:
             return
         self._pushed_pr.add(key)
         await push_mod.notify_event(
-            "pr_broke", "ccswitch — PR broke", f"{rec.name}: {repo} CI failing",
+            "pr_broke", f"{brand.NAME} — PR broke", f"{rec.name}: {repo} CI failing",
             repo=repo, account=getattr(rec, "account_name", None),
-            url=f"/session/{rec.id}",
+            url=f"/session/{rec.id}", orch=self,
         )
 
     async def _pr_doctor_sweep(self) -> None:
@@ -7369,8 +8408,10 @@ class SessionOrchestrator:
         seeded with that prompt. Emits the same ``attempted`` / ``spawn_failed``
         events as before. Returns ``(status, session_id)`` where status is
         ``"sent"`` | ``"spawned"`` (real injection) | ``"transient"`` |
-        ``"clone_failed"`` | ``"spawn_failed"``. Does NOT touch per-target engine
-        state — the caller records the attempt on a real injection.
+        ``"clone_failed"`` | ``"spawn_failed"`` | ``"refused"`` (fresh-spawn only —
+        the origin's engine policy refused the launch before any clone/model
+        cost was paid). Does NOT touch per-target engine state — the caller
+        records the attempt on a real injection.
 
         ``on_phase(phase)`` — optional progress hook the async manual trigger
         (issue #668) uses to advance its job through ``cloning`` → ``assessing``
@@ -7378,15 +8419,19 @@ class SessionOrchestrator:
         """
         phase = on_phase or (lambda _p: None)
         target = f"{repo}#{info.number}"
-        # Select the branch-aware first prompt by failure kind. Single source of
-        # truth for both the live-driver inject and the fresh-spawn seed.
-        if kind == "merge_conflict":
-            prompt = build_conflict_fix_prompt(repo, info)
-        else:  # "failing_ci"
-            prompt = build_pr_fix_prompt(repo, info)
 
         live_rec = rec if (rec is not None and rec.id in self._drivers) else None
         if live_rec is not None:
+            # Injection into an already-live session reuses THAT session's own
+            # already-resolved engine (decided once, at its original spawn) via
+            # the shared, engine-neutral AgentDriver.send_prompt contract
+            # (request_pr_fix routes through it too) — there is no fresh engine
+            # decision to make here, but the prompt's commit-trailer instruction
+            # still has to name the engine actually running the session.
+            if kind == "merge_conflict":
+                prompt = build_conflict_fix_prompt(repo, info, engine=live_rec.engine)
+            else:  # "failing_ci"
+                prompt = build_pr_fix_prompt(repo, info, engine=live_rec.engine)
             # LIVE driver → near-instant injection, no clone/assess. Report the
             # spawning phase so a polling job still sees forward motion.
             phase("spawning")
@@ -7423,6 +8468,19 @@ class SessionOrchestrator:
         # `spawned`; a repeated poll for the same target returns the existing
         # session instead of a second spawn.
         #
+        # Engine FIRST, before any network or disk work: the seed prompt states a
+        # commit trailer so it has to be built for the engine that will actually
+        # run (Phase 7, #1267, mirrors _backlog_spawn) — and a refused launch must
+        # cost nothing, not a full clone + model assessment.
+        plan = await self._pr_doctor_ctx.launch_plan_or_refuse(target)
+        if plan is None:                       # out of policy — the ctx recorded why
+            return "refused", None
+        eng, _launch_config = plan
+        if kind == "merge_conflict":
+            prompt = build_conflict_fix_prompt(repo, info, engine=eng)
+        else:  # "failing_ci"
+            prompt = build_pr_fix_prompt(repo, info, engine=eng)
+
         # Resolve the ccswitch-owned clone `cwd` first (mirrors the New-Session
         # API): create_session's worktree block only runs when `cwd` is a real git
         # repo, so without it the spawn falls to an empty scratch dir with
@@ -7441,14 +8499,29 @@ class SessionOrchestrator:
                 "error", f"clone failed for {target}: {exc}",
                 kind="spawn_failed", target=target)
             return "clone_failed", None
-        from server.automations.model_pick import resolve_model
         phase("assessing")
-        failing = ", ".join(
-            d.name for d in info.checks_detail if d.conclusion == "failure")
-        model, model_source = await resolve_model(
-            await self._pr_doctor_config(),
-            f"{kind} fix for PR {target}: {info.title}"
-            + (f"\nfailing checks: {failing}" if failing else ""))
+        model = model_source = None
+        detail: dict = {"engine": eng.value}
+        if eng is AgentEngine.CLAUDE_CODE:
+            # `resolve_model` is a Claude complexity assessor returning Claude
+            # catalog aliases — skip it for another engine rather than making the
+            # call and dropping the answer (Phase 7, Task 7.1).
+            from server.automations.model_pick import resolve_model
+            failing = ", ".join(
+                d.name for d in info.checks_detail if d.conclusion == "failure")
+            model, model_source = await resolve_model(
+                await self._pr_doctor_config(),
+                f"{kind} fix for PR {target}: {info.title}"
+                + (f"\nfailing checks: {failing}" if failing else ""))
+            if model is not None:
+                detail.update(model=model, model_source=model_source)
+        # Codex auto-effort assessment (mirrors _backlog_spawn's Codex branch) is
+        # skipped here: unlike backlog-runner, PR Doctor does not pre-resolve an
+        # account (create_session picks a healthy one below), and the assessor
+        # needs a resolved account to query that account's live model catalog. A
+        # Codex spawn therefore runs on the account's/engine's own default model
+        # rather than an auto-picked effort tier — refining that is a follow-up,
+        # not a blocker for widening the ceiling.
         phase("spawning")
         try:
             rec2 = await self._pr_doctor_ctx.spawn_session(
@@ -7458,11 +8531,11 @@ class SessionOrchestrator:
                 branch=branch,
                 cwd=cwd,
                 account=None,  # create_session picks a healthy account
+                engine=eng,
                 name=f"pr-doctor fix {target}",
                 initial_prompt=prompt,
                 model=model,
-                detail={"model": model, "model_source": model_source}
-                if model is not None else None,
+                detail=detail,
             )
         except AllAccountsBusy as exc:
             # Distinguish genuine ceiling (all accounts exhausted) from a transient
@@ -7483,6 +8556,11 @@ class SessionOrchestrator:
                 "error", f"spawn failed for {target}: {exc}",
                 kind="spawn_failed", target=target)
             return "spawn_failed", None
+        if rec2 is None:
+            # spawn_session already emitted why (engine_launch_refused /
+            # engine_policy_refused) — e.g. a Codex engine resolved under a
+            # sandboxed permission mode that cannot push. Attempt NOT consumed.
+            return "refused", None
         # Real successful spawn.
         sid = getattr(rec2, "id", None)
         await self._pr_doctor_ctx.emit(
@@ -7645,13 +8723,21 @@ class SessionOrchestrator:
         from server.sessions.pr_fix import build_consolidation_prompt
 
         try:
+            # Engine FIRST, before any network or disk work — same reasoning as
+            # _pr_doctor_session_fix's fresh-spawn branch (Phase 7, #1267): the
+            # seed prompt states a commit trailer, and a refused launch must cost
+            # nothing, not a remote branch listing + full clone + model call.
+            plan = await self._pr_doctor_ctx.launch_plan_or_refuse(target)
+            if plan is None:                   # out of policy — the ctx recorded why
+                return
+            eng, _launch_config = plan
             try:
                 default_branch = await asyncio.to_thread(
                     lambda: gitrepos.list_remote_branches(repo).get("default") or "master"
                 )
             except Exception:
                 default_branch = "master"
-            prompt = build_consolidation_prompt(repo, default_branch, prs)
+            prompt = build_consolidation_prompt(repo, default_branch, prs, engine=eng)
             url = f"https://github.com/{repo}.git"
             try:
                 cwd = await asyncio.to_thread(
@@ -7661,20 +8747,26 @@ class SessionOrchestrator:
                     "error", f"clone failed for {target}: {exc}",
                     kind="spawn_failed", target=target)
                 return
-            from server.automations.model_pick import resolve_model
-            model, model_source = await resolve_model(
-                await self._pr_doctor_config(),
-                f"consolidate {len(prs)} PRs in {repo}:\n"
-                + "\n".join(f"#{p.number}  {p.title}" for p in prs))
+            model = model_source = None
+            detail: dict = {"engine": eng.value}
+            if eng is AgentEngine.CLAUDE_CODE:
+                # See _pr_doctor_session_fix: skip the Claude complexity assessor
+                # for another engine rather than making the call and dropping it.
+                from server.automations.model_pick import resolve_model
+                model, model_source = await resolve_model(
+                    await self._pr_doctor_config(),
+                    f"consolidate {len(prs)} PRs in {repo}:\n"
+                    + "\n".join(f"#{p.number}  {p.title}" for p in prs))
+                if model is not None:
+                    detail.update(model=model, model_source=model_source)
             try:
                 rec = await self._pr_doctor_ctx.spawn_session(
                     origin_ref=target, dedupe_key=target, repo=repo,
-                    account=None, cwd=cwd,
+                    account=None, cwd=cwd, engine=eng,
                     name=f"pr-doctor consolidate {repo} ({len(prs)} PRs)",
                     initial_prompt=prompt,
                     model=model,
-                    detail={"model": model, "model_source": model_source}
-                    if model is not None else None)
+                    detail=detail)
             except AllAccountsBusy:
                 await self._pr_doctor_ctx.emit(
                     "warn", f"consolidate deferred for {target}: all accounts at/above usage ceiling",
@@ -7684,6 +8776,10 @@ class SessionOrchestrator:
                 await self._pr_doctor_ctx.emit(
                     "error", f"consolidate spawn failed for {target}: {exc}",
                     kind="spawn_failed", target=target)
+                return
+            if rec is None:
+                # spawn_session already emitted why (engine_launch_refused /
+                # engine_policy_refused) — nothing further to record here.
                 return
             sid = getattr(rec, "id", None)
             await self._pr_doctor_ctx.emit(
@@ -7873,26 +8969,112 @@ class SessionOrchestrator:
         self._last_title_sig[rec.id] = sig
         return title
 
+    async def _generate_codex_fallback_title(
+        self, session_id: str, rec: SessionRecord,
+    ) -> str | None:
+        """Codex's analogue of ``_generate_fallback_title``.
+
+        A Codex account has no Claude credential slot of its own for ``_title_fn``
+        to spend (``rec.account`` names an OpenAI-scoped identity, not an
+        Anthropic one), so this cannot reuse it directly. It reads the thread's
+        own prompts over the supported app-server RPC (``_codex_replay`` ->
+        ``CodexThreadReplay.user_prompts``) and, for the actual summarization,
+        borrows the SAME cross-engine helper-account pattern
+        ``_autopilot_helper_config_dir`` already established for autopilot's
+        decider/composer (and, since, session summaries): pick the first live,
+        enabled ANTHROPIC account and spend a Haiku query under ITS credentials —
+        never the Codex session's own. When no Anthropic account is available at
+        all (a Codex-only install), this degrades to
+        ``server/codex/titles.py``'s local, LLM-free heuristic rather than
+        leaving the session nameless.
+
+        Shares ``_last_title_sig`` with the Claude path's dedup gate — same
+        purpose (skip recomputation when nothing new was said), same dict, keyed
+        by session id so the two engines never collide.
+
+        Cost guard: the app-server READ only runs when the account's app-server
+        is ALREADY live (``client_for`` is a pure lookup, never a spawn).
+        ``_codex_replay`` would happily call ``codex.ensure(account)`` to start
+        one — appropriate for a user re-attaching to see history, wrong for a
+        background sweep that would otherwise wake (and keep alive) an idle
+        account's runner, on a timer, purely to see whether its title needs a
+        refresh. The common case — a session mid-conversation — always has a
+        live client already, since this also fires on every turn-completion
+        (``_set_status``'s ``completed_turn`` call). The Haiku query itself is
+        protected the same way every other cross-engine helper call is: shared
+        backoff/circuit-breaker in ``run_helper_call``, keyed by config_dir — no
+        separate ceiling check, matching ``model_pick``/``prompt_refiner``.
+        Best-effort throughout: any miss leaves the name unchanged.
+        """
+        if self._codex is None or self._codex.client_for(rec.account) is None:
+            return None
+        replay = await self._codex_replay(session_id)
+        if replay is None:
+            return None
+        prompts = await replay.user_prompts()
+        if not prompts:
+            return None
+        sig = hashlib.sha1("\n".join(prompts).encode("utf-8", "surrogatepass")).hexdigest()
+        if sig == self._last_title_sig.get(rec.id):
+            return None
+        # Recorded now, once generation is actually attempted (regardless of
+        # outcome) — mirrors the Claude path: a genuinely new prompt still gets
+        # a fresh attempt next sweep, but a failed attempt against unchanged
+        # prompts does not retry every 15s.
+        self._last_title_sig[rec.id] = sig
+        title = await self._codex_semantic_title(prompts, rec)
+        if title:
+            return title
+        from server.codex.titles import codex_fallback_title
+        return codex_fallback_title(prompts)
+
+    async def _codex_semantic_title(
+        self, prompts: list[str], rec: SessionRecord,
+    ) -> str | None:
+        """Best-effort Haiku title for a Codex session's *prompts*, or ``None``.
+
+        Same working directory as every other borrowed-account helper call on
+        this session (``rec.cwd``, the Codex session's own) — the query is
+        stateless and tool-free (``generate_title`` sets ``allowed_tools=[]``),
+        so it never needs to belong to the account whose credentials answer it.
+        ``None`` covers both "no Anthropic account available" and "the query
+        ran but failed" — the caller treats them identically (fall back to the
+        local heuristic).
+        """
+        from server.sessions.helper_call import pick_helper_config_dir
+        config_dir = pick_helper_config_dir()
+        if config_dir is None:
+            return None
+        return await generate_title(prompts, config_dir=config_dir, cwd=rec.cwd)
+
     async def _maybe_apply_auto_name(self, session_id: str) -> None:
         """If the session name is still auto, adopt a title for it.
 
         Prefers Claude's own transcript ``ai-title``; when absent (SDK-driven
-        sessions never get one) falls back to summarizing the user prompts. Updates
-        the DB + in-memory record and, when a live driver exists, pushes a ``Title``
-        event so the in-session header converges with the dashboard. Idempotent: a
-        title equal to the current name is a no-op.
+        sessions never get one) falls back to summarizing the user prompts. Codex
+        sessions have no transcript file at all (``transcript_path`` returns
+        ``None`` for them by design — see there), so they route to
+        ``_generate_codex_fallback_title`` instead, which reads the thread back
+        over the supported app-server RPC rather than a Claude-shaped file.
+        Updates the DB + in-memory record and, when a live driver exists, pushes
+        a ``Title`` event so the in-session header converges with the dashboard.
+        Idempotent: a title equal to the current name is a no-op.
         """
         rec = self._records.get(session_id)
         if rec is None or not rec.name_is_auto:
             return
-        path = self.transcript_path(session_id)
-        if not path:
-            return
-        title = await asyncio.to_thread(read_ai_title_from_file, path)
-        source = "claude"
-        if not title:
-            title = await self._generate_fallback_title(rec, path)
+        if self._engine_of(session_id) is not AgentEngine.CLAUDE_CODE:
+            title = await self._generate_codex_fallback_title(session_id, rec)
             source = "generated"
+        else:
+            path = self.transcript_path(session_id)
+            if not path:
+                return
+            title = await asyncio.to_thread(read_ai_title_from_file, path)
+            source = "claude"
+            if not title:
+                title = await self._generate_fallback_title(rec, path)
+                source = "generated"
         rec = self._records.get(session_id)
         if rec is None or not rec.name_is_auto or not title or title == rec.name:
             return
@@ -7941,14 +9123,94 @@ class SessionOrchestrator:
             await asyncio.sleep(self._titling_interval)
 
     async def _infer_goal_for(self, session_id: str) -> "str | None":
-        """One-shot inferred-goal generation for a session (LLM; None on failure)."""
-        from server.sessions.goal_inference import infer_goal
+        """One-shot inferred-goal generation for a session (LLM; None on failure).
+
+        Routed by ``rec.engine`` (#1280): a Codex-engine session's account has no
+        Claude credential material, so it must never reach ``compose()`` — which
+        builds an Anthropic ``CLAUDE_CONFIG_DIR`` — or the Claude Agent SDK.
+        ``AgentEngine`` has exactly two members (``ccswitch.engines.AgentEngine``:
+        CLAUDE_CODE, CODEX) and Copilot sessions run the CLAUDE_CODE engine (the
+        proxy translates underneath), so this if/elif is exhaustive today; a new
+        engine value falls through to ``None`` rather than guessing a path for it.
+        """
         rec = self._records.get(session_id)
         if rec is None:
             return None
         tail = await self._autopilot_transcript_tail(session_id)
-        return await infer_goal(rec.name, tail,
-                                config_dir=str(compose(rec.account)), cwd=rec.cwd)
+        if rec.engine is AgentEngine.CODEX:
+            return await self.infer_goal_codex(rec.account, rec.name, tail)
+        if rec.engine is AgentEngine.CLAUDE_CODE:
+            from server.sessions.goal_inference import infer_goal
+            return await infer_goal(rec.name, tail,
+                                    config_dir=str(compose(rec.account)), cwd=rec.cwd)
+        return None
+
+    async def infer_goal_codex(
+        self, account: str, name: str, transcript_tail: list[dict], *, timeout_s: float | None = None,
+    ) -> str | None:
+        """One-shot, tool-less Codex thread that infers a session's goal statement.
+
+        The native-Codex sibling of ``server/sessions/goal_inference.py:infer_goal``
+        (#1280), built the same way ``refine_prompt_codex`` (#1288) was: a real,
+        throwaway Codex thread through the SAME canonical driver/manager contract
+        every real Codex session uses (``self._engine_registry`` +
+        ``CodexRunnerManager``) — no separate subprocess/protocol code, no parallel
+        orchestration stack.
+
+        Gated on ``CCSWITCH_CODEX_GOAL_ENABLED`` (default off): unlike the Claude
+        path, this has not been verified against a live ``codex`` binary/account, and
+        constitution Principle III forbids claiming vendor parity from assumptions.
+        Flip the flag once verified end-to-end.
+
+        Runs in ``mode="plan"`` (read-only sandbox, no network egress) with any
+        approval auto-denied, matching ``refine_prompt_codex``'s contract exactly:
+        nothing persisted, fail-open on any error.
+        """
+        if self._codex is None:
+            return None
+        if os.environ.get("CCSWITCH_CODEX_GOAL_ENABLED", "false").lower() not in (
+            "1", "true", "yes",
+        ):
+            return None
+        from server.sessions.goal_inference import (
+            GOAL_INFER_TIMEOUT_S,
+            build_codex_goal_prompt,
+            normalize_goal_text,
+        )
+        if timeout_s is None:
+            timeout_s = GOAL_INFER_TIMEOUT_S
+        session_id = f"helper-goal-{uuid.uuid4().hex}"
+        attached = False
+        driver: CodexAgentDriver | None = None
+        try:
+            await self._ensure_codex_runner(AgentEngine.CODEX, account)
+            driver = cast("CodexAgentDriver", self._engine_registry.create(AgentEngine.CODEX, AgentDriverConfig(
+                session_id=session_id,
+                account=account,
+                cwd=os.getcwd(),
+                config_dir="",
+                mode="plan",
+                identity=SYSTEM_IDENTITY,
+            )))
+            await driver.start()
+            # Attach only AFTER start() succeeds, matching create_session's ordering:
+            # attaching earlier would leak a runner claim whenever start() fails (a
+            # runner nobody attached to is idle-reaped by the manager either way).
+            self._codex.attach(account, session_id)
+            attached = True
+            await driver.send_prompt(build_codex_goal_prompt(name, transcript_tail))
+            reply = await self._collect_codex_reply(driver, timeout=timeout_s)
+            return normalize_goal_text(reply)
+        except Exception:
+            log.warning("infer_goal_codex: failed account=%s", account, exc_info=True)
+            return None
+        finally:
+            if driver is not None:
+                with contextlib.suppress(Exception):
+                    await driver.archive()
+            if attached:
+                with contextlib.suppress(Exception):
+                    self._codex.detach(session_id)
 
     async def _goal_sweep(self) -> None:
         """One inferred-goal pass: refresh Session.inferred_goal for every active
@@ -8108,6 +9370,7 @@ class SessionOrchestrator:
             pr_resolution=getattr(row, "pr_resolution", None),
             pr_resolution_source=getattr(row, "pr_resolution_source", None),
             host=getattr(row, "host", None),
+            display_mode=getattr(row, "display_mode", None),
             kind=getattr(row, "kind", None),
             owner_identity=getattr(row, "owner_identity", None),
             paused_reason=getattr(row, "paused_reason", None),
@@ -8145,7 +9408,6 @@ class SessionOrchestrator:
                     "(%d with host=NULL -> primary)", me, len(foreign),
                     sum(1 for r in foreign if r.host is None))
             rows = [r for r in rows if r.host == me]
-        from .background_tasks import is_parked
         added = 0
         backfilled: dict[str, str] = {}
         healed: dict[str, str] = {}
@@ -8201,10 +9463,15 @@ class SessionOrchestrator:
             # longer parked — e.g. its background pollers were killed by a deploy and are
             # now dead, or a self-scheduled wakeup was lost — its true status is `done`.
             # Restore it so the card stops showing "Waiting…" forever. Cheap: only the
-            # (few) waiting_external rows hit the transcript scan.
+            # (few) waiting_external rows are asked at all.
+            #
+            # `_session_is_parked` answers per engine. A Codex row ALWAYS un-parks here
+            # and that is the correct answer rather than a shortcut: its background
+            # terminals were grandchildren of an app-server this daemon has not started
+            # yet, and the boot sweep reaps any that outlived the last one
+            # (server/codex/background.py).
             if status == "waiting_external":
-                path = self.transcript_path(row.id)
-                if not await asyncio.to_thread(is_parked, path):
+                if not await self._session_is_parked(row.id):
                     self._records[row.id].status = "done"
                     healed[row.id] = "done"
                     log_event(log, logging.INFO, "session.unpark",
@@ -8540,6 +9807,40 @@ class SessionOrchestrator:
                   **{"from": "ended", "to": "ended", "reason": "assistant_adopt"})
         return self._sync_detached(rec)
 
+    async def post_notice(self, identity: str, notice: dict) -> bool:
+        """Deliver a proactive watch notice into *identity*'s assistant drawer
+        (Task 8.4, spec v2 §4.7 Pack N). ``notice`` carries
+        {"kind","title","body","url","watchId"} — the same shape push.notify_event
+        builds from the fired NotificationRule.
+
+        Reuses find_assistant's identity lookup (including its idle-reaped-thread
+        adoption, #1122) rather than re-scanning _records. If the thread's driver
+        is live, emits ev.Notice through it immediately via the same out-of-band
+        `driver.emit()` path _auto_name uses for a Title rename — the notice rides
+        the live stream straight to an attached client. Otherwise the notice is
+        queued (pop_pending_notices flushes it on the next WS attach, mirroring
+        pop_pending_initial_prompt).
+
+        Returns whether delivery was live. Never raises: push.notify_event's
+        assistant-channel branch already wraps this in try/except and fails open
+        to the web push it sends unconditionally, but an unreachable identity
+        (no assistant thread at all) is not an error here either — it just means
+        nothing to deliver to yet.
+        """
+        rec = await self.find_assistant(identity)
+        if rec is None:
+            return False
+        driver = self._drivers.get(rec.id)
+        if driver is not None:
+            driver.emit(ev.Notice(
+                session_id=rec.id, kind=notice.get("kind", ""),
+                title=notice.get("title", ""), body=notice.get("body", ""),
+                url=notice.get("url"), watch_id=notice.get("watchId"),
+            ))
+            return True
+        self._pending_notices.setdefault(rec.id, []).append(notice)
+        return False
+
     def get_session(self, session_id: str) -> SessionRecord | None:
         """Return the in-memory SessionRecord for session_id, or None
         (``detached`` synced from ``_drivers``)."""
@@ -8838,6 +10139,54 @@ class SessionOrchestrator:
 
         return await asyncio.to_thread(_do)
 
+    async def pr_detail(self, repo: str, number: int) -> "dict | None":
+        """PR detail (SPEC v2 Pack G): the cached population entry for
+        ``(repo, number)`` — same join `all_prs` renders on the board, so
+        `session`/`node_states`/etc. come for free — composed with a live
+        checks+reviews+mergeability fetch (the population poll never fetches
+        reviews, and its own checks fetch has no per-check url). Returns None
+        when the PR isn't in the cached population; the route 404s on that."""
+        match = None
+        for p in await self.all_prs():
+            if p.pr.repo == repo and p.pr.number == number:
+                match = p
+                break
+        if match is None:
+            return None
+        out = match.to_dict()
+        out["sessionId"] = match.session_id
+        out.update(await self._fetch_pr_detail(repo, number))
+        return out
+
+    async def _fetch_pr_detail(self, repo: str, number: int) -> dict:
+        """The live half of `pr_detail`: one `gh api graphql` call for the fields
+        the cached population never carries (reviews) or carries without a url
+        (checks). Fails open to the empty triple — a live-fetch hiccup must not
+        blank the whole detail view, only its freshest fields."""
+        import json as _json
+
+        from server.github.pr_status import build_pr_detail_query, parse_pr_detail_response
+
+        def _do() -> dict:
+            query = build_pr_detail_query(repo, number)
+            owner = repo.partition("/")[0]
+            try:
+                proc = self._gh_run(
+                    ["api", "graphql", "-f", f"query={query}"],
+                    gitrepos.app_token_for_owner(owner), timeout=15,
+                )
+            except Exception:
+                return {"checks": [], "reviews": [], "mergeable": None}
+            if proc.returncode != 0:
+                return {"checks": [], "reviews": [], "mergeable": None}
+            try:
+                data = _json.loads(proc.stdout or "{}")
+            except (ValueError, TypeError):
+                return {"checks": [], "reviews": [], "mergeable": None}
+            return parse_pr_detail_response(data)
+
+        return await asyncio.to_thread(_do)
+
     # ------------------------------------------------------------------
     # Deploy environment config + status (SPEC §3)
     # ------------------------------------------------------------------
@@ -9035,7 +10384,7 @@ class SessionOrchestrator:
             return "no_pr"
         if info.state not in ("open", "draft"):
             return "not_actionable"
-        prompt = build_pr_fix_prompt(rec.repo, info)
+        prompt = build_pr_fix_prompt(rec.repo, info, engine=rec.engine)
         return await self.send_prompt(session_id, prompt)
 
     def _pr_doctor_owning_rec(self, repo: str, branch: str):
@@ -9079,6 +10428,7 @@ class SessionOrchestrator:
             "pm-sync": getattr(self, "_pm_sync_ctx", None),
             "pm-triage": getattr(self, "_pm_triage_ctx", None),
             "gh-reconcile": getattr(self, "_gh_reconcile_ctx", None),
+            "error-triage": getattr(self, "_error_triage_ctx", None),
         }
         out: dict[str, dict] = {}
         for a in registry.all():
@@ -9204,19 +10554,26 @@ class SessionOrchestrator:
             q.put_nowait(event)
 
     async def _snapshot_open_tasks(self) -> None:
-        """At drain, persist each live session's open background tasks so the post-restart
-        daemon can relaunch them. Only sessions with a live driver can have live tasks."""
+        """At drain, persist each live session's open background work so the post-restart
+        daemon can act on it. Only sessions with a live driver can have live work.
+
+        "Act on it" is engine-dependent and the snapshot says which: Claude tasks come
+        back ``replayable`` and are relaunched, while Codex background terminals come
+        back ``replayable=False`` and are only reported, because they died with the
+        app-server and re-running their command lines would duplicate whatever they did
+        (#1284). ``build_rearm_prompt`` is where that distinction is honoured."""
         from sqlalchemy import update as sa_update
         session_ids = list(self._drivers.keys())
         if not session_ids:
             return
 
         async def _scan(sid: str):
-            path = self.transcript_path(sid)
-            if not path:
-                return sid, []
-            tasks = await asyncio.to_thread(scan_open_background_tasks, path)
-            log_event(log, logging.INFO, "bg_task_rescan", session_id=sid, open=len(tasks))
+            tasks = await self._open_background_work(sid)
+            # Emitted even at zero: "we asked and found nothing" and "we never asked"
+            # are different forensic answers, and only the breadcrumb tells them apart.
+            log_event(log, logging.INFO, "bg_task_rescan", session_id=sid,
+                      open=len(tasks),
+                      replayable=sum(1 for t in tasks if t.replayable))
             return sid, [t.to_dict() for t in tasks]
 
         results = await asyncio.gather(*(_scan(s) for s in session_ids),
@@ -9418,9 +10775,21 @@ class SessionOrchestrator:
         """Cancel an in-flight device-flow login for a copilot account."""
         return await self._copilot_auth.cancel(account)
 
-    async def copilot_usage(self, account: str) -> dict | None:
-        """Return the proxy /usage payload for a copilot account, or None."""
-        return self._copilot.usage(account) if self._copilot is not None else None
+    async def process_quota_refresh(
+        self, account: str, *, force: bool = False, persist: bool = True
+    ) -> dict | None:
+        """Fresh-enough quota for a process-backed (Copilot / Codex) account.
+
+        The accounts page's refresh button lands here with ``force=True``: the
+        account's process is started if it is not running, read once, and
+        handed to the idle reaper. Returns the canonical snapshot dict, or None
+        when this host cannot read the account (provider not available here,
+        start failure, cooldown). The daemon RPC layer forwards it verbatim.
+        """
+        snapshot = await self._process_quota.refresh(
+            account, force=force, persist=persist
+        )
+        return None if snapshot is None else snapshot.to_dict()
 
     # ------------------------------------------------------------------
     # Codex (OpenAI) account surfaces
@@ -9510,7 +10879,9 @@ class SessionOrchestrator:
             log.warning("codex model validation for %s degraded: %s", account, exc)
         return {"ok": True, "model": model, "effort": effort}
 
-    async def codex_account_status(self, account: str, *, persist: bool = True) -> dict:
+    async def codex_account_status(
+        self, account: str, *, persist: bool = True, force: bool = False
+    ) -> dict:
         """Everything host-local the accounts page needs about one OpenAI account.
 
         One RPC rather than three. Quota, the live runner count and the auth
@@ -9529,16 +10900,22 @@ class SessionOrchestrator:
                 "activeRunners": 0,
                 "degradedReason": None,
             }
-        # Deliberately NOT ensure()d: this is polled by the accounts page, and
-        # starting an app-server on every poll would keep one alive per account
-        # forever, defeating the idle reaper. With nothing running the reader
-        # answers UNKNOWN (or last-good with an age), which is the honest answer.
+        # Quota goes through the process-backed refresher. A live app-server is
+        # read on the REST cadence; with none running the ledger is served until
+        # its process TTL lapses, then ONE app-server is started for a single
+        # read and handed to the idle reaper. That bounds this page-driven read
+        # (polled every 30s) to one cold start per account per TTL — the reason
+        # it used to refuse ensure() outright — while an account with no session
+        # open still shows its quota, as an Anthropic account does. ``force`` is
+        # the refresh button: bypass the TTL and the cooldown.
+        snapshot = await self._process_quota.refresh(
+            account, force=force, persist=persist
+        )
+        if snapshot is None:
+            # Could not read right now (start failure, cooldown): a CURRENT
+            # unknown, never a stale AVAILABLE served as fresh.
+            snapshot = unknown_snapshot("openai")
         client = codex.client_for(account)
-        snapshot = await self._codex_quota_reader().read(account, client=client)
-        if persist:
-            from server.codex.quota import persist_quota_snapshot
-
-            await asyncio.to_thread(persist_quota_snapshot, account, snapshot)
         provider = getattr(codex, "external_auth", None)
         return {
             "quota": snapshot.to_dict(),
@@ -9958,6 +11335,16 @@ class SessionOrchestrator:
                 except Exception:
                     pass
 
+            # Claim the session before spawning anything (#1379). This is the choke
+            # point the duplicate-owner bug went through: after a fleet-wide daemon
+            # restart both hosts rehydrated the same row, both believed they owned it
+            # (the stamp flips during a cut-short drain), and both resumed the same
+            # conversation into the same worktree. `_owns_record` is a per-process
+            # OPINION; the lease is a fact both hosts read from the same row. Losing
+            # it returns None, which every caller of ensure_driver already handles.
+            if not await self._claim_session(session_id, why="resume"):
+                return None
+
             # Build and start a new driver resuming from the stored engine_session_id,
             # ON THE SESSION'S OWN ENGINE. This used to hardcode CLAUDE_CODE, so a
             # detached Codex session came back as a Claude driver pointed at a Codex
@@ -9981,7 +11368,7 @@ class SessionOrchestrator:
             # with the display-injecting factory but x11.env_for() returns {}, so the
             # claude subprocess launches with no DISPLAY and X rendering escapes the
             # virtual viewport. start_display is idempotent (no-op if already leased).
-            if self._x11 is not None:
+            if self._x11 is not None and getattr(rec, "display_mode", None) != DISPLAY_NATIVE:
                 try:
                     await self._x11.start_display(session_id)
                 except Exception:
@@ -10011,23 +11398,24 @@ class SessionOrchestrator:
             # would raise CodexRunnerUnavailable on its first call.
             await self._ensure_codex_runner(resume_engine, rec.account)
 
-            # An assistant's options overlay is rebuilt for EVERY driver build here, not
-            # just at spawn: it is what makes the session an assistant, and the idle
-            # reap drops it along with the driver. See _setup_assistant_overlay for why
-            # it must be rebuilt rather than preserved (the old one holds a closed
-            # loopback client and a token that may already have expired). Rebuilt per
-            # _build() call, so the fresh-start fallback below — which acloses the first
-            # driver, and with it the first AssistantApi — also gets a live one.
+            # A session's options overlay is rebuilt for EVERY driver build here, not
+            # just at spawn: for an assistant it is what makes the session an assistant,
+            # for a coding session it is its `ccswitch` MCP surface — and every teardown
+            # (close, archive, idle reap) drops it along with the driver. See
+            # _setup_assistant_overlay for why it must be rebuilt rather than preserved
+            # (the old one holds a closed loopback client and a token that may already
+            # have expired). Rebuilt per _build() call, so the fresh-start fallback
+            # below — which acloses the first driver, and with it the first
+            # AssistantApi — also gets a live one.
             built_assistant_apis: list[AssistantApi] = []
 
             async def _build(resume_arg):
-                assistant_api = None
-                if is_assistant(rec):
-                    # Must run before _create_driver: the SDK factory reads
-                    # self._assistant_overlays[session_id] when it builds the client.
-                    assistant_api = await self._setup_assistant_overlay(
-                        session_id, identity=identity, model=rec.model,
-                        engine=resume_engine)
+                # Must run before _create_driver: the SDK factory reads
+                # self._overlays[session_id] when it builds the client.
+                assistant_api = await self._setup_overlay_for_kind(
+                    session_id, kind=getattr(rec, "kind", None), identity=identity,
+                    model=rec.model, engine=resume_engine)
+                if assistant_api is not None:
                     built_assistant_apis.append(assistant_api)
                 return self._create_driver(
                     engine=resume_engine,
@@ -10133,16 +11521,15 @@ class SessionOrchestrator:
                             await driver.aclose()
                         raise
             except BaseException:
-                # The resume failed and no driver was registered: release what
-                # _setup_assistant_overlay allocated, mirroring _spawn_session's own
-                # start()-failure path. Leaving the overlay behind would let an
-                # unrelated later build for this id pick up a stale one holding a
-                # closed loopback client, and the httpx clients would leak.
-                if built_assistant_apis:
-                    self._assistant_overlays.pop(session_id, None)
-                    for _api in built_assistant_apis:
-                        with contextlib.suppress(Exception):
-                            await _api.aclose()
+                # The resume failed and no driver was registered, so no teardown path
+                # will run: release what _setup_overlay_for_kind allocated, mirroring
+                # _spawn_session's own start()-failure path. Leaving the overlay behind
+                # would let an unrelated later build for this id pick up a stale one
+                # holding a closed loopback client, and the httpx clients would leak.
+                self._overlays.pop(session_id, None)
+                for _api in built_assistant_apis:
+                    with contextlib.suppress(Exception):
+                        await _api.aclose()
                 raise
             finally:
                 if self._swapping.get(session_id) is swap_done:
@@ -10379,6 +11766,11 @@ class SessionOrchestrator:
                     )
 
         session_id = str(uuid.uuid4())
+        # A fresh id can never be contended, so this always wins — it is here to keep
+        # the invariant uniform ("a session with a live driver holds its lease"), so
+        # the reconcile pass and any later resume on another host see a consistent
+        # picture rather than a driver with no claim behind it (#1379).
+        await self._claim_session(session_id, why="adopt")
         Path(cand.cwd).mkdir(parents=True, exist_ok=True)
         driver_config_dir = self._driver_config_dir(
             AgentEngine.CLAUDE_CODE, cand.account, cand.cwd, None
@@ -10415,22 +11807,41 @@ class SessionOrchestrator:
                 suggester=self._suggester,
             )
 
+        # The FOURTH driver-build site (see the fix-pattern doc named on
+        # _setup_overlay_for_kind). An adopted process is always a coding session —
+        # never an assistant — so this arms its `ccswitch` MCP surface, which the
+        # system-prompt append tells every Claude session it has. Re-armed for the
+        # fresh-start rebuild below, like ensure_driver's `_build`.
+        await self._setup_overlay_for_kind(
+            session_id, kind=None, identity=identity, model=None,
+            engine=AgentEngine.CLAUDE_CODE)
+
         # Resume the conversation; fall back to a fresh session if resume fails so
         # the adopted record stays usable (prior transcript still shows via replay).
         resumed = True
-        driver = _build(claude_session_id)
         try:
-            await driver.start()
-        except Exception:
-            log.warning("adopt.resume_failed sid=%s; starting fresh",
-                        claude_session_id, exc_info=True)
+            driver = _build(claude_session_id)
             try:
-                await driver.aclose()
+                await driver.start()
             except Exception:
-                pass
-            driver = _build(None)
-            await driver.start()
-            resumed = False
+                log.warning("adopt.resume_failed sid=%s; starting fresh",
+                            claude_session_id, exc_info=True)
+                try:
+                    await driver.aclose()
+                except Exception:
+                    pass
+                await self._setup_overlay_for_kind(
+                    session_id, kind=None, identity=identity, model=None,
+                    engine=AgentEngine.CLAUDE_CODE)
+                driver = _build(None)
+                await driver.start()
+                resumed = False
+        except BaseException:
+            # The adoption failed with no driver registered, so no teardown path will
+            # release the overlay armed above — and this session_id is discarded, so a
+            # leaked entry could never be reclaimed.
+            self._overlays.pop(session_id, None)
+            raise
         self._drivers[session_id] = driver
 
         # The transcript mtime is the adopted session's real last-response time — seed the
@@ -10544,6 +11955,14 @@ class SessionOrchestrator:
         Clears the entry so subsequent attaches (reconnects) do not re-send them.
         """
         return self._pending_initial_attachment_ids.pop(session_id, None)
+
+    def pop_pending_notices(self, session_id: str) -> list[dict]:
+        """Return and clear the queued proactive watch notices for session_id
+        (Task 8.4). Called by the WS bridge on attach, alongside
+        pop_pending_initial_prompt/pop_pending_initial_attachment_ids, so a notice
+        queued by post_notice while the drawer had no live driver is delivered on
+        the next open rather than lost."""
+        return self._pending_notices.pop(session_id, [])
 
     async def send_prompt(self, session_id, text, attachment_ids=None, *,
                           interrupt: bool = False,
@@ -11604,7 +13023,9 @@ class SessionOrchestrator:
 
         Also handles accounts that become persistently unreachable (usage=None for
         _UNREACHABLE_ROTATION_THRESHOLD consecutive polls) — the canonical case is a
-        Copilot proxy that exits when its premium-request quota is exhausted.
+        Copilot proxy that exits when its premium-request quota is exhausted. Fires
+        `account_limited` (#1354 kind="account" watch) once per account entering either
+        branch, debounced via `_account_limited_notified` and cleared on recovery.
         """
         q = self._poller.subscribe()
         try:
@@ -11629,11 +13050,22 @@ class SessionOrchestrator:
                         # Rotating off such an account finds no better target and parks
                         # the session as needs_attention for nothing.
                         self._maybe_sweep_on_recovery()
+                        self._account_limited_notified.discard(account)
                         continue
                     limiting = _limiting_window(usage, _ROTATION_CEILING)
                     session_pct = limiting.used_pct if limiting is not None else 0.0
                     reason = (f"{limiting.label} limit reached" if limiting is not None
                               else "usage limit reached")
+
+                # #1354 kind="account" watch: fire once per account entering this branch
+                # (unreachable proxy or usage-ceiling exhaustion), cleared on the recovery
+                # continue above so a later re-exhaustion re-fires.
+                if account not in self._account_limited_notified:
+                    self._account_limited_notified.add(account)
+                    await push_mod.notify_event(
+                        "account_limited", f"{brand.NAME} — account limited",
+                        f"{account}: {reason.replace('_', ' ')}",
+                        account=account, orch=self)
 
                 # Find all live sessions on this account and rotate them.
                 enabled_hosts = await self._enabled_host_names()
@@ -12518,6 +13950,14 @@ class SessionOrchestrator:
                                    phase=f"reassign.interrupt:{record.id}")
                 await old_driver.aclose()
             Path(cwd).mkdir(parents=True, exist_ok=True)
+            # Re-assert the lease across the swap (#1379). We normally already hold it
+            # — a reassign only runs on a session with a live driver — so this just
+            # refreshes the fence. It matters when the lease was FENCED away while the
+            # old driver kept running: relaunching then would hand a session that
+            # another host has already claimed a second CLI, which is the bug. Refuse
+            # instead; the caller's `except` pauses the session for a human.
+            if not await self._claim_session(record.id, why=f"relaunch ({reason})"):
+                raise SessionLeaseHeld(record.id)
             driver_config_dir = self._driver_config_dir(
                 record.engine,
                 new_account,
@@ -12531,18 +13971,19 @@ class SessionOrchestrator:
             # up before a driver can attach to it, exactly as a fresh spawn or a
             # detached resume already requires (see ensure_driver).
             await self._ensure_codex_runner(record.engine, new_account)
-            # An assistant-kind session's overlay carries an AssistantApi whose MCP
-            # tool handlers close over a live httpx.AsyncClient. old_driver.aclose()
-            # above already closed that client (it belonged to old_driver), so every
-            # mcp__ccswitch__* call on the rebuilt driver would raise against a dead
-            # connection unless a FRESH AssistantApi is minted here and re-registered
-            # under record.id before the new AgentDriver is built — the same
-            # _setup_assistant_overlay the spawn and the resume use (#1125).
-            assistant_api = None
-            if is_assistant_kind(getattr(record, "kind", None)):
-                assistant_api = await self._setup_assistant_overlay(
-                    record.id, identity=identity, model=record.model,
-                    engine=record.engine)
+            # This is the THIRD driver-build site, so it re-arms the overlay too. It
+            # matters most for an assistant, whose overlay carries an AssistantApi
+            # whose MCP tool handlers close over a live httpx.AsyncClient:
+            # old_driver.aclose() above already closed that client (it belonged to
+            # old_driver), so every mcp__ccswitch__* call on the rebuilt driver would
+            # raise against a dead connection unless a FRESH AssistantApi is minted
+            # here and re-registered under record.id before the new AgentDriver is
+            # built — the same _setup_overlay_for_kind the spawn and the resume use
+            # (#1125). A coding session's `ccswitch` surface is rebuilt for the same
+            # reason: the rotation drops the driver the overlay belonged to.
+            assistant_api = await self._setup_overlay_for_kind(
+                record.id, kind=getattr(record, "kind", None), identity=identity,
+                model=record.model, engine=record.engine)
             new_driver = self._create_driver(
                 engine=record.engine,
                 session_id=record.id,
@@ -12568,8 +14009,11 @@ class SessionOrchestrator:
             try:
                 await new_driver.start()
             except Exception:
+                # No driver was registered, so no teardown path will release the
+                # overlay this build armed — drop it here rather than leave a stale
+                # one for the next build to inherit.
+                self._overlays.pop(record.id, None)
                 if assistant_api is not None:
-                    self._assistant_overlays.pop(record.id, None)
                     await assistant_api.aclose()
                 raise
             self._install_driver(record.id, new_driver)
@@ -13449,7 +14893,7 @@ class SessionOrchestrator:
         )
 
     async def _codex_replay(self, session_id: str, *,
-                            ref: "_RowEngineRef | None" = None) -> "EngineReplay | None":
+                            ref: "_RowEngineRef | None" = None) -> "CodexThreadReplay | None":
         """`CodexThreadReplay` bound to this session's thread on its OWN runner.
 
         A Codex thread can only be read by the app-server that owns the account, so a

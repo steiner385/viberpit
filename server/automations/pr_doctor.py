@@ -23,10 +23,23 @@ class PrDoctor:
     name = "PR Doctor"
     description = "Watches CI on PRs created via ccswitch and restores failing ones."
     modes = _ordered_modes()
-    # Audited engine ceiling (Phase 7, Task 7.1). This origin has no Codex
-    # acceptance evidence, so it launches Claude only. Widening it is a
-    # reviewable one-line change gated on its acceptance suite passing.
-    engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
+    # Audited engine ceiling (Phase 7, Task 7.1; widened #1267). The offline
+    # acceptance suite (server/tests/test_pr_doctor_codex_acceptance.py) passes:
+    # prompt contract (incl. the commit-trailer wiring in server/sessions/pr_fix.py),
+    # launch preconditions, both spawn sites (session-fix, consolidation) resolving
+    # engine before the clone/model-assessment tail, and injection into an
+    # already-live session (which reuses the shared, already engine-neutral
+    # AgentDriver.send_prompt contract and needs no changes here). The suite's own
+    # last item — a live Codex session actually restoring or consolidating a real
+    # PR — is explicitly NOT covered here; the owner reviewed that gap and accepted
+    # it to widen this ceiling now rather than block on it (#1267), the same
+    # decision already made for backlog-runner (#1264) and the SDLC/PM origins.
+    # Three independent gates still stand between this and a live Codex launch:
+    # CCSWITCH_CODEX_AUTOMATIONS_ENABLED (default false, global kill switch), this
+    # automation's own `engine` config opt-in (default "claude"), and
+    # CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN (default false, required for an
+    # unattended Codex session to reach the network at all).
+    engine_policy: EnginePolicy = EnginePolicy.CODEX_ALLOWED
     config_schema = [
         ConfigField(key="enabled_repos", label="Repositories",
                     type="repo-multiselect", default=[],

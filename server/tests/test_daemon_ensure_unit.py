@@ -2,13 +2,13 @@
 """Regression coverage for #765: the daemon stayed dead for 45 minutes after a
 cancelled start job.
 
-``ccswitch-daemon.service`` has ``Requires=ccswitch-mounts.service``. When that mount
+``viberpit-daemon.service`` has ``Requires=viberpit-mounts.service``. When that mount
 unit is not ready at boot, systemd CANCELS the daemon's start job outright and the unit
 sits inactive forever — ``Restart=always`` never engages, because it only restarts a
 process that actually ran and exited. On 2026-08-25 the sshfs mount recovered on its own
 minutes after boot, but nothing ever retried the daemon.
 
-``ccswitch-daemon-ensure.timer`` closes that gap ON the daemon host, so recovery needs
+``viberpit-daemon-ensure.timer`` closes that gap ON the daemon host, so recovery needs
 neither the network nor SSH (both were unavailable during the incident).
 
 The load-bearing assertion here is the MOUNT GUARD. Starting the daemon into a dead
@@ -20,8 +20,8 @@ self-limiting outage into a crash loop.
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-UNIT = ROOT / "deploy" / "ccswitch-daemon-ensure.service"
-TIMER = ROOT / "deploy" / "ccswitch-daemon-ensure.timer"
+UNIT = ROOT / "deploy" / "viberpit-daemon-ensure.service"
+TIMER = ROOT / "deploy" / "viberpit-daemon-ensure.timer"
 
 
 def test_ensure_unit_exists_and_is_oneshot():
@@ -32,7 +32,7 @@ def test_ensure_unit_exists_and_is_oneshot():
 def test_ensure_unit_no_ops_when_daemon_already_active():
     """It must not restart a healthy daemon — that is Restart='s job, not this one."""
     unit = UNIT.read_text()
-    assert "is-active --quiet ccswitch-daemon.service" in unit
+    assert "is-active --quiet viberpit-daemon.service" in unit
     assert "exit 0" in unit
 
 
@@ -43,12 +43,12 @@ def test_ensure_unit_refuses_to_start_the_daemon_without_healthy_mounts():
     mount that killed it, once a minute, forever.
     """
     unit = UNIT.read_text()
-    assert "is-active --quiet ccswitch-mounts.service" in unit, (
+    assert "is-active --quiet viberpit-mounts.service" in unit, (
         "the ensure unit must gate on the mount unit, not merely on the daemon being down"
     )
     exec_start = unit.split("ExecStart=", 1)[1]
-    guard = exec_start.index("ccswitch-mounts.service")
-    start = exec_start.index("systemctl start ccswitch-daemon.service")
+    guard = exec_start.index("viberpit-mounts.service")
+    start = exec_start.index("systemctl start viberpit-daemon.service")
     assert guard < start, "the mount check must precede the start, or it guards nothing"
 
 
@@ -66,7 +66,7 @@ def test_timer_fires_soon_after_boot_and_then_periodically():
     boot = next(line for line in timer.splitlines() if line.startswith("OnBootSec="))
     assert int(boot.split("=", 1)[1]) <= 60, "a long OnBootSec is outage time"
     assert "OnUnitActiveSec=" in timer
-    assert "Unit=ccswitch-daemon-ensure.service" in timer
+    assert "Unit=viberpit-daemon-ensure.service" in timer
     assert "WantedBy=timers.target" in timer
 
 
@@ -76,10 +76,10 @@ def test_health_check_no_longer_claims_restart_always_covers_this():
     It logged "not our job (systemd Restart=always owns this)" every 60s for the whole
     outage. Leaving that reasoning documented as true is how the gap reappears.
     """
-    script = (ROOT / "scripts" / "ccswitch-health-check.sh").read_text()
+    script = (ROOT / "scripts" / "viberpit-health-check.sh").read_text()
     assert "Restart=always already owns recovery" not in script, (
         "the false premise from #765 must not be restated as fact"
     )
-    assert "ccswitch-daemon-ensure.timer" in script, (
+    assert "viberpit-daemon-ensure.timer" in script, (
         "the script should name what actually covers the cancelled-start-job case"
     )

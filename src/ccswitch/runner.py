@@ -12,6 +12,7 @@ from .config import load_config
 from .configdir import compose
 from .crypto import read_oauth_token
 from .detect import detect_limit_in_result
+from .env_compat import mirror_legacy_env
 from .engines import AgentEngine, InvalidAgentEngine, parse_agent_engine
 from .selector import AllAccountsBusy
 
@@ -61,6 +62,7 @@ def _parse_leading_flags(argv: list[str]) -> tuple[bool, str | None, list[str]]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    mirror_legacy_env()  # VIBERPIT_* <-> CCSWITCH_*, before any setting is read
     argv = list(sys.argv[1:] if argv is None else argv)
     wait, engine_value, argv = _parse_leading_flags(argv)
     try:

@@ -21,9 +21,13 @@ class _RecordingClient:
     def __init__(self, return_value):
         self.return_value = return_value
         self.last_call = None
+        self.last_timeout = None
 
-    async def call(self, method, **kwargs):
+    async def call(self, method, *, timeout=None, **kwargs):
+        # `timeout` is the client's own per-call budget, not an RPC param — kept
+        # apart so the wire-compat assertions below stay about the wire.
         self.last_call = (method, kwargs)
+        self.last_timeout = timeout
         return self.return_value
 
 
@@ -46,6 +50,25 @@ async def test_create_session_rejects_codex_without_dispatching_on_protocol_v1()
         await remote.create_session(name="S", engine="codex")
 
     assert client.last_call is None
+
+
+@pytest.mark.asyncio
+async def test_pr_detail_forwards_repo_and_number_and_unwraps_detail():
+    client = _RecordingClient({"detail": {"number": 42, "checks": []}})
+    remote = RemoteOrchestrator(client)
+
+    result = await remote.pr_detail("o/r", 42)
+
+    assert client.last_call == ("pr_detail", {"repo": "o/r", "number": 42})
+    assert result == {"number": 42, "checks": []}
+
+
+@pytest.mark.asyncio
+async def test_pr_detail_none_survives_the_rpc():
+    client = _RecordingClient({"detail": None})
+    remote = RemoteOrchestrator(client)
+
+    assert await remote.pr_detail("o/r", 999) is None
 
 
 @pytest.mark.asyncio
@@ -193,28 +216,34 @@ async def test_prs_for_over_uds():
 
 
 @pytest.mark.asyncio
-async def test_automation_spawn_rpcs_use_extended_timeout():
-    """consolidate/trigger run the whole clone→model-pick→spawn pipeline inline
-    in the daemon RPC and legitimately exceed the 30s client default, so the
-    edge must pass an extended per-call timeout or it 503s a spawn the daemon
-    actually completes (issue #567)."""
-    from server.sessions.remote import AUTOMATION_RPC_TIMEOUT, RemoteOrchestrator
+async def test_spawn_shaped_rpcs_use_extended_timeout():
+    """create_session and the automation consolidate/trigger RPCs all run the whole
+    clone→worktree→spawn pipeline inline in the daemon and legitimately exceed the
+    30s client default (12–41s observed for automations). #567 gave the automation
+    calls headroom; the user path was left on the default, so a slow create 503'd
+    at 30s while the daemon finished it 2s later, and the user's retry made a
+    duplicate session (2026-09-07). Every spawn-shaped RPC must carry the budget."""
+    from server.sessions.remote import SPAWN_RPC_TIMEOUT, RemoteOrchestrator
 
     calls: list[tuple[str, float | None]] = []
 
     class _RecordingClient:
         async def call(self, method, *, timeout=None, **params):
             calls.append((method, timeout))
+            if method == "create_session":
+                return {"session": _rec().to_dict()}
             return {"status": "spawned"}
 
     ro = RemoteOrchestrator(_RecordingClient())
     await ro.automation_consolidate("o/r", [1, 2])
     await ro.automation_trigger("pr-doctor", "o/r#1", "ci_failure")
+    await ro.create_session(name="S")
 
-    assert AUTOMATION_RPC_TIMEOUT > 30.0
+    assert SPAWN_RPC_TIMEOUT > 30.0
     by_method = dict(calls)
-    assert by_method["automation_consolidate"] == AUTOMATION_RPC_TIMEOUT
-    assert by_method["automation_trigger"] == AUTOMATION_RPC_TIMEOUT
+    assert by_method["automation_consolidate"] == SPAWN_RPC_TIMEOUT
+    assert by_method["automation_trigger"] == SPAWN_RPC_TIMEOUT
+    assert by_method["create_session"] == SPAWN_RPC_TIMEOUT
 
 
 @pytest.mark.asyncio
@@ -371,8 +400,9 @@ async def test_remote_orchestrator_refine_prompt_codex_forwards_to_daemon():
     # (transcript_window's pattern) so the client does not give up first.
     assert client.last_call == (
         "refine_prompt_codex",
-        {"account": "codex-bot", "prompt": "fix the bug", "timeout_s": 20.0, "timeout": 30.0},
+        {"account": "codex-bot", "prompt": "fix the bug", "timeout_s": 20.0},
     )
+    assert client.last_timeout == 30.0
 
 
 @pytest.mark.asyncio
@@ -385,6 +415,7 @@ async def test_remote_orchestrator_refine_prompt_codex_omits_timeout_when_unset(
     assert client.last_call == (
         "refine_prompt_codex", {"account": "codex-bot", "prompt": "fix the bug"},
     )
+    assert client.last_timeout is None
 
 
 def test_remote_orchestrator_latest_summary_proxies_with_viewing():

@@ -49,6 +49,15 @@ UNSUPPORTED = "unsupported"  # provider boundary does not expose quota
 
 AVAILABILITIES = frozenset({AVAILABLE, UNKNOWN, AUTH_ERROR, UNSUPPORTED})
 
+# --- reason -----------------------------------------------------------------
+# The machine-readable WHY behind a non-AVAILABLE availability, when the producer
+# knows it. ``availability`` alone cannot tell apart two UNSUPPORTED cases that
+# call for opposite actions: a provider with no quota API (nothing to do) and an
+# Anthropic setup-token minted without ``user:profile``, which will report the
+# moment the account is re-authenticated. Codes are a wire contract (ledger,
+# accounts API, browser) — never rename one; the browser words them.
+REASON_SETUP_TOKEN_SCOPE = "setup_token_scope"
+
 # --- window scope -----------------------------------------------------------
 # ACCOUNT: the window meters everything the account does.
 # MODEL:   the window meters only the models in ``applies_to_models``.
@@ -153,6 +162,9 @@ class QuotaSnapshot:
     # tier requires it in addition to the local opt-in. Kept on the snapshot
     # because it arrives on the same upstream read as the windows do.
     extra_usage_enabled: bool = False
+    # Why the read is not AVAILABLE (a ``REASON_*`` code), or None when it is or
+    # when the producer could not say. Carries no meaning on an AVAILABLE read.
+    reason: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "windows", tuple(self.windows))
@@ -229,6 +241,7 @@ class QuotaSnapshot:
             "availability": self.availability,
             "extra_usage_enabled": self.extra_usage_enabled,
             "windows": [w.to_dict() for w in self.windows],
+            "reason": self.reason,
         }
 
     @classmethod
@@ -247,6 +260,8 @@ class QuotaSnapshot:
             availability=str(d.get("availability") or default_availability),
             windows=tuple(QuotaWindow.from_dict(w) for w in (raw_windows or ())),
             extra_usage_enabled=bool(d.get("extra_usage_enabled")),
+            # Absent on older blobs and on every AVAILABLE read — None, not "".
+            reason=(str(d["reason"]) if d.get("reason") else None),
         )
 
 
@@ -306,11 +321,16 @@ def copilot_snapshot(premium_pct: float,
 
 
 def unknown_snapshot(provider: str, *, fetched_at: datetime | None = None,
-                     availability: str = UNKNOWN) -> QuotaSnapshot:
-    """A read that failed. No windows — absence of data, never a fabricated 0%."""
+                     availability: str = UNKNOWN,
+                     reason: str | None = None) -> QuotaSnapshot:
+    """A read that failed. No windows — absence of data, never a fabricated 0%.
+
+    ``reason`` names why, when the producer knows (a ``REASON_*`` code).
+    """
     return QuotaSnapshot(
         provider=provider,
         fetched_at=fetched_at or datetime.now(timezone.utc),
         availability=availability,
         windows=(),
+        reason=reason,
     )

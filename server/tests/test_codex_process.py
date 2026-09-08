@@ -625,3 +625,23 @@ def test_default_mounts_reader_reads_the_real_proc_mounts():
     mounts = proc.read_mounts()
     assert any(point == "/" for point, _ in mounts)
     assert proc.filesystem_type_for(os.getcwd()) is not None
+
+
+def test_process_widens_the_stdout_line_limit_for_thread_reads(tmp_path):
+    """#1444: a `thread/read` reply is ONE JSON line, and a long thread's exceeds
+    asyncio's default 64 KiB `StreamReader` limit. The overrun surfaced as a fatal
+    `CodexFramingError` that latched the client closed for good."""
+
+    async def go():
+        child, calls = _FakeChild(), []
+        p = proc.CodexProcess(
+            "/usr/bin/codex", tmp_path, spawn=_fake_spawn(child, calls),
+            parent_env={"PATH": "/usr/bin"},
+        )
+        await p.start()
+        _, kwargs = calls[0]
+        assert kwargs["limit"] == proc.APP_SERVER_STREAM_LIMIT
+        assert proc.APP_SERVER_STREAM_LIMIT >= 8 * 1024 * 1024
+        await p.stop()
+
+    asyncio.run(go())

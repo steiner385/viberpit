@@ -130,7 +130,8 @@ async def test_consolidate_passes_pinned_session_model(tmp_path, monkeypatch):
     assert status == "spawning"
     await _drain_consolidations(orch)
     assert spawned["model"] == "fable"
-    assert spawned["detail"] == {"model": "fable", "model_source": "pinned"}
+    assert spawned["detail"] == {
+        "engine": "claude_code", "model": "fable", "model_source": "pinned"}
 
 
 @pytest.mark.asyncio

@@ -1,12 +1,13 @@
-/** Presenter for `ToolKind.APP_ACTION` tool calls (the ccswitch MCP server
+import { mcpToolStem } from '@/brand'
+
+/** Presenter for `ToolKind.APP_ACTION` tool calls (the app's own MCP server
  * talking to itself — spec §4.4/§4.8). Keyed by the BARE tool name (the part
- * after the `mcp__ccswitch__` prefix), mirroring `TOOL_SPECS` in
+ * after the `mcp__viberpit__` prefix), mirroring `TOOL_SPECS` in
  * server/assistant/tools.py — the two maps' KEY SETS must stay identical
  * (checked cross-language via appActions.test.ts + the fixture it shares with
  * server/tests/test_assistant_tools.py). Title text itself is independent:
  * the server side names tools for permission-card summaries ("List sessions"),
  * this side names completed actions for transcript rows ("Listed sessions"). */
-const MCP_CCSWITCH_PREFIX = 'mcp__ccswitch__'
 
 export const APP_ACTION_TITLES: Record<string, string> = {
   list_sessions: 'Listed sessions',
@@ -19,6 +20,7 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   list_accounts: 'Listed accounts',
   list_hosts: 'Listed fleet hosts',
   list_prs: 'Listed pull requests',
+  get_pr: 'Got pull request detail',
   get_pipeline_health: 'Checked CI health',
   list_repos: 'Listed repositories',
   list_branches: 'Listed branches',
@@ -48,6 +50,10 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   get_pr_doctor_consolidation: 'Checked PR consolidation',
   get_pr_doctor_job: 'Checked PR doctor job',
   preview_schedule: 'Previewed a schedule',
+  list_presets: 'Listed presets',
+  list_templates: 'Listed templates',
+  render_template: 'Rendered a template',
+  list_permission_profiles: 'Listed permission profiles',
   report_gap: 'Recorded a capability gap',
   create_session: 'Started a session',
   send_prompt: 'Sent a prompt',
@@ -59,8 +65,14 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   resolve_model_approval: 'Resolved model approval',
   archive_session: 'Archived session',
   unarchive_session: 'Unarchived session',
+  archive_sessions: 'Archived sessions',
+  unarchive_sessions: 'Unarchived sessions',
+  resume_sessions: 'Resumed sessions',
+  rotate_sessions: 'Rotated sessions',
   set_autopilot_paused: 'Changed autopilot pause',
   fix_pr: 'Fixed a pull request',
+  comment_on_pr: 'Commented on a pull request',
+  create_issue: 'Filed a GitHub issue',
   set_automation_enabled: 'Changed automation',
   rename_session: 'Renamed session',
   move_in_queue: 'Reordered queued session',
@@ -78,6 +90,7 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   resolve_triage: 'Resolved triage proposal',
   request_product_sync: 'Requested product sync',
   delete_session: 'Deleted session permanently',
+  delete_sessions: 'Deleted sessions permanently',
   cancel_queued_session: 'Cancelled queued session',
   ready_merge_pr: 'Readied + auto-merged PR',
   trigger_automation_action: 'Triggered an automation action',
@@ -92,10 +105,11 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   start_reauth: 'Started account re-auth',
 }
 
-/** `fullToolName` is the wire name, e.g. `mcp__ccswitch__list_sessions`. Returns
- * `undefined` for anything not in the map (including non-ccswitch MCP tools) so
- * callers can fall back to the raw name. */
+/** `fullToolName` is the wire name, e.g. `mcp__viberpit__list_sessions` (or its
+ * pre-rebrand `mcp__ccswitch__` spelling, which replayed transcripts still carry).
+ * Returns `undefined` for anything not in the map (including third-party MCP
+ * tools) so callers can fall back to the raw name. */
 export function appActionTitle(fullToolName: string): string | undefined {
-  if (!fullToolName.startsWith(MCP_CCSWITCH_PREFIX)) return undefined
-  return APP_ACTION_TITLES[fullToolName.slice(MCP_CCSWITCH_PREFIX.length)]
+  const stem = mcpToolStem(fullToolName)
+  return stem === undefined ? undefined : APP_ACTION_TITLES[stem]
 }

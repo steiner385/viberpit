@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from ccswitch import quota
 from ccswitch.quota import (AUTH_ERROR, AVAILABLE, QuotaSnapshot, QuotaWindow,
-                            SCOPE_MODEL, UNKNOWN, anthropic_snapshot,
+                            SCOPE_MODEL, UNKNOWN, UNSUPPORTED, anthropic_snapshot,
                             copilot_snapshot, unknown_snapshot)
 
 NOW = datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc)
@@ -107,3 +107,19 @@ def test_explicit_availability_and_explicit_windows_still_win():
     assert QuotaSnapshot.from_dict(
         {"provider": "anthropic", "windows": [], "availability": AUTH_ERROR}
     ).availability == AUTH_ERROR
+
+
+def test_reason_explains_a_non_available_snapshot_and_survives_a_roundtrip():
+    """``reason`` is the machine-readable WHY behind a non-AVAILABLE availability.
+
+    ``availability`` alone could not tell a setup-token that can never read usage
+    (needs a re-auth) from a provider that simply has no quota API (nothing to
+    do) — both are UNSUPPORTED. The reason rides along so the UI can say which.
+    """
+    u = unknown_snapshot("anthropic", fetched_at=NOW, availability=UNSUPPORTED,
+                         reason=quota.REASON_SETUP_TOKEN_SCOPE)
+    assert u.reason == quota.REASON_SETUP_TOKEN_SCOPE
+    assert QuotaSnapshot.from_dict(u.to_dict()) == u
+    # Absent on the wire (older blobs, every AVAILABLE snapshot) decodes as None.
+    assert QuotaSnapshot.from_dict({"provider": "anthropic", "windows": []}).reason is None
+    assert anthropic_snapshot(1.0, NOW, 2.0, NOW, fetched_at=NOW).reason is None

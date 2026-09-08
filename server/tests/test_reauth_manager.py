@@ -705,6 +705,13 @@ async def test_success_writes_audit_row_no_token_material():
 import ccswitch.setup_token_oauth as _sto
 
 
+@pytest.fixture(autouse=True)
+def _token_has_usage_scope(monkeypatch):
+    """submit_code() confirms the freshly minted token's scope against the real
+    profile endpoint; the fake tokens here must never reach the network."""
+    monkeypatch.setattr("ccswitch.oauth.has_usage_scope", lambda tok: True)
+
+
 def _make_manager(monkeypatch, tmp_path):
     """Construct a ReauthManager with key available and setup_token_oauth.begin() mocked."""
     from server.reauth import ReauthManager
@@ -749,6 +756,47 @@ async def test_setup_token_submit_code_stores_token(monkeypatch, tmp_path):
     assert stored.get("acct") == "sk-ant-oat01-OK123"
     assert stored.get("reauth") == "acct"
     assert mgr.status("acct").state == "success"
+
+
+@pytest.mark.asyncio
+async def test_submit_code_reports_a_token_minted_without_the_usage_scope(monkeypatch, tmp_path, caplog):
+    """The one scope failure the exchange cannot see: the authorize page grants
+    the code but silently narrows it. The token is stored (it launches sessions),
+    the run still succeeds, but the user is told usage will not report — and the
+    log names the scope that was asked for, so the next re-auth is diagnosable."""
+    mgr = _make_manager(monkeypatch, tmp_path)
+    monkeypatch.setattr("ccswitch.crypto.store_oauth_token", lambda name, tok: None)
+    monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda name: None)
+    monkeypatch.setattr(_sto, "exchange", lambda code, ch: "sk-ant-oat01-NARROW")
+    monkeypatch.setattr("ccswitch.oauth.has_usage_scope", lambda tok: False)
+
+    await mgr.start("acct", "id@example.com", mode="setup_token")
+    with caplog.at_level("WARNING"):
+        st = await mgr.submit_code("acct", f"CODE#{mgr._setup_challenge.state}")
+
+    assert st.state == "success"
+    assert "usage" in (st.message or "").lower()
+    assert "user:profile" in (st.message or "")
+    assert any("user:profile" in r.getMessage() and "NARROW" not in r.getMessage()
+               for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_submit_code_scope_probe_failure_does_not_fail_the_reauth(monkeypatch, tmp_path):
+    """The probe is advisory: a network blip must not turn a stored token into an error."""
+    mgr = _make_manager(monkeypatch, tmp_path)
+    monkeypatch.setattr("ccswitch.crypto.store_oauth_token", lambda name, tok: None)
+    monkeypatch.setattr("ccswitch.accounts.mark_reauthenticated", lambda name: None)
+    monkeypatch.setattr(_sto, "exchange", lambda code, ch: "sk-ant-oat01-OK")
+
+    def boom(tok):
+        raise OSError("no route to host")
+
+    monkeypatch.setattr("ccswitch.oauth.has_usage_scope", boom)
+    await mgr.start("acct", "id@example.com", mode="setup_token")
+    st = await mgr.submit_code("acct", f"CODE#{mgr._setup_challenge.state}")
+    assert st.state == "success"
+    assert st.message is None
 
 
 @pytest.mark.asyncio
@@ -1096,3 +1144,65 @@ async def test_timeout_cleans_up_temp_profile(tmp_path, monkeypatch):
     assert m.status("primary").state == "timeout"
     assert not temp_profile.exists(), "timeout must remove the temp profile directory"
     assert m._state._temp_profile is None
+
+
+# --- setup-token scope fallback ---------------------------------------------
+# The paste-code reauth now asks for `user:profile` so the minted token can read
+# the usage endpoint. That scope is unverified against the long-lived grant, and
+# this is the fleet's last-resort recovery path, so a refusal must degrade to the
+# old narrow scope rather than leave the user unable to re-authenticate at all.
+
+@pytest.mark.asyncio
+async def test_scope_refusal_reissues_challenge_at_the_narrow_scope(monkeypatch):
+    from ccswitch import setup_token_oauth as sto
+
+    mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
+    await mgr.start("alpha", "tester", mode="setup_token")
+    assert mgr._setup_challenge.scope == sto.DEFAULT_SCOPE
+
+    def refuse_scope(code, challenge):
+        raise sto.SetupTokenInvalidCode("nope", body='{"error":"invalid_scope"}')
+
+    monkeypatch.setattr(sto, "exchange", refuse_scope)
+    state = await mgr.submit_code("alpha", "abc#def")
+
+    # Not an error state: the user gets a fresh link at the narrow scope.
+    assert state.state == "awaiting_code"
+    assert mgr._setup_challenge.scope == sto.FALLBACK_SCOPE
+    assert f"scope={sto.FALLBACK_SCOPE.replace(':', '%3A')}" in state.auth_url \
+        or "user%3Ainference" in state.auth_url
+    assert "usage" in (state.message or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_scope_fallback_fires_at_most_once(monkeypatch):
+    """A second refusal is a real failure — never an endless re-issue loop."""
+    from ccswitch import setup_token_oauth as sto
+
+    mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
+    await mgr.start("alpha", "tester", mode="setup_token")
+
+    def refuse_scope(code, challenge):
+        raise sto.SetupTokenInvalidCode("nope", body='{"error":"invalid_scope"}')
+
+    monkeypatch.setattr(sto, "exchange", refuse_scope)
+    assert (await mgr.submit_code("alpha", "abc#def")).state == "awaiting_code"
+    second = await mgr.submit_code("alpha", "abc#def")
+    assert second.state == "error"
+
+
+@pytest.mark.asyncio
+async def test_expired_code_does_not_trigger_the_scope_fallback(monkeypatch):
+    """An ordinary invalid_grant must fail plainly, not send the user in circles."""
+    from ccswitch import setup_token_oauth as sto
+
+    mgr = ReauthManager(x11=None, key_available=lambda: True, timeout_s=30)
+    await mgr.start("alpha", "tester", mode="setup_token")
+
+    def expired(code, challenge):
+        raise sto.SetupTokenInvalidCode("nope", body='{"error":"invalid_grant"}')
+
+    monkeypatch.setattr(sto, "exchange", expired)
+    state = await mgr.submit_code("alpha", "abc#def")
+    assert state.state == "error"
+    assert mgr._setup_challenge.scope == sto.DEFAULT_SCOPE  # unchanged

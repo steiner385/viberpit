@@ -1,16 +1,28 @@
 """Pure helpers for the PR auto-fix feature: the policy-mode vocabulary and the
 branch-aware fix prompt. No I/O — kept pure so it's trivially testable and so the
-orchestrator method that wires it stays small."""
+orchestrator method that wires it stays small.
+
+Engine-neutral by construction (Phase 7, #1267): every instruction is a git/gh
+fact that holds for any native agent. The one engine-specific detail, the commit
+attribution trailer, comes from ``server.sessions.completion.commit_trailer`` —
+a Codex session must not be told to co-author its commits as Claude.
+"""
 from __future__ import annotations
 
+from ccswitch.engines import AgentEngine
+
 from server.github.pr_status import PullRequestInfo
+from server.sessions.completion import commit_trailer
 
 # The single source of truth for the pr-doctor mode vocabulary. The orchestrator
 # validates the pr-doctor automation registry row's `mode` against this set.
 VALID_AUTOFIX_MODES: frozenset[str] = frozenset({"off", "propose", "auto"})
 
 
-def build_pr_fix_prompt(repo: str, pr: PullRequestInfo) -> str:
+def build_pr_fix_prompt(
+    repo: str, pr: PullRequestInfo, *,
+    engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+) -> str:
     """A system-originated prompt instructing the owning session to restore a
     failing PR.
 
@@ -28,13 +40,18 @@ def build_pr_fix_prompt(repo: str, pr: PullRequestInfo) -> str:
         f"`gh pr checkout {pr.number}` (then `git pull` to get the latest).\n"
         f"2. Inspect what's red: `gh pr checks {pr.number}` and reproduce the failing "
         f"job locally (run the relevant tests/lint/build).\n"
-        f"3. Fix the root cause, commit, and push so CI re-runs.\n"
+        f"3. Fix the root cause, commit, and push so CI re-runs. End the commit "
+        f"message with:\n"
+        f"   `{commit_trailer(engine)}`\n"
         f"4. Briefly report what was broken and what you changed.\n\n"
         f"PR: {pr.url}"
     )
 
 
-def build_conflict_fix_prompt(repo: str, pr: PullRequestInfo) -> str:
+def build_conflict_fix_prompt(
+    repo: str, pr: PullRequestInfo, *,
+    engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+) -> str:
     """A system-originated prompt instructing the owning session to resolve a
     merge conflict on a PR.
 
@@ -59,13 +76,17 @@ def build_conflict_fix_prompt(repo: str, pr: PullRequestInfo) -> str:
         f"4. Run the tests/lint/build to confirm the resolution is correct.\n"
         f"5. Commit the resolution and push (a rebase needs "
         f"`git push --force-with-lease`; a merge is a normal `git push`) so the PR "
-        f"becomes mergeable and CI re-runs.\n"
+        f"becomes mergeable and CI re-runs. End the commit message with:\n"
+        f"   `{commit_trailer(engine)}`\n"
         f"6. Briefly report which files conflicted and how you reconciled them.\n\n"
         f"PR: {pr.url}"
     )
 
 
-def build_consolidation_prompt(repo: str, base: str, prs: list[PullRequestInfo]) -> str:
+def build_consolidation_prompt(
+    repo: str, base: str, prs: list[PullRequestInfo], *,
+    engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+) -> str:
     """A system-originated prompt instructing a fresh session to consolidate
     several open PRs into ONE new PR (saving CI). Pure (no I/O).
 
@@ -84,7 +105,9 @@ def build_consolidation_prompt(repo: str, base: str, prs: list[PullRequestInfo])
         f"2. Bring each PR's changes onto this branch — `gh pr checkout <n>` to "
         f"inspect, then cherry-pick or merge its commits. Resolve conflicts by "
         f"reconciling BOTH sides (never blindly discard). Run the tests/lint/build "
-        f"after each so you know which PR introduced any breakage.\n"
+        f"after each so you know which PR introduced any breakage. End every commit "
+        f"message with:\n"
+        f"   `{commit_trailer(engine)}`\n"
         f"3. Push the branch and open ONE consolidated PR whose body summarizes the "
         f"combined change and lists every original with a closing keyword: {closes}\n"
         f"4. Close each original PR with a linking comment — for each number run "

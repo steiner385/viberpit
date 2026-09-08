@@ -28,6 +28,11 @@ class ProcInfo:
     cmdline: list[str]
     environ: dict[str, str]
     cwd: str | None
+    # Parent pid, read from /proc/<pid>/stat. Defaults to 0 (the kernel scheduler —
+    # never a real parent) so callers that only care about argv/env may omit it.
+    # Used by server.sessions.orphan_cli to tell a CLI this daemon started from one
+    # a PREVIOUS incarnation left behind (#1379).
+    ppid: int = 0
 
 
 @dataclass(frozen=True)
@@ -83,6 +88,22 @@ def classify(cmdline: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _read_ppid(base: str) -> int:
+    """Parent pid from /proc/<pid>/stat, or 0 when it can't be read.
+
+    Field 4 of `stat`, but comm (field 2) is an arbitrary string wrapped in
+    parentheses that may itself contain spaces or ')', so the split has to start
+    after the LAST ')' rather than naively on whitespace.
+    """
+    try:
+        with open(f"{base}/stat", encoding="utf-8", errors="replace") as fh:
+            raw = fh.read()
+        tail = raw[raw.rindex(")") + 1:].split()
+        return int(tail[1])  # state, ppid, …
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
 def _read_proc(pid: int) -> ProcInfo | None:
     base = f"/proc/{pid}"
     try:
@@ -102,7 +123,8 @@ def _read_proc(pid: int) -> ProcInfo | None:
             cwd = os.readlink(f"{base}/cwd")
         except (PermissionError, FileNotFoundError, OSError):
             cwd = None
-        return ProcInfo(pid=pid, cmdline=cmdline, environ=environ, cwd=cwd)
+        return ProcInfo(pid=pid, cmdline=cmdline, environ=environ, cwd=cwd,
+                        ppid=_read_ppid(base))
     except (FileNotFoundError, ProcessLookupError):
         return None
 

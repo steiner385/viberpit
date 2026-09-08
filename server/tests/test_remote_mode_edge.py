@@ -142,6 +142,28 @@ def test_rest_call_returns_503_when_daemon_down(dead_socket_edge):
     assert "restarting" in body["detail"]
 
 
+def test_create_with_unknown_daemon_outcome_is_not_reported_as_a_restart(dead_socket_edge):
+    """A create whose RPC timed out (or reset mid-response) may still be finishing on
+    the daemon. Telling the user "System is restarting — session creation will be
+    available shortly" invites the immediate retry that produced every same-prompt
+    duplicate pair on 2026-09-05..07. The 503 must say the session may still appear
+    and carry its own code so the client can tell the two apart."""
+    from server.ipc.client import DaemonTimeout
+    app = dead_socket_edge.app
+
+    async def timed_out(**kw):
+        raise DaemonTimeout("create_session timed out", outcome_unknown=True)
+
+    with mock.patch.object(app.state.sessions, "create_session", timed_out):
+        resp = dead_socket_edge.post(
+            "/api/sessions", json={"initialPrompt": "hello"}, headers=_IDENT)
+    assert resp.status_code == 503, resp.text
+    body = resp.json()
+    assert body["code"] == "daemon_outcome_unknown"
+    assert "restarting" not in body["detail"]
+    assert "may still" in body["detail"]
+
+
 import json as _json
 import time as _time
 from starlette.websockets import WebSocketDisconnect
