@@ -201,6 +201,35 @@ describe('SessionHeader — the status pill', () => {
     renderHeader()
     expect(screen.getAllByLabelText(/^Status: /)).toHaveLength(1)
   })
+
+  // A detached attach to a session with no driver leaves the runtime at its
+  // default `idle`, which the pill would render as a calm "Ready" — a promise
+  // the session cannot keep when its own record says it has ended. The record's
+  // terminal status wins over the runtime default; anything live still wins.
+  describe('a terminal record outranks the runtime default', () => {
+    it('shows Ended, not Ready, for an ended session the runtime reports idle', () => {
+      renderHeader({ props: { status: 'idle' }, sessions: [session({ status: 'ended' })] })
+      expect(screen.getByLabelText('Status: Ended')).toBeInTheDocument()
+      expect(screen.queryByLabelText('Status: Ready')).toBeNull()
+    })
+
+    it('shows Complete for a complete session the runtime reports idle', () => {
+      renderHeader({ props: { status: 'idle' }, sessions: [session({ status: 'complete' })] })
+      expect(screen.getByLabelText('Status: Complete')).toBeInTheDocument()
+    })
+
+    it('keeps the live status once a resumed session is working again', () => {
+      renderHeader({ props: { status: 'in_progress' }, sessions: [session({ status: 'ended' })] })
+      expect(screen.getByLabelText('Status: Working…')).toBeInTheDocument()
+    })
+
+    it('does not lift a non-terminal record over the runtime', () => {
+      // `queued` on the record with an idle runtime is the pre-spawn case the
+      // runtime already handles; only terminal statuses get promoted here.
+      renderHeader({ props: { status: 'idle' }, sessions: [session({ status: 'done' })] })
+      expect(screen.getByLabelText('Status: Ready')).toBeInTheDocument()
+    })
+  })
 })
 
 // ── the goal ─────────────────────────────────────────────────────────────────

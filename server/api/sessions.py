@@ -287,6 +287,13 @@ def _record_to_dict(
         # This is the BROWSER serializer; SessionRecord.to_dict is the daemon→edge
         # RPC one. Both must emit these or the feature is dead on the wire.
         "interruptedFromStatus": getattr(record, "interrupted_from_status", None),
+        # Why a finished session produced no PR: the mark_no_pr/marker token on a
+        # 'complete' session, or the queue drainer's "obsolete: PR #N merged before
+        # start" on a queued session it ended without ever spawning. Same
+        # two-serializer rule as above — SessionRecord.to_dict already emits these;
+        # without them here the card shows a bare "Ended" over an empty transcript.
+        "prResolution": getattr(record, "pr_resolution", None),
+        "prResolutionSource": getattr(record, "pr_resolution_source", None),
         "resumable": bool(getattr(record, "interrupted_by_restart", False)
                           and getattr(record, "interrupted_from_status", None)
                           in RESUME_ELIGIBLE_STATUSES),

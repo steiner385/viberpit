@@ -374,6 +374,12 @@ export interface Session {
    *  orphaned-ask notice. Sent by server/api/sessions.py:_record_to_dict (the browser
    *  serializer — server/sessions/types.py:to_dict is the daemon→edge RPC one). */
   interruptedFromStatus?: string | null
+  /** Why a finished session produced no PR — the mark_no_pr/marker token on a
+   *  'complete' session, or the queue drainer's "obsolete: PR #N merged before start"
+   *  on a queued session ended without ever spawning. Null/absent = no resolution. */
+  prResolution?: string | null
+  /** Where prResolution came from: "tool" | "marker" | "queue-drain". */
+  prResolutionSource?: string | null
   /** Why a needs_attention/limited session is parked (server pause reason token,
    *  e.g. "all_accounts_busy", "rotation_cap", "pinned_account_limited"). */
   pausedReason?: string | null

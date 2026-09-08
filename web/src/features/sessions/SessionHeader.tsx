@@ -50,7 +50,7 @@
  */
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
-import type { SessionStatus } from '@/api/types'
+import { TERMINAL_STATUSES, type SessionStatus } from '@/api/types'
 import { useRenameSession, useSessions, useEngineCapabilities } from '@/api/hooks'
 import { canUseEngine } from '@/session/engineCapabilities'
 import { StatusPill } from '@/components/UsageBadge'
@@ -110,6 +110,13 @@ export function SessionHeader({
   const { data: sessions = [] } = useSessions()
   const record = sessions.find((s) => s.id === sessionId)
   const agent = engineBadge(record?.engine)
+  // The runtime's status starts at `idle` and, on a detached attach to a session
+  // with no driver, nothing ever moves it — so an ended/complete session opened
+  // from the list rendered a calm "Ready" here while its card said "Ended". A
+  // terminal record status outranks that default; anything the runtime actually
+  // reports (a resumed turn working, done, a card) still wins.
+  const pillStatus: SessionStatus =
+    status === 'idle' && record && TERMINAL_STATUSES.has(record.status) ? record.status : status
   // "Next best account" recomposes the target account's config dir and syncs
   // credentials back — machinery that only exists for engines declaring
   // `accountRotation`. An engine that can't preserve the live thread but CAN start
@@ -206,7 +213,7 @@ export function SessionHeader({
         </span>
       )}
 
-      <StatusPill status={status} />
+      <StatusPill status={pillStatus} />
 
       {hasNeighbors && (
         <button
