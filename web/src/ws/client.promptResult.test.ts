@@ -6,7 +6,10 @@
  * both. The return value is what lets the pending bubble say which one it is.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { QueryClient } from '@tanstack/react-query'
 import { SessionSocket } from './client'
+import { QK } from '@/api/hooks'
+import type { Session } from '@/api/types'
 import { getFlight, __resetFlight } from '@/lib/promptFlight'
 
 class MockWebSocket {
@@ -127,6 +130,48 @@ describe('SessionSocket — promptFlight store', () => {
     sock.prompt('s1', 'hello')
     lastSock().simulateMessage({ type: 'status', sessionId: 's1', status: 'ended' })
     expect(getFlight()['s1']).toBeUndefined()
+  })
+})
+
+describe('SessionSocket — promptFlight survives a missed turn', () => {
+  beforeEach(() => { MockWebSocket.instances = []; vi.useFakeTimers(); __resetFlight() })
+  afterEach(() => { vi.useRealTimers() })
+  const T0 = '2026-09-08T02:40:00+00:00'
+  const T1 = '2026-09-08T02:44:00+00:00'
+
+  function openSocketWithRow(updatedAt: string | null): SessionSocket {
+    const qc = new QueryClient()
+    qc.setQueryData<Session[]>(QK.sessions, [
+      { id: 's1', status: 'done', updatedAt, accountName: 'a' } as Session,
+    ])
+    const sock = openSocket()
+    ;(sock as unknown as { setQueryClient: (q: QueryClient) => void }).setQueryClient(qc)
+    return sock
+  }
+
+  it('clears when a resting status frame carries a newer hand-back time than the send', () => {
+    // The socket missed `in_progress` (laptop sleep, deploy restart). The first frame
+    // it sees is the turn's `done`, whose updatedAt is the NEW hand-back — the turn
+    // we sent has already come and gone.
+    const sock = openSocketWithRow(T0)
+    sock.prompt('s1', 'hello')
+    lastSock().simulateMessage({ type: 'promptAck', sessionId: 's1', stage: 'delivered' })
+    lastSock().simulateMessage({ type: 'status', sessionId: 's1', status: 'done', updatedAt: T1 })
+    expect(getFlight()['s1']).toBeUndefined()
+  })
+
+  it('keeps narrating on a resting frame that still carries the pre-send hand-back time', () => {
+    const sock = openSocketWithRow(T0)
+    sock.prompt('s1', 'hello')
+    lastSock().simulateMessage({ type: 'status', sessionId: 's1', status: 'done', updatedAt: T0 })
+    expect(getFlight()['s1']).toBe('sent')
+  })
+
+  it('keeps narrating on a resting frame with no clock at all', () => {
+    const sock = openSocketWithRow(T0)
+    sock.prompt('s1', 'hello')
+    lastSock().simulateMessage({ type: 'status', sessionId: 's1', status: 'idle' })
+    expect(getFlight()['s1']).toBe('sent')
   })
 })
 
