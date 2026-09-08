@@ -770,6 +770,21 @@ def create_app(
     # in-process (never raised there).
     @app.exception_handler(DaemonUnavailable)
     async def _daemon_unavailable_handler(_request, _exc):  # noqa: ANN001
+        if _exc.outcome_unknown:
+            # The daemon was reached and may have completed the request after we
+            # stopped waiting — a create_session that times out at the edge still
+            # finishes on the daemon. "System is restarting, try again shortly" is
+            # the exact prompt that produced every same-prompt duplicate pair of
+            # 2026-09-05..07; say what actually happened instead.
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": ("The session runner did not answer in time — it may still "
+                               "be finishing your request, so the session may still "
+                               "appear. Check the session list before trying again."),
+                    "code": "daemon_outcome_unknown",
+                },
+            )
         return JSONResponse(
             status_code=503,
             content={

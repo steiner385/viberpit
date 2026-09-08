@@ -72,11 +72,12 @@ _POOL_WARN_INTERVAL_S = 30.0
 # turns over continuously — every completed, timed-out or reset RPC returns its slot — so
 # a gap this long against a pool that is still refusing slots is not a busy moment.
 #
-# Raised clear of the longest per-call budget: `automation_*` passes 90s
-# (`sessions.remote.AUTOMATION_RPC_TIMEOUT`), so a single connection can be legitimately
-# ACTIVE that long while completing nothing. This window gates BOTH signals below, and a
-# window shorter than the longest RPC would misread legitimate slow work as a strand on
-# either — a lockstep automation fan-out has zero pool-wide turnover for the whole call,
+# Raised clear of the longest per-call budget: spawn-shaped RPCs (`create_session`,
+# `automation_*`) pass 90s (`sessions.remote.SPAWN_RPC_TIMEOUT`), so a single connection
+# can be legitimately ACTIVE that long while completing nothing. This window gates BOTH
+# signals below, and a window shorter than the longest RPC would misread legitimate slow
+# work as a strand on either — a lockstep automation fan-out has zero pool-wide turnover
+# for the whole call,
 # and a connection mid-flight on a 90s RPC has not "turned over" for 90s. 120s = 90s plus
 # headroom keeps both clear. (Not imported from remote.py: that module imports THIS one, so
 # the coupling is a comment, not a cycle — the test pins the invariant instead.)
@@ -174,7 +175,22 @@ class _SeqDict(dict):
 
 
 class DaemonUnavailable(Exception):
-    """The daemon socket could not be reached."""
+    """The daemon socket could not be reached.
+
+    ``outcome_unknown`` is the one fact a retrying caller needs and cannot recover
+    from the message: did the request reach the daemon? A connect failure or a pool
+    timeout failed on OUR side of the wire, so the RPC never ran and retrying (or
+    failing over to another host) cannot duplicate anything. A read/write timeout or
+    a mid-response reset means the daemon was asked and may well have FINISHED — a
+    ``create_session`` that times out at the edge still completes on the daemon
+    (2026-09-07: the edge 503'd at 30s, the session row landed 2s later, and the
+    user's retry spawned a second session for the same prompt). Stamped here, once,
+    by :meth:`DaemonClient.call` so no caller re-derives it from httpx internals.
+    """
+
+    def __init__(self, message: str = "", *, outcome_unknown: bool = False):
+        super().__init__(message)
+        self.outcome_unknown = outcome_unknown
 
 
 class DaemonTimeout(DaemonUnavailable):
@@ -330,15 +346,25 @@ class DaemonClient:
             # both incidents spent their diagnosis budget on.
             self._note_pool_timeout(method)
             raise DaemonTimeout(f"{method} timed out: {exc}") from exc
-        except httpx.TimeoutException as exc:
+        except httpx.ConnectTimeout as exc:
+            # Never dialled through: the daemon was not asked, so the outcome is known.
             self._note_slot_served()
             raise DaemonTimeout(f"{method} timed out: {exc}") from exc
-        except httpx.TransportError as exc:
-            # Covers ConnectError, ReadError, WriteError, CloseError — any transport-level
-            # failure that means the daemon is unreachable or reset mid-response. The
-            # daemon WAS reached (or at least dialled), so the pool is not the problem.
+        except httpx.TimeoutException as exc:
+            # Read/Write timeout: the request was on the wire. The daemon may still be
+            # running it — or may already have finished it (see DaemonUnavailable).
+            self._note_slot_served()
+            raise DaemonTimeout(f"{method} timed out: {exc}", outcome_unknown=True) from exc
+        except httpx.ConnectError as exc:
+            # Refused/unroutable: nothing was sent, the outcome is known.
             self._note_slot_served()
             raise DaemonUnavailable(str(exc)) from exc
+        except httpx.TransportError as exc:
+            # ReadError, WriteError, CloseError, protocol errors — a transport-level failure
+            # AFTER dialling: the daemon was reached and may have run the RPC before the
+            # connection reset mid-response. The pool is not the problem.
+            self._note_slot_served()
+            raise DaemonUnavailable(str(exc), outcome_unknown=True) from exc
         self._note_slot_served()
         self._note_connection_served(resp)
         body = resp.json()

@@ -289,6 +289,55 @@ async def test_create_cascades_on_spawn_failure(monkeypatch):
     assert rec.id == "s1" and rec.host == "rocky"
 
 @pytest.mark.asyncio
+async def test_create_does_not_cascade_when_the_first_host_outcome_is_unknown(monkeypatch):
+    """A read timeout or mid-response reset means the first daemon MAY have finished
+    the spawn — it did on 2026-09-07: the edge gave up at 30s and rocky's session row
+    landed 2s later. Cascading to the next host then starts a SECOND session for the
+    same prompt on another runner (the cross-host duplicate pairs of 2026-09-05).
+    An unknown outcome must propagate to the caller, never fail over."""
+    from server.ipc.client import DaemonTimeout
+    slow, spare = _FakeOrch("rocky"), _FakeOrch("dobby")
+    async def timed_out(self, **kw):
+        self.calls.append("create_session")
+        raise DaemonTimeout("create_session timed out", outcome_unknown=True)
+    async def ok(self, **kw):
+        self.calls.append("create_session")
+        return _Rec("s2")
+    slow.create_session = timed_out.__get__(slow); spare.create_session = ok.__get__(spare)
+    router = _FakeRouter({"rocky": slow, "dobby": spare})
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        return ["rocky", "dobby"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
+    with pytest.raises(DaemonTimeout):
+        await fo.create_session(name="n")
+    assert slow.calls == ["create_session"]
+    assert spare.calls == []
+
+
+@pytest.mark.asyncio
+async def test_create_cascades_when_the_first_host_was_never_reached(monkeypatch):
+    """The inverse: a connect failure (daemon down, never dialled) cannot have spawned
+    anything, so failing over is exactly what the fleet is for."""
+    from server.ipc.client import DaemonUnavailable
+    down, spare = _FakeOrch("rocky"), _FakeOrch("dobby")
+    async def unreachable(self, **kw):
+        raise DaemonUnavailable("connection refused")
+    async def ok(self, **kw):
+        return _Rec("s2")
+    down.create_session = unreachable.__get__(down); spare.create_session = ok.__get__(spare)
+    router = _FakeRouter({"rocky": down, "dobby": spare})
+    async def pick(*, prefer=None, engine=None, expected_contract_sha256=None):
+        return ["rocky", "dobby"]
+    router.pick = pick
+    fo = FleetOrchestrator(router, primary="rocky")
+    monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
+    rec = await fo.create_session(name="n")
+    assert rec.id == "s2" and rec.host == "dobby"
+
+
+@pytest.mark.asyncio
 async def test_prefer_is_forwarded_not_passed_to_daemon(monkeypatch):
     rocky = _FakeOrch("rocky"); seen = {}
     async def create_session(self, **kw): seen.update(kw); return _Rec("s1")

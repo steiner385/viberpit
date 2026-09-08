@@ -8,6 +8,7 @@ import asyncio
 import logging
 
 from ccswitch.quota import QuotaSnapshot
+from server.ipc.client import DaemonUnavailable
 from server.usage.process_quota import persist_quota_snapshot
 from server.sessions.display_policy import DISPLAY_VIRTUAL
 from server.sessions.facade import _DEADLINE_ATTR
@@ -248,6 +249,19 @@ class FleetOrchestrator:
         for host in order:
             try:
                 rec = await self._router.get(host).create_session(**kwargs)
+            except DaemonUnavailable as e:
+                if e.outcome_unknown:
+                    # The RPC reached the host and timed out or reset mid-response: the
+                    # daemon may still be spawning — or may already have persisted the
+                    # session (2026-09-07: it landed 2s after the edge gave up). Trying
+                    # the next host would start a SECOND session for the same prompt on
+                    # another runner (the cross-host duplicate pairs of 2026-09-05).
+                    # Propagate; the edge tells the user the session may still appear.
+                    log.warning("fleet.create_session host=%s outcome unknown (%s) — "
+                                "not cascading to the next host", host, e)
+                    raise
+                last_exc = e  # never reached the daemon → safe to try the next host
+                continue
             except Exception as e:  # spawn/clone/account errors → try next ranked host
                 last_exc = e
                 continue
