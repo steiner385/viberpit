@@ -383,8 +383,12 @@ def is_parked(jsonl_path: str | None) -> bool:
 _ASK_TAIL_CHARS = 800
 
 # Lowercased substrings that mark an assistant message as handing a decision back to the
-# user. Deliberately broad (the cost of a false "Answer needed" is a harmless nudge; the
-# cost of a miss is the bug we are fixing). A trailing "?" is handled separately.
+# user. Deliberately broad — but ONLY because every consumer narrows it (see the function
+# below): a false "Answer needed" is not the harmless nudge this list was first written
+# to assume. It parks a card under NEEDS YOU that has nothing for the user, and because
+# the tail scan fires on the phrase rather than its sense, a session that says "I don't
+# need an answer — I overstated it by saying 'your call'" re-trips it by quoting itself.
+# A trailing "?" is handled separately.
 _ASK_PHRASES: tuple[str, ...] = (
     "options:", "(recommended)", "recommended)",
     "which option", "which approach", "which one", "which do you", "which would you",
@@ -397,12 +401,17 @@ _ASK_PHRASES: tuple[str, ...] = (
 def text_awaits_user(text: str) -> bool:
     """Heuristic: does this assistant prose hand a question/decision back to the user?
 
-    Public, and asked of prose from EITHER engine — ``_persist_status`` uses it to keep
-    the ``waiting_external`` overlay from masking a parked turn that actually needs the
-    user ("Answer needed" rather than "Waiting…"), reading the prose itself through
-    ``SessionOrchestrator._last_assistant_prose``. It is also the degrade path of
-    ``open_question.completion_awaits_user`` when the LLM helper lane is unavailable —
-    one phrase list, no parallel copies."""
+    The RECALL FLOOR of ``open_question.completion_awaits_user`` and nothing else — not a
+    verdict anything acts on directly. That function is the only caller: it runs this
+    first (a False here is final, and costs no model call) and, above the floor, narrows
+    a True with the gated classifier, degrading back to this answer whenever the helper
+    lane is unavailable. One phrase list, one judge, no parallel copies.
+
+    Both prose decision points — the completion auto-archive gate and the parked-turn
+    overlay in ``_persist_status`` — go through that function. The overlay called this
+    one raw until 2026-09-08, which is how a parked session that asked nothing spent a
+    turn under "Answer needed"; a floor is only safe to keep broad while every consumer
+    narrows it."""
     t = text.rstrip()
     if not t:
         return False
