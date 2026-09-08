@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 class ArchiveAudit:
     id = "archive-audit"
     name = "Archive Audit"
+    work_class = "maintenance"
     description = ("Re-audits recently archived sessions against the completion bar and "
                    "auto-unarchives ones archived prematurely (no merged/armed PR).")
     modes: tuple[str, ...] = ("off", "act")

@@ -20,11 +20,13 @@
 // is the region, decides where `app.list` sits, how wide it is and what names it.
 // This component fills what it is given, and only its middle band scrolls.
 //
-// Since the scope switch it is BOTH lists: `ScopeSegment` in the fixed head,
-// then either `LiveScopeBody` or `ArchivedScopeBody` — siblings, never nested
-// branches, so neither scope's hooks run behind the other. Archived used to be
-// a top-level nav page; it is a scope of this column now, derived from the route
-// by `listScopeForPath` in the shell and passed down as `scope`.
+// Since the scope switch it is ALL the lists: `ScopeSegment` in the fixed head,
+// then one of `LiveScopeBody`, `BackgroundScopeBody` or `ArchivedScopeBody` —
+// siblings, never nested branches, so no scope's hooks run behind another's.
+// Archived used to be a top-level nav page; it is a scope of this column now,
+// derived from the route by `listScopeForPath` in the shell and passed down as
+// `scope`. Background (quiet maintenance sessions, `session/backgroundSessions`)
+// is the same body as Active over the rows `useSessionListState` held out.
 //
 // There is no `listScrollTop`/`restoreListScroll` callback ref here. Desktop
 // needed one because the whole shell sat inside a `SessionRuntimeProvider` keyed
@@ -41,12 +43,14 @@ import { AdoptPanel } from '@/components/AdoptPanel'
 import { DaemonHealthIndicator } from '@/components/DaemonHealthIndicator'
 import { NO_FILTERS, isFiltered as hasActiveFilters } from '@/session/listFilters'
 import type { ListScope } from '@/session/sessionNavState'
-import type { Account } from '@/api/types'
+import type { Account, Session } from '@/api/types'
 import { useToastAnchor } from '@/shell/toastInsets'
 import { ArchivedScopeBody } from './ArchivedScopeBody'
 import { ScopeBody } from './ScopeBody'
 import { ScopeSegment } from './ScopeSegment'
-import type { SessionListState } from './useSessionListState'
+import {
+  useBackgroundListState, type ListPipelineState, type SessionListState,
+} from './useSessionListState'
 
 export interface SessionListColumnProps {
   /** Which scope the ROUTE is in (`listScopeForPath`, read once in the shell).
@@ -127,13 +131,14 @@ export function SessionListColumn({
         <ScopeSegment
           scope={scope}
           activeCount={state.sessions.length}
+          backgroundCount={state.background.length}
           archivedCount={archived.length}
         />
       </div>
 
-      {scope === 'live'
-        ? <LiveScopeBody state={state} {...live} />
-        : <ArchivedScopeBody onReviewSession={onReviewSession} />}
+      {scope === 'live' && <LiveScopeBody state={state} {...live} />}
+      {scope === 'background' && <BackgroundScopeBody background={state.background} {...live} />}
+      {scope === 'archived' && <ArchivedScopeBody onReviewSession={onReviewSession} />}
 
       {/* Daemon health: collapses to nothing when there is no daemon to watch.
           Both scopes — it describes the daemon, not the list. */}
@@ -161,9 +166,9 @@ export function SessionListColumn({
           where it lands flush against the DispatchBar's surface, it still reads
           as a separate control rather than part of the bar.
 
-          Live scope only: `onNew` starts a LIVE session, and offering it beside
-          a list of archived ones would start a session the list it sits under
-          can never show.
+          Active scope only: `onNew` starts a session that lands in Active, and
+          offering it beside a list of archived or background ones would start
+          a session the list it sits under can never show.
 
           And only while a session is OPEN. With none open (`newSelected`) the
           dock is already the DispatchBar — the very surface this button exists
@@ -196,8 +201,38 @@ export function SessionListColumn({
  *  drive sits in the column's foot, below the daemon indicator. */
 type LiveScopeBodyProps = Omit<
   SessionListColumnProps,
-  'scope' | 'newSelected' | 'onNew' | 'onReviewSession'
->
+  'scope' | 'state' | 'newSelected' | 'onNew' | 'onReviewSession'
+> & {
+  /** Either scope's pipeline: the shell's Active handle, or Background's own. */
+  state: ListPipelineState
+  searchPlaceholder?: string
+  searchAriaLabel?: string
+}
+
+/**
+ * The Background scope: the SAME body as Active over the rows Active held out,
+ * through its own pipeline. The hook lives here rather than in the column so
+ * the scope's search, filters and ordering exist only while it is on screen,
+ * and so the column calls no hook conditionally — this is a sibling component,
+ * mounted in exactly one branch. No AdoptPanel (adoption lands in Active) and
+ * no list-focus mode (the prompt dock drives Active's cursor, not this one).
+ */
+function BackgroundScopeBody({
+  background,
+  ...rest
+}: Omit<LiveScopeBodyProps, 'state'> & { background: readonly Session[] }) {
+  const state = useBackgroundListState(background, { sessionsLoading: rest.isLoading })
+  return (
+    <LiveScopeBody
+      {...rest}
+      state={state}
+      adoptionEnabled={false}
+      listMode={false}
+      searchPlaceholder="Search background…"
+      searchAriaLabel="Search background sessions"
+    />
+  )
+}
 
 /** The live scope: the column body as it has always been, unchanged. */
 function LiveScopeBody({
@@ -213,6 +248,8 @@ function LiveScopeBody({
   onDelete,
   onQuickResume,
   onExitList,
+  searchPlaceholder,
+  searchAriaLabel,
 }: LiveScopeBodyProps) {
   const { sessions, queued, pendingApproval, search, ordering, nav } = state
   const { filters, setFilters, filterOptions } = state
@@ -233,6 +270,8 @@ function LiveScopeBody({
             onSortByChange={ordering.setSortBy}
             searchQuery={search.query}
             onSearchChange={search.setQuery}
+            searchPlaceholder={searchPlaceholder}
+            searchAriaLabel={searchAriaLabel}
             filters={{ value: filters, options: filterOptions, onChange: setFilters }}
           />
         )

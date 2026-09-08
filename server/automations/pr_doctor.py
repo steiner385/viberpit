@@ -21,6 +21,7 @@ def _ordered_modes() -> tuple[str, ...]:
 class PrDoctor:
     id = "pr-doctor"
     name = "PR Doctor"
+    work_class = "maintenance"
     description = "Watches CI on PRs created via ccswitch and restores failing ones."
     modes = _ordered_modes()
     # Audited engine ceiling (Phase 7, Task 7.1; widened #1267). The offline

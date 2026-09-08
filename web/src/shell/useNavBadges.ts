@@ -2,16 +2,20 @@ import type { NavBadgeKey, NavDef } from './navDefs'
 import { useAccounts, useSessions, useAllPrs, useAutomations } from '@/api/hooks'
 import { useDeployState } from '@/lib/deployState'
 import { inFlightPrCount } from '@/session/prStatus'
+import { isBackgroundSession } from '@/session/backgroundSessions'
 
 export type NavBadges = Record<NavBadgeKey, number | boolean | undefined>
 
 /**
  * The counts the deleted `buildTabs(counts)` computed, in one place.
  *
- * DEC-4: `sessions` counts EVERY session in the section, including queued and
- * pending-approval rows, because those render inside the Sessions section too.
- * DesktopShell used `orderedSessions.length` (queued excluded) — that was an
- * artifact of it never rendering PendingApprovalSection.
+ * DEC-4: `sessions` counts EVERY session in the Active scope, including queued
+ * and pending-approval rows, because those render inside the Sessions section
+ * too. DesktopShell used `orderedSessions.length` (queued excluded) — that was
+ * an artifact of it never rendering PendingApprovalSection. Quiet maintenance
+ * sessions are NOT counted: they live in the Background scope precisely so
+ * they do not draw the eye, and a nav badge is the eye-drawing surface. One
+ * that needs a human lifts into Active and is counted then.
  *
  * A zero count comes back as `undefined`, not `0`, so no badge renders.
  * `settings` is boolean-or-undefined — an amber attention dot, never a count.
@@ -34,7 +38,7 @@ export function useNavBadges(): NavBadges {
   )
 
   return {
-    sessions: sessions.length || undefined,
+    sessions: sessions.filter((s) => !isBackgroundSession(s)).length || undefined,
     pipeline: inFlightPrCount(prs) || undefined,
     automations: automationsActiveSessions || undefined,
     // A FAILED deploy, not a pending one. The deploy banner is hidden on phone

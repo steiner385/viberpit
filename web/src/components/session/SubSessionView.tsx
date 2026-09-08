@@ -5,10 +5,10 @@
  * `rt.state.subAgents[agentId].turns` (populated live as the sub-agent streams).
  * We render them read-only with a breadcrumb back to the parent session.
  */
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { useSessionRuntime } from '@/session/useSessionRuntime'
-import { sessionPath } from '@/session/sessionNavState'
+import { listScopeForPath, sessionPath } from '@/session/sessionNavState'
 import { TranscriptView } from './TranscriptView'
 
 interface Props {
@@ -19,6 +19,8 @@ interface Props {
 
 export function SubSessionView({ sessionId, agentId, onBack }: Props) {
   const navigate = useNavigate()
+  // The breadcrumb returns to the parent INSIDE the list scope it is open in.
+  const scope = listScopeForPath(useLocation().pathname)
   const rt = useSessionRuntime(sessionId)
   const thread = rt.state.subAgents[agentId]
   const turns = thread?.turns ?? []
@@ -42,7 +44,7 @@ export function SubSessionView({ sessionId, agentId, onBack }: Props) {
         <nav aria-label="Breadcrumb" className="text-sm text-gray-600 dark:text-gray-300 truncate">
           <button
             type="button"
-            onClick={() => navigate(sessionPath(sessionId))}
+            onClick={() => navigate(sessionPath(sessionId, scope))}
             className="opacity-80 hover:underline focus-visible:outline-none focus-visible:underline"
           >
             {rt.title || sessionId.slice(0, 8)}

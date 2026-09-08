@@ -120,6 +120,35 @@ def validate_config(schema: ConfigSchema, config: dict) -> dict:
     return out
 
 
+#: What kind of work an origin's sessions are, for the sessions list's
+#: foreground/background split. ``development`` produces new work the operator
+#: is steering toward (a backlog issue, a spec, a plan); ``maintenance`` is
+#: housekeeping that should stay out of the way until it needs a human.
+WORK_CLASSES: tuple[str, ...] = ("development", "maintenance")
+DEFAULT_WORK_CLASS = "development"
+
+
+def work_class_of(automation: Any) -> str:
+    """The work class *automation* declares — see ``Automation.work_class``.
+
+    One accessor rather than a ``getattr`` at each reader, so the automations
+    payload, the session serializer and the browser cannot drift on which
+    origins are maintenance. The default is the OPPOSITE of ``engine_policy``'s
+    fail-closed: an origin that forgot to declare is ``development``, because
+    the safe mistake here is a maintenance session that stays visible, never a
+    development session that is hidden. A value outside ``WORK_CLASSES`` is a
+    typo and raises rather than silently landing in the foreground.
+    """
+    value = getattr(automation, "work_class", None)
+    if value is None:
+        return DEFAULT_WORK_CLASS
+    if value not in WORK_CLASSES:
+        raise ValueError(
+            f"{getattr(automation, 'id', automation)!r}: work_class {value!r} "
+            f"not in {WORK_CLASSES}")
+    return value
+
+
 def operator_triggered(automation: Any) -> bool:
     """Whether *automation* has no control loop — see ``Automation.modes``.
 
@@ -142,6 +171,11 @@ class Automation(Protocol):
     #: enabled/mode PATCH for such an origin and the card renders no toggle,
     #: rather than showing a switch whose position means nothing.
     modes: tuple[str, ...]
+    #: ``"development"`` or ``"maintenance"`` (``WORK_CLASSES``): whether the
+    #: sessions this origin spawns are new work the operator steers, or routine
+    #: housekeeping the sessions list keeps in the background until one needs a
+    #: human. Read only through ``work_class_of`` (defaults to development).
+    work_class: str
     config_schema: ConfigSchema
     #: The audited agent-engine ceiling for this origin (Phase 7, Task 7.1).
     #: Typed loosely here because ``engine_policy`` imports this module for

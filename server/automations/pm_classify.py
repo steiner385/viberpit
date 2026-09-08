@@ -20,6 +20,7 @@ from .engine_policy import EnginePolicy
 class PmClassify:
     id = "pm-classify"
     name = "PM Classification"
+    work_class = "maintenance"
     description = (
         "Classifies a bounded chunk of open backlog items against the project's "
         "feature map, proposing RICE-lite scores a human accepts or rejects in "

@@ -38,22 +38,38 @@
  * the actual rule through `nextSessionAfterClose`, which stays the one owner of
  * "which neighbour".
  */
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSessions, useArchivedSessions } from '@/api/hooks'
-import { useSessionOrdering } from '@/session/useSessionOrdering'
+import { BACKGROUND_SPEC, LIVE_SPEC, useItemOrdering } from '@/session/useSessionOrdering'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
-import { SESSIONS_PATH, archivedSessionPath, sessionPath } from '@/session/sessionNavState'
+import {
+  BACKGROUND_PATH, SESSIONS_PATH, archivedSessionPath, sessionPath, type ListScope,
+} from '@/session/sessionNavState'
+import { partitionByAttention } from '@/session/backgroundSessions'
 
 /**
  * @param sessionId the open session, or `undefined` on `/sessions` with none open.
+ * @param scope the list scope the session was opened in. The neighbour comes
+ *   from THAT scope's rows and the destination stays in it: archiving a
+ *   background session advances to the next background session, never to an
+ *   Active row the user was not looking at.
  * @returns the `onDone` handler for the session's Archive/Delete actions.
  */
-export function useArchiveAdvance(sessionId: string | undefined): () => void {
+export function useArchiveAdvance(sessionId: string | undefined, scope: ListScope = 'live'): () => void {
   const navigate = useNavigate()
   const { data: sessions = [], isLoading: sessionsLoading } = useSessions()
   const { data: archived = [] } = useArchivedSessions()
-  const { orderedSessions, allOrderedSessions } = useSessionOrdering(sessions)
+  const inScope = useMemo(() => {
+    const { foreground, background } = partitionByAttention(sessions)
+    return scope === 'background' ? background : foreground
+  }, [sessions, scope])
+  const listPath = scope === 'background' ? BACKGROUND_PATH : SESSIONS_PATH
+  // The scope's OWN persisted ordering, so the neighbour is the one the list
+  // beside the pane actually shows next.
+  const { orderedSessions, allOrderedSessions } = useItemOrdering(
+    inScope, scope === 'background' ? BACKGROUND_SPEC : LIVE_SPEC,
+  )
 
   // Snapshot of the ordered ids from the last render where the session was live.
   // The effect below reads it to find the correct neighbour even after
@@ -88,8 +104,8 @@ export function useArchiveAdvance(sessionId: string | undefined): () => void {
       lastOrderRef.current.all,
       sessionId,
     )
-    navigate(next ? sessionPath(next) : SESSIONS_PATH, { replace: true })
-  }, [archived, sessionId, navigate])
+    navigate(next ? sessionPath(next, scope) : listPath, { replace: true })
+  }, [archived, sessionId, navigate, scope, listPath])
 
   return useCallback(() => {
     if (!sessionId) return
@@ -100,6 +116,6 @@ export function useArchiveAdvance(sessionId: string | undefined): () => void {
       allOrderedSessions.map((s) => s.id),
       sessionId,
     )
-    navigate(next ? sessionPath(next) : SESSIONS_PATH)
-  }, [sessionId, orderedSessions, allOrderedSessions, navigate])
+    navigate(next ? sessionPath(next, scope) : listPath)
+  }, [sessionId, orderedSessions, allOrderedSessions, navigate, scope, listPath])
 }

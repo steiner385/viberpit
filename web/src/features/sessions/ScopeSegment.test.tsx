@@ -1,4 +1,4 @@
-// ScopeSegment — the sessions list's Active / Archived switch.
+// ScopeSegment — the sessions list's Active / Background / Archived switch.
 //
 // The property under test is that it is a NAVIGATION and holds no state: each
 // half is a link to the path that owns that scope, and "you are here" is
@@ -19,10 +19,10 @@ function Url() {
   return <div data-testid="url">{pathname}</div>
 }
 
-function renderSegment(scope: 'live' | 'archived', at = '/sessions') {
+function renderSegment(scope: 'live' | 'background' | 'archived', at = '/sessions') {
   return render(
     <MemoryRouter initialEntries={[at]}>
-      <ScopeSegment scope={scope} activeCount={7} archivedCount={132} />
+      <ScopeSegment scope={scope} activeCount={7} backgroundCount={3} archivedCount={132} />
       <Url />
     </MemoryRouter>,
   )
@@ -33,7 +33,19 @@ describe('ScopeSegment', () => {
     renderSegment('live')
     expect(screen.getByRole('navigation', { name: 'Session scope' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Active (7)' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Background (3)' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Archived (132)' })).toBeInTheDocument()
+  })
+
+  it('navigates to the background scope and marks it current there', async () => {
+    renderSegment('live')
+    await userEvent.click(screen.getByRole('link', { name: 'Background (3)' }))
+    expect(screen.getByTestId('url').textContent).toBe('/sessions/background')
+    renderSegment('background', '/sessions/background')
+    expect(screen.getAllByRole('link', { name: 'Background (3)' }).at(-1)).toHaveAttribute(
+      'aria-current',
+      'page',
+    )
   })
 
   it('marks the current scope with aria-current', () => {
@@ -62,10 +74,11 @@ describe('ScopeSegment', () => {
   it('omits a zero count from the name rather than announcing "0"', () => {
     render(
       <MemoryRouter initialEntries={['/sessions']}>
-        <ScopeSegment scope="live" activeCount={0} archivedCount={0} />
+        <ScopeSegment scope="live" activeCount={0} backgroundCount={0} archivedCount={0} />
       </MemoryRouter>,
     )
     expect(screen.getByRole('link', { name: 'Active' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Background' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Archived' })).toBeInTheDocument()
   })
 })

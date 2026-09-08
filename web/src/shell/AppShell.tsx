@@ -20,7 +20,7 @@ import { setServerSttEnabled } from '@/lib/sttCapability'
 import { textEntryClaimsKey } from '@/lib/detachKeyGuard'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
 import {
-  SESSIONS_PATH, archivedSessionPath, listScopeForPath, sessionPath,
+  BACKGROUND_PATH, SESSIONS_PATH, archivedSessionPath, listScopeForPath, sessionPath,
 } from '@/session/sessionNavState'
 import { useDrawerName, useOpenDrawer, type DrawerName } from './drawerParam'
 import { InteractionProvider } from './InteractionContext'
@@ -442,14 +442,29 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
 
   const { orderedSessions, allOrderedSessions } = list.ordering
 
+  // Scope, derived exactly once — `listProps.scope`, the dock's `drivesList`
+  // and every navigation below must never disagree about which part of the
+  // list is on screen.
+  const scope = listScopeForPath(pathname)
+
   /**
    * Where the detail view goes when the OPEN session leaves the live list
    * (§4.4). `replace`, because the session that is gone is not a place Back
    * should return to.
+   *
+   * `list.ordering` is the ACTIVE scope's; the Background scope's ordering is
+   * its body's own and the shell does not hold it, so a background close lands
+   * on the background list rather than on an Active neighbour the user was not
+   * looking at. (Closing from inside the pane goes through `useArchiveAdvance`,
+   * which does compute the in-scope neighbour.)
    */
   const advanceFrom = React.useCallback(
     (removedId: string) => {
       if (removedId !== openSessionId) return
+      if (scope === 'background') {
+        navigate(BACKGROUND_PATH, { replace: true })
+        return
+      }
       const next = nextSessionAfterClose(
         orderedSessions.map((s) => s.id),
         allOrderedSessions.map((s) => s.id),
@@ -457,15 +472,11 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
       )
       navigate(next ? sessionPath(next) : SESSIONS_PATH, { replace: true })
     },
-    [openSessionId, orderedSessions, allOrderedSessions, navigate],
+    [openSessionId, scope, orderedSessions, allOrderedSessions, navigate],
   )
 
   const nameOf = (id: string) =>
     sessions.find((s) => s.id === id)?.name ?? id.slice(0, 8)
-
-  // Scope, derived exactly once — `listProps.scope` and the dock's `drivesList`
-  // must never disagree about which half of the list is on screen.
-  const scope = listScopeForPath(pathname)
 
   const listProps: SessionListColumnProps = {
     scope,
@@ -481,7 +492,10 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     // exactly as `Dashboard` and `DesktopShell` each guarded their own): an
     // optimistic placeholder has no server session, so a click on one must not
     // navigate to an id the daemon has never heard of.
-    onOpen: (id) => { if (!isPendingSessionId(id)) navigate(sessionPath(id)) },
+    // Opened INSIDE the scope it was clicked in: a background row opens under
+    // `/sessions/background/:id`, so the column stays in Background with the
+    // row highlighted instead of flipping to Active around an absent session.
+    onOpen: (id) => { if (!isPendingSessionId(id)) navigate(sessionPath(id, scope)) },
     onRename: (id) => setRenameTarget({ id, name: nameOf(id) }),
     onClose: (id) => {
       closeSession.mutate(id)
@@ -508,8 +522,9 @@ function useSessionsWorkspace(openDrawer: (name: DrawerName) => void) {
     onShowHelp: () => openDrawer('help'),
     onAllLimited: (earliestReset: string | null) => setAllLimitedReset(earliestReset),
     autoFocusKey: promptFocusKey,
-    // The archived scope renders `ArchivedScopeBody`, not `SessionList` — the
-    // dock must stop pretending it owns `#session-listbox` and its rows there.
+    // Only the Active scope's list is the one `list.nav` walks: Archived renders
+    // `ArchivedScopeBody`, and Background has its own pipeline the shell does
+    // not hold — the dock must not pretend it owns `#session-listbox` in either.
     // See `DispatchBar`'s `drivesList` doc.
     drivesList: scope === 'live',
   }

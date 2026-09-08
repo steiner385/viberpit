@@ -132,6 +132,19 @@ export const LIVE_SPEC: OrderingSpec<GroupBy, SortBy, Session> = {
   defaultPref: { groupBy: 'none', sortBy: 'status' },
 }
 
+/**
+ * The Background scope's spec: the SAME groupings, sorts and default as the
+ * live list (its rows are live sessions rendered through the same cards), under
+ * its own namespace so its group-by, sort and collapse state persist apart
+ * from Active's — collapsing "Working" in Background must not collapse it in
+ * Active. `sessionOrder.ts` keys 'live' bare and every other namespace with a
+ * suffix, so the live key is byte-for-byte what it was.
+ */
+export const BACKGROUND_SPEC: OrderingSpec<GroupBy, SortBy, Session> = {
+  ...LIVE_SPEC,
+  namespace: 'background',
+}
+
 export function useSessionOrdering(
   sessions: readonly Session[],
   matchedIds: Set<string> | null = null,

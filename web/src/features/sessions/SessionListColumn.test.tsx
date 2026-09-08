@@ -113,7 +113,9 @@ function Harness({ sessions, highlight, ...props }: HarnessProps) {
 function renderColumn({ archived = [], ...props }: RenderProps) {
   archivedData.mockReturnValue(archived)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  const at = props.scope === 'archived' ? '/sessions/archived' : '/sessions'
+  const at = props.scope === 'archived'
+    ? '/sessions/archived'
+    : props.scope === 'background' ? '/sessions/background' : '/sessions'
   return render(
     <QueryClientProvider client={qc}>
       {/* The scope segment navigates, so the column needs a router. */}
@@ -430,6 +432,21 @@ describe('SessionListColumn — scope switch', () => {
     expect(screen.getByRole('link', { name: 'Archived' })).toBeInTheDocument()
   })
 
+  it('keeps a lifted maintenance session in Active, with its automation named on the card', () => {
+    renderColumn({
+      sessions: [
+        session({ id: 'sess-1', name: 'Mine' }),
+        session({ id: 'sess-2', name: 'pr-doctor fix o/r#1', status: 'waiting_input', origin: 'pr-doctor', originLabel: 'PR Doctor', workClass: 'maintenance' }),
+      ],
+      scope: 'live',
+    })
+    expect(screen.getByRole('button', { name: 'Open session pr-doctor fix o/r#1' })).toBeInTheDocument()
+    expect(screen.getByTestId('card-maintenance-chip')).toHaveTextContent('PR Doctor')
+    // …and it is not double-counted into Background.
+    expect(screen.getByRole('link', { name: 'Active (2)' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Background' })).toBeInTheDocument()
+  })
+
   it('keeps the daemon indicator in both scopes', () => {
     daemonHealthData.mockReturnValue(daemonHealth({ uptimeSec: 7200 }))
     renderColumn({ sessions: [session()], scope: 'archived' })
@@ -445,6 +462,59 @@ describe('SessionListColumn — scope switch', () => {
     const scroll = screen.getByTestId('session-list-scroll')
     expect(scroll.className).toContain('overflow-y-auto')
     expect(scroll.contains(screen.getByRole('navigation', { name: 'Session scope' }))).toBe(false)
+  })
+})
+
+describe('SessionListColumn — the Background scope', () => {
+  const MINE = session({ id: 'sess-1', name: 'Mine', repo: 'o/a' })
+  const QUIET = session({
+    id: 'sess-2', name: 'pm map viberpit', status: 'in_progress', repo: 'o/b',
+    origin: 'pm-onboard', originLabel: 'PM Onboarding', workClass: 'maintenance',
+  })
+  const QUEUED_QUIET = session({
+    id: 'sess-3', name: 'pm classify viberpit', status: 'queued', queuePosition: 1,
+    origin: 'pm-classify', originLabel: 'PM Classification', workClass: 'maintenance',
+  })
+
+  it('keeps quiet maintenance rows out of Active and counts them on the segment', () => {
+    renderColumn({ sessions: [MINE, QUIET, QUEUED_QUIET], scope: 'live' })
+    expect(screen.getByRole('button', { name: 'Open session Mine' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open session pm map viberpit' })).toBeNull()
+    // Not in Active's QueuedSection either — that would be the row leaking back.
+    expect(screen.queryByRole('button', { name: /^queued \(/i })).toBeNull()
+    expect(screen.getByRole('link', { name: 'Active (1)' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Background (2)' })).toBeInTheDocument()
+  })
+
+  it('renders them as ordinary session cards, with their own sections, in the Background scope', () => {
+    renderColumn({ sessions: [MINE, QUIET, QUEUED_QUIET], scope: 'background' })
+    expect(screen.getByRole('button', { name: 'Open session pm map viberpit' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open session Mine' })).toBeNull()
+    expect(screen.getByRole('button', { name: /queued \(1\)/i })).toBeInTheDocument()
+    expect(screen.getByText('pm classify viberpit')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Background (2)' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('has its own controls strip and no New Session button', () => {
+    renderColumn({ sessions: [MINE, QUIET], scope: 'background' })
+    expect(screen.getByRole('searchbox', { name: 'Search background sessions' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Project')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New Session' })).not.toBeInTheDocument()
+  })
+
+  it('persists its group-by apart from Active', async () => {
+    renderColumn({ sessions: [MINE, QUIET], scope: 'background' })
+    await userEvent.selectOptions(screen.getByLabelText('Group by'), 'repo')
+    expect(JSON.parse(localStorage.getItem('ccswitch.sessionOrder.background') ?? '{}').groupBy).toBe('repo')
+    // Active's own key (bare, as it always was) is untouched by the change.
+    expect(JSON.parse(localStorage.getItem('ccswitch.sessionOrder') ?? '{}').groupBy).toBe('none')
+  })
+
+  it('opens a background row through onOpen like any other', async () => {
+    const onOpen = vi.fn()
+    renderColumn({ sessions: [MINE, QUIET], scope: 'background', onOpen })
+    await userEvent.click(screen.getByRole('button', { name: 'Open session pm map viberpit' }))
+    expect(onOpen).toHaveBeenCalledWith('sess-2')
   })
 })
 

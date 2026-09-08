@@ -131,6 +131,16 @@ export interface Account {
   enabled?: boolean
 }
 
+/**
+ * What kind of work a session is, decided server-side from the automation
+ * registry (`server/automations/base.py:WORK_CLASSES`). `development` is new
+ * work the operator steers — every human session plus backlog and SDLC
+ * sessions; `maintenance` is ViberPit's own housekeeping (pm map, pm classify,
+ * pr-doctor, control-band diagnoses), which the sessions list keeps in its
+ * Background scope until one needs a human.
+ */
+export type WorkClass = 'development' | 'maintenance'
+
 export type SessionStatus =
   | 'idle'
   | 'in_progress'
@@ -392,6 +402,18 @@ export interface Session {
   origin?: string | null
   /** The automation's reference key (e.g. 'owner/repo#123'); null/absent when origin is absent. */
   originRef?: string | null
+  /** Server-derived from the automation registry: whether this session is new
+   *  work (`development` — every human session, backlog and SDLC sessions) or
+   *  routine housekeeping (`maintenance`) the list keeps in the Background
+   *  scope until it needs a human (`session/backgroundSessions.ts`). Absent
+   *  from an older server: treated as `development`, never hidden on a guess. */
+  workClass?: WorkClass
+  /** The spawning automation's display name (registry `name`), or the raw id
+   *  for one the registry does not know; null for a human session. The browser
+   *  keeps no id→name map of its own. */
+  originLabel?: string | null
+  /** As `originLabel`, for `assistedBy`. */
+  assistedByLabel?: string | null
   /** Client-only: true while an optimistic create placeholder awaits the server. Never sent by the server. */
   pending?: boolean
   /** Position in the max-active-sessions queue (1 = next to run); null when not queued. */

@@ -71,18 +71,36 @@ export const SUBAGENT_ROUTE = `${SESSIONS_PATH}/:id/agents/:agentId`
  */
 export const ARCHIVED_SESSION_ROUTE = `${ARCHIVED_PATH}/:archivedId`
 
+/**
+ * `/sessions/background` — the background SCOPE of the sessions list: quiet
+ * maintenance sessions (`session/backgroundSessions.ts`). Unlike Archived, a
+ * background session is a LIVE session the list merely keeps out of the way,
+ * so its detail routes keep the live param name `id` and get a runtime — the
+ * scope prefix exists only so the list column stays in Background while one
+ * of its rows is open, instead of flipping to Active with nothing highlighted.
+ */
+export const BACKGROUND_PATH = `${SESSIONS_PATH}/background`
+export const BACKGROUND_SESSION_ROUTE = `${BACKGROUND_PATH}/:id`
+export const BACKGROUND_SUBAGENT_ROUTE = `${BACKGROUND_PATH}/:id/agents/:agentId`
+
 /** Pre-scope-switch spellings. Bookmarks only — nothing in the app builds these. */
 export const LEGACY_ARCHIVED_PATH = '/archived'
 export const LEGACY_ARCHIVED_SESSION_ROUTE = '/archived/:sessionId'
 
-/** The route of an open session. */
-export function sessionPath(id: string): string {
-  return `${SESSIONS_PATH}/${id}`
+/** The section path a LIVE session's routes hang off in *scope*. Archived is
+ *  not a scope a live session can be opened in, so it maps to the live base. */
+function liveBase(scope: ListScope | undefined): string {
+  return scope === 'background' ? BACKGROUND_PATH : SESSIONS_PATH
 }
 
-/** The route of one sub-agent inside an open session. */
-export function subAgentPath(id: string, agentId: string): string {
-  return `${SESSIONS_PATH}/${id}/agents/${agentId}`
+/** The route of an open session, inside the list scope it was opened from. */
+export function sessionPath(id: string, scope?: ListScope): string {
+  return `${liveBase(scope)}/${id}`
+}
+
+/** The route of one sub-agent inside an open session, same scope rule. */
+export function subAgentPath(id: string, agentId: string, scope?: ListScope): string {
+  return `${liveBase(scope)}/${id}/agents/${agentId}`
 }
 
 /** The route of an archived session's read-only transcript (DEC-6). */
@@ -95,7 +113,11 @@ export function archivedSessionPath(id: string): string {
  * it is derived from, so `ScopeSegment`, `SessionListColumn` and `AppShell` all
  * name one type instead of each restating the union.
  */
-export type ListScope = 'live' | 'archived'
+export type ListScope = 'live' | 'background' | 'archived'
+
+function under(pathname: string, base: string): boolean {
+  return pathname === base || pathname.startsWith(`${base}/`)
+}
 
 /**
  * Which scope of the sessions list a route is in.
@@ -107,9 +129,9 @@ export type ListScope = 'live' | 'archived'
  * a prop from the shell rather than re-testing the pathname itself.
  */
 export function listScopeForPath(pathname: string): ListScope {
-  return pathname === ARCHIVED_PATH || pathname.startsWith(`${ARCHIVED_PATH}/`)
-    ? 'archived'
-    : 'live'
+  if (under(pathname, ARCHIVED_PATH)) return 'archived'
+  if (under(pathname, BACKGROUND_PATH)) return 'background'
+  return 'live'
 }
 
 /** Router state understood by the session route. */

@@ -21,6 +21,7 @@ _DAY = 24 * 3600.0
 class Autopilot:
     id = "autopilot"
     name = "Autopilot"
+    work_class = "maintenance"
     description = "Continuously advances every governed session toward its goal."
     modes: tuple[str, ...] = ("off", "propose", "auto")
     # Declared for `audited_policy_map()`'s whole-fleet ceiling view, but autopilot

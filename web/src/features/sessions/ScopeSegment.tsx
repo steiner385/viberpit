@@ -1,8 +1,8 @@
 // web/src/features/sessions/ScopeSegment.tsx
 //
-// Active | Archived — the sessions list's scope switch.
+// Active | Background | Archived — the sessions list's scope switch.
 //
-// It holds NO state. Scope is the route (`listScopeForPath`), so this is two
+// It holds NO state. Scope is the route (`listScopeForPath`), so this is three
 // links and a highlight: the Back button, a bookmark and a reload all land on
 // the scope the URL names, and there is no second opinion to drift.
 //
@@ -16,18 +16,27 @@
 // `<a>Active<span>7</span></a>` is announced "Active7". One `sr-only` node
 // carries the whole name; the visible label and the pill are `aria-hidden`.
 //
+// Background carries no attention state of its own, by design: a maintenance
+// session that needs a human LIFTS into Active (`session/backgroundSessions.ts`),
+// so the Background count is only ever quiet rows and a second badge would be
+// a second opinion about the same fact.
+//
 // Tokens only — this file is under `src/features/`, where
 // `ccswitch/no-raw-palette` is enforced.
 import { Link } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/ui/Badge'
 import { badgedName } from '@/ui/badgedName'
-import { ARCHIVED_PATH, SESSIONS_PATH, type ListScope } from '@/session/sessionNavState'
+import {
+  ARCHIVED_PATH, BACKGROUND_PATH, SESSIONS_PATH, type ListScope,
+} from '@/session/sessionNavState'
 
 export interface ScopeSegmentProps {
   scope: ListScope
-  /** Live sessions, pre-spawn rows included (the list-controls gate's count). */
+  /** Active-scope sessions, pre-spawn rows included (the list-controls gate's count). */
   activeCount: number
+  /** Quiet maintenance sessions held out of Active. */
+  backgroundCount: number
   archivedCount: number
 }
 
@@ -63,13 +72,19 @@ function ScopeLink({ to, label, count, current }: ScopeLinkProps) {
   )
 }
 
-export function ScopeSegment({ scope, activeCount, archivedCount }: ScopeSegmentProps) {
+export function ScopeSegment({ scope, activeCount, backgroundCount, archivedCount }: ScopeSegmentProps) {
   return (
     <nav
       aria-label="Session scope"
       className="flex gap-1 rounded-md border border-edge bg-surface p-1"
     >
       <ScopeLink to={SESSIONS_PATH} label="Active" count={activeCount} current={scope === 'live'} />
+      <ScopeLink
+        to={BACKGROUND_PATH}
+        label="Background"
+        count={backgroundCount}
+        current={scope === 'background'}
+      />
       <ScopeLink
         to={ARCHIVED_PATH}
         label="Archived"

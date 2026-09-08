@@ -6,7 +6,7 @@ from sqlalchemy import select
 from server.db import db_session
 from server.db.models import Automation as AutomationRow
 
-from .base import Automation, ConfigSchema
+from .base import DEFAULT_WORK_CLASS, Automation, ConfigSchema, work_class_of
 from .context import AutomationContext
 
 
@@ -52,6 +52,41 @@ class AutomationRegistry:
 
 
 registry = AutomationRegistry()
+
+
+def work_class_for_origin(origin: str | None) -> str:
+    """The work class of a session spawned by *origin* (``Session.origin``).
+
+    A human session (``None``) and an id the registry does not know — an
+    ad-hoc recurring-scheduler automation — both answer ``development``: the
+    sessions list must never hide a session on a guess. See ``work_class_of``.
+    """
+    if origin is None:
+        return DEFAULT_WORK_CLASS
+    try:
+        automation = registry.get(origin)
+    except KeyError:
+        return DEFAULT_WORK_CLASS
+    return work_class_of(automation)
+
+
+def origin_label(origin: str | None) -> str | None:
+    """The display name of the automation *origin*, or the id itself when the
+    registry does not know it, or ``None`` for a human session. The browser
+    renders this rather than keeping its own id→name map."""
+    if origin is None:
+        return None
+    try:
+        return registry.get(origin).name
+    except KeyError:
+        return origin
+
+
+def assisted_by_label(assisted_by: str | None) -> str | None:
+    """``origin_label`` for ``Session.assisted_by`` — same lookup, named for
+    its reader so a call site cannot pass the wrong column."""
+    return origin_label(assisted_by)
+
 
 from .pr_doctor import PrDoctor  # noqa: E402  (register the built-in automations)
 from .backlog_runner import BacklogRunner  # noqa: E402

@@ -115,6 +115,7 @@ class FiledItem:
 class ControlBandMonitor:
     id = "control-band-monitor"
     name = "Control-Band Monitor"
+    work_class = "maintenance"
     description = (
         "Watches ccswitch's own delivery metrics against version-controlled "
         "control bands. A deterministic breach files a triage item and, by tier, "

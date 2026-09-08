@@ -3,8 +3,33 @@ import { describe, it, expect } from 'vitest'
 import {
   sessionOpenState, readInitialPrompt,
   ARCHIVED_PATH, ARCHIVED_SESSION_ROUTE, SESSIONS_PATH,
-  archivedSessionPath, listScopeForPath,
+  BACKGROUND_PATH, BACKGROUND_SESSION_ROUTE, BACKGROUND_SUBAGENT_ROUTE,
+  archivedSessionPath, listScopeForPath, sessionPath, subAgentPath,
 } from '../sessionNavState'
+
+describe('background paths', () => {
+  it('nests the background scope under the sessions section', () => {
+    expect(BACKGROUND_PATH).toBe(`${SESSIONS_PATH}/background`)
+  })
+
+  it('keeps the LIVE param name `id`, so a background session gets a runtime', () => {
+    // The opposite of the archived rule: a background session is a live one
+    // the list merely keeps out of the way. `useOpenSessionId` reads
+    // useParams().id, and that is what mounts `SessionRuntimeProvider`.
+    expect(BACKGROUND_SESSION_ROUTE).toBe('/sessions/background/:id')
+    expect(BACKGROUND_SUBAGENT_ROUTE).toBe('/sessions/background/:id/agents/:agentId')
+  })
+
+  it('builds session and sub-agent paths inside the scope they are opened from', () => {
+    expect(sessionPath('abc')).toBe('/sessions/abc')
+    expect(sessionPath('abc', 'live')).toBe('/sessions/abc')
+    expect(sessionPath('abc', 'background')).toBe('/sessions/background/abc')
+    // Archived is not a scope a LIVE session can be opened in; it is the live path.
+    expect(sessionPath('abc', 'archived')).toBe('/sessions/abc')
+    expect(subAgentPath('abc', 'x')).toBe('/sessions/abc/agents/x')
+    expect(subAgentPath('abc', 'x', 'background')).toBe('/sessions/background/abc/agents/x')
+  })
+})
 
 describe('archived paths', () => {
   it('nests the archived scope under the sessions section', () => {
@@ -27,6 +52,9 @@ describe('listScopeForPath', () => {
     ['/sessions/abc/agents/x', 'live'],
     ['/sessions/archived', 'archived'],
     ['/sessions/archived/abc', 'archived'],
+    ['/sessions/background', 'background'],
+    ['/sessions/background/abc', 'background'],
+    ['/sessions/background/abc/agents/x', 'background'],
     ['/pipeline', 'live'],
   ])('%s → %s', (path, scope) => {
     expect(listScopeForPath(path)).toBe(scope)
@@ -34,6 +62,7 @@ describe('listScopeForPath', () => {
 
   it('does not mistake a session whose id merely starts with "archived"', () => {
     expect(listScopeForPath('/sessions/archivedxyz')).toBe('live')
+    expect(listScopeForPath('/sessions/backgroundxyz')).toBe('live')
   })
 })
 

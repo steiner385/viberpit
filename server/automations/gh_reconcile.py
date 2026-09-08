@@ -74,6 +74,7 @@ def _owner_of(product: ProductSyncView) -> str:
 class GhReconcile:
     id = "gh-reconcile"
     name = "GitHub Reconcile"
+    work_class = "maintenance"
     description = ("Writes Projects v2 Status/Score/Stage, board membership and native blocked-by "
                    "edges from ccswitch decisions. Journaled, capped, leader-gated.")
     modes: tuple[str, ...] = ("off", "dry_run", "apply")

@@ -142,6 +142,7 @@ async def select_batch(
 class BacklogRunner:
     id = "backlog-runner"
     name = "Backlog Runner"
+    work_class = "development"
     description = "Continuously implements high-priority backlog issues into reviewed-ready PRs."
     modes: tuple[str, ...] = ("off", "propose", "auto")
     # Audited engine ceiling (Phase 7, Task 7.1; widened Task 7.2/#1264). The

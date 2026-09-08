@@ -59,6 +59,7 @@ class Trigger:
 class SdlcIntake:
     id = "sdlc-intake"
     name = "SDLC Intake"
+    work_class = "development"
     description = (
         "Turns a brainstorm/triage trigger into a proposed intent.md PR — the "
         "front of the AI-native SDLC loop. Propose-only: a human advance is the gate.")

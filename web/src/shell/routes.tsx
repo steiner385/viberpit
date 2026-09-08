@@ -59,14 +59,16 @@ import {
 } from 'react-router-dom'
 import { NAV_BY_ID, settingsSectionPath } from './navDefs'
 import {
-  SESSIONS_PATH, ARCHIVED_PATH,
+  SESSIONS_PATH, ARCHIVED_PATH, BACKGROUND_PATH,
   SESSION_ROUTE, SUBAGENT_ROUTE, ARCHIVED_SESSION_ROUTE,
+  BACKGROUND_SESSION_ROUTE, BACKGROUND_SUBAGENT_ROUTE,
   LEGACY_ARCHIVED_PATH, LEGACY_ARCHIVED_SESSION_ROUTE,
-  sessionPath, subAgentPath, archivedSessionPath,
+  sessionPath, subAgentPath, archivedSessionPath, listScopeForPath,
 } from '@/session/sessionNavState'
 import { MainPaneSession } from '@/features/sessions/MainPaneSession'
 import { WelcomePane } from '@/features/sessions/WelcomePane'
 import { ArchivedWelcome } from '@/features/sessions/ArchivedWelcome'
+import { BackgroundWelcome } from '@/features/sessions/BackgroundWelcome'
 import { useArchiveAdvance } from '@/features/sessions/useArchiveAdvance'
 import { SubSessionView } from '@/components/session/SubSessionView'
 import { ReviewView } from '@/components/ReviewView'
@@ -101,29 +103,42 @@ const INSIGHTS_PATH = NAV_BY_ID.insights.path
  * advances anyway, and one that was never live at all — a bookmark of an
  * already-archived session — lands on its read-only transcript.
  */
+/**
+ * Serves BOTH `/sessions/:id` and `/sessions/background/:id`: a background
+ * session is a live session the list keeps out of the way, so it gets the same
+ * page and the same runtime. What differs is where its navigation lands — the
+ * list scope it was opened from, read from the route exactly as the shell does.
+ */
 function SessionsPage() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const onDone = useArchiveAdvance(id)
-  return id
-    ? (
-      <MainPaneSession
-        sessionId={id}
-        onClosed={onDone}
-        // Detaching (Back, ← / Esc / Ctrl+Z) goes to the list, not to the
-        // neighbour: the session is still there, the user just left it.
-        onDetach={() => navigate(SESSIONS_PATH)}
-        onOpenSession={(next) => navigate(sessionPath(next))}
-      />
-      )
-    : <WelcomePane />
+  const scope = listScopeForPath(useLocation().pathname)
+  const onDone = useArchiveAdvance(id, scope)
+  if (!id) return scope === 'background' ? <BackgroundWelcome /> : <WelcomePane />
+  return (
+    <MainPaneSession
+      sessionId={id}
+      onClosed={onDone}
+      // Detaching (Back, ← / Esc / Ctrl+Z) goes to the list, not to the
+      // neighbour: the session is still there, the user just left it.
+      onDetach={() => navigate(scope === 'background' ? BACKGROUND_PATH : SESSIONS_PATH)}
+      onOpenSession={(next) => navigate(sessionPath(next, scope))}
+    />
+  )
 }
 
 function SubAgentPage() {
   const { id, agentId } = useParams()
   const navigate = useNavigate()
+  const scope = listScopeForPath(useLocation().pathname)
   if (!id || !agentId) return <Navigate to={SESSIONS_PATH} replace />
-  return <SubSessionView sessionId={id} agentId={agentId} onBack={() => navigate(sessionPath(id))} />
+  return (
+    <SubSessionView
+      sessionId={id}
+      agentId={agentId}
+      onBack={() => navigate(sessionPath(id, scope))}
+    />
+  )
 }
 
 function PipelinePage() {
@@ -279,6 +294,11 @@ const PAGES: RouteObject[] = [
   // declaration order; this order documents that dependency.)
   { path: ARCHIVED_PATH, element: <ArchivedPage /> },
   { path: ARCHIVED_SESSION_ROUTE, element: <ReviewPage /> },
+  // Same static-above-dynamic dependency for `/sessions/background`. Its detail
+  // routes reuse the live pages on purpose: a background session IS live.
+  { path: BACKGROUND_PATH, element: <SessionsPage /> },
+  { path: BACKGROUND_SESSION_ROUTE, element: <SessionsPage /> },
+  { path: BACKGROUND_SUBAGENT_ROUTE, element: <SubAgentPage /> },
   { path: SESSION_ROUTE, element: <SessionsPage /> },
   { path: SUBAGENT_ROUTE, element: <SubAgentPage /> },
   { path: NAV_BY_ID.pipeline.path, element: <PipelinePage /> },
