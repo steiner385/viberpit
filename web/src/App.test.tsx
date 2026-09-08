@@ -277,7 +277,7 @@ describe('App session advance', () => {
   })
 
   it("archiving advances even when the open session's group is collapsed", async () => {
-    // Both mock sessions are idle → the 'your-turn' ("Done") status group. With
+    // Both mock sessions are idle → the 'your-turn' ("Your turn") status group. With
     // that group collapsed, the open session is absent from the VISIBLE ordering
     // — the advance must fall back to the full ordering, not bail to /sessions.
     localStorage.setItem('ccswitch.sessionOrder', JSON.stringify({ groupBy: 'status', sortBy: 'status' }))

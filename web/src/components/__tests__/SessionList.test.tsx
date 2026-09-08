@@ -357,7 +357,7 @@ describe('SessionList', () => {
     // it looks like all sessions vanished.
     const groups = [
       { key: 'busy', label: 'Working', count: 1, sessions: [SESSIONS[0]] },
-      { key: 'your-turn', label: 'Done', count: 1, sessions: [SESSIONS[1]] },
+      { key: 'your-turn', label: 'Your turn', count: 1, sessions: [SESSIONS[1]] },
     ]
     render(
       <SessionList
@@ -371,7 +371,7 @@ describe('SessionList', () => {
     )
     // Both headers (and their counts) are still shown so the user can re-expand.
     expect(screen.getByRole('button', { name: /Working/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Done/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Your turn/i })).toBeInTheDocument()
     // Not the "no sessions" empty state.
     expect(screen.queryByRole('button', { name: /new session/i })).not.toBeInTheDocument()
   })
@@ -399,7 +399,7 @@ describe('SessionList', () => {
     const onToggleCollapse = vi.fn()
     const groups = [
       { key: 'busy', label: 'Working', count: 1, sessions: [SESSIONS[0]] },
-      { key: 'your-turn', label: 'Done', count: 1, sessions: [SESSIONS[1]] },
+      { key: 'your-turn', label: 'Your turn', count: 1, sessions: [SESSIONS[1]] },
     ]
     const { rerender } = render(
       <SessionList {...baseProps} groups={groups} collapsedKeys={new Set()} onToggleCollapse={onToggleCollapse} />,
