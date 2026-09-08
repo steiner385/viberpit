@@ -206,3 +206,57 @@ def test_coverage_critic_prompt_is_same_branch_and_census_driven():
     assert "auto-merge" in pl  # instructed never to arm it
     # Anti-bias: low-churn foundations are the target, not skip-worthy
     assert any(k in pl for k in ["churn", "activity, not importance", "fundamental"])
+
+
+def test_diff_prompt_arms_auto_merge_with_hold_human_takeover():
+    """Feature-map drift PRs are FULLY AUTOMATED by default (2026-09-08).
+
+    The old `scope="diff"` prompt said "Do NOT arm auto-merge — the merge is the
+    human curation gate". That gate never existed in the target repo: KinDash's
+    `main` requires zero reviews and its ops-auto-merge workflow arms every open
+    non-draft PR anyway, so agents dutifully left auto-merge off and the bot
+    merged the PR unreviewed minutes later (#15829 merged at 20:08:41Z with 0
+    reviews after the session deliberately did not arm it). The instruction
+    bought nothing and made agents write a false claim into PR bodies.
+
+    Human takeover is now the exception, expressed as a `hold:human` label the
+    agent applies when its own confidence is low.
+    """
+    p = build_map_synthesis_prompt(
+        slug="acme", repo="acme/app", default_branch="main",
+        open_count=10, closed_count=20, scope="diff",
+        suggestion="new-capability", item_numbers=(1, 2))
+    pl = p.lower()
+    assert "arm auto-merge" in pl
+    assert "do not arm auto-merge" not in pl
+    assert "human curation gate" not in pl
+    # The takeover lever, and when to reach for it.
+    assert "hold:human" in p
+    assert "confidence" in pl
+
+
+def test_diff_prompt_keeps_its_other_propose_guarantees():
+    """Arming auto-merge must not loosen the rest of the contract."""
+    p = build_map_synthesis_prompt(
+        slug="acme", repo="acme/app", default_branch="main",
+        open_count=10, closed_count=20, scope="diff",
+        suggestion="new-capability", item_numbers=(1, 2))
+    assert "docs/product/features/" in p
+    assert "ONE" in p and "non-draft" in p.lower()
+    assert "origin/main" in p
+    assert "Co-Authored-By" in p
+
+
+def test_initial_and_critic_prompts_still_withhold_auto_merge():
+    """The two-phase onboarding pipeline is deliberately NOT changed.
+
+    Synthesis opens the map PR and a coverage critic is chained afterwards to
+    add any missing capability docs. If synthesis armed auto-merge the PR could
+    merge before that pass runs — and the critic can legitimately never spawn
+    (`launch_plan_or_refuse` returns None with no healthy account). Arming there
+    would silently drop the anti-omission gate, so it stays a coupled decision.
+    """
+    initial = build_map_synthesis_prompt(
+        slug="acme", repo="acme/app", default_branch="main",
+        open_count=10, closed_count=20)
+    assert "do not arm auto-merge" in initial.lower()

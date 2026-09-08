@@ -112,8 +112,22 @@ def build_map_synthesis_prompt(
     """Seed prompt for the map-synthesis session (spec §5 Step 1 / §6 drift).
 
     Reads the codebase + mirrored backlog (open+closed) + PR history as
-    evidence, writes outcome-driven feature docs, and opens ONE non-draft PR —
-    NO auto-merge. The merge is the human curation gate.
+    evidence, writes outcome-driven feature docs, and opens ONE non-draft PR.
+
+    Auto-merge differs by scope, deliberately:
+
+    * ``scope="diff"`` ARMS auto-merge. Full automation is the default; human
+      takeover is the exception, signalled by the agent adding a ``hold:human``
+      label when its own confidence is low. The former "do not arm — the merge
+      is the human curation gate" instruction described a gate that did not
+      exist in the target repo (``main`` requiring zero reviews, plus a sweep
+      that arms every open non-draft PR), so it only produced false claims in
+      PR bodies while the bot merged the PR unreviewed regardless.
+    * ``scope="initial"`` does NOT arm, because a coverage-critic session is
+      chained after it to add missing capability docs to the SAME PR. Arming
+      here would let the map merge before that anti-omission pass runs — and
+      the critic can legitimately never spawn. Changing that is a coupled
+      decision with ``build_coverage_critic_prompt``, not a wording change.
 
     ``scope="initial"`` (default) is the whole-repo archaeology prompt.
     ``scope="diff"`` is the diff-scoped drift prompt (phase 3 reuses this one
@@ -138,8 +152,15 @@ def build_map_synthesis_prompt(
             f"`{default_branch}`).\n"
             f"2. Commit only under `{FEATURE_DOCS_DIR}/`.\n"
             "3. Open exactly ONE NON-draft PR, marked ready for review.\n"
-            "4. Do NOT arm auto-merge — the merge is the human curation gate.\n"
-            "5. End every commit message with:\n"
+            "4. Arm auto-merge on the PR (`gh pr merge --auto`). Full "
+            "automation is the default here — do not leave it unarmed and do "
+            "not claim in the PR body that a human curates the feature map.\n"
+            "5. Human takeover is the exception, and you decide when to invoke "
+            "it: if your own confidence in this mapping is LOW — the capability "
+            "may not be real, or the cluster may belong to a doc that already "
+            "exists — add the `hold:human` label so a maintainer can take it "
+            "over before it lands.\n"
+            "6. End every commit message with:\n"
             f"   `{commit_trailer(engine)}`\n"
         )
     repo_clause = f" in repository `{repo}`" if repo else ""
