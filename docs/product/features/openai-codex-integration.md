@@ -149,6 +149,17 @@ compatibility audit; API-key authentication in v1.
   silent (`server/automations/engine_policy.py:escalate_for_codex_network_opt_in`). The push half of
   that escalation is now proven live (see the SDLC bullet below); the `gh pr create` half is not,
   and it is the one step of the contract that is plain shell and identical on either engine.
+- **`full-auto` keeps an approval channel.** The same sandbox that blocks `git push` also
+  hard-protects `.git` and refuses listening sockets, so an *attended* `full-auto` Codex session
+  (the Settings-page default reaches every hand-created session) could not commit, run a
+  server-backed test suite, or write through a `node_modules` symlink either — and with the approval
+  axis at `never` the app-server auto-declined every escalation without a card, so on 2026-09-07
+  every Codex session did its work and then reported the environment as broken. `full-auto` now
+  maps to `workspace-write` + `on-request` (`server/codex/permissions.py`): sandboxed work still
+  runs unattended, and the one command that must leave the sandbox raises an ordinary permission
+  card. Rule 3 in that module pins the general form — `never` is paired only with
+  `danger-full-access`. Automations are unaffected: the launch blocker still refuses the
+  network-isolated pair, and #1263's opt-in still escalates it.
 - **SDLC origins enabled (#1265 intake, #1266 synthesizer).** Both SDLC ceilings are now
   `codex_allowed`, on the evidence of an opt-in initiative driven intent → design → plan on the real
   `codex` binary (`codex-cli 0.153.2` — the same version the app-server contract is pinned to). The

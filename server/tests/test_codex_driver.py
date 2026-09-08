@@ -304,6 +304,18 @@ async def test_the_driver_satisfies_the_agent_driver_protocol(harness):
 
 
 @pytest.mark.asyncio
+async def test_full_auto_starts_sandboxed_but_still_able_to_ask_to_escalate(harness):
+    """``full-auto`` runs sandboxed work unattended, but a confined sandbox needs
+    an approval channel for the one thing it cannot do (commit, push, listen), or
+    every such command is silently rejected (how every Codex session on
+    2026-09-07 ended up unable to commit)."""
+    await harness.boot(mode="full-auto")
+    params = harness.params(schema.METHOD_THREAD_START)
+    assert params["sandbox"] == "workspace-write"
+    assert params["approvalPolicy"] == "on-request"
+
+
+@pytest.mark.asyncio
 async def test_start_opens_a_thread_with_the_mode_s_sandbox_and_markers(harness):
     driver = await harness.boot(mode="interactive")
     params = harness.params(schema.METHOD_THREAD_START)
