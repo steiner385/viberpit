@@ -24,6 +24,17 @@ def build_prompt(context: str) -> str:
     )
 
 
+def build_codex_suggest_prompt(context: str) -> str:
+    """Compose the one-shot Codex turn text for suggestion generation (#1281).
+
+    Codex threads have no separate system-prompt slot a one-shot caller can set
+    (see ``prompt_refiner.build_codex_refine_prompt`` for the same constraint on
+    the refine helper), so ``SUGGEST_SYSTEM_PROMPT`` and the transcript context
+    are folded into a single turn instead of split across a system/user pair.
+    """
+    return f"{SUGGEST_SYSTEM_PROMPT}\n\n{build_prompt(context)}"
+
+
 def parse_suggestions(raw: str, limit: int = 4) -> list[str]:
     raw = raw.strip()
     start = raw.find("[")
