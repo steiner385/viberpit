@@ -92,7 +92,7 @@ describe('filterSessions', () => {
 describe('deriveFilterOptions', () => {
   it('offers every status tier, ordered by triage rank, regardless of the data', () => {
     expect(deriveFilterOptions([], []).status.map((o) => o.value)).toEqual(
-      ['needs-you', 'unreachable', 'error', 'your-turn', 'waiting', 'busy'],
+      ['needs-you', 'unreachable', 'error', 'your-turn', 'complete', 'waiting', 'busy'],
     )
     expect(OPTIONS.status.map((o) => o.label)).toContain('Failed')
   })

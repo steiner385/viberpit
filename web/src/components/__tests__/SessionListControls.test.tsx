@@ -218,7 +218,7 @@ describe('SessionListControls — filter selects', () => {
       .getAllByRole('option')
       .map((o) => o.textContent)
     expect(labels).toEqual([
-      'All statuses', 'Needs you', 'Unreachable', 'Failed', 'Done', 'Waiting', 'Working',
+      'All statuses', 'Needs you', 'Unreachable', 'Failed', 'Your turn', 'Complete', 'Waiting', 'Working',
     ])
   })
 

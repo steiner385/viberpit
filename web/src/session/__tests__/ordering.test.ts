@@ -60,15 +60,31 @@ describe('orderSessions', () => {
     expect(g.map((x) => x.count)).toEqual([1, 1])
   })
 
-  it('group by status: parked (waiting_external) forms its own Waiting group, between Done and Working', () => {
+  it('group by status: parked (waiting_external) forms its own Waiting group, between Your turn and Working', () => {
     const s = [
       mk({ id: 'busy', status: 'in_progress' }),
       mk({ id: 'wait', status: 'waiting_external' }),
       mk({ id: 'done', status: 'done' }),
     ]
     const g = orderSessions(s, 'status', 'status')
-    expect(g.map((x) => x.label)).toEqual(['Done', 'Waiting', 'Working'])
+    expect(g.map((x) => x.label)).toEqual(['Your turn', 'Waiting', 'Working'])
     expect(g.find((x) => x.label === 'Waiting')?.sessions.map((x) => x.id)).toEqual(['wait'])
+  })
+
+  it('group by status: a session waiting on a reply is never filed under Complete', () => {
+    // `done` = the turn ended and the agent handed back to the user. Only
+    // `complete` (mark_complete) and `ended` are finished. The old single tier
+    // headed "Done" put both under one finished-sounding header.
+    const s = [
+      mk({ id: 'reply', status: 'done' }),
+      mk({ id: 'fresh', status: 'idle' }),
+      mk({ id: 'fin', status: 'complete' }),
+      mk({ id: 'gone', status: 'ended' }),
+    ]
+    const g = orderSessions(s, 'status', 'status')
+    expect(g.map((x) => x.label)).toEqual(['Your turn', 'Complete'])
+    expect(g.find((x) => x.label === 'Your turn')?.sessions.map((x) => x.id)).toEqual(['reply', 'fresh'])
+    expect(g.find((x) => x.label === 'Complete')?.sessions.map((x) => x.id)).toEqual(['fin', 'gone'])
   })
 
   it('group by repo: alphabetical, Scratch last', () => {
@@ -111,7 +127,7 @@ describe('orderSessions', () => {
     const g = orderSessions(s, 'status', 'status')
     const errorGroup = g.find((x) => x.label === 'Failed')
     expect(errorGroup?.sessions.map((x) => x.id)).toEqual(['broken'])
-    const doneGroup = g.find((x) => x.label === 'Done')
-    expect(doneGroup?.sessions.map((x) => x.id)).toEqual(['idle'])
+    const yourTurnGroup = g.find((x) => x.label === 'Your turn')
+    expect(yourTurnGroup?.sessions.map((x) => x.id)).toEqual(['idle'])
   })
 })

@@ -8,7 +8,13 @@ import { TERMINAL_STATUSES, type SessionStatus } from '@/api/types'
 import { formatResetTime } from '@/lib/formatReset'
 import { type PromptStage, STAGE_PILL_LABEL, isInFlight } from './promptStage'
 
-export type StatusTier = 'busy' | 'needs-you' | 'your-turn' | 'waiting' | 'error' | 'unreachable'
+// 'your-turn' and 'complete' are deliberately separate tiers. "The turn is done"
+// (`done`: the agent handed back and is waiting on the user) and "the objective is
+// complete" (`complete`: the agent called mark_complete; `ended`: the process is
+// gone) are different claims. They used to share one tier headed "Done", so a
+// session asking the user a question sat under a finished-sounding header.
+export type StatusTier =
+  | 'busy' | 'needs-you' | 'your-turn' | 'complete' | 'waiting' | 'error' | 'unreachable'
 
 export interface StatusPresentation {
   tier: StatusTier
@@ -67,12 +73,12 @@ const PRESENTATION: Record<SessionStatus | 'working', StatusPresentation> = {
   waiting_input:    { tier: 'needs-you', label: 'Permission needed', Icon: CircleAlert,   textClass: NEEDS_YOU },
   waiting_question: { tier: 'needs-you', label: 'Answer needed',     Icon: HelpCircle,    textClass: NEEDS_YOU },
   done:             { tier: 'your-turn', label: 'Your turn',         Icon: Check,         textClass: CALM },
-  complete:         { tier: 'your-turn', label: 'Complete',          Icon: CheckCircle2,  textClass: CALM },
+  complete:         { tier: 'complete',  label: 'Complete',          Icon: CheckCircle2,  textClass: CALM },
   idle:             { tier: 'your-turn', label: 'Ready',             Icon: Clock,         textClass: CALM },
   waiting_external: { tier: 'waiting',   label: 'Waiting…',          Icon: Hourglass,     textClass: CALM },
   needs_attention:  { tier: 'error',     label: 'Turn failed',       Icon: AlertTriangle, textClass: ERROR },
   limited:          { tier: 'error',     label: 'Usage limit',       Icon: AlertTriangle, textClass: ERROR },
-  ended:            { tier: 'your-turn', label: 'Ended',             Icon: X,             textClass: CALM },
+  ended:            { tier: 'complete',  label: 'Ended',             Icon: X,             textClass: CALM },
   // Not started yet. These two carry no transcript, so the pill is the ONLY signal the
   // session has not run — a calm "Ready" over an empty conversation reads as a dead
   // session, which is exactly what this table's fallback used to produce for them.
@@ -198,7 +204,8 @@ export function statusTier(state: string): StatusTier {
  * `pulse` marks the action-required tiers whose dot animates (motion-safe).
  */
 export const TIER_TONE: Record<StatusTier, 'success' | 'warning' | 'danger' | 'neutral' | 'info'> = {
-  busy: 'success', 'needs-you': 'warning', unreachable: 'warning', error: 'danger', 'your-turn': 'neutral', waiting: 'info',
+  busy: 'success', 'needs-you': 'warning', unreachable: 'warning', error: 'danger',
+  'your-turn': 'neutral', complete: 'neutral', waiting: 'info',
 }
 
 export const TIER_ACCENT: Record<StatusTier, { rail: string; dot: string; pulse: boolean }> = {
@@ -208,19 +215,24 @@ export const TIER_ACCENT: Record<StatusTier, { rail: string; dot: string; pulse:
   error: { rail: 'bg-danger', dot: 'bg-danger', pulse: true },
   // Deliberately muted relative to the dot (see module docstring above).
   'your-turn': { rail: 'bg-neutral/40', dot: 'bg-neutral', pulse: false },
+  complete: { rail: 'bg-neutral/40', dot: 'bg-neutral', pulse: false },
   waiting: { rail: 'bg-info/40', dot: 'bg-info', pulse: false },
 }
 
+// 'complete' sits right after 'your-turn': nothing is owed to it, but its PR is
+// usually the next thing the user reviews, so it stays near the action pile rather
+// than sinking below sessions that are parked or still working.
 export const TIER_RANK: Record<StatusTier, number> = {
-  'needs-you': 0, unreachable: 1, error: 2, 'your-turn': 3, waiting: 4, busy: 5,
+  'needs-you': 0, unreachable: 1, error: 2, 'your-turn': 3, complete: 4, waiting: 5, busy: 6,
 }
 
 /**
  * Human-readable section header for each tier (group-by-status). These name the
- * tier as a category and intentionally avoid reusing any individual status pill
- * label: the 'your-turn' tier bundles several pills (Ready / Your turn / Complete
- * / Ended), so its header is "Done" rather than "Your turn" — otherwise a header
- * named "Your turn" would sit above "Ready" cards and read as misfiled.
+ * tier as a category, and the two calm tiers name the CLAIM the session makes:
+ * "Your turn" (Ready / Your turn — the agent is waiting on you, the objective is
+ * open) versus "Complete" (Complete / Ended — finished, nothing owed). Neither is
+ * spelled "Done": that word reads as "the work is finished" in a header while the
+ * `done` wire status only means "the turn is finished", and the two must not blur.
  *
  * The 'error' header is "Failed", not "Needs attention": that read as a synonym
  * for "Needs you" while meaning the opposite kind of stop. Amber = the agent is
@@ -233,7 +245,8 @@ export const TIER_LABEL: Record<StatusTier, string> = {
   'needs-you': 'Needs you',
   unreachable: 'Unreachable',
   error: 'Failed',
-  'your-turn': 'Done',
+  'your-turn': 'Your turn',
+  complete: 'Complete',
   waiting: 'Waiting',
   busy: 'Working',
 }

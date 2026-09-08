@@ -36,7 +36,7 @@ export function StatusBar({ status, connectionState, subAgentCount }: Props) {
           phrase={status.state === 'condensing' ? 'Condensing context' : undefined}
         />
       ) : (
-        <span className={cn('inline-flex items-center gap-1', tier !== 'your-turn' && 'font-medium')}>
+        <span className={cn('inline-flex items-center gap-1', tier !== 'your-turn' && tier !== 'complete' && 'font-medium')}>
           <Icon size={12} aria-hidden="true" />
           {label}
         </span>

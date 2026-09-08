@@ -8,11 +8,13 @@ import type { PromptStage } from './promptStage'
 
 /** Tiers at which nothing is already watching the session's PR: it has no live
  *  turn and no armed Monitor/wakeup. Only these get lifted by a failing PR.
+ *  `complete` counts: the agent declared the objective met and left, so a red
+ *  rollup on its still-open PR is nobody's job but the user's.
  *  `waiting` (waiting_external — an armed Monitor/wakeup, see background_tasks.is_parked)
  *  and `busy` (a live turn) both mean an agent is already on the CI, so a red
  *  rollup there is that agent's job, not the user's — don't escalate to "Failed"
  *  and contradict the card's own "Waiting…"/"Working…" pill. */
-const AT_REST = new Set<StatusTier>(['your-turn'])
+const AT_REST = new Set<StatusTier>(['your-turn', 'complete'])
 
 /**
  * The ONE triage read for a session: the presentation its card pill shows AND

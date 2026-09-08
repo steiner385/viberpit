@@ -42,6 +42,17 @@ describe('triageTier', () => {
     // A turn is actively running — likely fixing the very failure. Not user-facing.
     expect(triageTier(s('in_progress', 'failing'))).toBe('busy')
   })
+  it('files complete and ended sessions under the complete tier', () => {
+    expect(triageTier(s('complete'))).toBe('complete')
+    expect(triageTier(s('ended'))).toBe('complete')
+    expect(triageTier(s('complete', 'passing'))).toBe('complete')
+  })
+  it('still elevates a complete session with a failing open PR (nothing is watching it)', () => {
+    // The agent declared the objective met, but its PR is red and no turn or
+    // Monitor is on it — that is the user's to act on, same as a done session.
+    expect(triageTier(s('complete', 'failing'))).toBe('error')
+    expect(triageTier(s('complete', 'failing', 'merged'))).toBe('complete')
+  })
 })
 
 describe('sessionTriage (pill + group share one computation)', () => {
