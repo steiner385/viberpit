@@ -233,9 +233,9 @@ class Translator:
                 # exists to catch. The dropped resolution must not latch either.
                 if completed:
                     log.info("sessions.hand_back_over_completion declared_complete=%s "
-                             "pr_resolution=%s reason=%s",
+                             "pr_resolution=%s",
                              "mark_complete" in signals or has_completion_marker(self._turn_text),
-                             pr_resolution, hand_back.get("reason"))
+                             pr_resolution)
                 outcome = "hand_back"
                 pr_resolution, pr_source = None, None
             elif completed:

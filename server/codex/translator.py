@@ -40,7 +40,8 @@ from typing import Any, Final
 from ccswitch import brand
 from server.codex import schema
 from server.sessions import events as ev
-from server.sessions.completion import has_completion_marker, resolution_from_text
+from server.sessions.completion import (has_completion_marker, parse_hand_back_marker,
+                                        resolution_from_text)
 
 #: Upper bound on the aggregated command output carried in a `ToolResult`
 #: payload. The payload rides the WebSocket to every attached client and then
@@ -356,11 +357,23 @@ class CodexEventTranslator:
         turn = params.turn
         text = self._state.turn_text
         pr_resolution = resolution_from_text(text)
+        hand_back = parse_hand_back_marker(text)
         outcome = _OUTCOME_BY_STATUS[turn.status]
-        if outcome == "success" and (
-            has_completion_marker(text) or pr_resolution is not None
-        ):
-            outcome = "complete"
+        if outcome == "success":
+            completed = has_completion_marker(text) or pr_resolution is not None
+            if hand_back is not None:
+                # Same precedence as the Claude translator (spec §5): a hand-back
+                # outranks a finishing marker in the same turn, and the dropped
+                # resolution must not latch on the driver.
+                # No disagreement log here: this module never logs (see the module
+                # docstring and test_the_translator_module_never_logs); the Claude
+                # translator carries that log.
+                outcome = "hand_back"
+                pr_resolution = None
+            elif completed:
+                outcome = "complete"
+        else:
+            hand_back = None
         out: list[object] = []
         if turn.error is not None:
             # Emit the failure inline, anchored to this turn and BEFORE the
@@ -380,6 +393,7 @@ class CodexEventTranslator:
                 pr_resolution=pr_resolution,
                 # Never honoured for Codex — see the module docstring.
                 model_request=None,
+                hand_back_reason=hand_back.get("reason") if hand_back else None,
             )
         )
         # The completed turn's `items` are the full transcript of what already
