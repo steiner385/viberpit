@@ -532,14 +532,32 @@ class PmSyncLoop:
                 kind="feature_read_error", target=view.repo)
             return
         docs: list[tuple[str, FeatureDoc]] = []
+        skipped: list[str] = []
         for path, text in raw:
             try:
                 doc = parse_feature_doc(text)
-            except FeatureDocError:
+            except FeatureDocError as e:
                 log.warning("pm_sync.bad_feature_doc repo=%s path=%s",
                             view.repo, path, exc_info=True)
+                skipped.append(f"{path}: {e}")
                 continue  # one bad doc never poisons the index (spec §4)
             docs.append((path, doc))
+        if skipped:
+            # A skipped doc is invisible everywhere else: the capability simply
+            # never appears on the map, and the pm-triage drift branch keeps
+            # re-proposing it because an unindexed capability cannot latch. The
+            # read-failure path above already emits; parse failures did not, so
+            # a repo could sit at zero indexed features indefinitely with the
+            # only trace in the process log. Emit once per pass, not per doc.
+            log.warning("pm_sync.feature_docs_skipped repo=%s skipped=%d of=%d",
+                        view.repo, len(skipped), len(raw))
+            await self._ctx.emit(
+                "warn",
+                f"{len(skipped)} of {len(raw)} feature docs in {view.repo} "
+                f"could not be parsed and are NOT on the map: "
+                + "; ".join(skipped[:5])
+                + ("; …" if len(skipped) > 5 else ""),
+                kind="feature_doc_skipped", target=view.repo)
         rows = await self._list_feature_rows(view.project_id)
         plan = plan_feature_index(rows, docs)
         await self._apply_feature_plan(view.project_id, plan)
