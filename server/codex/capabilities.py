@@ -86,10 +86,28 @@ CODEX_ENGINE: Final = AgentEngine.CODEX
 #: the natural mechanism once that is designed). Flipping this flag is
 #: therefore the next step, not this one.
 #:
-#: The remaining ``False`` entries are equally deliberate: ccswitch's fork,
-#: adopt and self-directed model switching surfaces are all implemented
-#: against the Claude CLI's private state and have no app-server equivalent in
-#: v1.
+#: ``adopt`` is False for a subtler reason (#1272): unlike Claude, where
+#: ``server/sessions/adopt.py`` finds externally-launched CLI processes by scanning
+#: `/proc` (there is no listing RPC to ask a CLI for its siblings), the pinned
+#: app-server protocol genuinely declares session-enumeration and resume-by-id
+#: methods — `thread/list`, `thread/search`, `thread/resume`
+#: (`server/tests/fixtures/codex_app_server/0.153.2/method_index.json`,
+#: `server/codex/schema.py`). None of `thread/list`/`thread/search` are in
+#: `SUPPORTED_CLIENT_REQUESTS`, and even if ccswitch called them, the answer would
+#: still be empty across the boundary that matters: `ensure_codex_home`
+#: (server/codex/process.py) forces every account's `codex app-server` into its
+#: own ccswitch-private `CODEX_HOME`, so a runner's own app-server process only
+#: ever enumerates threads it started itself — never a user's independently
+#: launched `codex` CLI (default `~/.codex`, a disjoint database) or another
+#: account's runner. There is no cross-boundary orphan to discover, so
+#: `orchestrator.adopt_session` (server/sessions/orchestrator.py) is hardcoded to
+#: `AgentEngine.CLAUDE_CODE` rather than capability-dispatched. Architectural, not
+#: a gap to close later, same as ``account_rotation`` below — verified against the
+#: pinned protocol fixture, not assumed.
+#:
+#: The remaining ``False`` entries (ccswitch's fork and self-directed model switching
+#: surfaces) are equally deliberate: they are implemented against the Claude CLI's
+#: private state and have no app-server equivalent in v1.
 #: ``account_rotation`` is False because rotation composes the target account's
 #: Claude config dir and syncs Claude credentials back; a Codex session is refused
 #: by that path rather than rebuilt as some other engine's driver. That refusal is

@@ -82,6 +82,25 @@ def test_supported_method_sets_are_subsets_of_the_declared_inventory() -> None:
     )
 
 
+def test_thread_discovery_methods_are_declared_but_deliberately_unsupported() -> None:
+    """Pin the #1272 finding: the vendor DOES expose session discovery/resume.
+
+    Unlike Claude's CLI (no listing RPC at all), the pinned app-server genuinely
+    declares `thread/list` and `thread/search` — this is not a vendor-absent
+    capability. ccswitch still leaves `adopt=False` (`server/codex/capabilities.py`)
+    because `CODEX_HOME` isolation (`server/codex/process.py`) means a runner's
+    own app-server process can only ever enumerate threads it started itself, so
+    calling these methods would find nothing to adopt. If a future CODEX_HOME
+    model ever lets one process see another's threads, revisit `adopt` alongside
+    this test rather than adding `thread/list` to `SUPPORTED_CLIENT_REQUESTS` on
+    its own.
+    """
+    declared = frozenset(_fixture_contract().method_index["clientRequests"])
+    assert {"thread/list", "thread/search", "thread/resume"} <= declared
+    assert "thread/list" not in schema.SUPPORTED_CLIENT_REQUESTS
+    assert "thread/search" not in schema.SUPPORTED_CLIENT_REQUESTS
+
+
 def test_external_token_login_still_carries_the_unstable_markers() -> None:
     """The version pin exists because this surface is explicitly unstable."""
     document = json.dumps(_fixture_contract().documents["v2/LoginAccountParams.json"])

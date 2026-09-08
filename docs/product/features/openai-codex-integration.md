@@ -61,6 +61,17 @@ compatibility audit; API-key authentication in v1.
 
 **Notes** —
 
+- **External-session adoption (#1272, verified vendor boundary).** The pinned app-server protocol
+  genuinely declares session-enumeration/resume-by-id methods (`thread/list`, `thread/search`,
+  `thread/resume` — `server/tests/fixtures/codex_app_server/0.153.2/method_index.json`), unlike
+  Claude's CLI, which has no such RPC at all. Adoption stays a non-goal anyway: `ensure_codex_home`
+  (`server/codex/process.py`) forces every account's `codex app-server` into its own
+  ccswitch-private `CODEX_HOME`, so a runner's own process only ever enumerates threads it started
+  itself — never a user's independently launched `codex` CLI (default `~/.codex`, a disjoint
+  database) or another account's runner. There is no cross-boundary orphan to discover, so this is
+  an architectural boundary, not an unimplemented feature; see the capability rationale in
+  `server/codex/capabilities.py` (`adopt=False`) and its regression test in
+  `server/tests/test_codex_capabilities.py`.
 - Architecture uses two axes: `engine` (`claude_code` or `codex`) and account `provider`
   (`anthropic`, `copilot`, or `openai`). Copilot remains a Claude-engine account.
 - OpenAI credentials use the same canonical-master principle as Claude: dobby owns the only refresh
