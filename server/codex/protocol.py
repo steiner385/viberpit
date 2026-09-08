@@ -25,7 +25,9 @@ grows a different answer per call site:
   is not a JSONL stream and pending callers must fail rather than wait.
 * **EOF / transport failure** fails every pending future with a typed
   :class:`CodexTransportClosed` and latches, so later calls fail closed instead
-  of hanging.
+  of hanging. The latch is observable (`closed`, `wait_closed()`) because the
+  process can outlive it: one oversized frame kills the connection, not the
+  child, and the runner supervisor must treat that as a crash (#1444).
 * **Bounded inbound queue.** With no notification handler installed, supported
   notifications buffer in a bounded queue; on overflow the *oldest* entry is
   dropped and counted. Codex notifications are a rolling stream whose newest
@@ -329,6 +331,11 @@ class CodexAppServerClient:
         self._logged_unknown_server_requests: set[str] = set()
         self._consecutive_malformed = 0
         self._closed_error: CodexProtocolError | None = None
+        #: Set exactly when `_closed_error` latches. A supervisor waits on this
+        #: rather than polling: a client that latched closed while its process is
+        #: still alive (#1444, one oversized frame) is a dead runner, and nothing
+        #: else — not the process exit, not the next caller's error — reports it.
+        self._closed_event = asyncio.Event()
         self._initialized = False
         self._initialize_response: schema.InitializeResponse | None = None
 
@@ -371,6 +378,20 @@ class CodexAppServerClient:
     @property
     def external_auth_enabled(self) -> bool:
         return self._external_auth_enabled
+
+    @property
+    def closed(self) -> bool:
+        """True once the client has latched: every call now fails closed."""
+        return self._closed_error is not None
+
+    @property
+    def closed_reason(self) -> str | None:
+        """The latched error's message (typed, never a wire value), or None."""
+        return str(self._closed_error) if self._closed_error is not None else None
+
+    async def wait_closed(self) -> None:
+        """Block until the client latches closed (EOF, read/write failure, aclose)."""
+        await self._closed_event.wait()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -760,6 +781,7 @@ class CodexAppServerClient:
     def _fail_all(self, error: CodexProtocolError) -> None:
         if self._closed_error is None:
             self._closed_error = error
+        self._closed_event.set()
         pending, self._pending = self._pending, {}
         for entry in pending.values():
             if not entry.future.done():

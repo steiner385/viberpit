@@ -15,7 +15,10 @@ import pytest
 
 from server.codex import protocol, redaction, schema
 from server.codex.redaction import REDACTED, Redacted
-from server.tests.fakes.fake_codex_app_server import FakeCodexAppServer
+from server.tests.fakes.fake_codex_app_server import (
+    _READER_LIMIT as _FAKE_READER_LIMIT,
+    FakeCodexAppServer,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -1459,5 +1462,40 @@ async def test_closed_copy_survives_a_subclass_with_a_richer_init() -> None:
             for _ in range(3):
                 with pytest.raises(protocol.CodexProtocolError):
                     await client.list_models()
+        finally:
+            await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# closed-state introspection (#1444)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_latched_client_reports_closed_and_wakes_waiters() -> None:
+    async with FakeCodexAppServer() as fake:
+        client = await _ready(fake)
+        try:
+            assert client.closed is False
+            waiter = asyncio.create_task(client.wait_closed())
+            await asyncio.sleep(0)
+            assert not waiter.done()
+            fake.eof()
+            await asyncio.wait_for(waiter, 1.0)
+            assert client.closed is True
+        finally:
+            await client.aclose()
+
+
+async def test_an_oversized_frame_latches_the_client_closed() -> None:
+    """The live shape of #1444: a read *failure*, not an EOF, must still flip
+    `closed` so a supervisor can tell a dead connection from a live one."""
+    async with FakeCodexAppServer() as fake:
+        client = await _ready(fake)
+        try:
+            fake.send_raw(b"x" * (2 * _FAKE_READER_LIMIT) + b"\n")
+            await asyncio.wait_for(client.wait_closed(), 1.0)
+            assert client.closed is True
+            with pytest.raises(protocol.CodexProtocolError):
+                await client.list_models()
         finally:
             await client.aclose()
