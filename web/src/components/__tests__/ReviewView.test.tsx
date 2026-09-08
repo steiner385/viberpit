@@ -114,7 +114,7 @@ describe('ReviewView', () => {
     expect(vi.mocked(hooks.useSessionTranscript)).toHaveBeenCalledWith('arc-99', true, 100)
   })
 
-  it('pages in older turns when scrolled to the top', () => {
+  it('pages in older turns when scrolled to the top', async () => {
     vi.mocked(hooks.useSessionTranscript).mockReturnValue({
       data: {
         events: [
@@ -136,6 +136,10 @@ describe('ReviewView', () => {
     const scroller = container.querySelector('.overflow-y-auto') as HTMLElement
     expect(scroller).toBeTruthy()
     Object.defineProperty(scroller, 'scrollTop', { value: 0, writable: true })
+    // Mounting the virtualizer routes its first row measurement through
+    // TranscriptView's programmatic-scroll guard, which flags the mount frame;
+    // a simulated user scroll has to land in a later frame, as a real one would.
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
     fireEvent.scroll(scroller)
 
     expect(fetchOlderTurns).toHaveBeenCalledWith('arc-1', 5)

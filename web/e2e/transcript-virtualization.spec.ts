@@ -25,6 +25,15 @@ const HAIKU = 'claude-haiku-4-5'
 // from Opus to Haiku, producing exactly one model-switch divider near the top.
 const SWITCH_AT = 2
 
+// The final reply is long (many paragraphs, far taller than the virtualizer's
+// 120px row estimate) while every other row is far shorter than it. That is
+// the real-session shape — short tool/thinking rows, then a long answer — and
+// the one that exposes the entry bug: the short rows above the viewport shrink
+// on first measurement, which pulls scrollTop up, while the tall last row grows
+// the total so nothing clamps the view back to the bottom. With uniformly
+// short rows the browser's own clamp hides the bug.
+const LONG_REPLY_PARAGRAPHS = 30
+
 /** Synthesize a long transcript as the wire events ReviewView folds into turns. */
 function buildTranscriptEvents() {
   const events: Array<Record<string, unknown>> = []
@@ -35,6 +44,11 @@ function buildTranscriptEvents() {
     events.push({ type: 'turnStart', turnId: asstId })
     events.push({ type: 'turnModel', turnId: asstId, model: i < SWITCH_AT ? OPUS : HAIKU })
     events.push({ type: 'textDelta', turnId: asstId, text: `Assistant reply number ${i}` })
+    if (i === EXCHANGES - 1) {
+      for (let p = 0; p < LONG_REPLY_PARAGRAPHS; p++) {
+        events.push({ type: 'textDelta', turnId: asstId, text: `\n\nClosing paragraph ${p} of the final answer.` })
+      }
+    }
     events.push({ type: 'turnEnd', turnId: asstId })
   }
   return events
@@ -87,8 +101,11 @@ test.describe('Transcript virtualization (#37)', () => {
     expect(domRows).toBeGreaterThan(0)
     expect(domRows).toBeLessThan(40)
 
-    // Pinned to the true bottom (within a row's height).
-    expect(await distanceFromBottom(page)).toBeLessThan(150)
+    // Pinned to the TRUE bottom. A generous tolerance here would hide the
+    // entry bug this guards against: the virtualizer's estimate→actual scroll
+    // adjustment for the rows above the viewport latching auto-pin off a few
+    // hundred px short (the session opens "a little above the bottom").
+    await expect.poll(() => distanceFromBottom(page)).toBeLessThanOrEqual(1)
 
     // A turn from the far top is virtualized away — not present in the DOM.
     await expect(page.getByText('Assistant reply number 0')).toHaveCount(0)
