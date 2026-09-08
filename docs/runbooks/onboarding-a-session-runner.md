@@ -308,7 +308,7 @@ CCSWITCH_FLEET_HOSTS=rocky=https://rocky.tail0dd570.ts.net:9443,<host>=https://<
 
 ```bash
 # Check fleet health via the API (from the edge host or any machine with access)
-curl -s https://dobby.tail0dd570.ts.net:8787/api/fleet/hosts | jq '.[] | select(.name=="<host>")'
+curl -s https://dobby.tail0dd570.ts.net/api/fleet/hosts | jq '.[] | select(.name=="<host>")'
 ```
 
 Expected: `"healthy": true`, `sha` matches the edge's deployed SHA, `protocol` matches.
@@ -357,6 +357,160 @@ python -m server.codex.doctor                     # exits 0 when nothing failed
 > unit by hand, `daemon-reload` — otherwise Codex homes follow
 > `$HOME/.local/state`, which on a runner with sshfs-mounted state is refused
 > (correctly) as not provably local.
+
+---
+
+### Step 10 — Prove the runner can finish repository work
+
+A healthy daemon and a passing Codex credential doctor do not establish that an agent can
+run a project's tests, commit, or publish a PR. Accept the runner only after checking both
+**host capabilities** and the **effective session permissions**. Repeat this check after an
+engine upgrade or a permission-policy change.
+
+#### 10a. Check the host as the daemon's user
+
+On the runner, inspect the service identity without printing its environment or credentials:
+
+```bash
+systemctl show viberpit-daemon.service -p User -p WorkingDirectory -p MainPID
+hostname
+id -un
+command -v git gh python3 node pnpm ssh
+```
+
+Run the remaining probes as that user, in an actual disposable project worktree. A terminal
+logged in as a different user is not evidence that the daemon has the same PATH, GitHub
+credentials, or filesystem ownership. Compare the tools visible inside a ViberPit session too.
+For Python-only projects, Node/pnpm are not prerequisites; derive tool versions from the target
+repository's manifests and CI instead of installing a runner-wide guessed version.
+
+```bash
+# Replace this with the target worktree path; do not run against the runner's daemon checkout.
+cd /path/to/project-worktree
+
+git --version
+node --version
+pnpm --version
+
+# Network + GitHub authentication; prints a login, never a token.
+gh api graphql -f query='{viewer{login}}'
+
+# Local test-server socket and a disposable write beside the REAL worktree Git metadata.
+# Does not alter the index, refs, Git configuration, or tracked files.
+python3 - <<'PY'
+import socket
+import subprocess
+import tempfile
+
+with socket.socket() as listener:
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    print("loopback listen: PASS")
+
+git_dir = subprocess.check_output(
+    ["git", "rev-parse", "--absolute-git-dir"], text=True,
+).strip()
+with tempfile.TemporaryFile(dir=git_dir):
+    print("worktree Git metadata write: PASS")
+PY
+```
+
+- [ ] Required binaries resolve and match the project's supported versions.
+- [ ] GitHub authentication works for the service user; verify access to the target repository
+      as well. A successful `viewer` query alone does not prove push permission.
+- [ ] A loopback listener opens (HTTP integration tests and local browser tests need it).
+- [ ] The worktree's actual Git metadata is writable. Linked worktrees store this outside the
+      visible `.git` file, so checking only the project directory is insufficient.
+- [ ] Install locked project dependencies and run its documented build/setup sequence and
+      mandatory commit gates. Browser projects additionally need the pinned browser and OS
+      libraries, a fresh SPA build, and an isolated test database where required. Do not reset
+      a shared database as an onboarding probe or reuse a person's signed-in browser profile.
+
+If a command is missing, install it using the project's supported setup procedure. If GitHub
+reports authentication failure, configure the service user's authorized GitHub credential flow;
+never copy Codex refresh credentials to a worker (Step 9). A failed host socket/metadata probe
+needs investigation of ownership, mount options, or service confinement. Do not use recursive
+`chmod`, disable host security, or bypass Git hooks to make onboarding appear green.
+
+#### 10b. Check the effective Codex session, not just its mode label
+
+The canonical mapping is [`server/codex/permissions.py`](../../server/codex/permissions.py).
+The distinction between sandbox boundaries and approval policy is also documented in
+[OpenAI's sandbox guide](https://learn.chatgpt.com/docs/sandboxing).
+
+| ViberPit mode | Codex sandbox | Approval policy | Expected behavior |
+|---|---|---|---|
+| `full-auto` (after #1452) | `workspace-write` | `on-request` | Routine workspace work proceeds; commands needing network, protected Git writes, or listening sockets request approval. |
+| Old, broken `full-auto` mapping | `workspace-write` | `never` | Restricted commands fail with no approval route; not acceptable for repository-delivery work. |
+| `bypassPermissions` | `danger-full-access` | `never` | No sandbox or approval barrier. Explicit operator opt-in only, where the host is the intended boundary. |
+
+These are ViberPit's pinned-engine profiles, not universal defaults for every Codex version.
+Setting a mode label to `full-auto` does not itself grant network access. Do not edit a personal
+`~/.codex/config.toml` to repair a ViberPit-managed thread: the runner uses per-account runtime
+homes and the driver supplies the session policy. Unattended automation additionally passes
+`unattended_launch_blocker`; do not assume an interactive approval workflow makes an automation
+eligible or silently switch it to `bypassPermissions`.
+
+1. Create a Codex **coding session** with the Runner override set to the new host. The assistant
+   drawer intentionally has a different, pinned read-only policy and is not this smoke test.
+2. Check the effective instructions/policy: `workspace-write` must have an approval channel.
+   Run the same socket and GitHub probes through the agent's shell tool. Sandbox denial is
+   expected for confined commands; ask for the approved **local** retry and verify it works.
+3. Confirm a real approval card reaches the operator, that declining prevents the operation,
+   and that approving a fresh retry allows the same operation on the same runner.
+4. In the project's disposable feature branch, finish the normal test/commit/push/draft-PR
+   workflow, with operator authorization for publication and without bypassing any gates.
+   Close a probe-only PR rather than merging a meaningless test commit. An authorized real
+   task's successfully published PR can satisfy this check instead.
+
+For a session created under the old mapping, first ensure the runner is on a release containing
+[#1452](https://github.com/steiner385/viberpit/pull/1452) through the normal deploy controller.
+Reapply `full-auto` in that session's permission control and verify the effective policy on the
+next turn. The equivalent authenticated API request from an allowed tailnet client is:
+
+```bash
+VIBERPIT_URL=https://dobby.tail0dd570.ts.net
+SESSION_ID=replace-with-the-coding-session-uuid
+curl --connect-timeout 5 --max-time 20 --fail-with-body --silent --show-error \
+  -X POST "$VIBERPIT_URL/api/sessions/$SESSION_ID/permission-mode" \
+  -H 'Content-Type: application/json' \
+  --data '{"mode":"full-auto"}'
+```
+
+Use the configured HTTPS edge origin (the default above is documented in
+[`deploy/README.md`](../../deploy/README.md#https-via-nginx--tailscale-cert-required-once-per-host));
+port 8787 is loopback-only. A TLS error needs the edge certificate-renewal procedure in that
+runbook, not `curl -k`. Alternatively, use the session permission control through an already
+working, authenticated ViberPit UI.
+
+A successful HTTP response is not the acceptance test: confirm an actual local approval/retry.
+If a resumed thread still advertises the old policy, start a fresh coding session after the
+runner update, preserving its branch and work. Do not restart the daemon while other sessions
+are active just to refresh a permission setting; it owns their live processes.
+
+#### Troubleshooting decision and Rocky evidence
+
+| Observation | Next action |
+|---|---|
+| Host terminal and approved local command pass; sandboxed command fails | Fix/reapply session policy or request local escalation. No package install or remote host is indicated. |
+| Host terminal passes; approved local command fails | Compare the daemon user, PATH, credentials, mounts, and service confinement. |
+| Neither execution context passes | Repair the specific host prerequisite before accepting the runner. |
+| Approval is unavailable or rejected | Record the exact policy/rejection and report the runner limitation. Do not route through SSH or another tool to evade it. |
+
+On 2026-09-08, Rocky passed GitHub GraphQL authentication, a loopback listener, and a temporary
+write in the KinDash linked-worktree Git directory when the local command was approved. It had
+Node `v22.23.2`, pnpm `11.25.0`, `gh`, and `ssh`; the daemon and terminal both ran as `tony`.
+The earlier kiosk-fix session had `workspace-write` + `never`: test sockets and SSH failed with
+`EPERM`, and protected Git writes were unavailable. This was a session-policy defect, not a
+missing Rocky package. The fix was published from Dobby as KinDash #15798, but after #1452 and
+an effective `on-request` policy, the first recovery choice should have been a local retry.
+These host versions are incident evidence, not pins to install on future runners.
+
+- [ ] Record runner, engine version, mode, effective sandbox/approval policy, project/worktree,
+      and which probes/gates passed; include a PR link when delivery was exercised.
+- [ ] Retry locally after permission changes before proposing a host move. Reserve Dobby for a
+      verified host-specific dependency or an explicitly authorized move, not an assumed escape
+      from sandbox restrictions.
 
 ---
 

@@ -564,9 +564,29 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
 def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
                           load: dict[str, float] | None = None,
                           *, reserve: bool = True,
+                          soft_exclude: set[str] = frozenset(),
                           require_engine: str | None = AgentEngine.CLAUDE_CODE.value,
                           default_engine: str | None = AgentEngine.CLAUDE_CODE.value) -> Picked:
     """Select the best available account.
+
+    Two kinds of exclusion, and the difference between them is the whole point:
+
+    * ``exclude`` is HARD — the caller's own first-hand knowledge, e.g. "this is
+      the account that just rate-limited the live session I am rotating away
+      from". No fallback tier may relax it. If honouring it leaves nothing
+      pickable, that is a genuine ``AllAccountsBusy``, and the caller parks the
+      session with an earliest-reset the user can actually read.
+    * ``soft_exclude`` is a HINT — quarantine, a time-boxed "it 429'd a minute
+      ago" guard that heals on its own. Relaxing it beats starving the session,
+      so the fallback drops it as a last resort.
+
+    Conflating the two is what broke rotation on 2026-09-08: the fallback
+    dropped the whole exclude set, and the just-rate-limited account was still
+    under the 100% ceiling (Anthropic 429s before reported usage reaches 100%,
+    and the snapshot is up to 60s stale), so it scored best and was handed
+    straight back to the caller. Sessions rotated A→A until the 3-per-300s
+    rotation cap parked them as "no usage headroom" — while another account sat
+    at 46% weekly.
 
     ``reserve`` (default True) writes a soft reservation on the picked account so
     a concurrent pick doesn't double-assign it. A READ-ONLY availability probe
@@ -616,19 +636,23 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
                                  providers=providers, engines=engines,
                                  require_engine=require_engine,
                                  default_engine=default_engine)
+        hard = set(exclude)
+        soft = set(soft_exclude) - hard
         try:
-            picked = _pick(exclude, reserved)
+            picked = _pick(hard | soft, reserved)
         except AllAccountsBusy as _first_exc:
-            if not exclude and not reserved:
-                raise
-            # Tiered fallback: progressively relax constraints so a single at-ceiling
-            # account or a stale reservation can't starve all new sessions.
-            #   1. Remove quarantine exclusion (rate-limited account might have reset).
-            #   2. Remove soft reservation (prevents concurrent double-picks, not meant
-            #      to block sequential spawns when only one account has headroom).
+            if not soft and not reserved:
+                raise  # nothing relaxable — the constraint is real, not a hint
+            # Tiered fallback: progressively relax the SOFT constraints so a freshly
+            # quarantined account or a stale reservation can't starve all new
+            # sessions. `hard` is present in every tier — see the docstring.
+            #   1. Drop quarantine (the rate-limited account might have reset).
+            #   2. Drop the soft reservation (it guards concurrent double-picks, and
+            #      is not meant to block sequential spawns when only one account has
+            #      headroom).
             _picked = None
-            for excl, rsv in [(frozenset(), reserved), (exclude, frozenset()),
-                              (frozenset(), frozenset())]:
+            for excl, rsv in [(hard, reserved), (hard | soft, frozenset()),
+                              (hard, frozenset())]:
                 try:
                     _picked = _pick(excl, rsv)
                     break
