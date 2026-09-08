@@ -788,6 +788,50 @@ def test_a_marker_never_upgrades_a_failed_turn() -> None:
     assert out[-1].outcome == "error"  # type: ignore[attr-defined]
 
 
+HAND_BACK_MARKER_WITH_REASON = '<!-- viberpit:hand-back reason="wire vs remove" -->'
+
+
+def test_hand_back_marker_ends_the_turn_as_hand_back_with_its_reason() -> None:
+    translator, _ = _fresh()
+    _agent_delta(translator, "it_a", f"Wire or remove?\n{HAND_BACK_MARKER_WITH_REASON}")
+    out = _turn_completed(translator)
+    assert out[0].outcome == "hand_back"  # type: ignore[attr-defined]
+    assert out[0].hand_back_reason == "wire vs remove"  # type: ignore[attr-defined]
+
+
+def test_hand_back_marker_beats_the_completion_marker_in_one_turn() -> None:
+    translator, _ = _fresh()
+    _agent_delta(translator, "it_a",
+                 f"done?\n{COMPLETION_MARKER}\n{HAND_BACK_MARKER_WITH_REASON}")
+    out = _turn_completed(translator)
+    assert out[0].outcome == "hand_back"  # type: ignore[attr-defined]
+    assert out[0].pr_resolution is None  # type: ignore[attr-defined]
+
+
+def test_hand_back_marker_beats_the_no_pr_marker_and_drops_the_resolution() -> None:
+    translator, _ = _fresh()
+    _agent_delta(translator, "it_a", f"{NO_PR_MARKER}\n{HAND_BACK_MARKER_WITH_REASON}")
+    out = _turn_completed(translator)
+    assert out[0].outcome == "hand_back"  # type: ignore[attr-defined]
+    assert out[0].pr_resolution is None  # type: ignore[attr-defined]
+
+
+def test_hand_back_marker_never_upgrades_a_failed_turn() -> None:
+    translator, _ = _fresh()
+    _agent_delta(translator, "it_a", HAND_BACK_MARKER_WITH_REASON)
+    out = _turn_completed(translator, status="failed")
+    assert out[-1].outcome == "error"  # type: ignore[attr-defined]
+    assert out[-1].hand_back_reason is None  # type: ignore[attr-defined]
+
+
+def test_a_plain_turn_carries_no_hand_back_reason() -> None:
+    translator, _ = _fresh()
+    _agent_delta(translator, "it_a", "still working")
+    out = _turn_completed(translator)
+    assert out[0].outcome == "success"  # type: ignore[attr-defined]
+    assert out[0].hand_back_reason is None  # type: ignore[attr-defined]
+
+
 def test_turn_text_does_not_leak_across_turns() -> None:
     translator, _ = _fresh()
     _agent_delta(translator, "it_a", COMPLETION_MARKER)

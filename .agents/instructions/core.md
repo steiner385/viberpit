@@ -279,11 +279,11 @@ Codex ends a message with `<!-- ccswitch:model=<tier> reason="..." -->` (parsed 
 
 Every coding session mounts the in-process app MCP server (`server/sessions/tools/`; wire name from `ccswitch.brand`) with
 `session_context`/`report_feedback` (READ-class, no card). Engines with `AgentCapabilities.durable_tool_surface` (Claude)
-also get the SIGNAL-class `mark_complete()`, `mark_no_pr(resolution, note?)` and `request_model(model, reason)`, which
-replaced the HTML-comment markers (SIGNAL is ungated like READ). Codex lacks the capability and keeps the markers —
+also get the SIGNAL-class `mark_complete()`, `mark_no_pr(resolution, note?)`, `hand_back(reason)` and `request_model(model, reason)`, which
+replaced the HTML-comment markers. Codex lacks the capability and keeps the markers —
 **the marker parsers are permanent**. The Translator reads the signal from the tool-use block, not the handler, to
 keep the sub-agent (`parent_tool_use_id is None`) guard.
 The coding overlay is exactly `{"mcp_servers": …}` — never add `strict_mcp_config` or `system_prompt`. Kill switch
-`CCSWITCH_SESSION_TOOLS_ENABLED` drops all five tools. Registry primitives live in `server/mcp_spec.py`; add a tool by
+`CCSWITCH_SESSION_TOOLS_ENABLED` drops all six tools. Registry primitives live in `server/mcp_spec.py`; add a tool by
 adding a `ToolSpec` + handler + eval case. Details: `docs/product/features/session-tools.md`.
 

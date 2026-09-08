@@ -4203,6 +4203,12 @@ class SessionOrchestrator:
         # without a source keeps the pre-provenance behaviour and persists "marker",
         # never None.
         resolution_source = getattr(driver, "last_pr_resolution_source", None) or "marker"
+        # The session's own hand_back reason (tool or marker), read only when the status
+        # being written IS the hand-back status: a structured AskUserQuestion lands at
+        # waiting_question too, and carries no reason. getattr, like the resolution reads
+        # above — a partial driver stub must not break status persist.
+        hand_back_reason = (getattr(driver, "last_hand_back_reason", None)
+                            if status == "waiting_question" else None)
         if rec is not None:
             rec.status = status
             rec.updated_at = datetime.utcnow()   # row-write token; bumps on EVERY persist (see rev_at)
@@ -4253,6 +4259,18 @@ class SessionOrchestrator:
             await db.execute(
                 sa_update(DbSession).where(DbSession.id == session_id).values(**values)
             )
+        if hand_back_reason:
+            log.info("session.hand_back sid=%s reason_len=%d", session_id, len(hand_back_reason))
+            # Best-effort audit in its own transaction: the status write above must
+            # never be held hostage by an audit failure.
+            try:
+                async with db_session() as db:
+                    await record_audit(db, "session.hand_back", SYSTEM_IDENTITY,
+                                       {"session_id": session_id, "reason": hand_back_reason},
+                                       via="session")
+                    await db.commit()
+            except Exception:  # noqa: BLE001 - audit must never fail the status write
+                log.warning("session.hand_back audit failed sid=%s", session_id, exc_info=True)
         # Refresh the per-sub-agent summary so the dashboard list can nest sub-agents
         # under this session. Best-effort: a failure must never break the session loop.
         # Deferred to a background task — _persist_sub_agents reads the full transcript

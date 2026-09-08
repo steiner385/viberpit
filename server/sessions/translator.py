@@ -6,7 +6,8 @@ from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, User
                               RateLimitEvent)
 from ccswitch import brand
 from . import events as ev
-from .completion import has_completion_marker, parse_mark_no_pr, resolution_from_text
+from .completion import (has_completion_marker, parse_hand_back, parse_hand_back_marker,
+                         parse_mark_no_pr, resolution_from_text)
 from .model_request import parse_model_request, parse_request_model
 from .tools.registry import SIGNAL_TOOL_NAMES
 
@@ -73,6 +74,8 @@ class Translator:
                 self._turn_signals[stem] = {}
             elif stem == "mark_no_pr":
                 self._turn_signals[stem] = parse_mark_no_pr(args or {})
+            elif stem == "hand_back":
+                self._turn_signals[stem] = parse_hand_back(args or {})
             elif stem == "request_model":
                 self._turn_signals[stem] = parse_request_model(args or {})
         except Exception:  # noqa: BLE001 - a bad argument must not fail the turn
@@ -219,8 +222,22 @@ class Translator:
             # marker fallback: finishing without a PR is still finishing.
             completed = ("mark_complete" in signals or pr_resolution is not None
                          or has_completion_marker(self._turn_text))
+            # The explicit "I need the user" signal: tool first, marker as fallback.
+            hand_back = signals.get("hand_back") or parse_hand_back_marker(self._turn_text)
             if msg.subtype != "success" or bool(getattr(msg, "is_error", False)):
                 outcome = "failed"
+            elif hand_back is not None:
+                # Spec §5: a hand-back outranks a completion signal in the same turn.
+                # Keeping a session on the board is the recoverable error; archiving
+                # one that was asking a question is the failure open_question.py
+                # exists to catch. The dropped resolution must not latch either.
+                if completed:
+                    log.info("sessions.hand_back_over_completion declared_complete=%s "
+                             "pr_resolution=%s",
+                             "mark_complete" in signals or has_completion_marker(self._turn_text),
+                             pr_resolution)
+                outcome = "hand_back"
+                pr_resolution, pr_source = None, None
             elif completed:
                 outcome = "complete"
             else:
@@ -240,7 +257,9 @@ class Translator:
                                   getattr(msg, "total_cost_usd", None), getattr(msg, "uuid", None),
                                   outcome=outcome, pr_resolution=pr_resolution,
                                   pr_resolution_source=pr_source,
-                                  model_request=model_request))
+                                  model_request=model_request,
+                                  hand_back_reason=(hand_back.get("reason")
+                                                    if outcome == "hand_back" and hand_back else None)))
             return out
 
         return []

@@ -265,6 +265,10 @@ class ClaudeAgentDriver:
         self._last_pr_resolution: str | None = None
         self._last_pr_resolution_source: str | None = None
         self._last_model_request: dict | None = None
+        # Per-turn, NOT sticky like _last_pr_resolution: the reason belongs to the turn
+        # that handed back, and the next turn clears it so the orchestrator can never
+        # audit a stale reason against a later waiting_question.
+        self._last_hand_back_reason: str | None = None
         self._suggester = suggester
         self._suggest_task: asyncio.Task | None = None
         self._last_user_text: str = ""
@@ -1022,6 +1026,8 @@ class ClaudeAgentDriver:
                     # as a marker.
                     self._last_pr_resolution = e.pr_resolution
                     self._last_pr_resolution_source = e.pr_resolution_source
+                self._last_hand_back_reason = (
+                    e.hand_back_reason if e.outcome == "hand_back" else None)
                 self._latch_model_request(e)
             elif isinstance(e, ev.ErrorEvent):
                 failure = await self._maybe_signal_recovery(
@@ -1248,6 +1254,13 @@ class ClaudeAgentDriver:
         Latched together with ``last_pr_resolution`` and therefore exactly as sticky:
         a turn with no resolution leaves both alone, so the pair can never disagree."""
         return self._last_pr_resolution_source
+
+    @property
+    def last_hand_back_reason(self) -> str | None:
+        """The reason the most recent turn gave ``hand_back`` (tool or marker), or
+        ``None`` if that turn did not hand back. Read by ``_persist_status`` when it
+        writes ``waiting_question``."""
+        return self._last_hand_back_reason
 
     def open_stream(self) -> DriverStream:
         """Open an attach stream ATOMICALLY — no await anywhere in this method,

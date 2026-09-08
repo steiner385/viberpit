@@ -198,7 +198,7 @@ def test_the_signal_tool_names_come_from_the_spec_registry():
     from server.sessions.tools.registry import SESSION_TOOL_SPECS, SIGNAL_TOOL_NAMES
     assert SIGNAL_TOOL_NAMES == {n for n, s in SESSION_TOOL_SPECS.items()
                                  if s.tool_class is ToolClass.SIGNAL}
-    assert SIGNAL_TOOL_NAMES == {"mark_complete", "mark_no_pr", "request_model"}
+    assert SIGNAL_TOOL_NAMES == {"mark_complete", "mark_no_pr", "hand_back", "request_model"}
 
 
 def test_a_failed_result_stays_failed_even_with_a_mark_complete_call():
@@ -224,3 +224,95 @@ def test_an_agreeing_resolution_is_not_logged(caplog):
     feed_assistant_text(t, "the user cancelled this work\n<!-- viberpit:no-pr -->", pid=None)
     assert feed_result(t).pr_resolution == "cancelled"
     assert "no_pr_resolution_disagreement" not in caplog.text
+
+
+HAND_BACK = "mcp__viberpit__hand_back"
+
+
+def test_a_hand_back_call_ends_the_turn_as_hand_back_with_its_reason():
+    t = Translator()
+    feed_assistant_tool_call(t, HAND_BACK, {"reason": "need a decision on scope"}, pid=None)
+    feed_assistant_text(t, "Per-IP or per-account?", pid=None)
+    end = feed_result(t)
+    assert end.outcome == "hand_back"
+    assert end.hand_back_reason == "need a decision on scope"
+    assert end.to_wire()["handBackReason"] == "need a decision on scope"
+
+
+def test_a_subagent_hand_back_does_NOT_hand_back_the_session():
+    t = Translator()
+    feed_assistant_tool_call(t, HAND_BACK, {"reason": "sub-agent question"}, pid="toolu_parent")
+    end = feed_result(t)
+    assert end.outcome == "success"
+    assert end.hand_back_reason is None
+
+
+def test_a_subagent_hand_back_still_renders_as_an_ordinary_tool_card():
+    from server.sessions.events import ToolCall
+    t = Translator()
+    out = feed_assistant_tool_call(t, HAND_BACK, {"reason": "x"}, pid="toolu_parent")
+    assert any(isinstance(e, ToolCall) for e in out)
+
+
+def test_a_top_level_hand_back_renders_no_tool_card():
+    from server.sessions.events import ToolCall
+    t = Translator()
+    out = feed_assistant_tool_call(t, HAND_BACK, {"reason": "x"}, pid=None)
+    assert not any(isinstance(e, ToolCall) for e in out)
+
+
+def test_hand_back_beats_mark_complete_in_the_same_turn_and_logs_it(caplog):
+    t = Translator()
+    feed_assistant_tool_call(t, MARK_COMPLETE, {}, pid=None)
+    feed_assistant_tool_call(t, HAND_BACK, {"reason": "one open question"}, pid=None)
+    with caplog.at_level(logging.INFO, logger="server.sessions.translator"):
+        end = feed_result(t)
+    assert end.outcome == "hand_back"
+    assert end.pr_resolution is None
+    assert any("hand_back_over_completion" in r.getMessage() for r in caplog.records)
+
+
+def test_hand_back_beats_mark_no_pr_and_drops_the_resolution():
+    t = Translator()
+    feed_assistant_tool_call(t, MARK_NO_PR, {"resolution": "not-needed"}, pid=None)
+    feed_assistant_tool_call(t, HAND_BACK, {"reason": "confirm before closing"}, pid=None)
+    end = feed_result(t)
+    assert end.outcome == "hand_back"
+    assert end.pr_resolution is None and end.pr_resolution_source is None
+
+
+def test_the_hand_back_marker_in_prose_is_the_fallback():
+    t = Translator()
+    feed_assistant_text(
+        t, 'Wire or remove?\n<!-- viberpit:hand-back reason="wire vs remove" -->', pid=None)
+    end = feed_result(t)
+    assert end.outcome == "hand_back"
+    assert end.hand_back_reason == "wire vs remove"
+
+
+def test_the_tool_reason_wins_over_the_marker_reason():
+    t = Translator()
+    feed_assistant_tool_call(t, HAND_BACK, {"reason": "from the tool"}, pid=None)
+    feed_assistant_text(t, '<!-- viberpit:hand-back reason="from the marker" -->', pid=None)
+    assert feed_result(t).hand_back_reason == "from the tool"
+
+
+def test_a_failed_result_still_wins_over_hand_back():
+    t = Translator()
+    feed_assistant_tool_call(t, HAND_BACK, {"reason": "x"}, pid=None)
+    end = feed_result(t, subtype="error_max_turns", is_error=True)
+    assert end.outcome == "failed"
+
+
+def test_a_hand_back_with_a_bad_reason_is_dropped_not_fatal():
+    t = Translator()
+    feed_assistant_tool_call(t, HAND_BACK, {"reason": ""}, pid=None)
+    assert feed_result(t).outcome == "success"
+
+
+def test_hand_back_state_clears_between_turns():
+    t = Translator()
+    feed_assistant_tool_call(t, HAND_BACK, {"reason": "x"}, pid=None)
+    assert feed_result(t).outcome == "hand_back"
+    feed_assistant_text(t, "continuing", pid=None)
+    assert feed_result(t).outcome == "success"

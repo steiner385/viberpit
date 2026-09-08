@@ -4,7 +4,8 @@ Kept dependency-free and side-effect-free so it is exhaustively table-testable.
 Precedence (highest first): a pending plan-approval, then a pending question
 (``waiting_question``), then a pending permission (``waiting_input``), then
 context condensing (``condensing``), then an active turn that is backing off on a
-529/5xx overload (``retrying``), then any other active turn, then a completed turn,
+529/5xx overload (``retrying``), then any other active turn, then a completed turn
+(failed → needs_attention, hand_back → waiting_question, complete → complete, else done),
 else never-ran. ``limited``/``ended`` are orchestrator overlays and intentionally
 NOT modelled here.
 """
@@ -83,6 +84,12 @@ def derive_status(sig: StatusSignals) -> str:
     if sig.turns_completed >= 1:
         if sig.last_turn_outcome == "failed":
             return "needs_attention"
+        # The agent's own hand_back signal (tool or marker): it needs the user. Reuses
+        # waiting_question — "Answer needed" — which the harness already persists
+        # without a structured question card (the parked-done overlay and the
+        # completion hold both do), so every consumer keyed to it already copes.
+        if sig.last_turn_outcome == "hand_back":
+            return "waiting_question"
         if sig.last_turn_outcome == "complete":
             return "complete"
         return "done"

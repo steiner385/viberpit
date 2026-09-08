@@ -13,7 +13,7 @@ from claude_agent_sdk import SdkMcpTool, tool
 from ccswitch import brand
 from server.mcp_spec import ToolArgError, ToolSpec, annotations_for, tool_err
 from server.obs.metrics import session_tool_calls_total
-from server.sessions.completion import NO_PR_RESOLUTIONS, parse_mark_no_pr
+from server.sessions.completion import NO_PR_RESOLUTIONS, parse_hand_back, parse_mark_no_pr
 from server.sessions.feedback import CATEGORIES, IMPACTS, record_feedback, validate_item
 from server.sessions.model_request import MODEL_TIERS, parse_request_model
 
@@ -21,6 +21,17 @@ from .context import SessionToolContext, context_snapshot
 from .registry import SESSION_TOOL_SPECS, mounted_names
 
 log = logging.getLogger(__name__)
+
+#: The cross-signal framing every SIGNAL description opens with. One literal, three
+#: descriptions: whichever tool the model is reading, it sees the other two and what
+#: each does to the session. This is the distinction no single description could carry.
+_THREE_WAYS = (
+    "Every turn ends ONE of three ways: `mark_complete` (the objective is fully done "
+    "and verified; the session will be treated as finished and may be archived without "
+    "anyone reading further), `mark_no_pr` (finished, but no pull request is "
+    "appropriate), or `hand_back` (you need a decision, review, approval or information "
+    "from the user before the objective can be finished). "
+)
 
 
 def tool_ok(data: Any) -> dict[str, Any]:
@@ -118,27 +129,29 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
 
     @spec_tool("mark_complete",
                "Signal that you have FULLY accomplished the objective of this session. "
-               "Call it only when the work is genuinely complete — never for an interim "
+               + _THREE_WAYS +
+               "Call this only when the work is genuinely complete — never for an interim "
                "step, never while you are still working or waiting on something, and never "
-               "in the same turn as a question to the user: if you need an answer, ask and "
-               "do not call this. Optional follow-ups belong in prose as statements ('I can "
-               "also do X if wanted'), not questions.",
+               "in the same turn as a question to the user: if you need an answer, call "
+               "`hand_back` instead. Optional follow-ups belong in prose as statements ('I "
+               "can also do X if wanted'), not questions.",
                {"type": "object", "properties": {}, "required": []})
     @guarded
     async def mark_complete(args: dict[str, Any]) -> Any:
         return {"acknowledged": True}
 
     @spec_tool("mark_no_pr",
-               "Signal that the work is finished but NO pull request is appropriate. Use "
-               "this INSTEAD of mark_complete when finishing without a code change. "
+               "Signal that the work is finished but NO pull request is appropriate. "
+               + _THREE_WAYS +
+               "Use this INSTEAD of mark_complete when finishing without a code change. "
                "resolution: 'not-needed' when the objective was already satisfied without "
                "one, 'cancelled' when the user called the work off or you deliberately "
                "decided not to open one. An objective that asked for a code change is NOT "
                "finished by investigating it — discovering the work is larger than expected, "
                "recommending a spec, or offering to continue is a hand-back: say what you "
-               "found, ask how to proceed, and call nothing. Never call this in the same turn "
-               "as a question to the user: if you need an answer, ask and withhold the call. "
-               "note: one short sentence.",
+               "found, ask how to proceed, and call `hand_back`, not this. Never call this in "
+               "the same turn as a question to the user: if you need an answer, call "
+               "`hand_back` instead. note: one short sentence.",
                {"type": "object",
                 "properties": {"resolution": {"type": "string", "enum": list(NO_PR_RESOLUTIONS)},
                                "note": {"type": "string"}},
@@ -146,6 +159,23 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
     @guarded
     async def mark_no_pr(args: dict[str, Any]) -> Any:
         return {"acknowledged": True, **parse_mark_no_pr(args)}
+
+    @spec_tool("hand_back",
+               "Hand this session back to the user because you need something from them "
+               "before the objective can be finished: a decision, a review, an approval, or "
+               "information you do not have. reason: one sentence naming exactly what you "
+               "need. "
+               + _THREE_WAYS +
+               "Ending your message with a question and calling nothing is NOT a hand-back: "
+               "the session reads as calmly idle and nobody is alerted. Call `hand_back` in "
+               "the same message as your question, and never in the same turn as "
+               "`mark_complete` or `mark_no_pr`.",
+               {"type": "object",
+                "properties": {"reason": {"type": "string"}},
+                "required": ["reason"]})
+    @guarded
+    async def hand_back(args: dict[str, Any]) -> Any:
+        return {"acknowledged": True, **parse_hand_back(args)}
 
     @spec_tool("request_model",
                "Ask to run on a different model tier, when the work has turned out "
@@ -166,5 +196,5 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
 
     by_name = {"session_context": session_context, "report_feedback": report_feedback,
                "mark_complete": mark_complete, "mark_no_pr": mark_no_pr,
-               "request_model": request_model}
+               "hand_back": hand_back, "request_model": request_model}
     return [by_name[name] for name in mounted_tool_names(ctx)]

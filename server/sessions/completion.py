@@ -23,9 +23,10 @@ COMPLETION_INSTRUCTION = (
     f"final message with `{COMPLETION_MARKER}` on its own line. Emit it ONLY "
     "when the work is genuinely complete — never for an interim step, and never "
     "while you are still working or waiting on something. Never emit it in a "
-    "message that asks the user a question: if you need an answer, ask and "
-    "withhold the marker; phrase optional follow-ups as statements ('I can also "
-    "do X if wanted'), not questions."
+    "message that asks the user a question: if you need an answer, ask and emit "
+    f'the hand-back marker (`<!-- {brand.SLUG}:hand-back reason="…" -->`) instead; '
+    "phrase optional follow-ups as statements ('I can also do X if wanted'), not "
+    "questions."
 )
 
 NO_PR_MARKER = brand.marker("no-pr")
@@ -41,8 +42,39 @@ NO_PR_INSTRUCTION = (
     "for a code change is not finished by investigating it: discovering that the work "
     "is larger than expected, recommending a spec or next step, or offering to "
     "continue is not a reason for this marker — it is a hand-back. State what you "
-    "found, ask the user how to proceed, and emit no marker at all. The same "
-    "no-question rule applies: never combine this marker with a question to the user."
+    f"found, ask the user how to proceed, and emit the hand-back marker (`<!-- {brand.SLUG}"
+    f':hand-back reason="…" -->`), never a finishing marker. The same no-question rule '
+    "applies: never combine this marker with a question to the user."
+)
+
+# The explicit "it's your turn" signal (spec 2026-09-08-hand-back-signal-tool). The
+# emitted form carries a reason attribute, so the regex is hand-built like
+# MODEL_REQUEST_RE rather than brand.marker_re(): either slug, optional reason, and a
+# reason group that cannot swallow the closing '-->'.
+HAND_BACK_MARKER = brand.marker("hand-back")
+HAND_BACK_MARKER_RE = re.compile(
+    rf'<!--\s*{brand.EITHER_SLUG_RE}:hand-back(?:\s+reason="([^"]*)")?\s*-->'
+)
+
+#: Longest reason kept. Longer is truncated, never rejected — a verbose hand-back is
+#: still a hand-back, and refusing it would strand the session at the calm `done`.
+HAND_BACK_REASON_MAX = 300
+
+_THREE_WAYS_MARKER = (
+    f"Every turn ends ONE of three ways: `{COMPLETION_MARKER}` (the objective is fully "
+    "done and verified; the session will be treated as finished and may be archived "
+    f"without anyone reading further), `{NO_PR_MARKER}` (finished, but no pull request "
+    f'is appropriate), or `<!-- {brand.SLUG}:hand-back reason="…" -->` (you need the '
+    "user). Ending a message with a question and no marker is NOT a hand-back: the "
+    "session reads as calmly idle and nobody is alerted."
+)
+
+HAND_BACK_INSTRUCTION = (
+    "If you need something from the user before this session's objective can be "
+    "finished — a decision, a review, an approval, or information you do not have — "
+    f'end the message that asks with `<!-- {brand.SLUG}:hand-back reason="<one sentence: '
+    'what you need>" -->` on its own line. '
+    f"{_THREE_WAYS_MARKER} Never combine the hand-back marker with either finishing marker."
 )
 
 _CANCEL_RE = re.compile(
@@ -107,7 +139,7 @@ def marker_instructions(*, self_model_switch: bool) -> str:
     """
     from .model_request import MODEL_REQUEST_INSTRUCTION
 
-    parts = [COMPLETION_INSTRUCTION, NO_PR_INSTRUCTION]
+    parts = [COMPLETION_INSTRUCTION, NO_PR_INSTRUCTION, HAND_BACK_INSTRUCTION]
     if self_model_switch:
         parts.append(MODEL_REQUEST_INSTRUCTION)
     return "\n\n".join(parts)
@@ -121,7 +153,7 @@ def strip_markers(text: str) -> str:
     if not text:
         return text
     from .model_request import MODEL_REQUEST_RE
-    for pattern in (COMPLETION_MARKER_RE, NO_PR_MARKER_RE, MODEL_REQUEST_RE):
+    for pattern in (COMPLETION_MARKER_RE, NO_PR_MARKER_RE, HAND_BACK_MARKER_RE, MODEL_REQUEST_RE):
         text = pattern.sub("", text)
     return text.rstrip()
 
@@ -160,3 +192,39 @@ def parse_mark_no_pr(args: dict) -> dict:
             "change, 'cancelled' when the work was called off.")
     note = (args or {}).get("note")
     return {"resolution": resolution, "note": note if isinstance(note, str) and note else None}
+
+
+def parse_hand_back(args: dict | None) -> dict:
+    """Validate ``hand_back`` arguments into ``{"reason"}``.
+
+    THE parser for both halves of the tool, exactly as ``parse_mark_no_pr`` is: the
+    handler rejects a bad argument locally (``ToolArgError`` → corrective message, no
+    side effect) and the Translator parses the observed tool-use block. A blank reason
+    is rejected — the reason is the whole point of the argument — but a long one is
+    truncated, because refusing a verbose hand-back would leave the session at the
+    calm ``done`` it was trying to escape.
+    """
+    from server.mcp_spec import ToolArgError
+    reason = (args or {}).get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ToolArgError(
+            "reason must be one non-empty sentence naming exactly what you need from the "
+            "user — a decision, a review, an approval, or information you do not have.")
+    return {"reason": reason.strip()[:HAND_BACK_REASON_MAX]}
+
+
+def parse_hand_back_marker(text: str | None) -> dict | None:
+    """Extract the LAST hand-back marker from *text*, or None when absent.
+
+    ``{"reason": str | None}`` — the reason attribute is optional on the wire (a model
+    that forgets it still meant the hand-back). Last-wins, like ``parse_model_request``.
+    Never raises; any non-str input reads as no marker.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    matches = list(HAND_BACK_MARKER_RE.finditer(text))
+    if not matches:
+        return None
+    raw = matches[-1].group(1)
+    reason = raw.strip()[:HAND_BACK_REASON_MAX] if isinstance(raw, str) else ""
+    return {"reason": reason or None}

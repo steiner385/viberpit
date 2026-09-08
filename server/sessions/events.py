@@ -86,12 +86,16 @@ class TurnEnd:
     # Self-directed model request parsed from this turn's text, or None.
     # {"model": str, "reason": str | None}
     model_request: dict | None = None
+    # The reason the session gave `hand_back` (tool) or the hand-back marker, or None.
+    # Present exactly when `outcome == "hand_back"`.
+    hand_back_reason: str | None = None
     def to_wire(self): return {"type": "turnEnd", "turnId": self.turn_id, "usage": self.usage,
                                "costUsd": self.cost_usd, "srcUuid": self.src_uuid,
                                "parentToolUseId": self.parent_tool_use_id, "outcome": self.outcome,
                                "prResolution": self.pr_resolution,
                                "prResolutionSource": self.pr_resolution_source,
-                               "modelRequest": self.model_request}
+                               "modelRequest": self.model_request,
+                               "handBackReason": self.hand_back_reason}
 
 @dataclass
 class TextDelta:

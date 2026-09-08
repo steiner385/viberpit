@@ -29,8 +29,19 @@ _BLURBS: dict[str, str] = {
     "report_feedback": f"a problem with {brand.NAME} itself, never the project.",
     "mark_complete": "you have fully accomplished this session's objective.",
     "mark_no_pr": "the work is finished but no pull request is appropriate.",
+    "hand_back": ("you need a decision, review, approval or information from the user "
+                  "before the objective can be finished."),
     "request_model": "you want to run the rest of the work on a different model tier.",
 }
+
+#: The ONE cross-tool sentence the index may carry beyond naming tools: the
+#: distinction between the three signals is not a rule of any single tool, so no
+#: description can hold it alone (spec 2026-09-08-hand-back-signal-tool §7). Emitted
+#: only when the signalling tools are mounted — it names them.
+_THREE_WAYS_LINE = (
+    "A turn ends one of three ways: `mark_complete`, `mark_no_pr`, or `hand_back`. "
+    "Ending a turn is not completion, and a question with no `hand_back` alerts nobody."
+)
 
 
 def _session_tools_instruction(*, signalling_tools: bool, self_model_switch: bool) -> str:
@@ -44,10 +55,11 @@ def _session_tools_instruction(*, signalling_tools: bool, self_model_switch: boo
     names = mounted_names(signalling_tools=signalling_tools,
                           self_model_switch=self_model_switch)
     lines = "\n".join(f"`{name}`: {_BLURBS[name]}" for name in names)
+    tail = f"\n{_THREE_WAYS_LINE}" if signalling_tools else ""
     return (
         f"{brand.NAME} is the harness that dispatched and supervises this session; it "
         f"exposes {len(names)} MCP tools under the `{brand.MCP_SERVER_NAME}` server.\n"
-        f"{lines}"
+        f"{lines}{tail}"
     )
 
 
