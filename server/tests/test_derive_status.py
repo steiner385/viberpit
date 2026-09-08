@@ -28,6 +28,17 @@ def S(**kw):
     (S(turns_completed=1, last_turn_outcome="success"),               "done"),
     (S(turns_completed=1, last_turn_outcome="complete"),              "complete"),
     (S(turns_completed=1, last_turn_outcome="failed"),                "needs_attention"),
+    # hand_back: the agent declared it needs the user → "Answer needed"
+    (S(turns_completed=1, last_turn_outcome="hand_back"),             "waiting_question"),
+    # an active turn still outranks a hand-back from the previous turn
+    (S(turn_active=True, turns_completed=1, last_turn_outcome="hand_back"), "in_progress"),
+    # a structured card still outranks it (plan > question > permission unchanged)
+    (S(turns_completed=1, last_turn_outcome="hand_back", pending_permission=True), "waiting_input"),
+    (S(turns_completed=1, last_turn_outcome="hand_back", pending_plan=True), "ready_review"),
+    # condensing still outranks it
+    (S(turns_completed=1, last_turn_outcome="hand_back", condensing=True, turn_active=True), "condensing"),
+    # outcome is ignored before the first completed turn
+    (S(turns_completed=0, last_turn_outcome="hand_back"),             "idle"),
     # an active turn still outranks any terminal outcome
     (S(turn_active=True, turns_completed=1, last_turn_outcome="failed"),   "in_progress"),
     # a pending question still outranks a 'complete' outcome
