@@ -273,12 +273,14 @@ export const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['complete', 'ende
 export const INACTIVE_SESSION_STATUSES: ReadonlySet<string> = new Set(['ended', 'archived'])
 
 /**
- * Archivable statuses: a resting, finished session a bulk "Archive done" action
- * may sweep. Narrower than TERMINAL (excludes already-'archived') and includes
- * 'done', which TERMINAL does not (a 'done' session is between turns, not finished).
+ * Archivable statuses: a finished session the bulk "Archive complete" action may
+ * sweep — exactly the Complete group (statusTier.ts), i.e. TERMINAL minus the
+ * already-'archived'. Deliberately EXCLUDES 'done': that is the turn ending with
+ * the agent waiting on the user (the "Your turn" group), and one click used to
+ * archive every such session mid-conversation.
  */
 export const ARCHIVABLE_STATUSES: ReadonlySet<SessionStatus> = new Set<SessionStatus>([
-  'done', 'complete', 'ended',
+  'complete', 'ended',
 ])
 
 /** A sub-agent (Task/Agent call) summary, nested under its session in the list. */
