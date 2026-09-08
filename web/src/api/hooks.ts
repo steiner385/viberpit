@@ -40,6 +40,7 @@ import { extractMutationErrorMessage } from './queryClient'
 import type { SessionEvent } from '@/session/events'
 import type { ToolDetailMode } from '@/session/groupBlocks'
 import { getPendingSessions, subscribePending, addPendingSession, removePendingSession } from '@/lib/pendingSessions'
+import { reconcileFlight } from '@/lib/promptFlight'
 import { isSessionsViewing, setSessionsViewing } from './sessionsViewing'
 import { reconcileSessions } from '@/session/reconcile'
 import { toast } from 'sonner'
@@ -150,6 +151,14 @@ export function useSessions() {
     // patched to a newer revAt. reconcileSessions keeps the newer of cache vs poll per id.
     structuralSharing: (prev, next) => reconcileSessions(prev as Session[] | undefined, next as Session[]),
   })
+  // The poll is the durable second signal for the "Sent — starting…" list pill: a
+  // socket that was down while a turn ran never sees it start, and the resting
+  // status it sees afterwards is (rightly) not a clear on its own. The row's
+  // hand-back clock is — see lib/promptFlight. `query.data` is reference-stable
+  // across unchanged polls (reconcileSessions), so this is a no-op most ticks.
+  useEffect(() => {
+    if (query.data) reconcileFlight(query.data)
+  }, [query.data])
   const data = useMemo<Session[] | undefined>(() => {
     if (pending.length === 0) return query.data
     return [...(query.data ?? []), ...pending]
