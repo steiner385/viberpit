@@ -39,14 +39,16 @@ READ_TOOL_NAMES: tuple[str, ...] = tuple(
 
 def mounted_signal_names(*, signalling_tools: bool, self_model_switch: bool) -> tuple[str, ...]:
     """Which SIGNAL tool names are mounted, in declaration order — the signalling half
-    of ``mounted_names`` below.
+    of ``mounted_names`` below. ``hand_back`` rides with the two finishing signals: it
+    is the third way a turn ends, and a session told about completion but not about
+    hand-back is exactly the session that misuses ``mark_complete``.
 
     ``request_model`` is named only when ``self_model_switch`` — declaring it otherwise
     offers a call whose result is silently dropped (no engine capability to honour it).
     """
     if not signalling_tools:
         return ()
-    names = ["mark_complete", "mark_no_pr"]
+    names = ["mark_complete", "mark_no_pr", "hand_back"]
     if self_model_switch:
         names.append("request_model")
     return tuple(names)

@@ -15,7 +15,7 @@ from server.sessions.tools.context import SessionToolContext
 from server.sessions.tools.registry import SESSION_TOOL_SPECS
 from server.sessions.tools.tools import build_session_tools, mounted_tool_names
 
-SIGNALS = ("mark_complete", "mark_no_pr", "request_model")
+SIGNALS = ("mark_complete", "mark_no_pr", "hand_back", "request_model")
 
 
 def _ctx(**kw):
@@ -38,12 +38,13 @@ def test_session_context_stays_read_class():
     assert SESSION_TOOL_SPECS["session_context"].tool_class is ToolClass.READ
 
 
-def test_session_tool_specs_declares_all_five_unconditionally():
+def test_session_tool_specs_declares_all_six_unconditionally():
     """The permission layer resolves a tool by name across every surface — a name
     missing from this table fails open into the mutation branch, so every tool the
     handlers can build must have a spec regardless of what any one context mounts."""
     assert set(SESSION_TOOL_SPECS) == {"session_context", "report_feedback",
-                                       "mark_complete", "mark_no_pr", "request_model"}
+                                       "mark_complete", "mark_no_pr", "hand_back",
+                                       "request_model"}
 
 
 def test_signalling_tools_are_absent_when_the_engine_cannot_keep_them():
@@ -56,7 +57,7 @@ def test_request_model_is_declared_only_when_the_engine_can_honour_it():
     off = {t.name for t in build_session_tools(_ctx(signalling_tools=True, self_model_switch=False))}
     assert "request_model" in on
     assert "request_model" not in off
-    assert {"mark_complete", "mark_no_pr"} <= off
+    assert {"mark_complete", "mark_no_pr", "hand_back"} <= off
 
 
 def test_mark_no_pr_description_carries_both_hardened_rules():
@@ -68,7 +69,7 @@ def test_mark_no_pr_description_carries_both_hardened_rules():
     guards mark_no_pr from silently dropping either one."""
     desc = {t.name: t.description for t in build_session_tools(_ctx(signalling_tools=True))}
     no_pr = desc["mark_no_pr"].lower()
-    assert "hand-back" in no_pr and "call nothing" in no_pr
+    assert "hand-back" in no_pr and "hand_back" in no_pr
     assert "never call this in the same turn as a question" in no_pr
 
 
@@ -231,3 +232,44 @@ async def test_setup_session_overlay_withholds_self_model_switch_when_settings_d
     ctx = captured["ctx"]
     assert ctx.signalling_tools is True
     assert ctx.self_model_switch is False
+
+
+def test_every_signal_description_names_the_three_ways_a_turn_ends():
+    """The distinction Tony asked for (2026-09-08): whichever signal the model is
+    looking at, it sees the other two and what each does to the session."""
+    desc = {t.name: t.description.lower()
+            for t in build_session_tools(_ctx(signalling_tools=True))}
+    for name in ("mark_complete", "mark_no_pr", "hand_back"):
+        d = desc[name]
+        assert "one of three ways" in d, name
+        assert "mark_complete" in d and "mark_no_pr" in d and "hand_back" in d, name
+    assert "may be archived" in desc["mark_complete"]
+    assert "not a hand-back" in desc["hand_back"]
+    assert "same message as your question" in desc["hand_back"]
+
+
+def test_hand_back_is_mounted_regardless_of_self_model_switch():
+    for sms in (False, True):
+        names = {t.name for t in build_session_tools(_ctx(signalling_tools=True, self_model_switch=sms))}
+        assert "hand_back" in names
+    assert "hand_back" not in {t.name for t in build_session_tools(_ctx(signalling_tools=False))}
+
+
+@pytest.mark.asyncio
+async def test_hand_back_acknowledges_with_the_trimmed_reason():
+    result = await _call(_ctx(signalling_tools=True), "hand_back", {"reason": "  scope decision "})
+    assert result.get("is_error") is not True
+    assert _payload(result) == {"acknowledged": True, "reason": "scope decision"}
+
+
+@pytest.mark.asyncio
+async def test_hand_back_rejects_a_missing_reason_without_a_side_effect():
+    result = await _call(_ctx(signalling_tools=True), "hand_back", {})
+    assert result["is_error"] is True
+    assert "reason" in result["content"][0]["text"]
+
+
+def test_hand_back_schema_requires_reason():
+    tool = next(t for t in build_session_tools(_ctx(signalling_tools=True)) if t.name == "hand_back")
+    assert tool.input_schema["required"] == ["reason"]
+    assert tool.input_schema["properties"]["reason"]["type"] == "string"

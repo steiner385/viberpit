@@ -86,3 +86,27 @@ def test_no_marker_session_still_gets_the_read_tools_paragraph():
 def test_mark_no_pr_is_also_named_when_signalling_is_on():
     s = session_instructions(session_tools=True, signalling_tools=True, self_model_switch=False)
     assert "mark_no_pr" in s
+
+
+def test_hand_back_is_named_when_signalling_is_on():
+    s = session_instructions(session_tools=True, signalling_tools=True, self_model_switch=False)
+    assert "`hand_back`" in s
+
+
+def test_the_three_ways_line_appears_only_with_signalling_tools():
+    """The cross-tool line is the ONE thing the index paragraph may say beyond naming
+    tools: no single description can carry the distinction between them. It names
+    tools, so a marker-only session (which has none) must never see it.
+
+    Discriminate on "ending a turn is not completion" rather than the bare "one of
+    three ways" substring: the marker world's own HAND_BACK_INSTRUCTION (completion.py,
+    task 1) already contains "ONE of three ways" unconditionally — pinned by
+    test_hand_back_marker.py — so that phrase alone cannot tell "the new tools-index
+    line" apart from "the pre-existing marker instruction" in the off case below, where
+    session_tools=True, signalling_tools=False still emits the full marker contract."""
+    on = session_instructions(session_tools=True, signalling_tools=True, self_model_switch=False)
+    off = session_instructions(session_tools=True, signalling_tools=False, self_model_switch=False)
+    assert "one of three ways" in on.lower()
+    assert "ending a turn is not completion" in on.lower()
+    assert "ending a turn is not completion" not in off.lower()
+    assert "hand_back" not in off
