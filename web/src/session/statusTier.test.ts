@@ -1,6 +1,8 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import { statusPresentation, statusTier, sortSessionsByTier, TIER_ACCENT } from './statusTier'
+import {
+  statusPresentation, statusTier, sortSessionsByTier, TIER_ACCENT, TIER_LABEL, TIER_RANK,
+} from './statusTier'
 import type { StatusTier } from './statusTier'
 
 describe('retrying presentation', () => {
@@ -127,11 +129,11 @@ describe('statusTier mapping table', () => {
     ['waiting_question', 'needs-you'],
     ['ready_review', 'needs-you'],
     ['done', 'your-turn'],
-    ['complete', 'your-turn'],
+    ['complete', 'complete'],
     ['idle', 'your-turn'],
     ['needs_attention', 'error'],
     ['limited', 'error'],
-    ['ended', 'your-turn'],
+    ['ended', 'complete'],
     ['waiting_external', 'waiting'],   // parked on an external event
     ['queued', 'waiting'],          // enqueued behind the active-session cap
     ['pending_approval', 'needs-you'],  // parked on a human model decision
@@ -143,6 +145,29 @@ describe('statusTier mapping table', () => {
   it('falls back to neutral "Unknown" (waiting tier) for an unknown state', () => {
     expect(statusTier('totally-unknown')).toBe('waiting')
     expect(statusPresentation('totally-unknown').label).toBe('Unknown')
+  })
+})
+
+// "The turn is done" and "the objective is complete" are different claims. A
+// session at `done` is handed back and waiting on the user; only `complete`
+// (mark_complete) and `ended` are finished. They used to share one tier whose
+// header read "Done", so a card waiting for a reply sat under a finished-sounding
+// header. Now they are two tiers, and neither is spelled "Done" anywhere.
+describe('your-turn vs complete tiers', () => {
+  it('heads the your-turn group "Your turn" and the finished group "Complete"', () => {
+    expect(TIER_LABEL['your-turn']).toBe('Your turn')
+    expect(TIER_LABEL.complete).toBe('Complete')
+  })
+  it('never spells any tier header "Done"', () => {
+    expect(Object.values(TIER_LABEL)).not.toContain('Done')
+  })
+  it('ranks complete after your-turn (nothing left to do) and before waiting', () => {
+    expect(TIER_RANK.complete).toBeGreaterThan(TIER_RANK['your-turn'])
+    expect(TIER_RANK.complete).toBeLessThan(TIER_RANK.waiting)
+  })
+  it('gives the complete tier a muted rail like the other calm tiers', () => {
+    expect(TIER_ACCENT.complete.rail).toContain('/40')
+    expect(TIER_ACCENT.complete.pulse).toBe(false)
   })
 })
 
@@ -200,6 +225,17 @@ describe('sortSessionsByTier', () => {
     ]
     const result = sortSessionsByTier(input)
     expect(result.map((s) => s.id)).toEqual(['turn', 'wait', 'busy'])
+  })
+
+  it('ranks complete between your-turn and waiting', () => {
+    const input = [
+      { id: 'wait', status: 'waiting_external' },
+      { id: 'fin', status: 'complete' },
+      { id: 'gone', status: 'ended' },
+      { id: 'turn', status: 'done' },
+    ]
+    const result = sortSessionsByTier(input)
+    expect(result.map((s) => s.id)).toEqual(['turn', 'fin', 'gone', 'wait'])
   })
 
   it('does not mutate the original array', () => {
