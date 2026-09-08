@@ -382,6 +382,10 @@ class CodexAgentDriver:
         self._turn_token: TurnToken | None = None
         self._turns_completed = 0
         self._last_turn_outcome = "success"
+        # Per-turn, NOT sticky like _last_pr_resolution: the reason belongs to the turn
+        # that handed back, and the next turn clears it so the orchestrator can never
+        # audit a stale reason against a later waiting_question.
+        self._last_hand_back_reason: str | None = None
         self._condensing = False
         # (base, effective) pair from the last on_status overlay (or seed_status):
         # current_status() reports `effective` while the raw derivation still equals
@@ -473,6 +477,13 @@ class CodexAgentDriver:
     @property
     def last_progress_at(self) -> float:
         return self._last_progress_at
+
+    @property
+    def last_hand_back_reason(self) -> str | None:
+        """The reason the most recent turn gave ``hand_back`` (tool or marker), or
+        ``None`` if that turn did not hand back. Read by ``_persist_status`` when it
+        writes ``waiting_question``."""
+        return self._last_hand_back_reason
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -1631,6 +1642,8 @@ class CodexAgentDriver:
             self._last_turn_outcome = "failed"
         else:
             self._last_turn_outcome = "failed" if outcome == "error" else outcome
+        self._last_hand_back_reason = (
+            event.hand_back_reason if self._last_turn_outcome == "hand_back" else None)
         self._turns_completed += 1
         self._turn_active = False
         self._turn_started_at = None

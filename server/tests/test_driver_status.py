@@ -308,3 +308,29 @@ def test_last_progress_advances_only_on_meaningful_events():
     assert d.last_progress_at == base
     d._note_progress(ev.TextDelta(turn_id="t", text="hello"))   # real → advance
     assert d.last_progress_at > base
+
+
+def test_claude_driver_latches_the_hand_back_reason_per_turn():
+    """Not sticky like pr_resolution: the reason belongs to ONE turn, and the next
+    turn (a plain success) clears it so a stale reason is never audited.
+
+    Feeding a synthetic TurnEnd through the fake-SDK-driven pump would require
+    scripting a whole turn through the translator; instead this drives
+    ClaudeAgentDriver._handle_msg directly — the same private consume path the
+    pump's _drain loop calls per SDK message — with _tr.feed monkeypatched to
+    hand back the TurnEnd under test."""
+    import server.sessions.events as ev
+
+    async def run():
+        d = _make_driver()
+        d._tr.feed = lambda msg: iter(
+            [ev.TurnEnd("t1", outcome="hand_back", hand_back_reason="need a decision")])
+        await d._handle_msg(object())
+        assert d.last_hand_back_reason == "need a decision"
+        assert d._last_turn_outcome == "hand_back"
+
+        d._tr.feed = lambda msg: iter([ev.TurnEnd("t2", outcome="success")])
+        await d._handle_msg(object())
+        assert d.last_hand_back_reason is None
+
+    asyncio.run(run())
