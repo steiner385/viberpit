@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
-  noteSent, noteStage, clearFlight, getFlight, subscribeFlight, __resetFlight,
+  noteSent, noteStage, clearFlight, reconcileFlight, getFlight, subscribeFlight, __resetFlight,
 } from './promptFlight'
 
 describe('promptFlight store', () => {
@@ -84,5 +84,72 @@ describe('promptFlight store', () => {
     subscribeFlight(() => { calls++ })
     clearFlight('nobody')
     expect(calls).toBe(0)
+  })
+})
+
+/**
+ * The stuck pill. The only clear signal used to be a live `status` frame with a
+ * non-resting status ("the turn started"). That frame is lossy: close the laptop,
+ * ride out a deploy restart, or reload the tab while the turn runs and the next
+ * thing the browser sees — a `done` status frame, or the 5 s poll — is a RESTING
+ * status, which the clear deliberately ignored. Every card the user had prompted
+ * before the gap then sat at "Sent — starting…" until the next page reload.
+ *
+ * `updatedAt` on a session row is the hand-back clock (server: last_turn_at), which
+ * advances ONLY when the agent hands output back — never on an incidental row
+ * write. So "updatedAt moved past what it was when we sent" is proof the turn we
+ * sent has come and gone, and it survives any socket gap because the poll carries it.
+ */
+describe('promptFlight — reconciling against session rows', () => {
+  beforeEach(() => { __resetFlight() })
+  const T0 = '2026-09-08T02:40:00+00:00'
+  const T1 = '2026-09-08T02:44:00+00:00'
+
+  it('clears a resting session whose hand-back clock advanced past the send baseline', () => {
+    noteSent('s1', 'sent', T0)
+    noteStage('s1', 'delivered')
+    reconcileFlight([{ id: 's1', status: 'done', updatedAt: T1 }])
+    expect(getFlight()['s1']).toBeUndefined()
+  })
+
+  it('keeps narrating while the resting row still carries the baseline clock', () => {
+    // The idle/done broadcasts that arrive DURING a wake-up carry the OLD hand-back
+    // time — nothing has come back yet.
+    noteSent('s1', 'sent', T0)
+    reconcileFlight([{ id: 's1', status: 'done', updatedAt: T0 }])
+    expect(getFlight()['s1']).toBe('sent')
+  })
+
+  it('treats a first-ever hand-back on a never-run session as an advance', () => {
+    noteSent('s1', 'sent', null)
+    reconcileFlight([{ id: 's1', status: 'done', updatedAt: T1 }])
+    expect(getFlight()['s1']).toBeUndefined()
+  })
+
+  it('never judges by time when the baseline was unknown at send', () => {
+    // Cold deep-link: the sessions cache had not loaded when the prompt went out, so
+    // there is no baseline. Fall back to the status-only rule rather than guess.
+    noteSent('s1', 'sent')
+    reconcileFlight([{ id: 's1', status: 'done', updatedAt: T1 }])
+    expect(getFlight()['s1']).toBe('sent')
+  })
+
+  it('still clears on a non-resting status regardless of the clock', () => {
+    noteSent('s1', 'sent', T0)
+    reconcileFlight([{ id: 's1', status: 'in_progress', updatedAt: T0 }])
+    expect(getFlight()['s1']).toBeUndefined()
+  })
+
+  it('leaves sessions absent from the rows alone', () => {
+    noteSent('s1', 'sent', T0)
+    reconcileFlight([{ id: 'other', status: 'done', updatedAt: T1 }])
+    expect(getFlight()['s1']).toBe('sent')
+  })
+
+  it('does not emit when nothing changed (stable reference for useSyncExternalStore)', () => {
+    noteSent('s1', 'sent', T0)
+    const before = getFlight()
+    reconcileFlight([{ id: 's1', status: 'idle', updatedAt: T0 }])
+    expect(getFlight()).toBe(before)
   })
 })

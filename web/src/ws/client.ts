@@ -12,7 +12,7 @@ import { QK } from '@/api/hooks'
 import type { SessionEvent, PromptContext } from '@/session/events'
 import { SESSION_EVENT_TYPES } from '@/session/events'
 import type { PromptStage } from '@/session/promptStage'
-import { noteSent, noteStage, noteHeld, clearFlight } from '@/lib/promptFlight'
+import { noteSent, noteStage, noteHeld, reconcileFlightRow } from '@/lib/promptFlight'
 import { clientLogger } from '@/obs/logger'
 import { createGapState, handleLiveBatch, catchUpCursor, catchUpEpoch, invalidateCatchUp, type GapState } from './liveBatch'
 import { revIsNewer, shouldApplyRev } from '@/session/reconcile'
@@ -290,15 +290,20 @@ export class SessionSocket {
     // Never silently drop input. Buffer whenever it can't be trusted to land — the
     // server is draining (updatePending) OR the socket isn't open — and flush on the
     // next reconnect (after re-attach). Otherwise send straight through.
+    // The hand-back clock as of this send, so promptFlight can tell "the turn we sent
+    // has come and gone" from a poll alone if the live status frames are missed.
+    // `undefined` (no cached row) means "unknown", distinct from `null` (never ran).
+    const row = this._cachedRow(sessionId)
+    const baseline = row ? (row.updatedAt ?? null) : undefined
     if (this._updatePending || this.ws?.readyState !== WebSocket.OPEN) {
       this._enqueuePrompt({ sessionId, text, attachmentIds, context })
-      noteSent(sessionId, 'buffered')
+      noteSent(sessionId, 'buffered', baseline)
       return 'buffered'
     }
     this._send({ type: 'prompt', sessionId, text,
       ...(attachmentIds && attachmentIds.length ? { attachmentIds } : {}),
       ...(context ? { context } : {}) })
-    noteSent(sessionId, 'sent')
+    noteSent(sessionId, 'sent', baseline)
     return 'sent'
   }
 
@@ -682,12 +687,13 @@ export class SessionSocket {
       case 'status':
         this._emit('status', msg)
         this._patchSessionStatus(msg.sessionId, msg.status as Session['status'], msg.updatedAt, msg.revAt, msg.interruptedByRestart, msg)
-        // The send has been superseded by real news about the session — stop narrating
-        // it. This top-level broadcast (unlike the attached event stream) arrives for
-        // sessions the user has navigated away from, which is precisely the case the
-        // list pill exists for: otherwise a prompt fired and left behind would leave a
-        // "Sent — starting…" pill up forever.
-        if (!RESTING_BEFORE_TURN.has(msg.status)) clearFlight(msg.sessionId)
+        // The send may have been superseded by real news about the session — stop
+        // narrating it if so. This top-level broadcast (unlike the attached event
+        // stream) arrives for sessions the user has navigated away from, which is
+        // precisely the case the list pill exists for. promptFlight decides: a
+        // non-resting status, OR a resting one whose hand-back clock moved past the
+        // send (the turn ran while this socket was down and we missed it start).
+        reconcileFlightRow({ id: msg.sessionId, status: msg.status as Session['status'], updatedAt: msg.updatedAt ?? null })
         break
       case 'usage':
         this._emit('usage', msg)

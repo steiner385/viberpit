@@ -126,7 +126,7 @@ export const PR_CHECKS_FAILING: StatusPresentation = {
 // yet — but they are the wrong thing to show someone who just hit Enter: "Ready" over
 // a prompt in flight reads as "your message went nowhere". Client-side only; this is
 // deliberately not a SessionStatus member (see the test file for why).
-// Exported so the socket clears its flight entry on exactly the statuses this overlay
+// Exported so lib/promptFlight clears its entry on exactly the statuses this overlay
 // stops applying to — one definition of "the turn has not started yet", not two.
 export const RESTING_BEFORE_TURN = new Set(['idle', 'done', 'complete'])
 
