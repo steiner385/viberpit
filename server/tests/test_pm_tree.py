@@ -133,3 +133,35 @@ def test_edge_cases_root_fallback_and_empty_product():
     by_slug = {i["slug"]: i for i in tree["initiatives"]}
     assert by_slug["floating"]["tier"] == "in-flight"
     assert tree["counts"]["inFlight"] == 1
+
+
+def test_advance_ready_initiative_is_needs_you_with_reason():
+    from server.pm.tree import initiative_reason
+    # build stage, every epic child closed → the human has to press Advance
+    assert initiative_tier("active", "build", 0, 0, epic_total=3, epic_done=3) == "needs-you"
+    assert initiative_reason("active", "build", 3, 3) == "advance"
+    # not ready: still open children, or no epic at all
+    assert initiative_tier("active", "build", 0, 0, epic_total=3, epic_done=2) == "in-flight"
+    assert initiative_reason("active", "build", 3, 2) is None
+    assert initiative_tier("active", "build", 0, 0, epic_total=0, epic_done=0) == "in-flight"
+    assert initiative_reason("active", "build", 0, 0) is None
+    # other stages never say advance, even with a finished epic
+    assert initiative_reason("active", "deploy", 3, 3) is None
+    assert initiative_reason("done", "done", 3, 3) is None
+
+
+def test_map_node_carries_reason():
+    ini = InitiativeIn(slug="s", title="S", stage="build", status="active",
+                       primary_slug="cap", capability_slugs=("cap",),
+                       epic={"ref": "o/r#1", "url": "u", "total": 2, "done": 2,
+                             "blocked": 0, "needsHuman": 0})
+    cap = CapabilityIn(id="f1", slug="cap", title="Cap", state="live", summary=None,
+                       doc_path=None, commit_sha=None, pr_number=None, parent_slug=None,
+                       issue_tiers=())
+    tree = build_product_tree(ProductIn(slug="p", name="P", capabilities=(cap,),
+                                        initiatives=(ini,), awaiting_triage=0, needs_home=0))
+    node = tree["initiatives"][0]
+    assert node["tier"] == "needs-you"
+    assert node["reason"] == "advance"
+    assert tree["capabilities"][0]["tier"] == "needs-you"
+    assert tree["counts"]["needsYou"] == 1
