@@ -11127,10 +11127,13 @@ class SessionOrchestrator:
         if record.status in _NOT_RELOADABLE_STATUSES:
             return f"skipped:{record.status}"
         now = self._clock()
-        exclude = self._recovery.quarantined(now=now) | frozenset({record.account})
+        # The current account is a HARD exclusion, quarantine a relaxable one: a
+        # "move me off this account" that returns the same account is not a move.
         try:
             new_account = select_account(
-                exclude=exclude, load=self.live_session_load(), engine=record.engine
+                exclude=frozenset({record.account}),
+                soft_exclude=self._recovery.quarantined(now=now),
+                load=self.live_session_load(), engine=record.engine
             ).name
         except AllAccountsBusy as e:
             if is_usage_stalled(record.status, record.paused_reason):
@@ -13399,13 +13402,21 @@ class SessionOrchestrator:
         await self._reassign(record, record.account, reason="recompose")
 
     async def _rotate_away(self, record: SessionRecord, *, reason: str) -> None:
-        """Select a healthy account (excluding quarantined + current) and reassign."""
+        """Select a healthy account (excluding quarantined + current) and reassign.
+
+        `old` just failed this session, so it is a HARD exclusion — no selection
+        fallback may hand it back. On 2026-09-08 one did: the account had 429'd
+        live but still read under the 100% ceiling, so sessions rotated A→A until
+        the rotation cap parked them as "no usage headroom". Quarantine stays a
+        soft hint — those accounts are only time-boxed out and may have reset.
+        """
         now = self._clock()
         old = record.account
-        exclude = self._recovery.quarantined(now=now) | frozenset({old})
         try:
             new_account = select_account(
-                exclude=exclude, load=self.live_session_load(), engine=record.engine
+                exclude=frozenset({old}),
+                soft_exclude=self._recovery.quarantined(now=now),
+                load=self.live_session_load(), engine=record.engine
             ).name
         except AllAccountsBusy as e:
             await self._pause_session(record, reason="all_accounts_busy",

@@ -209,15 +209,54 @@ def test_quarantined_account_selected_as_last_resort():
         def fake_usage(name: str) -> QuotaSnapshot:
             return usage_map[name]
 
-        # tonystein is "quarantined" — passed in the exclude set just as the
-        # orchestrator passes self._recovery.quarantined().
+        # tonystein is "quarantined" — passed in the SOFT exclude set, just as the
+        # orchestrator passes self._recovery.quarantined(). Quarantine is a
+        # time-boxed hint that heals on its own, so relaxing it beats starving the
+        # session.
         with patch("ccswitch.accounts.usage_for", side_effect=fake_usage):
             from server.sessions.selection import select_account
 
-            result = select_account(exclude=frozenset({"tonystein"}))
+            result = select_account(soft_exclude=frozenset({"tonystein"}))
 
         assert result.name == "tonystein", (
             f"expected quarantined last-resort fallback to 'tonystein', got {result!r}"
+        )
+
+
+def test_hard_exclude_is_never_relaxed_even_as_a_last_resort():
+    """The counterpart to the test above, and the 2026-09-08 regression.
+
+    `exclude` carries the caller's own first-hand knowledge — "this is the account
+    that just rate-limited the session I am rotating away from". Unlike quarantine
+    it does not heal on its own, so no fallback tier may return it. Merging the two
+    meant rotation handed the failing account straight back: sessions rotated A→A
+    until the rotation cap parked them as "no usage headroom", while another
+    account still had 54% of its weekly quota.
+
+    Raising here is the correct outcome — the caller pauses the session with an
+    earliest-reset the user can read, instead of a reassignment that changes
+    nothing."""
+    with temp_env():
+        _seed_account("limited1")
+        _seed_account("rate_limited")
+
+        reset = datetime.now(timezone.utc) + timedelta(hours=3)
+        usage_map = {
+            "limited1": anthropic_snapshot(100.0, reset, 100.0, reset, False),
+            # Under the ceiling and therefore the best-scoring candidate — exactly
+            # the shape that made this silent: Anthropic 429s before reported usage
+            # reaches 100%, and the cached snapshot is up to 60s stale.
+            "rate_limited": _headroom_usage(session_pct=14.0),
+        }
+
+        with patch("ccswitch.accounts.usage_for", side_effect=lambda n: usage_map[n]):
+            from server.sessions.selection import select_account, AllAccountsBusy
+
+            with pytest.raises(AllAccountsBusy) as ei:
+                select_account(exclude=frozenset({"rate_limited"}))
+
+        assert ei.value.earliest_reset is not None, (
+            "the pause needs an earliest-reset so the session card can say when to retry"
         )
 
 
