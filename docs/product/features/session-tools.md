@@ -1,6 +1,6 @@
 ---
 slug: session-tools
-title: Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, request_model)
+title: Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, request_model)
 state: delivering
 links:
   specs:
@@ -20,7 +20,7 @@ links:
     - server/sessions/engine.py
 ---
 
-# Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, request_model)
+# Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, request_model)
 
 **Problem** — A coding session run by ccswitch has no way to ask "what am I, and why was I
 dispatched" or to tell ccswitch itself (not the repo it's working in) that something about the
@@ -35,7 +35,7 @@ declaration the session made on purpose.
 the operators who triage `session_feedback` rows into the backlog.
 
 **Desired outcome** — every coding session mounts an in-process `ccswitch` MCP server with up to
-five tools:
+six tools:
 
 | Tool | Class | Args | What it does |
 |---|---|---|---|
@@ -43,6 +43,7 @@ five tools:
 | `report_feedback` | READ | category, impact, title, body, evidence? | Reports a problem with ccswitch itself (not the project). One call per distinct problem, at most `session_feedback_cap` per session. |
 | `mark_complete` | SIGNAL | none | Declares the session's objective is fully done. |
 | `mark_no_pr` | SIGNAL | resolution (`not-needed` \| `cancelled`), note? | Declares the work is finished but no PR is appropriate. |
+| `hand_back` | SIGNAL | reason | Declares the session needs the user (a decision, review, approval or information) before the objective can be finished; lands at `waiting_question` ("Answer needed"). |
 | `request_model` | SIGNAL | model (`haiku`\|`sonnet`\|`opus`\|`fable`), reason | Asks to move to a different model tier. |
 
 `session_context` and `report_feedback` are `ToolClass.READ` in `server/mcp_spec.py`'s shared
@@ -97,6 +98,24 @@ signalling call still renders as an ordinary tool card and has no effect on the 
 Tool-call state is turn-scoped, not message-scoped, and precedence is tool-over-marker: if a turn
 carries both a signalling tool call and a stray marker in its prose, the tool call wins.
 
+## Three ways a turn ends
+
+| The session… | Signal (Claude) | Marker (Codex / fallback) | Wire status | Board |
+|---|---|---|---|---|
+| declared the objective met | `mark_complete` / `mark_no_pr` | `<!-- viberpit:complete -->` / `<!-- viberpit:no-pr -->` | `complete` | "Complete"; auto-archive once the completion bar is met |
+| needs the user | `hand_back(reason)` | `<!-- viberpit:hand-back reason="…" -->` | `waiting_question` | "Answer needed", amber, push alert |
+| just stopped | nothing | nothing | `done` | "Your turn", calm |
+
+Precedence within one turn: a failed turn > `hand_back` > completion > plain success; tool
+beats marker. A turn carrying both a hand-back and a completion signal reads as a hand-back and
+logs `sessions.hand_back_over_completion` — keeping a session on the board is the recoverable
+error. `hand_back` reuses `waiting_question` rather than adding a status: the harness already
+persists that status without a structured question card (the parked-`done` overlay and the
+completion open-question hold), so push alerts, the PM "Needs human" view, autopilot, the deploy
+drain and the restart normaliser all already handle it. The reason rides `turnEnd` as
+`handBackReason` and is audited as `session.hand_back`; nothing in the web reads it yet.
+Spec: `docs/superpowers/specs/2026-09-08-hand-back-signal-tool-design.md`.
+
 ## The engine split: which sessions get tools, which keep markers
 
 Which contract a session gets is decided by `AgentCapabilities.durable_tool_surface`
@@ -105,7 +124,7 @@ Which contract a session gets is decided by `AgentCapabilities.durable_tool_surf
 | | Claude | Codex |
 |---|---|---|
 | `durable_tool_surface` | `True` | `False` |
-| Signalling tools (`mark_complete`, `mark_no_pr`, `request_model`) declared | yes | no |
+| Signalling tools (`mark_complete`, `mark_no_pr`, `hand_back`, `request_model`) declared | yes | no |
 | Instruction taught | tool descriptions | HTML-comment markers |
 | `session_context` / `report_feedback` | yes | yes (fresh threads only) |
 
@@ -136,7 +155,7 @@ a marker even on a Claude session that mostly signals via tools now. Which contr
 
 **Notes** —
 - **Kill switch** — `CCSWITCH_SESSION_TOOLS_ENABLED` (default `true`); off drops the overlay at the
-  next session build (no in-flight session is torn down) and, with it, the three signalling tools —
+  next session build (no in-flight session is torn down) and, with it, the four signalling tools —
   at which point every session falls back to marker instructions, exactly as a Codex session does.
   There is no separate kill switch for the signalling tools alone (spec §10): this migration is
   reversible today only by disabling the whole surface.
@@ -148,7 +167,7 @@ a marker even on a Claude session that mostly signals via tools now. Which contr
   fresh `thread/start` only; `thread/resume` silently drops them (no schema field, no rejection), so
   a resumed Codex thread has none until respawned. Confirmed against codex-cli 0.153.2 in
   `docs/superpowers/spikes/2026-09-06-codex-resume-dynamic-tools.md`. The same gap is why Codex never
-  gets the three signalling tools at all (the engine split above) rather than losing them on resume.
+  gets the four signalling tools at all (the engine split above) rather than losing them on resume.
 - **`pr_resolution_source`** gained a fourth value, `"tool"`, alongside `"marker"`, `"classifier"`,
   `"queue-drain"` — a session's own no-PR claim is a claim regardless of which transport carried it.
   `automations.completion_bar.SELF_CERTIFIED_SOURCES` is `frozenset({"marker", "tool"})`, so a
