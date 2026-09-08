@@ -143,8 +143,8 @@ async def set_model(
 
     rec = await _maybe_await(orch.get_session(session_id))
     if rec is not None and is_assistant(rec):
-        from server.sessions.model_policy import resolve_model_policy  # noqa: PLC0415
-        if await resolve_model_policy(db, model=model) != "allow":
+        from server.sessions.model_policy import launch_model, resolve_model_policy  # noqa: PLC0415
+        if await resolve_model_policy(db, model=launch_model(model)) != "allow":
             raise ActionError(
                 "MODEL_GATED", f"{model} needs approval and cannot run the assistant", 400,
             )

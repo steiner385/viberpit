@@ -6,20 +6,99 @@ model requires human approval, mirroring resolve_permission_mode's precedence.
 
 Called at every point that materialises a model onto a session
 (SessionOrchestrator.create_session and .set_model), so no create path can drift.
+Those callers judge ``launch_model(requested)`` rather than the raw request: a
+request that names no model still launches on one (the shared Claude settings
+default), and that is the model the denylist has to see.
 """
 from __future__ import annotations
+
+import json
+import logging
+import os
+from pathlib import Path
 
 from sqlalchemy import select
 
 from server.config import get_settings
 from server.db.models import AppSettings
+from server.sessions.engine import AgentEngine
 from server.sessions.model_catalog import model_tier, normalized_alias
 
+log = logging.getLogger("ccswitch.model_policy")
+
 VALID_ACTIONS: frozenset[str] = frozenset({"allow", "require_approval", "block"})
+
+# pending_model_reason for a hold whose model the requester never named.
+INHERITED_DEFAULT_REASON = (
+    "No model was requested; this is the shared Claude settings default the "
+    "session would launch on.")
 
 
 def _parse_denylist(raw: str | None) -> set[str]:
     return {t.strip().lower() for t in (raw or "").split(",") if t.strip()}
+
+
+def _settings_model(path: Path) -> str | None:
+    """The model *path* (a Claude settings file) pins: its ``env.ANTHROPIC_MODEL``,
+    else its ``model`` key. None when the file is missing, unparseable, or pins
+    nothing — fail-open to "no default", never to an exception: this runs on every
+    session create and a torn read of the shared file must not strand a launch."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    env = data.get("env")
+    for candidate in ((env.get("ANTHROPIC_MODEL") if isinstance(env, dict) else None),
+                      data.get("model")):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
+
+
+def inherited_default_model() -> str | None:
+    """The model a Claude session launches on when the request names none.
+
+    ccswitch passes no model to the ``claude`` binary for a "default" launch, so the
+    binary picks one from the same sources it uses interactively, in its own
+    precedence: ``ANTHROPIC_MODEL`` in its env (the spawn env is this process's
+    environ), then settings.local.json, then settings.json. Every account's config
+    dir symlinks those two files from ``paths.shared_base()``
+    (``ccswitch.configdir.SHARE_ALLOWLIST``), so ONE default applies fleet-wide and
+    is knowable before an account is picked — which is what lets the launch gate
+    judge it. A ``/model`` pick in any session rewrites that shared key, so this is
+    whatever the last interactive pick left behind, not a ccswitch setting.
+
+    Returns None when nothing pins a model (the binary's own built-in default).
+    """
+    env_model = os.environ.get("ANTHROPIC_MODEL", "").strip()
+    if env_model:
+        return env_model
+    from ccswitch import paths
+    base = paths.shared_base()
+    for name in ("settings.local.json", "settings.json"):
+        model = _settings_model(base / name)
+        if model:
+            return model
+    return None
+
+
+def launch_model(model: str | None, *,
+                 engine: AgentEngine | str = AgentEngine.CLAUDE_CODE) -> str | None:
+    """The model *model* would actually launch on, for the approval gate to judge.
+
+    An explicit alias or pinned id is returned as-is. No model, or the picker's
+    ``default`` row, resolves to ``inherited_default_model()`` for the Claude engine —
+    the binary would silently launch on it, so the gate must see it. Non-Claude
+    engines never inherit: Claude's settings.json says nothing about what a Codex
+    thread runs on, and their own catalogs supply their defaults.
+    """
+    if str(getattr(engine, "value", engine)) != AgentEngine.CLAUDE_CODE.value:
+        return model
+    if normalized_alias(model) in (None, "default"):
+        return inherited_default_model()
+    return model
 
 
 async def resolve_model_policy(db, *, model: str | None, account: str | None = None) -> str:
