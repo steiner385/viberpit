@@ -463,6 +463,20 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         >
           {presentation.label}
         </span>
+        {/* Why a finished session has no PR. Gated on the 'complete' tier (Complete /
+            Ended), not on the field alone: a resumed session keeps its old row value,
+            and "not-needed" beside "Working…" would be a stale claim. Without this a
+            queued session the drainer ended as obsolete read as a bare "Ended" over
+            "No messages yet" — a session that died, not one that was never needed. */}
+        {presentation.tier === 'complete' && session.prResolution && (
+          <span
+            data-testid="card-resolution"
+            className="min-w-0 truncate text-gray-500 dark:text-gray-400"
+            title={session.prResolution}
+          >
+            {' '}— {session.prResolution}
+          </span>
+        )}
         {presentation.tier === 'unreachable' && isValidTimestamp(session.lastConfirmedAliveAt) && (
           <span className="flex-shrink-0 text-slate-500 dark:text-slate-400">
             {' '}— last seen {relTime(session.lastConfirmedAliveAt, now || undefined)}
