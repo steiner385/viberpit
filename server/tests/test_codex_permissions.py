@@ -13,6 +13,7 @@ import asyncio
 import pytest
 
 from server.codex.permissions import (
+    ASSISTANT_PROFILE,
     PROFILES,
     CodexApprovalPolicy,
     CodexPermissionProfile,
@@ -118,7 +119,7 @@ def test_profiles_are_frozen_and_slotted():
     ("allowlist", CodexSandboxMode.WORKSPACE_WRITE, CodexApprovalPolicy.UNTRUSTED),
     ("auto", CodexSandboxMode.WORKSPACE_WRITE, CodexApprovalPolicy.UNTRUSTED),
     ("acceptEdits", CodexSandboxMode.WORKSPACE_WRITE, CodexApprovalPolicy.UNTRUSTED),
-    ("full-auto", CodexSandboxMode.WORKSPACE_WRITE, CodexApprovalPolicy.NEVER),
+    ("full-auto", CodexSandboxMode.WORKSPACE_WRITE, CodexApprovalPolicy.ON_REQUEST),
     ("bypassPermissions", CodexSandboxMode.DANGER_FULL_ACCESS, CodexApprovalPolicy.NEVER),
 ])
 def test_mode_maps_to_expected_profile(mode, sandbox, approval):
@@ -173,6 +174,38 @@ def test_only_a_permission_bypassing_mode_gets_the_unsandboxed_profile(mode):
     system (``to_sdk_permission_mode`` returns ``bypassPermissions`` only there)."""
     if profile_for_mode(mode).sandbox_mode is CodexSandboxMode.DANGER_FULL_ACCESS:
         assert to_sdk_permission_mode(mode) == "bypassPermissions"
+
+
+@pytest.mark.parametrize("profile", [*(PROFILES[m] for m in sorted(PROFILES)), ASSISTANT_PROFILE],
+                         ids=[*sorted(PROFILES), "assistant"])
+def test_a_confined_sandbox_always_keeps_an_approval_channel(profile):
+    """Rule (c): ``never`` is only safe when there is no sandbox left to escape.
+
+    Codex's confined sandboxes hard-protect ``.git`` and refuse listening
+    sockets, so a coding session inside one can only commit, push or run a
+    server-backed test suite by asking to escalate that one command. With the
+    approval axis at ``never`` that request is auto-declined without a card, and
+    the session is guaranteed to do all the work and then fail at the last step
+    (every Codex session on 2026-09-07 ran this way in ``full-auto``). A confined
+    sandbox therefore keeps ``approval_policy != never``; only the unsandboxed
+    profile, which has nothing to escalate out of, may stop asking.
+    """
+    if profile.sandbox_mode is CodexSandboxMode.DANGER_FULL_ACCESS:
+        pytest.skip("unsandboxed: there is no boundary an approval could lift")
+    assert profile.approval_policy.prompts_human, (
+        f"{profile.sandbox_mode.value} + never leaves no way out of the sandbox")
+
+
+def test_full_auto_keeps_the_workspace_sandbox_and_its_network_isolation():
+    """The approval channel is the ONLY thing ``full-auto`` gains. Its sandbox
+    stays ``workspace-write`` and network-isolated, so
+    ``unattended_launch_blocker`` still refuses it for automations, which have
+    nobody to answer the card."""
+    profile = profile_for_mode("full-auto")
+    assert profile.sandbox_mode is CodexSandboxMode.WORKSPACE_WRITE
+    assert profile.network_egress is False
+    # The operator prose must describe the new behaviour, not the old dead end.
+    assert "fails instead of prompting" not in profile.description
 
 
 def test_plan_mode_never_gets_a_write_capable_sandbox():

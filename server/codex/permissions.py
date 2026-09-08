@@ -48,17 +48,32 @@ Two rules are absolute:
 2. **`plan` never gets a write-capable sandbox.** Plan mode means "propose, do
    not change anything", so it maps to `read-only` — a guarantee enforced by the
    sandbox, not by asking the model to behave.
+3. **A confined sandbox always keeps an approval channel.** `never` is paired
+   only with `danger-full-access`: in every other sandbox it removes the one
+   way a session can escalate the commands the sandbox forbids (see the
+   `full-auto` paragraph below).
 
 `full-auto` keeps `workspace-write` rather than `danger-full-access`: it is
-already "approve everything without asking" on the ccswitch side (unattended
-automations depend on that, so `never` is required for the approval axis), but
-the workspace sandbox still bounds the blast radius at no cost to the operator's
+already "approve everything without asking" on the ccswitch side, but the
+workspace sandbox still bounds the blast radius at no cost to the operator's
 intent. An operator who genuinely wants no guardrails has `bypassPermissions`.
 
-`CodexApprovalPolicy.ON_REQUEST` is defined because it is part of the wire enum
-(it is Codex's own default and must round-trip through parsers), but no profile
-selects it: there is no ccswitch mode for which "run shell unattended, ask only
-to leave the sandbox" is not an escalation of authority.
+Its approval axis is `on-request`, not `never`, and the reason is the third
+absolute rule below: a confined sandbox must keep an approval channel. Codex's
+`workspace-write` sandbox hard-protects `.git` (no config knob lifts it in the
+pinned CLI) and refuses listening sockets, so a coding session inside it can
+only commit, push or run a server-backed test suite by asking to run that one
+command outside the sandbox. Under `never` the app-server auto-declines that
+request without ever raising a card, and the session does all the work and then
+fails at the last step — every Codex session launched on 2026-09-07 under the
+`full-auto` Settings default ended that way. `on-request` is not an escalation
+of authority over `full-auto`: ccswitch already approves shell unattended in
+that mode, so a card asking a human to lift the sandbox for one command is
+strictly *less* than what the operator granted, never more. The unattended
+automation path is unaffected — `unattended_launch_blocker` still refuses a
+`full-auto` Codex launch because the sandbox is network-isolated, and #1263's
+opt-in still escalates it to `bypassPermissions`, where `never` is safe because
+there is no sandbox left to escape.
 
 An unmapped mode raises :class:`UnsupportedCodexPermissionMode` rather than
 falling back to a default. A silent fallback is how a mode ends up running with
@@ -179,11 +194,12 @@ _ASK_EVERY_ACTION = CodexPermissionProfile(
 
 _FULL_AUTO = CodexPermissionProfile(
     sandbox_mode=CodexSandboxMode.WORKSPACE_WRITE,
-    approval_policy=CodexApprovalPolicy.NEVER,
+    approval_policy=CodexApprovalPolicy.ON_REQUEST,
     description=(
-        "Codex runs commands and applies patches without asking, but stays inside "
-        "the workspace sandbox with network access off; work that needs to escape "
-        "the sandbox fails instead of prompting."
+        "Codex runs commands and applies patches inside the workspace sandbox "
+        "without asking; network access is off and .git is read-only there, so a "
+        "commit, push or server-backed test run asks you to approve that one "
+        "command outside the sandbox."
     ),
 )
 
