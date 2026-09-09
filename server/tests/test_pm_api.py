@@ -1127,3 +1127,79 @@ def test_triage_undo_writes_audit_row():
         assert len(found) == 1
         assert found[0].detail["proposalId"] == pid and found[0].detail["workItemId"] == wid
         assert found[0].detail["previousStatus"] == "accepted"
+
+
+def test_triage_undo_restores_classified_at_across_naive_sqlite_roundtrip():
+    """Fix-round-1 regression: on SQLite a DateTime(timezone=True) column hands
+    back a NAIVE datetime after a round trip through the DB — the exact slip the
+    DB clock rule exists for. Pre-set classified_at directly (simulating a prior
+    classification), accept (forcing _apply_accept to re-query the WorkItem fresh
+    off SQLite, which comes back naive), undo, and assert the restored
+    classifiedAt is the SAME INSTANT as what was set — compared as parsed aware
+    datetimes, not strings, so a silent naive/aware drift would fail the
+    comparison rather than being masked by string formatting."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import WorkItem
+
+    prior_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
+
+        async def _preset():
+            async with db_session() as db:
+                w = (await db.execute(select(WorkItem).where(
+                    WorkItem.id == wid))).scalar_one()
+                w.classified_by = "ai"
+                w.classified_at = prior_at
+        c.portal.call(_preset)
+
+        assert c.post(f"/api/pm/triage/{pid}/accept",
+                      headers=IDENTITY_HEADERS).status_code == 200
+        assert c.post(f"/api/pm/triage/{pid}/undo",
+                      headers=IDENTITY_HEADERS).status_code == 200
+
+        body = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                       headers=IDENTITY_HEADERS).json()
+        assert body["classifiedBy"] == "ai"
+        restored = datetime.fromisoformat(body["classifiedAt"])
+        # Deliberately NOT coerced here: a server-side naive/aware slip must fail
+        # this assertion, not be silently healed by the test.
+        assert restored.tzinfo is not None, (
+            f"classifiedAt round-tripped without a UTC offset ({body['classifiedAt']!r}) "
+            "— naive/aware slip")
+        assert restored == prior_at
+
+
+def test_triage_undo_no_snapshot_409():
+    """A row resolved before undo_snapshot existed (or otherwise cleared) answers
+    409 no_snapshot rather than restoring garbage. Null the column through the
+    app's own DB session after a real accept, mirroring _seed_one_pending's
+    c.portal.call idiom — the window check runs first and this happens well
+    inside it, so the only thing under test is the no_snapshot branch."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import TriageProposal
+
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, _wid = _seed_one_pending(c, feature_slug="sessions")
+        assert c.post(f"/api/pm/triage/{pid}/accept",
+                      headers=IDENTITY_HEADERS).status_code == 200
+
+        async def _clear_snapshot():
+            async with db_session() as db:
+                prop = (await db.execute(select(TriageProposal).where(
+                    TriageProposal.id == pid))).scalar_one()
+                prop.undo_snapshot = None
+        c.portal.call(_clear_snapshot)
+
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 409
+        assert r.json()["detail"]["error"] == "no_snapshot"

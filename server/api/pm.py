@@ -47,12 +47,27 @@ router = APIRouter(prefix="/api/pm", tags=["pm"])
 TRIAGE_UNDO_WINDOW_S = 60
 
 
+def _aware(dt: datetime | None) -> datetime | None:
+    """Normalize a DateTime(timezone=True) value to tz-aware UTC.
+
+    SQLite has no native timezone type: it stores DateTime(timezone=True) values
+    as naive strings and hands them back tzinfo-less, unlike Postgres. Every
+    datetime this module round-trips through undo_snapshot (or compares against
+    an aware `now`) goes through here so the naive/aware slip the DB clock rule
+    warns about can't happen. Mirrors server/pm/reconcile_inputs.py's `_aware`
+    (kept local — that one is module-private, not a shared import point)."""
+    if dt is None or dt.tzinfo is not None:
+        return dt
+    return dt.replace(tzinfo=timezone.utc)
+
+
 def _overlay_snapshot(wi: WorkItem) -> dict:
+    at = _aware(wi.classified_at)
     return {
         "featureId": wi.feature_id, "reach": wi.reach, "impact": wi.impact,
         "effort": wi.effort, "confidence": wi.confidence, "triageState": wi.triage_state,
         "classifiedBy": wi.classified_by,
-        "classifiedAt": wi.classified_at.isoformat() if wi.classified_at else None,
+        "classifiedAt": at.isoformat() if at else None,
     }
 
 
@@ -65,7 +80,7 @@ def _restore_overlay(wi: WorkItem, snap: dict) -> None:
     wi.triage_state = snap.get("triageState")
     wi.classified_by = snap.get("classifiedBy")
     at = snap.get("classifiedAt")
-    wi.classified_at = datetime.fromisoformat(at) if at else None
+    wi.classified_at = _aware(datetime.fromisoformat(at)) if at else None
 
 
 def _slugify(name: str) -> str:
@@ -961,9 +976,7 @@ async def undo_triage(
     if prop.status == "pending":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
             "error": "not_resolved", "message": "proposal is pending; nothing to undo"})
-    resolved = prop.resolved_at
-    if resolved is not None and resolved.tzinfo is None:
-        resolved = resolved.replace(tzinfo=timezone.utc)  # SQLite hands back naive
+    resolved = _aware(prop.resolved_at)
     now = datetime.now(timezone.utc)
     if resolved is None or (now - resolved).total_seconds() > TRIAGE_UNDO_WINDOW_S:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
@@ -1040,6 +1053,13 @@ async def accept_bulk(
 
 
 def _work_item_to_dict(w: WorkItem) -> dict:
+    # classified_at goes through _aware(): a WorkItem freshly re-queried after the
+    # undo route's restore round-tripped through SQLite (which stores
+    # DateTime(timezone=True) as a naive string, dropping tzinfo on the way IN,
+    # not just on the way out — see _aware's docstring) would otherwise render an
+    # offset-less ISO string here, the exact naive/aware slip the DB clock rule
+    # warns about.
+    at = _aware(w.classified_at)
     return {
         "id": w.id, "repo": w.repo, "number": w.number, "kind": w.kind,
         "title": w.title, "state": w.state,
@@ -1048,7 +1068,7 @@ def _work_item_to_dict(w: WorkItem) -> dict:
         "confidence": w.confidence,
         "triageState": w.triage_state,
         "classifiedBy": w.classified_by,
-        "classifiedAt": w.classified_at.isoformat() if w.classified_at else None,
+        "classifiedAt": at.isoformat() if at else None,
         "url": w.url,
     }
 
