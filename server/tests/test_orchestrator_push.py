@@ -164,3 +164,61 @@ async def test_session_ended_does_not_fire_on_waiting_input(monkeypatch):
     await orch._maybe_push("s1", "waiting_input")
     assert _classes(calls).count("session_ended") == 0
     assert _classes(calls).count("needs_input") == 1
+
+
+# --------------------------------------------------------------------------- #
+# Routing scope: every session push must carry the fields a rule can scope on #
+# --------------------------------------------------------------------------- #
+#
+# `notify_rules.scope_matches` compares a rule's scope_account / scope_automation /
+# scope_session_id against the EVENT. The three session pushes used to read
+# `account_name` off a SessionRecord whose field is `account` (so every
+# account-scoped rule silently missed them) and never passed the automation origin
+# at all (so a rule scoped to, say, pr-doctor could not match a maintenance
+# session asking for input). Pinned here per push, on a record with an origin.
+
+def _add_automation_record(orch, session_id: str = "m1") -> None:
+    orch._records[session_id] = SessionRecord(
+        id=session_id, name="pr-doctor fix o/r#1", account="acct-a",
+        engine=AgentEngine.CLAUDE_CODE, engine_session_id="", cols=80, rows=24,
+        cwd="/tmp", status="idle", repo="o/r", origin="pr-doctor", origin_ref="o/r#1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_needs_input_push_carries_account_automation_and_session(monkeypatch):
+    calls = _patch_notify_event(monkeypatch)
+    orch = _make_orch()
+    _add_automation_record(orch)
+    await orch._maybe_push("m1", "waiting_input")
+    (_, _, _, kw), = [c for c in calls if c[0] == "needs_input"]
+    assert kw["account"] == "acct-a"
+    assert kw["automation"] == "pr-doctor"
+    assert kw["session_id"] == "m1"
+    assert kw["repo"] == "o/r"
+
+
+@pytest.mark.asyncio
+async def test_session_ended_push_carries_account_and_automation(monkeypatch):
+    calls = _patch_notify_event(monkeypatch)
+    orch = _make_orch()
+    _add_automation_record(orch)
+    await orch._maybe_push("m1", "done")
+    (_, _, _, kw), = [c for c in calls if c[0] == "session_ended"]
+    assert kw["account"] == "acct-a"
+    assert kw["automation"] == "pr-doctor"
+    assert kw["session_id"] == "m1"
+
+
+@pytest.mark.asyncio
+async def test_human_session_push_carries_no_automation(monkeypatch):
+    """A human session's origin is None — the event says so rather than inventing one,
+    so a rule scoped to an automation cannot match it."""
+    calls = _patch_notify_event(monkeypatch)
+    orch = _make_orch()
+    _add_record(orch, "h1", status="idle")
+    await orch._maybe_push("h1", "waiting_input")
+    (_, _, _, kw), = [c for c in calls if c[0] == "needs_input"]
+    assert kw["account"] == "acct-a"
+    assert kw["automation"] is None
+    assert kw["session_id"] == "h1"
