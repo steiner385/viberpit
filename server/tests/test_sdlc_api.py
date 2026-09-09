@@ -311,14 +311,15 @@ def test_get_detail_includes_epic_progress():
                 assert child_refs["o/r#2"]["status"] == "Blocked"
                 assert child_refs["o/r#3"]["status"] == "Ready"
 
-                # The list endpoint is what the web board actually renders from
-                # (InitiativesTab → fetchInitiatives → GET /initiatives, never the
-                # per-slug detail route) — it must carry the *expanded* epic dict
+                # The list endpoint serves the API's non-web readers (the AI
+                # assistant's `server/assistant/tools.py`, and anything scripting
+                # /api/sdlc/initiatives) — it must carry the *expanded* epic dict
                 # too, computed via one grouped query, not just the epicRepo/
                 # epicNumber pointer (#991 review round 1, CRITICAL 1). It omits
-                # `children` though (#991 final review, R8/Finding 2): nothing on
-                # the board reads the per-child array, and that endpoint's query
-                # re-runs on every websocket status frame, so the list's epic dict
+                # `children` though (#991 final review, R8/Finding 2): no list
+                # reader uses the per-child array. The web roadmap reads neither
+                # — progress comes from /api/pm/map, and the initiative page
+                # fetches the per-slug detail route — so the list's epic dict
                 # equals the detail one minus that one key.
                 listed = c.get("/api/sdlc/initiatives", headers=IDENTITY_HEADERS)
                 assert listed.status_code == 200

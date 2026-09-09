@@ -5,7 +5,7 @@
  * Region-neutral like `SessionListColumn`: it fills whatever `ContextList`
  * gives it and owns no width, no header and no route.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { InitiativeNode, ProductNode, RoadmapMap } from '@/api/roadmap'
 import { INITIATIVE_STAGES } from '@/api/sdlc'
 import { GroupedList } from '@/components/GroupedList'
@@ -23,7 +23,8 @@ import { RoadmapScopeSegment } from './RoadmapScopeSegment'
 import { InitiativeCard } from './rows/InitiativeCard'
 import { TreeRowCard } from './rows/TreeRowCard'
 import type { RoadmapScope } from './roadmapNavState'
-import { flattenMap, initiativeKey, toggleKey, type TreeRow, type TreeState } from './treeRows'
+import { flattenMap, initiativeKey, setCollapsed, toggleKey, type TreeRow, type TreeState } from './treeRows'
+import { useTreeKeys } from './useTreeKeys'
 
 export interface RoadmapListColumnProps {
   scope: RoadmapScope
@@ -102,6 +103,11 @@ function MapScopeBody({ map, isLoading, selectedKey, onOpen, onOpenInbox }: MapS
     saveGroupCollapseNs(COLLAPSE_NS, new Set(tree.collapsed))
   }, [tree])
   const rows = useMemo(() => (map ? flattenMap(map, tree, query) : []), [map, tree, query])
+  const collapse = useCallback(
+    (key: string, collapsed: boolean) => setTree((t) => setCollapsed(t, key, collapsed)),
+    [],
+  )
+  const { containerRef, rovingKey, onKeyDown } = useTreeKeys(rows, selectedKey, collapse)
 
   return (
     <ScopeBody
@@ -120,8 +126,17 @@ function MapScopeBody({ map, isLoading, selectedKey, onOpen, onOpenInbox }: MapS
       {map && rows.length === 0 && (
         <EmptyState title={query.trim() ? 'No matches' : PRODUCT.empty} />
       )}
+      {/* A real tree: one tab stop, arrows to walk and fold it (`useTreeKeys`).
+          The handler hangs off the container, so every row's keys are handled in
+          one place and only while focus is inside the tree. */}
       {rows.length > 0 && (
-        <div role="tree" aria-label={ROADMAP.map} className="flex flex-col gap-1">
+        <div
+          ref={containerRef}
+          role="tree"
+          aria-label={ROADMAP.map}
+          onKeyDown={onKeyDown}
+          className="flex flex-col gap-1"
+        >
           {rows.map((row) => (row.kind === 'initiative' ? (
             <InitiativeCard
               key={row.key}
@@ -129,6 +144,7 @@ function MapScopeBody({ map, isLoading, selectedKey, onOpen, onOpenInbox }: MapS
               depth={row.depth}
               initiative={row.initiative}
               selected={selectedKey === row.key}
+              focusable={rovingKey === row.key}
               onOpen={() => onOpen(row)}
             />
           ) : (
@@ -136,6 +152,7 @@ function MapScopeBody({ map, isLoading, selectedKey, onOpen, onOpenInbox }: MapS
               key={row.key}
               row={row}
               selected={selectedKey === row.key}
+              focusable={rovingKey === row.key}
               onOpen={onOpen}
               onToggle={(k) => setTree((t) => toggleKey(t, k))}
               onOpenInbox={onOpenInbox}

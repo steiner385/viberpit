@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useProject, useRoadmapMap, useSyncProject } from '@/api/hooks'
+import { extractMutationErrorMessage } from '@/api/queryClient'
 import { PageHeader } from '@/ui/PageHeader'
 import { PageContent } from '@/ui/PageContent'
 import { EmptyState } from '@/ui/EmptyState'
@@ -14,6 +15,7 @@ import { PortfolioDetail } from './detail/PortfolioDetail'
 import { ProductDetail } from './detail/ProductDetail'
 import { CapabilityDetail } from './detail/CapabilityDetail'
 import { NewInitiativeDialog } from './detail/NewInitiativeDialog'
+import { NewProductDialog } from './detail/NewProductDialog'
 
 /** `/roadmap`, `/roadmap/:productSlug`, `/roadmap/:productSlug/capabilities/:capSlug` —
  *  one routed page, three detail levels chosen by the params (spec §7). */
@@ -22,9 +24,12 @@ export function RoadmapPage() {
   // An initiative is never open on THESE routes (it has its own page), so the
   // rest of the component reasons about the product/capability item alone.
   const opened = item && item.kind !== 'initiative' ? item : null
-  const { data: map, isLoading, isError } = useRoadmapMap()
+  // `poll: false`: the shell's list column observes the same cache entry and
+  // owns the 15 s interval. Two polling observers of one key are two requests.
+  const { data: map, isLoading, isError } = useRoadmapMap({ poll: false })
   const sync = useSyncProject()
   const [creating, setCreating] = useState(false)
+  const [registering, setRegistering] = useState(false)
   const product = opened ? findProduct(map, opened.productSlug) : null
   const capability = opened?.kind === 'capability' && product ? findCapability(product, opened.capSlug) : null
   // Shares `QK.project(slug)` with `ProductDetail` and the new-initiative
@@ -74,7 +79,12 @@ export function RoadmapPage() {
         <Button size="sm" onClick={() => setCreating(true)}>+ {INITIATIVE.singular}</Button>
       </>
     )
-    : undefined
+    // Nothing open is the PORTFOLIO, and registering a product is the portfolio's
+    // action — the entrance to the whole roadmap, and the only one (the Products
+    // page this section replaced carried the only other new-product form).
+    : !opened
+      ? <Button size="sm" onClick={() => setRegistering(true)}>+ {PRODUCT.singular}</Button>
+      : undefined
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-page-variant="standard">
@@ -86,7 +96,18 @@ export function RoadmapPage() {
       <PageContent busy={isLoading && !map}>
         {/* Errors are a Banner, first child of the content region. Same copy as the
             list column, which fails from the same query. */}
-        {isError && <Banner tone="danger" title="Could not load the roadmap." />}
+        {isError && <Banner tone="danger" className="mb-4" title="Could not load the roadmap." />}
+        {/* Sync opts out of the global error toast (`PM_MUTATION_META`), so
+            without this a refused sync said nothing at all — the button just
+            stopped spinning. Same idiom and position as InitiativePage's
+            failed Advance. */}
+        {sync.isError && (
+          <Banner
+            tone="danger"
+            className="mb-4"
+            title={extractMutationErrorMessage(sync.error, 'Could not request sync')}
+          />
+        )}
         {/* Nothing open: the portfolio IS the page, not a "pick something" prompt. */}
         {map && !opened && <PortfolioDetail map={map} />}
         {/* A non-null `capability` is exactly the capability level: it is only
@@ -109,7 +130,11 @@ export function RoadmapPage() {
           <EmptyState
             title="Not found"
             description={`Nothing on the ${ROADMAP.label.toLowerCase()} matches this address. It may have been renamed.`}
-            action={<Link className="btn-ghost" to={roadmapPath()}>Back to the {ROADMAP.label.toLowerCase()}</Link>}
+            action={(
+              <Link className="text-accent hover:underline" to={roadmapPath()}>
+                Back to the {ROADMAP.label.toLowerCase()}
+              </Link>
+            )}
           />
         )}
         {/* No map and not loading: the region always says something. The Banner
@@ -117,11 +142,17 @@ export function RoadmapPage() {
             own interval, so this state clears itself. */}
         {!map && !isLoading && (isError
           ? <EmptyState title={`No ${ROADMAP.label.toLowerCase()} to show`} description="It will fill in as soon as the map loads again." />
-          : <EmptyState title={PRODUCT.empty} />)}
+          : (
+            <EmptyState
+              title={PRODUCT.empty}
+              action={<Button onClick={() => setRegistering(true)}>+ {PRODUCT.singular}</Button>}
+            />
+          ))}
       </PageContent>
       {/* Outside the content region: a modal is not part of the page's scroll.
           Mounted only while it is open, so each opening starts on a blank form
           rather than on whatever the last one was abandoned holding. */}
+      {registering && <NewProductDialog open onClose={() => setRegistering(false)} />}
       {creating && product && (
         <NewInitiativeDialog
           product={product}

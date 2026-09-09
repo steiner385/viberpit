@@ -133,6 +133,27 @@ describe('ProductDetail', () => {
     expect(screen.getByRole('region', { name: 'Incidents' })).toBeInTheDocument()
   })
 
+  it('shows no incidents at all until the repo list has arrived', () => {
+    // `repos === undefined` means "every repo" to IncidentQueue, so rendering
+    // the queue before the project resolves put OTHER products' incidents on
+    // this product's page.
+    Object.assign(projectQuery, { data: undefined, isLoading: true, isError: false })
+    mount('/roadmap/kindash?tab=needs-you')
+    expect(screen.queryByLabelText('CI failing')).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Incidents' })).toBeNull()
+    // A placeholder stands in, rather than a panel that is simply blank.
+    expect(screen.getByRole('tabpanel').querySelector('[aria-hidden="true"]')).not.toBeNull()
+  })
+
+  it('shows the Banner, not an unscoped queue, when the product fetch failed', () => {
+    Object.assign(projectQuery, { data: undefined, isLoading: false, isError: true })
+    mount('/roadmap/kindash?tab=needs-you')
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load this product.')
+    // The empty scope is a real scope: the rows the MAP carries still render.
+    expect(screen.queryByLabelText('CI failing')).toBeNull()
+    expect(screen.getByText('No home yet')).toBeInTheDocument()
+  })
+
   it('In flight: every initiative that is moving or stuck', () => {
     mount('/roadmap/kindash?tab=in-flight')
     expect(screen.getByRole('button', { name: 'Open initiative Use-case-first task views' })).toBeInTheDocument()

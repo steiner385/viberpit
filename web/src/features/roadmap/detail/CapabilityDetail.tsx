@@ -13,10 +13,11 @@ import { CAPABILITY, INITIATIVE, ISSUE, PRODUCT, TIER_LABEL, capabilityStateLabe
 import { useTabParam } from '../useTabParam'
 import { capabilityPath } from '../roadmapNavState'
 import { findCapability } from '../lookup'
-import { IN_FLIGHT_TIERS, TIER_TONE, tierLabel } from '../roadmapTier'
+import { TIER_TONE, tierLabel } from '../roadmapTier'
 import { StatTiles } from './StatTiles'
 import { NeedsYouList } from './NeedsYouList'
 import { needsYouCount } from './needsYou'
+import { inFlightInitiatives } from './inFlight'
 import { InitiativeList } from './InitiativeList'
 import { LeafList } from './LeafList'
 import { directOpenIssues } from './directOpenIssues'
@@ -47,7 +48,9 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
 }) {
   const [tab, setTab] = useTabParam(TABS, 'overview')
   const mine = initiativesOn(product, capability)
-  const inFlight = mine.filter((i) => IN_FLIGHT_TIERS.has(i.tier))
+  // The product narrowed to this capability's initiatives, so "in flight" is
+  // read by the same module the portfolio and product levels read it with.
+  const inFlight = inFlightInitiatives([{ ...product, initiatives: mine }])
   // The product, narrowed to this capability: the Needs-you panel below reads
   // its rows from this, and the tile and badge count the same object, so the
   // number above the list can never disagree with the list.

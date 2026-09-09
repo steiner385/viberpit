@@ -13,10 +13,10 @@ import { DependencyPanel } from '@/projects/DependencyPanel'
 import { CAPABILITY, INITIATIVE, ISSUE, TIER_LABEL } from '@/features/products/vocab'
 import { useTabParam } from '../useTabParam'
 import { initiativePath } from '../roadmapNavState'
-import { IN_FLIGHT_TIERS } from '../roadmapTier'
 import { StatTiles } from './StatTiles'
 import { NeedsYouList } from './NeedsYouList'
 import { needsYouCount } from './needsYou'
+import { inFlightInitiatives } from './inFlight'
 import { RankedList } from './RankedList'
 import { InitiativeList } from './InitiativeList'
 
@@ -33,7 +33,13 @@ export function ProductDetail({ product }: { product: ProductNode }) {
   // hides every incident, and "no repos yet" must not be indistinguishable from
   // "the repo list has not loaded".
   const repos = project ? project.repos.map((r) => r.repo).filter((r): r is string => !!r) : undefined
-  const inFlight = product.initiatives.filter((i) => IN_FLIGHT_TIERS.has(i.tier))
+  // The incident queue's scope. `undefined` means "every repo" to IncidentQueue,
+  // so passing it through while the project is in flight showed OTHER products'
+  // incidents on this product's page. A failed fetch resolves to the empty
+  // scope: the Banner above already says the repositories are missing, and an
+  // unscoped queue is worse than none.
+  const incidentScope: readonly string[] | null = repos ?? (isError ? [] : null)
+  const inFlight = inFlightInitiatives([product])
   // Same number as the portfolio's row for this product: `counts.needsYou`
   // excludes the proposal rows (awaiting triage / needs a home) that this list
   // renders, so it cannot be the badge.
@@ -116,7 +122,9 @@ export function ProductDetail({ product }: { product: ProductNode }) {
           </>
         )}
         {tab === 'in-flight' && <InitiativeList initiatives={inFlight} />}
-        {tab === 'needs-you' && <NeedsYouList products={[product]} repos={repos} />}
+        {tab === 'needs-you' && (incidentScope
+          ? <NeedsYouList products={[product]} repos={incidentScope} />
+          : <Skeleton lines={3} />)}
         {tab === 'ranked' && <RankedList productSlug={product.slug} />}
         {tab === 'dependencies' && <DependencyPanel slug={product.slug} />}
       </div>

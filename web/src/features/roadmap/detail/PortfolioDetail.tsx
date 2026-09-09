@@ -8,6 +8,7 @@ import { useTabParam } from '../useTabParam'
 import { StatTiles } from './StatTiles'
 import { NeedsYouList } from './NeedsYouList'
 import { needsYouCount } from './needsYou'
+import { inFlightCount } from './inFlight'
 import { RankedList } from './RankedList'
 import { InitiativeList } from './InitiativeList'
 
@@ -18,7 +19,12 @@ const panelId = (id: string) => `portfolio-panel-${id}`
 export function PortfolioDetail({ map }: { map: RoadmapMap }) {
   const [tab, setTab] = useTabParam(TABS, 'needs-you')
   const products = map.products
-  const sum = (k: 'inFlight' | 'blocked') => products.reduce((n, p) => n + p.counts[k], 0)
+  const blocked = products.reduce((n, p) => n + p.counts.blocked, 0)
+  // The same population the product and capability levels call "in flight" —
+  // the INITIATIVES that are moving or stuck (`inFlight.ts`). Summing the
+  // server's `counts.inFlight` here counted issue tiers too, so one label meant
+  // two different things one level apart.
+  const inFlight = inFlightCount(products)
   // Both the tile and the tab badge count the ROWS the Needs-you list renders,
   // not `counts.needsYou`: that stat excludes the proposal rows (awaiting triage
   // / needs a home) this list renders, so a portfolio whose only outstanding
@@ -32,8 +38,8 @@ export function PortfolioDetail({ map }: { map: RoadmapMap }) {
       <StatTiles
         tiles={[
           { label: PRODUCT.plural, value: products.length },
-          { label: TIER_LABEL['in-flight'], value: sum('inFlight'), tone: 'success' },
-          { label: TIER_LABEL.blocked, value: sum('blocked'), tone: 'danger' },
+          { label: TIER_LABEL['in-flight'], value: inFlight, tone: 'success' },
+          { label: TIER_LABEL.blocked, value: blocked, tone: 'danger' },
           { label: TIER_LABEL['needs-you'], value: needsYou, tone: 'warning' },
         ]}
       />

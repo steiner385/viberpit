@@ -19,20 +19,25 @@ import { TierDot } from './TierDot'
 export interface TreeRowCardProps {
   row: Exclude<TreeRow, { kind: 'initiative' }>
   selected: boolean
+  /** Roving tabindex: exactly one row of the tree is a tab stop (`useTreeKeys`).
+   *  Everything else is reached with the arrow keys, as a tree should be. */
+  focusable: boolean
   onOpen: (row: TreeRow) => void
   onToggle: (key: string) => void
   onOpenInbox: (productSlug: string) => void
 }
 
-export function TreeRowCard({ row, selected, onOpen, onToggle, onOpenInbox }: TreeRowCardProps) {
+export function TreeRowCard({ row, selected, focusable, onOpen, onToggle, onOpenInbox }: TreeRowCardProps) {
   if (row.kind === 'pseudo') {
     const label = row.pseudo === 'awaiting-triage' ? 'Awaiting triage' : 'Needs a home'
     const Icon = row.pseudo === 'awaiting-triage' ? Inbox : HelpCircle
     return (
       <div
         data-testid={`row-${row.key}`}
+        data-row-key={row.key}
         role="treeitem"
         aria-level={row.depth + 1}
+        aria-selected={selected}
         className={indentClass(row.depth)}
       >
         <CardFrame
@@ -41,7 +46,7 @@ export function TreeRowCard({ row, selected, onOpen, onToggle, onOpenInbox }: Tr
           railClass={TIER_ACCENT['needs-you'].rail}
           selected={selected}
           listMode={false}
-          focusable
+          focusable={focusable}
           swipeEnabled={false}
           onOpen={() => onOpenInbox(row.product.slug)}
           leading={<span aria-hidden="true" className="size-6 shrink-0" />}
@@ -80,8 +85,10 @@ export function TreeRowCard({ row, selected, onOpen, onToggle, onOpenInbox }: Tr
   return (
     <div
       data-testid={`row-${row.key}`}
+      data-row-key={row.key}
       role="treeitem"
       aria-level={row.depth + 1}
+      aria-selected={selected}
       aria-expanded={row.hasChildren ? row.expanded : undefined}
       className={indentClass(row.depth)}
     >
@@ -91,13 +98,16 @@ export function TreeRowCard({ row, selected, onOpen, onToggle, onOpenInbox }: Tr
         railClass={TIER_ACCENT[tier].rail}
         selected={selected}
         listMode={false}
-        focusable
+        focusable={focusable}
         swipeEnabled={false}
         onOpen={() => onOpen(row)}
         leading={
           row.hasChildren ? (
             <button
               type="button"
+              // Part of the same roving tab stop as the open control beside it:
+              // one Tab enters the tree, `←`/`→` fold and unfold from there.
+              tabIndex={focusable ? 0 : -1}
               aria-label={`${row.expanded ? 'Collapse' : 'Expand'} ${title}`}
               onClick={(e) => { e.stopPropagation(); onToggle(row.key) }}
               className={cn(

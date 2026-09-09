@@ -21,13 +21,13 @@ import type {
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import {
-  fetchInitiatives, fetchInitiative, advanceInitiative, createInitiative,
+  fetchInitiative, advanceInitiative, createInitiative,
   fetchIncidents, actOnIncident,
   type Initiative, type CreateInitiativeInput,
   type Incident, type IncidentActionInput,
 } from './sdlc'
 import {
-  fetchProjects, createProject, requestProjectSync,
+  createProject, requestProjectSync,
   fetchOnboarding, proposeMap, runClassify, advanceMap, advanceLive,
   type Project, type CreateProjectInput, type OnboardingView,
 } from './pm'
@@ -87,12 +87,10 @@ export const QK = {
   libraryMcp: ['library', 'mcp'] as const,
   libraryContent: (kind: string, id: string, plugin?: string) =>
     ['library', 'content', kind, id, plugin ?? null] as const,
-  initiatives: ['sdlc', 'initiatives'] as const,
   initiative: (slug: string) => ['sdlc', 'initiative', slug] as const,
   // Control-band INCIDENTS (#804) — deliberately not `triage` below, which is the
   // PM classification inbox. Same word, unrelated data.
   incidents: ['sdlc', 'incidents'] as const,
-  projects: ['pm', 'projects'] as const,
   triage: ['pm', 'triage'] as const,          // phase 2 OWNS this key
   onboarding: (slug: string) => ['pm', 'onboarding', slug] as const,
   roadmapMap: ['pm', 'map'] as const,
@@ -1466,25 +1464,13 @@ export function useDeletePermissionProfile() {
  *  this every failure produced two toasts — the hook's own and the global one. */
 const PM_MUTATION_META = { suppressErrorToast: true } as const
 
-/** The Initiative board's list. Each row already carries its artifact chain, so
- *  the board renders N tracks from one call. Polled for baseline liveness; the
- *  board also nudges an invalidation on `/ws` status frames (useInitiativesLive). */
-export function useInitiatives() {
-  return useQuery<Initiative[]>({
-    queryKey: QK.initiatives,
-    queryFn: fetchInitiatives,
-    staleTime: 5_000,
-    refetchInterval: 15_000,
-  })
-}
-
-/** The human-gate tap. On success, refresh the list so the moved node re-renders. */
+/** The human-gate tap. On success, refresh the map (every list of initiatives
+ *  the roadmap renders comes from it) and this initiative's own detail. */
 export function useAdvanceInitiative() {
   const qc = useQueryClient()
   return useMutation<Initiative, ApiRequestError, string>({
     mutationFn: (slug: string) => advanceInitiative(slug),
     onSuccess: (updated) => {
-      void qc.invalidateQueries({ queryKey: QK.initiatives })
       void qc.invalidateQueries({ queryKey: QK.initiative(updated.slug) })
       void qc.invalidateQueries({ queryKey: QK.roadmapMap })
     },
@@ -1496,10 +1482,7 @@ export function useCreateInitiative() {
   const qc = useQueryClient()
   return useMutation<Initiative, ApiRequestError, CreateInitiativeInput>({
     mutationFn: (input) => createInitiative(input),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: QK.initiatives })
-      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
-    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.roadmapMap }),
     meta: PM_MUTATION_META,
   })
 }
@@ -1524,16 +1507,16 @@ export function useIncidents() {
  *  worth reading (a past `scheduledFor`, an incident Intake already adopted).
  *  Showing the row's real state after the server answers is the honest rendering.
  *
- *  `initiatives` is invalidated too: `triage_now` is the tap that eventually
- *  produces an Initiative, and dropping that would leave the board stale until
- *  its own poll. */
+ *  The map is invalidated too: `triage_now` is the tap that eventually produces
+ *  an Initiative, and dropping that would leave the roadmap stale until its own
+ *  poll. */
 export function useIncidentAction() {
   const qc = useQueryClient()
   return useMutation<Incident, ApiRequestError, IncidentActionInput>({
     mutationFn: (input) => actOnIncident(input),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: QK.incidents })
-      void qc.invalidateQueries({ queryKey: QK.initiatives })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
     },
     meta: PM_MUTATION_META,
   })
@@ -1541,21 +1524,17 @@ export function useIncidentAction() {
 
 // ── PM product layer (phase 1) ────────────────────────────────────────────────
 
-/** Projects registry list. Polled like initiatives (baseline liveness). */
-export function useProjects() {
-  return useQuery<Project[]>({
-    queryKey: QK.projects,
-    queryFn: fetchProjects,
-    staleTime: 5_000,
-    refetchInterval: 15_000,
-  })
-}
-
+/**
+ * Registering a product adds a row to the roadmap map — the ONE query the
+ * roadmap's list column and portfolio read products from (there is no separate
+ * `/pm/projects` list observer any more, so invalidating that key would refresh
+ * nothing anybody watches).
+ */
 export function useCreateProject() {
   const qc = useQueryClient()
   return useMutation<Project, ApiRequestError, CreateProjectInput>({
     mutationFn: (input) => createProject(input),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.projects }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.roadmapMap }),
     meta: PM_MUTATION_META,
   })
 }
@@ -1568,7 +1547,8 @@ export function useSyncProject() {
       // The endpoint is a 202 — the loop picks the request up on its next
       // tick — so without this the button read as "nothing happened".
       toast.success(`Sync requested for ${slug}`)
-      void qc.invalidateQueries({ queryKey: QK.projects })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      void qc.invalidateQueries({ queryKey: QK.project(slug) })
     },
     meta: PM_MUTATION_META,
   })
@@ -1599,14 +1579,22 @@ export function useOnboarding(slug: string) {
  * wall display, funding a column that is not mounted. The query key is unchanged
  * either way, so `RoadmapPage`'s own `useRoadmapMap()` still shares this cache
  * entry rather than opening a second fetch.
+ *
+ * `poll` is the other half of that: react-query runs the interval of EVERY
+ * observer of a key, so the shell's column and the page beside it were each
+ * ticking `/pm/map` — one shared entry, two requests every 15 s. The shell
+ * observer (always mounted while the section is open) keeps the interval; the
+ * pages pass `poll: false` and read the entry it refreshes.
  */
-export function useRoadmapMap({ enabled = true }: { enabled?: boolean } = {}) {
+export function useRoadmapMap(
+  { enabled = true, poll = true }: { enabled?: boolean; poll?: boolean } = {},
+) {
   return useQuery<RoadmapMap>({
     queryKey: QK.roadmapMap,
     queryFn: fetchRoadmapMap,
     enabled,
     staleTime: 5_000,
-    refetchInterval: 15_000,
+    refetchInterval: poll ? 15_000 : false,
   })
 }
 
@@ -1661,7 +1649,7 @@ export function useProposeMap() {
     mutationFn: (slug) => proposeMap(slug),
     onSuccess: (_d, slug) => {
       void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
-      void qc.invalidateQueries({ queryKey: QK.projects })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
     },
     meta: PM_MUTATION_META,
   })
@@ -1674,6 +1662,8 @@ export function useClassify() {
     onSuccess: (_d, slug) => {
       void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
       void qc.invalidateQueries({ queryKey: QK.triage })
+      // Classification is what fills the awaiting-triage count the map carries.
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
     },
     meta: PM_MUTATION_META,
   })
@@ -1686,7 +1676,10 @@ export function useAdvanceMap() {
     mutationFn: (slug) => advanceMap(slug),
     onSuccess: (_d, slug) => {
       void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
-      void qc.invalidateQueries({ queryKey: QK.projects })
+      // The onboarding state is on the product payload the detail pane reads,
+      // and merging the map is what puts capabilities on the tree.
+      void qc.invalidateQueries({ queryKey: QK.project(slug) })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
     },
     meta: PM_MUTATION_META,
   })
@@ -1699,7 +1692,8 @@ export function useAdvanceLive() {
     mutationFn: (slug) => advanceLive(slug),
     onSuccess: (_d, slug) => {
       void qc.invalidateQueries({ queryKey: QK.onboarding(slug) })
-      void qc.invalidateQueries({ queryKey: QK.projects })
+      void qc.invalidateQueries({ queryKey: QK.project(slug) })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
     },
     meta: PM_MUTATION_META,
   })
@@ -1759,7 +1753,13 @@ export function useAcceptProposal(projectSlug?: string) {
       if (ctx?.prev) qc.setQueryData(key, ctx.prev)
       toast.error(extractMutationErrorMessage(e, 'Could not accept proposal'))
     },
-    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.projects }),
+    // Accepting a proposal homes a work item on a capability: the map's
+    // awaiting-triage and issue counts both move, and the onboarding wizard's
+    // pending-proposal count with them.
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      if (projectSlug) void qc.invalidateQueries({ queryKey: QK.onboarding(projectSlug) })
+    },
     onSettled: () => void qc.invalidateQueries({ queryKey: QK.triage }),
     meta: PM_MUTATION_META,
   })
@@ -1815,7 +1815,8 @@ export function useAcceptBulk(projectSlug?: string) {
     },
     onSuccess: (res) => {
       if (res.accepted) toast.success(`Accepted ${res.accepted}`)
-      void qc.invalidateQueries({ queryKey: QK.projects })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      if (projectSlug) void qc.invalidateQueries({ queryKey: QK.onboarding(projectSlug) })
     },
     onSettled: () => void qc.invalidateQueries({ queryKey: QK.triage }),
     meta: PM_MUTATION_META,

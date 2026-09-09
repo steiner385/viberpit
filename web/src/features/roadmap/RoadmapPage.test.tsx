@@ -1,15 +1,18 @@
 // What the routed page shows for each address. The three detail levels are
 // tested with their own components; this file is only about which one the page
 // picks — and that an address the map does not contain says so.
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { ApiRequestError } from '@/api/client'
 import { MAP } from './__fixtures__/map'
 import { RoadmapPage } from './RoadmapPage'
 import { CAPABILITY_ROUTE, PRODUCT_ROUTE, ROADMAP_PATH } from './roadmapNavState'
 
 const map = vi.hoisted(() => ({ data: undefined as unknown, isLoading: false, isError: false }))
-const sync = vi.hoisted(() => ({ mutate: vi.fn(), isPending: false, isError: false }))
+const sync = vi.hoisted(() => ({
+  mutate: vi.fn(), isPending: false, isError: false, error: null as unknown,
+}))
 
 // Beyond the page's own `useRoadmapMap`: the detail levels it renders reach for
 // the project, the queue, the incidents and the onboarding view.
@@ -17,6 +20,7 @@ vi.mock('@/api/hooks', () => ({
   useRoadmapMap: () => map,
   useSyncProject: () => sync,
   useCreateInitiative: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
+  useCreateProject: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useProject: () => ({
     data: {
       id: 'p', slug: 'kindash', name: 'KinDash', description: 'Family dashboard', status: null,
@@ -68,6 +72,10 @@ function mount(path: string, over: Partial<typeof map> = {}) {
     </MemoryRouter>,
   )
 }
+
+beforeEach(() => {
+  Object.assign(sync, { mutate: vi.fn(), isPending: false, isError: false, error: null })
+})
 
 describe('RoadmapPage', () => {
   it('shows the portfolio when nothing is open', () => {
@@ -123,6 +131,40 @@ describe('RoadmapPage', () => {
   it('offers no product actions when nothing (or nothing real) is open', () => {
     mount('/roadmap')
     expect(screen.queryByRole('button', { name: 'Sync' })).toBeNull()
+  })
+
+  it('offers + Product on the portfolio and opens the register dialog', () => {
+    // The only way to register a product: the Products page this section
+    // replaced took its new-product form with it.
+    mount('/roadmap')
+    fireEvent.click(screen.getByRole('button', { name: '+ Product' }))
+    expect(screen.getByRole('dialog', { name: 'New product' })).toBeInTheDocument()
+  })
+
+  it('keeps + Product off a product page — it is the portfolio\'s action', () => {
+    mount('/roadmap/kindash')
+    expect(screen.queryByRole('button', { name: '+ Product' })).toBeNull()
+  })
+
+  it('offers the same action from the empty state, when there is no map at all', () => {
+    mount('/roadmap', { data: undefined, isLoading: false })
+    expect(screen.getByText(/No products yet/)).toBeInTheDocument()
+    // Header action and empty-state action: both open the same dialog.
+    const actions = screen.getAllByRole('button', { name: '+ Product' })
+    expect(actions.length).toBe(2)
+    fireEvent.click(actions[1]!)
+    expect(screen.getByRole('dialog', { name: 'New product' })).toBeInTheDocument()
+  })
+
+  it('says so when a sync could not even be requested', () => {
+    // `useSyncProject` suppresses the global error toast, so a page that never
+    // renders `sync.error` reports a refusal as nothing at all.
+    Object.assign(sync, {
+      isError: true,
+      error: new ApiRequestError(409, { detail: { message: 'Backfill already running' } }),
+    })
+    mount('/roadmap/kindash')
+    expect(screen.getByRole('alert')).toHaveTextContent('Backfill already running')
   })
 
   it('says Not found for an address the map does not contain, with a way back', () => {

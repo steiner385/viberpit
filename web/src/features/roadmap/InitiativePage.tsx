@@ -8,7 +8,7 @@ import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useAdvanceInitiative, useInitiative, useRoadmapMap } from '@/api/hooks'
 import { ApiRequestError } from '@/api/client'
-import { INITIATIVE_STAGES, type Initiative, type InitiativeArtifact, type InitiativeStage } from '@/api/sdlc'
+import type { Initiative, InitiativeArtifact } from '@/api/sdlc'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { PageHeader } from '@/ui/PageHeader'
 import { PageContent } from '@/ui/PageContent'
@@ -24,7 +24,7 @@ import { commitUrl, fileUrl, prUrl } from '@/lib/githubUrl'
 import { sessionPath } from '@/session/sessionNavState'
 import {
   CAPABILITY, EPIC, INITIATIVE, ROADMAP,
-  initiativeStatusLabel, nextActionLabel, reasonLabel, stageLabel,
+  initiativeStatusLabel, nextActionLabel, nextStage, reasonLabel, stageLabel,
 } from '@/features/products/vocab'
 import { capabilityPath, productPath, roadmapPath } from './roadmapNavState'
 import { TIER_TONE } from './roadmapTier'
@@ -35,12 +35,6 @@ const TABS = ['track', 'epic', 'sessions', 'capabilities'] as const
 type Tab = (typeof TABS)[number]
 
 const panelId = (id: string) => `initiative-panel-${id}`
-
-/** The stage the gate would move to, or null at the end of the lifecycle. */
-function nextStage(stage: string | null | undefined): InitiativeStage | null {
-  const i = INITIATIVE_STAGES.indexOf(stage as InitiativeStage)
-  return i < 0 || i + 1 >= INITIATIVE_STAGES.length ? null : INITIATIVE_STAGES[i + 1]!
-}
 
 /** One committed artifact, linked at the SHA it was committed at rather than at
  *  HEAD, so the link keeps pointing at the reviewed bytes (`lib/githubUrl`).
@@ -197,7 +191,9 @@ export function InitiativePage() {
   // and the list column beside this page is already paying for the query — so
   // the header reads WHY this row needs a human from there rather than
   // re-deriving it from the detail payload.
-  const { data: map } = useRoadmapMap()
+  // `poll: false`: the list column beside this page observes the same cache
+  // entry and owns the interval — two polling observers are two requests.
+  const { data: map } = useRoadmapMap({ poll: false })
   const advance = useAdvanceInitiative()
   const [tab, setTab] = useTabParam(TABS, 'track')
   const [confirming, setConfirming] = useState(false)

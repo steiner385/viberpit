@@ -112,10 +112,6 @@ export interface CreateInitiativeInput {
   capabilityIds?: string[]
 }
 
-export function fetchInitiatives(): Promise<Initiative[]> {
-  return api.get<Initiative[]>('/sdlc/initiatives')
-}
-
 export function fetchInitiative(slug: string): Promise<Initiative> {
   return api.get<Initiative>(`/sdlc/initiatives/${encodeURIComponent(slug)}`)
 }

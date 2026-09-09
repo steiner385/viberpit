@@ -6,6 +6,8 @@ import {
   PRODUCT, CAPABILITY, STAGE_LABEL, stageLabel,
   INITIATIVE_STATUS_LABEL, initiativeStatusLabel,
   ONBOARDING_STATE_LABEL, onboardingStateLabel,
+  CAPABILITY_STATE_LABEL, NEXT_ACTION_LABEL, REASON_LABEL, ROADMAP, TIER_LABEL,
+  nextActionLabel, nextStage, reasonLabel,
 } from './vocab'
 
 describe('vocab', () => {
@@ -33,17 +35,19 @@ describe('vocab', () => {
     expect(onboardingStateLabel(undefined)).toBe('—')
   })
 
+  // EVERY exported table, not a sample of them: the guard is only worth having
+  // if adding a table to `vocab.ts` cannot quietly escape it.
   it('never says project or feature to the user', () => {
     const all = [
       ...Object.values(PRODUCT), ...Object.values(CAPABILITY),
       ...Object.values(STAGE_LABEL), ...Object.values(INITIATIVE_STATUS_LABEL),
-      ...Object.values(ONBOARDING_STATE_LABEL),
+      ...Object.values(ONBOARDING_STATE_LABEL), ...Object.values(CAPABILITY_STATE_LABEL),
+      ...Object.values(TIER_LABEL), ...Object.values(ROADMAP),
+      ...Object.values(REASON_LABEL), ...Object.values(NEXT_ACTION_LABEL),
     ].join(' ').toLowerCase()
     expect(all).not.toMatch(/\bproject\b|\bfeature\b/)
   })
 })
-
-import { NEXT_ACTION_LABEL, ROADMAP, TIER_LABEL, nextActionLabel, reasonLabel } from './vocab'
 
 it('names the roadmap surfaces and every tier', () => {
   expect(ROADMAP.label).toBe('Roadmap')
@@ -60,4 +64,12 @@ it('says every next action as a sentence, including the ones with nothing to say
   // An engine that grows a type the web has not learned yet shows the raw type,
   // never a blank line.
   expect(nextActionLabel('brand_new')).toBe('brand_new')
+})
+
+it('names the stage the gate would move to, and nothing past the end', () => {
+  expect(nextStage('build')).toBe('deploy')
+  expect(nextStage('done')).toBeNull()
+  // An unknown or absent stage has no next: the gate cannot name a target.
+  expect(nextStage('bogus')).toBeNull()
+  expect(nextStage(null)).toBeNull()
 })

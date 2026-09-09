@@ -5,7 +5,7 @@
  * keep `project` and `feature`; this module is where the renaming happens, so
  * copy cannot drift between the nav, a chip, a button and an empty state.
  */
-import type { InitiativeStage, InitiativeStatus } from '@/api/sdlc'
+import { INITIATIVE_STAGES, type InitiativeStage, type InitiativeStatus } from '@/api/sdlc'
 import type { OnboardingState } from '@/api/pm'
 import type { RoadmapTier } from '@/api/roadmap'
 
@@ -105,6 +105,15 @@ export const REASON_LABEL: Record<string, string> = {
 
 export const reasonLabel = (reason: string | null | undefined): string =>
   reason ? (REASON_LABEL[reason] ?? reason) : ''
+
+/** The stage the human gate would move an initiative to, or null at the end of
+ *  the lifecycle. Beside `reasonLabel` because the two are said together: a row
+ *  that is "Ready to advance" is ready to advance TO something, and the header
+ *  button on the initiative page names the same stage. */
+export function nextStage(stage: string | null | undefined): InitiativeStage | null {
+  const i = INITIATIVE_STAGES.indexOf(stage as InitiativeStage)
+  return i < 0 || i + 1 >= INITIATIVE_STAGES.length ? null : INITIATIVE_STAGES[i + 1]!
+}
 
 /** What the stage engine says happens next on one initiative
  *  (`nextAction.type`, detail endpoint only), as a sentence a human can act on. */

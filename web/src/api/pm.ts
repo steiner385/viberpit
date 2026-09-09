@@ -54,10 +54,6 @@ export interface CreateProjectInput {
   repos: { repo: string; isPrimary?: boolean }[]
 }
 
-export function fetchProjects(): Promise<Project[]> {
-  return api.get<Project[]>('/pm/projects')
-}
-
 export function createProject(input: CreateProjectInput): Promise<Project> {
   return api.post<Project>('/pm/projects', input)
 }

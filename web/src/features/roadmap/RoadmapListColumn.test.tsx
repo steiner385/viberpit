@@ -3,18 +3,18 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { MAP } from './__fixtures__/map'
 import { RoadmapListColumn } from './RoadmapListColumn'
-import { capabilityKey } from './treeRows'
+import { capabilityKey, productKey } from './treeRows'
 
 function mount(over: Partial<React.ComponentProps<typeof RoadmapListColumn>> = {}) {
   const onOpen = vi.fn()
   const onOpenInbox = vi.fn()
-  render(
+  const { unmount } = render(
     <MemoryRouter>
       <RoadmapListColumn scope="map" map={MAP} isLoading={false} isError={false}
         selectedKey={null} onOpen={onOpen} onOpenInbox={onOpenInbox} {...over} />
     </MemoryRouter>,
   )
-  return { onOpen, onOpenInbox }
+  return { onOpen, onOpenInbox, unmount }
 }
 
 describe('RoadmapListColumn', () => {
@@ -67,7 +67,8 @@ describe('RoadmapListColumn', () => {
     mount({ scope: 'initiatives' })
     expect(screen.getByRole('button', { name: 'Open initiative Use-case-first task views' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Open initiative No home yet' })).toBeInTheDocument()
-    expect(screen.getByText('Ready to advance')).toBeInTheDocument()
+    // The reason names the stage the gate would move to, not just "ready".
+    expect(screen.getByText('Ready to advance → Deploy')).toBeInTheDocument()
     // grouped by stage: both fixtures are in Build, under one header
     expect(screen.getByRole('button', { name: /^Build/ })).toBeInTheDocument()
   })
@@ -75,5 +76,88 @@ describe('RoadmapListColumn', () => {
   it('states: loading, error, empty', () => {
     mount({ map: undefined, isLoading: true })
     expect(screen.getByRole('status', { name: 'Loading roadmap' })).toBeInTheDocument()
+  })
+})
+
+/**
+ * The tree's keyboard semantics (`useTreeKeys`). `role="tree"` is a promise: one
+ * tab stop, arrows to walk it, `←`/`→` to fold it, and a row that says whether it
+ * is the selected one. Before this the role was there and none of it was.
+ */
+describe('RoadmapListColumn — tree keyboard', () => {
+  beforeEach(() => localStorage.clear())
+
+  const control = (name: string) => screen.getByRole('button', { name })
+  const productRow = productKey('kindash')
+
+  it('marks the open row aria-selected, and only that one', () => {
+    mount({ selectedKey: capabilityKey('kindash', 'tasks') })
+    expect(screen.getByTestId(`row-${capabilityKey('kindash', 'tasks')}`))
+      .toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId(`row-${productRow}`)).toHaveAttribute('aria-selected', 'false')
+  })
+
+  it('gives the tree ONE tab stop: the open row, else the first row', () => {
+    const { unmount } = mount({ selectedKey: capabilityKey('kindash', 'tasks') })
+    expect(control('Open capability Tasks')).toHaveAttribute('tabindex', '0')
+    expect(control('Open product KinDash')).toHaveAttribute('tabindex', '-1')
+    unmount()
+
+    mount()
+    expect(control('Open product KinDash')).toHaveAttribute('tabindex', '0')
+    expect(control('Open capability Tasks')).toHaveAttribute('tabindex', '-1')
+  })
+
+  it('ArrowDown and ArrowUp move focus between rows', () => {
+    mount()
+    const first = control('Open product KinDash')
+    first.focus()
+    fireEvent.keyDown(first, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(control('Open capability Billing'))
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowUp' })
+    expect(document.activeElement).toBe(control('Open product KinDash'))
+  })
+
+  it('Home and End jump to the first and last row', () => {
+    mount()
+    const first = control('Open product KinDash')
+    first.focus()
+    fireEvent.keyDown(first, { key: 'End' })
+    expect(document.activeElement).toBe(control('Open capability Sessions'))
+    fireEvent.keyDown(document.activeElement!, { key: 'Home' })
+    expect(document.activeElement).toBe(first)
+  })
+
+  it('ArrowRight expands a collapsed row, then steps onto its first child', () => {
+    mount()
+    const tasks = control('Open capability Tasks')
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse Tasks' }))
+    expect(screen.queryByTestId(`row-${capabilityKey('kindash', 'task-views')}`)).toBeNull()
+
+    fireEvent.keyDown(tasks, { key: 'ArrowRight' })
+    expect(screen.getByTestId(`row-${capabilityKey('kindash', 'task-views')}`)).toBeInTheDocument()
+
+    fireEvent.keyDown(control('Open capability Tasks'), { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(control('Open capability Task views'))
+  })
+
+  it('ArrowLeft collapses an expanded row, then moves to the parent', () => {
+    mount()
+    const tasks = control('Open capability Tasks')
+    fireEvent.keyDown(tasks, { key: 'ArrowLeft' })
+    expect(screen.queryByTestId(`row-${capabilityKey('kindash', 'task-views')}`)).toBeNull()
+
+    // Collapsed already: the second press hands focus up to the product.
+    fireEvent.keyDown(control('Open capability Tasks'), { key: 'ArrowLeft' })
+    expect(document.activeElement).toBe(control('Open product KinDash'))
+  })
+
+  it('Enter opens the focused row', () => {
+    const { onOpen } = mount()
+    fireEvent.keyDown(control('Open capability Tasks'), { key: 'Enter' })
+    expect(onOpen).toHaveBeenCalledTimes(1)
+    expect(onOpen).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'capability', key: capabilityKey('kindash', 'tasks') }),
+    )
   })
 })

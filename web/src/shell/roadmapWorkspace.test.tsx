@@ -91,6 +91,16 @@ describe('the shell only funds the roadmap map where the column renders', () => 
     await waitFor(() => expect(askedForMap()).toBe(true))
   })
 
+  it('marks the open product selected in the column — the URL IS the selection', async () => {
+    // End to end through the real hooks: `roadmapOpenItem(params)` →
+    // `keyForOpenItem` → the row's `aria-selected`. A resolver that stopped
+    // matching would leave a tree where nothing is ever the current row.
+    renderApp({ path: '/roadmap/kindash', mode: 'desktop' })
+    const row = await screen.findByTestId('row-product:kindash')
+    expect(row).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('row-product:viberpit')).toHaveAttribute('aria-selected', 'false')
+  })
+
   it('fetches the map on the aliased initiative page', async () => {
     // `/initiatives/:slug` is Roadmap by SECTION ALIAS, not by path prefix. The
     // gate reads `navDefForPath(...)?.id`, so an alias that stopped resolving
