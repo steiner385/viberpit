@@ -1,14 +1,18 @@
+import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useRoadmapMap } from '@/api/hooks'
+import { useRoadmapMap, useSyncProject } from '@/api/hooks'
 import { PageHeader } from '@/ui/PageHeader'
 import { PageContent } from '@/ui/PageContent'
 import { EmptyState } from '@/ui/EmptyState'
 import { Banner } from '@/ui/Banner'
+import { Button } from '@/ui/Button'
 import { Breadcrumb, type BreadcrumbItem } from '@/ui/Breadcrumb'
-import { PRODUCT, ROADMAP } from '@/features/products/vocab'
+import { INITIATIVE, PRODUCT, ROADMAP } from '@/features/products/vocab'
 import { productPath, roadmapOpenItem, roadmapPath } from './roadmapNavState'
 import { findCapability, findProduct } from './lookup'
 import { PortfolioDetail } from './detail/PortfolioDetail'
+import { ProductDetail } from './detail/ProductDetail'
+import { NewInitiativeDialog } from './detail/NewInitiativeDialog'
 
 /** `/roadmap`, `/roadmap/:productSlug`, `/roadmap/:productSlug/capabilities/:capSlug` —
  *  one routed page, three detail levels chosen by the params (spec §7). */
@@ -18,6 +22,8 @@ export function RoadmapPage() {
   // rest of the component reasons about the product/capability item alone.
   const opened = item && item.kind !== 'initiative' ? item : null
   const { data: map, isLoading, isError } = useRoadmapMap()
+  const sync = useSyncProject()
+  const [creating, setCreating] = useState(false)
   const product = opened ? findProduct(map, opened.productSlug) : null
   const capability = opened?.kind === 'capability' && product ? findCapability(product, opened.capSlug) : null
 
@@ -43,18 +49,40 @@ export function RoadmapPage() {
     crumbs.push({ label: title })
   }
 
+  // Product-level actions only: a product is the thing that syncs and the thing
+  // an initiative belongs to. Both need the product to actually be on the map —
+  // `Sync` on a slug the map does not have would post to nothing.
+  const productActions = opened?.kind === 'product' && product
+    ? (
+      <>
+        <Button size="sm" variant="ghost" onClick={() => sync.mutate(product.slug)} loading={sync.isPending}>
+          Sync
+        </Button>
+        <Button size="sm" onClick={() => setCreating(true)}>+ {INITIATIVE.singular}</Button>
+      </>
+    )
+    : undefined
+
   return (
     <div className="flex h-full min-h-0 flex-col" data-page-variant="standard">
-      <PageHeader title={title} meta={crumbs.length > 1 ? <Breadcrumb items={crumbs} /> : undefined} />
+      <PageHeader
+        title={title}
+        meta={crumbs.length > 1 ? <Breadcrumb items={crumbs} /> : undefined}
+        actions={productActions}
+      />
       <PageContent busy={isLoading && !map}>
         {/* Errors are a Banner, first child of the content region. Same copy as the
             list column, which fails from the same query. */}
         {isError && <Banner tone="danger" title="Could not load the roadmap." />}
         {/* Nothing open: the portfolio IS the page, not a "pick something" prompt. */}
         {map && !opened && <PortfolioDetail map={map} />}
-        {/* Product and capability detail arrive with the next tasks; until then the
-            open item is named rather than left blank. */}
-        {map && opened && !missing && <EmptyState title={title} />}
+        {/* Capability detail arrives with the next task; until then the open item
+            is named rather than left blank. */}
+        {map && opened && !missing && (
+          opened.kind === 'product' && product
+            ? <ProductDetail product={product} />
+            : <EmptyState title={title} />
+        )}
         {missing && (
           <EmptyState
             title="Not found"
@@ -69,6 +97,12 @@ export function RoadmapPage() {
           ? <EmptyState title={`No ${ROADMAP.label.toLowerCase()} to show`} description="It will fill in as soon as the map loads again." />
           : <EmptyState title={PRODUCT.empty} />)}
       </PageContent>
+      {/* Outside the content region: a modal is not part of the page's scroll.
+          Mounted only while it is open, so each opening starts on a blank form
+          rather than on whatever the last one was abandoned holding. */}
+      {creating && opened?.kind === 'product' && product && (
+        <NewInitiativeDialog product={product} open onClose={() => setCreating(false)} />
+      )}
     </div>
   )
 }

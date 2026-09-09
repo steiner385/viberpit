@@ -1,0 +1,162 @@
+// One product's detail: what each tab answers, and that its Needs-you number is
+// the same number the portfolio shows for it.
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import { MAP } from '../__fixtures__/map'
+import { needsYouCount } from './needsYou'
+import { ProductDetail } from './ProductDetail'
+
+// The project query is per-test state: a failed fetch is one of the states this
+// component has to render, and the map still holds the product either way.
+const projectQuery = vi.hoisted(() => ({
+  data: undefined as unknown,
+  isLoading: false,
+  isError: false,
+}))
+const onboardingQuery = vi.hoisted(() => ({ data: undefined as unknown, isLoading: false }))
+
+// Every hook the tree under test reaches: `useProject` here, `useQueue` in
+// `RankedList`, the two incident hooks in `IncidentQueue` (mounted by
+// `NeedsYouList`), and the onboarding hooks in `OnboardingWizard`.
+vi.mock('@/api/hooks', () => ({
+  useProject: () => projectQuery,
+  useOnboarding: () => onboardingQuery,
+  useProposeMap: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  useClassify: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  useAdvanceMap: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  useAdvanceLive: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  useQueue: () => ({
+    data: {
+      entries: [
+        { ref: 'cairnea/KinDash#1', repo: 'cairnea/KinDash', number: 1, product: 'kindash', title: 'Top', url: 'https://x/1', score: 9.5 },
+        { ref: 'steiner385/viberpit#2', repo: 'steiner385/viberpit', number: 2, product: 'viberpit', title: 'Other', url: 'https://x/2', score: 4 },
+      ],
+      skipped: 0,
+      generatedAt: 'now',
+    },
+    isLoading: false,
+  }),
+  useIncidents: () => ({
+    data: [{
+      id: 'i1', repo: 'cairnea/KinDash', status: 'open', metric: 'ci_fail', summary: 'CI failing',
+      key: null, sigma: 3, occurrences: 1, value: 1, baselineMean: 0, baselineStddev: 0, baselineN: 5,
+      observedAt: null, rule: 'we1', dismissedReason: null, scheduledFor: null, initiativeSlug: null,
+      sessionId: null, evidence: [], source: null, side: null, tier: null, response: null,
+      createdAt: null, updatedAt: null,
+    }],
+    isError: false,
+  }),
+  useIncidentAction: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+}))
+
+vi.mock('@/api/pm', async (orig) => ({
+  ...(await orig<typeof import('@/api/pm')>()),
+  useProjectDeps: () => ({
+    data: {
+      project: null,
+      edges: [],
+      drift: { proseOnly: [], unresolvedTargets: [], missingFromProject: [], checklistEpics: [] },
+    },
+    isLoading: false,
+    isError: false,
+  }),
+}))
+
+const PROJECT = {
+  id: 'p', slug: 'kindash', name: 'KinDash', description: 'Family dashboard', status: null,
+  portfolioTags: [], onboardingState: 'live', createdAt: null, updatedAt: null,
+  repos: [{ id: 'r1', repo: 'cairnea/KinDash', isPrimary: true, backfillDone: true, lastSyncedAt: null }],
+  edges: [], featureCount: 3, workItemCount: 40,
+}
+
+const ONBOARDING = {
+  state: 'live',
+  action: { type: 'live' },
+  counts: { repoCount: 1, backfillDoneCount: 1, featureCount: 3, openUnclassifiedCount: 0, pendingProposalCount: 2 },
+  mapPr: null,
+}
+
+const product = MAP.products[0]!
+
+const mount = (initial = '/roadmap/kindash') =>
+  render(
+    <MemoryRouter initialEntries={[initial]}>
+      <ProductDetail product={product} />
+    </MemoryRouter>,
+  )
+
+/** The stat tile for a label, matched on its `dt` — the tab strip repeats the
+ *  same words, and a plain text match would find the tab instead. */
+const tile = (label: string) =>
+  screen.getAllByText(label).find((el) => el.tagName === 'DT')?.closest('div')
+
+beforeEach(() => {
+  Object.assign(projectQuery, { data: PROJECT, isLoading: false, isError: false })
+  Object.assign(onboardingQuery, { data: ONBOARDING, isLoading: false })
+})
+
+describe('ProductDetail', () => {
+  it('Overview: tiles, description, repos, in-flight initiatives with tracks', () => {
+    mount()
+    expect(screen.getByText('Family dashboard')).toBeInTheDocument()
+    expect(screen.getByText(/cairnea\/KinDash/)).toBeInTheDocument()
+    expect(screen.getByText(/40 issues mirrored/)).toBeInTheDocument()
+    const link = screen.getByRole('link', { name: 'Use-case-first task views' })
+    expect(link).toHaveAttribute('href', '/initiatives/views')
+    // The stage track travels with the initiative it belongs to.
+    expect(screen.getAllByLabelText(/Build: in progress/).length).toBeGreaterThan(0)
+    expect(tile('Capabilities')).toHaveTextContent('3')
+    expect(tile('In flight')).toHaveTextContent('1')
+  })
+
+  it('counts Needs you exactly as the portfolio counts it for this product', () => {
+    expect(needsYouCount([product])).toBe(2) // the needs-you initiative + awaiting triage
+    mount()
+    expect(tile('Needs you')).toHaveTextContent('2')
+    expect(screen.getByRole('tab', { name: 'Needs you (2, needs attention)' })).toBeInTheDocument()
+  })
+
+  it('Needs you: product-scoped initiatives and incidents', () => {
+    mount('/roadmap/kindash?tab=needs-you')
+    expect(screen.getByText('No home yet')).toBeInTheDocument()
+    // The incident row is named by its summary (the visible line is the metric).
+    expect(screen.getByLabelText('CI failing')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Incidents' })).toBeInTheDocument()
+  })
+
+  it('In flight: every initiative that is moving or stuck', () => {
+    mount('/roadmap/kindash?tab=in-flight')
+    expect(screen.getByRole('button', { name: 'Open initiative Use-case-first task views' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open initiative No home yet' })).toBeInTheDocument()
+  })
+
+  it('Ranked: only this product', () => {
+    mount('/roadmap/kindash?tab=ranked')
+    expect(screen.getByText(/Top/)).toBeInTheDocument()
+    expect(screen.queryByText(/Other/)).toBeNull()
+  })
+
+  it('Dependencies tab renders the panel', () => {
+    mount()
+    fireEvent.click(screen.getByRole('tab', { name: /Dependencies/ }))
+    expect(screen.getByRole('tabpanel')).toHaveTextContent('No mirrored dependencies.')
+  })
+
+  it('says so when the product details could not be loaded, and still shows the map', () => {
+    Object.assign(projectQuery, { data: undefined, isLoading: false, isError: true })
+    mount()
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load this product.')
+    // The tree came from the map, so it survives a failed project fetch.
+    expect(screen.getByRole('link', { name: 'Use-case-first task views' })).toBeInTheDocument()
+  })
+
+  it('shows the onboarding wizard while the product is not live yet', () => {
+    Object.assign(onboardingQuery, {
+      data: { ...ONBOARDING, state: 'map_proposed', action: { type: 'propose_map' } },
+      isLoading: false,
+    })
+    mount()
+    expect(screen.getByText('Capability map proposed')).toBeInTheDocument()
+  })
+})
