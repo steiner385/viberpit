@@ -41,8 +41,17 @@ export function NewInitiativeDialog({ product, open, onClose, defaultCapabilityI
   const create = useCreateInitiative()
   // Same query key the product page already holds, so opening the dialog costs
   // no fetch; the repos are the ones the product is actually mirrored from.
-  const { data: project } = useProject(product.slug)
+  const { data: project, isLoading: projectLoading, isError: projectError } = useProject(product.slug)
   const repos = project?.repos.map((r) => r.repo).filter((r): r is string => !!r) ?? []
+  // Three different reasons for an empty repo list, and only one of them is the
+  // product's fault. Saying "no repository is attached" while the fetch is still
+  // in flight (or has failed) sends the user off to fix a registration that is
+  // perfectly fine.
+  const noRepoCopy = projectLoading && !project
+    ? 'Loading repositories…'
+    : projectError
+      ? 'Could not load repositories'
+      : 'No repository is attached to this product'
   const caps = useMemo(() => flatten(product.capabilities), [product])
 
   const [title, setTitle] = useState('')
@@ -59,6 +68,11 @@ export function NewInitiativeDialog({ product, open, onClose, defaultCapabilityI
   const effectiveSlug = slugify(shownSlug)
   const effectiveRepo = repo || repos[0] || ''
   const canSubmit = title.trim() !== '' && effectiveSlug !== '' && effectiveRepo !== '' && !create.isPending
+  // A title of "!!!" (or a slug edited down to punctuation) normalises to
+  // nothing; say why Create is disabled rather than leaving it greyed out.
+  const slugError = title.trim() !== '' && effectiveSlug === ''
+    ? 'Add a letter or number to the slug'
+    : undefined
 
   return (
     <Dialog open={open} onClose={onClose} title={INITIATIVE.new} size="md" initialFocus={titleRef}>
@@ -87,16 +101,17 @@ export function NewInitiativeDialog({ product, open, onClose, defaultCapabilityI
         <Field label="Title" htmlFor="ni-title" required>
           <Input ref={titleRef} id="ni-title" value={title} onChange={(e) => setTitle(e.target.value)} />
         </Field>
-        <Field label="Slug" htmlFor="ni-slug" help="Used in URLs and branch names" required>
+        <Field label="Slug" htmlFor="ni-slug" help="Used in URLs and branch names" error={slugError} required>
           <Input
             id="ni-slug"
+            invalid={!!slugError}
             value={shownSlug}
             onChange={(e) => { setSlugTouched(true); setSlug(sanitize(e.target.value)) }}
           />
         </Field>
         <Field label="Repository" htmlFor="ni-repo" required>
           <Select id="ni-repo" value={effectiveRepo} onChange={(e) => setRepo(e.target.value)}>
-            {repos.length === 0 && <option value="">No repository is attached to this product</option>}
+            {repos.length === 0 && <option value="">{noRepoCopy}</option>}
             {repos.map((r) => <option key={r} value={r}>{r}</option>)}
           </Select>
         </Field>

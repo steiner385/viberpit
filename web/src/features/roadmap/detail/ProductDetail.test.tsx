@@ -107,7 +107,15 @@ describe('ProductDetail', () => {
     // The stage track travels with the initiative it belongs to.
     expect(screen.getAllByLabelText(/Build: in progress/).length).toBeGreaterThan(0)
     expect(tile('Capabilities')).toHaveTextContent('3')
-    expect(tile('In flight')).toHaveTextContent('1')
+  })
+
+  it('counts In flight as the initiatives the In-flight tab lists', () => {
+    mount()
+    // The tile and the badge beside it must not be two different numbers: both
+    // are the moving-or-stuck initiatives (`counts.inFlight` also rolls up issue
+    // tiers, which belong to the capability level).
+    expect(tile('In flight')).toHaveTextContent('2')
+    expect(screen.getByRole('tab', { name: 'In flight (2)' })).toBeInTheDocument()
   })
 
   it('counts Needs you exactly as the portfolio counts it for this product', () => {

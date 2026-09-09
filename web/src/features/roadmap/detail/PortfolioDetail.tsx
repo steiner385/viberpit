@@ -20,9 +20,10 @@ export function PortfolioDetail({ map }: { map: RoadmapMap }) {
   const products = map.products
   const sum = (k: 'inFlight' | 'blocked') => products.reduce((n, p) => n + p.counts[k], 0)
   // Both the tile and the tab badge count the ROWS the Needs-you list renders,
-  // not `counts.needsYou`: that stat counts initiatives only, so a portfolio
-  // whose only outstanding decision is a batch of proposals would read zero
-  // above a list with a row in it.
+  // not `counts.needsYou`: that stat excludes the proposal rows (awaiting triage
+  // / needs a home) this list renders, so a portfolio whose only outstanding
+  // decision is a batch of proposals would read zero above a list with a row in
+  // it — it cannot be the badge.
   const needsYou = needsYouCount(products)
   const initiatives = products.flatMap((p) => p.initiatives)
 

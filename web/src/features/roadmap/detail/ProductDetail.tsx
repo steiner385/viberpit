@@ -2,7 +2,7 @@
 // the tiles say how big it is, and the tabs answer what it is, what is moving,
 // what needs me, what is next, and what it waits on (finish-line spec §7).
 import { Link } from 'react-router-dom'
-import type { ProductNode } from '@/api/roadmap'
+import type { ProductNode, RoadmapTier } from '@/api/roadmap'
 import { useProject } from '@/api/hooks'
 import { Banner } from '@/ui/Banner'
 import { Tabs } from '@/ui/Tabs'
@@ -25,7 +25,7 @@ const panelId = (id: string) => `product-panel-${id}`
 
 /** Moving or stuck — everything a human would call "open work" on this product.
  *  `live`, `proposed` and `idle` initiatives are history or not started yet. */
-const IN_FLIGHT_TIERS = new Set(['in-flight', 'blocked', 'needs-you'])
+const IN_FLIGHT_TIERS = new Set<RoadmapTier>(['in-flight', 'blocked', 'needs-you'])
 
 export function ProductDetail({ product }: { product: ProductNode }) {
   const [tab, setTab] = useTabParam(TABS, 'overview')
@@ -37,9 +37,9 @@ export function ProductDetail({ product }: { product: ProductNode }) {
   // "the repo list has not loaded".
   const repos = project ? project.repos.map((r) => r.repo).filter((r): r is string => !!r) : undefined
   const inFlight = product.initiatives.filter((i) => IN_FLIGHT_TIERS.has(i.tier))
-  // Same number as the portfolio's row for this product: `counts.needsYou` counts
-  // initiatives only, so a product whose sole outstanding decision is a batch of
-  // proposals would read zero above a list with a row in it.
+  // Same number as the portfolio's row for this product: `counts.needsYou`
+  // excludes the proposal rows (awaiting triage / needs a home) that this list
+  // renders, so it cannot be the badge.
   const needsYou = needsYouCount([product])
   const c = product.counts
 
@@ -56,7 +56,11 @@ export function ProductDetail({ product }: { product: ProductNode }) {
       <StatTiles
         tiles={[
           { label: CAPABILITY.plural, value: c.capabilities },
-          { label: TIER_LABEL['in-flight'], value: c.inFlight, tone: 'success' },
+          // The initiatives the In-flight tab LISTS, not `counts.inFlight`: the
+          // server's rollup also counts issue tiers, so the tile would read a
+          // different number from the tab badge beside it. (The issue-level
+          // count belongs to the capability tiles.)
+          { label: TIER_LABEL['in-flight'], value: inFlight.length, tone: 'success' },
           { label: TIER_LABEL.blocked, value: c.blocked, tone: 'danger' },
           { label: TIER_LABEL['needs-you'], value: needsYou, tone: 'warning' },
         ]}

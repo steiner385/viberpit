@@ -15,21 +15,27 @@ const create = vi.hoisted(() => ({
   error: null as unknown,
 }))
 
+// The project query is per-test state: "which repository?" has a different
+// honest answer while it loads, when it fails, and when it really is empty.
+const projectQuery = vi.hoisted(() => ({
+  data: undefined as unknown,
+  isLoading: false,
+  isError: false,
+}))
+
 vi.mock('@/api/hooks', () => ({
   useCreateInitiative: () => create,
-  useProject: () => ({
-    data: {
-      id: 'p', slug: 'kindash', name: 'KinDash', description: null, status: null, portfolioTags: [],
-      onboardingState: 'live', createdAt: null, updatedAt: null, edges: [], featureCount: 3, workItemCount: 0,
-      repos: [
-        { id: 'r1', repo: 'cairnea/KinDash', isPrimary: true, backfillDone: true, lastSyncedAt: null },
-        { id: 'r2', repo: 'cairnea/KinDash-infra', isPrimary: false, backfillDone: true, lastSyncedAt: null },
-      ],
-    },
-    isLoading: false,
-    isError: false,
-  }),
+  useProject: () => projectQuery,
 }))
+
+const PROJECT = {
+  id: 'p', slug: 'kindash', name: 'KinDash', description: null, status: null, portfolioTags: [],
+  onboardingState: 'live', createdAt: null, updatedAt: null, edges: [], featureCount: 3, workItemCount: 0,
+  repos: [
+    { id: 'r1', repo: 'cairnea/KinDash', isPrimary: true, backfillDone: true, lastSyncedAt: null },
+    { id: 'r2', repo: 'cairnea/KinDash-infra', isPrimary: false, backfillDone: true, lastSyncedAt: null },
+  ],
+}
 
 const product = MAP.products[0]!
 
@@ -54,6 +60,7 @@ beforeEach(() => {
   create.isPending = false
   create.isError = false
   create.error = null
+  Object.assign(projectQuery, { data: PROJECT, isLoading: false, isError: false })
 })
 
 describe('NewInitiativeDialog', () => {
@@ -98,6 +105,35 @@ describe('NewInitiativeDialog', () => {
     expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled()
     submit()
     expect(create.mutate).not.toHaveBeenCalled()
+  })
+
+  it('says why Create is disabled when the slug normalises to nothing', () => {
+    mount()
+    fireEvent.change(screen.getByLabelText(/Title/), { target: { value: '!!!' } })
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled()
+    expect(screen.getByText('Add a letter or number to the slug')).toBeInTheDocument()
+    expect(screen.getByLabelText(/Slug/)).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('does not blame the product for a repo list that is still loading or failed', () => {
+    Object.assign(projectQuery, { data: undefined, isLoading: true, isError: false })
+    const { unmount } = render(
+      <MemoryRouter><NewInitiativeDialog product={product} open onClose={vi.fn()} /></MemoryRouter>,
+    )
+    expect(screen.getByLabelText(/Repository/)).toHaveTextContent('Loading repositories…')
+    unmount()
+
+    Object.assign(projectQuery, { data: undefined, isLoading: false, isError: true })
+    render(<MemoryRouter><NewInitiativeDialog product={product} open onClose={vi.fn()} /></MemoryRouter>)
+    expect(screen.getByLabelText(/Repository/)).toHaveTextContent('Could not load repositories')
+    // Nothing to create against either way.
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled()
+  })
+
+  it('says a resolved product really has no repository', () => {
+    Object.assign(projectQuery, { data: { ...PROJECT, repos: [] }, isLoading: false, isError: false })
+    mount()
+    expect(screen.getByLabelText(/Repository/)).toHaveTextContent('No repository is attached to this product')
   })
 
   it('shows the server message when the create fails', () => {
