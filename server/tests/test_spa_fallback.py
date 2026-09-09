@@ -60,3 +60,17 @@ async def test_mount_spa_noop_when_dist_missing(tmp_path):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/session/abc")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_webmanifest_is_served_as_manifest_json(tmp_path):
+    """Python's mimetypes has no .webmanifest entry, so without an explicit
+    registration StaticFiles serves it as text/plain and Chrome rejects it."""
+    dist = _make_dist(tmp_path)
+    (dist / "manifest.webmanifest").write_text('{"name": "ViberPit"}')
+    app = FastAPI()
+    mount_spa(app, dist)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/manifest.webmanifest")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/manifest+json")
