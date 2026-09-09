@@ -23,7 +23,7 @@ describe('plotroom token remap', () => {
   it('has no dark-scheme override for .prdash-root (the global tokens flip instead)', () => {
     expect(css).not.toMatch(/prefers-color-scheme:\s*dark\)\s*\{\s*\.prdash-root/)
   })
-  it('keeps the legacy aliases on :root for projects.css / initiatives.css', () => {
+  it('keeps the legacy aliases on :root for plotroom.css', () => {
     for (const v of ['--bg', '--surface', '--text', '--muted', '--border', '--accent', '--amber', '--done', '--fail', '--purple']) {
       expect(root).toMatch(new RegExp(v.replace(/-/g, '\\-') + ':\\s*var\\(--t-'))
     }

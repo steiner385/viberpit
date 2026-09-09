@@ -1,0 +1,102 @@
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router-dom'
+import { MAP, product } from '../__fixtures__/map'
+import { PortfolioDetail } from './PortfolioDetail'
+import { needsYouCount } from './needsYou'
+
+// Every hook the tree under test reaches: `RankedList` calls `useQueue`, and
+// `NeedsYouList` mounts `IncidentQueue`, which calls the two incident hooks.
+vi.mock('@/api/hooks', () => ({
+  useQueue: () => ({
+    data: {
+      entries: [
+        { ref: 'cairnea/KinDash#1', repo: 'cairnea/KinDash', number: 1, product: 'kindash', title: 'Top', url: 'https://x/1', score: 9.5 },
+        { ref: 'steiner385/viberpit#2', repo: 'steiner385/viberpit', number: 2, product: 'viberpit', title: 'Second', url: 'https://x/2', score: 4 },
+        { ref: 'steiner385/viberpit#3', repo: 'steiner385/viberpit', number: 3, product: 'viberpit', title: 'No link', url: null, score: null },
+      ],
+      skipped: 0,
+      generatedAt: 'now',
+    },
+    isLoading: false,
+  }),
+  useIncidents: () => ({ data: [], isError: false }),
+  useIncidentAction: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+}))
+
+function Here() {
+  const loc = useLocation()
+  return <div data-testid="here">{loc.pathname + loc.search}</div>
+}
+
+function mount(initial = '/roadmap') {
+  render(
+    <MemoryRouter initialEntries={[initial]}>
+      <PortfolioDetail map={MAP} />
+      <Here />
+    </MemoryRouter>,
+  )
+}
+
+const here = () => screen.getByTestId('here').textContent
+
+/** The stat tile for a label. Matched on the `dt` because "Needs you" is also a
+ *  tab label, and the tab would otherwise match too. */
+const tile = (label: string) =>
+  screen.getAllByText(label).find((el) => el.tagName === 'DT')?.closest('div')
+
+describe('PortfolioDetail', () => {
+  it('shows stat tiles and the Needs-you tab by default', () => {
+    mount()
+    expect(screen.getByText('Products')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /Needs you/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('No home yet')).toBeInTheDocument() // needs-you initiative
+    expect(screen.getByText('Ready to advance')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /2 awaiting triage/ })).toHaveAttribute('href', '/triage?projectSlug=kindash')
+  })
+
+  it('counts the whole portfolio in the tiles', () => {
+    mount()
+    // In flight = the INITIATIVES that are moving or stuck (`inFlight.ts`), the
+    // same population the product and capability levels count under that word:
+    // KinDash's `views` (in-flight) and `orphan` (needs-you). The server's
+    // `counts.inFlight` rolls up issue tiers too, so summing it here made one
+    // label mean two different things one level apart.
+    expect(tile('In flight')).toHaveTextContent('2')
+    expect(tile('Blocked')).toHaveTextContent('0')
+    expect(tile('Products')).toHaveTextContent('2')
+  })
+
+  it('badges Needs you with the rows the list actually renders', () => {
+    // The needs-you initiative AND KinDash's awaiting-triage row — `counts.needsYou`
+    // alone would say 1 over a list of 2.
+    expect(needsYouCount(MAP.products)).toBe(2)
+    expect(needsYouCount([])).toBe(0)
+    expect(needsYouCount([product({ slug: 'quiet' })])).toBe(0)
+    mount()
+    expect(screen.getByRole('tab', { name: 'Needs you (2, needs attention)' })).toBeInTheDocument()
+    expect(tile('Needs you')).toHaveTextContent('2')
+    expect(screen.getAllByRole('listitem')).toHaveLength(2)
+  })
+
+  it('Ranked tab lists the queue across products in score order', () => {
+    mount('/roadmap?tab=ranked')
+    const rows = screen.getAllByRole('listitem')
+    expect(rows[0]).toHaveTextContent('Top')
+    expect(rows[1]).toHaveTextContent('Second')
+    expect(screen.getByRole('link', { name: /#1 Top/ })).toHaveAttribute('href', 'https://x/1')
+    // An entry with no URL is text, not a link that goes nowhere.
+    expect(rows[2]).toHaveTextContent('No link')
+    expect(screen.queryByRole('link', { name: /#3 No link/ })).toBeNull()
+  })
+
+  it('All initiatives tab lists every initiative and opens one', () => {
+    mount()
+    fireEvent.click(screen.getByRole('tab', { name: /All initiatives/ }))
+    expect(here()).toBe('/roadmap?tab=initiatives')
+    const open = screen.getByRole('button', { name: 'Open initiative Use-case-first task views' })
+    expect(screen.getByRole('button', { name: 'Open initiative No home yet' })).toBeInTheDocument()
+    fireEvent.click(open)
+    expect(here()).toBe('/initiatives/views')
+  })
+})

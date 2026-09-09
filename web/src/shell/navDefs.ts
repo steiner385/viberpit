@@ -1,9 +1,9 @@
 import {
-  MessagesSquare, GitPullRequest, Workflow, Target,
-  Inbox, Package, LineChart, Settings,
+  MessagesSquare, GitPullRequest, Workflow, Map as MapIcon,
+  Inbox, LineChart, Settings,
   type LucideIcon,
 } from 'lucide-react'
-import { BRAND_NAME } from '@/brand'
+import { ROADMAP } from '@/features/products/vocab'
 
 /** Which count `useNavBadges()` supplies for this section, if any. */
 export type NavBadgeKey = 'sessions' | 'pipeline' | 'automations' | 'settings'
@@ -54,7 +54,7 @@ interface NavDefShape {
    * default — see `navDefs.test.ts`'s pinned kiosk-safe set.
    */
   showInKiosk: boolean
-  /** Renders a list column in `app.list`. Only Sessions does today. */
+  /** Renders a list column in `app.list`. Sessions and Roadmap do today. */
   hasList: boolean
 }
 
@@ -66,8 +66,10 @@ interface NavDefShape {
  * Replaces `components/tabDefs.ts` (`TAB_DEFS` + `buildTabs`); `TabId` moved
  * here from `Dashboard.tsx` and is renamed `NavId`.
  *
- * Order and labels are carried over verbatim from the deleted `TAB_DEFS`.
- * Note `projects` is labelled "Products" — that is intentional, not a typo.
+ * Order and labels came over verbatim from the deleted `TAB_DEFS`, and are
+ * pinned by equality in `navDefs.test.ts`. One row has changed since: Roadmap
+ * Phase 3 replaced the `initiatives` and `projects` rows with a single
+ * `roadmap` section (finish-line spec §4.1), whose old paths now redirect.
  *
  * `NavId` is derived from this array (below) rather than declared separately,
  * so there is nothing to keep in sync: adding a row adds a `NavId` member.
@@ -86,20 +88,16 @@ const DEFS = [
   // `trigger.mutateAsync({ item_id, kind })`, which fires the job for real.
   { id: 'automations', label: 'Automations', icon: Workflow,        path: '/automations', badge: 'automations', showInKiosk: false, hasList: false,
     help: 'Scheduled and triggered jobs, their recent events, and the sessions they spawned.' },
-  // showInKiosk:false — `InitiativesTab` has `advance.mutate(init.slug)` (moves an
-  // initiative to the next SDLC stage) and `create.mutate(...)`.
-  { id: 'initiatives', label: 'Initiatives', icon: Target,          path: '/initiatives',                       showInKiosk: false, hasList: false,
-    help: 'Every initiative as a stage track: the gate it is at, the artifact each gate needs, and the open incidents that may become the next one.' },
+  // showInKiosk:false — `RoadmapPage` advances initiatives (`advance.mutate`),
+  // creates them, and syncs products; every one is a mutation.
+  { id: 'roadmap',     label: ROADMAP.label, icon: MapIcon,         path: '/roadmap',                           showInKiosk: false, hasList: true,
+    help: ROADMAP.help },
   // showInKiosk:false — and this is the row the flag exists for. `TriageInbox`
   // is keyboard-first: `a` accepts, `r` rejects and `A` bulk-accepts the
   // selection on ONE keystroke, with no confirm and a `window` keydown listener,
   // so a passer-by (or a stray keyboard on a wall display) empties the queue.
   { id: 'triage',      label: 'Triage',      icon: Inbox,           path: '/triage',                            showInKiosk: false, hasList: false,
     help: 'Proposed classifications awaiting your decision: each open issue matched to a capability with scores. Accept, adjust, or reject; the key map is on the page.' },
-  // showInKiosk:false — `ProjectsTab` has `create.mutate` and `sync.mutate(slug)`;
-  // `OnboardingWizard` has `proposeMap.mutate`/`classify.mutate`.
-  { id: 'projects',    label: 'Products',    icon: Package,         path: '/projects',                          showInKiosk: false, hasList: false,
-    help: `The products ${BRAND_NAME} tracks: each one's repos, onboarding progress and mirrored dependencies. Triage is its own section.` },
   // showInKiosk:true — verified read-only: `InsightsView` is two `<select>`s over
   // local state, two `useQuery` hooks, and `CheckTable`, which renders a table.
   { id: 'insights',    label: 'Insights',    icon: LineChart,       path: '/insights',                          showInKiosk: true,  hasList: false,
@@ -145,7 +143,30 @@ export function settingsSectionPath(section: string | null | undefined, fallback
   return `${NAV_BY_ID.settings.path}/${trimmed ? trimmed : fallback}`
 }
 
-/** The nav entry whose path prefixes `pathname`, or null. Longest match wins. */
+/**
+ * Paths that belong to a section without living under its path.
+ *
+ * Roadmap keeps `/initiatives/:slug` as the initiative detail URL (roadmap spec
+ * §4) rather than folding it under `/roadmap`, so a prefix match alone resolves
+ * it to NO section. Three things read `navDefForPath` and each degrades: the
+ * rail highlights nothing, `hasList` is false so the Roadmap list column
+ * vanishes from beside the page, and `OPEN_ITEM_RESOLVERS` is keyed by section
+ * id — with no section, nothing reads `initiativeSlug` and the shell believes
+ * nothing is open.
+ *
+ * It is NOT a kiosk gate. `KioskPageGuard` refuses anything whose def is not
+ * `showInKiosk`, and a null def fails that check exactly as a `false` one does,
+ * so the alias leaves kiosk behaviour unchanged in both directions.
+ *
+ * An alias is checked only AFTER every real path has failed, so it can never
+ * outrank a section's own prefix.
+ */
+const SECTION_ALIASES: readonly { prefix: string; id: NavId }[] = [
+  { prefix: '/initiatives', id: 'roadmap' },
+]
+
+/** The nav entry whose path prefixes `pathname` (longest match wins), else the
+ *  one an alias claims it for, else null. */
 export function navDefForPath(pathname: string): NavDef | null {
   let best: NavDef | null = null
   for (const d of NAV_DEFS) {
@@ -153,5 +174,9 @@ export function navDefForPath(pathname: string): NavDef | null {
       if (!best || d.path.length > best.path.length) best = d
     }
   }
-  return best
+  if (best) return best
+  for (const a of SECTION_ALIASES) {
+    if (pathname === a.prefix || pathname.startsWith(a.prefix + '/')) return NAV_BY_ID[a.id]
+  }
+  return null
 }

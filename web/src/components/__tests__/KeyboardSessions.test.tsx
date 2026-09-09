@@ -31,6 +31,9 @@ import { queryResult } from '@/test/reactQuery'
 const sendPromptMutate = vi.fn()
 
 vi.mock('@/api/hooks', () => ({
+  // The shell mounts the Roadmap list column app-wide (`useRoadmapWorkspace`),
+  // so this whole-module mock has to answer for it too.
+  useRoadmapMap: () => ({ data: undefined, isLoading: false, isError: false }),
   useQueueMove: vi.fn(() => ({ mutate: vi.fn() })),
   useQueueCancel: vi.fn(() => ({ mutate: vi.fn() })),
   useModelApproval: vi.fn(() => ({ mutate: vi.fn() })),

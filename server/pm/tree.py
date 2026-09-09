@@ -32,9 +32,22 @@ def max_tier(*tiers: str) -> str:
     return best
 
 
+def initiative_reason(status: str | None, stage: str | None,
+                      epic_total: int, epic_done: int) -> str | None:
+    """Why an initiative needs a human beyond its status: today only "advance" —
+    the build epic is fully closed but nobody has moved the gate (finish-line
+    spec §4.5). No auto-advance: SDLC governance keeps the human as the gate."""
+    if status == "active" and stage == "build" and epic_total > 0 and epic_done >= epic_total:
+        return "advance"
+    return None
+
+
 def initiative_tier(status: str | None, stage: str | None,
-                    epic_blocked: int, epic_needs_human: int) -> str:
+                    epic_blocked: int, epic_needs_human: int, *,
+                    epic_total: int = 0, epic_done: int = 0) -> str:
     if status == "awaiting_human" or epic_needs_human > 0:
+        return "needs-you"
+    if initiative_reason(status, stage, epic_total, epic_done) is not None:
         return "needs-you"
     if status == "blocked" or epic_blocked > 0:
         return "blocked"
@@ -117,6 +130,7 @@ class ProductIn:
 
 def _initiative_node(ini: InitiativeIn, project_slug: str) -> dict:
     epic = ini.epic or {}
+    total, done = int(epic.get("total", 0)), int(epic.get("done", 0))
     # NOTE: this node's `primaryCapability` is a slug string (the map tree is
     # slug-keyed), whereas server/api/sdlc.py's initiative payload serializes
     # `primaryCapability` as `{id, slug, title}`. Both shapes are intended —
@@ -126,7 +140,9 @@ def _initiative_node(ini: InitiativeIn, project_slug: str) -> dict:
         "projectSlug": project_slug, "primaryCapability": ini.primary_slug,
         "capabilities": list(ini.capability_slugs),
         "tier": initiative_tier(ini.status, ini.stage,
-                                int(epic.get("blocked", 0)), int(epic.get("needsHuman", 0))),
+                                int(epic.get("blocked", 0)), int(epic.get("needsHuman", 0)),
+                                epic_total=total, epic_done=done),
+        "reason": initiative_reason(ini.status, ini.stage, total, done),
         "epic": ini.epic,
     }
 

@@ -4,6 +4,10 @@ import {
   SessionListColumn,
   type SessionListColumnProps,
 } from '@/features/sessions/SessionListColumn'
+import {
+  RoadmapListColumn,
+  type RoadmapListColumnProps,
+} from '@/features/roadmap/RoadmapListColumn'
 
 /**
  * Which nav sections own a list column, and how each one renders.
@@ -14,10 +18,11 @@ import {
  * the id here, add a source field and a `case`. `AppShell` supplies the
  * sources from its workspace hooks.
  */
-export const LIST_SECTIONS = ['sessions'] as const satisfies readonly NavId[]
+export const LIST_SECTIONS = ['sessions', 'roadmap'] as const satisfies readonly NavId[]
 
 export interface ListColumnSources {
   sessions: SessionListColumnProps
+  roadmap: RoadmapListColumnProps
 }
 
 export function listColumnFor(
@@ -27,6 +32,8 @@ export function listColumnFor(
   switch (id) {
     case 'sessions':
       return <SessionListColumn {...sources.sessions} />
+    case 'roadmap':
+      return <RoadmapListColumn {...sources.roadmap} />
     default:
       return null
   }

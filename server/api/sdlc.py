@@ -120,14 +120,15 @@ async def _epic_progress_batch(
 
     ``include_children`` (default ``True``) controls whether the per-child
     array is serialized into each entry. `list_initiatives` (the LIST
-    endpoint) passes ``False``: `InitiativeTrack` only ever reads
-    `url`/`done`/`total`/`blocked`/`needsHuman`, but that endpoint's query is
-    re-run on every websocket status frame (`InitiativesTab` invalidates it),
-    so an unread one-object-per-sub-issue array would be re-serialized on
-    every fleet status change for no reader. `get_initiative` (the per-slug
-    detail endpoint) keeps the default — the plan's Task 10 shape has
-    `children` there. One helper either way, so the two endpoints can't drift
-    apart on the counts themselves (constitution VI)."""
+    endpoint) passes ``False``: its readers (the AI assistant's
+    `server/assistant/tools.py`, and anything scripting the API) only need the
+    epic's `url`/`done`/`total`/`blocked`/`needsHuman`, so an unread
+    one-object-per-sub-issue array would be serialized for no reader. The web
+    roadmap does not call it at all — the map endpoint (`/api/pm/map`) already
+    carries per-initiative progress, and the roadmap's initiative page fetches
+    the per-slug DETAIL route. `get_initiative` (that detail endpoint) keeps
+    the default. One helper either way, so the two endpoints can't drift apart
+    on the counts themselves (constitution VI)."""
     result: dict[str, dict | None] = {i.id: None for i in initiatives}
     pointers = [(i.id, i.epic_repo, i.epic_number) for i in initiatives
                 if i.epic_repo and i.epic_number]
