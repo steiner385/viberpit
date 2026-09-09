@@ -21,6 +21,17 @@ export const CAPABILITY = {
   plural: 'Capabilities',
 } as const
 
+/** Where a capability is in its life, as its feature doc declares it
+ *  (`FEATURE_LIFECYCLE_STATES` in `server/db/models.py`). Not a tier: this
+ *  is the intent a human wrote down, the tier is what the work is doing today. */
+export const CAPABILITY_STATE_LABEL: Record<string, string> = {
+  proposed: 'Proposed',
+  discovery: 'Discovery',
+  delivering: 'Delivering',
+  live: 'Live',
+  sunset: 'Sunset',
+}
+
 /** The first three stages surface the artifact they commit, so the track reads
  *  as the playbook's intent → spec → plan → build progression. */
 export const STAGE_LABEL: Record<InitiativeStage, string> = {
@@ -60,6 +71,8 @@ export const initiativeStatusLabel = (status: string | null | undefined) =>
   lookup(INITIATIVE_STATUS_LABEL, status)
 export const onboardingStateLabel = (state: string | null | undefined) =>
   lookup(ONBOARDING_STATE_LABEL, state)
+export const capabilityStateLabel = (state: string | null | undefined) =>
+  lookup(CAPABILITY_STATE_LABEL, state)
 
 /** The Roadmap section and its list scopes (finish-line spec §4.1, §4.3). */
 export const ROADMAP = {

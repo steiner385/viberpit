@@ -2,7 +2,7 @@
 // tested with their own components; this file is only about which one the page
 // picks — and that an address the map does not contain says so.
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { MAP } from './__fixtures__/map'
 import { RoadmapPage } from './RoadmapPage'
@@ -39,6 +39,7 @@ vi.mock('@/api/hooks', () => ({
   useAdvanceMap: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useAdvanceLive: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useQueue: () => ({ data: { entries: [], skipped: 0, generatedAt: 'now' }, isLoading: false }),
+  useLeaves: () => ({ data: [], isLoading: false, isError: false }),
   useIncidents: () => ({ data: [], isError: false }),
   useIncidentAction: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
 }))
@@ -97,6 +98,26 @@ describe('RoadmapPage', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '+ Initiative' }))
     expect(screen.getByLabelText(/Title/)).toHaveValue('')
+  })
+
+  it('shows the capability detail under a breadcrumb of every ancestor', () => {
+    mount('/roadmap/kindash/capabilities/task-views')
+    expect(screen.getByRole('heading', { level: 1, name: 'Task views' })).toBeInTheDocument()
+    expect(screen.getByRole('tablist', { name: 'Task views' })).toBeInTheDocument()
+    const crumbs = screen.getByRole('navigation', { name: 'Breadcrumb' })
+    // Roadmap › KinDash › Tasks › Task views — every ancestor is walkable back
+    // up one level at a time, and the open capability is the current page.
+    expect([...crumbs.querySelectorAll('li')].map((li) => li.textContent))
+      .toEqual(['Roadmap', 'KinDash', 'Tasks', 'Task views'])
+    expect(within(crumbs).getByRole('link', { name: 'Tasks' }))
+      .toHaveAttribute('href', '/roadmap/kindash/capabilities/tasks')
+    expect(within(crumbs).queryByRole('link', { name: 'Task views' })).toBeNull()
+  })
+
+  it('creates an initiative pre-homed on the open capability', () => {
+    mount('/roadmap/kindash/capabilities/task-views')
+    fireEvent.click(screen.getByRole('button', { name: /Initiative here/ }))
+    expect(screen.getByLabelText(/Primary capability/)).toHaveValue('f-task-views')
   })
 
   it('offers no product actions when nothing (or nothing real) is open', () => {

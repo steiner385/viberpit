@@ -26,6 +26,14 @@ export const TIER_ACCENT: Record<RoadmapTier, { rail: string; dot: string; pulse
   idle: { rail: 'bg-neutral/20', dot: 'bg-neutral/60', pulse: false },
 }
 
+/** Moving or stuck — everything a human would call "open work" on a node.
+ *  `live`, `proposed` and `idle` are history or not started yet. Every detail
+ *  level filters its in-flight list with THIS set, so a product and one of its
+ *  capabilities cannot disagree about what "in flight" means. */
+export const IN_FLIGHT_TIERS: ReadonlySet<RoadmapTier> = new Set<RoadmapTier>([
+  'in-flight', 'blocked', 'needs-you',
+])
+
 export const TIER_RANK: Record<RoadmapTier, number> = Object.fromEntries(
   ROADMAP_TIERS.map((t, i) => [t, i]),
 ) as Record<RoadmapTier, number>

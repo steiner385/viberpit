@@ -2,7 +2,7 @@
 // the tiles say how big it is, and the tabs answer what it is, what is moving,
 // what needs me, what is next, and what it waits on (finish-line spec §7).
 import { Link } from 'react-router-dom'
-import type { ProductNode, RoadmapTier } from '@/api/roadmap'
+import type { ProductNode } from '@/api/roadmap'
 import { useProject } from '@/api/hooks'
 import { Banner } from '@/ui/Banner'
 import { Tabs } from '@/ui/Tabs'
@@ -13,6 +13,7 @@ import { DependencyPanel } from '@/projects/DependencyPanel'
 import { CAPABILITY, INITIATIVE, ISSUE, TIER_LABEL } from '@/features/products/vocab'
 import { useTabParam } from '../useTabParam'
 import { initiativePath } from '../roadmapNavState'
+import { IN_FLIGHT_TIERS } from '../roadmapTier'
 import { StatTiles } from './StatTiles'
 import { NeedsYouList } from './NeedsYouList'
 import { needsYouCount } from './needsYou'
@@ -22,10 +23,6 @@ import { InitiativeList } from './InitiativeList'
 const TABS = ['overview', 'in-flight', 'needs-you', 'ranked', 'dependencies'] as const
 
 const panelId = (id: string) => `product-panel-${id}`
-
-/** Moving or stuck — everything a human would call "open work" on this product.
- *  `live`, `proposed` and `idle` initiatives are history or not started yet. */
-const IN_FLIGHT_TIERS = new Set<RoadmapTier>(['in-flight', 'blocked', 'needs-you'])
 
 export function ProductDetail({ product }: { product: ProductNode }) {
   const [tab, setTab] = useTabParam(TABS, 'overview')
