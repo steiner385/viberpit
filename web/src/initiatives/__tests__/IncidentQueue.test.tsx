@@ -144,4 +144,14 @@ describe('IncidentQueue', () => {
     expect(screen.getByText('incident-cycle-time')).toBeInTheDocument()
     expect(screen.getByText('Adopted by intake')).toBeInTheDocument()
   })
+
+  it('scopes to the given repos and takes a title', async () => {
+    mocked.fetchIncidents.mockResolvedValue([
+      { ...INCIDENT, id: 'i1', repo: 'a/b' },
+      { ...INCIDENT, id: 'i2', repo: 'c/d' },
+    ])
+    render(<IncidentQueue repos={['a/b']} title="Needs you" />, { wrapper })
+    expect(await screen.findByRole('region', { name: 'Needs you' })).toBeInTheDocument()
+    expect(screen.getAllByRole('listitem')).toHaveLength(1)
+  })
 })

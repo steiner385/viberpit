@@ -176,10 +176,12 @@ function IncidentRow({ incident }: { incident: Incident }) {
  * "no incidents" panel above the initiative board would be permanent furniture
  * on a healthy system, which is exactly when it has least to say.
  */
-export function IncidentQueue() {
+export function IncidentQueue({
+  repos, title = 'Control-band incidents',
+}: { repos?: readonly string[]; title?: string } = {}) {
   const { data: incidents, isError } = useIncidents()
   const [showSettled, setShowSettled] = useState(false)
-  const all = incidents ?? []
+  const all = (incidents ?? []).filter((i) => !repos || (i.repo !== null && repos.includes(i.repo)))
   const live = all.filter((i) => LIVE_STATUSES.has(i.status ?? ''))
   const settledCount = all.length - live.length
   const shown = showSettled ? all : live
@@ -191,10 +193,10 @@ export function IncidentQueue() {
 
   return (
     <section className="mb-4 rounded-md border border-edge bg-surface p-3"
-             aria-label="Control-band incidents">
+             aria-label={title}>
       <div className="mb-2 flex items-center justify-between gap-3">
         <h3 className="m-0 flex items-center gap-2 font-medium text-ink">
-          Control-band incidents
+          {title}
           {live.length > 0 && <Badge tone="warning" count={live.length} />}
         </h3>
         {settledCount > 0 && (
