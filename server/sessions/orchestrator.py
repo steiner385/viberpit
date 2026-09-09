@@ -4734,10 +4734,17 @@ class SessionOrchestrator:
                 self._pushed.add(session_id)
                 rec = self._records.get(session_id)
                 name = rec.name if rec else session_id
+                # Every scope a NotificationRule can carry (`notify_rules.scope_matches`):
+                # `account` is the record's field name (a stale `account_name` read here
+                # left every account-scoped rule unmatched), `automation` is the origin
+                # so a rule can single out — or leave out — maintenance sessions, and
+                # `session_id` lets a kind="session" watch match its own needs-you.
                 await push_mod.notify_event(
                     "needs_input", f"{brand.NAME} — needs you", f"{name}: {status}",
                     repo=getattr(rec, "repo", None),
-                    account=getattr(rec, "account_name", None),
+                    account=getattr(rec, "account", None),
+                    automation=getattr(rec, "origin", None),
+                    session_id=session_id,
                     url=f"/session/{session_id}", orch=self)
         else:
             self._pushed.discard(session_id)
@@ -4758,7 +4765,8 @@ class SessionOrchestrator:
                 await push_mod.notify_event(
                     "session_ended", f"{brand.NAME} — session finished", f"{name}: {status}",
                     repo=getattr(rec, "repo", None),
-                    account=getattr(rec, "account_name", None),
+                    account=getattr(rec, "account", None),
+                    automation=getattr(rec, "origin", None),
                     session_id=session_id,
                     url=f"/session/{session_id}", orch=self)
         else:
@@ -8275,7 +8283,8 @@ class SessionOrchestrator:
         self._pushed_pr.add(key)
         await push_mod.notify_event(
             "pr_broke", f"{brand.NAME} — PR broke", f"{rec.name}: {repo} CI failing",
-            repo=repo, account=getattr(rec, "account_name", None),
+            repo=repo, account=getattr(rec, "account", None),
+            automation=getattr(rec, "origin", None), session_id=rec.id,
             url=f"/session/{rec.id}", orch=self,
         )
 
