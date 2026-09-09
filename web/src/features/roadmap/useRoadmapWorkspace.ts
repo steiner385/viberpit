@@ -41,7 +41,7 @@ export function useRoadmapWorkspace(active: boolean): { list: RoadmapListColumnP
       map,
       isLoading,
       isError,
-      selectedKey: keyForOpenItem(roadmapOpenItem(params)),
+      selectedKey: keyForOpenItem(roadmapOpenItem(params, new URLSearchParams(search))),
       onOpen,
       onOpenInbox,
     },

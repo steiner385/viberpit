@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams } from 'react-router-dom'
 import { useProject, useRoadmapMap, useSyncProject } from '@/api/hooks'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { PageHeader } from '@/ui/PageHeader'
@@ -20,10 +20,12 @@ import { NewProductDialog } from './detail/NewProductDialog'
 /** `/roadmap`, `/roadmap/:productSlug`, `/roadmap/:productSlug/capabilities/:capSlug` —
  *  one routed page, three detail levels chosen by the params (spec §7). */
 export function RoadmapPage() {
-  const item = roadmapOpenItem(useParams())
-  // An initiative is never open on THESE routes (it has its own page), so the
-  // rest of the component reasons about the product/capability item alone.
-  const opened = item && item.kind !== 'initiative' ? item : null
+  const { search } = useLocation()
+  const item = roadmapOpenItem(useParams(), new URLSearchParams(search))
+  // An initiative is never open on THESE routes (it has its own page), and a
+  // proposal is the Inbox scope's concern, not this page's, so the rest of the
+  // component reasons about the product/capability item alone.
+  const opened = item && item.kind !== 'initiative' && item.kind !== 'proposal' ? item : null
   // `poll: false`: the shell's list column observes the same cache entry and
   // owns the 15 s interval. Two polling observers of one key are two requests.
   const { data: map, isLoading, isError } = useRoadmapMap({ poll: false })
