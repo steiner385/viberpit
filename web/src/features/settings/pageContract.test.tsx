@@ -120,7 +120,6 @@ const PAGES: readonly PageContractRow[] = [
   { nav: 'roadmap',  path: '/roadmap/kindash/capabilities/tasks',  variant: 'standard', title: 'Tasks' },
   { nav: 'roadmap',  path: '/roadmap?scope=inbox',                 variant: 'standard', title: 'Inbox' },
   { nav: 'roadmap',  path: '/initiatives/views',                   variant: 'standard', title: 'Use-case-first task views' },
-  { nav: 'triage',   path: '/triage',                              variant: 'standard', title: 'Triage' },
 ]
 
 describe('page contract', () => {

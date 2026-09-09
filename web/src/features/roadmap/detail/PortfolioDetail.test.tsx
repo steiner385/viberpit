@@ -52,7 +52,9 @@ describe('PortfolioDetail', () => {
     expect(screen.getByRole('tab', { name: /Needs you/ })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByText('No home yet')).toBeInTheDocument() // needs-you initiative
     expect(screen.getByText('Ready to advance')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /2 awaiting triage/ })).toHaveAttribute('href', '/triage?projectSlug=kindash')
+    // The queue is a SCOPE of this section now, not a section of its own.
+    expect(screen.getByRole('link', { name: /2 awaiting triage/ }))
+      .toHaveAttribute('href', '/roadmap?scope=inbox&product=kindash')
   })
 
   it('counts the whole portfolio in the tiles', () => {

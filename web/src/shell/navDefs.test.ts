@@ -13,7 +13,6 @@ describe('navDefs', () => {
       ['pipeline', 'Pipeline'],
       ['automations', 'Automations'],
       ['roadmap', 'Roadmap'],
-      ['triage', 'Triage'],
       ['insights', 'Insights'],
       ['settings', 'Settings'],
     ])
@@ -84,10 +83,18 @@ describe('navDefs', () => {
   // key useNavBadges actually produces. Kept here (not in useNavBadges.test) so
   // the failure names the offending nav entry.
   it('declares only known badge keys', () => {
-    const known = new Set(['sessions', 'pipeline', 'automations', 'settings'])
+    const known = new Set(['sessions', 'pipeline', 'automations', 'roadmap', 'settings'])
     for (const d of NAV_DEFS) {
       if (d.badge !== undefined) expect(known.has(d.badge), `${d.id} badge=${d.badge}`).toBe(true)
     }
+  })
+
+  // Finish-line row 3 deleted the Triage nav row: the queue is the Inbox SCOPE of
+  // Roadmap, so its pending count badges Roadmap. Pinned here because the badge is
+  // the only surface left that says the queue is non-empty from outside the section.
+  it('the pending-proposal count badges Roadmap, and Triage is not a section', () => {
+    expect(NAV_BY_ID.roadmap.badge).toBe('roadmap')
+    expect(NAV_DEFS.map((d) => d.id)).not.toContain('triage')
   })
 })
 

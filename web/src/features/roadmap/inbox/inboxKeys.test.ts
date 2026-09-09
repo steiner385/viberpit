@@ -6,7 +6,7 @@
  *
  * Moved here with `inboxKeys.ts` when the Triage page's queue became the
  * Roadmap list column's third scope; the assertions are the ones that guarded
- * `triage/keyboardState.ts`, unchanged. The clamps and the id-anchored cursor
+ * the deleted page's keyboard state, unchanged. The clamps and the id-anchored cursor
  * are the whole point: every accept is optimistic and irreversible, so a raw
  * index cursor accepts the row above the one the user is looking at whenever a
  * proposal is prepended between the read and the keystroke.

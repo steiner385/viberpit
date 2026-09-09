@@ -1,12 +1,12 @@
 import {
   MessagesSquare, GitPullRequest, Workflow, Map as MapIcon,
-  Inbox, LineChart, Settings,
+  LineChart, Settings,
   type LucideIcon,
 } from 'lucide-react'
 import { ROADMAP } from '@/features/products/vocab'
 
 /** Which count `useNavBadges()` supplies for this section, if any. */
-export type NavBadgeKey = 'sessions' | 'pipeline' | 'automations' | 'settings'
+export type NavBadgeKey = 'sessions' | 'pipeline' | 'automations' | 'roadmap' | 'settings'
 
 /** Shape of a nav entry, before `id` is narrowed to the derived union. */
 interface NavDefShape {
@@ -49,7 +49,7 @@ interface NavDefShape {
    *   feeding `useStageModels`/`useCheckInsights` (both `useQuery`) into
    *   `CheckTable`, which renders `<table>` and nothing else.
    *
-   * The other five are `false` with the mutation that disqualifies each named
+   * The other four are `false` with the mutation that disqualifies each named
    * beside the row. Widening this is a per-section change with evidence, not a
    * default — see `navDefs.test.ts`'s pinned kiosk-safe set.
    */
@@ -89,15 +89,17 @@ const DEFS = [
   { id: 'automations', label: 'Automations', icon: Workflow,        path: '/automations', badge: 'automations', showInKiosk: false, hasList: false,
     help: 'Scheduled and triggered jobs, their recent events, and the sessions they spawned.' },
   // showInKiosk:false — `RoadmapPage` advances initiatives (`advance.mutate`),
-  // creates them, and syncs products; every one is a mutation.
-  { id: 'roadmap',     label: ROADMAP.label, icon: MapIcon,         path: '/roadmap',                           showInKiosk: false, hasList: true,
+  // creates them, and syncs products; every one is a mutation. Since finish-line
+  // row 3 folded Triage in as the Inbox scope it also carries the reason the flag
+  // exists: that scope is keyboard-first — `a` accepts, `r` rejects and `A`
+  // bulk-accepts the selection on ONE keystroke, with no confirm and a `window`
+  // keydown listener, so a passer-by (or a stray keyboard on a wall display)
+  // would empty the queue.
+  //
+  // `badge: 'roadmap'` is that queue's depth. It came off the deleted Triage row:
+  // a queue nothing points at from outside the section is a queue nobody drains.
+  { id: 'roadmap',     label: ROADMAP.label, icon: MapIcon,         path: '/roadmap',     badge: 'roadmap',     showInKiosk: false, hasList: true,
     help: ROADMAP.help },
-  // showInKiosk:false — and this is the row the flag exists for. `TriageInbox`
-  // is keyboard-first: `a` accepts, `r` rejects and `A` bulk-accepts the
-  // selection on ONE keystroke, with no confirm and a `window` keydown listener,
-  // so a passer-by (or a stray keyboard on a wall display) empties the queue.
-  { id: 'triage',      label: 'Triage',      icon: Inbox,           path: '/triage',                            showInKiosk: false, hasList: false,
-    help: 'Proposed classifications awaiting your decision: each open issue matched to a capability with scores. Accept, adjust, or reject; the key map is on the page.' },
   // showInKiosk:true — verified read-only: `InsightsView` is two `<select>`s over
   // local state, two `useQuery` hooks, and `CheckTable`, which renders a table.
   { id: 'insights',    label: 'Insights',    icon: LineChart,       path: '/insights',                          showInKiosk: true,  hasList: false,

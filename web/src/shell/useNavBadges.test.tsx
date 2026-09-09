@@ -2,11 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import type { Account, PullRequestInfo, Session } from '@/api/types'
 import type { Automation } from '@/api/automations'
+import type { TriageProposal } from '@/api/triage'
 
 const useSessions = vi.fn()
 const useAllPrs = vi.fn()
 const useAutomations = vi.fn()
 const useAccounts = vi.fn()
+const useTriage = vi.fn()
 
 const useDeployState = vi.fn()
 
@@ -15,6 +17,7 @@ vi.mock('@/api/hooks', () => ({
   useAllPrs: () => useAllPrs(),
   useAutomations: () => useAutomations(),
   useAccounts: () => useAccounts(),
+  useTriage: () => useTriage(),
 }))
 
 // Mocked at the DERIVED state, not at the two queries under it: the dot is a
@@ -56,12 +59,24 @@ function automation(over: Partial<Automation> = {}): Automation {
   }
 }
 
+function proposal(over: Partial<TriageProposal> = {}): TriageProposal {
+  return {
+    id: 'p1', workItemId: 'w1', projectSlug: 'kindash', repo: 'steiner385/kindash',
+    number: 1, kind: 'issue', title: 't', url: null,
+    proposedFeatureId: null, proposedFeatureSlug: null, noFitSuggestion: null,
+    reach: null, impact: null, effort: null, confidence: null,
+    rationale: null, confidenceLevel: null, status: 'pending', createdAt: null,
+    ...over,
+  }
+}
+
 describe('useNavBadges', () => {
   beforeEach(() => {
     useSessions.mockReturnValue({ data: [] })
     useAllPrs.mockReturnValue({ data: [] })
     useAutomations.mockReturnValue({ data: [] })
     useAccounts.mockReturnValue({ data: [] })
+    useTriage.mockReturnValue({ data: [] })
     useDeployState.mockReturnValue({ hasFailure: false, count: 0 })
   })
 
@@ -83,6 +98,21 @@ describe('useNavBadges', () => {
     expect(result.current.sessions).toBeUndefined()
     expect(result.current.pipeline).toBeUndefined()
     expect(result.current.automations).toBeUndefined()
+    expect(result.current.roadmap).toBeUndefined()
+  })
+
+  // Finish-line row 3: the Triage section is gone and its queue is the Inbox
+  // scope of Roadmap, so the pending count badges Roadmap. The count is the
+  // whole app-wide queue (`useTriage()` with no project scope) — the same key
+  // the Inbox column reads when it is not narrowed, so nav and scope agree.
+  it('roadmap counts pending proposals, and an empty queue shows no badge', () => {
+    useTriage.mockReturnValue({ data: [proposal({ id: 'a' }), proposal({ id: 'b' })] })
+    const { result } = renderHook(() => useNavBadges())
+    expect(result.current.roadmap).toBe(2)
+
+    useTriage.mockReturnValue({ data: [] })
+    const { result: empty } = renderHook(() => useNavBadges())
+    expect(empty.current.roadmap).toBeUndefined()
   })
 
   it('settings is boolean-or-undefined, never a number', () => {

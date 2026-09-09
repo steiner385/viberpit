@@ -74,13 +74,12 @@ import { SubSessionView } from '@/components/session/SubSessionView'
 import { ReviewView } from '@/components/ReviewView'
 import { PipelineTab } from '@/pipeline/PipelineTab'
 import { AutomationsTab } from '@/automations/AutomationsTab'
-import { TriageInbox } from '@/triage/TriageInbox'
 import { InsightsView } from '@/components/InsightsView'
 import { RoadmapPage } from '@/features/roadmap/RoadmapPage'
 import { InitiativePage } from '@/features/roadmap/InitiativePage'
 import {
   CAPABILITY_ROUTE, INITIATIVE_ROUTE, INITIATIVES_PATH, PRODUCT_ROUTE,
-  productPath, roadmapPath,
+  inboxPath, productPath, roadmapPath,
 } from '@/features/roadmap/roadmapNavState'
 import { SettingsPage } from '@/features/settings/SettingsPage'
 import { SettingsIndexPage } from '@/features/settings/SettingsIndexPage'
@@ -166,10 +165,6 @@ function AutomationsPage() {
   )
 }
 
-function TriagePage() {
-  return <div className="flex flex-col h-full"><TriageInbox /></div>
-}
-
 function InsightsPage() {
   return <div className="p-4 overflow-y-auto h-full"><InsightsView /></div>
 }
@@ -247,6 +242,19 @@ function RedirectProject() {
 }
 
 /**
+ * `/triage[?projectSlug=x]` → the Inbox scope of Roadmap. Bookmarks only.
+ *
+ * Triage was its own nav section until finish-line row 3 made the queue a SCOPE
+ * of Roadmap. `?projectSlug=` was the only param the old page took, and it means
+ * exactly what `?product=` means in the scope, so the narrowed bookmark lands
+ * narrowed rather than on the whole queue.
+ */
+function RedirectTriage() {
+  const [params] = useSearchParams()
+  return <Navigate to={inboxPath({ product: params.get('projectSlug') })} replace />
+}
+
+/**
  * Legacy `/library?section=X` deep links → `/settings/X`. Moved here verbatim
  * from `App.tsx` (only the target spelling changed): the library section ids
  * were preserved when the Library tab became Settings sections, including its
@@ -314,7 +322,6 @@ const PAGES: RouteObject[] = [
   // Initiative detail keeps its own `/initiatives` prefix; `navDefForPath`'s
   // section alias is what puts it in the Roadmap section anyway.
   { path: INITIATIVE_ROUTE, element: <InitiativePage /> },
-  { path: NAV_BY_ID.triage.path, element: <TriagePage /> },
   { path: INSIGHTS_PATH, element: <InsightsPage /> },
   { path: `${SETTINGS_PATH}/:section`, element: <SettingsPage /> },
   // Bare `/settings` is a PAGE, not a redirect: on phone and tablet-portrait it
@@ -338,6 +345,8 @@ const PAGES: RouteObject[] = [
   { path: '/projects', element: <Navigate to={NAV_BY_ID.roadmap.path} replace /> },
   { path: '/projects/:slug', element: <RedirectProject /> },
   { path: INITIATIVES_PATH, element: <Navigate to={roadmapPath('initiatives')} replace /> },
+  // Finish-line row 3 folded the Triage section in as the Roadmap Inbox scope.
+  { path: '/triage', element: <RedirectTriage /> },
 
   { path: '*', element: <Navigate to={SESSIONS_PATH} replace /> },
 ]

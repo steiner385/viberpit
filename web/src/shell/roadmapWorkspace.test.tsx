@@ -3,8 +3,8 @@
  *
  * The subject is the GATE. `AppShellInner` calls the hook unconditionally (hooks
  * always are), so nothing about the code's shape stops `/pm/map` being polled
- * every 15 s on Sessions, Pipeline, Automations, Triage, Insights and Settings —
- * six sections that never render the Roadmap column — and on a wall display,
+ * every 15 s on Sessions, Pipeline, Automations, Insights and Settings —
+ * five sections that never render the Roadmap column — and on a wall display,
  * which has no `app.list` region at all. Only `enabled` stops it, and only a test
  * that watches the TRANSPORT can tell a disabled query from an enabled one: both
  * return `data: undefined` to the component.
@@ -55,7 +55,7 @@ import { ROADMAP } from '@/features/products/vocab'
 
 const get = vi.mocked(api.get)
 const askedForMap = () => get.mock.calls.some(([path]) => path === '/pm/map')
-const askedForTriage = () => get.mock.calls.some(([path]) => path.startsWith('/pm/triage'))
+const triageCalls = () => get.mock.calls.map(([path]) => path).filter((p) => p.startsWith('/pm/triage'))
 
 /** The shell has mounted and made its first round of requests. `/config` is
  *  asked for on every route by `useSessionsWorkspace`, so it is the settle
@@ -71,7 +71,7 @@ describe('the shell only funds the roadmap map where the column renders', () => 
     get.mockClear()
   })
 
-  it.each(['/sessions', '/pipeline', '/automations', '/triage', '/insights', '/settings/general'])(
+  it.each(['/sessions', '/pipeline', '/automations', '/insights', '/settings/general'])(
     'does not fetch the map on %s',
     async (path) => {
       renderApp({ path, mode: 'desktop' })
@@ -80,16 +80,21 @@ describe('the shell only funds the roadmap map where the column renders', () => 
     },
   )
 
-  // The Inbox scope's queue depth badges the Roadmap scope segment, so the
-  // workspace asks for it in EVERY scope — which is exactly why it needs the
-  // same section gate the map has. `/triage` is excluded: the standalone Triage
-  // page fetches the queue itself, and legitimately.
+  // The queue is fetched TWICE over, for two different readers, and only one of
+  // them is gated. Finish-line row 3 put the pending-proposal count on the
+  // Roadmap NAV badge, which every section renders, so one unscoped
+  // `/pm/triage` poll everywhere is the ruling rather than a leak — it is also
+  // what makes the nav badge and the Inbox scope badge agree, since both read
+  // the same unscoped key. What stays gated is the COLUMN's query: the
+  // `?projectSlug=` scoped fetch its rows come from only goes out where the
+  // column renders.
   it.each(['/sessions', '/pipeline', '/automations', '/insights', '/settings/general'])(
-    'does not fetch the triage queue on %s either',
+    'funds only the nav badge\'s unscoped triage poll on %s',
     async (path) => {
       renderApp({ path, mode: 'desktop' })
       await shellSettled()
-      expect(askedForTriage()).toBe(false)
+      await waitFor(() => expect(triageCalls()).toContain('/pm/triage'))
+      expect(triageCalls().filter((p) => p !== '/pm/triage')).toEqual([])
     },
   )
 
