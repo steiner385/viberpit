@@ -985,7 +985,6 @@ section h2 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); }
 
 .pm-contract { font-size: 12px; color: var(--muted); margin: 0 0 14px; padding: 0 2px; line-height: 1.5; }
 .pm-contract b { color: var(--text); }
-.pm-error { color: var(--fail); font-size: 13px; }
 
 /* two-column body: actions left, matrix right */
 .pm-body { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }

@@ -9,6 +9,8 @@ import { useState } from 'react'
 import { useIncidents, useIncidentAction } from '@/api/hooks'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import type { Incident, IncidentAction } from '@/api/sdlc'
+import { Badge, type Tone } from '@/ui/Badge'
+import { Input } from '@/ui/Input'
 
 /** Statuses that mean the incident is still someone's problem. `dismissed` and
  *  `intake` are settled — one by a human, one by SDLC Intake adopting it — so
@@ -32,6 +34,13 @@ const RULE_LABEL: Record<string, string> = {
   we2: '2 of 3 beyond 2σ',
   we3: '4 of 5 beyond 1σ',
   we4: '8 consecutive on one side',
+}
+
+/** Severity reads at a glance: 3σ is the tier that opens a PR, 1σ is a note. */
+const SIGMA_TONE: Record<number, Tone> = { 3: 'danger', 2: 'warning' }
+
+const STATUS_TONE: Record<string, Tone> = {
+  queued: 'accent', diagnosing: 'warning', intake: 'success',
 }
 
 /** Snooze options for `schedule`, in hours. */
@@ -58,55 +67,55 @@ function IncidentRow({ incident }: { incident: Incident }) {
     act.mutate({ id: incident.id, action, ...extra })
 
   return (
-    <li className="incident-row" aria-label={incident.summary ?? incident.key ?? incident.id}>
-      <div className="incident-head">
-        <span className={`incident-sigma incident-sigma-${incident.sigma ?? 0}`}>
-          {incident.sigma ?? '?'}σ
-        </span>
-        <div className="incident-ident">
-          <span className="incident-metric">{incident.metric ?? 'unknown metric'}</span>
-          {incident.repo && <span className="incident-repo">{incident.repo}</span>}
-          <span className={`incident-status incident-status-${incident.status}`}>
+    <li className="border-t border-edge py-2 first:border-t-0 first:pt-0"
+        aria-label={incident.summary ?? incident.key ?? incident.id}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone={SIGMA_TONE[incident.sigma ?? 0] ?? 'neutral'}>{incident.sigma ?? '?'}σ</Badge>
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="font-medium text-ink">{incident.metric ?? 'unknown metric'}</span>
+          {incident.repo && <span className="text-ink-muted">{incident.repo}</span>}
+          <Badge tone={STATUS_TONE[incident.status ?? ''] ?? 'neutral'}>
             {STATUS_LABEL[incident.status ?? ''] ?? incident.status}
-          </span>
+          </Badge>
         </div>
         {(incident.occurrences ?? 1) > 1 && (
-          <span className="incident-occurrences"
+          <span className="ml-auto text-xs tabular-nums text-ink-muted"
                 title="times this breach has been re-observed">
             ×{incident.occurrences}
           </span>
         )}
       </div>
 
-      <p className="incident-detail">
-        <strong>{formatValue(incident.value)}</strong>
+      <p className="mt-1.5 text-xs tabular-nums text-ink-muted">
+        <strong className="text-ink">{formatValue(incident.value)}</strong>
         {' vs baseline '}
         {formatValue(incident.baselineMean)} ± {formatValue(incident.baselineStddev)}
         {incident.baselineN ? ` (n=${incident.baselineN})` : ''}
         {incident.observedAt ? ` on ${incident.observedAt}` : ''}
         {incident.rule && (
-          <span className="incident-rule" title={`Western Electric rule ${incident.rule}`}>
+          <span className="ml-2 rounded-md border border-edge px-1.5"
+                title={`Western Electric rule ${incident.rule}`}>
             {RULE_LABEL[incident.rule] ?? incident.rule}
           </span>
         )}
       </p>
 
       {incident.status === 'dismissed' && incident.dismissedReason && (
-        <p className="incident-note">Dismissed: {incident.dismissedReason}</p>
+        <p className="mt-1.5 text-xs text-ink-muted">Dismissed: {incident.dismissedReason}</p>
       )}
       {incident.status === 'scheduled' && incident.scheduledFor && (
-        <p className="incident-note">
+        <p className="mt-1.5 text-xs text-ink-muted">
           Scheduled for {new Date(incident.scheduledFor).toLocaleString()}
         </p>
       )}
       {incident.status === 'intake' && incident.initiativeSlug && (
-        <p className="incident-note">
+        <p className="mt-1.5 text-xs text-ink-muted">
           Adopted as initiative <code>{incident.initiativeSlug}</code>
         </p>
       )}
 
       {!settled && (
-        <div className="incident-actions">
+        <div className="mt-2 flex flex-wrap items-center gap-2">
           <button type="button" className="btn-ghost" disabled={act.isPending}
                   onClick={() => run('triage_now')}
                   title="Queue this incident for SDLC Intake — it becomes an intent.md PR">
@@ -123,14 +132,15 @@ function IncidentRow({ incident }: { incident: Incident }) {
           ))}
           {dismissing ? (
             <form
-              className="incident-dismiss"
+              className="flex flex-wrap items-center gap-2"
               onSubmit={(e) => {
                 e.preventDefault()
                 if (!reason.trim()) return
                 run('dismiss', { reason: reason.trim() })
               }}
             >
-              <input aria-label="dismissal reason" placeholder="why is this not a problem?"
+              <Input size="sm" className="w-56" aria-label="dismissal reason"
+                     placeholder="why is this not a problem?"
                      value={reason} onChange={(e) => setReason(e.target.value)} />
               {/* The reason is required by the API, so the button gates on it here
                   rather than sending a request that can only 422. */}
@@ -153,7 +163,7 @@ function IncidentRow({ incident }: { incident: Incident }) {
       )}
 
       {act.isError && (
-        <p role="alert" className="init-error">
+        <p role="alert" className="text-sm text-danger">
           {extractMutationErrorMessage(act.error, 'Could not update this incident')}
         </p>
       )}
@@ -166,10 +176,12 @@ function IncidentRow({ incident }: { incident: Incident }) {
  * "no incidents" panel above the initiative board would be permanent furniture
  * on a healthy system, which is exactly when it has least to say.
  */
-export function IncidentQueue() {
+export function IncidentQueue({
+  repos, title = 'Control-band incidents',
+}: { repos?: readonly string[]; title?: string } = {}) {
   const { data: incidents, isError } = useIncidents()
   const [showSettled, setShowSettled] = useState(false)
-  const all = incidents ?? []
+  const all = (incidents ?? []).filter((i) => !repos || (i.repo !== null && repos.includes(i.repo)))
   const live = all.filter((i) => LIVE_STATUSES.has(i.status ?? ''))
   const settledCount = all.length - live.length
   const shown = showSettled ? all : live
@@ -180,11 +192,12 @@ export function IncidentQueue() {
   if (all.length === 0) return null
 
   return (
-    <section className="incident-queue" aria-label="Control-band incidents">
-      <div className="incident-queue-head">
-        <h3 className="incident-queue-title">
-          Control-band incidents
-          {live.length > 0 && <span className="incident-count">{live.length}</span>}
+    <section className="mb-4 rounded-md border border-edge bg-surface p-3"
+             aria-label={title}>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h3 className="m-0 flex items-center gap-2 font-medium text-ink">
+          {title}
+          {live.length > 0 && <Badge tone="warning" count={live.length} />}
         </h3>
         {settledCount > 0 && (
           <button type="button" className="btn-ghost"
@@ -194,8 +207,8 @@ export function IncidentQueue() {
         )}
       </div>
       {shown.length === 0
-        ? <p className="init-empty">No open incidents — every watched band is in control.</p>
-        : <ul className="incident-list">
+        ? <p className="text-sm text-ink-muted">No open incidents — every watched band is in control.</p>
+        : <ul className="list-none">
             {shown.map((i) => <IncidentRow key={i.id} incident={i} />)}
           </ul>}
     </section>

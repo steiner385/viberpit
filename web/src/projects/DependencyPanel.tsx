@@ -5,7 +5,7 @@ export function DependencyPanel({ slug }: { slug: string }) {
   // On query error, render a visible state instead of null-ing forever — the
   // 15s poll keeps retrying, so a transient blip self-heals (issue #973).
   if (isError) {
-    return <p className="text-sm pm-error">Failed to load dependencies.</p>
+    return <p className="text-sm text-danger">Failed to load dependencies.</p>
   }
   if (isLoading || !data) return null
   const active = data.edges.filter((e) => e.active)
@@ -21,7 +21,7 @@ export function DependencyPanel({ slug }: { slug: string }) {
     drift.checklistEpics.length && `${drift.checklistEpics.length} checklist epics`,
   ].filter(Boolean) as string[]
   if (active.length === 0 && badges.length === 0) {
-    return <p className="text-sm pm-muted">No mirrored dependencies.</p>
+    return <p className="text-sm text-ink-muted">No mirrored dependencies.</p>
   }
   return (
     <div className="space-y-2">
@@ -37,14 +37,14 @@ export function DependencyPanel({ slug }: { slug: string }) {
       {[...bySrc.entries()].map(([src, edges]) => (
         <div key={src} className="text-sm">
           <span className="font-medium">{src}</span>
-          <span className="pm-muted"> blocked by </span>
+          <span className="text-ink-muted"> blocked by </span>
           {edges.map((e, i) => (
             <span key={`${e.dst}:${e.source}`}>
               {i > 0 && ', '}
               <span className={e.dstState === 'closed' ? 'line-through opacity-60' : ''}>
                 {e.dst}
               </span>
-              <span className="text-xs pm-muted"> ({e.source})</span>
+              <span className="text-xs text-ink-muted"> ({e.source})</span>
             </span>
           ))}
         </div>

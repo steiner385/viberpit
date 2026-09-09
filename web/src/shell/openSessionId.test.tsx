@@ -2,19 +2,40 @@ import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { SESSION_ROUTE, SUBAGENT_ROUTE, ARCHIVED_SESSION_ROUTE, ARCHIVED_PATH, SESSIONS_PATH } from '@/session/sessionNavState'
+import {
+  CAPABILITY_ROUTE, INITIATIVE_ROUTE, PRODUCT_ROUTE, ROADMAP_PATH,
+} from '@/features/roadmap/roadmapNavState'
+import type { OpenItem } from './openItems'
 import { useOpenItem, useOpenSessionId } from './openSessionId'
+
+/** One line per `OpenItem` kind. Exhaustive on purpose: a new kind that this
+ *  probe cannot describe fails to compile rather than reading as `none`. */
+function describeItem(item: OpenItem | null): string {
+  if (!item) return 'none'
+  switch (item.kind) {
+    case 'session':
+    case 'archived': return `${item.kind}:${item.id}`
+    case 'product': return `product:${item.productSlug}`
+    case 'capability': return `capability:${item.productSlug}/${item.capSlug}`
+    case 'initiative': return `initiative:${item.initiativeSlug}`
+  }
+}
 
 function Probe() {
   const item = useOpenItem()
   const sessionId = useOpenSessionId()
-  return <div data-testid="probe">{`${item ? `${item.kind}:${item.id}` : 'none'}|${sessionId ?? '-'}`}</div>
+  return <div data-testid="probe">{`${describeItem(item)}|${sessionId ?? '-'}`}</div>
 }
 
 function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
-        {[SESSIONS_PATH, SESSION_ROUTE, SUBAGENT_ROUTE, ARCHIVED_PATH, ARCHIVED_SESSION_ROUTE, '/pipeline', '/projects/:id'].map((p) => (
+        {[
+          SESSIONS_PATH, SESSION_ROUTE, SUBAGENT_ROUTE, ARCHIVED_PATH, ARCHIVED_SESSION_ROUTE,
+          '/pipeline',
+          ROADMAP_PATH, PRODUCT_ROUTE, CAPABILITY_ROUTE, INITIATIVE_ROUTE,
+        ].map((p) => (
           <Route key={p} path={p} element={<Probe />} />
         ))}
       </Routes>
@@ -29,7 +50,13 @@ describe('useOpenItem', () => {
     ['/sessions/abc/agents/x', 'session:abc|abc'],
     ['/sessions/archived', 'none|-'],
     ['/pipeline', 'none|-'],
-    ['/projects/abc', 'none|-'],
+    // Roadmap detail routes report an open item and NEVER an open session: the
+    // resolver discriminates on `productSlug`/`capSlug`/`initiativeSlug`, so no
+    // roadmap URL can attach a live session runtime.
+    ['/roadmap', 'none|-'],
+    ['/roadmap/kindash', 'product:kindash|-'],
+    ['/roadmap/kindash/capabilities/tasks', 'capability:kindash/tasks|-'],
+    ['/initiatives/views', 'initiative:views|-'],
   ])('%s → %s', (path, expected) => {
     renderAt(path)
     expect(screen.getByTestId('probe')).toHaveTextContent(expected)

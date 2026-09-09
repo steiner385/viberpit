@@ -1,5 +1,6 @@
-import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { ListSearchInput } from './ListSearchInput'
+import { listControlClass } from './listControlStyles'
 import type { GroupBy, SortBy } from '@/session/ordering'
 import {
   NO_FILTERS, isFiltered,
@@ -59,12 +60,6 @@ const LIVE_SORT_OPTIONS: SelectOption<SortBy>[] = [
   { value: 'name', label: 'Name' },
 ]
 
-const selectClass = cn(
-  'text-xs rounded-md border border-gray-200 dark:border-gray-700',
-  'bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300',
-  'px-2 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
-  'disabled:opacity-60',
-)
 const labelClass = 'flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400'
 
 /** `<option>` value standing for "no filter". Safe as a sentinel because
@@ -108,7 +103,7 @@ function FilterSelect({ label, allLabel, value, options, onChange }: FilterSelec
       <span>{label}</span>
       <select
         aria-label={label}
-        className={selectClass}
+        className={listControlClass}
         value={value ?? ALL}
         disabled={offered.length === 0}
         onChange={(e) => onChange(e.target.value === ALL ? null : e.target.value)}
@@ -137,26 +132,13 @@ export function SessionListControls<G extends string = GroupBy, S extends string
 }: SessionListControlsProps<G, S>) {
   return (
     <div className="flex items-center gap-3 flex-wrap">
-      <div className="relative">
-        <input
-          type="search"
-          aria-label={searchAriaLabel}
-          placeholder={searchPlaceholder}
-          value={searchQuery}
-          onChange={(e) => onSearchChange(e.target.value)}
-          className={cn(selectClass, 'pr-7 w-44 [&::-webkit-search-cancel-button]:hidden')}
-        />
-        {searchQuery !== '' && (
-          <button
-            type="button"
-            aria-label="Clear search"
-            onClick={() => onSearchChange('')}
-            className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-          >
-            <X size={14} aria-hidden="true" />
-          </button>
-        )}
-      </div>
+      <ListSearchInput
+        value={searchQuery}
+        onChange={onSearchChange}
+        placeholder={searchPlaceholder}
+        ariaLabel={searchAriaLabel}
+        className="w-44"
+      />
       {filters && (
         <>
           <FilterSelect
@@ -205,7 +187,7 @@ export function SessionListControls<G extends string = GroupBy, S extends string
         <span>Group by</span>
         <select
           aria-label="Group by"
-          className={selectClass}
+          className={listControlClass}
           value={groupBy}
           onChange={(e) => onGroupByChange(e.target.value as G)}
         >
@@ -218,7 +200,7 @@ export function SessionListControls<G extends string = GroupBy, S extends string
         <span>Sort by</span>
         <select
           aria-label="Sort by"
-          className={selectClass}
+          className={listControlClass}
           value={sortBy}
           onChange={(e) => onSortByChange(e.target.value as S)}
         >

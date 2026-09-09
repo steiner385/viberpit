@@ -117,10 +117,15 @@ Session-workspace regions inside a Sessions page: `session.header` · `session.m
 
 | Variant | Pages |
 |---|---|
-| Standard | Automations, Initiatives, Products, Insights, Archived |
+| Standard | Automations, Roadmap, Insights, Archived |
 | Split | Settings |
 | Workspace | Sessions, Pipeline |
 | Reader | Archived review, sub-agent view |
+
+Roadmap is one row, not two: the roadmap drill-down spec (`2026-09-07-roadmap-drilldown-design.md`
+§4) folded the separate Products and Initiatives pages into a single Roadmap section at `/roadmap`,
+whose page is Standard and whose master list is the shell's `app.list` region (`hasList`), not a
+page variant.
 
 ### 4.4 Token families (names are the contract; values in sub-spec A)
 

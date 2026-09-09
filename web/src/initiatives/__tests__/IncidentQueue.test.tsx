@@ -43,7 +43,10 @@ describe('IncidentQueue', () => {
     const { container } = render(<IncidentQueue />, { wrapper })
     await waitFor(() => expect(mocked.fetchIncidents).toHaveBeenCalled())
     // A permanent "no incidents" panel would be furniture on a healthy system.
-    expect(container.querySelector('.incident-queue')).toBeNull()
+    // Asserted by ROLE, not by class: the queue's styling moved to design
+    // tokens when the Initiatives section's stylesheet went, and "renders
+    // nothing" is the claim.
+    expect(container.querySelector('section[aria-label="Control-band incidents"]')).toBeNull()
   })
 
   it('shows the breach with its severity, baseline arithmetic and rule in words', async () => {
@@ -141,5 +144,15 @@ describe('IncidentQueue', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Show 1 settled/ }))
     expect(screen.getByText('incident-cycle-time')).toBeInTheDocument()
     expect(screen.getByText('Adopted by intake')).toBeInTheDocument()
+  })
+
+  it('scopes to the given repos and takes a title', async () => {
+    mocked.fetchIncidents.mockResolvedValue([
+      { ...INCIDENT, id: 'i1', repo: 'a/b' },
+      { ...INCIDENT, id: 'i2', repo: 'c/d' },
+    ])
+    render(<IncidentQueue repos={['a/b']} title="Needs you" />, { wrapper })
+    expect(await screen.findByRole('region', { name: 'Needs you' })).toBeInTheDocument()
+    expect(screen.getAllByRole('listitem')).toHaveLength(1)
   })
 })

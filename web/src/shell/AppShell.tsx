@@ -15,6 +15,7 @@ import { RenameDialog } from '@/features/sessions/RenameDialog'
 import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
 import { useSessionListState } from '@/features/sessions/useSessionListState'
 import type { SessionListColumnProps } from '@/features/sessions/SessionListColumn'
+import { useRoadmapWorkspace } from '@/features/roadmap/useRoadmapWorkspace'
 import { isPendingSessionId } from '@/lib/pendingSessions'
 import { setServerSttEnabled } from '@/lib/sttCapability'
 import { textEntryClaimsKey } from '@/lib/detachKeyGuard'
@@ -241,6 +242,13 @@ function AppShellInner() {
   const shows = (r: RegionId) => REGION_VISIBILITY[r](region)
 
   const workspace = useSessionsWorkspace(openDrawer)
+  // The hook always runs (hooks do); its QUERY is gated on the section, so
+  // `/pm/map`'s 15 s poll does not fund a list column the other six sections
+  // never render — nor a wall display, which `KioskPageGuard` has already
+  // redirected off Roadmap and which has no `app.list` region at all. On
+  // Roadmap it is the same `QK.roadmapMap` entry `RoadmapPage` reads, so the
+  // page adds no second fetch.
+  const roadmap = useRoadmapWorkspace(def?.id === 'roadmap')
 
   // Kiosk enlarges the whole type scale by overriding `--scale` on `<html>`.
   // It goes on the document element rather than on the shell's root `<div>`
@@ -343,7 +351,9 @@ function AppShellInner() {
           )}
         >
           {listVisible && (
-            <ContextList column={listColumnFor(def?.id, { sessions: workspace.list })} />
+            <ContextList
+              column={listColumnFor(def?.id, { sessions: workspace.list, roadmap: roadmap.list })}
+            />
           )}
           <PageHost
             pageHidden={pageHidden}

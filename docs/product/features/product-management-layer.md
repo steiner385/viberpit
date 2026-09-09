@@ -3,7 +3,7 @@ slug: product-management-layer
 title: Product-Management Layer
 state: delivering
 links:
-  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/automations/pm_triage.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/projects/ProjectsTab.tsx, web/src/triage/TriageInbox.tsx, web/src/initiatives/InitiativesTab.tsx]
+  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/automations/pm_triage.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/triage/TriageInbox.tsx]
   prs: ['#866', '#879', '#893', '#897', '#899', '#1327']
 ---
 
@@ -67,6 +67,31 @@ Two Phase-3 design points worth knowing before changing this code:
   for "which project owns this repo", shared by the API and the orchestrator. Unscoped, a drift
   accept binds a work item to another *product's* feature.
 
+**The surface is one Roadmap section, not a Products tab and an Initiatives tab.** As of the
+roadmap drill-down spec (`docs/superpowers/specs/2026-09-07-roadmap-drilldown-design.md` §4, its
+own phase 3 — numbering independent of this doc's PM-layer phases; finish-line spec
+`2026-09-08-finish-line-persona-modes-design.md` §4), everything this capability renders lives
+under the nav section `roadmap`, on the same master/detail chassis as Sessions:
+
+- `/roadmap` — the portfolio. The list column carries two scopes, **Map** (the product →
+  capability tree, from `GET /api/pm/map`) and **Initiatives** (every initiative, grouped by
+  stage); the detail pane is the portfolio's Needs you / Ranked / All initiatives tabs.
+- `/roadmap/:productSlug` — one product: overview, in flight, needs you, ranked, dependencies.
+  This is where the onboarding wizard and the dependency panel are mounted.
+- `/roadmap/:productSlug/capabilities/:capSlug` — one capability, with its sub-capabilities,
+  in-flight initiatives and issues.
+- `/initiatives/:initiativeSlug` — one initiative (track, epic, sessions, capabilities, and the
+  Advance human gate). It keeps its own prefix and is claimed for the Roadmap section by a nav
+  alias, so the list column stays beside it.
+- Tabs are URL state (`?tab=`), so every level is linkable.
+- `/projects` → `/roadmap`, `/projects/:slug` → `/roadmap/:slug` and `/initiatives` →
+  `/roadmap?scope=initiatives` redirect; `ProjectsTab`, `InitiativesTab` and their css are deleted.
+- Triage remains its own nav section (`/triage`); folding it onto the chassis is roadmap-spec
+  phase 6.
+
+Still owed by that spec: issue leaves and inline overlay edits (phase 4), map-changes PRs
+(phase 5), triage on the chassis and the Queue scope (phase 6).
+
 **Phase 4 status:** superseded rather than pending. RICE→Score and the global queue landed in
 #1085, the portfolio UI is tracked as #993, and spec 003 (`specs/003-gh-projects-integration`)
 states it supersedes the freestanding Phase 4 model. The one piece 003 did not absorb is the
@@ -109,10 +134,13 @@ origins' audited engine ceilings and their operator-triggered `modes = ()` decla
 (`rice_score` + `validate_rice` — the RICE formula and its input bounds in one place);
 `server/api/pm.py` (project registry, sync-now, edges, `/onboarding`, `/propose-map`, `/classify`,
 `/triage` accept/reject/accept-bulk, `/work-items/{id}/overlay`);
-`web/src/projects/OnboardingWizard.tsx`, `web/src/projects/ProjectsTab.tsx`,
+`web/src/features/roadmap/RoadmapPage.tsx` (the portfolio / product / capability detail levels,
+with `OnboardingWizard` and `DependencyPanel` mounted as product tabs),
+`web/src/features/roadmap/RoadmapListColumn.tsx` (the Map and Initiatives list scopes),
+`web/src/features/roadmap/InitiativePage.tsx`, `web/src/projects/OnboardingWizard.tsx`,
 `web/src/triage/TriageInbox.tsx` + `keyboardState.ts` (the keyboard-first inbox: `j/k/a/e/r/x/A`,
 optimistic accept, cursor anchored to a proposal id so a queue that reorders under the user cannot
-misdirect a keystroke), `web/src/initiatives/InitiativesTab.tsx`;
+misdirect a keystroke);
 `specs/001-ccswitch-web/spec.md` (§§3–7). PRs: #866 (design spec), #879 (phase 2–4 plans),
 #893 (Phase 1), #897 (Phase 2), #899 (remote-mode seam fix), #1327 (Phase 3),
 #1268/#1269 (Codex parity for the onboarding, critic and classification sessions).
