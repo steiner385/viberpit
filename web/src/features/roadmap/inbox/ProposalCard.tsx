@@ -14,13 +14,14 @@
  * from `roadmapTier.ts`, the column's one source of truth for what a row's
  * urgency looks like.
  */
+import { useEffect, useRef } from 'react'
 import { Check, Inbox } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { CardFrame } from '@/components/card/CardFrame'
 import { Badge } from '@/ui/Badge'
 import type { RoadmapTier } from '@/api/roadmap'
 import type { TriageProposal } from '@/api/triage'
-import { TIER_TONE } from '../roadmapTier'
+import { TIER_ACCENT, TIER_TONE } from '../roadmapTier'
 import { TierDot } from '../rows/TierDot'
 
 /** The classifier's confidence, in the roadmap's tier words. An unknown level
@@ -49,8 +50,21 @@ export function ProposalCard({
   const name = p.title ?? p.id
   const tier = CONF_TIER[p.confidenceLevel ?? 'low'] ?? 'idle'
   const scores = [p.reach, p.impact, p.effort, p.confidence].map((v) => v ?? '—')
+
+  // A cursor the user cannot SEE must not be the one a keystroke acts on: `a`
+  // is one press from an accept that only an undo toast takes back, and after
+  // enough `j` the highlighted row is below the fold of the list's scroll band.
+  // `CardFrame` scrolls on `selected` — the URL selection — which is a
+  // different thing entirely, so the cursor needs its own.
+  const rowRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    // jsdom (and any other non-layout host) implements no scrolling at all.
+    if (cursor && rowRef.current?.scrollIntoView) rowRef.current.scrollIntoView({ block: 'nearest' })
+  }, [cursor])
+
   return (
     <div
+      ref={rowRef}
       data-testid={`row-proposal:${p.id}`}
       role="listitem"
       // The cursor is not the selection: `aria-current` says "the keys act
@@ -61,7 +75,10 @@ export function ProposalCard({
       <CardFrame
         id={`proposal-${p.id}`}
         openLabel={`Open proposal ${name}`}
-        railClass={checked ? 'bg-accent' : 'bg-neutral/40'}
+        // The rail is the row's TIER everywhere else in this column; `checked`
+        // is carried by the tick's `aria-pressed` and fill, which is the only
+        // affordance a screen reader can hear anyway.
+        railClass={TIER_ACCENT[tier].rail}
         selected={selected}
         listMode={false}
         focusable

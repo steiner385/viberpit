@@ -8,7 +8,7 @@
  * user types into the list's own search box, and `A` (Shift+a) turns a capital
  * letter into an irreversible bulk accept.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { TriageProposal } from '@/api/triage'
@@ -52,11 +52,22 @@ function mount(over: Partial<React.ComponentProps<typeof InboxScopeBody>> = {}) 
   return { onOpen, onClearProduct }
 }
 
+// jsdom implements no scrolling, so the row's scroll-into-view is only
+// observable as a stub. It is also the only way to assert the guard that makes
+// `a` safe (see the cursor test below).
+const scrollIntoView = vi.fn()
+
 describe('InboxScopeBody', () => {
   beforeEach(() => {
     accept.mockReset(); reject.mockReset(); bulk.mockReset()
     overlayOpen.mockReturnValue(false)
     localStorage.clear()
+    scrollIntoView.mockReset()
+    Element.prototype.scrollIntoView = scrollIntoView
+  })
+
+  afterEach(() => {
+    Reflect.deleteProperty(Element.prototype, 'scrollIntoView')
   })
 
   it('groups by product by default and opens a row', () => {
@@ -89,12 +100,28 @@ describe('InboxScopeBody', () => {
     expect(reject).toHaveBeenCalledWith({ id: 'First' })
   })
 
+  it('scrolls the cursor row into view — `a` must never accept a row off-screen', () => {
+    mount()
+    scrollIntoView.mockReset()
+    fireEvent.keyDown(window, { key: 'j' })
+    // The row `j` landed on is the one that scrolled, and it is the one `a`
+    // would accept.
+    const row = screen.getByTestId('row-proposal:Third')
+    expect(row).toHaveAttribute('aria-current', 'true')
+    expect(scrollIntoView).toHaveBeenCalled()
+    expect(scrollIntoView.mock.instances).toContain(row)
+  })
+
   it('x selects and A accepts exactly the selection through the bulk bar', () => {
     mount()
     fireEvent.keyDown(window, { key: 'x' })
     fireEvent.keyDown(window, { key: 'j' })
     fireEvent.keyDown(window, { key: 'x' })
     expect(screen.getByText('2 selected')).toBeInTheDocument()
+    // In the pinned controls strip, not inside the scroll band — a bulk bar
+    // below the rows scrolls away from the selection that summoned it.
+    expect(screen.getByTestId('session-list-controls'))
+      .toContainElement(screen.getByRole('region', { name: 'Bulk actions' }))
     fireEvent.click(screen.getByRole('button', { name: /Accept selected/ }))
     expect(bulk).toHaveBeenCalledWith(expect.arrayContaining([expect.any(String)]), expect.anything())
     expect(bulk.mock.calls[0][0]).toEqual(['First', 'Third'])
@@ -160,9 +187,13 @@ describe('InboxScopeBody', () => {
     expect(onClearProduct).not.toHaveBeenCalled()
   })
 
-  it('names the product in the empty state when the inbox is scoped', () => {
-    mount({ proposals: [], isLoading: false, product: 'kindash' })
+  it('names the product in the empty state, and the way out is still there', () => {
+    const { onClearProduct } = mount({ proposals: [], isLoading: false, product: 'kindash' })
     expect(screen.getByText(/Inbox zero for kindash/)).toBeInTheDocument()
+    // An empty SCOPED inbox is exactly when the widening control matters most:
+    // without it "Inbox zero for kindash" is a dead end.
+    fireEvent.click(screen.getByRole('button', { name: 'Show every product' }))
+    expect(onClearProduct).toHaveBeenCalled()
   })
 
   it('shows a skeleton while loading', () => {

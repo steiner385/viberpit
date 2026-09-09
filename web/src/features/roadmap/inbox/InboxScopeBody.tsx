@@ -232,6 +232,22 @@ export function InboxScopeBody({
             {' '}<Kbd keys="e" /> edit · <Kbd keys="r" /> reject ·
             {' '}<Kbd keys="x" /> select · <Kbd keys="A" /> accept selected
           </p>
+          {/* In the controls strip, not below the rows — the same place both
+              other bulk-selecting lists put it (`SessionList`,
+              `ArchivedSessionList`). Inside the scroll band it scrolls away
+              from the selection that summoned it. */}
+          {state.selected.size > 0 && (
+            <BulkActionBar
+              label={`${state.selected.size} selected`}
+              onClear={() => dispatch({ type: 'clearSelection' })}
+            >
+              {/* `lg` is the only size that carries the 44px touch target,
+                  which is what `BulkActionBar`'s own Clear button pins to. */}
+              <Button type="button" variant="secondary" size="lg" onClick={acceptSelected} disabled={bulk.isPending}>
+                Accept selected ({state.selected.size})
+              </Button>
+            </BulkActionBar>
+          )}
         </div>
       }
     >
@@ -263,18 +279,6 @@ export function InboxScopeBody({
           />
         )}
       />
-      {state.selected.size > 0 && (
-        <BulkActionBar
-          label={`${state.selected.size} selected`}
-          onClear={() => dispatch({ type: 'clearSelection' })}
-        >
-          {/* `lg` is the only size that carries the 44px touch target, which is
-              what `BulkActionBar`'s own Clear button pins itself to. */}
-          <Button type="button" variant="secondary" size="lg" onClick={acceptSelected} disabled={bulk.isPending}>
-            Accept selected ({state.selected.size})
-          </Button>
-        </BulkActionBar>
-      )}
     </ScopeBody>
   )
 }
