@@ -30,6 +30,16 @@ vi.mock('@/api/client', async (importOriginal) => {
         if (path === '/pm/map') return MAP
         if (path === '/pm/queue') return { entries: [], skipped: 0, generatedAt: 'now' }
         if (path === '/sdlc/triage') return { items: [] }
+        // The initiative page names itself from THIS payload, so the row below
+        // asserts the fetched title rather than the slug in the URL.
+        if (path.startsWith('/sdlc/initiatives/')) {
+          return {
+            slug: 'views', title: 'Use-case-first task views', stage: 'build', status: 'active',
+            repo: 'cairnea/KinDash', origin: null, originRef: null, epicRepo: null, epicNumber: null,
+            createdAt: null, updatedAt: null, artifacts: [], epic: null, projectSlug: 'kindash',
+            primaryCapability: null, capabilities: [], buildSessions: [], nextAction: { type: 'unknown' },
+          }
+        }
         if (path.startsWith('/pm/leaves')) return { items: [] }
         // The specific `/pm/projects/…` shapes come BEFORE the generic one:
         // `startsWith('/pm/projects/')` would otherwise swallow them. `/deps`
@@ -105,6 +115,7 @@ const PAGES: readonly PageContractRow[] = [
   { nav: 'roadmap',  path: '/roadmap',                             variant: 'standard', title: 'Roadmap' },
   { nav: 'roadmap',  path: '/roadmap/kindash',                     variant: 'standard', title: 'KinDash' },
   { nav: 'roadmap',  path: '/roadmap/kindash/capabilities/tasks',  variant: 'standard', title: 'Tasks' },
+  { nav: 'roadmap',  path: '/initiatives/views',                   variant: 'standard', title: 'Use-case-first task views' },
   { nav: 'triage',   path: '/triage',                              variant: 'standard', title: 'Triage' },
 ]
 

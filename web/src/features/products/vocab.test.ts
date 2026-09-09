@@ -43,11 +43,21 @@ describe('vocab', () => {
   })
 })
 
-import { ROADMAP, TIER_LABEL, reasonLabel } from './vocab'
+import { NEXT_ACTION_LABEL, ROADMAP, TIER_LABEL, nextActionLabel, reasonLabel } from './vocab'
 
 it('names the roadmap surfaces and every tier', () => {
   expect(ROADMAP.label).toBe('Roadmap')
   expect(Object.keys(TIER_LABEL)).toEqual(['needs-you', 'blocked', 'in-flight', 'proposed', 'live', 'idle'])
   expect(reasonLabel('advance')).toBe('Ready to advance')
   expect(reasonLabel(null)).toBe('')
+})
+
+it('says every next action as a sentence, including the ones with nothing to say', () => {
+  for (const t of ['propose', 'await_approval', 'handoff_to_build', 'done', 'needs_human', 'unknown']) {
+    expect(NEXT_ACTION_LABEL[t]).toMatch(/\.$/)
+  }
+  expect(nextActionLabel('handoff_to_build')).toBe('Ready to hand off to build.')
+  // An engine that grows a type the web has not learned yet shows the raw type,
+  // never a blank line.
+  expect(nextActionLabel('brand_new')).toBe('brand_new')
 })

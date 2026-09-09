@@ -105,3 +105,16 @@ export const REASON_LABEL: Record<string, string> = {
 
 export const reasonLabel = (reason: string | null | undefined): string =>
   reason ? (REASON_LABEL[reason] ?? reason) : ''
+
+/** What the stage engine says happens next on one initiative
+ *  (`nextAction.type`, detail endpoint only), as a sentence a human can act on. */
+export const NEXT_ACTION_LABEL: Record<string, string> = {
+  propose: 'The synthesizer will propose the next artifact.',
+  await_approval: 'An artifact PR is waiting for your review.',
+  handoff_to_build: 'Ready to hand off to build.',
+  done: 'Nothing left to do.',
+  needs_human: 'Needs a human decision.',
+  unknown: 'No next action yet.',
+}
+
+export const nextActionLabel = (type: string | null | undefined) => lookup(NEXT_ACTION_LABEL, type)
