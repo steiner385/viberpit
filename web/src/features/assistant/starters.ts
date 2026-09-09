@@ -21,18 +21,19 @@ export const STARTERS: Record<NavId, readonly string[]> = {
     'Which automations are failing?',
     'What is the PR doctor proposing?',
   ],
-  initiatives: [
+  // One section, so one set: the Products and Initiatives chips merged when
+  // Roadmap Phase 3 merged the sections. Every string here must also be a
+  // prompt in the assistant eval corpus (`starters.coverage.test.ts`).
+  roadmap: [
+    'Which project has the most open work?',
     'Which initiatives have no active session?',
     'Summarize initiative progress',
+    'What is blocked by a dependency?',
+    "What's at the top of the priority queue?",
   ],
   triage: [
     "What's waiting in the triage inbox?",
     'Which project has the most open work?',
-  ],
-  projects: [
-    'Which project has the most open work?',
-    'What is blocked by a dependency?',
-    "What's at the top of the priority queue?",
   ],
   insights: [
     'What regressed in CI recently?',

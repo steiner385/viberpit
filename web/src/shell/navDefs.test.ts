@@ -3,14 +3,17 @@ import { describe, it, expect } from 'vitest'
 import { NAV_DEFS, NAV_BY_ID, navDefForPath, settingsSectionPath } from './navDefs'
 
 describe('navDefs', () => {
-  it('preserves the legacy tab order and labels', () => {
+  // Was 'preserves the legacy tab order and labels'. The legacy order survived
+  // until Roadmap Phase 3 collapsed the Initiatives and Products tabs into one
+  // `roadmap` section, so what is pinned now is the CURRENT order, by equality:
+  // adding or renaming a section has to edit this line and say so.
+  it('pins the section order and labels', () => {
     expect(NAV_DEFS.map((d) => [d.id, d.label])).toEqual([
       ['sessions', 'Sessions'],
       ['pipeline', 'Pipeline'],
       ['automations', 'Automations'],
-      ['initiatives', 'Initiatives'],
+      ['roadmap', 'Roadmap'],
       ['triage', 'Triage'],
-      ['projects', 'Products'],
       ['insights', 'Insights'],
       ['settings', 'Settings'],
     ])
@@ -43,8 +46,16 @@ describe('navDefs', () => {
     }
   })
 
-  it('only Sessions owns a list column', () => {
-    expect(NAV_DEFS.filter((d) => d.hasList).map((d) => d.id)).toEqual(['sessions'])
+  it('Sessions and Roadmap own list columns', () => {
+    expect(NAV_DEFS.filter((d) => d.hasList).map((d) => d.id)).toEqual(['sessions', 'roadmap'])
+  })
+
+  // One path, two spellings: the nav row and `roadmapNavState`'s `ROADMAP_PATH`,
+  // which every roadmap link and route pattern is built from. If they drift, the
+  // rail item points at a URL the route table does not declare.
+  it('the roadmap section path is the one roadmapNavState builds from', async () => {
+    const { ROADMAP_PATH } = await import('@/features/roadmap/roadmapNavState')
+    expect(NAV_BY_ID.roadmap.path).toBe(ROADMAP_PATH)
   })
 
   /**
@@ -94,6 +105,18 @@ describe('navDefForPath', () => {
 
   it('returns null for an unknown path', () => {
     expect(navDefForPath('/nope')).toBeNull()
+  })
+
+  // `/initiatives/:slug` is a Roadmap page that does not live under `/roadmap`
+  // (roadmap spec §4 keeps the initiative prefix). Without the alias the rail
+  // highlights nothing there and the Roadmap list column disappears beside it.
+  it('resolves an aliased path to the section it belongs to', () => {
+    expect(navDefForPath('/initiatives/views')?.id).toBe('roadmap')
+    expect(navDefForPath('/initiatives')?.id).toBe('roadmap')
+  })
+
+  it('does not alias a path that merely shares the alias prefix string', () => {
+    expect(navDefForPath('/initiativesfoo')).toBeNull()
   })
 })
 

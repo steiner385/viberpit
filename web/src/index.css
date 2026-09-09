@@ -71,8 +71,8 @@
   --fs-lg: calc(1.125rem * var(--scale));   --fs-xl: calc(1.25rem * var(--scale));
   --fs-2xl: calc(1.5rem * var(--scale));
 
-  /* Legacy aliases — consumed by plotroom.css / projects.css / initiatives.css
-     and a few settings sections until sub-spec C removes the last use. */
+  /* Legacy aliases — consumed by plotroom.css and a few settings sections
+     until sub-spec C removes the last use. */
   --bg: var(--t-canvas); --surface: var(--t-surface); --text: var(--t-ink);
   --muted: var(--t-ink-muted); --border: var(--t-edge); --accent: var(--t-accent);
   --done: var(--t-success); --fail: var(--t-danger); --amber: var(--t-warning); --purple: var(--t-info);

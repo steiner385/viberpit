@@ -15,6 +15,7 @@ import { RenameDialog } from '@/features/sessions/RenameDialog'
 import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
 import { useSessionListState } from '@/features/sessions/useSessionListState'
 import type { SessionListColumnProps } from '@/features/sessions/SessionListColumn'
+import { useRoadmapWorkspace } from '@/features/roadmap/useRoadmapWorkspace'
 import { isPendingSessionId } from '@/lib/pendingSessions'
 import { setServerSttEnabled } from '@/lib/sttCapability'
 import { textEntryClaimsKey } from '@/lib/detachKeyGuard'
@@ -241,6 +242,10 @@ function AppShellInner() {
   const shows = (r: RegionId) => REGION_VISIBILITY[r](region)
 
   const workspace = useSessionsWorkspace(openDrawer)
+  // Mounted app-wide, exactly like `useSessions`: `useRoadmapMap` polls every
+  // 15 s while mounted, and it is the SAME query the Roadmap page reads, so the
+  // page adds no second fetch.
+  const roadmap = useRoadmapWorkspace()
 
   // Kiosk enlarges the whole type scale by overriding `--scale` on `<html>`.
   // It goes on the document element rather than on the shell's root `<div>`
@@ -343,7 +348,9 @@ function AppShellInner() {
           )}
         >
           {listVisible && (
-            <ContextList column={listColumnFor(def?.id, { sessions: workspace.list })} />
+            <ContextList
+              column={listColumnFor(def?.id, { sessions: workspace.list, roadmap: roadmap.list })}
+            />
           )}
           <PageHost
             pageHidden={pageHidden}

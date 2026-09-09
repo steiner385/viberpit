@@ -83,7 +83,7 @@ describe('OnboardingWizard', () => {
     fireEvent.click(await screen.findByRole('button', { name: /propose capability map/i }))
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('nope')
-    expect(alert).toHaveClass('pm-error')
+    expect(alert).toHaveClass('text-danger')
   })
 
   it('renders the server error inline under Classify backlog when it fails', async () => {
@@ -98,7 +98,7 @@ describe('OnboardingWizard', () => {
     fireEvent.click(await screen.findByRole('button', { name: /classify backlog/i }))
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('nope')
-    expect(alert).toHaveClass('pm-error')
+    expect(alert).toHaveClass('text-danger')
   })
 
   it('await_map_pr: links to the PR search, offers Map merged and Propose again', async () => {

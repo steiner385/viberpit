@@ -74,10 +74,14 @@ import { SubSessionView } from '@/components/session/SubSessionView'
 import { ReviewView } from '@/components/ReviewView'
 import { PipelineTab } from '@/pipeline/PipelineTab'
 import { AutomationsTab } from '@/automations/AutomationsTab'
-import { InitiativesTab } from '@/initiatives/InitiativesTab'
 import { TriageInbox } from '@/triage/TriageInbox'
-import { ProjectsTab } from '@/projects/ProjectsTab'
 import { InsightsView } from '@/components/InsightsView'
+import { RoadmapPage } from '@/features/roadmap/RoadmapPage'
+import { InitiativePage } from '@/features/roadmap/InitiativePage'
+import {
+  CAPABILITY_ROUTE, INITIATIVE_ROUTE, INITIATIVES_PATH, PRODUCT_ROUTE,
+  productPath, roadmapPath,
+} from '@/features/roadmap/roadmapNavState'
 import { SettingsPage } from '@/features/settings/SettingsPage'
 import { SettingsIndexPage } from '@/features/settings/SettingsIndexPage'
 
@@ -162,16 +166,8 @@ function AutomationsPage() {
   )
 }
 
-function InitiativesPage() {
-  return <div className="flex flex-col h-full"><InitiativesTab /></div>
-}
-
 function TriagePage() {
   return <div className="flex flex-col h-full"><TriageInbox /></div>
-}
-
-function ProjectsPage() {
-  return <div className="flex flex-col h-full"><ProjectsTab /></div>
 }
 
 function InsightsPage() {
@@ -243,6 +239,13 @@ function RedirectLegacyArchivedSession() {
   )
 }
 
+/** `/projects/:slug` → `/roadmap/:slug`. Products became the Roadmap section's
+ *  top level in Phase 3; every bookmark of a product page lands on it. */
+function RedirectProject() {
+  const { slug } = useParams()
+  return <Navigate to={slug ? productPath(slug) : NAV_BY_ID.roadmap.path} replace />
+}
+
 /**
  * Legacy `/library?section=X` deep links → `/settings/X`. Moved here verbatim
  * from `App.tsx` (only the target spelling changed): the library section ids
@@ -303,9 +306,15 @@ const PAGES: RouteObject[] = [
   { path: SUBAGENT_ROUTE, element: <SubAgentPage /> },
   { path: NAV_BY_ID.pipeline.path, element: <PipelinePage /> },
   { path: NAV_BY_ID.automations.path, element: <AutomationsPage /> },
-  { path: NAV_BY_ID.initiatives.path, element: <InitiativesPage /> },
+  // One page at three detail levels — portfolio, product, capability — chosen
+  // from the params by `roadmapOpenItem`, never from the path.
+  { path: NAV_BY_ID.roadmap.path, element: <RoadmapPage /> },
+  { path: PRODUCT_ROUTE, element: <RoadmapPage /> },
+  { path: CAPABILITY_ROUTE, element: <RoadmapPage /> },
+  // Initiative detail keeps its own `/initiatives` prefix; `navDefForPath`'s
+  // section alias is what puts it in the Roadmap section anyway.
+  { path: INITIATIVE_ROUTE, element: <InitiativePage /> },
   { path: NAV_BY_ID.triage.path, element: <TriagePage /> },
-  { path: NAV_BY_ID.projects.path, element: <ProjectsPage /> },
   { path: INSIGHTS_PATH, element: <InsightsPage /> },
   { path: `${SETTINGS_PATH}/:section`, element: <SettingsPage /> },
   // Bare `/settings` is a PAGE, not a redirect: on phone and tablet-portrait it
@@ -323,6 +332,12 @@ const PAGES: RouteObject[] = [
   { path: '/accounts', element: <Navigate to={settingsSectionPath('accounts')} replace /> },
   { path: '/automation', element: <Navigate to={settingsSectionPath('automation')} replace /> },
   { path: '/library', element: <LibraryRedirect /> },
+  // Roadmap Phase 3 folded the Products and Initiatives sections into `/roadmap`.
+  // The Initiatives tab becomes the list column's Initiatives SCOPE, so its
+  // bookmark lands there rather than on the Map.
+  { path: '/projects', element: <Navigate to={NAV_BY_ID.roadmap.path} replace /> },
+  { path: '/projects/:slug', element: <RedirectProject /> },
+  { path: INITIATIVES_PATH, element: <Navigate to={roadmapPath('initiatives')} replace /> },
 
   { path: '*', element: <Navigate to={SESSIONS_PATH} replace /> },
 ]

@@ -11,7 +11,7 @@
  * Later PRs add rows rather than files.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 
 // Same arrangement as `SettingsPage.test.tsx`: the transport is faked and the
 // real hooks run against it, so a page that starts asking for something new
@@ -19,6 +19,7 @@ import { screen } from '@testing-library/react'
 vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>()
   const { appSettings } = await import('@/test/factories')
+  const { MAP } = await import('@/features/roadmap/__fixtures__/map')
   return {
     ...actual,
     api: {
@@ -26,6 +27,30 @@ vi.mock('@/api/client', async (importOriginal) => {
         if (path === '/fleet/hosts') return { hosts: [] }
         if (path === '/config') return { adoptionEnabled: false }
         if (path === '/settings') return appSettings()
+        if (path === '/pm/map') return MAP
+        if (path === '/pm/queue') return { entries: [], skipped: 0, generatedAt: 'now' }
+        if (path === '/sdlc/triage') return { items: [] }
+        if (path.startsWith('/pm/leaves')) return { items: [] }
+        // The two specific `/pm/projects/…` shapes come BEFORE the generic one:
+        // `startsWith('/pm/projects/')` would otherwise swallow both.
+        if (path.startsWith('/pm/projects') && path.endsWith('/onboarding')) {
+          return {
+            state: 'live',
+            action: { type: 'none' },
+            counts: {
+              repoCount: 0, backfillDoneCount: 0, featureCount: 0,
+              openUnclassifiedCount: 0, pendingProposalCount: 0,
+            },
+            mapPr: null,
+          }
+        }
+        if (path.startsWith('/pm/projects/')) {
+          return {
+            id: 'p', slug: 'kindash', name: 'KinDash', repos: [], edges: [], portfolioTags: [],
+            description: null, status: null, onboardingState: 'live',
+            createdAt: null, updatedAt: null, featureCount: 0, workItemCount: 0,
+          }
+        }
         return []
       }),
       post: vi.fn(async () => ({})),
@@ -64,10 +89,11 @@ interface PageContractRow {
 
 /** Pages that conform to sub-spec C §2.3. Add a row when a page migrates. */
 const PAGES: readonly PageContractRow[] = [
-  { nav: 'settings',    path: '/settings/general', variant: 'split',    title: 'Settings' },
-  { nav: 'initiatives', path: '/initiatives',      variant: 'standard', title: 'Initiatives' },
-  { nav: 'projects',    path: '/projects',         variant: 'standard', title: 'Products' },
-  { nav: 'triage',      path: '/triage',           variant: 'standard', title: 'Triage' },
+  { nav: 'settings', path: '/settings/general',                    variant: 'split',    title: 'Settings' },
+  { nav: 'roadmap',  path: '/roadmap',                             variant: 'standard', title: 'Roadmap' },
+  { nav: 'roadmap',  path: '/roadmap/kindash',                     variant: 'standard', title: 'KinDash' },
+  { nav: 'roadmap',  path: '/roadmap/kindash/capabilities/tasks',  variant: 'standard', title: 'Tasks' },
+  { nav: 'triage',   path: '/triage',                              variant: 'standard', title: 'Triage' },
 ]
 
 describe('page contract', () => {
@@ -84,10 +110,23 @@ describe('page contract', () => {
       it(`${page.nav} × ${mode}: one h1, document.title, variant, no horizontal scroll`, async () => {
         renderApp({ path: page.path, mode })
 
-        const h1s = await screen.findAllByRole('heading', { level: 1 })
+        // Two deviations from a plain `findAllByRole`, both about WHEN and WHERE
+        // the heading is readable rather than about the contract itself:
+        //
+        // · by NAME — a page whose title comes from a query (Roadmap names the
+        //   product or capability the URL points at) renders its `h1` at once
+        //   with a slug placeholder, so waiting on the level alone resolves
+        //   before the real title lands and the assertion reads the placeholder.
+        // · `hidden: true` — on phone and tablet a section that owns a list
+        //   column gives the single content band to the LIST, and `PageHost`
+        //   marks the page `hidden` (§4.1). The page is mounted and correct; it
+        //   is behind the list. Which region owns the band is the region
+        //   matrix's claim, not this table's.
+        await screen.findByRole('heading', { level: 1, name: page.title, hidden: true })
+        const h1s = screen.getAllByRole('heading', { level: 1, hidden: true })
         expect(h1s).toHaveLength(1)
         expect(h1s[0]).toHaveTextContent(page.title)
-        expect(document.title).toMatch(new RegExp(`${page.title} — ViberPit$`))
+        await waitFor(() => expect(document.title).toMatch(new RegExp(`${page.title} — ViberPit$`)))
         expect(document.querySelector(`[data-page-variant="${page.variant}"]`)).not.toBeNull()
 
         const root = document.getElementById('root') ?? document.body
