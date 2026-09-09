@@ -15,6 +15,7 @@
 // `resolve.alias` from the config it is loading exists to apply — the alias
 // resolves fine inside the app bundle and under vitest, but not here.
 import { BRAND_NAME } from '../brand'
+import { CANVAS } from '../shell/canvas'
 
 export interface ManifestIcon {
   src: string
@@ -35,10 +36,6 @@ export interface WebAppManifest {
   icons: ManifestIcon[]
 }
 
-/** Matches the dark `theme-color` meta in index.html, so the installed app's
- *  splash and chrome do not flash a different colour on launch. */
-const APP_BACKGROUND = '#16171d'
-
 export function buildManifest(): WebAppManifest {
   return {
     id: '/',
@@ -47,8 +44,11 @@ export function buildManifest(): WebAppManifest {
     start_url: '/',
     scope: '/',
     display: 'standalone',
-    theme_color: APP_BACKGROUND,
-    background_color: APP_BACKGROUND,
+    // CANVAS.dark, not light: matches the dark `theme-color` meta in
+    // index.html, so the installed app's splash and chrome do not flash a
+    // different colour on launch.
+    theme_color: CANVAS.dark,
+    background_color: CANVAS.dark,
     icons: [
       { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
       { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },

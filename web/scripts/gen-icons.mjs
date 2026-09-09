@@ -8,11 +8,11 @@
  * Not part of `npm run build` — that would add an image-rendering step to every
  * CI build for assets that change roughly never.
  *
- * Chromium (via playwright-core, already a devDependency) is the renderer.
+ * Chromium (via @playwright/test, already a devDependency) is the renderer.
  * ImageMagick is NOT a substitute: without an rsvg-convert delegate it drops
  * the gradient-stroked signal lane and still exits 0.
  */
-import { chromium } from 'playwright-core'
+import { chromium } from '@playwright/test'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'

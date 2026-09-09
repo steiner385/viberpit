@@ -753,7 +753,7 @@ gh pr merge <#> --squash --auto
 After the PR merges and deploys, on an iPhone on the tailnet:
 
 1. Open `https://dobby.tail0dd570.ts.net/` in Safari → Share → Add to Home Screen. A ViberPit icon appears with the signal-lane mark.
-2. Open it from the Home Screen. It runs standalone — no URL bar.
+2. Open it from the Home Screen. It runs standalone — no URL bar, and the top bar renders below the status bar / clock rather than underneath it (the check for `apple-mobile-web-app-status-bar-style: black-translucent` drawing content under the notch instead of under a legible status bar).
 3. Settings → Notifications → Enable. Permission is granted and the subscription registers.
 4. Trigger a session notification. It arrives.
 5. Back in the **Safari tab** (not installed), the same setting shows the install instructions rather than a button.

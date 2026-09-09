@@ -20,5 +20,8 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["vite.config.ts", "src/pwa/manifest.ts", "src/brand.ts"]
+  /* vite.config.ts imports these, so they are compiled under this project too
+   * — they must stay DOM-free and must not use the `@/*` alias, which is only
+   * mapped in tsconfig.app.json. */
+  "include": ["vite.config.ts", "src/pwa/manifest.ts", "src/brand.ts", "src/shell/canvas.ts"]
 }

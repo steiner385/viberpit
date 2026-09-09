@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { buildManifest } from '../manifest'
 import { BRAND_NAME } from '@/brand'
+
+const here = dirname(fileURLToPath(import.meta.url))
+const webRoot = resolve(here, '../../..')
 
 describe('buildManifest', () => {
   it('names the app from the brand single source of truth', () => {
@@ -32,5 +38,20 @@ describe('buildManifest', () => {
     const m = buildManifest()
     expect(m.background_color).toBe('#16171d')
     expect(m.theme_color).toBe('#16171d')
+  })
+
+  it('is linked from index.html, or the browser never discovers it', () => {
+    const html = readFileSync(resolve(webRoot, 'index.html'), 'utf8')
+    expect(html).toMatch(/<link\s+rel="manifest"/)
+  })
+
+  it('only references icon files that actually exist', () => {
+    const icons = buildManifest().icons
+    for (const icon of icons) {
+      // icon.src is a root-relative URL path (e.g. /icons/icon-192.png),
+      // served from web/public at runtime.
+      const onDisk = resolve(webRoot, 'public', icon.src.replace(/^\//, ''))
+      expect(existsSync(onDisk), `${icon.src} -> ${onDisk}`).toBe(true)
+    }
   })
 })
