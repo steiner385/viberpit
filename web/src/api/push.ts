@@ -41,3 +41,33 @@ export async function disablePush(): Promise<void> {
     await sub.unsubscribe()
   }
 }
+
+/**
+ * Whether this browsing context can receive Web Push as-is.
+ *
+ * `needs-install` is the case that matters: iOS Safari delivers Web Push only
+ * to a web app added to the Home Screen, never to an ordinary tab. That is a
+ * "not yet" — distinct from a browser that genuinely cannot.
+ */
+export type InstallState = 'installed' | 'needs-install' | 'not-required'
+
+/** Running as an installed app: the standard media query, or Safari's
+ *  pre-standard flag, which older iOS still reports. */
+function isStandalone(): boolean {
+  if (typeof window === 'undefined') return false
+  if (window.matchMedia?.('(display-mode: standalone)').matches) return true
+  return (window.navigator as Navigator & { standalone?: boolean }).standalone === true
+}
+
+/** iOS or iPadOS. iPadOS 13+ sends a desktop Safari UA and reports
+ *  `platform === 'MacIntel'`, so touch points are the only reliable tell. */
+function isIos(): boolean {
+  if (typeof navigator === 'undefined') return false
+  if (/iPad|iPhone|iPod/.test(navigator.userAgent)) return true
+  return navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1
+}
+
+export function installState(): InstallState {
+  if (isStandalone()) return 'installed'
+  return isIos() ? 'needs-install' : 'not-required'
+}
