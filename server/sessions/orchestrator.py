@@ -259,6 +259,10 @@ _SUGGEST_AUTH_FAIL_BACKOFF_S: float = 60.0
 # turn must not hold the helper thread (and the app-server slot it occupies)
 # open forever.
 _SUGGEST_CODEX_TIMEOUT_S: float = float(os.environ.get("CCSWITCH_SUGGEST_CODEX_TIMEOUT_S", "20"))
+# How long a human session's staged initial prompt waits for a WS attach before the
+# orchestrator delivers it itself (_deliver_unattached_initial_prompt). Generous enough
+# that an open session view always wins the race and turn one streams live.
+_INITIAL_PROMPT_GRACE_DEFAULT_S: float = 8.0
 
 # Rate-limit window for _default_title_fn's give-up WARNING (see below). Same account-keyed
 # monotonic-deadline shape as _SUGGEST_AUTH_FAIL_BACKOFF_S above, but scoped to the log line
@@ -3535,6 +3539,13 @@ class SessionOrchestrator:
                 self._pending_initial_prompt[session_id] = initial_prompt
             if attachment_ids and origin is None:
                 self._pending_initial_attachment_ids[session_id] = list(attachment_ids)
+            if origin is None and (initial_prompt or attachment_ids):
+                # ...but bound that wait. "Until a client attaches" is only safe while an
+                # attach is GUARANTEED, and it is not — see the fallback's docstring. The
+                # staged entry above is the interlock, so an attach inside the window
+                # still wins and turn one still streams live.
+                self._spawn(self._deliver_unattached_initial_prompt(session_id),
+                            name=f"initial-prompt-fallback:{session_id}")
 
             if preexisting_row:
                 # UPDATE the existing queued row → idle with resolved account/cwd/branch/model.
@@ -12031,6 +12042,82 @@ class SessionOrchestrator:
         queued by post_notice while the drawer had no live driver is delivered on
         the next open rather than lost."""
         return self._pending_notices.pop(session_id, [])
+
+    @staticmethod
+    def _initial_prompt_grace_s() -> float:
+        """Seconds a staged initial prompt waits for a WS attach before we send it.
+
+        Read at CALL time, not import time, so a deployed daemon picks up an env edit
+        on the next spawn and tests can shorten it. Negative disables the fallback
+        (restoring the old defer-forever contract); 0 delivers on the next loop tick.
+        """
+        raw = (os.environ.get("CCSWITCH_INITIAL_PROMPT_GRACE_S") or "").strip()
+        if not raw:
+            return _INITIAL_PROMPT_GRACE_DEFAULT_S
+        try:
+            return float(raw)
+        except ValueError:
+            log.warning("CCSWITCH_INITIAL_PROMPT_GRACE_S=%r is not a number — using %s",
+                        raw, _INITIAL_PROMPT_GRACE_DEFAULT_S)
+            return _INITIAL_PROMPT_GRACE_DEFAULT_S
+
+    async def _deliver_unattached_initial_prompt(self, session_id: str) -> bool:
+        """Send a staged initial prompt that no client ever attached to pop.
+
+        ``_spawn_session`` defers a human session's initial prompt until the first WS
+        attach so turn one streams to a watching client. That is correct whenever an
+        attach actually happens — and there are three ordinary ways it does not:
+
+          * a session parked at 'queued' (no fleet capacity) is viewed while it waits,
+            so the bridge takes its READ-ONLY detached path, which never pops;
+          * the client's only re-attach trigger is the pre-spawn status transition, and
+            it observes that through a 5 s poll it can miss entirely;
+          * the user never opens the session view at all.
+
+        Each one strands the prompt: the session rests at 'idle' holding the user's
+        text with zero turns — a card reading "Ready" over an empty conversation that
+        never does anything (production 2026-09-07, session 97372235; the user read it
+        as "sessions come up blank" and respawned the same task 33 s later).
+
+        So the deferral is a grace WINDOW. When it closes we send the prompt ourselves:
+        the turn is replayed from the transcript on a later attach instead of streaming
+        live, which is strictly better than a turn that never runs.
+
+        The staged entry is the interlock against a double send — an attach, or a typed
+        prompt through the bridge's ``_ensure_live``, pops it first and this no-ops.
+        Nothing is popped unless we are committed to sending, so a torn-down session
+        leaves its prompt staged for whatever attaches next rather than losing it.
+        """
+        grace = self._initial_prompt_grace_s()
+        if grace < 0:
+            return False
+        if grace:
+            await asyncio.sleep(grace)
+        if self._shutting_down or session_id not in self._drivers:
+            # No live driver to send into. Leave the prompt staged: a later attach (or
+            # rehydrate's re-stage) is still a delivery path, and popping here would
+            # destroy the only copy we hold.
+            return False
+        if (session_id not in self._pending_initial_prompt
+                and session_id not in self._pending_initial_attachment_ids):
+            return False  # popped inside the window — the normal, live-streaming path
+        prompt = self._pending_initial_prompt.pop(session_id, None)
+        attachment_ids = self._pending_initial_attachment_ids.pop(session_id, None)
+        log_event(log, logging.WARNING, "session.initial_prompt_unattached",
+                  session_id=session_id, grace_s=grace)
+        try:
+            await self.send_prompt(session_id, prompt or "", attachment_ids)
+        except Exception:
+            # Re-stage rather than swallow: an attach that lands later is still a
+            # delivery path, and a dropped prompt is the exact bug this closes.
+            if prompt is not None:
+                self._pending_initial_prompt.setdefault(session_id, prompt)
+            if attachment_ids:
+                self._pending_initial_attachment_ids.setdefault(session_id, attachment_ids)
+            log.warning("initial-prompt fallback send failed for %s — re-staged",
+                        session_id, exc_info=True)
+            return False
+        return True
 
     async def send_prompt(self, session_id, text, attachment_ids=None, *,
                           interrupt: bool = False,

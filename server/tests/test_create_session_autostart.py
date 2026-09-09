@@ -42,8 +42,14 @@ def _seed_account(name: str) -> None:
         write_json_secure(paths.shared_mcp_path(), {})
 
 
-def _run(tmp_path, *, origin, initial_prompt):
-    """Create one session; return (prompts_sent_to_driver, deferred_in_pending)."""
+def _run(tmp_path, *, origin, initial_prompt, grace_s=None, settle_s=0.0):
+    """Create one session; return (prompts_sent_to_driver, deferred_in_pending).
+
+    ``grace_s`` sets CCSWITCH_INITIAL_PROMPT_GRACE_S — the window a human session's
+    staged prompt waits for a WS attach before the orchestrator delivers it itself.
+    ``settle_s`` is how long to wait after create before reading the driver, so a
+    test can observe the state either side of that window.
+    """
     store_home = tmp_path / "store"; store_home.mkdir()
     shared_base = tmp_path / "dot-claude"; shared_base.mkdir()
     (shared_base / "settings.json").write_text("{}")
@@ -56,6 +62,7 @@ def _run(tmp_path, *, origin, initial_prompt):
         "CCSWITCH_HOME": str(store_home),
         "CLAUDE_CONFIG_DIR": str(shared_base),
         "CCSWITCH_DB_URL": db_url,
+        **({} if grace_s is None else {"CCSWITCH_INITIAL_PROMPT_GRACE_S": str(grace_s)}),
     })
     compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
     trust_patch = patch("server.sessions.orchestrator.configdir.trust_project")
@@ -73,6 +80,8 @@ def _run(tmp_path, *, origin, initial_prompt):
             try:
                 rec = await orch.create_session("auto", initial_prompt=initial_prompt,
                                                 origin=origin, origin_ref="a/b#1")
+                if settle_s:
+                    await asyncio.sleep(settle_s)
                 sent = list(orch._drivers[rec.id]._client.sent)
                 deferred = rec.id in orch._pending_initial_prompt
                 return sent, deferred
@@ -92,3 +101,43 @@ def test_human_session_defers_prompt_until_attach(tmp_path):
     sent, deferred = _run(tmp_path, origin=None, initial_prompt="Hello!")
     assert sent == []       # nothing sent yet — waits for the first WS attach
     assert deferred is True  # parked in the pending map for the attach handler
+
+
+# ---------------------------------------------------------------------------
+# The deferral must not be able to strand the prompt forever.
+#
+# Deferring until the first WS attach is only safe if an attach is guaranteed.
+# It is not: a session parked at 'queued' (no fleet capacity) attaches on the
+# bridge's READ-ONLY path, which never pops the staged prompt, and the client's
+# only re-attach trigger is a status transition it observes through a 5s poll.
+# Miss that transition — or never open the session view at all — and the prompt
+# is orphaned: the card reads "Ready" over an empty conversation and the session
+# never does anything (observed in production 2026-09-07, session 97372235: one
+# `user` event, totalTurns 0, and the user respawned the same task 33s later).
+#
+# So the deferral is now a GRACE WINDOW, not an indefinite wait: if nobody has
+# popped the prompt when it closes, the orchestrator sends it itself. A turn that
+# replays from the transcript instead of streaming live is strictly better than
+# a turn that never runs.
+# ---------------------------------------------------------------------------
+
+def test_human_prompt_is_delivered_even_when_no_client_ever_attaches(tmp_path):
+    """The whole bug in one line: no attach must NOT mean no turn."""
+    sent, deferred = _run(tmp_path, origin=None, initial_prompt="Hello!",
+                          grace_s=0.0, settle_s=0.05)
+    assert sent == ["Hello!"], (
+        "nobody attached, so the staged prompt was never popped — the session sits "
+        "at 'Ready' with an empty conversation forever (the orphaned-prompt bug)")
+    assert deferred is False, "the fallback must clear the staged entry when it delivers"
+
+
+def test_the_grace_window_still_defers_for_a_client_that_is_about_to_attach(tmp_path):
+    """The fallback must not pre-empt the normal live-streaming path.
+
+    With the default (non-zero) window the prompt is still parked right after
+    create, exactly as before — an attach landing inside the window pops it and
+    streams turn one live, which is the whole point of deferring.
+    """
+    sent, deferred = _run(tmp_path, origin=None, initial_prompt="Hello!")
+    assert sent == []
+    assert deferred is True

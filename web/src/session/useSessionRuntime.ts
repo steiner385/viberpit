@@ -444,6 +444,30 @@ export function useSessionRuntime(
     if (isPreSpawnStatus(prev.status) && !isPreSpawnStatus(recordStatus)) attach(sessionId)
   }, [sessionId, recordStatus, attach])
 
+  // The same recovery for a transition we never SAW. The effect above can only fire
+  // on an observed pre-spawn → live edge, and it reads status from a 5s poll: when the
+  // first sessions payload for this view already shows the session live, the queued
+  // phase is invisible here even though the mount attach really did take the bridge's
+  // read-only path — so nothing ever pops the deferred initial prompt and the session
+  // renders empty forever (the "sessions come up blank" report, 2026-09-07).
+  //
+  // Keyed on a COMPLETED replay (`!replaying`) that produced nothing, which is the
+  // narrowest honest signal for "this attach brought back an empty session": a healthy
+  // session has turns and never pays a second replay. Once per session id — an empty
+  // session that is legitimately empty must not attach-storm the bridge.
+  //
+  // Belt-and-braces only. The orchestrator's own grace window
+  // (`_deliver_unattached_initial_prompt`) is what GUARANTEES delivery, including for a
+  // session whose view is never opened, where no client-side trigger can exist at all.
+  const blankRecheckedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (blankRecheckedRef.current === sessionId) return
+    if (state.replaying) return  // replay still arriving — nothing to judge yet
+    if (recordStatus === undefined || isPreSpawnStatus(recordStatus)) return
+    blankRecheckedRef.current = sessionId
+    if (state.turns.length === 0) attach(sessionId)
+  }, [sessionId, recordStatus, attach, state.replaying, state.turns.length])
+
   // Header title: prefer the session's name (the AI-generated/auto title, the
   // same value shown on the dashboard card) so the two stay consistent. Fall
   // back to a live transcript `title` event, then the sessionId prefix.
