@@ -44,7 +44,8 @@ describe('IncidentQueue', () => {
     await waitFor(() => expect(mocked.fetchIncidents).toHaveBeenCalled())
     // A permanent "no incidents" panel would be furniture on a healthy system.
     // Asserted by ROLE, not by class: the queue's styling moved to design
-    // tokens when `initiatives.css` went, and "renders nothing" is the claim.
+    // tokens when the Initiatives section's stylesheet went, and "renders
+    // nothing" is the claim.
     expect(container.querySelector('section[aria-label="Control-band incidents"]')).toBeNull()
   })
 

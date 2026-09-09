@@ -221,7 +221,9 @@ test.describe('T044 — Dashboard', () => {
     // them — but the bar deliberately does not try to fit eight icon+label
     // controls across 375px, which is what the scrolling tab strip used to do.
     const bar = page.getByRole('navigation', { name: /sections/i })
-    for (const name of [/^Sessions/, /^Pipeline/, /^Automations/, /^Initiatives/]) {
+    // The fourth primary entry is Roadmap: Phase 3 replaced the Products and
+    // Initiatives sections with one Roadmap section (finish-line spec §4.1).
+    for (const name of [/^Sessions/, /^Pipeline/, /^Automations/, /^Roadmap/]) {
       await expect(bar.getByRole('link', { name })).toHaveCount(1)
     }
     await expect(bar.getByRole('button', { name: /^More/ })).toBeVisible()
