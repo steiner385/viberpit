@@ -31,8 +31,20 @@ vi.mock('@/api/client', async (importOriginal) => {
         if (path === '/pm/queue') return { entries: [], skipped: 0, generatedAt: 'now' }
         if (path === '/sdlc/triage') return { items: [] }
         if (path.startsWith('/pm/leaves')) return { items: [] }
-        // The two specific `/pm/projects/…` shapes come BEFORE the generic one:
-        // `startsWith('/pm/projects/')` would otherwise swallow both.
+        // The specific `/pm/projects/…` shapes come BEFORE the generic one:
+        // `startsWith('/pm/projects/')` would otherwise swallow them. `/deps`
+        // is answered even though nothing reads it yet — `DependencyPanel`
+        // dereferences `drift` unguarded, so the generic `Project` shape would
+        // throw the moment a later task re-homes it under this page.
+        if (path.startsWith('/pm/projects') && path.endsWith('/deps')) {
+          return {
+            project: null,
+            edges: [],
+            drift: {
+              proseOnly: [], unresolvedTargets: [], missingFromProject: [], checklistEpics: [],
+            },
+          }
+        }
         if (path.startsWith('/pm/projects') && path.endsWith('/onboarding')) {
           return {
             state: 'live',
@@ -122,10 +134,11 @@ describe('page contract', () => {
         //   marks the page `hidden` (§4.1). The page is mounted and correct; it
         //   is behind the list. Which region owns the band is the region
         //   matrix's claim, not this table's.
+        // The wait itself carries the title assertion — `name` matches the
+        // accessible name — so all that is left to assert is that there is
+        // exactly ONE h1.
         await screen.findByRole('heading', { level: 1, name: page.title, hidden: true })
-        const h1s = screen.getAllByRole('heading', { level: 1, hidden: true })
-        expect(h1s).toHaveLength(1)
-        expect(h1s[0]).toHaveTextContent(page.title)
+        expect(screen.getAllByRole('heading', { level: 1, hidden: true })).toHaveLength(1)
         await waitFor(() => expect(document.title).toMatch(new RegExp(`${page.title} — ViberPit$`)))
         expect(document.querySelector(`[data-page-variant="${page.variant}"]`)).not.toBeNull()
 

@@ -147,12 +147,19 @@ export function settingsSectionPath(section: string | null | undefined, fallback
  * Paths that belong to a section without living under its path.
  *
  * Roadmap keeps `/initiatives/:slug` as the initiative detail URL (roadmap spec
- * §4) rather than folding it under `/roadmap`, so the prefix match alone would
- * resolve it to NO section: the rail would highlight nothing, the Roadmap list
- * column would vanish beside the page, and — because `showInKiosk` is read off
- * the same def — `KioskPageGuard` would let a wall display sit on a page whose
- * buttons advance initiatives. An alias is checked only AFTER every real path
- * has failed, so it can never outrank a section's own prefix.
+ * §4) rather than folding it under `/roadmap`, so a prefix match alone resolves
+ * it to NO section. Three things read `navDefForPath` and each degrades: the
+ * rail highlights nothing, `hasList` is false so the Roadmap list column
+ * vanishes from beside the page, and `OPEN_ITEM_RESOLVERS` is keyed by section
+ * id — with no section, nothing reads `initiativeSlug` and the shell believes
+ * nothing is open.
+ *
+ * It is NOT a kiosk gate. `KioskPageGuard` refuses anything whose def is not
+ * `showInKiosk`, and a null def fails that check exactly as a `false` one does,
+ * so the alias leaves kiosk behaviour unchanged in both directions.
+ *
+ * An alias is checked only AFTER every real path has failed, so it can never
+ * outrank a section's own prefix.
  */
 const SECTION_ALIASES: readonly { prefix: string; id: NavId }[] = [
   { prefix: '/initiatives', id: 'roadmap' },

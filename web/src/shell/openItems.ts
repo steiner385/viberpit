@@ -27,5 +27,5 @@ export const OPEN_ITEM_RESOLVERS: Partial<Record<NavId, OpenItemResolver>> = {
   },
   // Product / capability / initiative detail, by PARAM NAME (never `id`, so a
   // roadmap route can never be mistaken for a live session).
-  roadmap: (params) => roadmapOpenItem(params),
+  roadmap: roadmapOpenItem,
 }

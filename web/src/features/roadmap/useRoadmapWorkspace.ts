@@ -1,6 +1,11 @@
 /**
  * The Roadmap section's workspace: list props + navigation, the sibling of
  * `AppShell`'s `useSessionsWorkspace`. Selection is the URL (`roadmapNavState`).
+ *
+ * @param active whether the Roadmap list column is the one the shell is about to
+ *   render. The hook is called unconditionally (hooks always are), so this is
+ *   what keeps the map's 15 s poll off the six other sections and off kiosk,
+ *   where `app.list` does not exist at all.
  */
 import { useCallback } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
@@ -13,11 +18,11 @@ import {
 } from './roadmapNavState'
 import type { TreeRow } from './treeRows'
 
-export function useRoadmapWorkspace(): { list: RoadmapListColumnProps } {
+export function useRoadmapWorkspace(active: boolean): { list: RoadmapListColumnProps } {
   const navigate = useNavigate()
   const { search } = useLocation()
   const params = useParams()
-  const { data: map, isLoading, isError } = useRoadmapMap()
+  const { data: map, isLoading, isError } = useRoadmapMap({ enabled: active })
 
   const onOpen = useCallback((row: TreeRow) => {
     if (row.kind === 'product') navigate(productPath(row.product.slug))

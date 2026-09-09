@@ -592,10 +592,10 @@ describe('every route renders in every layout mode', () => {
   // The fifteen refused cells are exactly the kiosk rows for a section that is not
   // kiosk-safe — pinned so a `showInKiosk` flip has to come here and say so.
   // `/triage` is the least negotiable of them: the inbox accepts and bulk-accepts
-  // on a single unconfirmed keystroke. `/initiatives/views` is refused through
-  // the SECTION ALIAS rather than a path prefix, which is the point of asserting
-  // it here — an alias that stopped resolving would silently make a mutating page
-  // kiosk-reachable.
+  // on a single unconfirmed keystroke. `/initiatives/views` reaches Roadmap
+  // through the SECTION ALIAS rather than a path prefix; it is refused either
+  // way (a null def fails the `showInKiosk` check exactly as `false` does), so
+  // what this row pins is that the alias does not accidentally ADMIT it.
   it('kiosk refuses exactly the sections that are not kiosk-safe', () => {
     const refused = CELLS.filter(([mode, path, , url]) => mode === 'kiosk' && url !== path)
     expect(refused.map(([, path]) => path)).toEqual([

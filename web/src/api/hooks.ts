@@ -1589,11 +1589,22 @@ export function useOnboarding(slug: string) {
 
 // ── Roadmap (spec 2026-09-07 §10) ────────────────────────────────────────────
 
-/** The whole product → capability → initiative map with server-computed tiers. */
-export function useRoadmapMap() {
+/**
+ * The whole product → capability → initiative map with server-computed tiers.
+ *
+ * `enabled` exists because one caller is mounted app-wide: `AppShell` builds the
+ * Roadmap list column from this on every route, and the column only RENDERS on
+ * the Roadmap section (and never in kiosk, which has no list region at all). Left
+ * ungated, a 15 s poll of `/pm/map` would run on all seven sections and on every
+ * wall display, funding a column that is not mounted. The query key is unchanged
+ * either way, so `RoadmapPage`'s own `useRoadmapMap()` still shares this cache
+ * entry rather than opening a second fetch.
+ */
+export function useRoadmapMap({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery<RoadmapMap>({
     queryKey: QK.roadmapMap,
     queryFn: fetchRoadmapMap,
+    enabled,
     staleTime: 5_000,
     refetchInterval: 15_000,
   })

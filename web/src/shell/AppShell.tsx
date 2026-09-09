@@ -242,10 +242,13 @@ function AppShellInner() {
   const shows = (r: RegionId) => REGION_VISIBILITY[r](region)
 
   const workspace = useSessionsWorkspace(openDrawer)
-  // Mounted app-wide, exactly like `useSessions`: `useRoadmapMap` polls every
-  // 15 s while mounted, and it is the SAME query the Roadmap page reads, so the
+  // The hook always runs (hooks do); its QUERY is gated on the section, so
+  // `/pm/map`'s 15 s poll does not fund a list column the other six sections
+  // never render — nor a wall display, which `KioskPageGuard` has already
+  // redirected off Roadmap and which has no `app.list` region at all. On
+  // Roadmap it is the same `QK.roadmapMap` entry `RoadmapPage` reads, so the
   // page adds no second fetch.
-  const roadmap = useRoadmapWorkspace()
+  const roadmap = useRoadmapWorkspace(def?.id === 'roadmap')
 
   // Kiosk enlarges the whole type scale by overriding `--scale` on `<html>`.
   // It goes on the document element rather than on the shell's root `<div>`
