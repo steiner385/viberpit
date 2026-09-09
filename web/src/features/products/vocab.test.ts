@@ -42,3 +42,12 @@ describe('vocab', () => {
     expect(all).not.toMatch(/\bproject\b|\bfeature\b/)
   })
 })
+
+import { ROADMAP, TIER_LABEL, reasonLabel } from './vocab'
+
+it('names the roadmap surfaces and every tier', () => {
+  expect(ROADMAP.label).toBe('Roadmap')
+  expect(Object.keys(TIER_LABEL)).toEqual(['needs-you', 'blocked', 'in-flight', 'proposed', 'live', 'idle'])
+  expect(reasonLabel('advance')).toBe('Ready to advance')
+  expect(reasonLabel(null)).toBe('')
+})

@@ -7,6 +7,7 @@
  */
 import type { InitiativeStage, InitiativeStatus } from '@/api/sdlc'
 import type { OnboardingState } from '@/api/pm'
+import type { RoadmapTier } from '@/api/roadmap'
 
 export const PRODUCT = {
   singular: 'Product',
@@ -59,3 +60,35 @@ export const initiativeStatusLabel = (status: string | null | undefined) =>
   lookup(INITIATIVE_STATUS_LABEL, status)
 export const onboardingStateLabel = (state: string | null | undefined) =>
   lookup(ONBOARDING_STATE_LABEL, state)
+
+/** The Roadmap section and its list scopes (finish-line spec §4.1, §4.3). */
+export const ROADMAP = {
+  label: 'Roadmap',
+  map: 'Map',
+  initiatives: 'Initiatives',
+  queue: 'Queue',
+  inbox: 'Inbox',
+  help: 'The product roadmap: every product, its capabilities, the initiatives changing them and the issues underneath. Drill down, trace back up, and see what needs you.',
+} as const
+
+export const INITIATIVE = { singular: 'Initiative', plural: 'Initiatives', new: 'New initiative' } as const
+export const ISSUE = { singular: 'Issue', plural: 'Issues' } as const
+export const EPIC = { singular: 'Epic' } as const
+
+/** One attention tier per row (spec §11); the words the pill and Needs-you tab use. */
+export const TIER_LABEL: Record<RoadmapTier, string> = {
+  'needs-you': 'Needs you',
+  blocked: 'Blocked',
+  'in-flight': 'In flight',
+  proposed: 'Proposed',
+  live: 'Live',
+  idle: 'Idle',
+}
+
+/** Why a row needs a human beyond its tier (server `reason`). */
+export const REASON_LABEL: Record<string, string> = {
+  advance: 'Ready to advance',
+}
+
+export const reasonLabel = (reason: string | null | undefined): string =>
+  reason ? (REASON_LABEL[reason] ?? reason) : ''
