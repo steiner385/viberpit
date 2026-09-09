@@ -208,19 +208,57 @@ async def _seed_spawned(session_id: str, *, origin, engine_session_id=None,
             initial_prompt=initial_prompt))
 
 
-def test_rehydrate_restages_an_undelivered_human_prompt(tmp_path):
-    """origin=None: the prompt is re-staged for the next WS attach, as at spawn time."""
+def test_rehydrate_redelivers_an_undelivered_human_prompt(tmp_path):
+    """origin=None: the prompt is re-SENT, exactly as _spawn_session would have —
+    a human session does not wait to be opened before it starts working."""
     async def run():
         from server.sessions.orchestrator import SessionOrchestrator
         await _init(f"sqlite+aiosqlite:///{tmp_path / 'h.db'}")
         await _seed_spawned("human-1", origin=None)
 
         orch = SessionOrchestrator()
-        await orch.rehydrate()
+        sent: list[tuple] = []
 
-        assert orch.pop_pending_initial_prompt("human-1") == "do the thing", (
-            "a human session that was spawned but never attached lost its prompt "
-            "to the restart — it will sit at 'Ready' with an empty conversation forever")
+        async def _send(sid, prompt, attachment_ids=None):
+            sent.append((sid, prompt))
+
+        async def _driver(sid):
+            return object()
+
+        orch.send_prompt = _send  # type: ignore[method-assign]
+        orch.ensure_driver = _driver  # type: ignore[method-assign]
+        await orch.rehydrate()
+        await _settle()
+
+        assert sent == [("human-1", "do the thing")], (
+            "a human session that was spawned but never ran lost its prompt to the "
+            "restart — it will sit at 'Ready' with an empty conversation until opened")
+        assert orch.pop_pending_initial_prompt("human-1") is None
+
+    asyncio.run(run())
+
+
+def test_rehydrate_restages_an_undelivered_slash_command_prompt(tmp_path):
+    """A bare slash command must not be re-sent to the model as literal text: it
+    runs through the WS bridge's command dispatch (#943), so it is re-staged for
+    the next attach — the one prompt shape that still waits for a human."""
+    async def run():
+        from server.sessions.orchestrator import SessionOrchestrator
+        await _init(f"sqlite+aiosqlite:///{tmp_path / 'sc.db'}")
+        await _seed_spawned("cmd-1", origin=None, initial_prompt="/model opus")
+
+        orch = SessionOrchestrator()
+        sent: list[tuple] = []
+
+        async def _send(sid, prompt, attachment_ids=None):
+            sent.append((sid, prompt))
+
+        orch.send_prompt = _send  # type: ignore[method-assign]
+        await orch.rehydrate()
+        await _settle()
+
+        assert sent == []
+        assert orch.pop_pending_initial_prompt("cmd-1") == "/model opus"
 
     asyncio.run(run())
 

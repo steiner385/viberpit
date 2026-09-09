@@ -202,7 +202,6 @@ def test_attach_passes_driver_turn_started_at_to_replay_window(tmp_path, monkeyp
         async def command_catalog(self, session_id): return []
         def pending_questions(self, session_id): return []
         def pop_pending_initial_prompt(self, session_id): return None
-        def pop_pending_initial_attachment_ids(self, session_id): return None
 
     app = create_app(orchestrator=Orch())
     with TestClient(app, raise_server_exceptions=False) as client:
