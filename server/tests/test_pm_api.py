@@ -952,6 +952,67 @@ def test_accept_rejects_out_of_range_rice_edits():
         assert ok.status_code == 200, ok.text
 
 
+def test_accept_rejects_boolean_rice_edits():
+    """`True` IS an `int` in Python, so a bare isinstance check waves it through
+    and `effort: true` lands in the overlay as a 1 nobody typed — a real RICE
+    score, silently invented from a JSON type error."""
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, _wid = _seed_one_pending(c, feature_slug="sessions")
+        for edits in ({"effort": True}, {"reach": False}, {"impact": True},
+                      {"confidence": False}):
+            bad = c.post(f"/api/pm/triage/{pid}/accept", json={"edits": edits},
+                         headers=IDENTITY_HEADERS)
+            assert bad.status_code == 422, (edits, bad.text)
+            assert bad.json()["detail"]["error"] == "bad_rice_value"
+            assert "whole number" in bad.json()["detail"]["message"]
+
+
+def test_accept_with_edits_rejects_an_unknown_feature_id():
+    """`featureId` in an accept body writes `WorkItem.feature_id` directly, the
+    same column the overlay PATCH writes — and the PATCH 404s an id that names no
+    row. Accept-with-edits replaced that PATCH, so it has to answer the same way;
+    without this the item points at a feature that does not exist and every
+    consumer keyed on feature→project reads a dangling id."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import TriageProposal, WorkItem
+
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
+
+        bad = c.post(f"/api/pm/triage/{pid}/accept",
+                     json={"edits": {"featureId": "f-does-not-exist"}},
+                     headers=IDENTITY_HEADERS)
+        assert bad.status_code == 404, bad.text
+        assert bad.json()["detail"]["error"] == "feature_not_found"
+
+        # Refused BEFORE anything was written: the proposal is still decidable.
+        async def _check():
+            async with db_session() as db:
+                prop = (await db.execute(select(TriageProposal).where(
+                    TriageProposal.id == pid))).scalar_one()
+                wi = (await db.execute(select(WorkItem).where(
+                    WorkItem.id == wid))).scalar_one()
+                return prop.status, wi.triage_state, prop.proposed_feature_id
+        status_, state, real_feature_id = c.portal.call(_check)
+        assert (status_, state) == ("pending", "unclassified")
+
+        # An id that DOES name a feature still accepts.
+        ok = c.post(f"/api/pm/triage/{pid}/accept",
+                    json={"edits": {"featureId": real_feature_id}},
+                    headers=IDENTITY_HEADERS)
+        assert ok.status_code == 200, ok.text
+
+        # An explicit null is "no home", not a lookup — it must not 404.
+        pid2, _wid2 = _seed_one_pending(c, number=91)
+        ok2 = c.post(f"/api/pm/triage/{pid2}/accept",
+                     json={"edits": {"featureId": None}}, headers=IDENTITY_HEADERS)
+        assert ok2.status_code == 200, ok2.text
+
+
 def test_overlay_patch_rejects_out_of_range_rice_values():
     with _client() as c:
         _register(c, "Ccswitch", repo="o/r")
@@ -1223,8 +1284,7 @@ def test_triage_undo_no_snapshot_409():
     """A row resolved before undo_snapshot existed (or otherwise cleared) answers
     409 no_snapshot rather than restoring garbage. Null the column through the
     app's own DB session after a real accept, mirroring _seed_one_pending's
-    c.portal.call idiom — the window check runs first and this happens well
-    inside it, so the only thing under test is the no_snapshot branch."""
+    c.portal.call idiom."""
     from sqlalchemy import select
 
     from server.db import db_session
@@ -1246,3 +1306,35 @@ def test_triage_undo_no_snapshot_409():
         r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
         assert r.status_code == 409
         assert r.json()["detail"]["error"] == "no_snapshot"
+
+
+def test_triage_undo_no_snapshot_beats_the_window(monkeypatch):
+    """The case the no_snapshot branch actually EXISTS for: a row decided before
+    the column was added. Such a row is also, always, outside the undo window —
+    so with the window checked first it could only ever have answered
+    undo_expired, and no_snapshot documented a reachable-by-nobody state. The
+    missing snapshot is the more specific reason; it is the one reported."""
+    import server.api.pm as pm_api
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import TriageProposal
+
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, _wid = _seed_one_pending(c, feature_slug="sessions")
+        assert c.post(f"/api/pm/triage/{pid}/accept",
+                      headers=IDENTITY_HEADERS).status_code == 200
+
+        async def _clear_snapshot():
+            async with db_session() as db:
+                prop = (await db.execute(select(TriageProposal).where(
+                    TriageProposal.id == pid))).scalar_one()
+                prop.undo_snapshot = None
+        c.portal.call(_clear_snapshot)
+        # Aged out as well — the pre-migration row's real shape.
+        monkeypatch.setattr(pm_api, "TRIAGE_UNDO_WINDOW_S", 0)
+
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 409
+        assert r.json()["detail"]["error"] == "no_snapshot", r.text

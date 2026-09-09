@@ -850,13 +850,14 @@ async def _repropose_siblings(db, accepted: TriageProposal, feature_id: str,
     return moved
 
 
-def _validate_rice_edits(edits: dict | None) -> None:
-    """Range-check the RICE fields of an accept body's ``edits``.
+async def _validate_accept_edits(db, edits: dict | None) -> None:
+    """Validate an accept body's ``edits`` exactly as the overlay PATCH does.
 
-    Accept-with-edits writes the same four numbers the overlay PATCH does, so it
-    needs the same guard — an out-of-range value reaches the GitHub Projects
-    ``Score`` field and inverts roadmap ordering, and an ``effort`` of 0 makes
-    the score undefined. Bounds live in ``server/pm/score.py`` beside the
+    Accept-with-edits writes the same five fields the overlay PATCH does, so it
+    needs the same guards — an out-of-range value reaches the GitHub Projects
+    ``Score`` field and inverts roadmap ordering, an ``effort`` of 0 makes the
+    score undefined, and a ``featureId`` that names no row would leave the work
+    item pointing at nothing. Bounds live in ``server/pm/score.py`` beside the
     formula; do NOT inline a second copy of them here, and do not let the client
     be the only thing enforcing them (the inbox no longer PATCHes the overlay
     before accepting).
@@ -869,14 +870,25 @@ def _validate_rice_edits(edits: dict | None) -> None:
         value = edits[attr]
         # ``validate_rice`` compares against ints; a string would raise
         # TypeError out of the route as a 500, which is not what a bad request
-        # deserves.
-        if value is not None and not isinstance(value, int):
+        # deserves. ``bool`` IS an ``int`` in Python, and ``True`` would land in
+        # the overlay as a 1 nobody typed — excluded explicitly.
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
             raise HTTPException(status_code=422, detail={
                 "error": "bad_rice_value", "message": f"{attr} must be a whole number"})
         msg = validate_rice(attr, value)
         if msg:
             raise HTTPException(status_code=422, detail={
                 "error": "bad_rice_value", "message": msg})
+    # Same 404 shape ``patch_overlay`` answers with, for the same reason: the id
+    # comes from a client-side capability list that a rename or a delete can
+    # outdate between load and accept.
+    feature_id = edits.get("featureId")
+    if feature_id is not None:
+        feat = (await db.execute(select(Feature).where(
+            Feature.id == feature_id))).scalar_one_or_none()
+        if feat is None:
+            raise HTTPException(status_code=404,
+                                detail={"error": "feature_not_found"})
 
 
 async def _apply_accept(db, proposal: TriageProposal, identity: str, *,
@@ -957,7 +969,7 @@ async def accept_triage(
     which reuses the same helper."""
     prop = await _load_pending_proposal(db, proposal_id)
     edits = (body or {}).get("edits")
-    _validate_rice_edits(edits)
+    await _validate_accept_edits(db, edits)
     await _apply_accept(db, prop, identity, edits=edits)
     wi_id = prop.work_item_id
     await record_audit(db=db, type="pm.triage.accept", identity=identity,
@@ -1006,16 +1018,21 @@ async def undo_triage(
     if prop.status == "pending":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
             "error": "not_resolved", "message": "proposal is pending; nothing to undo"})
+    # Snapshot BEFORE window: a decision taken before this column existed has a
+    # `resolved_at` older than the window too, so checking the window first would
+    # answer `undo_expired` for every such row and `no_snapshot` for none. The
+    # missing snapshot is the more specific reason, so it is the one reported.
+    snap = prop.undo_snapshot
+    if not snap:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "no_snapshot",
+            "message": "nothing to restore: this decision was taken without an undo snapshot"})
     resolved = _aware(prop.resolved_at)
     now = datetime.now(timezone.utc)
     if resolved is None or (now - resolved).total_seconds() > TRIAGE_UNDO_WINDOW_S:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
             "error": "undo_expired",
             "message": f"undo is only available for {TRIAGE_UNDO_WINDOW_S}s after a decision"})
-    snap = prop.undo_snapshot
-    if not snap:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
-            "error": "no_snapshot", "message": "this decision predates undo support"})
     wi = (await db.execute(select(WorkItem).where(
         WorkItem.id == prop.work_item_id))).scalar_one_or_none()
     if wi is not None:
