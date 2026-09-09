@@ -95,6 +95,9 @@ async def test_an_assistant_thread_is_started_even_when_the_row_says_resume(harn
     await harness.boot(assistant_overlay=overlay, resume="thread-from-yesterday")
     assert harness.frames(schema.METHOD_THREAD_RESUME) == []
     assert len(harness.frames(schema.METHOD_THREAD_START)) == 1
+    assert harness.engine_ids == []
+    await harness.driver.send_prompt("hello")
+    assert harness.engine_ids == [(SESSION, THREAD)]
 
 
 @pytest.mark.asyncio
