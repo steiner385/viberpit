@@ -262,6 +262,75 @@ def test_queued_prompt_runs_after_first_turn():
     assert queries == ["prompt-one", "prompt-two"]
 
 
+def test_prompt_arriving_while_the_turn_settles_is_not_stranded_in_the_queue():
+    """A prompt delivered DURING _end_turn's idle bookkeeping must still run.
+
+    ``_turn_live()`` is true for as long as the pump task is alive — which includes
+    the stretch where that very pump is inside ``_end_turn`` settling the turn. So a
+    prompt that lands after ``_end_turn`` looked at the queue but before the pump
+    finishes is appended to the queue by ``send_prompt`` and nothing ever pops it:
+    the session sits at "Ready" with the user's message in the queue strip forever.
+    The window is every await in the idle branch (``_emit_context_usage``, the status
+    persist) — real milliseconds on a loaded host, and exactly where a first typed
+    prompt lands now that the initial prompt runs at spawn (CI, PR #1480).
+
+    The delivery is injected from inside ``_emit_context_usage`` so the ordering is
+    the race's, not the scheduler's mood.
+    """
+    import asyncio
+
+    class QuickFakeSDK(PerQueryScript):
+        def __init__(self):
+            self.queries: list[str] = []
+            self._call = 0
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def query(self, prompt: str): self.queries.append(prompt)
+        async def receive_response(self):
+            self._call += 1
+            yield f.result(uuid=f"t{self._call}")
+        async def interrupt(self): pass
+        async def set_permission_mode(self, mode): pass
+
+    sdk = QuickFakeSDK()
+
+    def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None):
+        return sdk
+
+    async def run():
+        d = ClaudeAgentDriver("sq-settle", "primary", "/tmp/r", "/tmp/cfg", mode="interactive",
+                              sdk_factory=factory, registry=PermissionRegistry(), identity="me")
+        await d.start()
+
+        real_usage = d._emit_context_usage
+        fired = False
+
+        async def emit_context_usage_then_type():
+            nonlocal fired
+            await real_usage()
+            if not fired:      # turn one only — the second turn settles normally
+                fired = True
+                await d.send_prompt("typed-while-settling")
+
+        d._emit_context_usage = emit_context_usage_then_type   # type: ignore[method-assign]
+        await d.send_prompt("prompt-one")
+        # Both turns must complete: wait for the idle status that follows the SECOND.
+        async def until_second_idle():
+            async for e in d.events():
+                if (isinstance(e, Status)
+                        and e.state in ("idle", "done", "complete", "needs_attention")
+                        and len(sdk.queries) == 2):
+                    return
+        await asyncio.wait_for(until_second_idle(), timeout=5)
+        await d.aclose()
+        return sdk.queries
+
+    queries = asyncio.run(run())
+    assert queries == ["prompt-one", "typed-while-settling"], (
+        "a prompt delivered while the turn settled was stranded in the queue; "
+        f"SDK saw {queries!r}")
+
+
 def test_send_prompt_context_header_prepended_once_per_change():
     """A context header is prepended to the text sent to the SDK the first time
     (or whenever) the context changes, but the UserMessage event keeps the
