@@ -5,6 +5,8 @@ import { renderHook, act } from '@testing-library/react'
 // Mock the socket hook so we can drive inbound commands/commandResult.
 const listeners: Record<string, ((m: unknown) => void)[]> = {}
 const command = vi.fn()
+const setPermissionMode = vi.fn(() => true)
+const sessions = [{ id: 's1', engine: 'codex' }]
 vi.mock('@/ws/client', () => ({
   useSessionSocket: () => ({
     attach: vi.fn(), detach: vi.fn(),
@@ -12,12 +14,12 @@ vi.mock('@/ws/client', () => ({
     off: vi.fn(),
     connectionState: 'connected',
     prompt: vi.fn(), sendInterrupt: vi.fn(), permissionResponse: vi.fn(),
-    answerQuestion: vi.fn(), setPermissionMode: vi.fn(), cancelQueued: vi.fn(),
+    answerQuestion: vi.fn(), setPermissionMode, cancelQueued: vi.fn(),
     command,
   }),
 }))
 vi.mock('@/api/hooks', () => ({
-  useSessions: () => ({ data: [] }),
+  useSessions: () => ({ data: sessions }),
   useAccounts: () => ({ data: [] }),
   useSettings: () => ({ data: { defaultToolDetail: 'auto', thinkingCollapsed: true } }),
   useSessionsViewing: vi.fn(),
@@ -76,5 +78,79 @@ describe('runtime commands', () => {
     expect(result.current.state.turns.at(-1)!.blocks[0]).toMatchObject({ kind: 'notice', text: 'Model → sonnet' })
     act(() => emit('commandResult', { type: 'commandResult', sessionId: 's1', ok: true, render: 'help', data: null }))
     expect(result.current.commandResult).toMatchObject({ render: 'help' })
+  })
+})
+
+
+describe('runtime effective permission mode', () => {
+  beforeEach(() => {
+    for (const k of Object.keys(listeners)) delete listeners[k]
+    setPermissionMode.mockReset().mockReturnValue(true)
+  })
+
+  it('keeps the acknowledged mode until a deferred native change takes effect', () => {
+    const { result } = renderHook(() => useSessionRuntime('s1'))
+    act(() => emit('sessionEvent', { type: 'sessionMeta', sessionId: 's1', model: 'gpt-5', permissionMode: 'full-auto' }))
+    expect(result.current.mode).toBe('full-auto')
+    act(() => result.current.onSetMode('plan'))
+    expect(setPermissionMode).toHaveBeenCalledWith('s1', 'plan')
+    expect(result.current.pendingMode).toBe('plan')
+    expect(result.current.mode).toBe('full-auto')
+    act(() => emit('sessionEvent', { type: 'sessionMeta', sessionId: 's1', model: 'gpt-5', permissionMode: 'plan' }))
+    expect(result.current.mode).toBe('plan')
+    expect(result.current.pendingMode).toBeNull()
+    act(() => result.current.onSetMode('default'))
+    expect(result.current.mode).toBe('plan')
+    act(() => emit('sessionEvent', { type: 'sessionMeta', sessionId: 's1', model: 'gpt-5', permissionMode: 'full-auto' }))
+    expect(result.current.mode).toBe('full-auto')
+  })
+
+  it('keeps the latest intent when an earlier acknowledgement arrives', () => {
+    const { result } = renderHook(() => useSessionRuntime('s1'))
+    act(() => emit('sessionEvent', { type: 'sessionMeta', sessionId: 's1', model: 'gpt-5', permissionMode: 'full-auto' }))
+    act(() => result.current.onSetMode('plan'))
+    act(() => result.current.onSetMode('default'))
+    expect(result.current.pendingMode).toBe('default')
+    act(() => emit('sessionEvent', { type: 'sessionMeta', sessionId: 's1', model: 'gpt-5', permissionMode: 'plan' }))
+    expect(result.current.mode).toBe('plan')
+    expect(result.current.pendingMode).toBe('default')
+    act(() => emit('sessionEvent', { type: 'sessionMeta', sessionId: 's1', model: 'gpt-5', permissionMode: 'full-auto' }))
+    expect(result.current.mode).toBe('full-auto')
+    expect(result.current.pendingMode).toBeNull()
+  })
+
+  it('does not claim a sent request was applied when native policy refuses it', () => {
+    const { result } = renderHook(() => useSessionRuntime('s1'))
+    act(() => result.current.onSetMode('full-auto'))
+    expect(result.current.pendingMode).toBe('full-auto')
+    act(() => emit('sessionEvent', { type: 'error', sessionId: 's1', code: 'codex_sandbox_change_refused', message: 'Policy was refused' }))
+    expect(result.current.pendingMode).toBeNull()
+    expect(result.current.mode).toBe('interactive')
+  })
+
+  it('does not create pending intent when the socket rejects the selection', () => {
+    const { result } = renderHook(() => useSessionRuntime('s1'))
+    setPermissionMode.mockReturnValue(false)
+    act(() => result.current.onSetMode('plan'))
+    expect(result.current.pendingMode).toBeNull()
+    expect(result.current.mode).toBe('interactive')
+  })
+
+  it('initializes an idle reattach from the live status snapshot and resets across sessions', () => {
+    const { result, rerender } = renderHook(({ id }) => useSessionRuntime(id), { initialProps: { id: 's1' } })
+    act(() => emit('sessionEvent', { type: 'status', sessionId: 's1', state: 'idle', count: 0, permissionMode: 'full-auto' }))
+    expect(result.current.mode).toBe('full-auto')
+    rerender({ id: 's2' })
+    expect(result.current.mode).toBe('interactive')
+    act(() => result.current.onSetMode('full-auto'))
+    expect(result.current.mode).toBe('interactive')
+  })
+
+  it('ignores another session and legacy metadata without an effective mode', () => {
+    const { result } = renderHook(() => useSessionRuntime('s1'))
+    act(() => emit('sessionEvent', { type: 'sessionMeta', sessionId: 's1', model: 'gpt-5', permissionMode: 'full-auto' }))
+    act(() => emit('sessionEvent', { type: 'sessionMeta', sessionId: 's2', model: 'gpt-5', permissionMode: 'plan' }))
+    act(() => emit('sessionEvent', { type: 'sessionMeta', sessionId: 's1', model: 'gpt-5' }))
+    expect(result.current.mode).toBe('full-auto')
   })
 })

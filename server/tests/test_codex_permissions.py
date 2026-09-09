@@ -22,7 +22,7 @@ from server.codex.permissions import (
     profile_for_mode,
     supported_modes,
 )
-from server.sessions.permissions import PermissionRegistry, to_sdk_permission_mode
+from server.sessions.permissions import PermissionRegistry
 from server.sessions.types import VALID_SESSION_MODES
 
 # Probe tools spanning the classes PermissionRegistry distinguishes: read-only,
@@ -119,7 +119,7 @@ def test_profiles_are_frozen_and_slotted():
     ("allowlist", CodexSandboxMode.WORKSPACE_WRITE, CodexApprovalPolicy.UNTRUSTED),
     ("auto", CodexSandboxMode.WORKSPACE_WRITE, CodexApprovalPolicy.UNTRUSTED),
     ("acceptEdits", CodexSandboxMode.WORKSPACE_WRITE, CodexApprovalPolicy.UNTRUSTED),
-    ("full-auto", CodexSandboxMode.WORKSPACE_WRITE, CodexApprovalPolicy.ON_REQUEST),
+    ("full-auto", CodexSandboxMode.DANGER_FULL_ACCESS, CodexApprovalPolicy.NEVER),
     ("bypassPermissions", CodexSandboxMode.DANGER_FULL_ACCESS, CodexApprovalPolicy.NEVER),
 ])
 def test_mode_maps_to_expected_profile(mode, sandbox, approval):
@@ -168,12 +168,9 @@ def test_a_mode_that_prompts_a_human_never_gets_an_unattended_profile(mode):
 
 
 @pytest.mark.parametrize("mode", sorted(PROFILES))
-def test_only_a_permission_bypassing_mode_gets_the_unsandboxed_profile(mode):
-    """``danger-full-access`` removes the sandbox entirely, so it is reserved for
-    the one mode ccswitch itself defines as bypassing the engine's permission
-    system (``to_sdk_permission_mode`` returns ``bypassPermissions`` only there)."""
+def test_only_a_fully_unattended_mode_gets_the_unsandboxed_profile(mode):
     if profile_for_mode(mode).sandbox_mode is CodexSandboxMode.DANGER_FULL_ACCESS:
-        assert to_sdk_permission_mode(mode) == "bypassPermissions"
+        assert _auto_approved(mode) == frozenset(PROBE_TOOLS)
 
 
 @pytest.mark.parametrize("profile", [*(PROFILES[m] for m in sorted(PROFILES)), ASSISTANT_PROFILE],
@@ -196,16 +193,12 @@ def test_a_confined_sandbox_always_keeps_an_approval_channel(profile):
         f"{profile.sandbox_mode.value} + never leaves no way out of the sandbox")
 
 
-def test_full_auto_keeps_the_workspace_sandbox_and_its_network_isolation():
-    """The approval channel is the ONLY thing ``full-auto`` gains. Its sandbox
-    stays ``workspace-write`` and network-isolated, so
-    ``unattended_launch_blocker`` still refuses it for automations, which have
-    nobody to answer the card."""
+def test_full_auto_can_complete_without_human_escalation():
     profile = profile_for_mode("full-auto")
-    assert profile.sandbox_mode is CodexSandboxMode.WORKSPACE_WRITE
-    assert profile.network_egress is False
-    # The operator prose must describe the new behaviour, not the old dead end.
-    assert "fails instead of prompting" not in profile.description
+    assert profile is profile_for_mode("bypassPermissions")
+    assert profile.network_egress
+    assert not profile.approval_policy.prompts_human
+    assert profile.sandbox_mode is CodexSandboxMode.DANGER_FULL_ACCESS
 
 
 def test_plan_mode_never_gets_a_write_capable_sandbox():

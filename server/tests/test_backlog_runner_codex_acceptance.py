@@ -12,11 +12,8 @@ reviewed that gap and explicitly accepted it to widen the ceiling to
 of this file is the reviewable record of that decision, not a claim that the
 live run happened.
 
-The headline finding is :func:`test_a_full_auto_codex_automation_is_refused`:
-Codex's ``full-auto`` profile is network-isolated, so an unattended session
-would run to completion and then fail at ``git push``. That is not a Codex bug
-and not something the runner can prompt its way around — it is the sandbox — so
-the launch path refuses up front instead of spending a session to discover it.
+Full-auto grants unattended filesystem and network access. Restrictive modes
+remain refused before spending a session.
 """
 from __future__ import annotations
 
@@ -28,9 +25,7 @@ from ccswitch.engines import AgentEngine
 from server.automations.backlog_prompt import build_implement_prompt
 from server.automations.backlog_selection import Batch
 from server.automations.engine_policy import (
-    CODEX_NETWORK_OPT_IN_MODE,
     EnginePolicy,
-    escalate_for_codex_network_opt_in,
     unattended_launch_blocker,
 )
 from server.db import db_session, init_db
@@ -96,23 +91,16 @@ def test_the_completion_and_no_pr_markers_are_engine_neutral():
 # 2. Launch preconditions — the sandbox finding.                                #
 # --------------------------------------------------------------------------- #
 
-def test_a_full_auto_codex_automation_is_refused():
-    """``full-auto`` is the automation default (see ``context.py``) and maps to
-    Codex's network-isolated ``workspace-write`` sandbox. The run would produce a
-    branch it can never push, so the launch is refused with a reason an operator
-    can act on."""
-    blocker = unattended_launch_blocker(AgentEngine.CODEX, "full-auto")
-    assert blocker is not None
-    assert "network" in blocker.lower()
+def test_full_auto_can_complete_the_automation_contract():
+    assert unattended_launch_blocker(AgentEngine.CODEX, "full-auto") is None
 
 
-@pytest.mark.parametrize("mode", ["interactive", "acceptEdits", "auto",
-                                  "allowlist", "plan"])
-def test_every_other_sandboxed_mode_is_refused_too(mode):
+@pytest.mark.parametrize("mode", ["interactive", "acceptEdits", "auto", "allowlist", "plan"])
+def test_every_sandboxed_mode_is_refused(mode):
     assert unattended_launch_blocker(AgentEngine.CODEX, mode) is not None
 
 
-def test_bypass_permissions_is_the_one_mode_that_can_complete_the_contract():
+def test_bypass_permissions_can_also_complete_the_contract():
     assert unattended_launch_blocker(AgentEngine.CODEX, "bypassPermissions") is None
 
 
@@ -124,48 +112,6 @@ def test_claude_automations_are_unaffected_by_the_precondition():
 
 def test_an_unmappable_mode_is_refused_rather_than_assumed_fine():
     assert unattended_launch_blocker(AgentEngine.CODEX, "nonesuch") is not None
-
-
-# --------------------------------------------------------------------------- #
-# 2b. The owner-authorized network opt-in (#1263) — narrow by construction.    #
-# --------------------------------------------------------------------------- #
-
-def test_the_opt_in_is_a_no_op_when_unset():
-    mode, note = escalate_for_codex_network_opt_in(
-        AgentEngine.CODEX, "full-auto", network_opt_in=False)
-    assert (mode, note) == ("full-auto", None)
-    assert unattended_launch_blocker(AgentEngine.CODEX, mode) is not None
-
-
-def test_the_opt_in_escalates_only_the_full_auto_fallback():
-    mode, note = escalate_for_codex_network_opt_in(
-        AgentEngine.CODEX, "full-auto", network_opt_in=True)
-    assert mode == CODEX_NETWORK_OPT_IN_MODE
-    assert note is not None and "full-auto" in note
-    assert unattended_launch_blocker(AgentEngine.CODEX, mode) is None
-
-
-@pytest.mark.parametrize("mode", ["interactive", "acceptEdits", "auto",
-                                  "allowlist", "plan"])
-def test_the_opt_in_never_overrides_an_explicit_or_pinned_mode(mode):
-    """An operator who pinned or explicitly chose a restrictive mode is making a
-    deliberate choice; the opt-in only rescues the automation's OWN unattended
-    fallback, it must never read as license to override a human's pick."""
-    escalated, note = escalate_for_codex_network_opt_in(
-        AgentEngine.CODEX, mode, network_opt_in=True)
-    assert (escalated, note) == (mode, None)
-
-
-def test_the_opt_in_does_not_touch_an_already_egress_capable_mode():
-    escalated, note = escalate_for_codex_network_opt_in(
-        AgentEngine.CODEX, "bypassPermissions", network_opt_in=True)
-    assert (escalated, note) == ("bypassPermissions", None)
-
-
-def test_the_opt_in_is_codex_only():
-    escalated, note = escalate_for_codex_network_opt_in(
-        AgentEngine.CLAUDE_CODE, "full-auto", network_opt_in=True)
-    assert (escalated, note) == ("full-auto", None)
 
 
 # --------------------------------------------------------------------------- #
@@ -199,13 +145,14 @@ async def _codex_runner_ctx(tmp_path, db_name, monkeypatch, *, mode="full-auto")
     return ctx
 
 
-def test_a_codex_spawn_under_full_auto_refuses_and_records_why(tmp_path, monkeypatch):
+def test_a_codex_spawn_under_full_auto_proceeds_without_escalation(tmp_path, monkeypatch):
     async def run():
         ctx = await _codex_runner_ctx(tmp_path, "cx_a.db", monkeypatch)
         rec = await ctx.spawn_session(origin_ref="o/r#1", name="backlog o/r#1")
-        assert rec is None, "a session that cannot push must not be spawned"
+        assert rec is not None
+        assert rec.launch_kwargs["permission_mode"] == "full-auto"
         kinds = [e["kind"] for e in await ctx.list_events()]
-        assert "engine_launch_refused" in kinds
+        assert "engine_launch_refused" not in kinds
 
     asyncio.run(run())
 
@@ -225,40 +172,15 @@ def test_a_codex_spawn_with_an_egress_capable_mode_proceeds(tmp_path, monkeypatc
     asyncio.run(run())
 
 
-def test_a_codex_spawn_under_the_network_opt_in_escalates_and_proceeds(
-        tmp_path, monkeypatch):
-    """With CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN set, the automation's own
-    full-auto fallback is escalated rather than refused, and the escalation is
-    recorded — not silent."""
-
-    async def run():
-        ctx = await _codex_runner_ctx(tmp_path, "cx_e.db", monkeypatch)
-        monkeypatch.setenv("CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN", "true")
-        rec = await ctx.spawn_session(origin_ref="o/r#1", name="backlog o/r#1")
-        assert rec is not None
-        assert rec.launch_kwargs["permission_mode"] == "bypassPermissions"
-        kinds = [e["kind"] for e in await ctx.list_events()]
-        assert "engine_network_opt_in_escalated" in kinds
-        assert "engine_launch_refused" not in kinds
-
-    asyncio.run(run())
-
-
-def test_a_codex_spawn_pinned_to_a_restrictive_mode_stays_refused_under_opt_in(
-        tmp_path, monkeypatch):
-    """The opt-in must not read as license to override an operator's own pinned
-    account default — only the automation's full-auto fallback is in scope."""
-
+@pytest.mark.parametrize("mode", ["interactive", "acceptEdits", "auto", "allowlist", "plan"])
+def test_a_codex_spawn_with_a_restrictive_mode_stays_refused(tmp_path, monkeypatch, mode):
     async def run():
         ctx = await _codex_runner_ctx(tmp_path, "cx_f.db", monkeypatch)
-        monkeypatch.setenv("CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN", "true")
         rec = await ctx.spawn_session(origin_ref="o/r#1", name="backlog o/r#1",
-                                      permission_mode="acceptEdits")
+                                      permission_mode=mode)
         assert rec is None
         kinds = [e["kind"] for e in await ctx.list_events()]
         assert "engine_launch_refused" in kinds
-        assert "engine_network_opt_in_escalated" not in kinds
-
     asyncio.run(run())
 
 
@@ -510,13 +432,7 @@ def test_the_backlog_runner_ceiling_is_codex_allowed():
     sanitized evidence recorded — was explicitly accepted as outstanding rather
     than blocking the ceiling.
 
-    Three independent gates still stand between this and an actual live Codex
-    launch, none of which this test flips: ``CCSWITCH_CODEX_AUTOMATIONS_ENABLED``
-    (global kill switch, default false), the automation's own ``engine`` config
-    opt-in (default Claude), and ``CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN``
-    (default false — without it, ``unattended_launch_blocker`` still refuses an
-    unattended Codex launch outright because ``full-auto`` cannot reach the
-    network).
+    The global automation kill switch and each origin’s engine opt-in remain off.
     """
     from server.automations.registry import registry
 

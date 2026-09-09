@@ -427,3 +427,14 @@ def test_remote_orchestrator_latest_summary_proxies_with_viewing():
     assert out == "Doing X"
     ro._client.call.assert_awaited_once_with("latest_summary", session_id="s1", viewing=True,
                                              timeout=None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["full-auto", None])
+async def test_ensure_driver_preserves_effective_mode_snapshot(mode):
+    reply = {"found": True, "status": "idle", "queued": []}
+    if mode is not None:
+        reply["permission_mode"] = mode
+    remote = RemoteOrchestrator(_RecordingClient(reply))
+    driver = await remote.ensure_driver("s1")
+    assert driver.mode == mode

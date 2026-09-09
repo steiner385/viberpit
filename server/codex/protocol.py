@@ -584,6 +584,20 @@ class CodexAppServerClient:
         assert isinstance(response, schema.ThreadResumeResponse)
         return response
 
+    async def fork_thread(
+        self, params: schema.ThreadForkParams
+    ) -> schema.ThreadResumeResponse:
+        response = await self.call(schema.METHOD_THREAD_FORK, params.to_wire())
+        assert isinstance(response, schema.ThreadResumeResponse)
+        return response
+
+    async def get_thread_goal(
+        self, params: schema.ThreadGoalGetParams,
+    ) -> schema.ThreadGoalGetResponse:
+        response = await self.call(schema.METHOD_THREAD_GOAL_GET, params.to_wire())
+        assert isinstance(response, schema.ThreadGoalGetResponse)
+        return response
+
     async def read_thread(
         self, params: schema.ThreadReadParams
     ) -> schema.ThreadReadResponse:

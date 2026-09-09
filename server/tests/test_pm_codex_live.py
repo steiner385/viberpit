@@ -63,9 +63,8 @@ SLUG = "codex-live-pm"
 DEFAULT_BRANCH = "main"
 _TIMEOUT_S = 900
 
-# The map/critic sessions run in the profile #1263's opt-in escalates a
-# `full-auto` automation launch to; anything narrower is network-isolated and
-# could not push (`server/codex/permissions.py`).
+# The map/critic sessions run in the unsandboxed full-auto profile; confined
+# profiles cannot push (`server/codex/permissions.py`).
 _WRITE_SANDBOX = "danger-full-access"
 
 #: Appended to the map/critic prompts, fenced and labelled. The harness `origin`

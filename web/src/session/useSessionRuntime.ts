@@ -34,6 +34,8 @@ export interface SessionRuntime {
   sessionId: string
   state: TranscriptState
   mode: string
+  /** Requested change awaiting a native acknowledgement; never the effective mode. */
+  pendingMode?: string | null
   toolDetailMode: ToolDetailMode
   thinkingCollapsed: boolean
   connectionState: ConnectionState
@@ -138,7 +140,13 @@ export function useSessionRuntime(
     [state, visibleTurns, visibleSubAgents],
   )
 
-  const [mode, setMode] = useState('interactive')
+  const { data: sessions } = useSessions()
+  const sessionRecord = sessions?.find((s) => s.id === sessionId)
+  const waitsForModeAcknowledgement = sessionRecord?.engine !== 'claude_code'
+  const [modeState, setModeState] = useState<{ sessionId: string; mode: string } | null>(null)
+  const mode = modeState?.sessionId === sessionId ? modeState.mode : 'interactive'
+  const [modeRequest, setModeRequest] = useState<{ sessionId: string; mode: string } | null>(null)
+  const pendingMode = modeRequest?.sessionId === sessionId ? modeRequest.mode : null
   const [armedQuestionId, setArmedQuestionId] = useState<string | null>(null)
   // Live ack-watchdog timers (one per send), cleared on unmount so a closed session
   // never dispatches into an unmounted reducer.
@@ -174,6 +182,17 @@ export function useSessionRuntime(
       // its replayReset would wipe this session's transcript to empty (the
       // blank-on-navigation bug).
       if (isForOtherSession((e as { sessionId?: string }).sessionId)) return
+      // Native mode changes may be deferred or refused. A received request is not
+      // proof of application; metadata (or the attach status snapshot) is the ack.
+      if ((e.type === 'sessionMeta' || e.type === 'status') && e.permissionMode) {
+        setModeState({ sessionId, mode: e.permissionMode })
+        setModeRequest((request) => request?.sessionId === sessionId && (
+          request.mode === e.permissionMode || (request.mode === 'default' && e.permissionMode !== 'plan')
+        ) ? null : request)
+      }
+      if (e.type === 'error' && (
+        e.code === 'codex_permission_mode_refused' || e.code === 'codex_sandbox_change_refused'
+      )) setModeRequest(null)
       dispatch(e)
     }
     const onRotated = (msg: WsRotatedMsg) => {
@@ -372,13 +391,16 @@ export function useSessionRuntime(
   )
   const onSetMode = useCallback(
     (m: string) => {
-      // Only apply the mode locally when the frame actually left the browser. On a
-      // closed socket the send is rejected (setPermissionMode returns false + emits
-      // NOT_CONNECTED), and a stale last-write replay could clobber a newer choice —
-      // so don't optimistically show a mode the server never received (#505).
-      if (setPermissionMode(sessionId, m)) setMode(m)
+      // Codex acknowledges only the effective mode, including deferred changes and
+      // plan exit's restored mode. Legacy engines retain their existing send ack.
+      if (!setPermissionMode(sessionId, m)) return
+      if (waitsForModeAcknowledgement) {
+        setModeRequest({ sessionId, mode: m })
+      } else {
+        setModeState({ sessionId, mode: m })
+      }
     },
-    [sessionId, setPermissionMode],
+    [sessionId, setPermissionMode, waitsForModeAcknowledgement],
   )
   const onCancelQueued = useCallback(
     (index: number) => cancelQueued(sessionId, index),
@@ -418,12 +440,10 @@ export function useSessionRuntime(
 
   // ── Status-strip derived data ──────────────────────────────────────────────
   // Account: the session record's account, overridden by the latest rotation.
-  const { data: sessions } = useSessions()
   const { data: accounts } = useAccounts()
   const { data: appSettings } = useSettings()
   const toolDetailMode: ToolDetailMode = appSettings?.defaultToolDetail ?? 'auto'
   const thinkingCollapsed = appSettings?.thinkingCollapsed ?? true
-  const sessionRecord = sessions?.find((s) => s.id === sessionId)
 
   // Re-attach when this session leaves a PRE-SPAWN state (`pending_approval` /
   // `queued`) while the view is open. The mount-time attach above ran BEFORE the
@@ -516,6 +536,7 @@ export function useSessionRuntime(
     sessionId,
     state: viewState,
     mode,
+    pendingMode,
     toolDetailMode,
     thinkingCollapsed,
     connectionState,

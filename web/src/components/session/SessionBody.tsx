@@ -92,6 +92,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           liveModel={rt.liveModel}
           modelPending={rt.modelPending}
           mode={rt.mode}
+          pendingMode={rt.pendingMode}
           contextPct={rt.contextPct}
           quota={rt.quota}
           subAgents={rt.subAgents}
