@@ -1035,3 +1035,95 @@ def test_advance_live_transitions_state():
         # live is absorbing: a second tap is a 409, not a silent no-op
         r = c.post("/api/pm/projects/ccswitch/advance-live", headers=IDENTITY_HEADERS)
         assert r.status_code == 409
+
+
+def test_triage_undo_restores_overlay_and_pending():
+    """Controller ruling: the seed's starting triageState is 'unclassified', not
+    the literal 'proposed' — read the pre-accept overlay and assert undo restores
+    exactly THOSE values, rather than hardcoding a state the seed never sets."""
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        pre = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                      headers=IDENTITY_HEADERS).json()
+        r = c.post(f"/api/pm/triage/{pid}/accept", json={"edits": {"impact": 9}},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 200
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"id": pid, "status": "pending", "workItemId": wid,
+                            "triageState": pre["triageState"]}
+        # the proposal is pending again and listed
+        assert any(p["id"] == pid for p in c.get("/api/pm/triage", headers=IDENTITY_HEADERS).json())
+        # the overlay is back to its pre-accept values
+        r = c.patch(f"/api/pm/work-items/{wid}/overlay", json={}, headers=IDENTITY_HEADERS)
+        body = r.json()
+        assert body["triageState"] == pre["triageState"]
+        assert body["impact"] == pre["impact"] and body["featureId"] == pre["featureId"]
+        assert body["classifiedBy"] == pre["classifiedBy"]
+        assert body["classifiedAt"] == pre["classifiedAt"]
+        # a second undo is refused: it is pending, not resolved
+        assert c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS).status_code == 409
+        assert c.post(f"/api/pm/triage/{pid}/undo",
+                      headers=IDENTITY_HEADERS).json()["detail"]["error"] == "not_resolved"
+        # and it can be accepted again
+        assert c.post(f"/api/pm/triage/{pid}/accept", headers=IDENTITY_HEADERS).status_code == 200
+
+
+def test_triage_undo_after_reject():
+    """Same controller ruling as above: assert undo restores the pre-reject
+    overlay values (whatever the seed set them to), not a hardcoded literal."""
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        pre = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                      headers=IDENTITY_HEADERS).json()
+        assert c.post(f"/api/pm/triage/{pid}/reject", headers=IDENTITY_HEADERS).status_code == 200
+        assert c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                       headers=IDENTITY_HEADERS).json()["triageState"] == "needs_human"
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200
+        assert r.json()["triageState"] == pre["triageState"]
+        after = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                        headers=IDENTITY_HEADERS).json()
+        assert after["triageState"] == pre["triageState"]
+        assert after["impact"] == pre["impact"] and after["featureId"] == pre["featureId"]
+        assert after["classifiedBy"] == pre["classifiedBy"]
+        assert after["classifiedAt"] == pre["classifiedAt"]
+
+
+def test_triage_undo_unknown_and_expired(monkeypatch):
+    import server.api.pm as pm_api
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        assert c.post("/api/pm/triage/nope/undo", headers=IDENTITY_HEADERS).status_code == 404
+        pid, _ = _seed_one_pending(c, feature_slug="sessions")
+        assert c.post(f"/api/pm/triage/{pid}/accept", headers=IDENTITY_HEADERS).status_code == 200
+        monkeypatch.setattr(pm_api, "TRIAGE_UNDO_WINDOW_S", 0)
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 409
+        assert r.json()["detail"]["error"] == "undo_expired"
+
+
+def test_triage_undo_writes_audit_row():
+    """No GET /api/audit route exists — read the row the DB-side way, following
+    the idiom in test_overlay_patch_with_empty_body_is_a_no_op."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import AuditEvent
+
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        assert c.post(f"/api/pm/triage/{pid}/accept", headers=IDENTITY_HEADERS).status_code == 200
+        assert c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS).status_code == 200
+
+        async def _check():
+            async with db_session() as db:
+                return (await db.execute(select(AuditEvent).where(
+                    AuditEvent.type == "pm.triage.undo"))).scalars().all()
+        found = c.portal.call(_check)
+        assert len(found) == 1
+        assert found[0].detail["proposalId"] == pid and found[0].detail["workItemId"] == wid
+        assert found[0].detail["previousStatus"] == "accepted"

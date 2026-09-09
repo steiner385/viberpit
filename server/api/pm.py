@@ -42,6 +42,31 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/pm", tags=["pm"])
 
+# How long after accept/reject a proposal can be undone. The UI toast lasts
+# six seconds; the server keeps a wider window so a slow click still lands.
+TRIAGE_UNDO_WINDOW_S = 60
+
+
+def _overlay_snapshot(wi: WorkItem) -> dict:
+    return {
+        "featureId": wi.feature_id, "reach": wi.reach, "impact": wi.impact,
+        "effort": wi.effort, "confidence": wi.confidence, "triageState": wi.triage_state,
+        "classifiedBy": wi.classified_by,
+        "classifiedAt": wi.classified_at.isoformat() if wi.classified_at else None,
+    }
+
+
+def _restore_overlay(wi: WorkItem, snap: dict) -> None:
+    wi.feature_id = snap.get("featureId")
+    wi.reach = snap.get("reach")
+    wi.impact = snap.get("impact")
+    wi.effort = snap.get("effort")
+    wi.confidence = snap.get("confidence")
+    wi.triage_state = snap.get("triageState")
+    wi.classified_by = snap.get("classifiedBy")
+    at = snap.get("classifiedAt")
+    wi.classified_at = datetime.fromisoformat(at) if at else None
+
 
 def _slugify(name: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
@@ -824,6 +849,7 @@ async def _apply_accept(db, proposal: TriageProposal, identity: str, *,
         WorkItem.id == proposal.work_item_id))).scalar_one_or_none()
     if wi is None:
         raise HTTPException(status_code=404, detail={"error": "work_item_missing"})
+    proposal.undo_snapshot = _overlay_snapshot(wi)
     now = datetime.now(timezone.utc)
     edits = edits or {}
     feature_id = edits.get("featureId", proposal.proposed_feature_id)
@@ -908,6 +934,7 @@ async def reject_triage(
         WorkItem.id == prop.work_item_id))).scalar_one_or_none()
     now = datetime.now(timezone.utc)
     if wi is not None:
+        prop.undo_snapshot = _overlay_snapshot(wi)
         wi.triage_state = "needs_human"
     prop.status = "rejected"
     prop.resolved_at = now
@@ -915,6 +942,51 @@ async def reject_triage(
     await record_audit(db=db, type="pm.triage.reject", identity=identity,
                        detail={"proposalId": proposal_id})
     return {"id": prop.id, "status": "rejected"}
+
+
+@router.post("/triage/{proposal_id}/undo")
+async def undo_triage(
+    proposal_id: str,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Put an accepted or rejected proposal back to pending and restore the work
+    item's overlay from the snapshot accept/reject took (roadmap spec §10, §12).
+    Only within TRIAGE_UNDO_WINDOW_S of resolution; siblings re-proposed by the
+    drift latch are NOT restored (their no_fit_suggestion is gone)."""
+    prop = (await db.execute(select(TriageProposal).where(
+        TriageProposal.id == proposal_id))).scalar_one_or_none()
+    if prop is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found"})
+    if prop.status == "pending":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "not_resolved", "message": "proposal is pending; nothing to undo"})
+    resolved = prop.resolved_at
+    if resolved is not None and resolved.tzinfo is None:
+        resolved = resolved.replace(tzinfo=timezone.utc)  # SQLite hands back naive
+    now = datetime.now(timezone.utc)
+    if resolved is None or (now - resolved).total_seconds() > TRIAGE_UNDO_WINDOW_S:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "undo_expired",
+            "message": f"undo is only available for {TRIAGE_UNDO_WINDOW_S}s after a decision"})
+    snap = prop.undo_snapshot
+    if not snap:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "no_snapshot", "message": "this decision predates undo support"})
+    wi = (await db.execute(select(WorkItem).where(
+        WorkItem.id == prop.work_item_id))).scalar_one_or_none()
+    if wi is not None:
+        _restore_overlay(wi, snap)
+    previous = prop.status
+    prop.status = "pending"
+    prop.resolved_at = None
+    prop.undo_snapshot = None
+    await db.flush()
+    await record_audit(db=db, type="pm.triage.undo", identity=identity,
+                       detail={"proposalId": proposal_id, "workItemId": prop.work_item_id,
+                               "previousStatus": previous})
+    return {"id": prop.id, "status": "pending", "workItemId": prop.work_item_id,
+            "triageState": wi.triage_state if wi is not None else None}
 
 
 class AcceptBulkBody(BaseModel):
