@@ -1079,3 +1079,17 @@ def test_a_skill_input_survives_the_outbound_turn_start_rebuild() -> None:
         {"type": "skill", "name": "pr-review", "path": "/s/pr-review"},
         {"type": "text", "text": "PR #42"},
     ]
+
+
+@pytest.mark.parametrize("payload", [{}, {"goal": []}, {"goal": False}])
+def test_native_goal_guard_rejects_ambiguous_presence(payload):
+    with pytest.raises(schema.CodexSchemaError):
+        schema.parse_client_response(schema.METHOD_THREAD_GOAL_GET, payload)
+
+
+@pytest.mark.parametrize("goal, expected", [(None, False), ({"objective": "private"}, True)])
+def test_native_goal_guard_retains_only_presence(goal, expected):
+    response = schema.parse_client_response(schema.METHOD_THREAD_GOAL_GET, {"goal": goal})
+    assert isinstance(response, schema.ThreadGoalGetResponse)
+    assert response.has_goal is expected
+    assert "private" not in repr(response)

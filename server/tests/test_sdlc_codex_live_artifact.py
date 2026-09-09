@@ -37,6 +37,7 @@ from pathlib import Path
 import pytest
 
 from ccswitch.engines import AgentEngine
+from server.codex.permissions import profile_for_mode
 from server.sdlc.prompts import artifact_path, build_intent_prompt, build_plan_prompt, build_spec_prompt
 from server.sessions.completion import commit_trailer
 
@@ -61,10 +62,6 @@ no PR service reachable here, so perform the pull-request requirement as far as
 it can go — push the branch to `origin` — and then stop. Do not attempt `gh`.
 """
 
-# The session runs unattended in the profile #1263's opt-in escalates a
-# `full-auto` automation launch to; anything narrower is network-isolated and
-# could not push (`server/codex/permissions.py`).
-_SANDBOX = "danger-full-access"
 _STAGE_TIMEOUT_S = 900
 
 
@@ -99,8 +96,11 @@ def _run_stage(work: Path, prompt: str) -> None:
     _git(work, "checkout", "-q", DEFAULT_BRANCH)
     _git(work, "fetch", "-q", "origin")
     _git(work, "reset", "-q", "--hard", f"origin/{DEFAULT_BRANCH}")
+    profile = profile_for_mode("full-auto")
     result = subprocess.run(
-        ("codex", "exec", "-s", _SANDBOX, "-C", str(work), "--skip-git-repo-check", "-"),
+        ("codex", "exec", "-s", profile.sandbox_mode.value,
+         "-c", f'approval_policy="{profile.approval_policy.value}"',
+         "-C", str(work), "--skip-git-repo-check", "-"),
         input=prompt + _HARNESS_NOTE, text=True, capture_output=True,
         timeout=_STAGE_TIMEOUT_S)
     assert result.returncode == 0, f"codex exec failed:\n{result.stdout[-4000:]}"

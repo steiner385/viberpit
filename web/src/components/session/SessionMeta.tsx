@@ -56,6 +56,8 @@ interface Props {
   modelPending?: boolean
   /** Permission mode for the session ('plan' shows the plan-mode toggle as on). */
   mode: string
+  /** Latest requested mode, while the effective mode above is awaiting change. */
+  pendingMode?: string | null
   contextPct: number | null
   quota: UsageWindow[] | null
   subAgents: SubAgent[]
@@ -96,7 +98,7 @@ const DOT_CLASS: Record<SubAgentStatus, string> = {
   failed: 'bg-red-500',
 }
 
-export function SessionMeta({ account, engine = null, host = null, displayMode = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, mode, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
+export function SessionMeta({ account, engine = null, host = null, displayMode = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, mode, pendingMode = null, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
   const [open, setOpen] = useState(false)
   const agentCount = subAgentsSupported ? subAgents.length : 0
   const agentBadge = engineBadge(engine)
@@ -268,7 +270,7 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
           role="switch"
           aria-checked={mode === 'plan'}
           aria-label="Plan mode"
-          onClick={() => onSetMode(mode === 'plan' ? 'default' : 'plan')}
+          onClick={() => onSetMode((pendingMode ?? mode) === 'plan' ? 'default' : 'plan')}
           className={cn(
             'inline-flex items-center rounded px-2 py-0.5 text-xs font-medium min-h-[28px] border',
             mode === 'plan'
@@ -279,6 +281,9 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
         >
           plan
         </button>
+        {pendingMode && (
+          <span role="status">{pendingMode === 'plan' ? 'Plan pending' : pendingMode === 'default' ? 'Exit plan pending' : 'Mode change pending'}</span>
+        )}
 
         {/* Right cluster: live status (folded-in StatusBar) + export + session
             actions (archive/⋮) + sub-agents toggle */}

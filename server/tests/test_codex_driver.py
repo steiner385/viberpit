@@ -25,7 +25,9 @@ from server.codex.driver import (
     CodexAgentDriver,
     CodexAgentDriverFactory,
     CodexAttachmentRejected,
+    CodexPolicyTransitionBlocked,
     CodexRunnerUnavailable,
+    CodexThreadNotStarted,
 )
 from server.codex.manager import (
     RECOVER_VIA_THREAD_READ,
@@ -166,9 +168,22 @@ class Harness:
         )
         await self.manager.ensure(ACCOUNT)
         self.server = self.processes[0].server
-        self.server.rule(schema.METHOD_THREAD_START, result=thread_config())
-        self.server.rule(schema.METHOD_THREAD_RESUME, result=thread_config())
+        def configured_thread(params):
+            native_sandbox = {
+                "read-only": "readOnly", "workspace-write": "workspaceWrite",
+                "danger-full-access": "dangerFullAccess",
+            }[params["sandbox"]]
+            return thread_config(sandbox=native_sandbox,
+                                 approval_policy=params["approvalPolicy"])
+
+        self.server.rule(schema.METHOD_THREAD_START, result=configured_thread)
+        self.server.rule(schema.METHOD_THREAD_RESUME, result=configured_thread)
         self.server.rule(schema.METHOD_THREAD_READ, result={"thread": thread_payload()})
+        self.server.rule(schema.METHOD_THREAD_BACKGROUND_TERMINALS_LIST,
+                         result={"data": [], "nextCursor": None})
+        self.server.rule(schema.METHOD_THREAD_GOAL_GET, result={"goal": None})
+        self.server.rule(schema.METHOD_THREAD_FORK,
+                         error={"code": -32601, "message": "fork denied"})
         self.server.rule(schema.METHOD_THREAD_ARCHIVE, result={})
         self.server.rule(schema.METHOD_TURN_START, result={"turn": turn_payload("turn-1")})
         self.server.rule(schema.METHOD_TURN_STEER, result={"turnId": "turn-1"})
@@ -304,15 +319,12 @@ async def test_the_driver_satisfies_the_agent_driver_protocol(harness):
 
 
 @pytest.mark.asyncio
-async def test_full_auto_starts_sandboxed_but_still_able_to_ask_to_escalate(harness):
-    """``full-auto`` runs sandboxed work unattended, but a confined sandbox needs
-    an approval channel for the one thing it cannot do (commit, push, listen), or
-    every such command is silently rejected (how every Codex session on
-    2026-09-07 ended up unable to commit)."""
+async def test_full_auto_starts_with_unattended_filesystem_and_network_access(harness):
+    """Full-auto gives routine work filesystem/network authority without cards."""
     await harness.boot(mode="full-auto")
     params = harness.params(schema.METHOD_THREAD_START)
-    assert params["sandbox"] == "workspace-write"
-    assert params["approvalPolicy"] == "on-request"
+    assert params["sandbox"] == "danger-full-access"
+    assert params["approvalPolicy"] == "never"
 
 
 @pytest.mark.asyncio
@@ -808,7 +820,7 @@ async def test_the_plan_toggle_s_default_sentinel_restores_the_previous_mode(har
     assert driver.mode == "full-auto"
     assert [
         f["params"]["sandbox"] for f in harness.frames(schema.METHOD_THREAD_RESUME)
-    ] == ["read-only", "workspace-write"]
+    ] == ["read-only", "danger-full-access"]
 
 
 # ---------------------------------------------------------------------------
@@ -1253,3 +1265,492 @@ async def test_the_factory_builds_a_driver_from_the_shared_config(harness):
     assert built.engine is AgentEngine.CODEX
     assert built._model == "gpt-5.1-codex"
     assert built._effort == "high"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [None, THREAD])
+@pytest.mark.parametrize("mismatch", ["sandbox", "approval"])
+async def test_native_policy_mismatch_prevents_start(harness, resume, mismatch):
+    driver = await harness.boot(mode="full-auto", resume=resume, start=False)
+    harness.server.rule(
+        schema.METHOD_THREAD_RESUME if resume else schema.METHOD_THREAD_START,
+        result=thread_config(
+            sandbox="workspaceWrite" if mismatch == "sandbox" else "dangerFullAccess",
+            approval_policy="on-request" if mismatch == "approval" else "never",
+        ),
+    )
+    with pytest.raises(CodexRunnerUnavailable, match="permission policy"):
+        await driver.start()
+    assert harness.engine_ids == []
+    assert harness.of(ev.SessionMeta) == []
+    with pytest.raises(CodexThreadNotStarted):
+        await driver.send_prompt("must not run")
+    assert harness.frames(schema.METHOD_TURN_START) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saved_sandbox,saved_approval", [
+    ("workspaceWrite", "on-request"),
+    ("readOnly", "untrusted"),
+])
+async def test_rebuild_reconciles_saved_native_policy_with_durable_full_auto(
+    harness, saved_sandbox, saved_approval,
+):
+    # The row stores the selected base mode, while a loaded thread may retain a
+    # legacy full-auto policy or the transient plan overlay across driver loss.
+    original = await harness.boot(mode="full-auto")
+    if saved_sandbox == "readOnly":
+        await original.set_permission_mode("plan")
+        assert original.mode == "plan"
+    await original.aclose()
+    await harness.manager.stop_all()
+    harness.processes.clear()
+
+    rebuilt = await harness.boot(mode="full-auto", resume=THREAD, start=False)
+    harness.server.rule(schema.METHOD_THREAD_RESUME, result=thread_config(
+        sandbox=saved_sandbox, approval_policy=saved_approval,
+    ))
+    harness.server.rule(schema.METHOD_THREAD_FORK, result=thread_config(
+        "rebuilt-full-auto", sandbox="dangerFullAccess", approval_policy="never",
+    ))
+    await rebuilt.start()
+    await harness.settle()
+    assert rebuilt.mode == "full-auto"
+    assert harness.engine_ids[-1] == (SESSION, "rebuilt-full-auto")
+    assert harness.of(ev.SessionMeta)[-1].permission_mode == "full-auto"
+    await rebuilt.send_prompt("continue after rebuild")
+    assert harness.params(schema.METHOD_TURN_START)["threadId"] == "rebuilt-full-auto"
+    assert harness.params(schema.METHOD_TURN_START)["approvalPolicy"] == "never"
+    assert harness.params(schema.METHOD_THREAD_FORK)["threadId"] == THREAD
+    assert not harness.frames(schema.METHOD_THREAD_START)
+
+
+@pytest.mark.asyncio
+async def test_rebuild_policy_reconciliation_preserves_native_goal_with_explicit_error(harness):
+    driver = await harness.boot(mode="full-auto", resume=THREAD, start=False)
+    harness.server.rule(schema.METHOD_THREAD_RESUME, result=thread_config(sandbox="readOnly"))
+    harness.server.rule(schema.METHOD_THREAD_GOAL_GET, result={"goal": {
+        "threadId": THREAD, "objective": "Keep working", "status": "active",
+        "tokenBudget": 10000, "tokensUsed": 42, "timeUsedSeconds": 3,
+        "createdAt": 1, "updatedAt": 2,
+    }})
+    with pytest.raises(CodexPolicyTransitionBlocked, match="native goal"):
+        await driver.start()
+    assert harness.engine_ids == []
+    assert not harness.frames(schema.METHOD_THREAD_FORK)
+    assert not harness.frames(schema.METHOD_THREAD_START)
+    with pytest.raises(CodexThreadNotStarted):
+        await driver.send_prompt("must not use a mismatched native policy")
+    assert not harness.frames(schema.METHOD_TURN_START)
+
+
+@pytest.mark.asyncio
+async def test_runner_recovery_reconciles_saved_native_policy_and_updates_resume_handle(harness):
+    driver = await harness.boot(mode="full-auto", resume=THREAD)
+    harness.server.rule(schema.METHOD_THREAD_RESUME, result=thread_config(sandbox="readOnly"))
+    harness.server.rule(schema.METHOD_THREAD_FORK, result=thread_config(
+        "recovered-full-auto", sandbox="dangerFullAccess", approval_policy="never",
+    ))
+    driver._on_notice(RunnerNotice(
+        kind=RunnerNoticeKind.RESTARTED, account=ACCOUNT, generation=7,
+        recover_via=RECOVER_VIA_THREAD_READ,
+    ))
+    await harness.settle()
+    assert harness.engine_ids[-1] == (SESSION, "recovered-full-auto")
+    assert harness.failures == []
+    await driver.send_prompt("continue after runner recovery")
+    assert harness.params(schema.METHOD_TURN_START)["threadId"] == "recovered-full-auto"
+    assert harness.params(schema.METHOD_TURN_START)["approvalPolicy"] == "never"
+
+
+@pytest.mark.asyncio
+async def test_native_mismatch_on_plan_exit_blocks_execution_and_allows_retry(harness):
+    driver = await harness.boot(mode="full-auto")
+    await driver.set_permission_mode("plan")
+    harness.server.rule(schema.METHOD_THREAD_RESUME,
+                        result=thread_config(sandbox="readOnly"))
+    await driver.set_permission_mode("default")
+    await harness.settle()
+    assert driver.mode == "plan"
+    assert driver.current_status() == "needs_attention"
+    with pytest.raises(CodexRunnerUnavailable, match="permission policy"):
+        await driver.send_prompt("must not run")
+    assert harness.frames(schema.METHOD_TURN_START) == []
+    harness.server.rule(schema.METHOD_THREAD_RESUME,
+                        result=thread_config(sandbox="dangerFullAccess", approval_policy="never"))
+    await driver.set_permission_mode("default")
+    assert driver.mode == "full-auto"
+    await harness.run_turn("recovered")
+    assert harness.params(schema.METHOD_TURN_START)["approvalPolicy"] == "never"
+
+
+@pytest.mark.asyncio
+async def test_recovery_restores_full_auto_policy_and_blocks_mismatch(harness):
+    driver = await harness.boot(mode="full-auto")
+    harness.server.rule(schema.METHOD_THREAD_RESUME, result=thread_config())
+    driver._on_notice(RunnerNotice(
+        kind=RunnerNoticeKind.RESTARTED, account=ACCOUNT, generation=7,
+        recover_via=RECOVER_VIA_THREAD_READ,
+    ))
+    await harness.settle()
+    params = harness.params(schema.METHOD_THREAD_RESUME)
+    assert params["sandbox"] == "danger-full-access"
+    assert params["approvalPolicy"] == "never"
+    assert harness.failures == ["process_crash"]
+    with pytest.raises(CodexRunnerUnavailable, match="permission policy"):
+        await driver.send_prompt("must not run")
+    assert harness.frames(schema.METHOD_TURN_START) == []
+
+
+@pytest.mark.asyncio
+async def test_failed_pending_policy_preserves_queued_work(harness):
+    driver = await harness.boot(mode="full-auto")
+    await harness.run_turn("first")
+    await driver.set_permission_mode("plan")
+    harness.server.rule(schema.METHOD_TURN_STEER,
+                        error={"code": -32600, "message": "activeTurnNotSteerable"})
+    await driver.send_prompt("follow-up")
+    harness.server.rule(schema.METHOD_THREAD_RESUME,
+                        result=thread_config(sandbox="dangerFullAccess", approval_policy="never"))
+    harness.notify_turn_completed()
+    await harness.settle()
+    assert driver.queued() == ["follow-up"]
+    assert len(harness.frames(schema.METHOD_TURN_START)) == 1
+    assert driver.counters.pump_errors == 0
+    assert driver.current_status() == "needs_attention"
+
+    harness.server.rule(schema.METHOD_THREAD_RESUME,
+                        result=thread_config(sandbox="readOnly"))
+    await driver.set_permission_mode("plan")
+    await harness.settle()
+    assert driver.mode == "plan"
+    assert driver.queued() == []
+    assert driver.turn_active
+    assert len(harness.frames(schema.METHOD_TURN_START)) == 2
+    assert harness.params(schema.METHOD_TURN_START, index=1)["input"] == [
+        {"type": "text", "text": "follow-up"},
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,sandbox,approval", [
+    ("full-auto", "danger-full-access", "never"),
+    ("plan", "read-only", "untrusted"),
+    ("interactive", "workspace-write", "untrusted"),
+])
+async def test_resume_and_runner_recovery_keep_selected_policy(harness, mode, sandbox, approval):
+    driver = await harness.boot(mode=mode, resume=THREAD)
+    assert harness.params(schema.METHOD_THREAD_RESUME)["sandbox"] == sandbox
+    driver._on_notice(RunnerNotice(
+        kind=RunnerNoticeKind.RESTARTED, account=ACCOUNT, generation=7,
+        recover_via=RECOVER_VIA_THREAD_READ,
+    ))
+    await harness.settle()
+    params = harness.params(schema.METHOD_THREAD_RESUME)
+    assert params["sandbox"] == sandbox
+    assert params["approvalPolicy"] == approval
+    assert harness.failures == []
+
+
+@pytest.mark.asyncio
+async def test_assistant_recovery_requests_fresh_tool_surface_without_resuming(harness):
+    from server.assistant.options_codex import CodexAssistantOverlay
+
+    overlay = CodexAssistantOverlay(
+        base_instructions="test", dynamic_tools=(), handlers={}, cwd="/neutral",
+    )
+    driver = await harness.boot(mode="full-auto", assistant_overlay=overlay)
+    assert harness.params(schema.METHOD_THREAD_START)["sandbox"] == "read-only"
+    driver._on_notice(RunnerNotice(
+        kind=RunnerNoticeKind.RESTARTED, account=ACCOUNT, generation=7,
+        recover_via=RECOVER_VIA_THREAD_READ,
+    ))
+    await harness.settle()
+    assert harness.frames(schema.METHOD_THREAD_RESUME) == []
+    assert harness.failures == ["process_crash"]
+    with pytest.raises(CodexRunnerUnavailable):
+        await driver.send_prompt("must not run without tools")
+
+
+@pytest.mark.asyncio
+async def test_leaving_pending_plan_mode_keeps_full_auto_without_late_switch(harness):
+    driver = await harness.boot(mode="full-auto")
+    await harness.run_turn("first")
+    await driver.set_permission_mode("plan")
+    await driver.set_permission_mode("default")
+    harness.notify_turn_completed()
+    await harness.settle()
+    await driver.send_prompt("next")
+    assert driver.mode == "full-auto"
+    assert harness.frames(schema.METHOD_THREAD_RESUME) == []
+    assert harness.params(schema.METHOD_TURN_START)["approvalPolicy"] == "never"
+
+
+@pytest.mark.asyncio
+async def test_mode_acknowledgements_follow_native_verification(harness):
+    driver = await harness.boot(mode="full-auto")
+    assert [getattr(e, "permission_mode", None) for e in harness.of(ev.SessionMeta)] == [
+        "full-auto",
+    ]
+    await harness.run_turn("first")
+    await driver.set_permission_mode("plan")
+    await harness.settle()
+    assert len(harness.of(ev.SessionMeta)) == 1
+    harness.notify_turn_completed()
+    await harness.settle()
+    await driver.send_prompt("plan next")
+    await harness.settle()
+    assert harness.of(ev.SessionMeta)[-1].permission_mode == "plan"
+    harness.notify_turn_completed()
+    await harness.settle()
+    harness.server.rule(schema.METHOD_THREAD_RESUME,
+                        result=thread_config(sandbox="readOnly"))
+    await driver.set_permission_mode("default")
+    await harness.settle()
+    assert [e.permission_mode for e in harness.of(ev.SessionMeta)] == ["full-auto", "plan"]
+    harness.server.rule(schema.METHOD_THREAD_RESUME,
+                        result=thread_config(sandbox="dangerFullAccess", approval_policy="never"))
+    await driver.set_permission_mode("default")
+    await harness.settle()
+    assert harness.of(ev.SessionMeta)[-1].permission_mode == "full-auto"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("select_after_turn", [True, False])
+async def test_newer_plan_selection_supersedes_pending_full_auto(harness, select_after_turn):
+    driver = await harness.boot(mode="interactive")
+    await harness.run_turn("first")
+    await driver.set_permission_mode("full-auto")
+    if select_after_turn:
+        harness.notify_turn_completed()
+        await harness.settle()
+    await driver.set_permission_mode("plan")
+    if not select_after_turn:
+        harness.notify_turn_completed()
+        await harness.settle()
+    await driver.send_prompt("plan only")
+    await harness.settle()
+    assert driver.mode == "plan"
+    assert [
+        frame["params"]["sandbox"] for frame in harness.frames(schema.METHOD_THREAD_RESUME)
+    ] == ["read-only"]
+    assert harness.params(schema.METHOD_TURN_START, index=1)["approvalPolicy"] == "untrusted"
+    assert [event.permission_mode for event in harness.of(ev.SessionMeta)] == [
+        "interactive", "plan",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repeated_plan_exit_requests_restore_full_auto_after_ack(harness):
+    driver = await harness.boot(mode="full-auto")
+    await driver.set_permission_mode("plan")
+    await harness.run_turn("planning")
+    await driver.set_permission_mode("default")
+    await driver.set_permission_mode("default")
+    await harness.settle()
+    assert driver.mode == "plan"
+    assert [event.permission_mode for event in harness.of(ev.SessionMeta)] == [
+        "full-auto", "plan",
+    ]
+    harness.notify_turn_completed()
+    await harness.settle()
+    await driver.send_prompt("implement")
+    await harness.settle()
+    assert driver.mode == "full-auto"
+    assert [frame["params"]["sandbox"]
+            for frame in harness.frames(schema.METHOD_THREAD_RESUME)] == [
+        "read-only", "danger-full-access",
+    ]
+    assert harness.params(schema.METHOD_TURN_START, index=1)["approvalPolicy"] == "never"
+    assert harness.of(ev.SessionMeta)[-1].permission_mode == "full-auto"
+
+
+@pytest.mark.asyncio
+async def test_reentering_plan_during_pending_exit_preserves_saved_full_auto(harness):
+    driver = await harness.boot(mode="full-auto")
+    await driver.set_permission_mode("plan")
+    await harness.run_turn("planning")
+    await driver.set_permission_mode("default")
+    await driver.set_permission_mode("plan")
+    harness.notify_turn_completed()
+    await harness.settle()
+    assert driver.mode == "plan"
+    await driver.set_permission_mode("default")
+    await harness.settle()
+    assert driver.mode == "full-auto"
+    assert [frame["params"]["sandbox"]
+            for frame in harness.frames(schema.METHOD_THREAD_RESUME)] == [
+        "read-only", "danger-full-access",
+    ]
+    await driver.send_prompt("implement")
+    assert harness.params(schema.METHOD_TURN_START, index=1)["approvalPolicy"] == "never"
+
+
+@pytest.mark.asyncio
+async def test_empty_native_thread_policy_switch_restarts_without_wedging(harness):
+    driver = await harness.boot(mode="full-auto")
+    harness.server.rule(schema.METHOD_THREAD_RESUME,
+                        error={"code": -32600, "message": "no rollout found"})
+    harness.server.rule(schema.METHOD_THREAD_START,
+                        result=thread_config("empty-plan", sandbox="readOnly"))
+    await driver.set_permission_mode("plan")
+    assert driver.mode == "plan"
+    assert harness.engine_ids[-1] == (SESSION, "empty-plan")
+    assert driver.current_status() != "needs_attention"
+    await driver.send_prompt("first prompt")
+    assert harness.params(schema.METHOD_TURN_START)["threadId"] == "empty-plan"
+    assert harness.params(schema.METHOD_TURN_START)["approvalPolicy"] == "untrusted"
+
+
+@pytest.mark.asyncio
+async def test_loaded_native_policy_switch_forks_history_and_updates_resume_handle(harness):
+    driver = await harness.boot(mode="full-auto", resume=THREAD)
+    harness.server.rule(schema.METHOD_THREAD_RESUME,
+                        result=thread_config(sandbox="dangerFullAccess", approval_policy="never"))
+    harness.server.rule("thread/backgroundTerminals/list", result={"data": [], "nextCursor": None})
+    harness.server.rule("thread/fork", result=thread_config("fork-plan", sandbox="readOnly"))
+    await driver.set_permission_mode("plan")
+    assert driver.mode == "plan"
+    assert harness.engine_ids[-1] == (SESSION, "fork-plan")
+    await driver.send_prompt("keep the previous context")
+    assert harness.params(schema.METHOD_TURN_START)["threadId"] == "fork-plan"
+    assert harness.params("thread/fork")["threadId"] == THREAD
+
+
+@pytest.mark.asyncio
+async def test_loaded_native_policy_switch_does_not_orphan_background_work(harness):
+    driver = await harness.boot(mode="full-auto", resume=THREAD)
+    harness.server.rule(schema.METHOD_THREAD_RESUME,
+                        result=thread_config(sandbox="dangerFullAccess", approval_policy="never"))
+    harness.server.rule("thread/backgroundTerminals/list", result={"data": [{
+        "itemId": "item-bg", "processId": "123", "command": "npm run dev", "cwd": "/work",
+    }], "nextCursor": None})
+    await driver.set_permission_mode("plan")
+    assert driver.mode == "full-auto"
+    assert not harness.frames("thread/fork")
+    await driver.send_prompt("stop the background job")
+    assert harness.params(schema.METHOD_TURN_START)["threadId"] == THREAD
+
+
+@pytest.mark.asyncio
+async def test_guard_refusal_keeps_execution_blocked_when_original_policy_cannot_be_verified(harness):
+    driver = await harness.boot(mode="full-auto", resume=THREAD)
+
+    def mismatched_policy(params):
+        if params["sandbox"] == "read-only":
+            return thread_config(sandbox="dangerFullAccess", approval_policy="never")
+        return thread_config(sandbox="readOnly")
+
+    harness.server.rule(schema.METHOD_THREAD_RESUME, result=mismatched_policy)
+    harness.server.rule(schema.METHOD_THREAD_BACKGROUND_TERMINALS_LIST, result={"data": [{
+        "itemId": "item-bg", "processId": "123", "command": "npm run dev", "cwd": "/work",
+    }], "nextCursor": None})
+    await driver.set_permission_mode("plan")
+    assert driver.mode == "full-auto"
+    assert not harness.frames(schema.METHOD_THREAD_FORK)
+    assert driver.current_status() == "needs_attention"
+    with pytest.raises(CodexRunnerUnavailable):
+        await driver.send_prompt("cannot trust the retained mode label")
+    assert not harness.frames(schema.METHOD_TURN_START)
+
+
+@pytest.mark.asyncio
+async def test_policy_thread_persistence_failure_blocks_until_retry(harness):
+    driver = await harness.boot(mode="full-auto")
+    harness.server.rule(schema.METHOD_THREAD_RESUME,
+                        error={"code": -32600, "message": "no rollout found"})
+    harness.server.rule(schema.METHOD_THREAD_START,
+                        result=thread_config("empty-plan", sandbox="readOnly"))
+    original = driver._on_engine_session_id
+
+    async def fail_save(session_id, thread_id):
+        raise RuntimeError("database unavailable")
+
+    driver._on_engine_session_id = fail_save
+    await driver.set_permission_mode("plan")
+    assert driver.mode == "full-auto"
+    with pytest.raises(CodexRunnerUnavailable):
+        await driver.send_prompt("must not run before saved")
+    driver._on_engine_session_id = original
+    await driver.set_permission_mode("plan")
+    assert driver.mode == "plan"
+    assert harness.engine_ids[-1] == (SESSION, "empty-plan")
+    await driver.send_prompt("saved")
+    assert harness.params(schema.METHOD_TURN_START)["threadId"] == "empty-plan"
+
+
+@pytest.mark.asyncio
+async def test_failed_native_turn_start_cannot_be_replaced_as_empty(harness):
+    driver = await harness.boot(mode="full-auto")
+    harness.server.rule(schema.METHOD_TURN_START,
+                        error={"code": -32000, "message": "ambiguous turn failure"})
+    await driver.send_prompt("may have persisted")
+    harness.server.rule(schema.METHOD_THREAD_RESUME,
+                        error={"code": -32600, "message": "no rollout found"})
+    await driver.set_permission_mode("plan")
+    assert driver.mode == "full-auto"
+    assert len(harness.frames(schema.METHOD_THREAD_START)) == 1
+    with pytest.raises(CodexRunnerUnavailable):
+        await driver.send_prompt("must not drop history")
+
+
+@pytest.mark.asyncio
+async def test_fork_persistence_retry_retries_save_before_allowing_new_work(harness):
+    driver = await harness.boot(mode="full-auto", resume=THREAD)
+    harness.server.rule(schema.METHOD_THREAD_RESUME,
+                        result=thread_config(sandbox="dangerFullAccess", approval_policy="never"))
+    harness.server.rule(schema.METHOD_THREAD_FORK,
+                        result=thread_config("fork-plan", sandbox="readOnly"))
+    original = driver._on_engine_session_id
+    attempts = []
+
+    async def fail_save(session_id, thread_id):
+        attempts.append(thread_id)
+        # Saving yields to other session requests. A matching native resume on
+        # retry must not make prompts runnable during that durability gap.
+        await asyncio.sleep(0)
+        assert driver.current_status() == "needs_attention"
+        with pytest.raises(CodexRunnerUnavailable):
+            await driver.send_prompt("save is still in progress")
+        raise RuntimeError("database unavailable")
+
+    driver._on_engine_session_id = fail_save
+    await driver.set_permission_mode("plan")
+    harness.server.rule(schema.METHOD_THREAD_RESUME,
+                        result=thread_config("fork-plan", sandbox="readOnly"))
+    await driver.set_permission_mode("plan")
+    assert attempts == ["fork-plan", "fork-plan"]
+    assert driver.mode == "full-auto"
+    with pytest.raises(CodexRunnerUnavailable):
+        await driver.send_prompt("must not use an unpersisted fork")
+    driver._on_engine_session_id = original
+    await driver.set_permission_mode("plan")
+    assert harness.engine_ids[-1] == (SESSION, "fork-plan")
+    assert driver.mode == "plan"
+    await driver.send_prompt("saved fork")
+    assert harness.params(schema.METHOD_TURN_START)["threadId"] == "fork-plan"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [None, THREAD])
+async def test_native_goal_prevents_policy_fork_without_losing_goal_accounting(harness, resume):
+    driver = await harness.boot(mode="full-auto", resume=resume)
+    harness.server.rule(schema.METHOD_THREAD_RESUME,
+                        result=thread_config(sandbox="dangerFullAccess", approval_policy="never"))
+    if resume is None:
+        harness.server.rule(schema.METHOD_THREAD_RESUME,
+                            error={"code": -32600, "message": "no rollout found"})
+    harness.server.rule("thread/goal/get", result={"goal": {
+        "threadId": THREAD, "objective": "Keep working", "status": "active",
+        "tokenBudget": 10000, "tokensUsed": 42, "timeUsedSeconds": 3,
+        "createdAt": 1, "updatedAt": 2,
+    }})
+    await driver.set_permission_mode("plan")
+    await harness.settle()
+    assert not harness.frames(schema.METHOD_THREAD_FORK)
+    assert harness.frames("thread/goal/get")
+    assert driver.mode == "full-auto"
+    assert "goal" in harness.of(ev.ErrorEvent)[-1].message
+    assert len(harness.frames(schema.METHOD_THREAD_START)) == (1 if resume is None else 0)
+    await driver.send_prompt("continue the original goal")
+    assert harness.params(schema.METHOD_TURN_START)["threadId"] == THREAD

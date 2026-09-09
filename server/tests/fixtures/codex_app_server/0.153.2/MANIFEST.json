@@ -1,6 +1,6 @@
 {
  "cliVersion": "codex-cli 0.153.2",
- "contractSha256": "eca341dd40e380b9e91c01e6ad62617e4ec05a6c3a8085cf96fd8e8a4a45a44a",
+ "contractSha256": "c74a67306859f0cbdee29f7560754e004e9ba9800507197c7aa30b9ceffa1c0a",
  "documents": [
   "v1/InitializeParams.json",
   "v1/InitializeResponse.json",
@@ -21,6 +21,10 @@
   "v2/ThreadStartResponse.json",
   "v2/ThreadResumeParams.json",
   "v2/ThreadResumeResponse.json",
+  "v2/ThreadForkParams.json",
+  "v2/ThreadForkResponse.json",
+  "v2/ThreadGoalGetParams.json",
+  "v2/ThreadGoalGetResponse.json",
   "v2/ThreadReadParams.json",
   "v2/ThreadReadResponse.json",
   "v2/ThreadArchiveParams.json",

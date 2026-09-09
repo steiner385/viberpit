@@ -868,6 +868,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 out_q.put_nowait({**ev.Status(
                     state=driver.current_status(),
                     count=len(driver.queued()),
+                    permission_mode=getattr(driver, "mode", None),
                 ).to_wire(), "sessionId": session_id})
             except Exception:
                 log.warning("ws.attach: live status emit failed for %s", session_id, exc_info=True)
@@ -1297,6 +1298,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 out_q.put_nowait({**ev.Status(
                     state=driver.current_status(),
                     count=len(driver.queued()),
+                    permission_mode=getattr(driver, "mode", None),
                 ).to_wire(), "sessionId": session_id})
             except Exception:
                 log.warning("ws._ensure_live: live status emit failed for %s", session_id, exc_info=True)

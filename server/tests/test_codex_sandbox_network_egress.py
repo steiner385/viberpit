@@ -62,17 +62,15 @@ def test_only_an_unsandboxed_thread_reaches_the_network(sandbox, expected):
 
 
 @pytest.mark.parametrize("mode", ["plan", "interactive", "allowlist", "auto",
-                                  "acceptEdits", "full-auto", "default"])
+                                  "acceptEdits", "default"])
 def test_every_sandboxed_mode_is_network_isolated(mode):
-    """Including ``full-auto`` — the automation default. This is the finding that
-    blocks unattended Codex parity: approving every command without asking does
-    NOT grant the egress a `git push` needs."""
     assert permits_network_egress(mode) is False
     assert profile_for_mode(mode).network_egress is False
 
 
-def test_bypass_permissions_is_the_only_mode_that_reaches_the_network():
-    assert permits_network_egress("bypassPermissions") is True
+@pytest.mark.parametrize("mode", ["full-auto", "bypassPermissions"])
+def test_unattended_modes_reach_the_network(mode):
+    assert permits_network_egress(mode) is True
 
 
 def test_an_unmapped_mode_fails_closed_rather_than_claiming_egress():
@@ -82,3 +80,12 @@ def test_an_unmapped_mode_fails_closed_rather_than_claiming_egress():
 
     with pytest.raises(UnsupportedCodexPermissionMode):
         permits_network_egress("nonesuch")
+
+
+def test_sandbox_policy_discriminators_match_the_native_response_schema():
+    response = json.loads((_FIXTURES / "v2__ThreadStartResponse.json").read_text())
+    native_types = {
+        arm["properties"]["type"]["enum"][0]
+        for arm in response["definitions"]["SandboxPolicy"]["oneOf"]
+    }
+    assert {mode.policy_type for mode in CodexSandboxMode} <= native_types

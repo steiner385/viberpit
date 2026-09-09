@@ -156,6 +156,26 @@ describe('SessionMeta', () => {
     expect(onSetMode).toHaveBeenCalledWith('default')
   })
 
+  it('can cancel a pending plan entry without claiming plan is active', () => {
+    const onSetMode = vi.fn()
+    render(<SessionMeta {...baseProps} mode="full-auto" pendingMode="plan" onSetMode={onSetMode} />)
+    const toggle = screen.getByRole('switch', { name: /plan mode/i })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByText('Plan pending')).toBeInTheDocument()
+    fireEvent.click(toggle)
+    expect(onSetMode).toHaveBeenCalledWith('default')
+  })
+
+  it('can reverse a pending plan exit while plan is still active', () => {
+    const onSetMode = vi.fn()
+    render(<SessionMeta {...baseProps} mode="plan" pendingMode="default" onSetMode={onSetMode} />)
+    const toggle = screen.getByRole('switch', { name: /plan mode/i })
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText('Exit plan pending')).toBeInTheDocument()
+    fireEvent.click(toggle)
+    expect(onSetMode).toHaveBeenCalledWith('plan')
+  })
+
   it('omits the sub-agents control when there are none', () => {
     render(<SessionMeta {...baseProps} subAgents={[]} />)
     expect(screen.queryByRole('button', { name: /sub-agent/i })).toBeNull()

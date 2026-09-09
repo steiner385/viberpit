@@ -121,9 +121,9 @@ def test_no_mode_is_more_permissive_on_codex_than_it_is_on_ccswitch():
         assert profile_for_mode(mode).approval_policy.prompts_human
 
 
-def test_the_sdlc_stages_hit_the_same_egress_wall_as_the_backlog_runner():
+def test_sdlc_full_auto_has_egress_while_plan_stays_refused():
     """An artifact PR needs a push too, so the finding is not backlog-specific."""
-    assert unattended_launch_blocker(AgentEngine.CODEX, "full-auto") is not None
+    assert unattended_launch_blocker(AgentEngine.CODEX, "full-auto") is None
     assert unattended_launch_blocker(AgentEngine.CODEX, "plan") is not None
     assert unattended_launch_blocker(AgentEngine.CLAUDE_CODE, "full-auto") is None
 
@@ -614,20 +614,11 @@ def test_the_kill_switch_clamps_an_opted_in_sdlc_origin_back_to_claude(origin):
 
 
 @pytest.mark.parametrize("origin", ["sdlc-intake", "sdlc-synthesizer"])
-def test_an_opted_in_codex_sdlc_launch_is_still_refused_without_the_network_opt_in(
-        origin):
-    """Gate 3 of 3: past the ceiling and past the kill switch, an unattended
-    Codex artifact session is refused because its sandbox could not push the
-    branch the stage exists to produce (#1263). The escalation that lifts this
-    is owner-authorized and ships off — see the test below."""
-    from server.automations.engine_policy import escalate_for_codex_network_opt_in
+def test_an_opted_in_codex_sdlc_launch_can_complete_in_full_auto(origin):
     from server.automations.registry import registry
 
     assert registry.get(origin).engine_policy is EnginePolicy.CODEX_ALLOWED
-    mode, note = escalate_for_codex_network_opt_in(
-        AgentEngine.CODEX, "full-auto", network_opt_in=False)
-    assert note is None and mode == "full-auto"
-    assert unattended_launch_blocker(AgentEngine.CODEX, mode) is not None
+    assert unattended_launch_blocker(AgentEngine.CODEX, "full-auto") is None
 
 
 @pytest.mark.parametrize("origin", ["sdlc-intake", "sdlc-synthesizer"])
@@ -651,15 +642,6 @@ def test_the_codex_automation_kill_switch_still_ships_off():
     from server.config import get_settings
 
     assert getattr(get_settings(), "codex_automations_enabled", False) is False
-
-
-def test_the_codex_network_opt_in_still_ships_off():
-    """#1263's network-egress escalation is owner-authorized, not a default: an
-    unattended Codex automation must still be refused, not silently granted
-    danger-full-access, absent an explicit operator opt-in."""
-    from server.config import get_settings
-
-    assert getattr(get_settings(), "codex_unattended_network_opt_in", False) is False
 
 
 def test_the_db_is_untouched_by_this_suite(tmp_path):

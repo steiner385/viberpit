@@ -38,42 +38,15 @@ therefore collapse onto the interactive profile, and each `description` says so
 rather than implying the Claude behaviour was reproduced. Erring strict is a
 prompt the operator can answer; erring lax is an action they cannot take back.
 
-Two rules are absolute:
+Three rules define the boundary:
 
-1. **Never more permissive than the ccswitch mode.** If ccswitch would stop and
-   ask a human for any tool in this mode, the profile keeps an approval channel
-   (`approval_policy != never`) and keeps a sandbox. `danger-full-access` is
-   reserved for `bypassPermissions`, the single mode ccswitch itself defines as
-   bypassing the engine's permission system.
-2. **`plan` never gets a write-capable sandbox.** Plan mode means "propose, do
-   not change anything", so it maps to `read-only` — a guarantee enforced by the
-   sandbox, not by asking the model to behave.
-3. **A confined sandbox always keeps an approval channel.** `never` is paired
-   only with `danger-full-access`: in every other sandbox it removes the one
-   way a session can escalate the commands the sandbox forbids (see the
-   `full-auto` paragraph below).
-
-`full-auto` keeps `workspace-write` rather than `danger-full-access`: it is
-already "approve everything without asking" on the ccswitch side, but the
-workspace sandbox still bounds the blast radius at no cost to the operator's
-intent. An operator who genuinely wants no guardrails has `bypassPermissions`.
-
-Its approval axis is `on-request`, not `never`, and the reason is the third
-absolute rule below: a confined sandbox must keep an approval channel. Codex's
-`workspace-write` sandbox hard-protects `.git` (no config knob lifts it in the
-pinned CLI) and refuses listening sockets, so a coding session inside it can
-only commit, push or run a server-backed test suite by asking to run that one
-command outside the sandbox. Under `never` the app-server auto-declines that
-request without ever raising a card, and the session does all the work and then
-fails at the last step — every Codex session launched on 2026-09-07 under the
-`full-auto` Settings default ended that way. `on-request` is not an escalation
-of authority over `full-auto`: ccswitch already approves shell unattended in
-that mode, so a card asking a human to lift the sandbox for one command is
-strictly *less* than what the operator granted, never more. The unattended
-automation path is unaffected — `unattended_launch_blocker` still refuses a
-`full-auto` Codex launch because the sandbox is network-isolated, and #1263's
-opt-in still escalates it to `bypassPermissions`, where `never` is safe because
-there is no sandbox left to escape.
+1. Modes that ask a human for any tool retain an approval channel and sandbox.
+2. `plan` always uses a read-only sandbox.
+3. `full-auto` and `bypassPermissions` share `danger-full-access` + `never`.
+   The operator grants unattended filesystem and network execution under the
+   runner's OS permissions. A confined sandbox would require escalation for Git
+   worktree metadata, network access and listening sockets, contradicting that
+   grant. Explicit managed denials and assistant isolation remain independent.
 
 An unmapped mode raises :class:`UnsupportedCodexPermissionMode` rather than
 falling back to a default. A silent fallback is how a mode ends up running with
@@ -106,6 +79,15 @@ class CodexSandboxMode(StrEnum):
     READ_ONLY = "read-only"
     WORKSPACE_WRITE = "workspace-write"
     DANGER_FULL_ACCESS = "danger-full-access"
+
+    @property
+    def policy_type(self) -> str:
+        """Native SandboxPolicy discriminator returned by the app-server."""
+        return {
+            self.READ_ONLY: "readOnly",
+            self.WORKSPACE_WRITE: "workspaceWrite",
+            self.DANGER_FULL_ACCESS: "dangerFullAccess",
+        }[self]
 
     @property
     def write_capable(self) -> bool:
@@ -192,24 +174,13 @@ _ASK_EVERY_ACTION = CodexPermissionProfile(
     ),
 )
 
-_FULL_AUTO = CodexPermissionProfile(
-    sandbox_mode=CodexSandboxMode.WORKSPACE_WRITE,
-    approval_policy=CodexApprovalPolicy.ON_REQUEST,
-    description=(
-        "Codex runs commands and applies patches inside the workspace sandbox "
-        "without asking; network access is off and .git is read-only there, so a "
-        "commit, push or server-backed test run asks you to approve that one "
-        "command outside the sandbox."
-    ),
-)
-
 _BYPASS = CodexPermissionProfile(
     sandbox_mode=CodexSandboxMode.DANGER_FULL_ACCESS,
     approval_policy=CodexApprovalPolicy.NEVER,
     description=(
         "Codex runs unsandboxed with no approvals: full filesystem and network "
-        "access, nothing is asked and nothing is confined. Use only where the host "
-        "itself is the boundary."
+        "access under the runner’s OS permissions. Explicit managed denials still "
+        "apply. Use only where the host itself is the boundary."
     ),
 )
 
@@ -250,7 +221,7 @@ PROFILES: Final[Mapping[str, CodexPermissionProfile]] = MappingProxyType({
     "allowlist": _ASK_EVERY_ACTION,
     "auto": _ASK_EVERY_ACTION,
     "acceptEdits": _ASK_EVERY_ACTION,
-    "full-auto": _FULL_AUTO,
+    "full-auto": _BYPASS,
     "bypassPermissions": _BYPASS,
 })
 
@@ -299,9 +270,8 @@ def permits_network_egress(mode: str) -> bool:
 
     The question an UNATTENDED caller has to ask before it spends a session: an
     automation's own seed prompt ends in ``git push`` and ``gh pr create``, and
-    under a network-isolated sandbox those fail after the whole run. Every mode
-    except ``bypassPermissions`` answers False — approving every command without
-    asking (``full-auto``) is an *approval* grant, not an egress one.
+    under a network-isolated sandbox those fail after the whole run. Only ``full-auto`` and
+    ``bypassPermissions`` grant unattended filesystem and network access.
 
     Raises :class:`UnsupportedCodexPermissionMode` for an unmapped mode, like
     :func:`profile_for_mode`: a security question never gets a permissive

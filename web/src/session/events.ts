@@ -35,10 +35,10 @@ export interface EvQuestion      { type: 'question';      questionId: string; tu
 // dismissed (selected null). Rides the same stream as the question frame so a mid-turn
 // reattach (ring resupply re-delivers the question) re-resolves the recreated block.
 export interface EvQuestionResolved { type: 'questionResolved'; questionId: string; turnId: string; selected: string[] | null; mode?: string; ts?: number }
-export interface EvSessionMeta   { type: 'sessionMeta';   model: string; sessionId: string }
+export interface EvSessionMeta   { type: 'sessionMeta';   model: string; sessionId: string; permissionMode?: string }
 export interface EvTurnModel     { type: 'turnModel';     turnId: string; model: string; parentToolUseId?: string | null }
 export interface EvTitle         { type: 'title';         title: string; source: string }
-export interface EvStatus        { type: 'status';        state: string; count: number }
+export interface EvStatus        { type: 'status';        state: string; count: number; permissionMode?: string }
 export interface EvReplayReset   { type: 'replayReset'; sessionId?: string }
 export interface EvReplayComplete { type: 'replayComplete'; sessionId?: string; earliestTurn?: number; totalTurns?: number }
 export interface EvError         { type: 'error';         code: string; message: string; resetsAt?: string | null; turnId?: string | null; ts?: number }

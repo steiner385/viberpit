@@ -27,8 +27,8 @@ asked is gone and the new one never asked.
 **Never widen silently.** ``set_permission_mode`` receives unvalidated strings
 (the web plan toggle sends ``plan``/``default`` straight through), and the Codex
 sandbox is fixed for the life of a thread. An unmapped mode is refused and the
-narrower profile kept; a sandbox change is applied by re-resuming the thread at
-a turn boundary, and a failure to do so refuses the switch rather than running
+narrower profile kept; a sandbox change is applied at a turn boundary with a
+verified native resume or transcript fork, and failure refuses the switch rather than running
 the next turn under a sandbox nobody chose.
 
 **One status vocabulary.** Status is always derived through
@@ -81,7 +81,7 @@ from server.codex.permissions import (
     UnsupportedCodexPermissionMode,
     profile_for_mode,
 )
-from server.codex.protocol import CodexAppServerClient
+from server.codex.protocol import CodexAppServerClient, CodexRequestFailed
 from server.codex.redaction import scrub_exception
 from server.codex.translator import TRANSLATED_NOTIFICATIONS, CodexEventTranslator
 from server.obs.context import log_event
@@ -169,14 +169,14 @@ _UNRECOVERABLE_MESSAGE: Final = (
 )
 _RESYNC_CODE: Final = "codex_thread_lost"
 _RESYNC_MESSAGE: Final = (
-    "The Codex thread could not be re-read after the app-server restarted."
+    "The Codex thread or its permission policy could not be restored after the "
+    "app-server restarted."
 )
 _MODE_REFUSED_CODE: Final = "codex_permission_mode_refused"
 _SANDBOX_REFUSED_CODE: Final = "codex_sandbox_change_refused"
 _SANDBOX_REFUSED_MESSAGE: Final = (
-    "The Codex sandbox for this thread could not be changed, so the permission "
-    "mode was left as it was. The session keeps running under the sandbox it "
-    "was started with."
+    "The Codex permission policy could not be verified. The requested mode was "
+    "not adopted, and execution is blocked until a policy is successfully restored."
 )
 _TURN_START_FAILED_CODE: Final = "codex_turn_start_failed"
 _TURN_START_FAILED_MESSAGE: Final = "The Codex turn could not be started."
@@ -198,6 +198,10 @@ class CodexRunnerUnavailable(CodexDriverError):
     """
 
 
+class CodexPolicyTransitionBlocked(CodexDriverError):
+    """A native policy fork would abandon state that cannot be migrated safely."""
+
+
 class CodexThreadNotStarted(CodexDriverError):
     """A turn operation was attempted before :meth:`CodexAgentDriver.start`."""
 
@@ -217,6 +221,7 @@ class _Notification:
 
     method: str
     params: schema.ServerNotificationParams
+    thread_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,6 +366,9 @@ class CodexAgentDriver:
         #: A profile whose sandbox differs from the live one, waiting for the
         #: next turn boundary (the sandbox is immutable mid-thread).
         self._pending_profile: tuple[str, CodexPermissionProfile] | None = None
+        self._policy_error: str | None = None
+        self._thread_may_have_history = bool(resume)
+        self._pending_engine_session_id: str | None = None
         #: The mode in force before the plan overlay, so the toggle's "default"
         #: sentinel restores it instead of collapsing to the ask-everything
         #: profile. Same contract as ``ClaudeAgentDriver.set_permission_mode``.
@@ -500,6 +508,74 @@ class CodexAgentDriver:
             )
         return client
 
+    def _fresh_thread_params(self, profile: CodexPermissionProfile) -> schema.ThreadStartParams:
+        from server.sessions.tools.instruction import session_instructions
+
+        return schema.ThreadStartParams(
+            cwd=self.cwd,
+            model=self._model,
+            sandbox=profile.sandbox_mode.value,
+            approval_policy=profile.approval_policy.value,
+            # Codex cannot act on a model request
+            # (`AgentCapabilities.self_model_switch=False`), so it is
+            # never told about the marker — asking for a signal nothing
+            # honours burns turns on a request that is silently dropped.
+            #
+            # The session-tools paragraph rides the SAME string, through the
+            # same helper the Claude factory's system-prompt append uses, and
+            # ONLY on this branch: declaring the tools without telling the
+            # model when to reach for them leaves a surface it never uses,
+            # and saying they exist on a RESUMED thread (which cannot declare
+            # them) would describe a surface that is not there. Resume needs
+            # no matching guard — `ThreadResumeParams` carries no
+            # `developerInstructions` at all.
+            #
+            # Both flags read `self.capabilities` rather than a literal — the
+            # capability is what says a declared surface does not survive
+            # `thread/resume` (§5) and that this engine cannot act on a model
+            # request, so the day either flips this call flips with it instead
+            # of disagreeing with the capability that already answers the
+            # question.
+            developer_instructions=session_instructions(
+                session_tools=self._session_tools is not None,
+                signalling_tools=self.capabilities.durable_tool_surface,
+                self_model_switch=self.capabilities.self_model_switch,
+            ),
+            # The coding session's ccswitch tool surface, or nothing at
+            # all: an empty tuple emits no `dynamicTools` field, so a
+            # session with the flag off looks exactly as it did before.
+            dynamic_tools=(
+                ()
+                if self._session_tools is None
+                else self._session_tools.dynamic_tools
+            ),
+        )
+
+    def _register_thread(self, thread_id: str) -> None:
+        self._manager.register_thread(
+            self.account,
+            thread_id,
+            self._on_notice,
+            events=self._on_event,
+            approvals=self._on_approval,
+            user_input=self._on_user_input,
+            # Registered when EITHER surface is MOUNTED — which is not the same
+            # as "declared on this thread": a resumed coding session carries a
+            # `_session_tools` whose `dynamicTools` the pinned `thread/resume`
+            # cannot send (see server/sessions/tools/codex.py), so the callback
+            # is live with nothing declared behind it. That is deliberate and
+            # still fail-closed one layer in: `_on_dynamic_tool` refuses any name
+            # the mounted surface does not `declare()` before the permission
+            # gate, so an `item/tool/call` on such a thread is rejected by us
+            # rather than by the protocol. Left unregistered only when NEITHER
+            # surface is mounted, where the protocol's own `-32601` is the answer.
+            dynamic_tools=(
+                None
+                if (self._assistant is None and self._session_tools is None)
+                else self._on_dynamic_tool
+            ),
+        )
+
     async def start(self) -> None:
         """Open (or resume) this session's thread and subscribe to its streams."""
         client = self._client()
@@ -550,49 +626,29 @@ class CodexAgentDriver:
                 )
             )
         else:
-            from server.sessions.tools.instruction import session_instructions
-
-            response = await client.start_thread(
-                schema.ThreadStartParams(
-                    cwd=self.cwd,
-                    model=self._model,
-                    sandbox=profile.sandbox_mode.value,
-                    approval_policy=profile.approval_policy.value,
-                    # Codex cannot act on a model request
-                    # (`AgentCapabilities.self_model_switch=False`), so it is
-                    # never told about the marker — asking for a signal nothing
-                    # honours burns turns on a request that is silently dropped.
-                    #
-                    # The session-tools paragraph rides the SAME string, through the
-                    # same helper the Claude factory's system-prompt append uses, and
-                    # ONLY on this branch: declaring the tools without telling the
-                    # model when to reach for them leaves a surface it never uses,
-                    # and saying they exist on a RESUMED thread (which cannot declare
-                    # them) would describe a surface that is not there. Resume needs
-                    # no matching guard — `ThreadResumeParams` carries no
-                    # `developerInstructions` at all.
-                    #
-                    # Both flags read `self.capabilities` rather than a literal — the
-                    # capability is what says a declared surface does not survive
-                    # `thread/resume` (§5) and that this engine cannot act on a model
-                    # request, so the day either flips this call flips with it instead
-                    # of disagreeing with the capability that already answers the
-                    # question.
-                    developer_instructions=session_instructions(
-                        session_tools=self._session_tools is not None,
-                        signalling_tools=self.capabilities.durable_tool_surface,
-                        self_model_switch=self.capabilities.self_model_switch,
-                    ),
-                    # The coding session's ccswitch tool surface, or nothing at
-                    # all: an empty tuple emits no `dynamicTools` field, so a
-                    # session with the flag off looks exactly as it did before.
-                    dynamic_tools=(
-                        ()
-                        if self._session_tools is None
-                        else self._session_tools.dynamic_tools
-                    ),
-                )
-            )
+            response = await client.start_thread(self._fresh_thread_params(profile))
+        resume_handle_saved = False
+        try:
+            self._validate_policy(response, profile)
+        except CodexRunnerUnavailable:
+            if overlay is not None or not self.resume:
+                raise
+            # A durable base mode can outlive a legacy native policy or a
+            # transient plan overlay. Reuse the live transition's guarded,
+            # native-verified transcript fork instead of wedging every rebuild.
+            resumed_thread_id = response.thread.id
+            self._thread_id = resumed_thread_id
+            self._generation = self._manager.generation_for(self.account)
+            try:
+                response = await self._transition_profile(profile, restore_on_guard=False)
+            except Exception as exc:
+                if self._thread_id is not None:
+                    self._manager.unregister_thread(self.account, self._thread_id)
+                self._thread_id = None
+                if isinstance(exc, CodexPolicyTransitionBlocked):
+                    raise
+                raise CodexRunnerUnavailable(_SANDBOX_REFUSED_MESSAGE) from exc
+            resume_handle_saved = response.thread.id != resumed_thread_id
         thread_id = response.thread.id
         self._thread_id = thread_id
         self._generation = self._manager.generation_for(self.account)
@@ -607,30 +663,8 @@ class CodexAgentDriver:
         # it), and a resumed thread never sends it at all. `session_id` is the
         # thread id — the engine-native resume handle, the same role the Claude
         # SDK session id plays — so the web's model chip works unchanged.
-        self.emit(ev.SessionMeta(model=response.model, session_id=thread_id))
-        self._manager.register_thread(
-            self.account,
-            thread_id,
-            self._on_notice,
-            events=self._on_event,
-            approvals=self._on_approval,
-            user_input=self._on_user_input,
-            # Registered when EITHER surface is MOUNTED — which is not the same
-            # as "declared on this thread": a resumed coding session carries a
-            # `_session_tools` whose `dynamicTools` the pinned `thread/resume`
-            # cannot send (see server/sessions/tools/codex.py), so the callback
-            # is live with nothing declared behind it. That is deliberate and
-            # still fail-closed one layer in: `_on_dynamic_tool` refuses any name
-            # the mounted surface does not `declare()` before the permission
-            # gate, so an `item/tool/call` on such a thread is rejected by us
-            # rather than by the protocol. Left unregistered only when NEITHER
-            # surface is mounted, where the protocol's own `-32601` is the answer.
-            dynamic_tools=(
-                None
-                if (overlay is None and self._session_tools is None)
-                else self._on_dynamic_tool
-            ),
-        )
+        self._emit_session_meta(response.model)
+        self._register_thread(thread_id)
         self._closing = False
         self._pump = asyncio.create_task(
             self._pump_loop(), name=f"codex-driver-{self.session_id}"
@@ -643,7 +677,7 @@ class CodexAgentDriver:
             account=self.account,
             resumed=bool(self.resume),
         )
-        if self._on_engine_session_id is not None:
+        if self._on_engine_session_id is not None and not resume_handle_saved:
             await self._on_engine_session_id(self.session_id, thread_id)
 
     async def aclose(self) -> None:
@@ -713,6 +747,8 @@ class CodexAgentDriver:
         self._turn_buffer = []
         self._titled = False
         self.resume = None
+        self._thread_may_have_history = False
+        self._pending_engine_session_id = None
         self._thread_id = None
         await self.start()
 
@@ -734,10 +770,7 @@ class CodexAgentDriver:
         cannot silently swallow it. ``interrupt`` stops the live turn and runs
         this prompt next, ahead of anything queued.
         """
-        if self._thread_id is None:
-            raise CodexThreadNotStarted(
-                "CodexAgentDriver.send_prompt called before start()"
-            )
+        self._require_thread()
         images = images or []
         # Validate attachments BEFORE any state change: a rejected prompt must
         # not interrupt a turn or leave an entry in the queue.
@@ -798,6 +831,7 @@ class CodexAgentDriver:
         """Open a new turn for *entry*, fenced to the current runner generation."""
         await self._apply_pending_profile()
         thread_id = self._require_thread()
+        self._thread_may_have_history = True
         self._turn_active = True
         self._turn_started_at = self._clock()
         # A new turn replaces the previous turn's replay buffer, so a late
@@ -889,7 +923,14 @@ class CodexAgentDriver:
                 continue
             if not inputs:
                 continue
-            await self._start_turn(entry, inputs)
+            try:
+                await self._start_turn(entry, inputs)
+            except CodexRunnerUnavailable:
+                # A deferred profile change can fail here. Preserve the prompt
+                # while policy verification blocks execution, without killing
+                # the event pump or silently dropping queued work.
+                self._queue.insert(0, entry)
+                self._emit(ev.QueueUpdate(self.queue_wire()))
             return
 
     def _finish_turn(self) -> TurnOutcome:
@@ -1043,11 +1084,13 @@ class CodexAgentDriver:
             )
             return
         resolved = mode
-        if mode == "plan" and self.mode != "plan":
+        requested_mode = self._pending_profile[0] if self._pending_profile else self.mode
+        if mode == "plan" and self.mode != "plan" and requested_mode != "plan":
             self._pre_plan_mode = self.mode
-        elif mode == "default" and self.mode == "plan":
+        elif mode == "default" and (self.mode == "plan" or requested_mode == "plan"):
+            # Until the exit is acknowledged, repeated OFF requests must still
+            # restore the saved mode rather than replacing it with the sentinel.
             resolved = self._pre_plan_mode or "default"
-            self._pre_plan_mode = None
         try:
             profile = profile_for_mode(resolved)
         except UnsupportedCodexPermissionMode as exc:
@@ -1063,22 +1106,26 @@ class CodexAgentDriver:
                 f"the session kept its current mode ({self.mode}).",
             )
             return
-        if profile.sandbox_mode == self._profile.sandbox_mode:
-            # Only the approval policy moved, and that rides the next
-            # `turn/start` — no thread-level change is needed.
+        # Every valid selection supersedes the previous request, including an
+        # idle switch after the old request's turn ended without queued work.
+        # Otherwise the next prompt could restore stale, wider authority.
+        self._pending_profile = None
+        if profile == self._profile and self._policy_error is None:
+            if resolved != "plan":
+                self._pre_plan_mode = None
             self.mode = resolved
-            self._profile = profile
+            self._emit_session_meta()
             await self._emit_status()
             return
-        # The sandbox is fixed for the life of a thread (see the `TurnStartParams`
-        # docstring in schema.py), so a sandbox change means re-resuming. Mid-turn
-        # that would move the ground under work already running: park it for the
-        # next boundary. The mode is adopted only once the sandbox really changed,
-        # so the approval policy can never take effect under the old sandbox.
+        # Confirm BOTH settings at a turn boundary. Even an approval-only change
+        # must be acknowledged before the UI can claim the new mode is active.
         if self._turn_active:
             self._pending_profile = (resolved, profile)
             return
-        await self._apply_profile(resolved, profile)
+        if await self._apply_profile(resolved, profile):
+            # A failed deferred switch keeps queued prompts. A successful manual
+            # retry must resume that work; there is no active turn left to drain it.
+            await self._drain_queue()
 
     async def _apply_pending_profile(self) -> None:
         pending, self._pending_profile = self._pending_profile, None
@@ -1086,20 +1133,12 @@ class CodexAgentDriver:
             await self._apply_profile(*pending)
 
     async def _apply_profile(self, mode: str, profile: CodexPermissionProfile) -> bool:
-        """Re-resume the thread under *profile*'s sandbox; refuse on failure."""
+        """Apply a native-verified policy at a turn boundary; refuse on failure."""
         thread_id = self._thread_id
         if thread_id is None:
             return False
         try:
-            await self._client().resume_thread(
-                schema.ThreadResumeParams(
-                    thread_id=thread_id,
-                    cwd=self.cwd,
-                    model=self._model,
-                    sandbox=profile.sandbox_mode.value,
-                    approval_policy=profile.approval_policy.value,
-                )
-            )
+            response = await self._transition_profile(profile)
         except Exception as exc:  # noqa: BLE001 -- refuse rather than widen
             log_event(
                 logger,
@@ -1108,10 +1147,17 @@ class CodexAgentDriver:
                 session=self.session_id,
                 error=scrub_exception(exc),
             )
-            await self.emit_error(_SANDBOX_REFUSED_CODE, _SANDBOX_REFUSED_MESSAGE)
+            await self.emit_error(
+                _SANDBOX_REFUSED_CODE,
+                str(exc) if isinstance(exc, CodexPolicyTransitionBlocked)
+                else _SANDBOX_REFUSED_MESSAGE,
+            )
             return False
+        if self.mode == "plan" and mode != "plan":
+            self._pre_plan_mode = None
         self.mode = mode
         self._profile = profile
+        self._emit_session_meta(response.model)
         log_event(
             logger,
             logging.INFO,
@@ -1155,6 +1201,7 @@ class CodexAgentDriver:
         generation = self._manager.generation_for(self.account)
         if (
             self._closing
+            or self._policy_error is not None
             or thread_id is None
             or params.thread_id != thread_id
             or generation is None
@@ -1266,6 +1313,7 @@ class CodexAgentDriver:
         if (
             overlay is None
             or self._closing
+            or self._policy_error is not None
             or thread_id is None
             or params.thread_id != thread_id
             or generation is None
@@ -1368,6 +1416,7 @@ class CodexAgentDriver:
         generation = self._manager.generation_for(self.account)
         if (
             self._closing
+            or self._policy_error is not None
             or thread_id is None
             or params.thread_id != thread_id
             or generation is None
@@ -1515,7 +1564,9 @@ class CodexAgentDriver:
     def _on_event(self, method: str, params: schema.ServerNotificationParams) -> None:
         """Manager-side sink: queue only. Synchronous by contract, and the pump
         is where anything that can await happens."""
-        self._inbox.put_nowait(_Notification(method=method, params=params))
+        self._inbox.put_nowait(_Notification(
+            method=method, params=params, thread_id=self._thread_id,
+        ))
 
     def _on_notice(self, notice: RunnerNotice) -> None:
         self._inbox.put_nowait(_Notice(notice=notice))
@@ -1547,6 +1598,8 @@ class CodexAgentDriver:
                 )
 
     async def _handle_notification(self, item: _Notification) -> None:
+        if item.thread_id != self._thread_id:
+            return
         if item.method not in TRANSLATED_NOTIFICATIONS:
             await self._handle_untranslated(item)
             return
@@ -1700,10 +1753,18 @@ class CodexAgentDriver:
         thread_id = self._thread_id
         if thread_id is None:
             return
+        self._policy_error = _RESYNC_MESSAGE
+        if self._assistant is not None:
+            # Resume loses dynamic tools. Let the existing recovery path rebuild
+            # the assistant with its pinned overlay and a fresh tool declaration.
+            await self.emit_error(_RESYNC_CODE, _RESYNC_MESSAGE)
+            await self._signal_recoverable("process_crash")
+            return
         try:
             await self._client().read_thread(
                 schema.ThreadReadParams(thread_id=thread_id, include_turns=False)
             )
+            response = await self._transition_profile(self._profile, restore_on_guard=False)
         except Exception as exc:  # noqa: BLE001 -- one typed surface
             log_event(
                 logger,
@@ -1712,9 +1773,13 @@ class CodexAgentDriver:
                 session=self.session_id,
                 error=scrub_exception(exc),
             )
-            await self.emit_error(_RESYNC_CODE, _RESYNC_MESSAGE)
+            await self.emit_error(
+                _RESYNC_CODE,
+                str(exc) if isinstance(exc, CodexPolicyTransitionBlocked) else _RESYNC_MESSAGE,
+            )
             await self._signal_recoverable("process_crash")
             return
+        self._emit_session_meta(response.model)
         log_event(
             logger, logging.INFO, "codex.driver.resynchronized",
             session=self.session_id,
@@ -1789,7 +1854,8 @@ class CodexAgentDriver:
         Honors the last ``on_status`` overlay / persisted seed while the raw
         derivation still equals the base that produced it — see
         ``ClaudeAgentDriver.current_status`` for the shared rationale."""
-        status = derive_status(self._dash_signals())
+        status = ("needs_attention" if self._policy_error is not None
+                  else derive_status(self._dash_signals()))
         if self._status_overlay is not None and self._status_overlay[0] == status:
             return self._status_overlay[1]
         return status
@@ -1806,7 +1872,8 @@ class CodexAgentDriver:
             self._status_overlay = (base, persisted)
 
     async def _emit_status(self, count: int | None = None) -> None:
-        status = derive_status(self._dash_signals())
+        status = ("needs_attention" if self._policy_error is not None
+                  else derive_status(self._dash_signals()))
         final = status
         if self._on_status is not None:
             try:
@@ -2011,9 +2078,146 @@ class CodexAgentDriver:
 
     # -- helpers -----------------------------------------------------------
 
+    async def _transition_profile(
+        self, profile: CodexPermissionProfile,
+        *, restore_on_guard: bool = True,
+    ) -> schema.ThreadStartResponse | schema.ThreadResumeResponse:
+        """Use native acknowledgement; loaded resumes may ignore overrides.
+
+        The pinned server cannot resume an empty, unpersisted thread. For one
+        this driver knows has never received a turn, a fresh declaration loses
+        no history. A persisted thread instead forks its transcript under the
+        requested policy; never restart the account's shared app-server.
+        """
+        response: schema.ThreadStartResponse | schema.ThreadResumeResponse
+        if not self._thread_may_have_history:
+            # An empty thread cannot be resumed by the pinned server. Check
+            # state before attempting that RPC so a native goal can be cleared
+            # using the existing, already verified thread when replacement is
+            # refused.
+            await self._check_policy_replacement_state()
+        try:
+            return await self._resume_with_profile(profile)
+        except CodexRequestFailed as exc:
+            if exc.code != -32600 or self._thread_may_have_history:
+                raise
+            await self._check_policy_replacement_state()
+            response = await self._client().start_thread(self._fresh_thread_params(profile))
+        except CodexRunnerUnavailable:
+            # Resume returned another policy. The native thread remains loaded
+            # with its old settings; fork provides an acknowledged new policy.
+            thread_id = self._thread_id
+            assert thread_id is not None
+            try:
+                await self._check_policy_replacement_state()
+            except CodexPolicyTransitionBlocked:
+                # The UI retains the original mode on refusal. Restore and
+                # verify it so the user can stop background work or clear the
+                # goal without an inaccessible same-mode toggle. A failed
+                # acknowledgement keeps execution blocked.
+                if restore_on_guard:
+                    await self._resume_with_profile(self._profile)
+                raise
+            response = await self._client().fork_thread(schema.ThreadForkParams(
+                thread_id=thread_id, cwd=self.cwd, model=self._model,
+                sandbox=profile.sandbox_mode.value,
+                approval_policy=profile.approval_policy.value,
+            ))
+        self._validate_policy(response, profile)
+        # Keep execution blocked until both subscription and persisted resume
+        # handle name the verified thread. No transcript replay is necessary.
+        self._policy_error = _SANDBOX_REFUSED_MESSAGE
+        old = self._thread_id
+        if old is not None:
+            self._manager.unregister_thread(self.account, old)
+        self._thread_id = response.thread.id
+        self.resume = response.thread.id if self._thread_may_have_history else None
+        self._translator = CodexEventTranslator(
+            thread_id=response.thread.id, model=response.model,
+        )
+        self._pending_engine_session_id = response.thread.id
+        await self._persist_policy_thread()
+        return response
+
+    async def _check_policy_replacement_state(self) -> None:
+        thread_id = self._thread_id
+        assert thread_id is not None
+        # A thread that has never received a turn cannot have spawned terminals.
+        # Native background listing also rejects such unpersisted threads.
+        if (self._thread_may_have_history
+                and await background.open_background_terminals(self._client(), thread_id)):
+            raise CodexPolicyTransitionBlocked(
+                "Finish the session's background terminals before changing its Codex policy."
+            )
+        goal = await self._client().get_thread_goal(
+            schema.ThreadGoalGetParams(thread_id=thread_id),
+        )
+        if goal.has_goal:
+            raise CodexPolicyTransitionBlocked(
+                "This Codex thread has a native goal. Changing its policy would lose "
+                "the goal and its accounting. Keep the current mode or clear the goal first."
+            )
+
+    async def _persist_policy_thread(self) -> None:
+        thread_id = self._pending_engine_session_id
+        if thread_id is None:
+            return
+        # A matching resume on retry does not mean the durable handle was saved.
+        # Retry both idempotent registration and persistence before unblocking.
+        self._policy_error = _SANDBOX_REFUSED_MESSAGE
+        self._register_thread(thread_id)
+        if self._on_engine_session_id is not None:
+            await self._on_engine_session_id(self.session_id, thread_id)
+        self._pending_engine_session_id = None
+        self._policy_error = None
+
+    async def _resume_with_profile(
+        self, profile: CodexPermissionProfile,
+    ) -> schema.ThreadResumeResponse:
+        thread_id = self._thread_id
+        if thread_id is None:
+            raise CodexThreadNotStarted("this codex driver has no thread")
+        # A failed RPC can leave a changed native thread behind. Block execution
+        # before sending, and only clear the block after a matching response.
+        self._policy_error = _SANDBOX_REFUSED_MESSAGE
+        response = await self._client().resume_thread(
+            schema.ThreadResumeParams(
+                thread_id=thread_id,
+                cwd=self.cwd,
+                model=self._model,
+                sandbox=profile.sandbox_mode.value,
+                approval_policy=profile.approval_policy.value,
+            )
+        )
+        self._validate_policy(response, profile)
+        await self._persist_policy_thread()
+        return response
+
+    def _emit_session_meta(self, model: str | None = None) -> None:
+        model = model or self._translator.model
+        if self._thread_id is not None and model is not None:
+            self.emit(ev.SessionMeta(
+                model=model, session_id=self._thread_id,
+                permission_mode=None if self._assistant is not None else self.mode,
+            ))
+
+    def _validate_policy(
+        self,
+        response: schema.ThreadStartResponse | schema.ThreadResumeResponse,
+        profile: CodexPermissionProfile,
+    ) -> None:
+        """Trust the native acknowledgement, not merely the requested settings."""
+        if (response.sandbox != profile.sandbox_mode.policy_type
+                or response.approval_policy != profile.approval_policy.value):
+            self._policy_error = _SANDBOX_REFUSED_MESSAGE
+            raise CodexRunnerUnavailable(_SANDBOX_REFUSED_MESSAGE)
+        self._policy_error = None
+
     def _require_thread(self) -> str:
         if self._thread_id is None:
             raise CodexThreadNotStarted("this codex driver has no thread")
+        if self._policy_error is not None:
+            raise CodexRunnerUnavailable(self._policy_error)
         return self._thread_id
 
 

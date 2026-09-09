@@ -119,6 +119,7 @@ def register_orchestrator_rpc(app, orch) -> None:
             return {"found": False}
         _ensure_pump(session_id, driver)
         return {"found": True, "status": driver.current_status(), "queued": driver.queued(),
+                "permission_mode": getattr(driver, "mode", None),
                 "head_seq": app.state.head_seq(session_id),
                 "resume_since": app.state.resume_since(session_id),
                 "turn_active": app.state.turn_open_for(session_id),

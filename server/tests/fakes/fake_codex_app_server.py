@@ -271,7 +271,8 @@ class FakeCodexAppServer:
             if rule.error is not None:
                 self.send({"id": frame["id"], "error": rule.error})
             else:
-                self.respond(frame["id"], rule.result)
+                result = rule.result(frame["params"]) if callable(rule.result) else rule.result
+                self.respond(frame["id"], result)
 
     # -- handshake helper --------------------------------------------------
 
