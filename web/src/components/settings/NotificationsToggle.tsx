@@ -1,9 +1,28 @@
 import { useState } from 'react'
-import { enablePush, disablePush, pushSupported } from '@/api/push'
+import { enablePush, disablePush, pushSupported, installState } from '@/api/push'
+import { BRAND_NAME } from '@/brand'
 
 export function NotificationsToggle() {
   const [state, setState] = useState<'idle' | 'subscribed' | 'denied'>('idle')
   const [busy, setBusy] = useState(false)
+
+  if (installState() === 'needs-install') {
+    return (
+      <div className="text-sm text-ink-muted space-y-1">
+        <p>
+          iPhone and iPad deliver notifications only to an installed app, not to a Safari tab.
+        </p>
+        <ol className="list-decimal ml-4 space-y-0.5">
+          <li>Tap Share, then <span className="font-medium">Add to Home Screen</span>.</li>
+          <li>Open {BRAND_NAME} from your Home Screen.</li>
+          <li>Come back to this setting and tap Enable.</li>
+        </ol>
+        <p className="text-xs">
+          The order matters — enabling here in Safari does not carry over to the installed app.
+        </p>
+      </div>
+    )
+  }
 
   if (!pushSupported()) {
     return (
