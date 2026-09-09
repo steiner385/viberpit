@@ -54,7 +54,7 @@ from server.codex.redaction import Redacted, contains_secret_shaped_value
 
 PINNED_CLI_VERSION: Final = "codex-cli 0.153.2"
 PINNED_CONTRACT_SHA256: Final = (
-    "eca341dd40e380b9e91c01e6ad62617e4ec05a6c3a8085cf96fd8e8a4a45a44a"
+    "c74a67306859f0cbdee29f7560754e004e9ba9800507197c7aa30b9ceffa1c0a"
 )
 
 #: Schema documents copied verbatim into the fixtures and covered by the hash.
@@ -79,6 +79,10 @@ CURATED_SCHEMA_FILES: Final[tuple[str, ...]] = (
     "v2/ThreadStartResponse.json",
     "v2/ThreadResumeParams.json",
     "v2/ThreadResumeResponse.json",
+    "v2/ThreadForkParams.json",
+    "v2/ThreadForkResponse.json",
+    "v2/ThreadGoalGetParams.json",
+    "v2/ThreadGoalGetResponse.json",
     "v2/ThreadReadParams.json",
     "v2/ThreadReadResponse.json",
     "v2/ThreadArchiveParams.json",
@@ -188,6 +192,8 @@ METHOD_AUTH_TOKENS_REFRESH: Final = "account/chatgptAuthTokens/refresh"
 # Thread / turn lifecycle (client -> server).
 METHOD_THREAD_START: Final = "thread/start"
 METHOD_THREAD_RESUME: Final = "thread/resume"
+METHOD_THREAD_FORK: Final = "thread/fork"
+METHOD_THREAD_GOAL_GET: Final = "thread/goal/get"
 METHOD_THREAD_READ: Final = "thread/read"
 METHOD_THREAD_ARCHIVE: Final = "thread/archive"
 METHOD_TURN_START: Final = "turn/start"
@@ -262,6 +268,8 @@ SUPPORTED_CLIENT_REQUESTS: Final[frozenset[str]] = frozenset(
         METHOD_SKILLS_LIST,
         METHOD_THREAD_START,
         METHOD_THREAD_RESUME,
+        METHOD_THREAD_FORK,
+        METHOD_THREAD_GOAL_GET,
         METHOD_THREAD_READ,
         METHOD_THREAD_ARCHIVE,
         METHOD_TURN_START,
@@ -2188,6 +2196,14 @@ class ThreadResumeParams:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class ThreadForkParams(ThreadResumeParams):
+    """`thread/fork` uses the same policy overrides as resume, on a new thread.
+
+    Native fork retains the transcript but cannot declare dynamic tools.
+    """
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class ThreadReadParams:
     thread_id: str
     include_turns: bool | None = None
@@ -2213,6 +2229,11 @@ class ThreadArchiveParams:
 
     def to_wire(self) -> dict[str, Any]:
         return {"threadId": self.thread_id}
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ThreadGoalGetParams(ThreadArchiveParams):
+    """`thread/goal/get` accepts only the native thread handle."""
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -2377,6 +2398,13 @@ class ThreadReadResponse:
 @dataclass(frozen=True, slots=True, repr=False)
 class ThreadArchiveResponse:
     """`thread/archive` answers with an empty object."""
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ThreadGoalGetResponse:
+    """Only goal presence is needed; objective/accounting never leave the peer boundary."""
+
+    has_goal: bool
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -2693,7 +2721,7 @@ def validate_client_request_params(method: str, payload: Any) -> dict[str, Any]:
             personality=_optional_enum(body, "personality", what, PERSONALITIES),
             dynamic_tools=_parse_dynamic_tool_specs(body, what),
         ).to_wire()
-    if method == METHOD_THREAD_RESUME:
+    if method in (METHOD_THREAD_RESUME, METHOD_THREAD_FORK):
         _reject_unknown_fields(
             body,
             frozenset({"threadId", "cwd", "model", "sandbox", "approvalPolicy"}),
@@ -2714,7 +2742,7 @@ def validate_client_request_params(method: str, payload: Any) -> dict[str, Any]:
             thread_id=_require_str(body, "threadId", what),
             include_turns=_optional_bool(body, "includeTurns", what),
         ).to_wire()
-    if method == METHOD_THREAD_ARCHIVE:
+    if method in (METHOD_THREAD_ARCHIVE, METHOD_THREAD_GOAL_GET):
         _reject_unknown_fields(body, frozenset({"threadId"}), what)
         return ThreadArchiveParams(
             thread_id=_require_str(body, "threadId", what)
@@ -3456,6 +3484,7 @@ ClientResponse = (
     | ThreadStartResponse
     | ThreadResumeResponse
     | ThreadReadResponse
+    | ThreadGoalGetResponse
     | ThreadArchiveResponse
     | ThreadBackgroundTerminalsListResponse
     | TurnStartResponse
@@ -3481,10 +3510,17 @@ def parse_client_response(method: str, payload: Any) -> ClientResponse:
         return parse_skills_list_response(payload)
     if method == METHOD_THREAD_START:
         return parse_thread_start_response(payload)
-    if method == METHOD_THREAD_RESUME:
+    if method in (METHOD_THREAD_RESUME, METHOD_THREAD_FORK):
         return parse_thread_resume_response(payload)
     if method == METHOD_THREAD_READ:
         return parse_thread_read_response(payload)
+    if method == METHOD_THREAD_GOAL_GET:
+        body = _as_mapping(payload, "thread/goal/get response")
+        if "goal" not in body:
+            raise CodexSchemaError("thread/goal/get response requires goal")
+        if body["goal"] is not None:
+            _as_mapping(body["goal"], "thread/goal/get goal")
+        return ThreadGoalGetResponse(has_goal=body["goal"] is not None)
     if method == METHOD_THREAD_ARCHIVE:
         return parse_thread_archive_response(payload)
     if method == METHOD_THREAD_BACKGROUND_TERMINALS_LIST:

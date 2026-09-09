@@ -29,9 +29,7 @@ import pytest
 
 from ccswitch.engines import AgentEngine
 from server.automations.engine_policy import (
-    CODEX_NETWORK_OPT_IN_MODE,
     EnginePolicy,
-    escalate_for_codex_network_opt_in,
     unattended_launch_blocker,
 )
 from server.db import db_session, init_db
@@ -122,30 +120,17 @@ def test_both_engines_get_the_same_contract_apart_from_the_trailer(builder, args
 # 2. Launch preconditions — shared with every other codex_allowed origin.      #
 # --------------------------------------------------------------------------- #
 
-def test_a_full_auto_codex_pr_doctor_launch_is_refused():
-    """``full-auto`` is the automation default and maps to Codex's
-    network-isolated ``workspace-write`` sandbox: a fix/consolidation session
-    would run to completion and then fail at ``git push``."""
-    blocker = unattended_launch_blocker(AgentEngine.CODEX, "full-auto")
-    assert blocker is not None
-    assert "network" in blocker.lower()
+def test_full_auto_can_complete_the_automation_contract():
+    assert unattended_launch_blocker(AgentEngine.CODEX, "full-auto") is None
 
 
-def test_bypass_permissions_is_the_one_mode_that_can_complete_the_contract():
+def test_bypass_permissions_can_also_complete_the_contract():
     assert unattended_launch_blocker(AgentEngine.CODEX, "bypassPermissions") is None
 
 
 def test_claude_pr_doctor_launches_are_unaffected_by_the_precondition():
     for mode in ("full-auto", "acceptEdits", "interactive", "bypassPermissions"):
         assert unattended_launch_blocker(AgentEngine.CLAUDE_CODE, mode) is None
-
-
-def test_the_network_opt_in_escalates_only_the_full_auto_fallback():
-    mode, note = escalate_for_codex_network_opt_in(
-        AgentEngine.CODEX, "full-auto", network_opt_in=True)
-    assert mode == CODEX_NETWORK_OPT_IN_MODE
-    assert note is not None
-    assert unattended_launch_blocker(AgentEngine.CODEX, mode) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -178,14 +163,15 @@ async def _codex_pr_doctor_ctx(tmp_path, db_name, monkeypatch, *, config=None):
     return AutomationContext("pr-doctor", create_session=_fake_create_session)
 
 
-def test_a_codex_pr_doctor_spawn_under_full_auto_refuses_and_records_why(
+def test_a_codex_pr_doctor_spawn_under_full_auto_proceeds_without_escalation(
         tmp_path, monkeypatch):
     async def run():
         ctx = await _codex_pr_doctor_ctx(tmp_path, "cx_a.db", monkeypatch)
         rec = await ctx.spawn_session(origin_ref="o/r#7", name="pr-doctor fix o/r#7")
-        assert rec is None
+        assert rec is not None
+        assert rec.launch_kwargs["permission_mode"] == "full-auto"
         kinds = [e["kind"] for e in await ctx.list_events()]
-        assert "engine_launch_refused" in kinds
+        assert "engine_launch_refused" not in kinds
 
     asyncio.run(run())
 
@@ -251,11 +237,14 @@ async def _init_codex_pr_doctor_db(tmp_path, monkeypatch, db_name="orch.db"):
                         EnginePolicy.CODEX_ALLOWED, raising=False)
     monkeypatch.setenv("CCSWITCH_CODEX_AUTOMATIONS_ENABLED", "true")
 
+    monkeypatch.setattr("server.automations.context.resolve_permission_mode",
+                        lambda kwargs: "acceptEdits")
+
 
 @pytest.mark.asyncio
 async def test_a_refused_fresh_spawn_reports_refused_not_a_phantom_spawn(
         tmp_path, monkeypatch):
-    """No live driver + a Codex engine resolved under the default (full-auto)
+    """No live driver + a Codex engine resolved under the restrictive (acceptEdits)
     permission mode → spawn_session's own sandbox-blocker check refuses inside
     the clone/model tail. Before this fix, the caller assumed any return value
     from spawn_session was a real record and reported "spawned" with a null
@@ -322,7 +311,7 @@ async def test_a_codex_engine_fresh_spawn_skips_the_claude_only_model_assessor(
 
     monkeypatch.setattr(model_pick_mod, "resolve_model", fail_if_called, raising=True)
 
-    # Default permission mode (full-auto) still refuses the Codex spawn below —
+    # The explicit restrictive mode refuses the Codex spawn below —
     # that is fine, this test only cares that resolve_model was never reached on
     # the way there (it runs, if at all, BEFORE the clone/spawn_session tail).
     status, _sid = await orch._pr_doctor_session_fix("o/r", "feat/x", pr, "failing_ci", None)
@@ -341,13 +330,7 @@ def test_the_pr_doctor_ceiling_is_codex_allowed():
     restoring or consolidating a real PR — was explicitly accepted as
     outstanding rather than blocking the ceiling.
 
-    Three independent gates still stand between this and an actual live Codex
-    launch, none of which this test flips: ``CCSWITCH_CODEX_AUTOMATIONS_ENABLED``
-    (global kill switch, default false), the automation's own ``engine`` config
-    opt-in (default Claude), and ``CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN``
-    (default false — without it, ``unattended_launch_blocker`` still refuses an
-    unattended Codex launch outright because ``full-auto`` cannot reach the
-    network)."""
+    The global automation kill switch and each origin’s engine opt-in remain off."""
     from server.automations.registry import registry
 
     assert registry.get("pr-doctor").engine_policy is EnginePolicy.CODEX_ALLOWED

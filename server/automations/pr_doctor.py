@@ -35,11 +35,9 @@ class PrDoctor:
     # PR — is explicitly NOT covered here; the owner reviewed that gap and accepted
     # it to widen this ceiling now rather than block on it (#1267), the same
     # decision already made for backlog-runner (#1264) and the SDLC/PM origins.
-    # Three independent gates still stand between this and a live Codex launch:
+    # Two independent gates still stand between this and a live Codex launch:
     # CCSWITCH_CODEX_AUTOMATIONS_ENABLED (default false, global kill switch), this
-    # automation's own `engine` config opt-in (default "claude"), and
-    # CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN (default false, required for an
-    # unattended Codex session to reach the network at all).
+    # automation's own `engine` config opt-in (default "claude").
     engine_policy: EnginePolicy = EnginePolicy.CODEX_ALLOWED
     config_schema = [
         ConfigField(key="enabled_repos", label="Repositories",

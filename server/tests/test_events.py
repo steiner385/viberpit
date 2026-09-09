@@ -108,3 +108,12 @@ def test_recovering_to_wire():
     assert w["turnId"] == "t1"
     assert w["message"] == "Recovering the dropped turn…"
     assert "ts" in w
+
+
+def test_session_meta_reports_effective_permission_mode():
+    from server.sessions.events import SessionMeta
+    assert SessionMeta(model="gpt-5", session_id="s1", permission_mode="full-auto").to_wire()["permissionMode"] == "full-auto"
+
+
+def test_status_can_acknowledge_live_permission_mode_on_attach():
+    assert Status(state="idle", permission_mode="plan").to_wire()["permissionMode"] == "plan"

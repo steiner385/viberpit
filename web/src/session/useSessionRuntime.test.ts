@@ -262,14 +262,24 @@ describe('useSessionRuntime.onSetMode — reject on closed socket (#505)', () =>
     capturedSessionEventHandler = undefined
   })
 
-  it('applies the mode locally when the send succeeds (open socket)', () => {
+  it('waits for native acknowledgement after a successful send while the engine is unknown', () => {
     mockSetPermissionMode.mockReturnValue(true)
     const { result } = renderHook(() => useSessionRuntime('msess1'), { wrapper })
 
     act(() => { result.current.onSetMode('plan') })
 
     expect(mockSetPermissionMode).toHaveBeenCalledWith('msess1', 'plan')
+    expect(result.current.mode).toBe('interactive')
+    expect(result.current.pendingMode).toBe('plan')
+
+    act(() => {
+      capturedSessionEventHandler?.({
+        type: 'sessionMeta', sessionId: 'msess1', permissionMode: 'plan',
+      })
+    })
+
     expect(result.current.mode).toBe('plan')
+    expect(result.current.pendingMode).toBeNull()
   })
 
   it('does NOT apply the mode when the send is rejected (closed socket)', () => {

@@ -18,8 +18,8 @@ links:
 > live Codex session landing a real PR / restoring or consolidating a real PR
 > remains unverified there, an owner-accepted gap in both cases.
 > Every other automation origin is still `claude_only`. In every case the global
-> kill switch, each automation's own `engine` config opt-in, and
-> `CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN` still default off, so none of this
+> kill switch and each automation's own `engine` config opt-in
+> still default off, so none of this
 > starts a live unattended Codex launch by itself. This becomes `live` only when
 > Part 2 of the acceptance record —
 > the real-boundary runs on dobby and rocky — passes and the owner enables the
@@ -125,49 +125,34 @@ compatibility audit; API-key authentication in v1.
   operator's opt-in is a key in the origin's ordinary automation config row, so an origin that is
   not in the registry has nowhere to store one and is `claude_only` by *default* rather than by
   decision. That is why the PM origins had to be registered before they could be widened (#1268).
-- **Automation parity was blocked on the Codex sandbox, not on the prompt contract (Phase 7, Tasks
-  7.2/7.3).** The offline half of both acceptance gates passes — the backlog and SDLC seed prompts
-  carry their whole contract with no Claude-only syntax, the loops handle a refused launch without
-  stranding a claim, and permission tiers map without weakening the propose-only human gates
-  (`server/tests/test_backlog_runner_codex_acceptance.py`,
-  `server/tests/test_sdlc_codex_acceptance.py`). The blocker is elsewhere: an automation's only
-  output is a pushed branch and a PR, and Codex's sandbox is network-isolated in every mode except
-  `bypassPermissions`. `full-auto` — the automation default — maps to `workspace-write`, whose
-  `networkAccess` the pinned app-server schema defaults to `false` with no settable override on
-  `thread/start` (Codex's own config file has the knob, but config management is post-v1). So an
-  unattended Codex run would do all the work and fail at `git push`. The launch path now refuses
-  that pair up front with an operator-legible reason rather than spending a session to discover it.
-  Enabling automation parity therefore needs a separate, explicit decision about the authority an
-  unattended Codex session runs with — not just a ceiling widening.
-- **Owner-authorized network opt-in (#1263).** `CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN` (default
-  `false`) is that separate decision. It changes nothing by itself: with it unset, an unattended
-  Codex launch is refused exactly as above. Set, it escalates ONLY the automation's own `full-auto`
-  fallback — never an operator's explicit `permission_mode` or an account-pinned default — to
-  `bypassPermissions`, the one profile whose sandbox actually permits network egress, so the
-  automation's own contract (push a branch, open a PR) can complete instead of failing at the last
-  step. The escalation is recorded as an `engine_network_opt_in_escalated` activity event, never
-  silent (`server/automations/engine_policy.py:escalate_for_codex_network_opt_in`). The push half of
-  that escalation is now proven live (see the SDLC bullet below); the `gh pr create` half is not,
-  and it is the one step of the contract that is plain shell and identical on either engine.
-- **`full-auto` keeps an approval channel.** The same sandbox that blocks `git push` also
-  hard-protects `.git` and refuses listening sockets, so an *attended* `full-auto` Codex session
-  (the Settings-page default reaches every hand-created session) could not commit, run a
-  server-backed test suite, or write through a `node_modules` symlink either — and with the approval
-  axis at `never` the app-server auto-declined every escalation without a card, so on 2026-09-07
-  every Codex session did its work and then reported the environment as broken. `full-auto` now
-  maps to `workspace-write` + `on-request` (`server/codex/permissions.py`): sandboxed work still
-  runs unattended, and the one command that must leave the sandbox raises an ordinary permission
-  card. Rule 3 in that module pins the general form — `never` is paired only with
-  `danger-full-access`. Automations are unaffected: the launch blocker still refuses the
-  network-isolated pair, and #1263's opt-in still escalates it.
+- **Full-auto executes unattended.** With owner approval on 2026-09-09, Codex
+  `full-auto` shares the canonical `danger-full-access` + `never` profile with
+  `bypassPermissions` (`server/codex/permissions.py`). Commands, file edits, Git
+  worktree commits, network operations and local test servers run with the runner's
+  OS permissions without routine approval cards. The earlier `workspace-write`
+  sandbox required escalation for these operations; `on-request` restored completion
+  by interrupting the operator, while `never` refused the operations outright.
+  Explicit managed denials, plan mode, stricter modes and assistant isolation remain
+  enforced independently. Full-auto is an explicit grant of filesystem and network
+  authority, not workspace confinement.
+- **Automation permissions use the same profile.** The obsolete
+  `CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN` workaround is removed; remove it from
+  runner configuration. Full-auto no longer needs promotion to `bypassPermissions`
+  or a separate escalation event. Explicit restrictive modes are still refused by
+  `unattended_launch_blocker`, and no disabled automation is enabled by this change.
+  The global automation kill switch and each origin's engine selection remain the
+  controls for whether it runs Codex.
+- **Existing sessions adopt the corrected policy on safe resume/rebuild.** Do not
+  interrupt an active turn or restart a busy daemon just to apply it. Effective native
+  settings are checked against the selected profile; a mismatch fails closed.
 - **SDLC origins enabled (#1265 intake, #1266 synthesizer).** Both SDLC ceilings are now
   `codex_allowed`, on the evidence of an opt-in initiative driven intent → design → plan on the real
   `codex` binary (`codex-cli 0.153.2` — the same version the app-server contract is pinned to). The
   harness is committed as `server/tests/test_sdlc_codex_live_artifact.py` and is opt-in
   (`CCSWITCH_TEST_CODEX_LIVE=1`), so CI never spends OpenAI quota on it. It runs each stage's **real**
   prompt from `server/sdlc/prompts.py` in a throwaway repository whose `origin` is a local *bare*
-  repo, in the `danger-full-access` profile #1263's opt-in escalates a `full-auto` automation launch
-  to. Each stage was verified to produce exactly its own artifact at
+  repo, in the `danger-full-access` profile now shared by `full-auto` and
+  `bypassPermissions`. Each stage was verified to produce exactly its own artifact at
   `docs/sdlc/<slug>/<kind>.md`, branch off `origin/<default>`, carry
   `Co-Authored-By: Codex <noreply@openai.com>` (and never Claude's trailer), leave its upstream
   artifacts byte-identical, and push the branch. The human gate is structural rather than asserted:
@@ -176,12 +161,9 @@ compatibility audit; API-key authentication in v1.
   by the following stage finding an upstream nobody merged. Not covered, deliberately:
   `gh pr create` (needs GitHub) and therefore the non-draft/no-auto-merge PR attributes, which stay
   prompt-level guarantees checked in `server/tests/test_sdlc_codex_acceptance.py`.
-  **`codex_allowed` grants the option, not the traffic.** Three gates still ship off between this
-  and an unattended Codex artifact session: `default_engine` still answers Claude for a config that
-  says nothing, `CCSWITCH_CODEX_AUTOMATIONS_ENABLED=false` clamps an opted-in origin back to Claude,
-  and without `CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN` the launch is refused by
-  `unattended_launch_blocker`. Each is pinned by its own test in section 5 of
-  `server/tests/test_sdlc_codex_acceptance.py`.
+  **`codex_allowed` grants the option, not the traffic.** The default engine remains
+  Claude and `CCSWITCH_CODEX_AUTOMATIONS_ENABLED=false` clamps an opted-in origin
+  back to Claude. Both remain covered in `server/tests/test_sdlc_codex_acceptance.py`.
 - **PM origins enabled (#1268 onboarding/critic, #1269 classification).** `pm-onboard` and
   `pm-classify` spawn unattended sessions but are *operator-triggered* — the Projects workspace and
   the pm-triage drift path call their seams; nothing ticks them. They were not in the automation

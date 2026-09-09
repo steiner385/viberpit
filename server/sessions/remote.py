@@ -101,10 +101,11 @@ class RemoteDriver:
     """
     def __init__(self, client, session_id: str, status="idle", queued=None, head_seq=None,
                  resume_since=None, turn_active=False,
-                 turn_started_at: float | None = None):
+                 turn_started_at: float | None = None, permission_mode: str | None = None):
         self._client = client
         self._session_id = session_id
         self._status = status
+        self.mode = permission_mode
         self._queued = queued or []
         self._head_seq = head_seq
         # Where to resume the daemon topic: while a turn is open this is just before its
@@ -693,7 +694,8 @@ class RemoteOrchestrator:
         return RemoteDriver(self._client, session_id, status=r["status"], queued=r["queued"],
                             head_seq=r.get("head_seq"), resume_since=r.get("resume_since"),
                             turn_active=r.get("turn_active", False),
-                            turn_started_at=r.get("turn_started_at"))
+                            turn_started_at=r.get("turn_started_at"),
+                            permission_mode=r.get("permission_mode"))
 
     async def archive_session(self, session_id, *, archived_by: str = "user",
                               context: dict | None = None):

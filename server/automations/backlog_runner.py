@@ -151,12 +151,10 @@ class BacklogRunner:
     # handling, and shared-account concurrency are all covered. The suite's own
     # last item — a live Codex session landing a real PR in a disposable repo —
     # is explicitly NOT covered here; the owner reviewed that gap and accepted
-    # it to widen this ceiling now rather than block on it (#1264). Three
+    # it to widen this ceiling now rather than block on it (#1264). Two
     # independent gates still stand between this and a live Codex launch:
     # CCSWITCH_CODEX_AUTOMATIONS_ENABLED (default false, global kill switch),
-    # this automation's own `engine` config opt-in (default "claude"), and
-    # CCSWITCH_CODEX_UNATTENDED_NETWORK_OPT_IN (default false, required for an
-    # unattended Codex session to reach the network at all).
+    # this automation's own `engine` config opt-in (default "claude").
     engine_policy: EnginePolicy = EnginePolicy.CODEX_ALLOWED
     config_schema = [
         ConfigField(key="enabled_repos", label="Repositories", type="repo-multiselect",

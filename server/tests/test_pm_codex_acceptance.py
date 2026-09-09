@@ -37,12 +37,10 @@ import pytest
 
 from ccswitch.engines import AgentEngine
 from server.automations.engine_policy import (
-    CODEX_NETWORK_OPT_IN_MODE,
     ENGINE_CONFIG_KEY,
     EnginePolicy,
     audited_policy_map,
     default_engine,
-    escalate_for_codex_network_opt_in,
     resolve_engine,
     unattended_launch_blocker,
 )
@@ -178,16 +176,10 @@ def test_the_kill_switch_clamps_an_opted_in_pm_origin_back_to_claude():
                           automations_enabled=True) is CODEX
 
 
-def test_an_unattended_codex_pm_session_is_refused_without_the_network_opt_in():
-    """A map or critic session pushes a branch and opens a PR; a classify session
-    is read-only but still clones. ``full-auto`` is network-isolated on Codex, so
-    the launch is refused up front rather than discovered at ``git push``."""
-    assert unattended_launch_blocker(CODEX, "full-auto") is not None
+def test_an_unattended_codex_pm_session_can_complete_in_full_auto():
+    assert unattended_launch_blocker(CODEX, "full-auto") is None
     assert unattended_launch_blocker(CLAUDE, "full-auto") is None
-    mode, note = escalate_for_codex_network_opt_in(CODEX, "full-auto",
-                                                   network_opt_in=True)
-    assert mode == CODEX_NETWORK_OPT_IN_MODE and note
-    assert unattended_launch_blocker(CODEX, mode) is None
+    assert unattended_launch_blocker(CODEX, "acceptEdits") is not None
 
 
 # --------------------------------------------------------------------------- #

@@ -70,8 +70,15 @@ class SessionMeta:
     # coding session. Mirrors SessionRecord.kind (server/sessions/types.py) so a
     # live-attaching client can tell the two apart without a separate REST call.
     kind: str | None = None
-    def to_wire(self): return {"type": "sessionMeta", "model": self.model,
-                               "sessionId": self.session_id, "kind": self.kind}
+    # Effective engine permission mode, only set after native policy validation.
+    # Omitted by legacy emitters; a missing value is not an acknowledgement.
+    permission_mode: str | None = None
+    def to_wire(self):
+        wire = {"type": "sessionMeta", "model": self.model,
+                "sessionId": self.session_id, "kind": self.kind}
+        if self.permission_mode is not None:
+            wire["permissionMode"] = self.permission_mode
+        return wire
 
 @dataclass
 class TurnEnd:
@@ -194,7 +201,12 @@ class Title:
 @dataclass
 class Status:
     state: str; count: int = 0
-    def to_wire(self): return {"type": "status", "state": self.state, "count": self.count}
+    permission_mode: str | None = None
+    def to_wire(self):
+        wire = {"type": "status", "state": self.state, "count": self.count}
+        if self.permission_mode is not None:
+            wire["permissionMode"] = self.permission_mode
+        return wire
 
 @dataclass
 class Rotated:

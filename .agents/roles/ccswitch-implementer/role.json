@@ -7,7 +7,6 @@
     "model": ""
   },
   "codex": {
-    "sandbox_mode": "read-only",
     "model_reasoning_effort": "medium"
   }
 }
