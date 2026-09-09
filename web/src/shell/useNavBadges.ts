@@ -35,7 +35,9 @@ export function useNavBadges(): NavBadges {
   // while you are looking at another section, so this one 15 s poll runs
   // app-wide; it shares `[...QK.triage, null]` with the Inbox column whenever
   // that column is not narrowed to a product, so react-query dedupes the two and
-  // the nav badge and the scope badge can never disagree.
+  // the nav badge and the scope badge can never disagree. This observer OWNS
+  // that key's interval: the column passes `poll: false` for the unscoped queue
+  // precisely so the two do not run two timers over one key.
   const { data: pendingProposals = [] } = useTriage()
   const deploy = useDeployState()
 

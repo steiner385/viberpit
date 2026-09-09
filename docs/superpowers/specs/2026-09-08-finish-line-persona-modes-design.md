@@ -140,7 +140,7 @@ Each row is one PR series with its own implementation plan; each leaves master s
 | 0 | Noise: merge #1462, arm #1465 | — | — | done 2026-09-08 |
 | 1 | Board hygiene: `finish-line` and `parked` labels, ViberPit removed from the runner's repos (D7), audit issues moved to board #26, one tracking issue per row below | this spec §6 | — | — |
 | 2 | Roadmap Phase 3 at `/roadmap`: Products master/detail, Map + Initiatives scopes, three detail levels, D6 tier, redirects | roadmap spec §6–§7, §11, Phase 3 | `projects/`, `initiatives/InitiativesTab.tsx`, `initiatives.css`, `projects.css`, `IncidentQueue` moves to Needs-you | #993 |
-| 3 | Inbox scope: Triage onto the Roadmap chassis with key map and undo; delete the Triage section | roadmap spec §12 | `triage/TriageInbox.tsx`, `triage.css`, nav row | landed 2026-09-09 (row 3 PR) |
+| 3 | Inbox scope: Triage onto the Roadmap chassis with key map and undo; delete the Triage section | roadmap spec §12 | `triage/TriageInbox.tsx`, `triage.css`, nav row | landed 2026-09-09 (Closes #1467) |
 | 4 | Delivery section: Automations + CI health master/detail; delete Automations and Insights sections | this spec §4.4 | `AutomationsTab`, `InsightsView`, two nav rows | page-migration PR 6, PR 8 |
 | 5 | Pipeline → Workspace variant on the chassis | page-migration PR 10 | `.prdash-root` remap, `pipeline/kiosk.ts`, `useKioskCycle` | — |
 | 6 | Archived review → Reader; sub-agent view → Reader | page-migration PR 7 (remainder) | inline dialogs in review | — |

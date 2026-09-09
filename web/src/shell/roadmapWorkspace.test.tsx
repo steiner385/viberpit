@@ -80,23 +80,34 @@ describe('the shell only funds the roadmap map where the column renders', () => 
     },
   )
 
-  // The queue is fetched TWICE over, for two different readers, and only one of
-  // them is gated. Finish-line row 3 put the pending-proposal count on the
-  // Roadmap NAV badge, which every section renders, so one unscoped
-  // `/pm/triage` poll everywhere is the ruling rather than a leak — it is also
-  // what makes the nav badge and the Inbox scope badge agree, since both read
-  // the same unscoped key. What stays gated is the COLUMN's query: the
-  // `?projectSlug=` scoped fetch its rows come from only goes out where the
-  // column renders.
+  // The queue has TWO readers and is fetched once. Finish-line row 3 put the
+  // pending-proposal count on the Roadmap NAV badge, which every section
+  // renders, so one unscoped `/pm/triage` poll everywhere is the ruling rather
+  // than a leak — it is also what makes the nav badge and the Inbox scope badge
+  // agree, since both read the same key. What this pins is the COUNT: one
+  // observer's worth of requests off Roadmap, and no second one added by the
+  // column when the two are co-mounted on Roadmap itself.
+  //
+  // What it does NOT pin is `useRoadmapWorkspace`'s `enabled` gate: with the
+  // badge live app-wide, dropping the gate would add observers of a key that is
+  // already fetched, not requests. That gate (and the `poll` ownership below
+  // it) is guarded at the hook, in
+  // `features/roadmap/useRoadmapWorkspace.test.tsx`.
   it.each(['/sessions', '/pipeline', '/automations', '/insights', '/settings/general'])(
-    'funds only the nav badge\'s unscoped triage poll on %s',
+    'funds exactly one unscoped triage read — the nav badge\'s — on %s',
     async (path) => {
       renderApp({ path, mode: 'desktop' })
       await shellSettled()
-      await waitFor(() => expect(triageCalls()).toContain('/pm/triage'))
-      expect(triageCalls().filter((p) => p !== '/pm/triage')).toEqual([])
+      await waitFor(() => expect(triageCalls()).toEqual(['/pm/triage']))
     },
   )
+
+  it('adds no second triage request on Roadmap, where badge and column co-mount', async () => {
+    renderApp({ path: '/roadmap', mode: 'desktop' })
+    await waitFor(() => expect(askedForMap()).toBe(true))
+    expect(await screen.findByRole('tree', { name: ROADMAP.map })).toBeInTheDocument()
+    expect(triageCalls()).toEqual(['/pm/triage'])
+  })
 
   it('fetches the map on the Roadmap section, and renders the column from it', async () => {
     renderApp({ path: '/roadmap', mode: 'desktop' })

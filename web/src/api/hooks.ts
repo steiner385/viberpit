@@ -1702,16 +1702,18 @@ export function useAdvanceLive() {
 /**
  * The pending triage queue, optionally scoped to one project.
  *
- * `enabled` for the same reason `useRoadmapMap` has one: the Roadmap list
- * column's Inbox scope is mounted through `useRoadmapWorkspace`, which the
- * shell calls on EVERY route (hooks always are). Without the gate this 15 s
- * poll runs on Sessions, Pipeline, Automations, Insights, Settings and on a
- * wall display, none of which render the column.
+ * `enabled` is NOT what keeps this off the other sections, unlike
+ * `useRoadmapMap`'s: the Roadmap nav badge (`useNavBadges`) polls the unscoped
+ * queue app-wide by design, so `/pm/triage` is live on Sessions, Pipeline,
+ * Automations, Insights and Settings whatever the column does. The gate is what
+ * stops the column — mounted on every route through `useRoadmapWorkspace`,
+ * hooks always are — from being a SECOND observer of that key, and what keeps
+ * the queue off a wall display, which renders no nav badges.
  *
- * `poll` for the reason `useRoadmapMap` has one: the Roadmap PAGE observes the
- * same cache entry as the list column (the Inbox scope's detail pane finds the
- * open proposal in it), and two polling observers of one key are two requests.
- * The column owns the interval; the page reads what it fetched.
+ * `poll` for the reason `useRoadmapMap` has one: two polling observers of one
+ * key are two intervals. Whoever already owns the interval for a key keeps it —
+ * the badge for the unscoped queue, the list column for a `?product=` scope —
+ * and the other observer reads what it fetched.
  */
 export function useTriage(
   projectSlug?: string,

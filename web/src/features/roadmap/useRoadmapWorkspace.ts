@@ -4,7 +4,7 @@
  *
  * @param active whether the Roadmap list column is the one the shell is about to
  *   render. The hook is called unconditionally (hooks always are), so this is
- *   what keeps the map's 15 s poll off the six other sections and off kiosk,
+ *   what keeps the map's 15 s poll off the five other sections and off kiosk,
  *   where `app.list` does not exist at all.
  */
 import { useCallback } from 'react'
@@ -29,9 +29,17 @@ export function useRoadmapWorkspace(active: boolean): { list: RoadmapListColumnP
   const product = inboxProductForSearch(search)
   // Gated on the SECTION, not the scope: the queue depth badges the Inbox link
   // from Map and Initiatives too, so it is fetched in every scope — but the
-  // column exists only while Roadmap is the section, and `enabled` is the only
-  // thing that keeps this 15 s poll off the six sections that never show it.
-  const triage = useTriage(product ?? undefined, { enabled: active })
+  // column exists only while Roadmap is the section. Unlike `/pm/map`, the
+  // unscoped queue IS polled app-wide by design (the Roadmap nav badge,
+  // `useNavBadges`), so `enabled` is not what keeps it off the five other
+  // sections — it is what keeps the column from being a SECOND observer of a
+  // key that is already live, and the only thing that keeps any `/pm/triage`
+  // off kiosk, which renders no nav badges at all.
+  //
+  // `poll` for the same reason, one level down: the unscoped key rides the
+  // badge's 15 s interval, so the column adds no timer to it; a `?product=`
+  // chip is its own key with no other observer, so that one polls itself.
+  const triage = useTriage(product ?? undefined, { enabled: active, poll: product !== null })
 
   const onOpen = useCallback((row: TreeRow) => {
     if (row.kind === 'product') navigate(productPath(row.product.slug))
