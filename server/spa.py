@@ -5,12 +5,19 @@ files, so a refresh on a clean deep link like `/session/abc` 404s. `SPAStaticFil
 catches that 404 and serves `index.html` instead, letting the React router resolve
 the path on the client.
 """
+import mimetypes
 from pathlib import Path
 
 from fastapi import FastAPI
 from starlette.exceptions import HTTPException
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
+
+
+# Python's mimetypes table has no `.webmanifest` entry, so StaticFiles would
+# guess text/plain and Chrome would refuse the manifest (and with it, the
+# install prompt). Registered at import so any StaticFiles mount inherits it.
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 
 class SPAStaticFiles(StaticFiles):
