@@ -1,6 +1,6 @@
-import { useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
-import { useProject, useRoadmapMap, useSyncProject } from '@/api/hooks'
+import { useMemo, useState } from 'react'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { useProject, useRoadmapMap, useSyncProject, useTriage } from '@/api/hooks'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { PageHeader } from '@/ui/PageHeader'
 import { PageContent } from '@/ui/PageContent'
@@ -9,21 +9,34 @@ import { Banner } from '@/ui/Banner'
 import { Button } from '@/ui/Button'
 import { Breadcrumb, type BreadcrumbItem } from '@/ui/Breadcrumb'
 import { INITIATIVE, PRODUCT, ROADMAP } from '@/features/products/vocab'
-import { capabilityPath, productPath, roadmapOpenItem, roadmapPath } from './roadmapNavState'
-import { capabilityTrail, findCapability, findProduct } from './lookup'
+import {
+  capabilityPath, inboxPath, inboxProductForSearch, productPath, roadmapOpenItem, roadmapPath,
+  roadmapScopeForSearch,
+} from './roadmapNavState'
+import { capabilityTrail, findCapability, findProduct, flattenCapabilities } from './lookup'
 import { PortfolioDetail } from './detail/PortfolioDetail'
 import { ProductDetail } from './detail/ProductDetail'
 import { CapabilityDetail } from './detail/CapabilityDetail'
 import { NewInitiativeDialog } from './detail/NewInitiativeDialog'
 import { NewProductDialog } from './detail/NewProductDialog'
+import { useInboxOrder } from './inbox/inboxOrderStore'
+import { InboxWelcome } from './inbox/InboxWelcome'
+import { ProposalDetail } from './inbox/ProposalDetail'
 
 /** `/roadmap`, `/roadmap/:productSlug`, `/roadmap/:productSlug/capabilities/:capSlug` —
- *  one routed page, three detail levels chosen by the params (spec §7). */
+ *  one routed page, three detail levels chosen by the params (spec §7), plus the
+ *  Inbox scope (`?scope=inbox`), whose detail level is one proposal (§12). */
 export function RoadmapPage() {
-  const item = roadmapOpenItem(useParams())
-  // An initiative is never open on THESE routes (it has its own page), so the
-  // rest of the component reasons about the product/capability item alone.
-  const opened = item && item.kind !== 'initiative' ? item : null
+  const { search } = useLocation()
+  const navigate = useNavigate()
+  const item = roadmapOpenItem(useParams(), new URLSearchParams(search))
+  const inbox = roadmapScopeForSearch(search) === 'inbox'
+  // An initiative is never open on THESE routes (it has its own page), and a
+  // proposal is the Inbox branch's concern, so the rest of the component
+  // reasons about the product/capability item alone. In the Inbox scope
+  // NOTHING product-level is open, even on `/roadmap/kindash?scope=inbox`: one
+  // page shows one body, and the scope is what says which.
+  const opened = !inbox && item && item.kind !== 'initiative' && item.kind !== 'proposal' ? item : null
   // `poll: false`: the shell's list column observes the same cache entry and
   // owns the 15 s interval. Two polling observers of one key are two requests.
   const { data: map, isLoading, isError } = useRoadmapMap({ poll: false })
@@ -37,6 +50,56 @@ export function RoadmapPage() {
   // committed in is needed here.
   const { data: project, isError: projectError } = useProject(product?.slug ?? null)
   const primaryRepo = project?.repos.find((r) => r.isPrimary)?.repo ?? undefined
+
+  // ---- Inbox scope (§12) -------------------------------------------------
+  // `poll: false` for the same reason the map fetch above has it: the list
+  // column observes this exact cache entry (same `?product=` scope) and owns
+  // the 15 s interval. Two polling observers of one key are two requests.
+  const inboxProduct = inboxProductForSearch(search)
+  const triage = useTriage(inboxProduct ?? undefined, { poll: false })
+  const proposalId = item?.kind === 'proposal' ? item.proposalId : null
+  // `e` in the list column opens the row WITH the score fields focused, which
+  // is the whole of what "edit" means now that the editor is the pane.
+  const editing = new URLSearchParams(search).get('edit') === '1'
+  const proposal = proposalId ? triage.data?.find((p) => p.id === proposalId) ?? null : null
+  // The proposal's OWN product, not the one the `?product=` chip names: an
+  // unscoped inbox mixes products, and offering a KinDash capability as the
+  // home for a ViberPit issue would accept it onto the wrong tree.
+  const proposalProduct = proposal?.projectSlug ? findProduct(map, proposal.projectSlug) : null
+  const capabilities = useMemo(
+    () => flattenCapabilities(proposalProduct?.capabilities ?? [])
+      .map(({ node, depth }) => ({ id: node.id, slug: node.slug, title: node.title, depth })),
+    [proposalProduct],
+  )
+  // "Next" means next ON SCREEN, so it is the order the LIST COLUMN is actually
+  // rendering, published by it (`inboxOrderStore`) rather than recomputed here:
+  // the server hands the queue over in `created_at DESC`, which is not what the
+  // user is looking at once anything is grouped, sorted or searched, and a
+  // second `useItemOrdering` here would go stale the moment they change either
+  // control (the hook seeds its prefs from localStorage once).
+  const columnOrder = useInboxOrder()
+  // Decided: the row is leaving the queue, so the pane cannot stay on it. The
+  // next one in list order (or the one before it, when this was the last) keeps
+  // the queue moving without a trip back to the list; `replace`, because the
+  // address just left behind names a proposal that is no longer pending.
+  const onDecided = () => {
+    // Empty store = no column is rendering an order — the phone layout unmounts
+    // the list while a proposal is open. Then, and only then, the server's order
+    // is the best sequence available; it is also what the user last saw.
+    const ids = columnOrder.length > 0 ? columnOrder : (triage.data ?? []).map((p) => p.id)
+    const i = proposalId === null ? -1 : ids.indexOf(proposalId)
+    const next = i === -1 ? undefined : (ids[i + 1] ?? ids[i - 1])
+    navigate(
+      next ? inboxPath({ product: inboxProduct, proposal: next }) : inboxPath({ product: inboxProduct }),
+      { replace: true },
+    )
+  }
+  // A proposal the queue does not contain: decided in another tab, decided by
+  // somebody else, or a stale bookmark. Gated on the queue having ARRIVED — a
+  // failed fetch also leaves `proposal` null, and that is a broken connection.
+  const proposalMissing = inbox && proposalId !== null && triage.data !== undefined && !proposal
+  /** First load of the queue: no answer yet either way. */
+  const inboxPending = triage.isLoading && !triage.data
 
   // The address points at something the map does not contain — a renamed slug or
   // a stale bookmark. Gated on the map having ARRIVED: a failed fetch also leaves
@@ -55,6 +118,14 @@ export function RoadmapPage() {
     title = product?.name ?? opened.productSlug
     crumbs.push({ label: title, to: opened.kind === 'capability' ? productPath(opened.productSlug) : undefined })
   }
+  if (inbox) {
+    // The Inbox is a scope, not a thing on the map: it is always "the Inbox",
+    // whether one proposal is open or none, and the `?product=` narrowing is a
+    // crumb rather than a title so the section the user is in never moves.
+    title = ROADMAP.inbox
+    crumbs.push({ label: ROADMAP.inbox, to: inboxProduct ? inboxPath({}) : undefined })
+    if (inboxProduct) crumbs.push({ label: inboxProduct })
+  }
   if (opened?.kind === 'capability') {
     title = capability?.title ?? opened.capSlug
     // Every ancestor is a link, so a nested capability can be walked back up one
@@ -70,7 +141,7 @@ export function RoadmapPage() {
   // Product-level actions only: a product is the thing that syncs and the thing
   // an initiative belongs to. Both need the product to actually be on the map —
   // `Sync` on a slug the map does not have would post to nothing.
-  const productActions = opened?.kind === 'product' && product
+  const mapActions = opened?.kind === 'product' && product
     ? (
       <>
         <Button size="sm" variant="ghost" onClick={() => sync.mutate(product.slug)} loading={sync.isPending}>
@@ -85,6 +156,10 @@ export function RoadmapPage() {
     : !opened
       ? <Button size="sm" onClick={() => setRegistering(true)}>+ {PRODUCT.singular}</Button>
       : undefined
+  // None of them belong to the Inbox: its actions are the decision buttons on
+  // the proposal itself, and a `+ Product` beside them would be noise between
+  // the user and an irreversible accept.
+  const productActions = inbox ? undefined : mapActions
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-page-variant="standard">
@@ -93,15 +168,56 @@ export function RoadmapPage() {
         meta={crumbs.length > 1 ? <Breadcrumb items={crumbs} /> : undefined}
         actions={productActions}
       />
-      <PageContent busy={isLoading && !map}>
+      <PageContent busy={inbox ? inboxPending : isLoading && !map}>
+        {/* The Inbox scope is a page of its own inside this one: a different
+            query, a different detail level, and none of the map's states. */}
+        {inbox && (
+          <>
+            {/* Same copy as the list column, which fails from the same query. */}
+            {triage.isError && <Banner tone="danger" className="mb-4" title="Could not load the inbox." />}
+            {proposal && (
+              <ProposalDetail
+                proposal={proposal}
+                capabilities={capabilities}
+                scopeProduct={inboxProduct}
+                autoFocusScores={editing}
+                onDone={onDecided}
+              />
+            )}
+            {proposalMissing && (
+              <EmptyState
+                title="Proposal not found — it may have been decided"
+                description="It is no longer in the queue. Somebody (or another tab) may have accepted or rejected it."
+                action={(
+                  <Link className="text-accent hover:underline" to={inboxPath({ product: inboxProduct })}>
+                    Back to the {ROADMAP.inbox.toLowerCase()}
+                  </Link>
+                )}
+              />
+            )}
+            {/* Nothing open, and not still waiting for the queue: the pane says
+                what is waiting rather than sitting blank. A failed fetch is not
+                inbox zero, so it says so instead. */}
+            {!proposal && !proposalMissing && !inboxPending && (
+              triage.isError && !triage.data
+                ? (
+                  <EmptyState
+                    title={`No ${ROADMAP.inbox.toLowerCase()} to show`}
+                    description="It will fill in as soon as the queue loads again."
+                  />
+                )
+                : <InboxWelcome count={triage.data?.length ?? 0} product={inboxProduct} />
+            )}
+          </>
+        )}
         {/* Errors are a Banner, first child of the content region. Same copy as the
             list column, which fails from the same query. */}
-        {isError && <Banner tone="danger" className="mb-4" title="Could not load the roadmap." />}
+        {!inbox && isError && <Banner tone="danger" className="mb-4" title="Could not load the roadmap." />}
         {/* Sync opts out of the global error toast (`PM_MUTATION_META`), so
             without this a refused sync said nothing at all — the button just
             stopped spinning. Same idiom and position as InitiativePage's
             failed Advance. */}
-        {sync.isError && (
+        {!inbox && sync.isError && (
           <Banner
             tone="danger"
             className="mb-4"
@@ -109,7 +225,7 @@ export function RoadmapPage() {
           />
         )}
         {/* Nothing open: the portfolio IS the page, not a "pick something" prompt. */}
-        {map && !opened && <PortfolioDetail map={map} />}
+        {map && !opened && !inbox && <PortfolioDetail map={map} />}
         {/* A non-null `capability` is exactly the capability level: it is only
             resolved for a capability address, and a capability address that
             resolves to nothing is `missing` above. */}
@@ -140,7 +256,7 @@ export function RoadmapPage() {
         {/* No map and not loading: the region always says something. The Banner
             above carries the reason when there is one; the map re-fetches on its
             own interval, so this state clears itself. */}
-        {!map && !isLoading && (isError
+        {!inbox && !map && !isLoading && (isError
           ? <EmptyState title={`No ${ROADMAP.label.toLowerCase()} to show`} description="It will fill in as soon as the map loads again." />
           : (
             <EmptyState

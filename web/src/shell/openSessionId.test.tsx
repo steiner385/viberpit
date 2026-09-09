@@ -18,6 +18,7 @@ function describeItem(item: OpenItem | null): string {
     case 'product': return `product:${item.productSlug}`
     case 'capability': return `capability:${item.productSlug}/${item.capSlug}`
     case 'initiative': return `initiative:${item.initiativeSlug}`
+    case 'proposal': return `proposal:${item.proposalId}`
   }
 }
 
@@ -57,6 +58,7 @@ describe('useOpenItem', () => {
     ['/roadmap/kindash', 'product:kindash|-'],
     ['/roadmap/kindash/capabilities/tasks', 'capability:kindash/tasks|-'],
     ['/initiatives/views', 'initiative:views|-'],
+    ['/roadmap?scope=inbox&proposal=p1', 'proposal:p1|-'],
   ])('%s → %s', (path, expected) => {
     renderAt(path)
     expect(screen.getByTestId('probe')).toHaveTextContent(expected)

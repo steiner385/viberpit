@@ -1708,6 +1708,14 @@ class TriageProposal(Base):
     session_id: Mapped[str | None] = mapped_column(String, nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
+    # Pre-resolution overlay of the work item (featureId, reach, impact, effort,
+    # confidence, triageState, classifiedBy, classifiedAt), written by accept and
+    # reject so `POST /triage/{id}/undo` can put it back (finish-line row 3).
+    # Nullable so reconcile ALTER-ADDs it on both dialects; NULL = there is
+    # nothing to restore (a decision taken before this column existed, or one
+    # already undone) → undo answers 409 no_snapshot, which it checks BEFORE the
+    # undo window so a pre-migration row reports the specific reason.
+    undo_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
 

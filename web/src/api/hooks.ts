@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState, useRef, useCallback, useSyncExternalStore } from 'react'
 import { api, ApiRequestError } from './client'
 import {
@@ -36,8 +36,8 @@ import {
   type RoadmapMap, type Leaf, type LeavesScope, type QueueView,
 } from './roadmap'
 import {
-  fetchTriage, acceptProposal, rejectProposal, acceptBulk, updateOverlay,
-  type TriageProposal, type OverlayEdits, type AcceptBulkResult, type WorkItemOverlay,
+  fetchTriage, acceptProposal, rejectProposal, acceptBulk, updateOverlay, undoProposal,
+  type TriageProposal, type OverlayEdits, type AcceptBulkResult, type WorkItemOverlay, type UndoResult,
 } from './triage'
 import { useSessionSocket } from '@/ws/client'
 import { extractMutationErrorMessage } from './queryClient'
@@ -1699,12 +1699,32 @@ export function useAdvanceLive() {
   })
 }
 
-export function useTriage(projectSlug?: string) {
+/**
+ * The pending triage queue, optionally scoped to one project.
+ *
+ * `enabled` is NOT what keeps this off the other sections, unlike
+ * `useRoadmapMap`'s: the Roadmap nav badge (`useNavBadges`) polls the unscoped
+ * queue app-wide by design, so `/pm/triage` is live on Sessions, Pipeline,
+ * Automations, Insights and Settings whatever the column does. The gate is what
+ * stops the column — mounted on every route through `useRoadmapWorkspace`,
+ * hooks always are — from being a SECOND observer of that key, and what keeps
+ * the queue off a wall display, which renders no nav badges.
+ *
+ * `poll` for the reason `useRoadmapMap` has one: two polling observers of one
+ * key are two intervals. Whoever already owns the interval for a key keeps it —
+ * the badge for the unscoped queue, the list column for a `?product=` scope —
+ * and the other observer reads what it fetched.
+ */
+export function useTriage(
+  projectSlug?: string,
+  { enabled = true, poll = true }: { enabled?: boolean; poll?: boolean } = {},
+) {
   return useQuery<TriageProposal[]>({
     queryKey: [...QK.triage, projectSlug ?? null],
     queryFn: () => fetchTriage(projectSlug),
+    enabled,
     staleTime: 5_000,
-    refetchInterval: 15_000,
+    refetchInterval: poll ? 15_000 : false,
   })
 }
 
@@ -1732,6 +1752,29 @@ export function useTriageLive() {
  * rather than twice.
  */
 
+/** Six seconds to change your mind — same shape as the archive toast in
+ *  `useCloseSession`. `ids` are the landed proposal ids; every one is undone. */
+function triageUndoToast(qc: QueryClient, message: string, ids: string[], projectSlug?: string) {
+  const refresh = () => {
+    void qc.invalidateQueries({ queryKey: QK.triage })
+    void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+    if (projectSlug) void qc.invalidateQueries({ queryKey: QK.onboarding(projectSlug) })
+  }
+  toast.success(message, {
+    duration: 6000,
+    action: {
+      label: 'Undo',
+      onClick: () => {
+        void Promise.allSettled(ids.map((id) => undoProposal(id))).then((results) => {
+          const failed = results.filter((r) => r.status === 'rejected')
+          if (failed.length) toast.error(failed.length === ids.length ? 'Could not undo' : `Could not undo ${failed.length} of ${ids.length}`)
+          refresh()
+        })
+      },
+    },
+  })
+}
+
 /** Optimistic single-accept — remove the row now, roll back (and toast) on error. */
 export function useAcceptProposal(projectSlug?: string) {
   const qc = useQueryClient()
@@ -1756,9 +1799,10 @@ export function useAcceptProposal(projectSlug?: string) {
     // Accepting a proposal homes a work item on a capability: the map's
     // awaiting-triage and issue counts both move, and the onboarding wizard's
     // pending-proposal count with them.
-    onSuccess: () => {
+    onSuccess: (_res, vars) => {
       void qc.invalidateQueries({ queryKey: QK.roadmapMap })
       if (projectSlug) void qc.invalidateQueries({ queryKey: QK.onboarding(projectSlug) })
+      triageUndoToast(qc, 'Accepted', [vars.id], projectSlug)
     },
     onSettled: () => void qc.invalidateQueries({ queryKey: QK.triage }),
     meta: PM_MUTATION_META,
@@ -1785,6 +1829,11 @@ export function useRejectProposal(projectSlug?: string) {
     onError: (e, _v, ctx) => {
       if (ctx?.prev) qc.setQueryData(key, ctx.prev)
       toast.error(extractMutationErrorMessage(e, 'Could not reject proposal'))
+    },
+    // A reject moves the map's awaiting-triage / needs-home counts too.
+    onSuccess: (_res, vars) => {
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      triageUndoToast(qc, 'Rejected', [vars.id], projectSlug)
     },
     onSettled: () => void qc.invalidateQueries({ queryKey: QK.triage }),
     meta: PM_MUTATION_META,
@@ -1814,9 +1863,11 @@ export function useAcceptBulk(projectSlug?: string) {
       toast.error(extractMutationErrorMessage(e, 'Could not accept selection'))
     },
     onSuccess: (res) => {
-      if (res.accepted) toast.success(`Accepted ${res.accepted}`)
       void qc.invalidateQueries({ queryKey: QK.roadmapMap })
       if (projectSlug) void qc.invalidateQueries({ queryKey: QK.onboarding(projectSlug) })
+      if (res.accepted) {
+        triageUndoToast(qc, `Accepted ${res.accepted}`, res.results.filter((r) => r.ok).map((r) => r.id), projectSlug)
+      }
     },
     onSettled: () => void qc.invalidateQueries({ queryKey: QK.triage }),
     meta: PM_MUTATION_META,
@@ -1834,6 +1885,22 @@ export function useUpdateOverlay() {
     mutationFn: ({ itemId, edit }) => updateOverlay(itemId, edit),
     onSuccess: () => void qc.invalidateQueries({ queryKey: QK.triage }),
     onError: (e) => toast.error(extractMutationErrorMessage(e, 'Could not update work item')),
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** Standalone undo — same endpoint the toasts' Undo action calls, exposed for a
+ *  direct affordance (e.g. a "Recently decided" list) outside the toast window. */
+export function useUndoProposal(projectSlug?: string) {
+  const qc = useQueryClient()
+  return useMutation<UndoResult, ApiRequestError, string>({
+    mutationFn: (id) => undoProposal(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.triage })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      if (projectSlug) void qc.invalidateQueries({ queryKey: QK.onboarding(projectSlug) })
+    },
+    onError: (e) => toast.error(extractMutationErrorMessage(e, 'Could not undo')),
     meta: PM_MUTATION_META,
   })
 }

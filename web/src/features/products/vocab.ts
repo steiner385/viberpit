@@ -81,7 +81,7 @@ export const ROADMAP = {
   initiatives: 'Initiatives',
   queue: 'Queue',
   inbox: 'Inbox',
-  help: 'The product roadmap: every product, its capabilities, the initiatives changing them and the issues underneath. Drill down, trace back up, and see what needs you.',
+  help: 'The product roadmap: every product, its capabilities, the initiatives changing them and the issues underneath. Drill down, trace back up, and see what needs you. Its Inbox scope holds the proposed classifications awaiting your decision — accept, adjust or reject each one.',
 } as const
 
 export const INITIATIVE = { singular: 'Initiative', plural: 'Initiatives', new: 'New initiative' } as const

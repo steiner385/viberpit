@@ -1,20 +1,43 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
+import type { TriageProposal } from '@/api/triage'
 import { MAP } from './__fixtures__/map'
 import { RoadmapListColumn } from './RoadmapListColumn'
 import { capabilityKey, productKey } from './treeRows'
 
+// The Inbox scope's rows call the real triage mutations; the column's job here
+// is only to mount that scope, so the hooks are stubbed rather than served.
+vi.mock('@/api/hooks', () => ({
+  useAcceptProposal: () => ({ mutate: vi.fn(), isPending: false }),
+  useRejectProposal: () => ({ mutate: vi.fn(), isPending: false }),
+  useAcceptBulk: () => ({ mutate: vi.fn(), isPending: false }),
+  useTriageLive: () => undefined,
+}))
+
+const PROPOSALS: TriageProposal[] = [{
+  id: 'pr1', workItemId: 'w1', projectSlug: 'kindash', repo: 'cairnea/KinDash', number: 7,
+  kind: 'issue', title: 'Recurring chores', url: null, proposedFeatureId: null,
+  proposedFeatureSlug: 'tasks', noFitSuggestion: null, reach: 3, impact: 2, effort: 1,
+  confidence: 80, rationale: null, confidenceLevel: 'high', status: 'pending', createdAt: null,
+}]
+
 function mount(over: Partial<React.ComponentProps<typeof RoadmapListColumn>> = {}) {
   const onOpen = vi.fn()
   const onOpenInbox = vi.fn()
+  const onOpenProposal = vi.fn()
+  const onClearProduct = vi.fn()
+  const inbox = {
+    proposals: PROPOSALS, isLoading: false, isError: false, product: null,
+    onOpenProposal, onClearProduct,
+  }
   const { unmount } = render(
     <MemoryRouter>
       <RoadmapListColumn scope="map" map={MAP} isLoading={false} isError={false}
-        selectedKey={null} onOpen={onOpen} onOpenInbox={onOpenInbox} {...over} />
+        selectedKey={null} onOpen={onOpen} onOpenInbox={onOpenInbox} inbox={inbox} {...over} />
     </MemoryRouter>,
   )
-  return { onOpen, onOpenInbox, unmount }
+  return { onOpen, onOpenInbox, onOpenProposal, onClearProduct, unmount }
 }
 
 describe('RoadmapListColumn', () => {
@@ -71,6 +94,22 @@ describe('RoadmapListColumn', () => {
     expect(screen.getByText('Ready to advance → Deploy')).toBeInTheDocument()
     // grouped by stage: both fixtures are in Build, under one header
     expect(screen.getByRole('button', { name: /^Build/ })).toBeInTheDocument()
+  })
+
+  it('the Inbox scope is a third segment link, current, with the proposal rows under it', () => {
+    const { onOpenProposal } = mount({ scope: 'inbox' })
+    const link = screen.getByRole('link', { name: /^Inbox/ })
+    expect(link).toHaveAttribute('aria-current', 'page')
+    expect(link).toHaveAttribute('href', '/roadmap?scope=inbox')
+    fireEvent.click(screen.getByRole('button', { name: 'Open proposal Recurring chores' }))
+    expect(onOpenProposal).toHaveBeenCalledWith(expect.objectContaining({ id: 'pr1' }))
+    // The tree belongs to the Map scope only — one scope body is mounted.
+    expect(screen.queryByRole('tree')).toBeNull()
+  })
+
+  it('badges the queue depth on the Inbox link from every scope', () => {
+    mount()
+    expect(screen.getByRole('link', { name: 'Inbox (1)' })).toBeInTheDocument()
   })
 
   it('states: loading, error, empty', () => {

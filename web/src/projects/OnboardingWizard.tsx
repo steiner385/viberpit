@@ -11,8 +11,8 @@ import {
 } from '@/api/hooks'
 import type { OnboardingAction, OnboardingCounts, OnboardingMapPr } from '@/api/pm'
 import { extractMutationErrorMessage } from '@/api/queryClient'
-import { onboardingStateLabel } from '@/features/products/vocab'
-import { NAV_BY_ID } from '@/shell/navDefs'
+import { ROADMAP, onboardingStateLabel } from '@/features/products/vocab'
+import { inboxPath } from '@/features/roadmap/roadmapNavState'
 import { Button } from '@/ui/Button'
 
 function InlineError({ error, fallback }: { error: unknown; fallback: string }) {
@@ -59,9 +59,12 @@ function AwaitTriage({ slug, counts }: { slug: string; counts: OnboardingCounts 
   return (
     <>
       <span className="text-sm text-ink-muted">Drain the triage queue, then go live.</span>
-      <Link className="text-sm text-accent underline"
-            to={`${NAV_BY_ID.triage.path}?projectSlug=${encodeURIComponent(slug)}`}>
-        {n === 0 ? 'Open the Triage inbox →' : `Review ${n} proposal${n === 1 ? '' : 's'} in Triage →`}
+      {/* The queue is the Roadmap section's Inbox scope, narrowed to this
+          product (finish-line row 3) — there is no Triage page to send them to. */}
+      <Link className="text-sm text-accent underline" to={inboxPath({ product: slug })}>
+        {n === 0
+          ? `Open the ${ROADMAP.inbox} →`
+          : `Review ${n} proposal${n === 1 ? '' : 's'} in the ${ROADMAP.inbox} →`}
       </Link>
       <div className="flex flex-wrap gap-2">
         <Button variant="secondary" size="sm" disabled={advance.isPending}

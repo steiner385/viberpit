@@ -131,8 +131,8 @@ describe('OnboardingWizard', () => {
       counts: { ...BASE_COUNTS, pendingProposalCount: 4 }, mapPr: MAP_PR,
     })
     renderWizard()
-    const link = await screen.findByRole('link', { name: /review 4 proposals in triage/i })
-    expect(link).toHaveAttribute('href', '/triage?projectSlug=ccswitch')
+    const link = await screen.findByRole('link', { name: /review 4 proposals in the inbox/i })
+    expect(link).toHaveAttribute('href', '/roadmap?scope=inbox&product=ccswitch')
     fireEvent.click(screen.getByRole('button', { name: /go live/i }))
     await waitFor(() => expect(advanceLive).toHaveBeenCalledWith('ccswitch'))
   })

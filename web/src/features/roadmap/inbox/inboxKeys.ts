@@ -136,8 +136,8 @@ export const initialInboxState: InboxState = {
  * because someone typed a capital letter.
  *
  * NOT the whole guard: a button is not a typing target, and a modal sheet's
- * first focused child is its Close button — see `overlayIsOpen()` in
- * `TriageInbox`.
+ * first focused child is its Close button — see `overlayIsOpen()`
+ * (`shell/useOverlayState`), which `InboxScopeBody` checks first.
  */
 export function isTypingTarget(target: EventTarget | null): boolean {
   const el = target as (HTMLElement & { isContentEditable?: boolean }) | null

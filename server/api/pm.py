@@ -42,6 +42,46 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/pm", tags=["pm"])
 
+# How long after accept/reject a proposal can be undone. The UI toast lasts
+# six seconds; the server keeps a wider window so a slow click still lands.
+TRIAGE_UNDO_WINDOW_S = 60
+
+
+def _aware(dt: datetime | None) -> datetime | None:
+    """Normalize a DateTime(timezone=True) value to tz-aware UTC.
+
+    SQLite has no native timezone type: it stores DateTime(timezone=True) values
+    as naive strings and hands them back tzinfo-less, unlike Postgres. Every
+    datetime this module round-trips through undo_snapshot (or compares against
+    an aware `now`) goes through here so the naive/aware slip the DB clock rule
+    warns about can't happen. Mirrors server/pm/reconcile_inputs.py's `_aware`
+    (kept local — that one is module-private, not a shared import point)."""
+    if dt is None or dt.tzinfo is not None:
+        return dt
+    return dt.replace(tzinfo=timezone.utc)
+
+
+def _overlay_snapshot(wi: WorkItem) -> dict:
+    at = _aware(wi.classified_at)
+    return {
+        "featureId": wi.feature_id, "reach": wi.reach, "impact": wi.impact,
+        "effort": wi.effort, "confidence": wi.confidence, "triageState": wi.triage_state,
+        "classifiedBy": wi.classified_by,
+        "classifiedAt": at.isoformat() if at else None,
+    }
+
+
+def _restore_overlay(wi: WorkItem, snap: dict) -> None:
+    wi.feature_id = snap.get("featureId")
+    wi.reach = snap.get("reach")
+    wi.impact = snap.get("impact")
+    wi.effort = snap.get("effort")
+    wi.confidence = snap.get("confidence")
+    wi.triage_state = snap.get("triageState")
+    wi.classified_by = snap.get("classifiedBy")
+    at = snap.get("classifiedAt")
+    wi.classified_at = _aware(datetime.fromisoformat(at)) if at else None
+
 
 def _slugify(name: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
@@ -810,6 +850,47 @@ async def _repropose_siblings(db, accepted: TriageProposal, feature_id: str,
     return moved
 
 
+async def _validate_accept_edits(db, edits: dict | None) -> None:
+    """Validate an accept body's ``edits`` exactly as the overlay PATCH does.
+
+    Accept-with-edits writes the same five fields the overlay PATCH does, so it
+    needs the same guards — an out-of-range value reaches the GitHub Projects
+    ``Score`` field and inverts roadmap ordering, an ``effort`` of 0 makes the
+    score undefined, and a ``featureId`` that names no row would leave the work
+    item pointing at nothing. Bounds live in ``server/pm/score.py`` beside the
+    formula; do NOT inline a second copy of them here, and do not let the client
+    be the only thing enforcing them (the inbox no longer PATCHes the overlay
+    before accepting).
+    """
+    if not edits:
+        return
+    for attr in RICE_FIELDS:
+        if attr not in edits:
+            continue
+        value = edits[attr]
+        # ``validate_rice`` compares against ints; a string would raise
+        # TypeError out of the route as a 500, which is not what a bad request
+        # deserves. ``bool`` IS an ``int`` in Python, and ``True`` would land in
+        # the overlay as a 1 nobody typed — excluded explicitly.
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+            raise HTTPException(status_code=422, detail={
+                "error": "bad_rice_value", "message": f"{attr} must be a whole number"})
+        msg = validate_rice(attr, value)
+        if msg:
+            raise HTTPException(status_code=422, detail={
+                "error": "bad_rice_value", "message": msg})
+    # Same 404 shape ``patch_overlay`` answers with, for the same reason: the id
+    # comes from a client-side capability list that a rename or a delete can
+    # outdate between load and accept.
+    feature_id = edits.get("featureId")
+    if feature_id is not None:
+        feat = (await db.execute(select(Feature).where(
+            Feature.id == feature_id))).scalar_one_or_none()
+        if feat is None:
+            raise HTTPException(status_code=404,
+                                detail={"error": "feature_not_found"})
+
+
 async def _apply_accept(db, proposal: TriageProposal, identity: str, *,
                         edits: dict | None = None) -> None:
     """Shared accept logic (phase 3 EXTENDS this for accept-bulk — do NOT copy
@@ -824,6 +905,7 @@ async def _apply_accept(db, proposal: TriageProposal, identity: str, *,
         WorkItem.id == proposal.work_item_id))).scalar_one_or_none()
     if wi is None:
         raise HTTPException(status_code=404, detail={"error": "work_item_missing"})
+    proposal.undo_snapshot = _overlay_snapshot(wi)
     now = datetime.now(timezone.utc)
     edits = edits or {}
     feature_id = edits.get("featureId", proposal.proposed_feature_id)
@@ -887,6 +969,7 @@ async def accept_triage(
     which reuses the same helper."""
     prop = await _load_pending_proposal(db, proposal_id)
     edits = (body or {}).get("edits")
+    await _validate_accept_edits(db, edits)
     await _apply_accept(db, prop, identity, edits=edits)
     wi_id = prop.work_item_id
     await record_audit(db=db, type="pm.triage.accept", identity=identity,
@@ -908,6 +991,7 @@ async def reject_triage(
         WorkItem.id == prop.work_item_id))).scalar_one_or_none()
     now = datetime.now(timezone.utc)
     if wi is not None:
+        prop.undo_snapshot = _overlay_snapshot(wi)
         wi.triage_state = "needs_human"
     prop.status = "rejected"
     prop.resolved_at = now
@@ -915,6 +999,54 @@ async def reject_triage(
     await record_audit(db=db, type="pm.triage.reject", identity=identity,
                        detail={"proposalId": proposal_id})
     return {"id": prop.id, "status": "rejected"}
+
+
+@router.post("/triage/{proposal_id}/undo")
+async def undo_triage(
+    proposal_id: str,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Put an accepted or rejected proposal back to pending and restore the work
+    item's overlay from the snapshot accept/reject took (roadmap spec §10, §12).
+    Only within TRIAGE_UNDO_WINDOW_S of resolution; siblings re-proposed by the
+    drift latch are NOT restored (their no_fit_suggestion is gone)."""
+    prop = (await db.execute(select(TriageProposal).where(
+        TriageProposal.id == proposal_id))).scalar_one_or_none()
+    if prop is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found"})
+    if prop.status == "pending":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "not_resolved", "message": "proposal is pending; nothing to undo"})
+    # Snapshot BEFORE window: a decision taken before this column existed has a
+    # `resolved_at` older than the window too, so checking the window first would
+    # answer `undo_expired` for every such row and `no_snapshot` for none. The
+    # missing snapshot is the more specific reason, so it is the one reported.
+    snap = prop.undo_snapshot
+    if not snap:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "no_snapshot",
+            "message": "nothing to restore: this decision was taken without an undo snapshot"})
+    resolved = _aware(prop.resolved_at)
+    now = datetime.now(timezone.utc)
+    if resolved is None or (now - resolved).total_seconds() > TRIAGE_UNDO_WINDOW_S:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "undo_expired",
+            "message": f"undo is only available for {TRIAGE_UNDO_WINDOW_S}s after a decision"})
+    wi = (await db.execute(select(WorkItem).where(
+        WorkItem.id == prop.work_item_id))).scalar_one_or_none()
+    if wi is not None:
+        _restore_overlay(wi, snap)
+    previous = prop.status
+    prop.status = "pending"
+    prop.resolved_at = None
+    prop.undo_snapshot = None
+    await db.flush()
+    await record_audit(db=db, type="pm.triage.undo", identity=identity,
+                       detail={"proposalId": proposal_id, "workItemId": prop.work_item_id,
+                               "previousStatus": previous})
+    return {"id": prop.id, "status": "pending", "workItemId": prop.work_item_id,
+            "triageState": wi.triage_state if wi is not None else None}
 
 
 class AcceptBulkBody(BaseModel):
@@ -968,6 +1100,13 @@ async def accept_bulk(
 
 
 def _work_item_to_dict(w: WorkItem) -> dict:
+    # classified_at goes through _aware(): a WorkItem freshly re-queried after the
+    # undo route's restore round-tripped through SQLite (which stores
+    # DateTime(timezone=True) as a naive string, dropping tzinfo on the way IN,
+    # not just on the way out — see _aware's docstring) would otherwise render an
+    # offset-less ISO string here, the exact naive/aware slip the DB clock rule
+    # warns about.
+    at = _aware(w.classified_at)
     return {
         "id": w.id, "repo": w.repo, "number": w.number, "kind": w.kind,
         "title": w.title, "state": w.state,
@@ -976,7 +1115,7 @@ def _work_item_to_dict(w: WorkItem) -> dict:
         "confidence": w.confidence,
         "triageState": w.triage_state,
         "classifiedBy": w.classified_by,
-        "classifiedAt": w.classified_at.isoformat() if w.classified_at else None,
+        "classifiedAt": at.isoformat() if at else None,
         "url": w.url,
     }
 

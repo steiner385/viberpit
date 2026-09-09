@@ -34,6 +34,7 @@
 // runtime to a dead session.
 // The section check stays: it still excludes every OTHER `:id`-shaped detail
 // route that isn't Sessions.
+import { useMemo } from 'react'
 import { useLocation, useParams } from 'react-router-dom'
 import { navDefForPath } from './navDefs'
 import { OPEN_ITEM_RESOLVERS } from './openItems'
@@ -48,10 +49,11 @@ export type { OpenItem }
  */
 export function useOpenItem(): OpenItem | null {
   const params = useParams()
-  const { pathname } = useLocation()
+  const { pathname, search } = useLocation()
+  const searchParams = useMemo(() => new URLSearchParams(search), [search])
   const def = navDefForPath(pathname)
   if (!def) return null
-  return OPEN_ITEM_RESOLVERS[def.id]?.(params) ?? null
+  return OPEN_ITEM_RESOLVERS[def.id]?.(params, searchParams) ?? null
 }
 
 /** The open LIVE session's id, or null — unchanged signature/behaviour, now

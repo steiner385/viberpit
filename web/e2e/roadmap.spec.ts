@@ -217,7 +217,9 @@ async function interceptApi(page: Page) {
     } else if (path.startsWith('/api/sdlc/initiatives/')) {
       route.fulfill({ json: INITIATIVE })
     } else if (path === '/api/pm/triage') {
-      route.fulfill({ json: { items: [] } })
+      // A bare ARRAY, not `{ items }` — `fetchTriage` returns `TriageProposal[]`
+      // and the Inbox calls `.length`/`.find` on it directly.
+      route.fulfill({ json: [] })
     } else if (path === '/api/settings') {
       route.fulfill({ json: SETTINGS })
     } else if (path === '/api/config') {
