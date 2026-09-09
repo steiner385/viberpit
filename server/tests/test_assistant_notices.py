@@ -297,13 +297,10 @@ class _NoticeFlushFakeOrch:
     def pop_pending_initial_prompt(self, session_id):
         return None
 
-    def pop_pending_initial_attachment_ids(self, session_id):
-        return None
-
     async def pop_pending_notices(self, session_id):
         # Async to match the facade contract every real orchestrator wrapper uses
         # (server/sessions/facade.py, remote.py) — ws.py always `await`s this call
-        # (mirrors pop_pending_initial_prompt/pop_pending_initial_attachment_ids).
+        # (mirrors pop_pending_initial_prompt).
         return self._pending.pop(session_id, [])
 
 

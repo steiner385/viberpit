@@ -2,6 +2,8 @@
  * `app.list` for the Roadmap section (finish-line spec §4.3, roadmap spec §6).
  * Map scope: the flattened tree from `treeRows.ts`. Initiatives scope: every
  * initiative through `useItemOrdering` + `GroupedList`, grouped by stage.
+ * Inbox scope: the pending triage proposals (`inbox/InboxScopeBody`), which is
+ * where the old standalone Triage page's queue and key map now live.
  * Region-neutral like `SessionListColumn`: it fills whatever `ContextList`
  * gives it and owns no width, no header and no route.
  */
@@ -18,6 +20,7 @@ import { loadGroupCollapseNs, saveGroupCollapseNs } from '@/lib/groupCollapse'
 import { useItemOrdering, type OrderingSpec } from '@/session/useSessionOrdering'
 import { INITIATIVE, PRODUCT, ROADMAP, stageLabel } from '@/features/products/vocab'
 import { ScopeBody } from '@/features/sessions/ScopeBody'
+import { InboxScopeBody, type InboxScopeBodyProps } from './inbox/InboxScopeBody'
 import { TIER_RANK } from './roadmapTier'
 import { RoadmapScopeSegment } from './RoadmapScopeSegment'
 import { InitiativeCard } from './rows/InitiativeCard'
@@ -25,6 +28,17 @@ import { TreeRowCard } from './rows/TreeRowCard'
 import type { RoadmapScope } from './roadmapNavState'
 import { flattenMap, initiativeKey, setCollapsed, toggleKey, type TreeRow, type TreeState } from './treeRows'
 import { useTreeKeys } from './useTreeKeys'
+
+/**
+ * The Inbox scope's half of the column's props. `selectedKey` is NOT here — the
+ * column already carries the one open-item key for all three scopes and hands
+ * it down, so a proposal cannot end up highlighted by a second, disagreeing
+ * source. The open callback is named for what it opens, because the column's
+ * own `onOpen` already means "open a tree row".
+ */
+export interface RoadmapInboxProps extends Omit<InboxScopeBodyProps, 'selectedKey' | 'onOpen'> {
+  onOpenProposal: InboxScopeBodyProps['onOpen']
+}
 
 export interface RoadmapListColumnProps {
   scope: RoadmapScope
@@ -35,6 +49,7 @@ export interface RoadmapListColumnProps {
   selectedKey: string | null
   onOpen: (row: TreeRow) => void
   onOpenInbox: (productSlug: string) => void
+  inbox: RoadmapInboxProps
 }
 
 /**
@@ -57,13 +72,14 @@ interface InitiativeEntry {
 }
 
 export function RoadmapListColumn({
-  scope, map, isLoading, isError, selectedKey, onOpen, onOpenInbox,
+  scope, map, isLoading, isError, selectedKey, onOpen, onOpenInbox, inbox,
 }: RoadmapListColumnProps) {
   const products = useMemo(() => map?.products ?? [], [map])
   const entries = useMemo<InitiativeEntry[]>(
     () => products.flatMap((product) => product.initiatives.map((initiative) => ({ product, initiative }))),
     [products],
   )
+  const { onOpenProposal, ...inboxRest } = inbox
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <div className="shrink-0 p-2">
@@ -71,10 +87,15 @@ export function RoadmapListColumn({
           scope={scope}
           productCount={products.length}
           initiativeCount={entries.length}
+          inboxCount={inbox.proposals.length}
         />
       </div>
-      {isError && <Banner tone="danger" title="Could not load the roadmap." className="mx-2" />}
-      {scope === 'map' ? (
+      {/* The map's error, not the inbox's — the Inbox scope's body owns its own
+          banner, and only that scope's failure is news while you are in it. */}
+      {isError && scope !== 'inbox' && (
+        <Banner tone="danger" title="Could not load the roadmap." className="mx-2" />
+      )}
+      {scope === 'map' && (
         <MapScopeBody
           map={map}
           isLoading={isLoading}
@@ -82,7 +103,8 @@ export function RoadmapListColumn({
           onOpen={onOpen}
           onOpenInbox={onOpenInbox}
         />
-      ) : (
+      )}
+      {scope === 'initiatives' && (
         <InitiativesScopeBody
           entries={entries}
           isLoading={isLoading}
@@ -90,11 +112,14 @@ export function RoadmapListColumn({
           onOpen={onOpen}
         />
       )}
+      {scope === 'inbox' && (
+        <InboxScopeBody {...inboxRest} selectedKey={selectedKey} onOpen={onOpenProposal} />
+      )}
     </div>
   )
 }
 
-type MapScopeBodyProps = Omit<RoadmapListColumnProps, 'scope' | 'isError'>
+type MapScopeBodyProps = Omit<RoadmapListColumnProps, 'scope' | 'isError' | 'inbox'>
 
 function MapScopeBody({ map, isLoading, selectedKey, onOpen, onOpenInbox }: MapScopeBodyProps) {
   const [tree, setTree] = useState<TreeState>(() => ({ collapsed: loadGroupCollapseNs(COLLAPSE_NS) }))

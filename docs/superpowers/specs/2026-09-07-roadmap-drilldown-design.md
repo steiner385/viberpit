@@ -1,12 +1,15 @@
 # Roadmap drill-down: Products, Capabilities, Initiatives, Triage — design
 
 **Date:** 2026-09-07
-**Status:** approved design. Phases 1–3 landed (§13): phase 3 shipped the one Roadmap
-section at `/roadmap` — Map and Initiatives list scopes, the portfolio / product /
+**Status:** approved design. Phases 1–3 landed (§13). Phase 3 landed in #1478: the one
+Roadmap section at `/roadmap` — Map and Initiatives list scopes, the portfolio / product /
 capability detail levels, the `/initiatives/:slug` initiative page, and the `/projects*`
-and `/initiatives` redirects — and deleted `ProjectsTab`, `InitiativesTab` and their css.
-Phases 4–6 remain: issue leaves and inline overlay edits (4), map-changes PRs (5), and
-triage on the chassis plus the Queue scope (6).
+and `/initiatives` redirects — deleting `ProjectsTab`, `InitiativesTab` and their css.
+§12 (the Inbox scope, the proposal editor as its detail pane and the six-second
+server-backed undo) landed 2026-09-09 (Closes #1467), which also deleted the Triage
+section, moved its badge onto Roadmap and redirected `/triage`. Remaining: phases
+4–6 — issue leaves and inline overlay edits (4), map-changes PRs (5), and the Queue scope
+plus the Inbox's "Needs a home" Reclassify control (6).
 **Owns:** #993 (003 Phase D portfolio UI). Coordinates with #1414 (page/token adoption).
 **Supersedes where they conflict:** spec 003 §7c (portfolio, initiative, queue views);
 PM-layer design §8 (Products area: inbox, product board, roadmap); UI target-state

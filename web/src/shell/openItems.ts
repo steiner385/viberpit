@@ -8,7 +8,7 @@ export type OpenItem =
   | { kind: 'archived'; id: string }
   | RoadmapOpenItem
 
-export type OpenItemResolver = (params: Readonly<Params<string>>) => OpenItem | null
+export type OpenItemResolver = (params: Readonly<Params<string>>, search: URLSearchParams) => OpenItem | null
 
 /**
  * Per-section "is something open?" from the matched route's params.

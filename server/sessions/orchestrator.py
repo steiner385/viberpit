@@ -779,11 +779,13 @@ class SessionOrchestrator:
         self._recovery = RecoveryState()
         self._recompose_attempts: dict[str, float] = {}  # session_id → last recompose ts
         self._recompose_ttl: float = 60.0
-        # initial_prompt deferred until first WS attach so the client is watching
-        # when the turn runs — avoids losing events before any consumer exists.
+        # Initial prompts parked for the WS bridge's first live attach. Only TWO
+        # shapes live here (see _initial_prompt_waits_for_attach): a bare slash
+        # command typed as the initial prompt, which must run through the bridge's
+        # command dispatch rather than go to the model as text (#943), and the
+        # unarchive "why you're back" seed. Every other initial prompt is SENT at
+        # spawn — a session must start working without anyone opening it.
         self._pending_initial_prompt: dict[str, str] = {}
-        # Deferred attachment ids for the initial prompt, sent on first WS attach.
-        self._pending_initial_attachment_ids: dict[str, list[str]] = {}
         # Proactive watch notices (Task 8.4, spec v2 §4.7 Pack N) queued because the
         # target assistant thread had no live driver when post_notice fired. Flushed
         # by the WS bridge's attach handler via pop_pending_notices — same in-memory,
@@ -3503,8 +3505,8 @@ class SessionOrchestrator:
             # the outer BaseException rollback therefore closes `driver` regardless
             # of whether this await completed.
             await driver.start()
-            # Apply the chosen model before the first prompt runs (initial prompt is
-            # deferred until a client attaches, so this always lands on turn one). The
+            # Apply the chosen model before the first prompt runs (the initial prompt is
+            # sent below, after the row is durable, so this always lands on turn one). The
             # "default" alias / empty means "account default" → leave the driver as-is.
             model = (model or "").strip() or None
             if model and model != "default":
@@ -3520,21 +3522,24 @@ class SessionOrchestrator:
             # attached to is idle-reaped by the manager either way.
             if self._codex is not None and selected_engine == AgentEngine.CODEX:
                 self._codex.attach(account, session_id)
-            # Human-created sessions (origin is None) DEFER the initial prompt until the
-            # first WebSocket client attaches. Sending it before any subscriber exists
-            # risks the turn's events being lost: control events broadcast to zero
-            # subscribers are dropped, and the transcript file may not be flushed yet.
-            # Deferring means the client is already watching when the turn runs.
+            # The initial prompt is SENT below, right after the row is durable, for
+            # every origin. It used to be parked for human-created sessions (origin
+            # None) until the first WS attach "so the client is watching when the turn
+            # runs" (#4) — which meant a session created from the dispatch bar, a
+            # preset or the phone sat at "Ready" doing nothing until somebody navigated
+            # into it, and one nobody opened never ran at all. Nothing is lost by
+            # sending first: UserMessage and the turn's content are turn-buffered, so
+            # a mid-turn attach gets them from the driver snapshot, and a settled turn
+            # replays from the transcript — the exact path automation-spawned sessions
+            # (origin set, no human ever attaches) have always relied on.
             #
-            # Automation-spawned sessions (origin set) have NO human who will ever
-            # attach, so a deferred prompt would never be sent and the session would sit
-            # idle forever. Those send immediately, below — the driver persists its
-            # transcript and fires status callbacks with no live subscriber, and a later
-            # human attach replays the turn.
-            if initial_prompt and origin is None:
+            # The one shape that still waits is a bare slash command: it must execute
+            # through the WS bridge's command dispatch (#943), which only exists on a
+            # live socket, not be handed to the model as literal text.
+            defer_for_bridge = self._initial_prompt_waits_for_attach(
+                initial_prompt, attachment_ids)
+            if defer_for_bridge and initial_prompt:
                 self._pending_initial_prompt[session_id] = initial_prompt
-            if attachment_ids and origin is None:
-                self._pending_initial_attachment_ids[session_id] = list(attachment_ids)
 
             if preexisting_row:
                 # UPDATE the existing queued row → idle with resolved account/cwd/branch/model.
@@ -3588,11 +3593,10 @@ class SessionOrchestrator:
             log_event(log, logging.INFO, "session.start",
                       session_id=session_id, **{"from": None, "to": "idle", "reason": "create"})
             log.info("session.create id=%s account=%s", session_id, account)
-            # Autonomous kick-off for automation-spawned sessions: no human will attach
-            # to trigger the deferred prompt, so run turn one now (after the DB row +
-            # record exist, so status/claude-session callbacks land on a persisted row).
-            if initial_prompt and origin is not None:
-                await self.send_prompt(session_id, initial_prompt, attachment_ids)
+            # Kick off turn one now — after the DB row + record exist, so status and
+            # engine-session-id callbacks land on a persisted row. No attach required.
+            if not defer_for_bridge and (initial_prompt or attachment_ids):
+                await self.send_prompt(session_id, initial_prompt or "", attachment_ids)
             return record
         except BaseException:
             # Before the row is durable, this method owns every resource allocated
@@ -9587,13 +9591,13 @@ class SessionOrchestrator:
     async def _recover_undelivered_prompts(self, rows) -> int:
         """Re-stage / re-send initial prompts a daemon restart stranded. Returns the count.
 
-        The bug this closes: ``_pending_initial_prompt`` is an in-memory dict, and
-        ``_spawn_session``'s two delivery paths are both process-local — a human
-        session (origin None) parks its prompt there until the first WS attach, and an
-        automation session (origin set) sends it inline right after the row is written.
-        A restart in either window left the session resting at 'idle' with its prompt
-        never delivered: a card that reads "Ready" over an empty conversation and never
-        does anything. Nothing reaped it and nothing retried it.
+        The bug this closes: initial-prompt delivery is process-local —
+        ``_spawn_session`` sends the prompt inline right after the row is written
+        (or, for a bare slash command, parks it in the in-memory
+        ``_pending_initial_prompt`` for the bridge). A restart in that window left
+        the session resting at 'idle' with its prompt never delivered: a card that
+        reads "Ready" over an empty conversation and never does anything. Nothing
+        reaped it and nothing retried it.
 
         The durable state that makes recovery safe already exists on the row — no new
         column needed:
@@ -9619,10 +9623,10 @@ class SessionOrchestrator:
         not add. Pre-existing behaviour, called out so it is not mistaken for covered.
 
         Known limitation: the initial prompt's ATTACHMENTS are not recovered. Nothing
-        persists them on the sessions row (``_pending_initial_attachment_ids`` is
-        in-memory, and ``session_queue.params`` is the only durable copy — see
-        ``_rebuild_hold_kwargs``, which forgoes them for the same reason). A recovered
-        turn therefore runs text-only rather than not running at all.
+        persists them on the sessions row (``session_queue.params`` is the only
+        durable copy — see ``_rebuild_hold_kwargs``, which forgoes them for the same
+        reason). A recovered turn therefore runs text-only rather than not running
+        at all.
         """
         recovered = 0
         to_send: list[tuple[str, str]] = []
@@ -9659,14 +9663,14 @@ class SessionOrchestrator:
                 continue
             if row.id in self._pending_initial_prompt:
                 continue  # already staged this boot (e.g. by unarchive)
-            if getattr(row, "origin", None) is None:
-                # Human session: restore the deferred-until-attach contract exactly as
-                # _spawn_session set it up, so the turn streams live to the client that
-                # opens the card rather than firing into a driver nobody is watching.
+            if self._initial_prompt_waits_for_attach(prompt, None):
+                # A bare slash command: restore the parked-for-the-bridge contract
+                # exactly as _spawn_session set it up (#943) — the bridge's command
+                # dispatch, not the model, has to run it.
                 self._pending_initial_prompt[row.id] = prompt
             else:
-                # Automation session: no human will ever attach, so nothing would pop a
-                # staged prompt. Re-send it — batched below, off the startup path.
+                # Same contract as _spawn_session for every origin: re-send it so the
+                # session starts working — batched below, off the startup path.
                 to_send.append((row.id, prompt))
             recovered += 1
             log_event(log, logging.WARNING, "session.initial_prompt_recovered",
@@ -9685,7 +9689,7 @@ class SessionOrchestrator:
         return recovered
 
     async def _deliver_initial_prompts(self, items: list[tuple[str, str]]) -> None:
-        """Deliver each recovered automation prompt in turn (see _deliver_initial_prompt)."""
+        """Deliver each recovered initial prompt in turn (see _deliver_initial_prompt)."""
         for session_id, prompt in items:
             await self._deliver_initial_prompt(session_id, prompt)
 
@@ -12016,29 +12020,35 @@ class SessionOrchestrator:
         d = self._drivers.get(session_id)
         return d.pending_questions() if d else []
 
-    def pop_pending_initial_prompt(self, session_id: str) -> str | None:
-        """Return and remove the deferred initial prompt for session_id, or None.
+    @staticmethod
+    def _initial_prompt_waits_for_attach(prompt: str | None, attachment_ids) -> bool:
+        """Whether an initial prompt must be PARKED for the WS bridge rather than sent
+        at spawn. True only for a bare slash command with no attachments: it has to
+        run through the bridge's command dispatch (``/model``, ``/account``, custom
+        commands — #943), which exists only on a live socket, instead of reaching
+        the model as literal text. Everything else is sent immediately so the
+        session starts working without anyone opening it. ``parse_command_line``
+        is the same predicate the bridge applies when it pops the prompt, so the
+        two halves cannot disagree about what is a command."""
+        if not prompt or attachment_ids:
+            return False
+        return cmd_catalog.parse_command_line(prompt) is not None
 
-        Called by the WS bridge on the first attach so the initial prompt is sent
-        while a client is already watching.  Clears the entry so subsequent attaches
-        (reconnects) do not re-send it.
+    def pop_pending_initial_prompt(self, session_id: str) -> str | None:
+        """Return and remove the parked initial prompt for session_id, or None.
+
+        Called by the WS bridge when a live stream opens. Only a slash-command
+        initial prompt (#943) or an unarchive seed is ever parked here — see
+        ``_initial_prompt_waits_for_attach``. Clears the entry so subsequent
+        attaches (reconnects) do not re-run it.
         """
         return self._pending_initial_prompt.pop(session_id, None)
-
-    def pop_pending_initial_attachment_ids(self, session_id: str) -> list[str] | None:
-        """Return and remove the deferred initial attachment ids for session_id, or None.
-
-        Called by the WS bridge on the first attach alongside pop_pending_initial_prompt.
-        Clears the entry so subsequent attaches (reconnects) do not re-send them.
-        """
-        return self._pending_initial_attachment_ids.pop(session_id, None)
 
     def pop_pending_notices(self, session_id: str) -> list[dict]:
         """Return and clear the queued proactive watch notices for session_id
         (Task 8.4). Called by the WS bridge on attach, alongside
-        pop_pending_initial_prompt/pop_pending_initial_attachment_ids, so a notice
-        queued by post_notice while the drawer had no live driver is delivered on
-        the next open rather than lost."""
+        pop_pending_initial_prompt, so a notice queued by post_notice while the
+        drawer had no live driver is delivered on the next open rather than lost."""
         return self._pending_notices.pop(session_id, [])
 
     async def send_prompt(self, session_id, text, attachment_ids=None, *,
@@ -14658,10 +14668,11 @@ class SessionOrchestrator:
         record = self._record_from_row(
             row, status="idle", auto_archive_opt_out_reason="manual-unarchive")
         self._records[session_id] = record
-        # Stage the seed for lazy delivery on the NEXT WS attach (same path as a new
-        # session's deferred initial prompt — ws.py pops + sends it once the client is
-        # watching, so its turn streams live rather than firing eagerly into a driver
-        # nobody is looking at). setdefault: never clobber a genuinely queued prompt.
+        # Stage the seed for lazy delivery on the NEXT WS attach (same path as a
+        # slash-command initial prompt — ws.py pops + sends it once the client is
+        # watching). Unlike a new session's initial prompt this is deliberately NOT
+        # sent now: it is a "why you're back" briefing for the human who just
+        # unarchived, not work to start. setdefault: never clobber a queued prompt.
         if seed is not None:
             self._pending_initial_prompt.setdefault(session_id, seed)
         log.info("session.unarchive id=%s restored to %s", session_id, original_cwd)

@@ -43,3 +43,7 @@ The forbidden-rule test verifies native policy evaluation. A model refusing to a
 Independent whole-branch review passed after correcting startup reconciliation, deferred-mode ordering, repeated plan-toggle intent, guarded-transition recovery, and durable handle-save retry.
 
 Final gates: Ruff and full mypy passed; core 681 passed; frontend typecheck/lint/build and 4,171 tests passed. Full server run had 8,616 passes and 33 skips; two unrelated API assertions expected 404 but the local frontend build enabled a SPA fallback returning 405. With the generated build moved out to match backend CI, both affected files passed all 45 tests without source changes.
+
+Integration with concurrent PR #1499: empty replacement threads retain native IDs only locally until a first turn is accepted; history-bearing forks publish through the shared serialized persistence helper. This preserves restart continuity while changing policy. Independent merge review passed; all five native checks passed again (59.67 s).
+
+Final merged validation: native 5 passed; core 681 passed; frontend 4,237 passed plus typecheck/lint/build; Ruff/mypy passed. Server run: 8,647 passed, 33 skipped, one disk-sensitive account-usage timing failure (0.69 s vs 0.5 s ceiling). Its full three-test file passed with tmpfs temporary storage; ledger fsync latency is outside this change, and no assertion was weakened.

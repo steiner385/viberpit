@@ -3,7 +3,7 @@ slug: product-management-layer
 title: Product-Management Layer
 state: delivering
 links:
-  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/automations/pm_triage.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/triage/TriageInbox.tsx]
+  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/automations/pm_triage.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts]
   prs: ['#866', '#879', '#893', '#897', '#899', '#1327']
 ---
 
@@ -48,7 +48,8 @@ not one per tick. The engine is pure/propose-only and never mutates onboarding s
 **Notes** — State is `delivering`. Phase 1 (foundation models + pm-sync backlog mirror + project
 registry API/UI, #893), Phase 2 (archaeology onboarding wizard + map-synthesis prompt +
 classify/triage, #897, with the remote-mode RPC-serialization fix #899) and **Phase 3** (the
-continuous `pm-triage` loop + the keyboard-first Triage Inbox) have landed. Phase 3 reuses
+continuous `pm-triage` loop + the keyboard-first triage inbox, now the Inbox scope of the Roadmap
+section, `/roadmap?scope=inbox`) have landed. Phase 3 reuses
 `server/pm/classification.py` and the phase-2 `pm_classify_run` / `pm_onboard_spawn_map`
 orchestrator seams rather than adding a second classifier or map-synthesis path (constitution VI),
 and needed no schema change — every concern routes through phase-1's `0012_pm_product_layer`.
@@ -84,13 +85,18 @@ under the nav section `roadmap`, on the same master/detail chassis as Sessions:
   Advance human gate). It keeps its own prefix and is claimed for the Roadmap section by a nav
   alias, so the list column stays beside it.
 - Tabs are URL state (`?tab=`), so every level is linkable.
-- `/projects` → `/roadmap`, `/projects/:slug` → `/roadmap/:slug` and `/initiatives` →
-  `/roadmap?scope=initiatives` redirect; `ProjectsTab`, `InitiativesTab` and their css are deleted.
-- Triage remains its own nav section (`/triage`); folding it onto the chassis is roadmap-spec
-  phase 6.
+- `/roadmap?scope=inbox[&product=<slug>][&proposal=<id>]` — the **Inbox** scope: the triage queue,
+  grouped by product, with the proposal editor as its detail pane. Accept / reject / bulk-accept
+  are optimistic and each raises a six-second Undo toast backed by `POST
+  /api/pm/triage/{id}/undo`.
+- `/projects` → `/roadmap`, `/projects/:slug` → `/roadmap/:slug`, `/initiatives` →
+  `/roadmap?scope=initiatives` and `/triage[?projectSlug=x]` →
+  `/roadmap?scope=inbox[&product=x]` redirect; `ProjectsTab`, `InitiativesTab`, `TriageInbox` and
+  their css are deleted. The queue's depth badges the **Roadmap** nav entry, which is what points
+  at it from outside the section now that Triage is not a section.
 
 Still owed by that spec: issue leaves and inline overlay edits (phase 4), map-changes PRs
-(phase 5), triage on the chassis and the Queue scope (phase 6).
+(phase 5), the Queue scope and the Inbox's "Needs a home" Reclassify control (phase 6).
 
 **Phase 4 status:** superseded rather than pending. RICE→Score and the global queue landed in
 #1085, the portfolio UI is tracked as #993, and spec 003 (`specs/003-gh-projects-integration`)
@@ -136,11 +142,12 @@ origins' audited engine ceilings and their operator-triggered `modes = ()` decla
 `/triage` accept/reject/accept-bulk, `/work-items/{id}/overlay`);
 `web/src/features/roadmap/RoadmapPage.tsx` (the portfolio / product / capability detail levels,
 with `OnboardingWizard` and `DependencyPanel` mounted as product tabs),
-`web/src/features/roadmap/RoadmapListColumn.tsx` (the Map and Initiatives list scopes),
+`web/src/features/roadmap/RoadmapListColumn.tsx` (the Map, Initiatives and Inbox list scopes),
 `web/src/features/roadmap/InitiativePage.tsx`, `web/src/projects/OnboardingWizard.tsx`,
-`web/src/triage/TriageInbox.tsx` + `keyboardState.ts` (the keyboard-first inbox: `j/k/a/e/r/x/A`,
-optimistic accept, cursor anchored to a proposal id so a queue that reorders under the user cannot
-misdirect a keystroke);
+`web/src/features/roadmap/inbox/InboxScopeBody.tsx` + `inboxKeys.ts` + `ProposalDetail.tsx` (the
+keyboard-first inbox: `j/k/a/e/r/x/A`, optimistic accept with a six-second server-backed Undo,
+cursor anchored to a proposal id so a queue that reorders under the user cannot misdirect a
+keystroke);
 `specs/001-ccswitch-web/spec.md` (§§3–7). PRs: #866 (design spec), #879 (phase 2–4 plans),
 #893 (Phase 1), #897 (Phase 2), #899 (remote-mode seam fix), #1327 (Phase 3),
 #1268/#1269 (Codex parity for the onboarding, critic and classification sessions).

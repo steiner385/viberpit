@@ -243,7 +243,7 @@ function AppShellInner() {
 
   const workspace = useSessionsWorkspace(openDrawer)
   // The hook always runs (hooks do); its QUERY is gated on the section, so
-  // `/pm/map`'s 15 s poll does not fund a list column the other six sections
+  // `/pm/map`'s 15 s poll does not fund a list column the five other sections
   // never render — nor a wall display, which `KioskPageGuard` has already
   // redirected off Roadmap and which has no `app.list` region at all. On
   // Roadmap it is the same `QK.roadmapMap` entry `RoadmapPage` reads, so the

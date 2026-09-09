@@ -3,8 +3,8 @@
  *
  * The subject is the GATE. `AppShellInner` calls the hook unconditionally (hooks
  * always are), so nothing about the code's shape stops `/pm/map` being polled
- * every 15 s on Sessions, Pipeline, Automations, Triage, Insights and Settings —
- * six sections that never render the Roadmap column — and on a wall display,
+ * every 15 s on Sessions, Pipeline, Automations, Insights and Settings —
+ * five sections that never render the Roadmap column — and on a wall display,
  * which has no `app.list` region at all. Only `enabled` stops it, and only a test
  * that watches the TRANSPORT can tell a disabled query from an enabled one: both
  * return `data: undefined` to the component.
@@ -13,7 +13,7 @@
  * arrangement as `routes.test.tsx` and `features/settings/pageContract.test.tsx`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 
 vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>()
@@ -55,6 +55,7 @@ import { ROADMAP } from '@/features/products/vocab'
 
 const get = vi.mocked(api.get)
 const askedForMap = () => get.mock.calls.some(([path]) => path === '/pm/map')
+const triageCalls = () => get.mock.calls.map(([path]) => path).filter((p) => p.startsWith('/pm/triage'))
 
 /** The shell has mounted and made its first round of requests. `/config` is
  *  asked for on every route by `useSessionsWorkspace`, so it is the settle
@@ -70,7 +71,7 @@ describe('the shell only funds the roadmap map where the column renders', () => 
     get.mockClear()
   })
 
-  it.each(['/sessions', '/pipeline', '/automations', '/triage', '/insights', '/settings/general'])(
+  it.each(['/sessions', '/pipeline', '/automations', '/insights', '/settings/general'])(
     'does not fetch the map on %s',
     async (path) => {
       renderApp({ path, mode: 'desktop' })
@@ -78,6 +79,35 @@ describe('the shell only funds the roadmap map where the column renders', () => 
       expect(askedForMap()).toBe(false)
     },
   )
+
+  // The queue has TWO readers and is fetched once. Finish-line row 3 put the
+  // pending-proposal count on the Roadmap NAV badge, which every section
+  // renders, so one unscoped `/pm/triage` poll everywhere is the ruling rather
+  // than a leak — it is also what makes the nav badge and the Inbox scope badge
+  // agree, since both read the same key. What this pins is the COUNT: one
+  // observer's worth of requests off Roadmap, and no second one added by the
+  // column when the two are co-mounted on Roadmap itself.
+  //
+  // What it does NOT pin is `useRoadmapWorkspace`'s `enabled` gate: with the
+  // badge live app-wide, dropping the gate would add observers of a key that is
+  // already fetched, not requests. That gate (and the `poll` ownership below
+  // it) is guarded at the hook, in
+  // `features/roadmap/useRoadmapWorkspace.test.tsx`.
+  it.each(['/sessions', '/pipeline', '/automations', '/insights', '/settings/general'])(
+    'funds exactly one unscoped triage read — the nav badge\'s — on %s',
+    async (path) => {
+      renderApp({ path, mode: 'desktop' })
+      await shellSettled()
+      await waitFor(() => expect(triageCalls()).toEqual(['/pm/triage']))
+    },
+  )
+
+  it('adds no second triage request on Roadmap, where badge and column co-mount', async () => {
+    renderApp({ path: '/roadmap', mode: 'desktop' })
+    await waitFor(() => expect(askedForMap()).toBe(true))
+    expect(await screen.findByRole('tree', { name: ROADMAP.map })).toBeInTheDocument()
+    expect(triageCalls()).toEqual(['/pm/triage'])
+  })
 
   it('fetches the map on the Roadmap section, and renders the column from it', async () => {
     renderApp({ path: '/roadmap', mode: 'desktop' })
@@ -107,6 +137,21 @@ describe('the shell only funds the roadmap map where the column renders', () => 
     // would silently drop the list column beside the initiative page.
     renderApp({ path: '/initiatives/views', mode: 'desktop' })
     await waitFor(() => expect(askedForMap()).toBe(true))
+  })
+
+  it('scopes the Inbox to ?product= and mounts that scope in the column', async () => {
+    // The `?product=` chip is the query key AND the mutations' cache key, so a
+    // resolver that stopped reading it would leave the optimistic accept
+    // patching a list the rows did not come from.
+    renderApp({ path: '/roadmap?scope=inbox&product=kindash', mode: 'desktop' })
+    await waitFor(() =>
+      expect(get.mock.calls.some(([p]) => p === '/pm/triage?projectSlug=kindash')).toBe(true))
+    // Scoped to the column's scope switch: the page's breadcrumb offers a
+    // second "Inbox" link (back to every product) whenever the scope is
+    // narrowed, and it is the SEGMENT that has to mark the current scope.
+    const segment = await screen.findByRole('navigation', { name: 'Roadmap scope' })
+    const link = within(segment).getByRole('link', { name: new RegExp(`^${ROADMAP.inbox}`) })
+    expect(link).toHaveAttribute('aria-current', 'page')
   })
 
   it('starts fetching only once the user navigates to Roadmap', async () => {

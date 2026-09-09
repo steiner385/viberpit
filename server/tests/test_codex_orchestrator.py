@@ -13,7 +13,7 @@ failure before this slice:
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -570,3 +570,122 @@ async def test_engine_replay_window_falls_back_to_the_claude_reader(
     with patch.object(orch, "_find_transcript", return_value=str(jsonl)):
         window = await orch.engine_replay_window("s1")
     assert window is not None and window.total_turns == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preexisting_row", [False, True], ids=["fresh", "queued"])
+@pytest.mark.parametrize("prompt_state", ["command", "pending", "started"])
+async def test_codex_native_id_survives_restart_at_first_turn_boundary(
+        tmp_path: Path, isolated_db, preexisting_row: bool, prompt_state: str) -> None:
+    """Use the real driver/JSONL stack; only a native turn creates a resume handle."""
+    import asyncio
+
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    from contextlib import nullcontext
+
+    from server.tests.test_codex_driver import Harness, THREAD
+
+    first_turn = prompt_state == "started"
+    harness = Harness(tmp_path)
+    await harness.boot(start=False)
+    orch = _orch(tmp_path, codex=harness.manager)
+    restarted = _orch(tmp_path, codex=harness.manager)
+    session_id = "restart-session"
+    cwd = tmp_path / "workspace"
+    cwd.mkdir()
+    prompt = "/help" if prompt_state == "command" else "Continue the calendar implementation"
+    if preexisting_row:
+        async with db_session() as db:
+            db.add(DbSession(
+                id=session_id, name="Restart", account_name="openai-main",
+                engine=AgentEngine.CODEX.value, engine_session_id=None, status="queued",
+                cwd=str(cwd), permission_mode="interactive", initial_prompt=prompt,
+            ))
+    try:
+        # Simulate the crash window after row creation but before a normal
+        # prompt is sent; all other cases run the actual send path.
+        with (patch.object(orch, "send_prompt", new_callable=AsyncMock)
+              if prompt_state == "pending" else nullcontext()):
+            rec = await orch._spawn_session(
+                session_id, name="Restart", account="openai-main",
+                initial_prompt=prompt, cols=80, rows=24, cwd=str(cwd), branch=None,
+                repo=None, identity=SYSTEM_IDENTITY, permission_mode="interactive",
+                attachment_ids=None, name_is_auto=False, origin=None, origin_ref=None,
+                model=None, engine=AgentEngine.CODEX, preexisting_row=preexisting_row,
+            )
+        if first_turn:
+            harness.notify_turn_started()
+            harness.notify_turn_completed()
+            await harness.settle()
+        native_id = THREAD if first_turn else None
+        assert (rec.engine_session_id or None) == native_id
+        async with db_session() as db:
+            row = await db.get(DbSession, session_id)
+            assert row is not None
+            assert row.engine_session_id == native_id
+            assert row.engine == AgentEngine.CODEX.value
+            assert row.account_name == "openai-main"
+
+        await orch.stop()
+        with patch.object(restarted, "_deliver_initial_prompts", new_callable=AsyncMock) as replay:
+            assert await restarted.rehydrate() == 1
+            if restarted._bg_tasks:
+                await asyncio.gather(*list(restarted._bg_tasks))
+            if prompt_state == "pending":
+                replay.assert_awaited_once_with([(session_id, prompt)])
+            else:
+                replay.assert_not_awaited()
+        restored = restarted._records[session_id]
+        assert (restored.engine_session_id or None) == native_id
+        if prompt_state == "command":
+            # The bridge-deferred command survives without a bogus empty-thread
+            # resume handle, and will be dispatched on the next attach.
+            assert restarted._pending_initial_prompt[session_id] == prompt
+        else:
+            assert session_id not in restarted._pending_initial_prompt
+        driver = await _ensure_driver(restarted, session_id, tmp_path)
+        assert driver.resume == native_id
+        assert driver.engine is AgentEngine.CODEX
+        assert driver.account == "openai-main"
+        assert driver.cwd == str(cwd)
+        if first_turn:
+            assert len(harness.frames(schema.METHOD_TURN_START)) == 1
+            assert harness.params(schema.METHOD_THREAD_RESUME)["threadId"] == THREAD
+        else:
+            assert not harness.frames(schema.METHOD_TURN_START)
+            assert not harness.frames(schema.METHOD_THREAD_RESUME)
+            assert len(harness.frames(schema.METHOD_THREAD_START)) == 2
+    finally:
+        await orch.stop()
+        await restarted.stop()
+        await harness.aclose()
+
+
+@pytest.mark.asyncio
+async def test_claude_native_id_remains_deferred_until_first_turn(
+        tmp_path: Path, isolated_db) -> None:
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+
+    factory = _RecFactory(AgentEngine.CLAUDE_CODE)
+    orch = _orch(tmp_path, registry=_registry(claude_factory=factory))
+    try:
+        with patch.object(orch, "_driver_config_dir", return_value=""):
+            rec = await orch._spawn_session(
+                "late-claude", name="Restart", account="claude-main",
+                initial_prompt=None, cols=80, rows=24, cwd=str(tmp_path), branch=None,
+                repo=None, identity=SYSTEM_IDENTITY, permission_mode="interactive",
+                attachment_ids=None, name_is_auto=False, origin=None, origin_ref=None,
+                model=None, engine=AgentEngine.CLAUDE_CODE,
+            )
+        async with db_session() as db:
+            row = await db.get(DbSession, rec.id)
+            assert row is not None and row.engine_session_id is None
+        await factory.created[0].config.on_engine_session_id(rec.id, "claude-native-id")
+        async with db_session() as db:
+            row = await db.get(DbSession, rec.id)
+            assert row is not None and row.engine_session_id == "claude-native-id"
+        assert rec.engine_session_id == "claude-native-id"
+    finally:
+        await orch.stop()

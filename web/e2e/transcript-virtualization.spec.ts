@@ -67,6 +67,10 @@ async function mockTranscript(page: Page) {
   )
   await page.route('**/api/sessions*', (route) => route.fulfill({ json: [] }))
   await page.route('**/api/accounts*', (route) => route.fulfill({ json: [] }))
+  // The Roadmap nav badge polls the pending triage queue app-wide (finish-line
+  // row 3), so the shell asks for this on `/review/:id` too — unstubbed it hits
+  // a dev server with no API behind it.
+  await page.route('**/api/pm/triage*', (route) => route.fulfill({ json: [] }))
   await page.routeWebSocket('**/ws', (ws) => ws.onMessage(() => {}))
 }
 

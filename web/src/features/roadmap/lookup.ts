@@ -21,6 +21,21 @@ export function findCapability(product: ProductNode, slug: string): CapabilityNo
   return walk(product.capabilities)
 }
 
+/**
+ * The capability tree as an indented flat list, so a `select` can offer the
+ * whole tree without pretending it is flat. Depth-first, parents before their
+ * children, `depth` carrying the indent the option renders with.
+ *
+ * Here rather than in a dialog: both places that let a human pick a capability
+ * — "+ Initiative" and the Inbox's proposal editor — flatten the same tree the
+ * same way, and two copies would be two indent rules.
+ */
+export function flattenCapabilities(
+  nodes: CapabilityNode[], depth = 0,
+): { node: CapabilityNode; depth: number }[] {
+  return nodes.flatMap((n) => [{ node: n, depth }, ...flattenCapabilities(n.children, depth + 1)])
+}
+
 /** The slug path from the root to `slug`, for breadcrumbs. */
 export function capabilityTrail(product: ProductNode, slug: string): CapabilityNode[] {
   const walk = (nodes: CapabilityNode[], trail: CapabilityNode[]): CapabilityNode[] | null => {

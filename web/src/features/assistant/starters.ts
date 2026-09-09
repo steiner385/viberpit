@@ -22,18 +22,18 @@ export const STARTERS: Record<NavId, readonly string[]> = {
     'What is the PR doctor proposing?',
   ],
   // One section, so one set: the Products and Initiatives chips merged when
-  // Roadmap Phase 3 merged the sections. Every string here must also be a
-  // prompt in the assistant eval corpus (`starters.coverage.test.ts`).
+  // Roadmap Phase 3 merged the sections, and the Triage chips joined them when
+  // finish-line row 3 made the queue this section's Inbox scope. (Triage's
+  // second chip was already this set's first, so only one string moved.) Every
+  // string here must also be a prompt in the assistant eval corpus
+  // (`starters.coverage.test.ts`).
   roadmap: [
     'Which project has the most open work?',
     'Which initiatives have no active session?',
     'Summarize initiative progress',
     'What is blocked by a dependency?',
     "What's at the top of the priority queue?",
-  ],
-  triage: [
     "What's waiting in the triage inbox?",
-    'Which project has the most open work?',
   ],
   insights: [
     'What regressed in CI recently?',

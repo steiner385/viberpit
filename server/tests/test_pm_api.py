@@ -909,6 +909,110 @@ def test_accept_bulk_one_failure_does_not_roll_back_the_batch():
         assert second == ("unclassified", "pending")    # rolled back to itself only
 
 
+def test_accept_rejects_out_of_range_rice_edits():
+    """Accept-with-edits writes the same four numbers the overlay PATCH does, so
+    it needs the same range guard.
+
+    The inbox used to PATCH the overlay first and get this validation for free;
+    it no longer does (the pre-accept PATCH corrupted the undo snapshot, which
+    is taken from the overlay AS IT WAS before the decision). Without this the
+    only thing standing between a typo and an inverted roadmap ordering was the
+    browser.
+    """
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import TriageProposal, WorkItem
+
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
+
+        for edits in ({"effort": 0}, {"effort": -1}, {"reach": -1},
+                      {"impact": 10001}, {"confidence": -5}, {"reach": "lots"}):
+            bad = c.post(f"/api/pm/triage/{pid}/accept", json={"edits": edits},
+                         headers=IDENTITY_HEADERS)
+            assert bad.status_code == 422, (edits, bad.text)
+            assert bad.json()["detail"]["error"] == "bad_rice_value"
+
+        # Refused BEFORE anything was written: the proposal is still decidable.
+        async def _check():
+            async with db_session() as db:
+                prop = (await db.execute(select(TriageProposal).where(
+                    TriageProposal.id == pid))).scalar_one()
+                wi = (await db.execute(select(WorkItem).where(
+                    WorkItem.id == wid))).scalar_one()
+                return prop.status, wi.triage_state
+        assert c.portal.call(_check)[0] == "pending"
+
+        ok = c.post(f"/api/pm/triage/{pid}/accept",
+                    json={"edits": {"effort": 1, "reach": 0, "impact": 10000,
+                                    "confidence": 0}},
+                    headers=IDENTITY_HEADERS)
+        assert ok.status_code == 200, ok.text
+
+
+def test_accept_rejects_boolean_rice_edits():
+    """`True` IS an `int` in Python, so a bare isinstance check waves it through
+    and `effort: true` lands in the overlay as a 1 nobody typed — a real RICE
+    score, silently invented from a JSON type error."""
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, _wid = _seed_one_pending(c, feature_slug="sessions")
+        for edits in ({"effort": True}, {"reach": False}, {"impact": True},
+                      {"confidence": False}):
+            bad = c.post(f"/api/pm/triage/{pid}/accept", json={"edits": edits},
+                         headers=IDENTITY_HEADERS)
+            assert bad.status_code == 422, (edits, bad.text)
+            assert bad.json()["detail"]["error"] == "bad_rice_value"
+            assert "whole number" in bad.json()["detail"]["message"]
+
+
+def test_accept_with_edits_rejects_an_unknown_feature_id():
+    """`featureId` in an accept body writes `WorkItem.feature_id` directly, the
+    same column the overlay PATCH writes — and the PATCH 404s an id that names no
+    row. Accept-with-edits replaced that PATCH, so it has to answer the same way;
+    without this the item points at a feature that does not exist and every
+    consumer keyed on feature→project reads a dangling id."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import TriageProposal, WorkItem
+
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
+
+        bad = c.post(f"/api/pm/triage/{pid}/accept",
+                     json={"edits": {"featureId": "f-does-not-exist"}},
+                     headers=IDENTITY_HEADERS)
+        assert bad.status_code == 404, bad.text
+        assert bad.json()["detail"]["error"] == "feature_not_found"
+
+        # Refused BEFORE anything was written: the proposal is still decidable.
+        async def _check():
+            async with db_session() as db:
+                prop = (await db.execute(select(TriageProposal).where(
+                    TriageProposal.id == pid))).scalar_one()
+                wi = (await db.execute(select(WorkItem).where(
+                    WorkItem.id == wid))).scalar_one()
+                return prop.status, wi.triage_state, prop.proposed_feature_id
+        status_, state, real_feature_id = c.portal.call(_check)
+        assert (status_, state) == ("pending", "unclassified")
+
+        # An id that DOES name a feature still accepts.
+        ok = c.post(f"/api/pm/triage/{pid}/accept",
+                    json={"edits": {"featureId": real_feature_id}},
+                    headers=IDENTITY_HEADERS)
+        assert ok.status_code == 200, ok.text
+
+        # An explicit null is "no home", not a lookup — it must not 404.
+        pid2, _wid2 = _seed_one_pending(c, number=91)
+        ok2 = c.post(f"/api/pm/triage/{pid2}/accept",
+                     json={"edits": {"featureId": None}}, headers=IDENTITY_HEADERS)
+        assert ok2.status_code == 200, ok2.text
+
+
 def test_overlay_patch_rejects_out_of_range_rice_values():
     with _client() as c:
         _register(c, "Ccswitch", repo="o/r")
@@ -1035,3 +1139,202 @@ def test_advance_live_transitions_state():
         # live is absorbing: a second tap is a 409, not a silent no-op
         r = c.post("/api/pm/projects/ccswitch/advance-live", headers=IDENTITY_HEADERS)
         assert r.status_code == 409
+
+
+def test_triage_undo_restores_overlay_and_pending():
+    """Controller ruling: the seed's starting triageState is 'unclassified', not
+    the literal 'proposed' — read the pre-accept overlay and assert undo restores
+    exactly THOSE values, rather than hardcoding a state the seed never sets."""
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        pre = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                      headers=IDENTITY_HEADERS).json()
+        r = c.post(f"/api/pm/triage/{pid}/accept", json={"edits": {"impact": 9}},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 200
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"id": pid, "status": "pending", "workItemId": wid,
+                            "triageState": pre["triageState"]}
+        # the proposal is pending again and listed
+        assert any(p["id"] == pid for p in c.get("/api/pm/triage", headers=IDENTITY_HEADERS).json())
+        # the overlay is back to its pre-accept values
+        r = c.patch(f"/api/pm/work-items/{wid}/overlay", json={}, headers=IDENTITY_HEADERS)
+        body = r.json()
+        assert body["triageState"] == pre["triageState"]
+        assert body["impact"] == pre["impact"] and body["featureId"] == pre["featureId"]
+        assert body["classifiedBy"] == pre["classifiedBy"]
+        assert body["classifiedAt"] == pre["classifiedAt"]
+        # a second undo is refused: it is pending, not resolved
+        assert c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS).status_code == 409
+        assert c.post(f"/api/pm/triage/{pid}/undo",
+                      headers=IDENTITY_HEADERS).json()["detail"]["error"] == "not_resolved"
+        # and it can be accepted again
+        assert c.post(f"/api/pm/triage/{pid}/accept", headers=IDENTITY_HEADERS).status_code == 200
+
+
+def test_triage_undo_after_reject():
+    """Same controller ruling as above: assert undo restores the pre-reject
+    overlay values (whatever the seed set them to), not a hardcoded literal."""
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        pre = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                      headers=IDENTITY_HEADERS).json()
+        assert c.post(f"/api/pm/triage/{pid}/reject", headers=IDENTITY_HEADERS).status_code == 200
+        assert c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                       headers=IDENTITY_HEADERS).json()["triageState"] == "needs_human"
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200
+        assert r.json()["triageState"] == pre["triageState"]
+        after = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                        headers=IDENTITY_HEADERS).json()
+        assert after["triageState"] == pre["triageState"]
+        assert after["impact"] == pre["impact"] and after["featureId"] == pre["featureId"]
+        assert after["classifiedBy"] == pre["classifiedBy"]
+        assert after["classifiedAt"] == pre["classifiedAt"]
+
+
+def test_triage_undo_unknown_and_expired(monkeypatch):
+    import server.api.pm as pm_api
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        assert c.post("/api/pm/triage/nope/undo", headers=IDENTITY_HEADERS).status_code == 404
+        pid, _ = _seed_one_pending(c, feature_slug="sessions")
+        assert c.post(f"/api/pm/triage/{pid}/accept", headers=IDENTITY_HEADERS).status_code == 200
+        monkeypatch.setattr(pm_api, "TRIAGE_UNDO_WINDOW_S", 0)
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 409
+        assert r.json()["detail"]["error"] == "undo_expired"
+
+
+def test_triage_undo_writes_audit_row():
+    """No GET /api/audit route exists — read the row the DB-side way, following
+    the idiom in test_overlay_patch_with_empty_body_is_a_no_op."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import AuditEvent
+
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        assert c.post(f"/api/pm/triage/{pid}/accept", headers=IDENTITY_HEADERS).status_code == 200
+        assert c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS).status_code == 200
+
+        async def _check():
+            async with db_session() as db:
+                return (await db.execute(select(AuditEvent).where(
+                    AuditEvent.type == "pm.triage.undo"))).scalars().all()
+        found = c.portal.call(_check)
+        assert len(found) == 1
+        assert found[0].detail["proposalId"] == pid and found[0].detail["workItemId"] == wid
+        assert found[0].detail["previousStatus"] == "accepted"
+
+
+def test_triage_undo_restores_classified_at_across_naive_sqlite_roundtrip():
+    """Fix-round-1 regression: on SQLite a DateTime(timezone=True) column hands
+    back a NAIVE datetime after a round trip through the DB — the exact slip the
+    DB clock rule exists for. Pre-set classified_at directly (simulating a prior
+    classification), accept (forcing _apply_accept to re-query the WorkItem fresh
+    off SQLite, which comes back naive), undo, and assert the restored
+    classifiedAt is the SAME INSTANT as what was set — compared as parsed aware
+    datetimes, not strings, so a silent naive/aware drift would fail the
+    comparison rather than being masked by string formatting."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import WorkItem
+
+    prior_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
+
+        async def _preset():
+            async with db_session() as db:
+                w = (await db.execute(select(WorkItem).where(
+                    WorkItem.id == wid))).scalar_one()
+                w.classified_by = "ai"
+                w.classified_at = prior_at
+        c.portal.call(_preset)
+
+        assert c.post(f"/api/pm/triage/{pid}/accept",
+                      headers=IDENTITY_HEADERS).status_code == 200
+        assert c.post(f"/api/pm/triage/{pid}/undo",
+                      headers=IDENTITY_HEADERS).status_code == 200
+
+        body = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                       headers=IDENTITY_HEADERS).json()
+        assert body["classifiedBy"] == "ai"
+        restored = datetime.fromisoformat(body["classifiedAt"])
+        # Deliberately NOT coerced here: a server-side naive/aware slip must fail
+        # this assertion, not be silently healed by the test.
+        assert restored.tzinfo is not None, (
+            f"classifiedAt round-tripped without a UTC offset ({body['classifiedAt']!r}) "
+            "— naive/aware slip")
+        assert restored == prior_at
+
+
+def test_triage_undo_no_snapshot_409():
+    """A row resolved before undo_snapshot existed (or otherwise cleared) answers
+    409 no_snapshot rather than restoring garbage. Null the column through the
+    app's own DB session after a real accept, mirroring _seed_one_pending's
+    c.portal.call idiom."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import TriageProposal
+
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, _wid = _seed_one_pending(c, feature_slug="sessions")
+        assert c.post(f"/api/pm/triage/{pid}/accept",
+                      headers=IDENTITY_HEADERS).status_code == 200
+
+        async def _clear_snapshot():
+            async with db_session() as db:
+                prop = (await db.execute(select(TriageProposal).where(
+                    TriageProposal.id == pid))).scalar_one()
+                prop.undo_snapshot = None
+        c.portal.call(_clear_snapshot)
+
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 409
+        assert r.json()["detail"]["error"] == "no_snapshot"
+
+
+def test_triage_undo_no_snapshot_beats_the_window(monkeypatch):
+    """The case the no_snapshot branch actually EXISTS for: a row decided before
+    the column was added. Such a row is also, always, outside the undo window —
+    so with the window checked first it could only ever have answered
+    undo_expired, and no_snapshot documented a reachable-by-nobody state. The
+    missing snapshot is the more specific reason; it is the one reported."""
+    import server.api.pm as pm_api
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import TriageProposal
+
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, _wid = _seed_one_pending(c, feature_slug="sessions")
+        assert c.post(f"/api/pm/triage/{pid}/accept",
+                      headers=IDENTITY_HEADERS).status_code == 200
+
+        async def _clear_snapshot():
+            async with db_session() as db:
+                prop = (await db.execute(select(TriageProposal).where(
+                    TriageProposal.id == pid))).scalar_one()
+                prop.undo_snapshot = None
+        c.portal.call(_clear_snapshot)
+        # Aged out as well — the pre-migration row's real shape.
+        monkeypatch.setattr(pm_api, "TRIAGE_UNDO_WINDOW_S", 0)
+
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 409
+        assert r.json()["detail"]["error"] == "no_snapshot", r.text

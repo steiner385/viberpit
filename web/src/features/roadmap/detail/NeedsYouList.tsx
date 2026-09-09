@@ -6,9 +6,8 @@ import { Link } from 'react-router-dom'
 import type { ProductNode } from '@/api/roadmap'
 import { IncidentQueue } from '@/initiatives/IncidentQueue'
 import { EmptyState } from '@/ui/EmptyState'
-import { NAV_BY_ID } from '@/shell/navDefs'
 import { initiativeStatusLabel, reasonLabel } from '@/features/products/vocab'
-import { initiativePath } from '../roadmapNavState'
+import { inboxPath, initiativePath } from '../roadmapNavState'
 import { needsYouRows } from './needsYou'
 
 export function NeedsYouList({ products, repos }: { products: ProductNode[]; repos?: readonly string[] }) {
@@ -45,12 +44,9 @@ export function NeedsYouList({ products, repos }: { products: ProductNode[]; rep
               <span className="font-medium text-ink">{p.name ?? p.slug}</span>
               {' · '}
               {p.counts.awaitingTriage > 0 && (
-                // Triage is still its own page; finish-line row 3 folds it into
-                // the roadmap and this link follows it there.
-                <Link
-                  className="text-accent hover:underline"
-                  to={`${NAV_BY_ID.triage.path}?projectSlug=${encodeURIComponent(p.slug)}`}
-                >
+                // Stays inside this section: the queue is the Inbox scope,
+                // narrowed to this product (finish-line row 3).
+                <Link className="text-accent hover:underline" to={inboxPath({ product: p.slug })}>
                   {p.counts.awaitingTriage} awaiting triage
                 </Link>
               )}

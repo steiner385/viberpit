@@ -1,5 +1,5 @@
 import type { NavBadgeKey, NavDef } from './navDefs'
-import { useAccounts, useSessions, useAllPrs, useAutomations } from '@/api/hooks'
+import { useAccounts, useSessions, useAllPrs, useAutomations, useTriage } from '@/api/hooks'
 import { useDeployState } from '@/lib/deployState'
 import { inFlightPrCount } from '@/session/prStatus'
 import { isBackgroundSession } from '@/session/backgroundSessions'
@@ -30,6 +30,15 @@ export function useNavBadges(): NavBadges {
   const { data: prs = [] } = useAllPrs()
   const { data: automationsData = [] } = useAutomations()
   const { data: accounts = [] } = useAccounts()
+  // Deliberately UNSCOPED and ungated, unlike the Roadmap column's copy
+  // (`useRoadmapWorkspace`, `enabled: active`). A section badge has to be right
+  // while you are looking at another section, so this one 15 s poll runs
+  // app-wide; it shares `[...QK.triage, null]` with the Inbox column whenever
+  // that column is not narrowed to a product, so react-query dedupes the two and
+  // the nav badge and the scope badge can never disagree. This observer OWNS
+  // that key's interval: the column passes `poll: false` for the unscoped queue
+  // precisely so the two do not run two timers over one key.
+  const { data: pendingProposals = [] } = useTriage()
   const deploy = useDeployState()
 
   const automationsActiveSessions = automationsData.reduce((n, a) => n + a.activeSessions, 0)
@@ -41,6 +50,10 @@ export function useNavBadges(): NavBadges {
     sessions: sessions.filter((s) => !isBackgroundSession(s)).length || undefined,
     pipeline: inFlightPrCount(prs) || undefined,
     automations: automationsActiveSessions || undefined,
+    // Proposals awaiting a decision — the count the deleted Triage nav row wore.
+    // The queue is the Roadmap section's Inbox scope now (finish-line row 3), so
+    // the badge follows it onto Roadmap rather than disappearing with the row.
+    roadmap: pendingProposals.length || undefined,
     // A FAILED deploy, not a pending one. The deploy banner is hidden on phone
     // (`useAppBanners`, `hideOn: ['phone']`), so without this dot a lost session
     // would be silent there — Settings › Deploy has the detail but nothing would

@@ -337,7 +337,8 @@ async def test_start_opens_a_thread_with_the_mode_s_sandbox_and_markers(harness)
     # Codex cannot act on a self-directed model request, so it is never asked for one.
     assert MODEL_REQUEST_INSTRUCTION not in params["developerInstructions"]
     assert driver.engine_session_id == THREAD
-    assert harness.engine_ids == [(SESSION, THREAD)]
+    # thread/start alone is not durable across an app-server restart.
+    assert harness.engine_ids == []
 
 
 @pytest.mark.asyncio
@@ -352,6 +353,7 @@ async def test_start_resumes_an_existing_thread(harness):
     await harness.boot(resume=THREAD)
     assert not harness.frames(schema.METHOD_THREAD_START)
     assert harness.params(schema.METHOD_THREAD_RESUME)["threadId"] == THREAD
+    assert harness.engine_ids == [(SESSION, THREAD)]
 
 
 @pytest.mark.asyncio
@@ -1192,6 +1194,9 @@ async def test_reconnect_starts_a_fresh_thread(harness):
     assert len(harness.frames(schema.METHOD_THREAD_START)) == 2
     assert old_pump is not None and old_pump.done()
     assert driver._pump is not old_pump
+    assert harness.engine_ids == [(SESSION, THREAD)]
+    await driver.send_prompt("first turn on the new thread")
+    assert harness.engine_ids == [(SESSION, THREAD), (SESSION, "thread-2")]
 
 
 @pytest.mark.asyncio
@@ -1587,7 +1592,8 @@ async def test_reentering_plan_during_pending_exit_preserves_saved_full_auto(har
 
 
 @pytest.mark.asyncio
-async def test_empty_native_thread_policy_switch_restarts_without_wedging(harness):
+@pytest.mark.parametrize("turn_accepted", [False, True])
+async def test_empty_native_thread_policy_switch_restarts_without_wedging(harness, turn_accepted):
     driver = await harness.boot(mode="full-auto")
     harness.server.rule(schema.METHOD_THREAD_RESUME,
                         error={"code": -32600, "message": "no rollout found"})
@@ -1595,9 +1601,13 @@ async def test_empty_native_thread_policy_switch_restarts_without_wedging(harnes
                         result=thread_config("empty-plan", sandbox="readOnly"))
     await driver.set_permission_mode("plan")
     assert driver.mode == "plan"
-    assert harness.engine_ids[-1] == (SESSION, "empty-plan")
+    assert harness.engine_ids == []
     assert driver.current_status() != "needs_attention"
+    if not turn_accepted:
+        harness.server.rule(schema.METHOD_TURN_START,
+                            error={"code": -32600, "message": "refused"})
     await driver.send_prompt("first prompt")
+    assert harness.engine_ids == ([(SESSION, "empty-plan")] if turn_accepted else [])
     assert harness.params(schema.METHOD_TURN_START)["threadId"] == "empty-plan"
     assert harness.params(schema.METHOD_TURN_START)["approvalPolicy"] == "untrusted"
 
@@ -1611,8 +1621,9 @@ async def test_loaded_native_policy_switch_forks_history_and_updates_resume_hand
     harness.server.rule("thread/fork", result=thread_config("fork-plan", sandbox="readOnly"))
     await driver.set_permission_mode("plan")
     assert driver.mode == "plan"
-    assert harness.engine_ids[-1] == (SESSION, "fork-plan")
+    assert harness.engine_ids == [(SESSION, THREAD), (SESSION, "fork-plan")]
     await driver.send_prompt("keep the previous context")
+    assert harness.engine_ids == [(SESSION, THREAD), (SESSION, "fork-plan")]
     assert harness.params(schema.METHOD_TURN_START)["threadId"] == "fork-plan"
     assert harness.params("thread/fork")["threadId"] == THREAD
 
@@ -1656,11 +1667,11 @@ async def test_guard_refusal_keeps_execution_blocked_when_original_policy_cannot
 
 @pytest.mark.asyncio
 async def test_policy_thread_persistence_failure_blocks_until_retry(harness):
-    driver = await harness.boot(mode="full-auto")
+    driver = await harness.boot(mode="full-auto", resume=THREAD)
     harness.server.rule(schema.METHOD_THREAD_RESUME,
-                        error={"code": -32600, "message": "no rollout found"})
-    harness.server.rule(schema.METHOD_THREAD_START,
-                        result=thread_config("empty-plan", sandbox="readOnly"))
+                        result=thread_config(sandbox="dangerFullAccess", approval_policy="never"))
+    harness.server.rule(schema.METHOD_THREAD_FORK,
+                        result=thread_config("fork-plan", sandbox="readOnly"))
     original = driver._on_engine_session_id
 
     async def fail_save(session_id, thread_id):
@@ -1674,9 +1685,9 @@ async def test_policy_thread_persistence_failure_blocks_until_retry(harness):
     driver._on_engine_session_id = original
     await driver.set_permission_mode("plan")
     assert driver.mode == "plan"
-    assert harness.engine_ids[-1] == (SESSION, "empty-plan")
+    assert harness.engine_ids[-1] == (SESSION, "fork-plan")
     await driver.send_prompt("saved")
-    assert harness.params(schema.METHOD_TURN_START)["threadId"] == "empty-plan"
+    assert harness.params(schema.METHOD_TURN_START)["threadId"] == "fork-plan"
 
 
 @pytest.mark.asyncio
@@ -1754,3 +1765,89 @@ async def test_native_goal_prevents_policy_fork_without_losing_goal_accounting(h
     assert len(harness.frames(schema.METHOD_THREAD_START)) == (1 if resume is None else 0)
     await driver.send_prompt("continue the original goal")
     assert harness.params(schema.METHOD_TURN_START)["threadId"] == THREAD
+
+
+@pytest.mark.asyncio
+async def test_native_id_is_published_once_after_first_turn_acceptance(harness):
+    driver = await harness.boot()
+    assert harness.engine_ids == []
+    await driver.send_prompt("hello")
+    assert harness.engine_ids == [(SESSION, THREAD)]
+    harness.notify_turn_started()
+    await harness.settle()
+    harness.notify_turn_completed()
+    await harness.settle()
+    await driver.send_prompt("next turn")
+    assert harness.engine_ids == [(SESSION, THREAD)]
+
+
+@pytest.mark.asyncio
+async def test_turn_start_failure_does_not_publish_an_empty_thread(harness):
+    driver = await harness.boot()
+    harness.server.rule(schema.METHOD_TURN_START, error={"code": -32600, "message": "refused"})
+    await driver.send_prompt("hello")
+    assert harness.engine_ids == []
+    assert driver.turn_active is False
+    assert driver._last_turn_outcome == "failed"
+
+
+@pytest.mark.asyncio
+async def test_turn_started_notice_preserves_id_when_start_response_fails(harness):
+    driver = await harness.boot()
+    harness.server.rule(schema.METHOD_TURN_START, error={"code": -32600, "message": "lost ack"})
+    await driver.send_prompt("hello")
+    assert harness.engine_ids == []
+    # The native notification independently proves a turn exists even when the
+    # request did not yield a successful response to this driver.
+    harness.notify_turn_started()
+    await harness.settle()
+    assert harness.engine_ids == [(SESSION, THREAD)]
+
+
+@pytest.mark.asyncio
+async def test_native_id_callback_failure_is_not_a_turn_start_failure(harness):
+    driver = await harness.boot()
+    attempts = 0
+
+    async def persist(session_id, thread_id):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("database unavailable")
+        harness.engine_ids.append((session_id, thread_id))
+
+    driver._on_engine_session_id = persist
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await driver.send_prompt("hello")
+    assert driver.turn_active is True
+    harness.notify_turn_started()
+    await harness.settle()
+    assert harness.engine_ids == [(SESSION, THREAD)]
+
+
+@pytest.mark.asyncio
+async def test_native_id_publication_serializes_response_and_notice(harness):
+    driver = await harness.boot()
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+    calls = 0
+
+    async def persist(session_id, thread_id):
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await finish.wait()
+        harness.engine_ids.append((session_id, thread_id))
+
+    driver._on_engine_session_id = persist
+    prompt = asyncio.create_task(driver.send_prompt("hello"))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        harness.notify_turn_started()
+        await harness.settle()
+        assert calls == 1
+    finally:
+        finish.set()
+        await prompt
+    await harness.settle()
+    assert harness.engine_ids == [(SESSION, THREAD)]

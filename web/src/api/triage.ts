@@ -90,6 +90,13 @@ export function rejectProposal(id: string): Promise<{ id: string; status: string
   return api.post(`/pm/triage/${encodeURIComponent(id)}/reject`)
 }
 
+export interface UndoResult { id: string; status: 'pending'; workItemId: string | null; triageState: string | null }
+
+/** Put an accepted/rejected proposal back to pending (server window ≈ 60 s). */
+export function undoProposal(id: string): Promise<UndoResult> {
+  return api.post<UndoResult>(`/pm/triage/${encodeURIComponent(id)}/undo`)
+}
+
 /** Accept many proposals in one round trip (the inbox's `A` / accept-selected). */
 export function acceptBulk(ids: string[]): Promise<AcceptBulkResult> {
   return api.post<AcceptBulkResult>('/pm/triage/accept-bulk', { ids })

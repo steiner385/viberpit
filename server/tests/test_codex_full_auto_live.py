@@ -406,14 +406,19 @@ async def test_native_driver_empty_thread_policy_roundtrip(
         await client.initialize()
         await driver.start()
         assert driver.mode == "full-auto"
+        allocated = [driver._require_thread()]
         await driver.set_permission_mode("plan")
         assert driver.mode == "plan"
         assert driver.current_status() != "needs_attention"
+        allocated.append(driver._require_thread())
         await driver.set_permission_mode("default")
         assert driver.mode == "full-auto"
         assert driver.current_status() != "needs_attention"
-        assert len(handles) == len(set(handles)) == 3
-        assert driver._require_thread() == handles[-1]
+        allocated.append(driver._require_thread())
+        assert len(set(allocated)) == 3
+        # Empty native allocations cannot resume after a runner restart. Policy
+        # replacement must preserve #1499's first-turn publication boundary.
+        assert not handles
     finally:
         await driver.aclose()
         await client.aclose()

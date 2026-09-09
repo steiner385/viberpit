@@ -77,9 +77,39 @@ Swept both failure modes across `server/` (2026-09-02):
   prompt — a different semantic that the predicate would wrongly alter, so it is deliberately left
   as-is.
 
+## Addendum (2026-09-09): the deferral itself was the bug
+
+"Deliver on every live-stream open" fixed the *orphaning*, but the underlying contract —
+a human session's initial prompt does not run until a client attaches — still meant every
+session created from the dispatch bar, a preset or the phone sat at "Ready" until somebody
+navigated into it, and one nobody opened never ran. That contract is gone: `_spawn_session`
+now **sends the initial prompt at spawn for every origin** (the way automation sessions always
+did), and `_recover_undelivered_prompts` re-sends a restart-stranded human prompt instead of
+re-parking it. Visibility is what it was for automation sessions all along: a mid-turn attach
+gets `UserMessage` + content from the driver's turn-buffer snapshot, a settled turn replays
+from the transcript.
+
+Only two things are still parked for the bridge, each for a reason that is *not* "so the
+client is watching":
+
+- a bare slash command typed as the initial prompt (#943) — it needs the socket's command
+  dispatch, not the model. `SessionOrchestrator._initial_prompt_waits_for_attach` is the one
+  predicate (shared with recovery) and uses the same `parse_command_line` the bridge does;
+- the unarchive "why you're back" seed — a briefing for the human who just clicked, not work
+  to start.
+
+`_pending_initial_attachment_ids` was deleted with its last writer. Re-sweep (2026-09-09):
+`_pending_notices` is the only other pop-on-attach state, and it is drawer UI content, so
+deferring it is correct.
+
+**Rule going forward:** "wait for a human to open it" is never a reason to hold *work*. Park
+something for the bridge only when the bridge is the only component that can execute it.
+
 ## Reference
 
-- Tests: `server/tests/test_ws_deferred_prompt_after_approval.py`,
+- Tests: `server/tests/test_create_session_autostart.py`,
+  `server/tests/test_initial_prompt_visible.py`, `server/tests/test_orphan_initial_prompt.py`,
+  `server/tests/test_ws_deferred_prompt_after_approval.py`,
   `server/tests/test_titles.py::test_user_prompts_skip_cli_local_command_records`,
   `server/tests/test_replay.py::test_replay_skips_cli_local_command_records`,
   `web/src/session/__tests__/useSessionRuntime.reattach.test.ts`.

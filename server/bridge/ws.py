@@ -119,6 +119,37 @@ _WORK_WAIT_LOG_MS = 250.0
 # the resume+send always completed. Each item is internally bounded by
 # _RESUME_TIMEOUT, so this reproduces that without an unbounded teardown.
 _WORK_DRAIN_TIMEOUT = _RESUME_TIMEOUT + 15.0
+# Every phase of the socket-teardown `finally` is individually bounded — the work
+# drain by _WORK_DRAIN_TIMEOUT, each reap by its own 0.5s — so the whole path has a
+# designed ceiling of roughly _WORK_DRAIN_TIMEOUT plus a handful of reaps. Exceeding
+# it means a phase overran a bound it is supposed to enforce, which is worth a
+# WARNING with the per-phase timeline attached (issue #1383).
+_TEARDOWN_BUDGET_S = _WORK_DRAIN_TIMEOUT + 10.0
+
+
+def _emit_teardown_timeline(marks: list[tuple[str, float]]) -> None:
+    """Log the socket-teardown phase timeline, loudly if it blew its budget.
+
+    Reported as per-phase DELTAS rather than cumulative offsets: the phase that
+    stalled is simply the one with the large delta. #1383's forensics repeatedly
+    went wrong doing that subtraction by hand against half-remembered schedules —
+    most notably reading two monitor sweep PERIODS as delivery latency — so the
+    number that gets read is the number that answers the question.
+    """
+    if not marks:
+        return
+    total = marks[-1][1]
+    parts: list[str] = []
+    prev = 0.0
+    for phase, at in marks:
+        parts.append(f"{phase}={at - prev:.2f}s")
+        prev = at
+    line = " ".join(parts)
+    if total > _TEARDOWN_BUDGET_S:
+        log.warning("ws.teardown OVER BUDGET: %.1fs > %.0fs — %s",
+                    total, _TEARDOWN_BUDGET_S, line)
+    else:
+        log.debug("ws.teardown %.2fs — %s", total, line)
 
 
 async def _forward_live(stream, out_q: "asyncio.Queue[dict]", session_id: str) -> None:
@@ -892,46 +923,44 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             await _flush_pending_notices(session_id)
 
         async def _send_deferred_initial_prompt(session_id: str) -> None:
-            """Pop + send the session's deferred initial prompt, if one is staged.
+            """Pop + run the session's parked initial prompt, if one is staged.
 
-            The prompt is stored at spawn instead of being sent immediately so that
-            its events stream live to a watching client rather than racing the
-            transcript-file write or arriving before any subscriber is registered on
-            the driver. The pop clears the entry, so it fires at most once; a plain
-            reconnect finds nothing and falls through to live-stream only.
+            A normal initial prompt is sent at spawn and never lands here. The
+            orchestrator parks only two shapes for the bridge
+            (SessionOrchestrator._initial_prompt_waits_for_attach): a bare slash
+            command typed as the initial prompt — it needs THIS socket's command
+            dispatch, not the model — and the unarchive "why you're back" seed. The
+            pop clears the entry, so it fires at most once; a plain reconnect finds
+            nothing and falls through to live-stream only.
 
             Called from BOTH places this socket opens a live stream — _handle_attach's
             live path and the lazy _ensure_live a typed prompt triggers — because the
             "first attach" can happen BEFORE the spawn: a `pending_approval` / `queued`
             session viewed while it waits attaches on the read-only detached path,
             which never pops. When the spawn then lands (approval, a freed slot), only
-            a later live-stream open on this same socket can deliver the prompt
-            (incident 2026-09-02: a Fable session approved from its open view sat
-            idle, the user's "continue" ran instead, and the titler named it after the
-            CLI's `/model` bookkeeping). Best-effort like every other attach step: a
-            raise would propagate out of the attach, close the just-opened stream and
-            kill the whole attach — the client would spin on a dead socket over a
+            a later live-stream open on this same socket can run the command
+            (incident 2026-09-02). Best-effort like every other attach step: a raise
+            would propagate out of the attach, close the just-opened stream and kill
+            the whole attach — the client would spin on a dead socket over a
             deferred nicety.
             """
             try:
                 pending_prompt = await orchestrator.pop_pending_initial_prompt(session_id)
-                pending_attachment_ids = await orchestrator.pop_pending_initial_attachment_ids(session_id)
+                if pending_prompt is None:
+                    return
                 # A bare slash command typed as the initial prompt runs through the
                 # SAME dispatch as one typed mid-session (/model, /account, /clear,
                 # /context, /help, custom commands) — so it executes as a command
-                # instead of being sent to the model as literal text. Only when it
-                # has no attachments (a command carrying images isn't a thing) and
-                # parses as a single-line command; an unknown command falls back to
-                # a normal prompt, mirroring the composer's runCommandFromText.
+                # instead of being sent to the model as literal text. An unknown
+                # command falls back to a normal prompt, mirroring the composer's
+                # runCommandFromText.
                 handled = False
-                if pending_prompt and not pending_attachment_ids:
-                    parsed = parse_command_line(pending_prompt)
-                    if parsed is not None:
-                        handled = await _run_command_and_reply(session_id, parsed[0], parsed[1])
-                if not handled and (pending_prompt is not None or pending_attachment_ids):
+                parsed = parse_command_line(pending_prompt)
+                if parsed is not None:
+                    handled = await _run_command_and_reply(session_id, parsed[0], parsed[1])
+                if not handled:
                     log.info("ws.attach: sending deferred initial prompt for %s", session_id)
-                    await orchestrator.send_prompt(
-                        session_id, pending_prompt or "", pending_attachment_ids)
+                    await orchestrator.send_prompt(session_id, pending_prompt)
             except Exception:
                 log.warning("ws.attach: deferred initial prompt send failed for %s",
                             session_id, exc_info=True)
@@ -1870,18 +1899,38 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                                  "message": f"Unknown message type: {msg_type!r}"})
 
         finally:
+            # Per-phase teardown timeline (#1383). This path's phases are each
+            # individually bounded, yet CI has repeatedly observed
+            # `unsubscribe_events` uncalled 240s after the socket closed — more than
+            # twice the ceiling every bound here adds up to. The forensics could
+            # never separate the only two ways that happens: a phase overran its own
+            # bound, or this `finally` was never entered at all. Marks are cheap
+            # (a monotonic read and a tuple) and settle it on the next occurrence:
+            # a timeline names the phase that stalled, and NO timeline at all means
+            # teardown never ran, which points at the receive loop instead.
+            _td_t0 = time.monotonic()
+            _td_marks: list[tuple[str, float]] = []
+
+            def _td_mark(phase: str) -> None:
+                _td_marks.append((phase, time.monotonic() - _td_t0))
+
+            _td_mark("enter")
             # Let queued/in-flight per-session work finish first (a disconnect
             # mid-resume must still deliver the prompt), THEN cancel whatever is
             # left. The drain runs in its own try so a cancellation arriving during
             # it (a SIGTERM drain) still reaches the cancel-and-reap below instead
             # of leaking the chains as orphan tasks.
             try:
-                await _drain_work_chains()
+                try:
+                    await _drain_work_chains()
+                finally:
+                    _td_mark("drain_work_chains")
             finally:
                 for sid, work_task in list(work_tasks.items()):
                     await cancel_and_reap(work_task, phase=f"ws.work:{sid}", timeout=0.5)
                 work_tasks.clear()
                 work_queues.clear()
+                _td_mark("reap_work")
 
                 # Fence the auto re-attach path with plain assignments, BEFORE any
                 # await. event_task is still running here and can still spawn one,
@@ -1904,19 +1953,27 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                     # Reap the forwarder first — it is the only spawner of auto
                     # re-attach tasks, so the set below cannot grow while we drain it.
                     await cancel_and_reap(event_task, phase="ws.events", timeout=0.5)
+                    _td_mark("reap_events")
                     for sid, auto_task in list(auto_reattach_tasks.items()):
                         await cancel_and_reap(auto_task, phase=f"ws.auto_reattach:{sid}",
                                               timeout=0.5)
                     auto_reattach_tasks.clear()
+                    _td_mark("reap_auto_reattach")
                     # Cancel live streams (bounded per session by _teardown_live_task).
                     for sid in list(live_tasks.keys()):
                         await _handle_detach(sid)
+                    _td_mark("detach_live")
                     await cancel_and_reap(batcher_task, phase="ws.batcher", timeout=0.5)
+                    _td_mark("reap_batcher")
                 finally:
                     # Unconditional: an unsubscribed-from queue is one the orchestrator
                     # keeps publishing into for the life of the process, so it must
                     # survive a cancellation or failure anywhere above.
-                    await orchestrator.unsubscribe_events(event_q)
+                    try:
+                        await orchestrator.unsubscribe_events(event_q)
+                    finally:
+                        _td_mark("unsubscribe_events")
+                        _emit_teardown_timeline(_td_marks)
                 log.debug("ws.disconnect identity=%s", identity)
 
     return router

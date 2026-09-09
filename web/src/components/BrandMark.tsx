@@ -1,7 +1,8 @@
 /** ViberPit logo mark: two session lanes; the live signal switches lanes, changing
  *  color (account identity) as it crosses. Decorative — pair it with visible
  *  "ViberPit" text; screen readers get the text, not the glyph.
- *  Keep the geometry in sync with public/favicon.svg (same glyph as a standalone file). */
+ *  Keep the geometry in sync with public/favicon.svg (same glyph as a standalone file).
+ *  public/icons/*.png are rendered from that SVG — re-run scripts/gen-icons.mjs after changing the mark. */
 export function BrandMark({ size = 22 }: { size?: number }) {
   return (
     <svg viewBox="0 0 32 32" width={size} height={size} aria-hidden="true" className="shrink-0">

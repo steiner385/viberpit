@@ -375,6 +375,8 @@ class CodexAgentDriver:
         self._pre_plan_mode: str | None = None
 
         self._thread_id: str | None = None
+        self._published_thread_id: str | None = None
+        self._publish_thread_lock = asyncio.Lock()
         self._generation: int | None = None
         self._translator = CodexEventTranslator()
         self._inbox: asyncio.Queue[_InboxItem] = asyncio.Queue()
@@ -627,7 +629,6 @@ class CodexAgentDriver:
             )
         else:
             response = await client.start_thread(self._fresh_thread_params(profile))
-        resume_handle_saved = False
         try:
             self._validate_policy(response, profile)
         except CodexRunnerUnavailable:
@@ -648,7 +649,6 @@ class CodexAgentDriver:
                 if isinstance(exc, CodexPolicyTransitionBlocked):
                     raise
                 raise CodexRunnerUnavailable(_SANDBOX_REFUSED_MESSAGE) from exc
-            resume_handle_saved = response.thread.id != resumed_thread_id
         thread_id = response.thread.id
         self._thread_id = thread_id
         self._generation = self._manager.generation_for(self.account)
@@ -677,8 +677,23 @@ class CodexAgentDriver:
             account=self.account,
             resumed=bool(self.resume),
         )
-        if self._on_engine_session_id is not None and not resume_handle_saved:
-            await self._on_engine_session_id(self.session_id, thread_id)
+        # A fresh thread/start ID cannot be resumed after app-server restart
+        # until its first native turn exists. Keep it local for protocol routing;
+        # publishing it now also outruns the orchestrator's fresh row INSERT.
+        # An assistant always starts fresh, even when self.resume was supplied.
+        if self.resume and overlay is None:
+            await self._publish_thread_id(thread_id)
+
+    async def _publish_thread_id(self, thread_id: str) -> None:
+        """Publish durable identity once, from a resume or an accepted native turn."""
+        # The turn/start response and turn/started pump can race. Set the marker
+        # only after persistence succeeds so a later signal retries a failed write.
+        async with self._publish_thread_lock:
+            if thread_id != self._thread_id or thread_id == self._published_thread_id:
+                return
+            if self._on_engine_session_id is not None:
+                await self._on_engine_session_id(self.session_id, thread_id)
+            self._published_thread_id = thread_id
 
     async def aclose(self) -> None:
         """Release the thread. The manager owns the process — nothing is killed."""
@@ -750,6 +765,7 @@ class CodexAgentDriver:
         self._thread_may_have_history = False
         self._pending_engine_session_id = None
         self._thread_id = None
+        self._published_thread_id = None
         await self.start()
 
     # -- turns -------------------------------------------------------------
@@ -872,6 +888,9 @@ class CodexAgentDriver:
         # The `turn/started` notification may already have set this; both name
         # the same turn, so the assignment is idempotent either way.
         self._turn_id = response.turn.id
+        # Outside the request-failure handler: a persistence failure must not be
+        # misreported as a refused turn after Codex already accepted that turn.
+        await self._publish_thread_id(thread_id)
 
     async def interrupt(self, *, keep_queue: bool = False) -> None:
         """Stop the live turn. A Stop abandons the queue; ``keep_queue`` (the
@@ -1639,6 +1658,9 @@ class CodexAgentDriver:
                 self._turn_started_at = self._clock()
             self._emit(event)
             await self._emit_status()
+            # A notification independently proves acceptance if the request's
+            # response was lost. The manager routes this to the owning thread.
+            await self._publish_thread_id(self._require_thread())
             return
         if isinstance(event, ev.TurnEnd):
             await self._end_turn(event)
@@ -2166,8 +2188,10 @@ class CodexAgentDriver:
         # Retry both idempotent registration and persistence before unblocking.
         self._policy_error = _SANDBOX_REFUSED_MESSAGE
         self._register_thread(thread_id)
-        if self._on_engine_session_id is not None:
-            await self._on_engine_session_id(self.session_id, thread_id)
+        # Only a fork carrying history is resumable now. A replacement created
+        # with thread/start stays local until its first accepted native turn.
+        if self._thread_may_have_history:
+            await self._publish_thread_id(thread_id)
         self._pending_engine_session_id = None
         self._policy_error = None
 

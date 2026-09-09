@@ -94,11 +94,11 @@ def _release(cls, client, *futures) -> None:
             pass
 
 
-def test_attach_during_spawn_opens_a_live_stream_and_sends_the_initial_prompt(ws_env):
+def test_attach_during_spawn_opens_a_live_stream_and_the_spawn_sends_the_initial_prompt(ws_env):
     """The incident shape: attach while pending, approve, and re-attach while the
     spawn is still in ``driver.start()``. The re-attach must be a LIVE attach
-    (wait for the driver) so the deferred initial prompt streams — not a second
-    read-only replay that orphans it."""
+    (wait for the driver, never build a second one), and the spawn itself sends
+    the initial prompt exactly once — the attach neither triggers nor repeats it."""
     cls = _gated_client_cls()
     orch, client, sid = _hold(ws_env, cls)
     approval = None
@@ -114,20 +114,19 @@ def test_attach_during_spawn_opens_a_live_stream_and_sends_the_initial_prompt(ws
             rec = client.portal.call(lambda: orch.get_session(sid))
             assert rec is not None and rec.status == "idle", rec
             assert rec.detached is False, (
-                "a spawning session read as detached — the bridge will take the "
-                "read-only path and never pop the deferred prompt")
+                "a spawning session read as detached — the bridge takes the "
+                "read-only path instead of opening a live stream")
 
             # The view's status-transition re-attach lands here.
             ws.send_text(json.dumps({"type": "attach", "sessionId": sid}))
             _release(cls, client, approval)
-            events = _drain_events(ws, until_type="user", timeout=10.0)
+            _drain_events(ws, until_type="replayComplete", timeout=10.0)
     finally:
         _release(cls, client, *([approval] if approval else []))
 
-    user_texts = [e.get("text") for e in events if e.get("type") == "user"]
-    assert "Hello!" in user_texts, f"initial prompt never streamed; got {user_texts!r}"
     driver = orch.driver(sid)
-    assert driver is not None and driver._client.sent == ["Hello!"]
+    assert driver is not None
+    _wait_until(lambda: driver._client.sent == ["Hello!"], what="the spawn to send the prompt")
     assert cls.entered == 1, "the attach built a second driver instead of waiting"
 
 
