@@ -247,6 +247,35 @@ function findTurnIdx(turns: Turn[], id: string): number {
 }
 
 /**
+ * A turn id is NOT unique across roles — look turns up BY ROLE, never by id alone.
+ *
+ * Claude mints a fresh id for every user echo (`claude_driver.py` `_start_turn`), so
+ * one id meant one turn meant one role and a bare `findTurnIdx` was safe. Codex does
+ * not: its app-server reuses ONE native turn id for the user's prompt AND the agent's
+ * reply, so `ensureAssistantTurn` adopted the USER's turn and every agent message was
+ * appended as a block inside it. `Turn` picks its renderer from `turn.role` (blocks
+ * carry no role of their own), so agent prose rendered in a `UserBubble` — right-aligned
+ * and blue, pixel-identical to something the human typed — and the next prompt sharing
+ * that id upserted the turn, deleting the agent's blocks outright.
+ *
+ * The suffix is only ever taken by whichever role arrives SECOND, so the engine's bare
+ * id stays on the turn that claimed it and Claude's ids are untouched.
+ */
+const ROLE_TURN_SUFFIX = { user: '#user', assistant: '#agent' } as const
+
+/** Index of the turn carrying `role`'s half of engine turn `id`, or -1. */
+function findRoleTurnIdx(turns: Turn[], id: string, role: Turn['role']): number {
+  const yielded = id + ROLE_TURN_SUFFIX[role]
+  return turns.findIndex((t) => t.role === role && (t.id === id || t.id === yielded))
+}
+
+/** The id to create `role`'s turn for engine turn `id` under — the bare id unless
+ *  the other role already claimed it. */
+function newRoleTurnId(turns: Turn[], id: string, role: Turn['role']): string {
+  return findTurnIdx(turns, id) === -1 ? id : id + ROLE_TURN_SUFFIX[role]
+}
+
+/**
  * Every way a merged transcript can be out of order, from one pass.
  *
  * The three ordinal classes compare ADJACENT ordinal-bearing turns (turns without an
@@ -388,19 +417,23 @@ function resolveQuestionInPlace(state: TranscriptState, questionId: string, answ
 }
 
 /**
- * Ensure a turn exists at turnId; if it doesn't, append an empty assistant
+ * Ensure an ASSISTANT turn exists at turnId; if it doesn't, append an empty assistant
  * turn at the TAIL and count it. A block event with no preceding turnStart means the
  * frame reached us out of order (an attach re-emit of a pending ask/error whose turn
  * fell outside the replay window, a delta for an evicted turn) — the fabricated turn
  * may render far from where its content belongs, so it is marked `fabricated` and
  * `anchorTurnStart` moves it once its turnStart says where it begins.
- * Returns [nextTurns, idx].
+ *
+ * The lookup is role-scoped (see `findRoleTurnIdx`): a user turn holding this same id
+ * is NOT the agent's turn, and adopting it would file agent output under the human's
+ * name. Returns [nextTurns, idx].
  */
 function ensureAssistantTurn(turns: Turn[], turnId: string, evType: string): [Turn[], number] {
-  const idx = findTurnIdx(turns, turnId)
+  const idx = findRoleTurnIdx(turns, turnId, 'assistant')
   if (idx !== -1) return [turns, idx]
   clientLogger.warn(`transcript.turn.fabricated type=${evType} turnId=${turnId}`)
-  return [[...turns, { id: turnId, role: 'assistant', blocks: [], fabricated: true }], turns.length]
+  const id = newRoleTurnId(turns, turnId, 'assistant')
+  return [[...turns, { id, role: 'assistant', blocks: [], fabricated: true }], turns.length]
 }
 
 /**
@@ -460,23 +493,23 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
     case 'user': {
       const { turnId, text } = ev
       const blocks = userTurnBlocks(turnId, text, ev.images, ev.ts)
-      const idx = findTurnIdx(thread.turns, turnId)
+      const idx = findRoleTurnIdx(thread.turns, turnId, 'user')
       const turns =
         idx === -1
-          ? [...thread.turns, userTurn(turnId, blocks, ev.ownerPrefix, ev.context)]
-          : replaceTurn(thread.turns, idx, () => userTurn(turnId, blocks, ev.ownerPrefix, ev.context))
+          ? [...thread.turns, userTurn(newRoleTurnId(thread.turns, turnId, 'user'), blocks, ev.ownerPrefix, ev.context)]
+          : replaceTurn(thread.turns, idx, (t) => userTurn(t.id, blocks, ev.ownerPrefix, ev.context))
       return { turns, openBlockId: null }
     }
 
     case 'turnStart': {
-      const idx = findTurnIdx(thread.turns, ev.turnId)
+      const idx = findRoleTurnIdx(thread.turns, ev.turnId, 'assistant')
       if (idx !== -1) {
         const turns = anchorTurnStart(thread.turns, idx)
         if (turns === thread.turns && thread.openBlockId === null) return thread
         return { turns, openBlockId: null }
       }
       return {
-        turns: [...thread.turns, { id: ev.turnId, role: 'assistant', blocks: [] }],
+        turns: [...thread.turns, { id: newRoleTurnId(thread.turns, ev.turnId, 'assistant'), role: 'assistant', blocks: [] }],
         openBlockId: null,
       }
     }
@@ -633,7 +666,8 @@ export function transcriptReducer(
       // user event is always the seeded prompt — and only one optimistic turn exists.
       const optIdx = findTurnIdx(state.turns, OPTIMISTIC_USER_ID)
       if (optIdx !== -1) {
-        const nextTurns = replaceTurn(state.turns, optIdx, () => userTurn(turnId, blocks, ev.ownerPrefix, ev.context))
+        const adoptedId = newRoleTurnId(state.turns, turnId, 'user')
+        const nextTurns = replaceTurn(state.turns, optIdx, () => userTurn(adoptedId, blocks, ev.ownerPrefix, ev.context))
         return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
       }
 
@@ -649,11 +683,15 @@ export function transcriptReducer(
           && t.blocks.some((b) => b.kind === 'text' && b.text === text),
       )
       if (pendIdx !== -1) {
-        const nextTurns = replaceTurn(state.turns, pendIdx, () => userTurn(turnId, blocks, ev.ownerPrefix, ev.context))
+        const adoptedId = newRoleTurnId(state.turns, turnId, 'user')
+        const nextTurns = replaceTurn(state.turns, pendIdx, () => userTurn(adoptedId, blocks, ev.ownerPrefix, ev.context))
         return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
       }
 
-      const idx = findTurnIdx(state.turns, turnId)
+      // Role-scoped: an ASSISTANT turn already holding this id is the agent's half of
+      // a Codex turn, not a previous copy of this prompt. Upserting it would replace
+      // the agent's blocks with the prompt's. See `findRoleTurnIdx`.
+      const idx = findRoleTurnIdx(state.turns, turnId, 'user')
       let nextTurns: Turn[]
       if (idx === -1) {
         // Append new user turn at the TAIL. For an owner-PREFIX copy that is a
@@ -666,10 +704,11 @@ export function transcriptReducer(
         if (ev.ownerPrefix && state.turns.length > 0) {
           clientLogger.warn(`transcript.turn.fabricated type=${ev.type} turnId=${turnId}`)
         }
-        nextTurns = [...state.turns, userTurn(turnId, blocks, ev.ownerPrefix, ev.context)]
+        nextTurns = [...state.turns, userTurn(newRoleTurnId(state.turns, turnId, 'user'), blocks, ev.ownerPrefix, ev.context)]
       } else {
-        // Upsert: rebuild the turn (blocks + prefix mark) from the newer event.
-        nextTurns = replaceTurn(state.turns, idx, () => userTurn(turnId, blocks, ev.ownerPrefix, ev.context))
+        // Upsert: rebuild the turn (blocks + prefix mark) from the newer event, keeping
+        // whichever id this user turn already holds.
+        nextTurns = replaceTurn(state.turns, idx, (t) => userTurn(t.id, blocks, ev.ownerPrefix, ev.context))
       }
       return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
     }
@@ -677,7 +716,9 @@ export function transcriptReducer(
     // ── turnStart ─────────────────────────────────────────────────────────────
     case 'turnStart': {
       const { turnId } = ev
-      const idx = findTurnIdx(state.turns, turnId)
+      // Role-scoped: a turnStart opens the AGENT's turn. A user turn already holding
+      // this id is the prompt half of the same engine turn (Codex), not this one.
+      const idx = findRoleTurnIdx(state.turns, turnId, 'assistant')
       if (idx !== -1) {
         // Idempotent — turn already exists (a fabricated one is re-anchored here, see
         // anchorTurnStart). If nothing moved and openBlockId is already null, return
@@ -689,7 +730,7 @@ export function transcriptReducer(
       const ordinal = ev.turnIndex ?? undefined
       return {
         ...state,
-        turns: [...state.turns, { id: turnId, role: 'assistant', blocks: [], ...(ordinal !== undefined ? { ordinal } : {}) }],
+        turns: [...state.turns, { id: newRoleTurnId(state.turns, turnId, 'assistant'), role: 'assistant', blocks: [], ...(ordinal !== undefined ? { ordinal } : {}) }],
         openBlockId: null,
         latestSuggestions: [],
       }
@@ -913,7 +954,9 @@ export function transcriptReducer(
         if (cur.model === ev.model) return state
         return { ...state, subAgents: { ...state.subAgents, [pid]: { ...cur, model: ev.model } } }
       }
-      const idx = findTurnIdx(state.turns, ev.turnId)
+      // The producing model of an ASSISTANT message — never stamp it on the user turn
+      // that shares the engine's turn id.
+      const idx = findRoleTurnIdx(state.turns, ev.turnId, 'assistant')
       if (idx === -1) return state
       if (state.turns[idx].model === ev.model && state.model === ev.model) return state
       return {

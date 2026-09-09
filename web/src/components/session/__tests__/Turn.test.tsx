@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { Turn } from '../Turn'
-import type { Turn as TurnType, Block } from '@/session/reducer'
+import { transcriptReducer, initialTranscript } from '@/session/reducer'
+import type { Turn as TurnType, Block, TranscriptState } from '@/session/reducer'
 
 function tool(id: string): Block {
   return {
@@ -106,6 +107,65 @@ describe('Turn rendering edge cases', () => {
       />,
     )
     expect(document.querySelector('strong')).not.toBeNull()
+  })
+})
+
+describe('Turn user-vs-agent styling', () => {
+  // The one visual contract the transcript makes (rich-session-rendering design):
+  // a human prompt is a right-aligned `UserBubble`; an agent response is plain
+  // full-width markdown. `bg-blue-50` is the bubble's distinguishing mark.
+  const bubbleAround = (el: HTMLElement | null) => el?.closest('.bg-blue-50') ?? null
+
+  it('renders a USER turn text block in a bubble', () => {
+    render(
+      <Turn
+        turn={{ id: 't', role: 'user', blocks: [{ kind: 'text', id: 'b', text: 'are we done?' }] }}
+        isLastTurn toolDetailMode="auto" thinkingCollapsed={true} onAnswer={noop}
+      />,
+    )
+    expect(bubbleAround(screen.getByText('are we done?'))).not.toBeNull()
+  })
+
+  it('renders an AGENT turn text block as markdown with no bubble', () => {
+    render(
+      <Turn
+        turn={makeTurn([{ kind: 'text', id: 'b', text: 'Not yet.' }])}
+        isLastTurn toolDetailMode="auto" thinkingCollapsed={true} onAnswer={noop}
+      />,
+    )
+    const text = screen.getByText('Not yet.')
+    expect(bubbleAround(text)).toBeNull()
+    expect(text.closest('.markdown')).not.toBeNull()
+  })
+
+  it('keeps agent styling when the engine reuses ONE turn id for prompt and reply', () => {
+    // The Codex shape end to end: `user`, `turnStart` and `textDelta` all carry the
+    // same native turn id. Before the reducer's role-scoped lookup, the agent's text
+    // was appended into the user's turn and drew as a UserBubble — indistinguishable
+    // from something the human typed.
+    const events = [
+      { type: 'user', turnId: 'native-1', text: 'are we completely done?' },
+      { type: 'turnStart', turnId: 'native-1' },
+      { type: 'textDelta', turnId: 'native-1', text: 'Not yet — the fix is implemented.' },
+    ]
+    const state = events.reduce<TranscriptState>(
+      (s, ev) => transcriptReducer(s, ev as Parameters<typeof transcriptReducer>[1]),
+      initialTranscript,
+    )
+
+    render(
+      <>
+        {state.turns.map((t) => (
+          <Turn key={t.id} turn={t} isLastTurn={false} toolDetailMode="auto"
+            thinkingCollapsed={true} streamingBlockId={null} onAnswer={noop} />
+        ))}
+      </>,
+    )
+
+    expect(bubbleAround(screen.getByText('are we completely done?'))).not.toBeNull()
+    expect(bubbleAround(screen.getByText('Not yet — the fix is implemented.'))).toBeNull()
+    // Exactly one bubble on screen — the prompt.
+    expect(document.querySelectorAll('.bg-blue-50')).toHaveLength(1)
   })
 })
 
