@@ -30,6 +30,9 @@ vi.mock('@/api/client', async (importOriginal) => {
         if (path === '/pm/map') return MAP
         if (path === '/pm/queue') return { entries: [], skipped: 0, generatedAt: 'now' }
         if (path === '/sdlc/triage') return { items: [] }
+        // The Roadmap section's Inbox scope, in every scope: the list column
+        // badges the queue depth, and the page finds the open proposal in it.
+        if (path.startsWith('/pm/triage')) return []
         // The initiative page names itself from THIS payload, so the row below
         // asserts the fetched title rather than the slug in the URL.
         if (path.startsWith('/sdlc/initiatives/')) {
@@ -115,6 +118,7 @@ const PAGES: readonly PageContractRow[] = [
   { nav: 'roadmap',  path: '/roadmap',                             variant: 'standard', title: 'Roadmap' },
   { nav: 'roadmap',  path: '/roadmap/kindash',                     variant: 'standard', title: 'KinDash' },
   { nav: 'roadmap',  path: '/roadmap/kindash/capabilities/tasks',  variant: 'standard', title: 'Tasks' },
+  { nav: 'roadmap',  path: '/roadmap?scope=inbox',                 variant: 'standard', title: 'Inbox' },
   { nav: 'roadmap',  path: '/initiatives/views',                   variant: 'standard', title: 'Use-case-first task views' },
   { nav: 'triage',   path: '/triage',                              variant: 'standard', title: 'Triage' },
 ]

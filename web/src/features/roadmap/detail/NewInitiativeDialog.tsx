@@ -4,7 +4,7 @@
 // derive (finish-line spec §7).
 import { useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { CapabilityNode, ProductNode } from '@/api/roadmap'
+import type { ProductNode } from '@/api/roadmap'
 import type { CreateInitiativeInput } from '@/api/sdlc'
 import { useCreateInitiative, useProject } from '@/api/hooks'
 import { extractMutationErrorMessage } from '@/api/queryClient'
@@ -14,6 +14,7 @@ import { Input } from '@/ui/Input'
 import { Select } from '@/ui/Select'
 import { Button } from '@/ui/Button'
 import { CAPABILITY, INITIATIVE } from '@/features/products/vocab'
+import { flattenCapabilities } from '../lookup'
 import { initiativePath } from '../roadmapNavState'
 
 /** What the user is typing, kept slug-shaped: a trailing separator survives so
@@ -21,12 +22,6 @@ import { initiativePath } from '../roadmapNavState'
 const sanitize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-/, '')
 /** The final slug — `sanitize` plus the trailing separator a finished word never has. */
 const slugify = (s: string) => sanitize(s.trim()).replace(/-$/, '')
-
-/** The capability tree as an indented flat list, so a `select` can offer the
- *  whole tree without pretending it is flat. */
-function flatten(nodes: CapabilityNode[], depth = 0): { node: CapabilityNode; depth: number }[] {
-  return nodes.flatMap((n) => [{ node: n, depth }, ...flatten(n.children, depth + 1)])
-}
 
 export function NewInitiativeDialog({ product, open, onClose, defaultCapabilityId }: {
   product: ProductNode
@@ -52,7 +47,7 @@ export function NewInitiativeDialog({ product, open, onClose, defaultCapabilityI
     : projectError
       ? 'Could not load repositories'
       : 'No repository is attached to this product'
-  const caps = useMemo(() => flatten(product.capabilities), [product])
+  const caps = useMemo(() => flattenCapabilities(product.capabilities), [product])
 
   const [title, setTitle] = useState('')
   const [slug, setSlug] = useState('')

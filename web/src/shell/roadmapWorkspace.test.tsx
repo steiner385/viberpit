@@ -13,7 +13,7 @@
  * arrangement as `routes.test.tsx` and `features/settings/pageContract.test.tsx`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 
 vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>()
@@ -130,7 +130,11 @@ describe('the shell only funds the roadmap map where the column renders', () => 
     renderApp({ path: '/roadmap?scope=inbox&product=kindash', mode: 'desktop' })
     await waitFor(() =>
       expect(get.mock.calls.some(([p]) => p === '/pm/triage?projectSlug=kindash')).toBe(true))
-    const link = await screen.findByRole('link', { name: new RegExp(`^${ROADMAP.inbox}`) })
+    // Scoped to the column's scope switch: the page's breadcrumb offers a
+    // second "Inbox" link (back to every product) whenever the scope is
+    // narrowed, and it is the SEGMENT that has to mark the current scope.
+    const segment = await screen.findByRole('navigation', { name: 'Roadmap scope' })
+    const link = within(segment).getByRole('link', { name: new RegExp(`^${ROADMAP.inbox}`) })
     expect(link).toHaveAttribute('aria-current', 'page')
   })
 

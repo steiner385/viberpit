@@ -1707,14 +1707,22 @@ export function useAdvanceLive() {
  * shell calls on EVERY route (hooks always are). Without the gate this 15 s
  * poll runs on Sessions, Pipeline, Automations, Insights, Settings and on a
  * wall display, none of which render the column.
+ *
+ * `poll` for the reason `useRoadmapMap` has one: the Roadmap PAGE observes the
+ * same cache entry as the list column (the Inbox scope's detail pane finds the
+ * open proposal in it), and two polling observers of one key are two requests.
+ * The column owns the interval; the page reads what it fetched.
  */
-export function useTriage(projectSlug?: string, { enabled = true }: { enabled?: boolean } = {}) {
+export function useTriage(
+  projectSlug?: string,
+  { enabled = true, poll = true }: { enabled?: boolean; poll?: boolean } = {},
+) {
   return useQuery<TriageProposal[]>({
     queryKey: [...QK.triage, projectSlug ?? null],
     queryFn: () => fetchTriage(projectSlug),
     enabled,
     staleTime: 5_000,
-    refetchInterval: 15_000,
+    refetchInterval: poll ? 15_000 : false,
   })
 }
 
