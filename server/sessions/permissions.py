@@ -94,6 +94,12 @@ class PermissionRegistry:
     resolve(...) or deny_all(session_id). Callers MUST call deny_all on WebSocket
     disconnect, interrupt, and session close, or a tool's can_use_tool callback awaits
     forever. There is intentionally no timeout (human-in-the-loop approval may take a while).
+
+    That "no timeout" is only safe while every way a human can respond actually reaches
+    the registry. Sending a prompt is one of those ways — ``ClaudeAgentDriver.send_prompt``
+    resolves a parked prompt through ``deny_all(reason=...)`` so the user's words reach
+    the model — because a message typed at a parked turn would otherwise queue behind a
+    turn that cannot end until this very prompt is answered (#1504).
     """
     DANGEROUS = frozenset({"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch"})
     # Tools that only read filesystem/index state and produce no side-effects.
@@ -105,6 +111,9 @@ class PermissionRegistry:
     def __init__(self):
         self._pending: dict[str, dict] = {}              # perm_id -> {future, identity, session_id, tool, input, turn_id}
         self._grants: dict[tuple[str, str], float] = {}  # (session_id, fingerprint) -> expires_at
+        # perm_id -> (session_id, reason) a deny_all(reason=...) settled it with, read
+        # back exactly once by the awaiting can_use_tool (see take_deny_reason).
+        self._deny_reasons: dict[str, tuple[str, str]] = {}
 
     @staticmethod
     def fingerprint(tool: str, input: dict) -> str:
@@ -325,11 +334,43 @@ class PermissionRegistry:
                 moved += 1
         return moved
 
-    def deny_all(self, session_id):
+    def deny_all(self, session_id, reason: str | None = None) -> int:
+        """Settle every pending prompt of *session_id* as denied. Returns how many
+        were actually awaiting (a future already resolved counts for nothing).
+
+        ``reason`` carries a message back to the awaiting ``can_use_tool``, which
+        turns it into the model-visible ``PermissionResultDeny(message=...)`` instead
+        of the bare ``"denied by user"``. It is keyed per perm_id rather than stashed
+        on the driver so a call that settles SEVERAL parked prompts gives each one the
+        same real reason — the production case parked three at once, and a single
+        shared slot would have handed the reason to whichever coroutine woke first and
+        the generic string to the other two.
+
+        A Stop/interrupt passes no reason: it is not user guidance, and "denied by
+        user" is the honest description of it.
+        """
+        # Drop any reason this session left behind — an awaiter cancelled before it
+        # could read one would otherwise keep its entry for the life of the process.
+        for pid in [p for p, (sid, _) in self._deny_reasons.items() if sid == session_id]:
+            del self._deny_reasons[pid]
+        n = 0
         for pid in [p for p, r in self._pending.items() if r["session_id"] == session_id]:
             rec = self._pending.pop(pid)
             if not rec["future"].done():
+                if reason is not None:
+                    self._deny_reasons[pid] = (session_id, reason)
                 rec["future"].set_result(False)
+                n += 1
+        return n
+
+    def take_deny_reason(self, perm_id: str | None) -> str | None:
+        """Pop the reason :meth:`deny_all` recorded for *perm_id* (None if there is
+        none). Popping is what stops a reason from ever attaching to a later,
+        unrelated denial of the same session."""
+        if perm_id is None:
+            return None
+        entry = self._deny_reasons.pop(perm_id, None)
+        return None if entry is None else entry[1]
 
 def _resolved(value: bool):
     fut = asyncio.get_running_loop().create_future()
