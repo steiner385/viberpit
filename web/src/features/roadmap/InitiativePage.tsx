@@ -7,6 +7,7 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useAdvanceInitiative, useInitiative, useRoadmapMap } from '@/api/hooks'
+import { ApiRequestError } from '@/api/client'
 import { INITIATIVE_STAGES, type Initiative, type InitiativeArtifact, type InitiativeStage } from '@/api/sdlc'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { PageHeader } from '@/ui/PageHeader'
@@ -26,6 +27,7 @@ import {
   initiativeStatusLabel, nextActionLabel, reasonLabel, stageLabel,
 } from '@/features/products/vocab'
 import { capabilityPath, productPath, roadmapPath } from './roadmapNavState'
+import { TIER_TONE } from './roadmapTier'
 import { useTabParam } from './useTabParam'
 import { StatTiles } from './detail/StatTiles'
 
@@ -58,15 +60,14 @@ function ArtifactLink({ repo, artifact }: { repo: string | null; artifact: Initi
       </a>
     )
   }
-  if (artifact.prUrl ?? (repo && artifact.prNumber != null)) {
+  // A PR URL can arrive without its number (the row stores either), so the
+  // number is part of the LABEL only when there is one — "(PR #)" is not a
+  // thing a human can read.
+  const pr = artifact.prUrl ?? (repo && artifact.prNumber != null ? prUrl(repo, artifact.prNumber) : null)
+  if (pr) {
     return (
-      <a
-        className="text-accent hover:underline"
-        target="_blank"
-        rel="noreferrer"
-        href={artifact.prUrl ?? prUrl(repo!, artifact.prNumber!)}
-      >
-        {kind} (PR #{artifact.prNumber}) ↗
+      <a className="text-accent hover:underline" target="_blank" rel="noreferrer" href={pr}>
+        {kind}{artifact.prNumber != null ? ` (PR #${artifact.prNumber})` : ''} ↗
       </a>
     )
   }
@@ -77,7 +78,9 @@ function ArtifactLink({ repo, artifact }: { repo: string | null; artifact: Initi
 
 function TrackTab({ initiative }: { initiative: Initiative }) {
   const next = initiative.nextAction
-  const latest = initiative.artifacts.find((a) => a.commitSha)
+  // The server sends artifacts in ASCENDING order (intent, spec, plan), so the
+  // LAST committed one is the latest — `find` would link the intent commit.
+  const newestCommitted = initiative.artifacts.findLast((a) => a.commitSha)
   return (
     // `prdash-root` scopes plotroom.css for the track; it goes when finish-line
     // row 5 moves the track onto tokens (same note as ProductDetail).
@@ -92,12 +95,12 @@ function TrackTab({ initiative }: { initiative: Initiative }) {
         {initiative.artifacts.length === 0
           ? <span className="text-ink-muted">No artifacts committed yet.</span>
           : initiative.artifacts.map((a) => <ArtifactLink key={a.id} repo={initiative.repo} artifact={a} />)}
-        {initiative.repo && latest && (
+        {initiative.repo && newestCommitted && (
           <a
             className="text-accent hover:underline"
             target="_blank"
             rel="noreferrer"
-            href={commitUrl(initiative.repo, latest.commitSha!)}
+            href={commitUrl(initiative.repo, newestCommitted.commitSha!)}
           >
             latest commit ↗
           </a>
@@ -189,7 +192,7 @@ function CapabilitiesTab({ initiative }: { initiative: Initiative }) {
 
 export function InitiativePage() {
   const { initiativeSlug = '' } = useParams()
-  const { data: initiative, isLoading, isError } = useInitiative(initiativeSlug || null)
+  const { data: initiative, isLoading, isError, error } = useInitiative(initiativeSlug || null)
   // The map is the only place the tier/reason is computed (server `pm/tree.py`),
   // and the list column beside this page is already paying for the query — so
   // the header reads WHY this row needs a human from there rather than
@@ -206,9 +209,25 @@ export function InitiativePage() {
   const reason = reasonLabel(node?.reason)
   const next = nextStage(initiative?.stage)
 
+  // A renamed slug or a stale bookmark is an ADDRESS problem, not a connection
+  // problem, and the two want opposite copy. The detail endpoint answers 404
+  // (which `shouldRetryQuery` fails fast, so it lands as isError with no data —
+  // there is no "resolved empty" state for react-query to produce), and the map
+  // having loaded without this slug says the same thing from the other side.
+  const notFound = !initiative
+    && ((error instanceof ApiRequestError && error.status === 404)
+      || (!isLoading && map !== undefined && node === undefined))
+
+  // The map is where a product's display NAME lives; the detail payload only
+  // carries its slug, and a slug among titles reads as a different kind of thing.
+  const productSlug = initiative?.projectSlug ?? node?.projectSlug ?? null
+  const productName = productSlug
+    ? (map?.products.find((p) => p.slug === productSlug)?.name ?? productSlug)
+    : null
+
   const crumbs: BreadcrumbItem[] = [
     { label: ROADMAP.label, to: roadmapPath('initiatives') },
-    ...(initiative?.projectSlug ? [{ label: initiative.projectSlug, to: productPath(initiative.projectSlug) }] : []),
+    ...(productSlug && productName ? [{ label: productName, to: productPath(productSlug) }] : []),
     { label: title },
   ]
 
@@ -221,7 +240,9 @@ export function InitiativePage() {
             <Breadcrumb items={crumbs} />
             {initiative && (
               <div className="flex flex-wrap items-center gap-2">
-                <Badge tone="info">{stageLabel(initiative.stage)}</Badge>
+                {/* Same badge the row in the list column beside this page shows
+                    (`rows/InitiativeCard`): the stage, toned by the tier. */}
+                <Badge tone={node ? TIER_TONE[node.tier] : 'neutral'}>{stageLabel(initiative.stage)}</Badge>
                 <Badge tone={initiative.status === 'blocked' ? 'danger' : 'neutral'}>
                   {initiativeStatusLabel(initiative.status)}
                 </Badge>
@@ -247,8 +268,10 @@ export function InitiativePage() {
       />
       <PageContent busy={isLoading && !initiative}>
         {/* Errors are a Banner, first child of the content region (same idiom,
-            and same position, as RoadmapPage). */}
-        {isError && <Banner tone="danger" className="mb-4" title="Could not load this initiative." />}
+            and same position, as RoadmapPage) — but a 404 is not a failure to
+            report, it is an address that no longer exists, and it gets the
+            not-found empty state below instead. */}
+        {isError && !notFound && <Banner tone="danger" className="mb-4" title="Could not load this initiative." />}
         {advance.isError && (
           <Banner
             tone="danger"
@@ -278,18 +301,12 @@ export function InitiativePage() {
             </div>
           </div>
         )}
-        {/* Resolved with nothing is NOT the loading state: a renamed slug or a
-            stale bookmark says so and offers the way back. A failed fetch says
-            the other thing — the Banner above already carries the reason, and
-            the query re-tries on its own interval. */}
-        {!initiative && !isLoading && (isError
+        {/* Nothing to show: either the address is wrong (say so, and offer the
+            way back) or the fetch failed (the Banner above carries the reason,
+            and the query re-tries on its own interval). Never the loading
+            state — a 404 arrives with `isLoading` already false. */}
+        {!initiative && (notFound || !isLoading) && (notFound
           ? (
-            <EmptyState
-              title={`Nothing to show for this ${INITIATIVE.singular.toLowerCase()}`}
-              description="It will fill in as soon as it loads again."
-            />
-          )
-          : (
             <EmptyState
               title={`${INITIATIVE.singular} not found`}
               description={`Nothing on the ${ROADMAP.label.toLowerCase()} matches this address. It may have been renamed.`}
@@ -298,6 +315,12 @@ export function InitiativePage() {
                   Back to the {ROADMAP.label.toLowerCase()}
                 </Link>
               }
+            />
+          )
+          : (
+            <EmptyState
+              title={`Nothing to show for this ${INITIATIVE.singular.toLowerCase()}`}
+              description="It will fill in as soon as it loads again."
             />
           ))}
       </PageContent>
