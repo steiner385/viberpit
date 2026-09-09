@@ -9,7 +9,7 @@ import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
 import { EmptyState } from '@/ui/EmptyState'
 import { fileUrl } from '@/lib/githubUrl'
-import { CAPABILITY, INITIATIVE, ISSUE, TIER_LABEL, capabilityStateLabel } from '@/features/products/vocab'
+import { CAPABILITY, INITIATIVE, ISSUE, PRODUCT, TIER_LABEL, capabilityStateLabel } from '@/features/products/vocab'
 import { useTabParam } from '../useTabParam'
 import { capabilityPath } from '../roadmapNavState'
 import { findCapability } from '../lookup'
@@ -19,6 +19,7 @@ import { NeedsYouList } from './NeedsYouList'
 import { needsYouCount } from './needsYou'
 import { InitiativeList } from './InitiativeList'
 import { LeafList } from './LeafList'
+import { directOpenIssues } from './directOpenIssues'
 
 const TABS = ['overview', 'children', 'in-flight', 'issues', 'needs-you'] as const
 
@@ -34,12 +35,15 @@ function initiativesOn(product: ProductNode, capability: CapabilityNode) {
   )
 }
 
-export function CapabilityDetail({ product, capability, onNewInitiative, primaryRepo }: {
+export function CapabilityDetail({ product, capability, onNewInitiative, primaryRepo, projectError }: {
   product: ProductNode
   capability: CapabilityNode
   onNewInitiative: () => void
   /** The repo the feature doc is committed in; without it there is no doc link. */
   primaryRepo?: string
+  /** The product fetch that would have supplied `primaryRepo` failed. Without
+   *  this the missing doc link is indistinguishable from "there is no doc". */
+  projectError?: boolean
 }) {
   const [tab, setTab] = useTabParam(TABS, 'overview')
   const mine = initiativesOn(product, capability)
@@ -57,6 +61,9 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
   }
   const needsYou = needsYouCount([scoped])
   const c = capability.counts
+  // The issues on THIS capability, not on the branch under it: the Issues panel
+  // lists direct children only, so the rollup would badge issues it cannot show.
+  const openIssues = directOpenIssues(capability)
   // Pinned at the SHA the doc was read at, so the link keeps pointing at the
   // words this page is showing even after the branch moves on.
   const docHref = primaryRepo && capability.docPath && capability.commitSha
@@ -68,7 +75,7 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
     <div className="flex flex-col gap-4">
       <StatTiles
         tiles={[
-          { label: `Open ${ISSUE.plural.toLowerCase()}`, value: c.openIssues },
+          { label: `Open ${ISSUE.plural.toLowerCase()}`, value: openIssues },
           // The initiatives the In-flight tab LISTS, the same reading as the
           // product level (`counts.inFlight` also rolls up issue tiers).
           { label: TIER_LABEL['in-flight'], value: inFlight.length, tone: 'success' },
@@ -85,7 +92,7 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
           { id: 'overview', label: 'Overview' },
           { id: 'children', label: `Sub-${CAPABILITY.plural.toLowerCase()}`, count: capability.children.length },
           { id: 'in-flight', label: TIER_LABEL['in-flight'], count: inFlight.length },
-          { id: 'issues', label: ISSUE.plural, count: c.openIssues },
+          { id: 'issues', label: ISSUE.plural, count: openIssues },
           { id: 'needs-you', label: TIER_LABEL['needs-you'], count: needsYou, attention: needsYou > 0 },
         ]}
       />
@@ -103,6 +110,14 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
                 <a href={docHref} target="_blank" rel="noreferrer" className="text-accent hover:underline">
                   feature doc ↗
                 </a>
+              )}
+              {/* The doc lives in the product's primary repo, so a failed
+                  product fetch takes the link with it. Said out loud, because a
+                  silently absent link reads as "this capability has no doc". */}
+              {!docHref && projectError && capability.docPath && (
+                <span role="status" className="text-xs text-ink-muted">
+                  Doc link unavailable — could not load the {PRODUCT.singular.toLowerCase()}
+                </span>
               )}
             </div>
             {capability.summary

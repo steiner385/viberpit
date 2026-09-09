@@ -30,7 +30,7 @@ export function RoadmapPage() {
   // Shares `QK.project(slug)` with `ProductDetail` and the new-initiative
   // dialog, so the three of them are one fetch. Only the repo a feature doc is
   // committed in is needed here.
-  const { data: project } = useProject(product?.slug ?? null)
+  const { data: project, isError: projectError } = useProject(product?.slug ?? null)
   const primaryRepo = project?.repos.find((r) => r.isPrimary)?.repo ?? undefined
 
   // The address points at something the map does not contain — a renamed slug or
@@ -99,6 +99,7 @@ export function RoadmapPage() {
                 product={product}
                 capability={capability}
                 primaryRepo={primaryRepo}
+                projectError={projectError}
                 onNewInitiative={() => setCreating(true)}
               />
             )

@@ -36,6 +36,7 @@ const LEAVES: Leaf[] = [
   leaf({ id: 'w1', number: 7, title: 'Bulk edit', score: 6.5, tier: 'in-flight', sessionStatus: 'in_progress' }),
   leaf({ id: 'w2', number: 9, title: 'Blocked one', tier: 'blocked', blockedBy: ['cairnea/KinDash#7'] }),
   leaf({ id: 'w3', number: 3, title: 'Old', state: 'closed', tier: 'live' }),
+  leaf({ id: 'w4', number: 11, title: 'No URL', url: null }),
 ]
 
 // The shipped fixture: `tasks` ▸ `task-views`, whose only initiative is primary
@@ -98,6 +99,19 @@ describe('CapabilityDetail', () => {
   it('Overview: no doc link without a repo to resolve it against', () => {
     mount()
     expect(screen.queryByRole('link', { name: /feature doc/ })).toBeNull()
+    // Nothing failed — the link is simply not resolvable yet, so say nothing.
+    expect(screen.queryByText(/Doc link unavailable/)).toBeNull()
+  })
+
+  it('Overview: says why the doc link is missing when the product fetch failed', () => {
+    mount({ projectError: true })
+    expect(screen.queryByRole('link', { name: /feature doc/ })).toBeNull()
+    expect(screen.getByText(/Doc link unavailable — could not load the product/)).toBeInTheDocument()
+  })
+
+  it('Overview: stays quiet about a doc the capability does not have', () => {
+    mount({ capability: cap({ slug: 'tasks', title: 'Tasks' }), projectError: true })
+    expect(screen.queryByText(/Doc link unavailable/)).toBeNull()
   })
 
   it('Overview: a sub-capability points back at its parent', () => {
@@ -115,9 +129,11 @@ describe('CapabilityDetail', () => {
 
   it('every tile counts what the tab beside it lists', () => {
     mount()
-    // Open issues: the capability rollup, and the same number on the Issues tab.
-    expect(tile('Open issues')).toHaveTextContent('7')
-    expect(screen.getByRole('tab', { name: 'Issues (7)' })).toBeInTheDocument()
+    // Open issues: the 7 in `counts` is a rollup that includes the child's 4,
+    // but the Issues panel lists direct children only — so both the tile and the
+    // badge say 3, the number the panel can actually show.
+    expect(tile('Open issues')).toHaveTextContent('3')
+    expect(screen.getByRole('tab', { name: 'Issues (3)' })).toBeInTheDocument()
     // In flight: the INITIATIVES the tab lists (not `counts.inFlight`, which
     // also rolls up issue tiers), so the two numbers cannot disagree.
     expect(tile('In flight')).toHaveTextContent('2')
@@ -158,9 +174,15 @@ describe('CapabilityDetail', () => {
     expect(screen.getByRole('link', { name: /#7 Bulk edit/ })).toHaveAttribute('href', 'https://x/7')
     expect(screen.getByLabelText('1 blocker')).toBeInTheDocument()
     // Closed leaves are kept, but below a heading that says what they are.
-    expect(screen.getByRole('heading', { name: /Open · 2/ })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /Open · 3/ })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: /Closed · 1/ })).toBeInTheDocument()
-    expect(items[2]).toHaveTextContent('Old')
+    expect(items[3]).toHaveTextContent('Old')
+  })
+
+  it('Issues: a leaf with no URL is text, not a dead link', () => {
+    mount({}, '/roadmap/kindash/capabilities/tasks?tab=issues')
+    expect(screen.getByText(/#11 No URL/)).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /No URL/ })).toBeNull()
   })
 
   it('Issues: says so when the list could not be loaded', () => {

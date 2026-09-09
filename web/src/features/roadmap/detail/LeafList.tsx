@@ -18,15 +18,21 @@ function LeafRow({ leaf }: { leaf: Leaf }) {
     <li className="flex items-center gap-2 rounded-md border border-edge bg-surface p-2 text-sm">
       <TierDot tier={leaf.tier} />
       {/* GitHub owns the issue; the row links out rather than pretending to a
-          detail page ccswitch does not have. */}
-      <a
-        href={leaf.url ?? undefined}
-        target="_blank"
-        rel="noreferrer"
-        className="min-w-0 flex-1 truncate text-ink hover:underline"
-      >
-        #{leaf.number} {leaf.title ?? leaf.ref}
-      </a>
+          detail page ccswitch does not have. A mirrored row can be missing its
+          URL, and a dead anchor is worse than plain text — it is focusable,
+          announced as a link and goes nowhere. */}
+      {leaf.url
+        ? (
+          <a
+            href={leaf.url}
+            target="_blank"
+            rel="noreferrer"
+            className="min-w-0 flex-1 truncate text-ink hover:underline"
+          >
+            #{leaf.number} {leaf.title ?? leaf.ref}
+          </a>
+        )
+        : <span className="min-w-0 flex-1 truncate text-ink">#{leaf.number} {leaf.title ?? leaf.ref}</span>}
       {/* The dot is decorative, so the tier is said in words for a screen
           reader — the same words the pills elsewhere use. */}
       <span className="sr-only">{tierLabel(leaf.tier)}</span>

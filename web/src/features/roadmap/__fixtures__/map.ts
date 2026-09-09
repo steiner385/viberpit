@@ -33,9 +33,16 @@ export const MAP: RoadmapMap = {
       counts: { inFlight: 1, blocked: 0, needsYou: 1, capabilities: 3, awaitingTriage: 2, needsHome: 0 },
       capabilities: [
         cap({ slug: 'billing', title: 'Billing' }),
-        cap({ slug: 'tasks', title: 'Tasks', tier: 'in-flight', children: [
-          cap({ slug: 'task-views', title: 'Task views', parentSlug: 'tasks', tier: 'in-flight', initiatives: ['views'] }),
-        ] }),
+        // `tasks` counts 5 open issues, 3 of which are its child's: capability
+        // counts are ROLLED UP by the server, so a parent's direct issues are
+        // the difference. Kept different on purpose so the subtraction shows.
+        cap({ slug: 'tasks', title: 'Tasks', tier: 'in-flight',
+          counts: { openIssues: 5, inFlight: 0, blocked: 0, needsYou: 0 },
+          children: [
+            cap({ slug: 'task-views', title: 'Task views', parentSlug: 'tasks', tier: 'in-flight',
+              counts: { openIssues: 3, inFlight: 0, blocked: 0, needsYou: 0 },
+              initiatives: ['views'] }),
+          ] }),
       ],
       initiatives: [
         ini({ slug: 'views', title: 'Use-case-first task views', projectSlug: 'kindash', primaryCapability: 'task-views', capabilities: ['task-views'] }),
