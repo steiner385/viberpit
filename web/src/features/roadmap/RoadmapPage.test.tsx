@@ -19,6 +19,9 @@ const sync = vi.hoisted(() => ({
 const triage = vi.hoisted(() => ({ data: undefined as unknown, isLoading: false, isError: false }))
 const accept = vi.hoisted(() => ({ mutate: vi.fn(), isPending: false }))
 const reject = vi.hoisted(() => ({ mutate: vi.fn(), isPending: false }))
+// The scope each decision mutation was keyed to: the cache entry its optimistic
+// removal patches has to be the one the list column's rows came from.
+const acceptScope = vi.hoisted(() => vi.fn())
 
 // Beyond the page's own `useRoadmapMap`: the detail levels it renders reach for
 // the project, the queue, the incidents and the onboarding view.
@@ -53,9 +56,8 @@ vi.mock('@/api/hooks', () => ({
   useIncidents: () => ({ data: [], isError: false }),
   useIncidentAction: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useTriage: () => triage,
-  useAcceptProposal: () => accept,
+  useAcceptProposal: (slug?: string) => { acceptScope(slug); return accept },
   useRejectProposal: () => reject,
-  useUpdateOverlay: () => ({ mutateAsync: vi.fn().mockResolvedValue({}), isPending: false }),
 }))
 
 vi.mock('@/api/pm', async (orig) => ({
@@ -107,6 +109,7 @@ beforeEach(() => {
   Object.assign(triage, { data: QUEUE, isLoading: false, isError: false })
   Object.assign(accept, { mutate: vi.fn(), isPending: false })
   Object.assign(reject, { mutate: vi.fn(), isPending: false })
+  acceptScope.mockClear()
 })
 
 describe('RoadmapPage', () => {
@@ -303,6 +306,31 @@ describe('RoadmapPage — Inbox scope', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
     // Exactly the root: no `&proposal=` left pointing at the row just decided.
     expect(screen.getByTestId('location').textContent).toBe('/roadmap?scope=inbox&product=kindash')
+  })
+
+  it('keys the decision to the scope the list observes, not the proposal\'s product', () => {
+    // Every fixture proposal is a KinDash one, but an UNSCOPED inbox lists them
+    // from `[...QK.triage, null]` — accepting against `kindash` would remove
+    // the row from a cache entry nobody is reading, and it would sit there
+    // until the next refetch.
+    mount('/roadmap?scope=inbox&proposal=p1')
+    expect(acceptScope).toHaveBeenCalledWith(undefined)
+    expect(acceptScope).not.toHaveBeenCalledWith('kindash')
+  })
+
+  it('keys it to the product once the inbox is narrowed', () => {
+    mount('/roadmap?scope=inbox&product=kindash&proposal=p1')
+    expect(acceptScope).toHaveBeenCalledWith('kindash')
+  })
+
+  it('shows one body, not two, on a product route carrying ?scope=inbox', () => {
+    // The scope decides which body the page is; a product in the path does not
+    // get to render a second one underneath it.
+    mount('/roadmap/kindash?scope=inbox')
+    expect(screen.getByRole('heading', { level: 1, name: 'Inbox' })).toBeInTheDocument()
+    expect(screen.getByText('Pick a proposal')).toBeInTheDocument()
+    expect(screen.queryByRole('tablist', { name: 'KinDash' })).toBeNull()
+    expect(screen.queryByText('Not found')).toBeNull()
   })
 
   it('opens the score fields focused for ?edit=1', () => {

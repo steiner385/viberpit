@@ -29,11 +29,13 @@ export function RoadmapPage() {
   const { search } = useLocation()
   const navigate = useNavigate()
   const item = roadmapOpenItem(useParams(), new URLSearchParams(search))
+  const inbox = roadmapScopeForSearch(search) === 'inbox'
   // An initiative is never open on THESE routes (it has its own page), and a
   // proposal is the Inbox branch's concern, so the rest of the component
-  // reasons about the product/capability item alone.
-  const opened = item && item.kind !== 'initiative' && item.kind !== 'proposal' ? item : null
-  const inbox = roadmapScopeForSearch(search) === 'inbox'
+  // reasons about the product/capability item alone. In the Inbox scope
+  // NOTHING product-level is open, even on `/roadmap/kindash?scope=inbox`: one
+  // page shows one body, and the scope is what says which.
+  const opened = !inbox && item && item.kind !== 'initiative' && item.kind !== 'proposal' ? item : null
   // `poll: false`: the shell's list column observes the same cache entry and
   // owns the 15 s interval. Two polling observers of one key are two requests.
   const { data: map, isLoading, isError } = useRoadmapMap({ poll: false })
@@ -166,6 +168,7 @@ export function RoadmapPage() {
               <ProposalDetail
                 proposal={proposal}
                 capabilities={capabilities}
+                scopeProduct={inboxProduct}
                 autoFocusScores={editing}
                 onDone={onDecided}
               />

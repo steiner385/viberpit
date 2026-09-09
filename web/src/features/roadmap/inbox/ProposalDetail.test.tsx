@@ -4,7 +4,7 @@
 // the accept will home the item on, and that every action ends with `onDone` so
 // the page can move to the next proposal.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { ComponentProps } from 'react'
 import type { TriageProposal } from '@/api/triage'
@@ -12,11 +12,13 @@ import { ProposalDetail } from './ProposalDetail'
 
 const accept = vi.fn()
 const reject = vi.fn()
-const overlay = vi.fn().mockResolvedValue({})
+// The SCOPE each mutation was keyed to — the cache entry its optimistic
+// removal will patch.
+const acceptScope = vi.fn()
+const rejectScope = vi.fn()
 vi.mock('@/api/hooks', () => ({
-  useAcceptProposal: () => ({ mutate: accept, isPending: false }),
-  useRejectProposal: () => ({ mutate: reject, isPending: false }),
-  useUpdateOverlay: () => ({ mutateAsync: overlay, isPending: false }),
+  useAcceptProposal: (slug?: string) => { acceptScope(slug); return { mutate: accept, isPending: false } },
+  useRejectProposal: (slug?: string) => { rejectScope(slug); return { mutate: reject, isPending: false } },
 }))
 
 const proposal: TriageProposal = {
@@ -38,6 +40,7 @@ function mount(over: Partial<ComponentProps<typeof ProposalDetail>> = {}) {
       <ProposalDetail
         proposal={proposal}
         capabilities={caps}
+        scopeProduct={null}
         autoFocusScores={false}
         onDone={onDone}
         {...over}
@@ -51,7 +54,8 @@ describe('ProposalDetail', () => {
   beforeEach(() => {
     accept.mockReset()
     reject.mockReset()
-    overlay.mockClear()
+    acceptScope.mockClear()
+    rejectScope.mockClear()
   })
 
   it('shows the proposal, scores and computed RICE', () => {
@@ -67,11 +71,15 @@ describe('ProposalDetail', () => {
 
   it('recomputes the score as the fields are edited', () => {
     mount()
-    fireEvent.change(screen.getByLabelText('effort'), { target: { value: '' } })
-    // Nothing to divide by: the read-out says "not scored", not a stale 360.
-    expect(screen.getByText('—')).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('effort'), { target: { value: '4' } })
     expect(screen.getByText('180')).toBeInTheDocument()
+  })
+
+  it('says "not scored" when the proposal itself has no effort', () => {
+    mount({ proposal: { ...proposal, effort: null } })
+    // Nothing to divide by, and nothing to fall back to either.
+    expect(screen.getByLabelText('effort')).toHaveValue(null)
+    expect(screen.getByText('—')).toBeInTheDocument()
   })
 
   it('Accept accepts as proposed and calls onDone', () => {
@@ -81,17 +89,15 @@ describe('ProposalDetail', () => {
     expect(onDone).toHaveBeenCalled()
   })
 
-  it('Save edits & accept patches the overlay then accepts with the edits', async () => {
+  it('Save edits & accept sends only what changed, in one call', () => {
     const { onDone } = mount()
     fireEvent.change(screen.getByLabelText('impact'), { target: { value: '9' } })
     fireEvent.change(screen.getByRole('combobox', { name: 'Capability' }), { target: { value: 'f-billing' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save edits & accept' }))
-    await waitFor(() => expect(overlay).toHaveBeenCalledWith({
-      itemId: 'w1', edit: expect.objectContaining({ impact: 9, featureId: 'f-billing' }),
-    }))
-    expect(accept).toHaveBeenCalledWith({
-      id: 'p1', edits: expect.objectContaining({ impact: 9, featureId: 'f-billing' }),
-    })
+    // No overlay PATCH first: `_apply_accept` snapshots the overlay for Undo as
+    // it finds it, so a pre-accept write would put the edits INTO the snapshot
+    // and undo would restore the decision. The accept applies the same fields.
+    expect(accept).toHaveBeenCalledWith({ id: 'p1', edits: { impact: 9, featureId: 'f-billing' } })
     expect(onDone).toHaveBeenCalled()
   })
 
@@ -102,29 +108,29 @@ describe('ProposalDetail', () => {
     expect(screen.getByRole('button', { name: 'Save edits & accept' })).toBeEnabled()
   })
 
-  it('accepts with the edits even when there is no overlay to patch', async () => {
-    const { onDone } = mount({ proposal: { ...proposal, workItemId: null } })
-    fireEvent.change(screen.getByLabelText('reach'), { target: { value: '5' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save edits & accept' }))
-    // No mirrored work item means no overlay row; the accept body carries the
-    // same edits, so the decision must not be dropped on the floor.
-    await waitFor(() => expect(accept).toHaveBeenCalledWith({
-      id: 'p1', edits: expect.objectContaining({ reach: 5 }),
-    }))
-    expect(overlay).not.toHaveBeenCalled()
-    expect(onDone).toHaveBeenCalled()
+  it('keeps the proposal\'s value for a field the user cleared', () => {
+    mount()
+    fireEvent.change(screen.getByLabelText('effort'), { target: { value: '' } })
+    // An empty box is the ABSENCE of an override, not "unset this": the accept
+    // would keep the proposal's effort either way, so the read-out has to say
+    // so rather than showing an em dash the decision does not honour.
+    expect(screen.getByText('360')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save edits & accept' })).toBeDisabled()
   })
 
-  it('keeps the pane open when the overlay patch fails', async () => {
-    overlay.mockRejectedValueOnce(new Error('nope'))
-    const { onDone } = mount()
-    fireEvent.change(screen.getByLabelText('reach'), { target: { value: '5' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save edits & accept' }))
-    await waitFor(() => expect(overlay).toHaveBeenCalled())
-    // The hook toasts the failure; accepting anyway would land scores the
-    // server just refused, and moving on would hide that it did.
-    expect(accept).not.toHaveBeenCalled()
-    expect(onDone).not.toHaveBeenCalled()
+  it('keys the mutations to the scope the list is observing, not the proposal', () => {
+    mount()
+    // Unscoped inbox: the rows came from `[...QK.triage, null]`, so an accept
+    // keyed on the proposal's own product would optimistically remove the row
+    // from a cache entry nobody is reading.
+    expect(acceptScope).toHaveBeenCalledWith(undefined)
+    expect(rejectScope).toHaveBeenCalledWith(undefined)
+  })
+
+  it('keys them to the product when the inbox is narrowed', () => {
+    mount({ scopeProduct: 'kindash' })
+    expect(acceptScope).toHaveBeenCalledWith('kindash')
+    expect(rejectScope).toHaveBeenCalledWith('kindash')
   })
 
   it('Reject rejects and calls onDone', () => {

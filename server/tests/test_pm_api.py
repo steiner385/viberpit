@@ -909,6 +909,49 @@ def test_accept_bulk_one_failure_does_not_roll_back_the_batch():
         assert second == ("unclassified", "pending")    # rolled back to itself only
 
 
+def test_accept_rejects_out_of_range_rice_edits():
+    """Accept-with-edits writes the same four numbers the overlay PATCH does, so
+    it needs the same range guard.
+
+    The inbox used to PATCH the overlay first and get this validation for free;
+    it no longer does (the pre-accept PATCH corrupted the undo snapshot, which
+    is taken from the overlay AS IT WAS before the decision). Without this the
+    only thing standing between a typo and an inverted roadmap ordering was the
+    browser.
+    """
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import TriageProposal, WorkItem
+
+    with _client() as c:
+        _register(c, "ccswitch", repo="o/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
+
+        for edits in ({"effort": 0}, {"effort": -1}, {"reach": -1},
+                      {"impact": 10001}, {"confidence": -5}, {"reach": "lots"}):
+            bad = c.post(f"/api/pm/triage/{pid}/accept", json={"edits": edits},
+                         headers=IDENTITY_HEADERS)
+            assert bad.status_code == 422, (edits, bad.text)
+            assert bad.json()["detail"]["error"] == "bad_rice_value"
+
+        # Refused BEFORE anything was written: the proposal is still decidable.
+        async def _check():
+            async with db_session() as db:
+                prop = (await db.execute(select(TriageProposal).where(
+                    TriageProposal.id == pid))).scalar_one()
+                wi = (await db.execute(select(WorkItem).where(
+                    WorkItem.id == wid))).scalar_one()
+                return prop.status, wi.triage_state
+        assert c.portal.call(_check)[0] == "pending"
+
+        ok = c.post(f"/api/pm/triage/{pid}/accept",
+                    json={"edits": {"effort": 1, "reach": 0, "impact": 10000,
+                                    "confidence": 0}},
+                    headers=IDENTITY_HEADERS)
+        assert ok.status_code == 200, ok.text
+
+
 def test_overlay_patch_rejects_out_of_range_rice_values():
     with _client() as c:
         _register(c, "Ccswitch", repo="o/r")

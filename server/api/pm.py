@@ -850,6 +850,35 @@ async def _repropose_siblings(db, accepted: TriageProposal, feature_id: str,
     return moved
 
 
+def _validate_rice_edits(edits: dict | None) -> None:
+    """Range-check the RICE fields of an accept body's ``edits``.
+
+    Accept-with-edits writes the same four numbers the overlay PATCH does, so it
+    needs the same guard — an out-of-range value reaches the GitHub Projects
+    ``Score`` field and inverts roadmap ordering, and an ``effort`` of 0 makes
+    the score undefined. Bounds live in ``server/pm/score.py`` beside the
+    formula; do NOT inline a second copy of them here, and do not let the client
+    be the only thing enforcing them (the inbox no longer PATCHes the overlay
+    before accepting).
+    """
+    if not edits:
+        return
+    for attr in RICE_FIELDS:
+        if attr not in edits:
+            continue
+        value = edits[attr]
+        # ``validate_rice`` compares against ints; a string would raise
+        # TypeError out of the route as a 500, which is not what a bad request
+        # deserves.
+        if value is not None and not isinstance(value, int):
+            raise HTTPException(status_code=422, detail={
+                "error": "bad_rice_value", "message": f"{attr} must be a whole number"})
+        msg = validate_rice(attr, value)
+        if msg:
+            raise HTTPException(status_code=422, detail={
+                "error": "bad_rice_value", "message": msg})
+
+
 async def _apply_accept(db, proposal: TriageProposal, identity: str, *,
                         edits: dict | None = None) -> None:
     """Shared accept logic (phase 3 EXTENDS this for accept-bulk — do NOT copy
@@ -928,6 +957,7 @@ async def accept_triage(
     which reuses the same helper."""
     prop = await _load_pending_proposal(db, proposal_id)
     edits = (body or {}).get("edits")
+    _validate_rice_edits(edits)
     await _apply_accept(db, prop, identity, edits=edits)
     wi_id = prop.work_item_id
     await record_audit(db=db, type="pm.triage.accept", identity=identity,

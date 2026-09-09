@@ -18,10 +18,17 @@
  * which — correctly — reports false for a BUTTON: without this, `a` pressed
  * while Accept has focus would accept whatever row the list's own cursor is on,
  * irreversibly, and it would not be the proposal on screen.
+ *
+ * "Save edits & accept" does NOT PATCH the overlay first. `_apply_accept`
+ * snapshots the overlay for Undo as it finds it, so a pre-accept PATCH writes
+ * the edits into the snapshot and Undo restores the decision it was meant to
+ * take back. The accept body carries the same five fields, and the server
+ * range-checks them (`server/api/pm.py:_validate_rice_edits`), which was the
+ * PATCH's only non-redundant effect.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { OverlayEdits, TriageProposal } from '@/api/triage'
-import { useAcceptProposal, useRejectProposal, useUpdateOverlay } from '@/api/hooks'
+import { useAcceptProposal, useRejectProposal } from '@/api/hooks'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { Badge, type Tone } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
@@ -44,6 +51,16 @@ export interface CapabilityOption {
 export interface ProposalDetailProps {
   proposal: TriageProposal
   capabilities: readonly CapabilityOption[]
+  /**
+   * The `?product=` narrowing the LIST is observing (`inboxProductForSearch`),
+   * not the proposal's own product.
+   *
+   * It is the accept/reject cache key. In an unscoped inbox the rows come from
+   * `[...QK.triage, null]`, so keying the mutation on the proposal's project
+   * would have the optimistic removal patch an entry nobody is reading — the
+   * decided row would sit there until the next refetch.
+   */
+  scopeProduct: string | null
   /** Arrived via `e` / `?edit=1`: put the caret in the first score field. */
   autoFocusScores: boolean
   /** The decision is made; the page moves on. */
@@ -52,6 +69,7 @@ export interface ProposalDetailProps {
 
 /** The four RICE inputs, in formula order (`server/pm/score.py:RICE_FIELDS`). */
 const FIELDS = ['reach', 'impact', 'effort', 'confidence'] as const
+type ScoreField = typeof FIELDS[number]
 
 /** The list column's key map, which lives on `window` and must not reach past
  *  this pane. `A` is Shift+a, and just as destructive. */
@@ -59,21 +77,24 @@ const INBOX_KEYS = new Set(['j', 'k', 'a', 'A', 'r', 'e', 'x'])
 
 const CONFIDENCE_TONE: Record<string, Tone> = { high: 'success', medium: 'info', low: 'neutral' }
 
+/** What the form starts holding: the proposal's own numbers, so the fields show
+ *  what is being decided rather than four blanks. */
 const editsOf = (p: TriageProposal): OverlayEdits => ({
   reach: p.reach ?? undefined,
   impact: p.impact ?? undefined,
   effort: p.effort ?? undefined,
   confidence: p.confidence ?? undefined,
-  featureId: p.proposedFeatureId,
+  featureId: p.proposedFeatureId ?? undefined,
 })
 
-export function ProposalDetail({ proposal: p, capabilities, autoFocusScores, onDone }: ProposalDetailProps) {
-  // Scoped to the proposal's OWN product, which is the cache entry the list
-  // column's rows came from when the inbox is narrowed — an accept that patched
-  // a different key would leave the row sitting in the list it was accepted from.
-  const accept = useAcceptProposal(p.projectSlug ?? undefined)
-  const reject = useRejectProposal(p.projectSlug ?? undefined)
-  const overlay = useUpdateOverlay()
+export function ProposalDetail({
+  proposal: p, capabilities, scopeProduct, autoFocusScores, onDone,
+}: ProposalDetailProps) {
+  // Keyed to the SCOPE the list is observing, not to `p.projectSlug`: these
+  // mutations remove the row optimistically, and they can only remove it from
+  // the cache entry the rows actually came from.
+  const accept = useAcceptProposal(scopeProduct ?? undefined)
+  const reject = useRejectProposal(scopeProduct ?? undefined)
 
   const [edits, setEdits] = useState<OverlayEdits>(() => editsOf(p))
   const firstRef = useRef<HTMLInputElement>(null)
@@ -95,9 +116,29 @@ export function ProposalDetail({ proposal: p, capabilities, autoFocusScores, onD
     if (autoFocusScores) firstRef.current?.focus()
   }, [autoFocusScores, p.id])
 
-  const changed = FIELDS.some((f) => (edits[f] ?? null) !== (p[f] ?? null))
-    || (edits.featureId ?? null) !== (p.proposedFeatureId ?? null)
-  const score = riceScore(edits.reach, edits.impact, edits.effort, edits.confidence)
+  // A CLEARED field means "keep what the proposal says", not "unset this": the
+  // form is a set of overrides over the proposal, and an empty box is the
+  // absence of an override. So the score read-out, the changed test and the
+  // accept body all read `effective` — before this, clearing `effort` showed
+  // "—" while the accept quietly kept the proposal's effort, which is the one
+  // combination that lies about what the button is about to do.
+  const effective = {
+    reach: edits.reach ?? p.reach ?? undefined,
+    impact: edits.impact ?? p.impact ?? undefined,
+    effort: edits.effort ?? p.effort ?? undefined,
+    confidence: edits.confidence ?? p.confidence ?? undefined,
+    // The empty option is "— keep proposal —", which is the same absence.
+    featureId: edits.featureId === undefined ? (p.proposedFeatureId ?? null) : edits.featureId,
+  }
+  const differs = (f: ScoreField) => (effective[f] ?? null) !== (p[f] ?? null)
+  const featureChanged = (effective.featureId ?? null) !== (p.proposedFeatureId ?? null)
+  const changed = FIELDS.some(differs) || featureChanged
+  // Only what actually moved: an accept body that restates the proposal's own
+  // values is noise in the audit trail and in the diff a reviewer reads.
+  const edited: OverlayEdits = {}
+  for (const f of FIELDS) if (differs(f)) edited[f] = effective[f]
+  if (featureChanged) edited.featureId = effective.featureId
+  const score = riceScore(effective.reach, effective.impact, effective.effort, effective.confidence)
   const name = p.title ?? p.id
   const options = useMemo(
     () => capabilities.map((c) => ({ ...c, label: `${'  '.repeat(c.depth)}${c.title ?? c.slug}` })),
@@ -114,24 +155,11 @@ export function ProposalDetail({ proposal: p, capabilities, autoFocusScores, onD
     onDone()
   }
 
-  const saveAndAccept = async () => {
-    // edit-then-accept: persist the overlay edit first, then accept with the
-    // same edits in the body. A proposal with no mirrored work item has no
-    // overlay row to patch and goes straight to the accept.
-    if (p.workItemId) {
-      try {
-        await overlay.mutateAsync({ itemId: p.workItemId, edit: edits })
-      } catch {
-        // The hook already toasted. Swallowed rather than rethrown: this runs as
-        // a floating promise from an event handler, so an escaping rejection
-        // ships a spurious `unhandledrejection` to the server log
-        // (`obs/install.ts`). The pane stays open holding the edit — accepting
-        // scores the server just refused would land the wrong numbers AND move
-        // the user off the only screen that could tell them.
-        return
-      }
-    }
-    accept.mutate({ id: p.id, edits })
+  // edit-then-accept, in ONE call: `accept` applies the same five fields the
+  // overlay PATCH would have, and doing it in one place keeps the undo snapshot
+  // (taken inside the accept, from the overlay as it was) honest.
+  const saveAndAccept = () => {
+    accept.mutate({ id: p.id, edits: edited })
     onDone()
   }
 
@@ -171,7 +199,7 @@ export function ProposalDetail({ proposal: p, capabilities, autoFocusScores, onD
       {/* The classifier's stated reason — the one piece of evidence a human has
           before an irreversible accept, so it reads before the form. */}
       {p.rationale && <p className="text-sm text-ink">{p.rationale}</p>}
-      <form className="flex flex-col gap-3" onSubmit={(e) => { e.preventDefault(); void saveAndAccept() }}>
+      <form className="flex flex-col gap-3" onSubmit={(e) => { e.preventDefault(); saveAndAccept() }}>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {FIELDS.map((f, i) => (
             <Field key={f} label={f} htmlFor={`score-${f}`}>
@@ -187,14 +215,16 @@ export function ProposalDetail({ proposal: p, capabilities, autoFocusScores, onD
           ))}
         </div>
         <p className="text-sm text-ink-muted">
-          Score: <span className="font-semibold tabular-nums text-ink">{score ?? '—'}</span>
+          {/* Announced: the score is the consequence of the four numbers above,
+              and a sighted user sees it move as they type. */}
+          Score: <span aria-live="polite" className="font-semibold tabular-nums text-ink">{score ?? '—'}</span>
         </p>
         <Field label={CAPABILITY.singular} htmlFor="proposal-capability">
           <Select
             id="proposal-capability"
             aria-label={CAPABILITY.singular}
             value={edits.featureId ?? ''}
-            onChange={(e) => setEdits((s) => ({ ...s, featureId: e.target.value || null }))}
+            onChange={(e) => setEdits((s) => ({ ...s, featureId: e.target.value || undefined }))}
           >
             {/* Empty means "as proposed" — which for a no-fit proposal is no
                 capability at all, and the option has to say so rather than
@@ -212,7 +242,7 @@ export function ProposalDetail({ proposal: p, capabilities, autoFocusScores, onD
           <Button type="button" variant="secondary" size="lg" onClick={acceptAsProposed} disabled={accept.isPending}>
             Accept
           </Button>
-          <Button type="submit" size="lg" disabled={!changed || accept.isPending || overlay.isPending}>
+          <Button type="submit" size="lg" disabled={!changed || accept.isPending}>
             Save edits &amp; accept
           </Button>
         </div>
