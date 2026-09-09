@@ -1,15 +1,20 @@
-"""Automation-spawned sessions must actually START without a human.
+"""Every session created with an initial prompt must START on its own.
 
-A session created with an ``initial_prompt`` normally DEFERS that prompt until
-the first WebSocket client attaches, so the turn's events stream live to a
-watching client (issue #4). But an automation-spawned session (``origin`` set —
-backlog-runner / pr-doctor) has no human who will ever attach, so the deferred
-prompt was never sent and the session sat idle forever (driver running, no work).
+A session created with an ``initial_prompt`` sends it as soon as the driver is up
+and the row is durable — for EVERY origin. Historically (issue #4) a human-created
+session (``origin`` None) parked its prompt in ``_pending_initial_prompt`` until the
+first WebSocket client attached, so the turn would stream live to a watching
+client. In practice that meant a session created from the dispatch bar, a preset
+or the mobile UI sat at "Ready" doing nothing until somebody navigated into it —
+and a session nobody opened never ran at all. Automation-spawned sessions (``origin``
+set — backlog-runner / pr-doctor) already sent immediately, and a later human
+attach replays the turn from the driver snapshot (mid-turn) or the transcript
+(settled turn), which is the SAME path a human session now relies on.
 
-So: when ``origin`` is set, ``create_session`` sends the initial prompt
-immediately (the driver persists its transcript and fires status callbacks with
-no live subscriber; a later human attach replays it). A human-created session
-(``origin`` is None) keeps the deferred-until-attach behavior.
+The one thing that still defers is a bare slash command typed as the initial
+prompt (``/model opus``, ``/help`` …): it has to run through the WS bridge's
+command dispatch, not go to the model as literal text (#943), and that dispatch
+only exists on a live socket.
 """
 from __future__ import annotations
 
@@ -88,7 +93,19 @@ def test_origin_session_sends_prompt_immediately(tmp_path):
     assert deferred is False            # NOT parked in the pending map
 
 
-def test_human_session_defers_prompt_until_attach(tmp_path):
+def test_human_session_sends_prompt_immediately(tmp_path):
+    """A session created by a human must start working without being opened."""
     sent, deferred = _run(tmp_path, origin=None, initial_prompt="Hello!")
-    assert sent == []       # nothing sent yet — waits for the first WS attach
-    assert deferred is True  # parked in the pending map for the attach handler
+    assert sent == ["Hello!"], (
+        "a human-created session parked its initial prompt instead of running it — "
+        "it sits at 'Ready' until someone navigates into the session")
+    assert deferred is False
+
+
+def test_human_slash_command_prompt_stays_deferred_for_the_bridge(tmp_path):
+    """A bare slash command as the initial prompt is NOT model input: it must run
+    through the WS bridge's command dispatch (#943), which only exists on a live
+    socket — so it is the one shape that still waits for the first attach."""
+    sent, deferred = _run(tmp_path, origin=None, initial_prompt="/model opus")
+    assert sent == []        # never sent to the model as literal text
+    assert deferred is True  # parked for ws.py's _send_deferred_initial_prompt

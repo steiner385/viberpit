@@ -59,12 +59,10 @@ def test_rehydrated_session_reports_real_status_and_created_at(tmp_path):
 
 
 def test_create_session_status_reflects_initial_prompt(tmp_path):
-    """POST /api/sessions: status='idle' in both cases.
-
-    With the deferred-initial-prompt design (issue #4 fix), the initial prompt is
-    not sent until the first WS client attaches.  So the session always starts
-    'idle' at creation time — it becomes 'working' only after attach triggers the
-    prompt.  Both with and without initialPrompt return 'idle' from the create API.
+    """POST /api/sessions: a session WITH an initialPrompt has already been handed
+    that prompt when the create call returns — it starts working without anyone
+    opening it (the deferred-until-attach design of #4 is gone). A session WITHOUT
+    one has nothing to run and is 'idle'.
     """
     import time as _time
     from ccswitch import paths
@@ -115,7 +113,9 @@ def test_create_session_status_reflects_initial_prompt(tmp_path):
         app = create_app(orchestrator=orch)
 
         with TestClient(app, raise_server_exceptions=False) as client:
-            # Session WITH initial_prompt → status is "idle" (prompt deferred until first attach)
+            # Session WITH initial_prompt → the prompt has reached the SDK by the time
+            # the create call returns; nothing waits for a WS attach. (The fake's turn
+            # may or may not have settled yet, so the status itself is not pinned.)
             resp_with = client.post(
                 "/api/sessions",
                 json={"name": "With prompt", "initialPrompt": "hello there"},
@@ -123,10 +123,11 @@ def test_create_session_status_reflects_initial_prompt(tmp_path):
             )
             assert resp_with.status_code == 201, resp_with.text
             data_with = resp_with.json()
-            assert data_with["status"] == "idle", (
-                f"expected status=idle with initialPrompt (prompt deferred until first attach), "
-                f"got {data_with['status']!r}"
+            assert orch._drivers[data_with["id"]]._client.sent == ["hello there"], (
+                "the initial prompt was not sent at creation — the session sits at "
+                "'Ready' until someone navigates into it"
             )
+            assert orch.pop_pending_initial_prompt(data_with["id"]) is None
 
             # Session WITHOUT initial_prompt → status should also be "idle"
             resp_without = client.post(

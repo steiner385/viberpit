@@ -15,6 +15,7 @@ attached session with no live forwarding task on this socket.
 """
 import asyncio
 import json
+import logging
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -32,6 +33,17 @@ _TRANSCRIPT_FIXTURE = str(Path(__file__).parent / "fixtures" / "transcript.jsonl
 # Real races against real WS threads, arbitrated with real time.sleep() windows
 # (up to 2.2s) rather than polling — the timing IS the thing under test.
 pytestmark = pytest.mark.slow
+
+
+def _teardown_timeline(caplog) -> str:
+    """The `ws.teardown` phase timeline, for a failure message (#1383).
+
+    Returns the sentinel rather than an empty list when nothing was emitted: "no
+    timeline" is itself the finding — it means the teardown `finally` never ran —
+    and an empty `[]` in a CI log reads like a formatting slip instead.
+    """
+    lines = [r.getMessage() for r in caplog.records if "ws.teardown" in r.getMessage()]
+    return "; ".join(lines) if lines else "NONE RECORDED"
 
 
 def _with_history(orch) -> None:
@@ -339,7 +351,7 @@ def test_wedged_auto_reattach_does_not_block_another_sessions_prompt(tmp_path):
                 client.portal.call(orch.close_session, rid)
 
 
-def test_teardown_unsubscribes_even_with_an_auto_reattach_in_flight(tmp_path):
+def test_teardown_unsubscribes_even_with_an_auto_reattach_in_flight(tmp_path, caplog):
     """Teardown must unwind promptly with an auto re-attach still in flight.
 
     Gating the cleanup loop on a lock a wedged `_handle_attach` can hold for 90 s
@@ -347,6 +359,9 @@ def test_teardown_unsubscribes_even_with_an_auto_reattach_in_flight(tmp_path):
     (SIGTERM drain, app shutdown) skips the reaps AND `unsubscribe_events`, orphaning
     the forwarding tasks and leaving a queue the orchestrator publishes into for the
     life of the process (#1164's rule about teardown paths)."""
+    # Captured so a CI-only failure arrives WITH the teardown phase timeline instead
+    # of only the fact that nothing happened (#1383) — see the assertion below.
+    caplog.set_level(logging.DEBUG, logger="server.bridge.ws")
     with _Harness(tmp_path) as h:
         orch = h.orch
         unsubscribed: list[float] = []
@@ -382,24 +397,43 @@ def test_teardown_unsubscribes_even_with_an_auto_reattach_in_flight(tmp_path):
                     time.sleep(0.7)   # the auto re-attach is now inside the resume
                 # ...and the socket closes on top of it.
                 #
-                # This assertion was the repo's most persistent CI flake: 7 failures
-                # on `server-tests (2)`, 3 of them after the fence was widened
-                # 120s -> 240s, every one on a diff disjoint from WS teardown. The
-                # fence was never the variable (#1383). `_Harness` injects a fake at
-                # the DRIVER door only; the auxiliary paths this orchestrator drives —
-                # auto-name, suggestions, summaries, goal inference — reached the SDK
-                # by direct module import, spawned the bundled `claude` binary, and
-                # took 14-75s EACH to fail `Not logged in`. Several serialized inside
-                # this window and teardown queued behind them. conftest.py now stubs
-                # `claude_agent_sdk.query` / `.ClaudeSDKClient` — the one door all of
-                # them resolve at call time — so no real spawn can compete here again.
+                # This assertion is the repo's most persistent CI flake: 12 failures
+                # on `server-tests (2)`, 5 of them after the fence was widened
+                # 120s -> 240s, every one on a diff disjoint from WS teardown — and
+                # twice on `master`'s own push CI with no PR involved at all, which
+                # is what finally retired "my branch must have caused it" as a
+                # question worth asking (#1383).
                 #
-                # The fence stays at 240s: it is a ceiling, only ever paid on failure,
-                # and still leaves headroom under the shard's 300s pytest-timeout. If
-                # this fires again, the cause is NOT the margin — look for a new door.
+                # Every theory has since been falsified. Real SDK subprocesses:
+                # conftest.py stubs `claude_agent_sdk.query` / `.ClaudeSDKClient`,
+                # the one door auto-name/suggestions/summaries/goal-inference all
+                # resolve at call time, and an occurrence after that stub still
+                # showed zero spawns. Executor starvation: the aux-helper log offsets
+                # that suggested it turned out to be monitor sweep PERIODS, landing
+                # ~30ms on schedule. Broad runner load: shard successes cluster at
+                # 6m16s-7m46s and failures at 9m32s-9m58s, so ~2100 tests ran inside
+                # the normal band while exactly one ate the fence.
+                #
+                # So the fence stays at 240s — it is a ceiling, only ever paid on
+                # failure, and still leaves headroom under the shard's 300s
+                # pytest-timeout — and widening it again would be the sixth guess in
+                # a row. What was missing was never margin but EVIDENCE: teardown's
+                # phases are each individually bounded (a 105s work drain plus four
+                # 0.5s reaps), so overrunning 240s means either a phase broke its own
+                # bound or the `finally` never ran, and nothing recorded which.
+                # `ws.py` now marks each phase and logs the timeline, so a failure
+                # here arrives naming the culprit.
+                # Sampled INSIDE the message, which Python only evaluates once the
+                # wait has already failed — reading it beforehand would snapshot the
+                # timeline before teardown had a chance to emit one and report
+                # "NONE RECORDED" every time.
                 assert _wait_until(lambda: bool(unsubscribed), timeout=240.0), (
                     "teardown must unsubscribe the lifecycle queue even with an "
-                    "auto re-attach in flight")
+                    "auto re-attach in flight.\n"
+                    f"teardown timeline: {_teardown_timeline(caplog)}\n"
+                    "A timeline names the phase that stalled (largest delta). NONE "
+                    "means the teardown `finally` was never entered — look at the "
+                    "receive loop, not at the phases.")
                 # Order, not wall clock: the unsubscribe must have happened while the
                 # re-attach was STILL wedged. A teardown that waits on it can only
                 # unsubscribe after the wedge lets go.

@@ -74,7 +74,6 @@ class _BaseOrch:
     async def command_catalog(self, session_id): return []
     def pending_questions(self, session_id): return []
     def pop_pending_initial_prompt(self, session_id): return None
-    def pop_pending_initial_attachment_ids(self, session_id): return None
 
 
 class _BlockingStream:

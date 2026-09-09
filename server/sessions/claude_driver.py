@@ -1077,14 +1077,9 @@ class ClaudeAgentDriver:
             assistant_turn_ms.observe((time.time() - self._turn_started_at) * 1000)
         # Clear every turn-scoped flag so none outlives the turn that set it.
         self._reset_turn_flags()
-        # If queued prompts remain, pop the front and start the next turn.
-        if self._queue:
-            next_text, next_images, next_context = self._queue.pop(0)
-            log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
-                      self.session_id, len(self._queue))
-            self._emit(ev.QueueUpdate(self.queue_wire()))
-            await self._start_turn(next_text, next_images, context=next_context)
-        else:
+        # Nothing queued: settle to idle. The dequeue below is deliberately NOT an
+        # `else` — see its comment.
+        if not self._queue:
             self._turn_active = False
             self._turn_started_at = None
             self._turn_buffer = []
@@ -1092,8 +1087,25 @@ class ClaudeAgentDriver:
             # Turn settled — refresh the exact context-window readout.
             await self._emit_context_usage()
             await self._emit_status()
-            self._maybe_start_suggestions()
-            self._start_listener()
+        # If queued prompts remain, pop the front and start the next turn. Re-checked
+        # AFTER the idle bookkeeping above because `_turn_live()` is `drain_alive or
+        # _turn_active`, and `drain_alive` stays true while THIS pump settles: a
+        # prompt delivered during those two awaits is therefore QUEUED by send_prompt
+        # rather than started, and only this drain would ever pop it — a check-then-
+        # await lost wakeup that stranded the message in the queue strip forever, over
+        # a "Ready" header (CI, PR #1480: the first typed prompt now lands exactly
+        # here, because turn one runs at spawn instead of at the first attach).
+        # Nothing below this check awaits, so the pump task completes without
+        # reopening the window.
+        if self._queue:
+            next_text, next_images, next_context = self._queue.pop(0)
+            log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
+                      self.session_id, len(self._queue))
+            self._emit(ev.QueueUpdate(self.queue_wire()))
+            await self._start_turn(next_text, next_images, context=next_context)
+            return
+        self._maybe_start_suggestions()
+        self._start_listener()
 
     # ---- idle listener: the SDK cursor is never left unread -----------------------
     def _start_listener(self) -> None:
