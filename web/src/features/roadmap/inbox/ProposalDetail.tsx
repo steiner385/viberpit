@@ -23,8 +23,9 @@
  * snapshots the overlay for Undo as it finds it, so a pre-accept PATCH writes
  * the edits into the snapshot and Undo restores the decision it was meant to
  * take back. The accept body carries the same five fields, and the server
- * range-checks them (`server/api/pm.py:_validate_rice_edits`), which was the
- * PATCH's only non-redundant effect.
+ * validates them exactly as the PATCH does — RICE bounds and the existence of
+ * `featureId` (`server/api/pm.py:_validate_accept_edits`) — so nothing the
+ * PATCH enforced is lost by dropping it.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { OverlayEdits, TriageProposal } from '@/api/triage'

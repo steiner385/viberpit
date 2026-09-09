@@ -9,7 +9,7 @@
  * letter into an irreversible bulk accept.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { cleanup, render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { TriageProposal } from '@/api/triage'
 import { InboxScopeBody } from './InboxScopeBody'
@@ -82,6 +82,19 @@ describe('InboxScopeBody', () => {
     mount()
     expect(screen.getAllByText(/cairnea\/KinDash#1 · R3 I3 E2 C80/)).not.toHaveLength(0)
     expect(screen.getAllByText('tasks')).not.toHaveLength(0)
+  })
+
+  it('says the confidence in words, not only in the rail colour', () => {
+    // The rail, the tier dot and the badge tone all encode confidence as colour
+    // alone; a screen reader (and anyone who cannot tell the tiers apart) needs
+    // the same fact in text.
+    mount({ proposals: [p({ id: 'Sure' }), p({ id: 'Unsure', confidenceLevel: 'low' })] })
+    expect(screen.getByText('high confidence')).toBeInTheDocument()
+    expect(screen.getByText('low confidence')).toBeInTheDocument()
+    // A row the classifier gave no level reads as the safest thing it could be.
+    cleanup()
+    mount({ proposals: [p({ id: 'Blank', confidenceLevel: null })] })
+    expect(screen.getByText('low confidence')).toBeInTheDocument()
   })
 
   it('names the suggested new capability when the proposal fits nowhere', () => {

@@ -6,6 +6,7 @@ import { render, screen, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { ApiRequestError } from '@/api/client'
 import type { TriageProposal } from '@/api/triage'
+import { saveOrderPref } from '@/lib/sessionOrder'
 import { MAP } from './__fixtures__/map'
 import { RoadmapPage } from './RoadmapPage'
 import { CAPABILITY_ROUTE, PRODUCT_ROUTE, ROADMAP_PATH } from './roadmapNavState'
@@ -105,6 +106,9 @@ const QUEUE: TriageProposal[] = [
 ]
 
 beforeEach(() => {
+  // The Inbox ordering prefs are persisted and shared with the list column, so
+  // a test that sets them must not leak into the ones that assume the default.
+  window.localStorage.removeItem('ccswitch.sessionOrder.roadmap-inbox')
   Object.assign(sync, { mutate: vi.fn(), isPending: false, isError: false, error: null })
   Object.assign(triage, { data: QUEUE, isLoading: false, isError: false })
   Object.assign(accept, { mutate: vi.fn(), isPending: false })
@@ -289,6 +293,40 @@ describe('RoadmapPage — Inbox scope', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
     expect(accept.mutate).toHaveBeenCalledWith({ id: 'p1' })
     expect(screen.getByTestId('location')).toHaveTextContent('/roadmap?scope=inbox&proposal=p2')
+  })
+
+  it('takes "next" from the LIST order, not the order the server sent', () => {
+    // The list column orders through `INBOX_ORDERING_SPEC` under the persisted
+    // `roadmap-inbox` prefs; the server hands the queue over in `created_at
+    // DESC`. Sorted by title the queue reads Alpha · Bravo · Charlie, so the row
+    // after Alpha is p3 — while the server's own next is p2.
+    saveOrderPref('roadmap-inbox', { groupBy: 'none', sortBy: 'title' })
+    Object.assign(triage, {
+      data: [
+        proposal({ id: 'p1', title: 'Alpha' }),
+        proposal({ id: 'p2', title: 'Charlie' }),
+        proposal({ id: 'p3', title: 'Bravo' }),
+      ],
+    })
+    mount('/roadmap?scope=inbox&proposal=p1')
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    expect(screen.getByTestId('location')).toHaveTextContent('/roadmap?scope=inbox&proposal=p3')
+  })
+
+  it('groups "next" the way the column groups it', () => {
+    // Grouped by product (the DEFAULT pref), the queue reads kindash · kindash ·
+    // viberpit, so the row after p1 is its product sibling p3 — while the
+    // server's order interleaves them and would have gone to p2.
+    Object.assign(triage, {
+      data: [
+        proposal({ id: 'p1', projectSlug: 'kindash' }),
+        proposal({ id: 'p2', projectSlug: 'viberpit' }),
+        proposal({ id: 'p3', projectSlug: 'kindash' }),
+      ],
+    })
+    mount('/roadmap?scope=inbox&proposal=p1')
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    expect(screen.getByTestId('location')).toHaveTextContent('/roadmap?scope=inbox&proposal=p3')
   })
 
   it('steps back to the previous proposal when the decided one was last', () => {

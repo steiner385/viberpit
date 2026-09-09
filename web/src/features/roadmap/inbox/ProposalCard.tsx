@@ -104,6 +104,10 @@ export function ProposalCard({
             <TierDot tier={tier} />
             <Inbox size={14} aria-hidden="true" className="shrink-0 text-ink-muted" />
             <span className="truncate text-sm font-medium text-ink">{name}</span>
+            {/* The rail, the dot and the badge tone all say "confidence" in
+                colour alone; this is the same fact in words, for a screen
+                reader and for anyone who cannot tell the tiers apart. */}
+            <span className="sr-only">{p.confidenceLevel ?? 'low'} confidence</span>
           </span>
         }
         trailing={

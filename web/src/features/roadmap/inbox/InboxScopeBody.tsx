@@ -33,12 +33,13 @@ import { Button } from '@/ui/Button'
 import { EmptyState } from '@/ui/EmptyState'
 import { Kbd } from '@/ui/Kbd'
 import { Skeleton } from '@/ui/Skeleton'
-import { useItemOrdering, type OrderingSpec } from '@/session/useSessionOrdering'
+import { useItemOrdering } from '@/session/useSessionOrdering'
 import { overlayIsOpen } from '@/shell/useOverlayState'
 import { PRODUCT, ROADMAP } from '@/features/products/vocab'
 import { ScopeBody } from '@/features/sessions/ScopeBody'
 import { proposalKey } from '../roadmapNavState'
 import { inboxReducer, initialInboxState, isTypingTarget, resolveCursorIndex } from './inboxKeys'
+import { INBOX_ORDERING_SPEC, type InboxGroupBy, type InboxSortBy } from './inboxOrdering'
 import { ProposalCard } from './ProposalCard'
 
 export interface InboxScopeBodyProps {
@@ -51,50 +52,6 @@ export interface InboxScopeBodyProps {
   selectedKey: string | null
   onOpen: (p: TriageProposal, opts?: { edit: boolean }) => void
   onClearProduct: () => void
-}
-
-type GroupBy = 'product' | 'capability' | 'confidence' | 'none'
-type SortBy = 'newest' | 'confidence' | 'title'
-
-/** High first — the queue's whole job is to surface the safe accepts. */
-const CONF_RANK: Record<string, number> = { high: 0, medium: 1, low: 2 }
-const confRank = (p: TriageProposal) => CONF_RANK[p.confidenceLevel ?? 'low'] ?? 2
-
-const SPEC: OrderingSpec<GroupBy, SortBy, TriageProposal> = {
-  namespace: 'roadmap-inbox',
-  groupByValues: ['product', 'capability', 'confidence', 'none'],
-  sortByValues: ['newest', 'confidence', 'title'],
-  defaultPref: { groupBy: 'product', sortBy: 'newest' },
-  config: {
-    idOf: (p) => p.id,
-    groupings: {
-      product: {
-        bucketOf: (p) => ({ key: p.projectSlug ?? 'unknown', label: p.projectSlug ?? 'unknown' }),
-      },
-      capability: {
-        // "No fit" last: it is the bucket that needs a decision, not a home.
-        bucketOf: (p) => ({
-          key: p.proposedFeatureSlug ?? 'no-fit',
-          label: p.proposedFeatureSlug ?? 'No fit',
-          order: p.proposedFeatureSlug ? 0 : 1,
-        }),
-      },
-      confidence: {
-        bucketOf: (p) => ({
-          key: p.confidenceLevel ?? 'low',
-          label: p.confidenceLevel ?? 'low',
-          order: confRank(p),
-        }),
-      },
-    },
-    // Every comparator ends on the id, so a refetch cannot reshuffle equal rows
-    // under the cursor.
-    sorts: {
-      newest: (a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? '') || a.id.localeCompare(b.id),
-      confidence: (a, b) => confRank(a) - confRank(b) || a.id.localeCompare(b.id),
-      title: (a, b) => (a.title ?? a.id).localeCompare(b.title ?? b.id) || a.id.localeCompare(b.id),
-    },
-  },
 }
 
 const haystack = (p: TriageProposal) =>
@@ -111,7 +68,7 @@ export function InboxScopeBody({
     () => (q ? proposals.filter((p) => haystack(p).includes(q)) : proposals),
     [proposals, q],
   )
-  const ordering = useItemOrdering(visible, SPEC)
+  const ordering = useItemOrdering(visible, INBOX_ORDERING_SPEC)
   const ordered = ordering.orderedSessions
   const ids = useMemo(() => ordered.map((p) => p.id), [ordered])
 
@@ -196,7 +153,7 @@ export function InboxScopeBody({
     <ScopeBody
       controls={
         <div className="flex flex-col gap-2">
-          <SessionListControls<GroupBy, SortBy>
+          <SessionListControls<InboxGroupBy, InboxSortBy>
             groupBy={ordering.groupBy}
             sortBy={ordering.sortBy}
             onGroupByChange={ordering.setGroupBy}

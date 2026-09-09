@@ -8,6 +8,7 @@ import { EmptyState } from '@/ui/EmptyState'
 import { Banner } from '@/ui/Banner'
 import { Button } from '@/ui/Button'
 import { Breadcrumb, type BreadcrumbItem } from '@/ui/Breadcrumb'
+import { useItemOrdering } from '@/session/useSessionOrdering'
 import { INITIATIVE, PRODUCT, ROADMAP } from '@/features/products/vocab'
 import {
   capabilityPath, inboxPath, inboxProductForSearch, productPath, roadmapOpenItem, roadmapPath,
@@ -19,6 +20,7 @@ import { ProductDetail } from './detail/ProductDetail'
 import { CapabilityDetail } from './detail/CapabilityDetail'
 import { NewInitiativeDialog } from './detail/NewInitiativeDialog'
 import { NewProductDialog } from './detail/NewProductDialog'
+import { INBOX_ORDERING_SPEC } from './inbox/inboxOrdering'
 import { InboxWelcome } from './inbox/InboxWelcome'
 import { ProposalDetail } from './inbox/ProposalDetail'
 
@@ -70,12 +72,19 @@ export function RoadmapPage() {
       .map(({ node, depth }) => ({ id: node.id, slug: node.slug, title: node.title, depth })),
     [proposalProduct],
   )
+  // "Next" means next ON SCREEN, so it is computed through the SAME ordering
+  // hook and the SAME persisted prefs (`roadmap-inbox`) the list column orders
+  // its rows with — the server hands the queue over in `created_at DESC`, which
+  // is not what the user is looking at once anything is grouped or sorted. The
+  // column's search box is excluded on purpose: it narrows the view, not the
+  // queue, and advancing should not dead-end on text typed in the other pane.
+  const inboxOrder = useItemOrdering(triage.data ?? [], INBOX_ORDERING_SPEC).orderedSessions
   // Decided: the row is leaving the queue, so the pane cannot stay on it. The
   // next one in list order (or the one before it, when this was the last) keeps
   // the queue moving without a trip back to the list; `replace`, because the
   // address just left behind names a proposal that is no longer pending.
   const onDecided = () => {
-    const list = triage.data ?? []
+    const list = inboxOrder
     const i = list.findIndex((p) => p.id === proposalId)
     const next = i === -1 ? undefined : (list[i + 1] ?? list[i - 1])
     navigate(
