@@ -49,8 +49,15 @@ export function TreeRowCard({ row, selected, onOpen, onToggle, onOpenInbox }: Tr
             <span className="flex min-w-0 items-center gap-2 text-sm text-ink">
               <Icon size={14} aria-hidden="true" className="shrink-0 text-ink-muted" />
               <span className="truncate">{label}</span>
-              <Badge tone="warning" count={row.count} />
             </span>
+          }
+          // Outside the open button, or the count would be swallowed by that
+          // button's `aria-label` and never announced at all.
+          trailing={
+            <>
+              <span className="sr-only">{badgedName({ label, count: row.count })}</span>
+              <Badge tone="warning" count={row.count} aria-hidden="true" />
+            </>
           }
         />
       </div>

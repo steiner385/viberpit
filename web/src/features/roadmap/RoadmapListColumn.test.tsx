@@ -34,7 +34,20 @@ describe('RoadmapListColumn', () => {
     mount()
     fireEvent.click(screen.getByRole('button', { name: 'Collapse Tasks' }))
     expect(screen.queryByTestId(`row-${capabilityKey('kindash', 'task-views')}`)).toBeNull()
-    expect(JSON.parse(localStorage.getItem('ccswitch.roadmap.collapsed') ?? '[]')).toContain(capabilityKey('kindash', 'tasks'))
+    // Folds go through `lib/groupCollapse`, so the key is that module's.
+    expect(JSON.parse(localStorage.getItem('ccswitch.groupCollapse.roadmap') ?? '[]'))
+      .toContain(capabilityKey('kindash', 'tasks'))
+  })
+
+  it('a searched-open row reports itself open, never a dead Expand chevron', () => {
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse Tasks' }))
+    // The search force-expands the fold; the row must say so.
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search roadmap' }), { target: { value: 'task views' } })
+    expect(screen.getByTestId(`row-${capabilityKey('kindash', 'task-views')}`)).toBeInTheDocument()
+    expect(screen.getByTestId(`row-${capabilityKey('kindash', 'tasks')}`)).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: 'Collapse Tasks' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Expand Tasks' })).toBeNull()
   })
 
   it('search narrows the tree', () => {
@@ -55,6 +68,8 @@ describe('RoadmapListColumn', () => {
     expect(screen.getByRole('button', { name: 'Open initiative Use-case-first task views' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Open initiative No home yet' })).toBeInTheDocument()
     expect(screen.getByText('Ready to advance')).toBeInTheDocument()
+    // grouped by stage: both fixtures are in Build, under one header
+    expect(screen.getByRole('button', { name: /^Build/ })).toBeInTheDocument()
   })
 
   it('states: loading, error, empty', () => {

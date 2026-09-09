@@ -59,4 +59,19 @@ describe('flattenMap', () => {
     ])
     expect(keys(flattenMap(MAP, EXPANDED, 'zzz'))).toEqual([])
   })
+
+  it('a row force-expanded by a query reports itself expanded', () => {
+    // Collapse it, then search INTO it: the fold is ignored, so `expanded` must
+    // describe the rendered subtree — otherwise the row draws an "Expand"
+    // chevron over children that are already on screen, and clicking it does
+    // nothing (the query overrides the fold either way).
+    const collapsed = toggleKey(EXPANDED, capabilityKey('kindash', 'tasks'))
+    const byKey = Object.fromEntries(flattenMap(MAP, collapsed, 'task view').map((r) => [r.key, r]))
+    expect(byKey[capabilityKey('kindash', 'tasks')]).toMatchObject({ expanded: true, hasChildren: true })
+    expect(byKey[capabilityKey('kindash', 'task-views')]).toBeDefined()
+    // A match with no rendered descendants claims neither children nor a fold.
+    expect(flattenMap(MAP, EXPANDED, 'billing')).toContainEqual(
+      expect.objectContaining({ key: capabilityKey('kindash', 'billing'), hasChildren: false }),
+    )
+  })
 })

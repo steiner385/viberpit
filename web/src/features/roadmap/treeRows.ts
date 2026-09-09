@@ -89,7 +89,21 @@ function flattenProduct(product: ProductNode, state: TreeState, query: string): 
           ...c.children.flatMap((k) => capRows(k, depth + 1)),
           ...initiativeRows(byPrimary.get(c.slug) ?? [], depth + 1),
         ]
-    const self: TreeRow = { kind: 'capability', key, depth, product, capability: c, expanded: !state.collapsed.has(key), hasChildren: c.children.length > 0 || (byPrimary.get(c.slug)?.length ?? 0) > 0 }
+    // While searching the fold is ignored — `kids` are emitted whatever the
+    // collapse state — so the row reports what it ACTUALLY renders. Reporting
+    // the stored fold instead would give a visibly expanded row an
+    // `aria-expanded="false"` and an "Expand" chevron that does nothing.
+    const self: TreeRow = {
+      kind: 'capability',
+      key,
+      depth,
+      product,
+      capability: c,
+      expanded: searching ? kids.length > 0 : !state.collapsed.has(key),
+      hasChildren: searching
+        ? kids.length > 0
+        : c.children.length > 0 || (byPrimary.get(c.slug)?.length ?? 0) > 0,
+    }
     if (searching) {
       return rowMatches(self, query) || kids.length > 0 ? [self, ...kids] : []
     }
@@ -107,10 +121,21 @@ function flattenProduct(product: ProductNode, state: TreeState, query: string): 
       : []),
   ]
   const key = productKey(product.slug)
-  const self: TreeRow = { kind: 'product', key, depth: 0, product, expanded: !state.collapsed.has(key), hasChildren: children.length > 0 }
+  // Leaf rows (initiatives, pseudo) were not filtered by capRows; filter here.
+  const kept = searching
+    ? children.filter((r) => r.kind === 'capability' || rowMatches(r, query))
+    : children
+  const self: TreeRow = {
+    kind: 'product',
+    key,
+    depth: 0,
+    product,
+    // Same honesty rule as a capability row: under a query the fold is ignored,
+    // so `expanded` describes the rendered subtree, not the stored fold.
+    expanded: searching ? kept.length > 0 : !state.collapsed.has(key),
+    hasChildren: searching ? kept.length > 0 : children.length > 0,
+  }
   if (searching) {
-    // Leaf rows (initiatives, pseudo) were not filtered by capRows; filter here.
-    const kept = children.filter((r) => r.kind === 'capability' || rowMatches(r, query))
     return rowMatches(self, query) || kept.length > 0 ? [self, ...kept] : []
   }
   return self.expanded ? [self, ...children] : [self]

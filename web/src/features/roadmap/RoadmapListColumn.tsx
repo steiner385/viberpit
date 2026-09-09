@@ -9,10 +9,12 @@ import { useEffect, useMemo, useState } from 'react'
 import type { InitiativeNode, ProductNode, RoadmapMap } from '@/api/roadmap'
 import { INITIATIVE_STAGES } from '@/api/sdlc'
 import { GroupedList } from '@/components/GroupedList'
+import { ListSearchInput } from '@/components/ListSearchInput'
 import { SessionListControls } from '@/components/SessionListControls'
 import { Banner } from '@/ui/Banner'
 import { EmptyState } from '@/ui/EmptyState'
 import { Skeleton } from '@/ui/Skeleton'
+import { loadGroupCollapseNs, saveGroupCollapseNs } from '@/lib/groupCollapse'
 import { useItemOrdering, type OrderingSpec } from '@/session/useSessionOrdering'
 import { INITIATIVE, PRODUCT, ROADMAP, stageLabel } from '@/features/products/vocab'
 import { ScopeBody } from '@/features/sessions/ScopeBody'
@@ -21,9 +23,7 @@ import { RoadmapScopeSegment } from './RoadmapScopeSegment'
 import { InitiativeCard } from './rows/InitiativeCard'
 import { TreeRowCard } from './rows/TreeRowCard'
 import type { RoadmapScope } from './roadmapNavState'
-import {
-  EMPTY_TREE_STATE, flattenMap, initiativeKey, toggleKey, type TreeRow, type TreeState,
-} from './treeRows'
+import { flattenMap, initiativeKey, toggleKey, type TreeRow, type TreeState } from './treeRows'
 
 export interface RoadmapListColumnProps {
   scope: RoadmapScope
@@ -36,18 +36,16 @@ export interface RoadmapListColumnProps {
   onOpenInbox: (productSlug: string) => void
 }
 
-const COLLAPSED_KEY = 'ccswitch.roadmap.collapsed'
-
-function loadCollapsed(): TreeState {
-  try {
-    const raw = localStorage.getItem(COLLAPSED_KEY)
-    const parsed: unknown = raw ? JSON.parse(raw) : []
-    if (!Array.isArray(parsed)) return EMPTY_TREE_STATE
-    return { collapsed: new Set(parsed.filter((k): k is string => typeof k === 'string')) }
-  } catch {
-    return EMPTY_TREE_STATE
-  }
-}
+/**
+ * Collapse namespace for the Map tree. The tree's folds are the same fact the
+ * lists' group folds are — which keys the user has closed — so they go through
+ * `lib/groupCollapse` (guarded read AND guarded write; a private
+ * `localStorage.setItem` throws the whole render down in Safari private mode)
+ * rather than a second hand-rolled reader. Key: `ccswitch.groupCollapse.roadmap`.
+ * The Initiatives scope's group folds are a DIFFERENT list, hence a different
+ * namespace (`roadmap-initiatives`, below).
+ */
+const COLLAPSE_NS = 'roadmap'
 
 /** An initiative plus the product it belongs to — the Initiatives scope flattens
  *  the map, and the row still has to be able to name (and open under) its
@@ -98,23 +96,21 @@ export function RoadmapListColumn({
 type MapScopeBodyProps = Omit<RoadmapListColumnProps, 'scope' | 'isError'>
 
 function MapScopeBody({ map, isLoading, selectedKey, onOpen, onOpenInbox }: MapScopeBodyProps) {
-  const [tree, setTree] = useState<TreeState>(loadCollapsed)
+  const [tree, setTree] = useState<TreeState>(() => ({ collapsed: loadGroupCollapseNs(COLLAPSE_NS) }))
   const [query, setQuery] = useState('')
   useEffect(() => {
-    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...tree.collapsed]))
+    saveGroupCollapseNs(COLLAPSE_NS, new Set(tree.collapsed))
   }, [tree])
   const rows = useMemo(() => (map ? flattenMap(map, tree, query) : []), [map, tree, query])
 
   return (
     <ScopeBody
       controls={
-        <input
-          type="search"
-          aria-label="Search roadmap"
-          placeholder="Search roadmap…"
+        <ListSearchInput
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          className="w-full min-h-target rounded-md border border-edge bg-surface px-3 text-sm text-ink placeholder:text-ink-faint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          onChange={setQuery}
+          placeholder={`Search ${ROADMAP.label.toLowerCase()}…`}
+          ariaLabel={`Search ${ROADMAP.label.toLowerCase()}`}
         />
       }
     >

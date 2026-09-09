@@ -26,7 +26,11 @@ describe('roadmapNavState', () => {
     expect(roadmapOpenItem({ productSlug: 'k' })).toEqual({ kind: 'product', productSlug: 'k' })
     expect(roadmapOpenItem({ productSlug: 'k', capSlug: 'c' })).toEqual({ kind: 'capability', productSlug: 'k', capSlug: 'c' })
     expect(roadmapOpenItem({ initiativeSlug: 'i' })).toEqual({ kind: 'initiative', initiativeSlug: 'i' })
+    // Every kind maps to the key `treeRows` gives that row, so a URL highlights
+    // the row the user actually sees.
+    expect(keyForOpenItem({ kind: 'product', productSlug: 'k' })).toBe('product:k')
     expect(keyForOpenItem({ kind: 'capability', productSlug: 'k', capSlug: 'c' })).toBe('capability:k:c')
+    expect(keyForOpenItem({ kind: 'initiative', initiativeSlug: 'i' })).toBe('initiative:i')
     expect(keyForOpenItem(null)).toBeNull()
   })
 })
