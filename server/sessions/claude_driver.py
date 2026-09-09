@@ -72,6 +72,17 @@ _CLOSE_AEXIT_TIMEOUT_S = 15.0
 # Soft notice text surfaced when a dropped turn is being auto-resent.
 _RECOVERING_MSG = "Recovering the dropped turn…"
 
+# Prefix on the deny message a prompt sends to a permission it unparks (see
+# send_prompt). It has to say two things the model would otherwise get wrong: the tool
+# did NOT run, and what follows is the user steering rather than a refusal to engage.
+# The bare "denied by user" it replaces reads as "stop", which is what made the model
+# re-attempt the same blocked writes instead of following the instruction (#1504).
+PROMPT_STEER_DENY_PREFIX = (
+    "[This tool use was NOT run. The user sent a message instead of answering the "
+    "approval prompt — their message follows. Follow it; re-request this tool only if "
+    "it is still needed.]"
+)
+
 
 async def _aiter_one(message: dict):
     yield message
@@ -750,7 +761,13 @@ class ClaudeAgentDriver:
             self._emit(ev.PermissionResolved(perm_id, turn_id, allowed))
         # Decision made; the perm is no longer pending → back to in_progress.
         await self._emit_status()
-        return PermissionResultAllow() if allowed else PermissionResultDeny(message="denied by user")
+        if allowed:
+            return PermissionResultAllow()
+        # A deny raised by `send_prompt` carries the user's own words (see
+        # PROMPT_STEER_DENY_PREFIX); a card deny or a Stop carries nothing and keeps
+        # the generic string.
+        return PermissionResultDeny(
+            message=self._reg.take_deny_reason(perm_id) or "denied by user")
 
     async def start(self):
         # A turn interrupted mid-tool-call (manual Stop, stall-watchdog, or a deploy
@@ -821,6 +838,44 @@ class ClaudeAgentDriver:
                 if images:
                     self._queue.append(("", images, context))
                     self._emit(ev.QueueUpdate(self.queue_wire()))
+                return
+        # A pending PERMISSION parks the turn inside _can_use_tool exactly as a question
+        # does, and — exactly as with a question — the turn cannot end until it is
+        # resolved. Falling through to the C2 queue below therefore deadlocked the
+        # session: the prompt waited for a turn end that waited for this permission,
+        # while send_prompt's caller was told "sent". Production, 2026-09-09: three
+        # writes parked ~1800s (every other call that session finished under 9s), two
+        # prompts vanished, and the only exit — interrupt() — denied the parked work
+        # generically, so the model retried the same writes and parked again (#1504).
+        #
+        # Prose can never APPROVE a tool (that is the card's job, and this path never
+        # allows anything), but it is unambiguously the user steering, so it resolves
+        # every parked prompt as a deny CARRYING the user's words — the same channel
+        # _handle_ask_user_question already uses to feed text back to the model. The
+        # model reads the instruction mid-turn instead of 30 minutes later.
+        # Gated on the park itself, not on the text: an attachment-only message sent at
+        # a parked turn is the same deadlock, and "it needs words to count" would leave
+        # one instance of the bug standing.
+        if self._reg.pending(self.session_id):
+            body = text if text.strip() else "(the user sent an attachment)"
+            steered = self._reg.deny_all(
+                self.session_id, reason=f"{PROMPT_STEER_DENY_PREFIX}\n{body}")
+            if steered:
+                log.info("driver.send_prompt: steered %d parked permission(s) with the "
+                         "user's prompt session=%s", steered, self.session_id)
+                # Echo it: the whole failure mode this closes is "I sent a message and
+                # nothing happened", so the message must appear in the conversation
+                # even though it starts no turn of its own. Images ride the queue and
+                # get their own UserMessage when that turn starts, so echoing here
+                # would double them.
+                if text.strip():
+                    echo = uuid.uuid4().hex
+                    self._emit(ev.UserMessage(turn_id=echo, text=text, src_uuid=echo,
+                                              images=None, context=context))
+                if images:
+                    self._queue.append(("", images, context))
+                    self._emit(ev.QueueUpdate(self.queue_wire()))
+                await self._emit_status()
                 return
         # C2 — FIFO queue: if a turn is live — a prompt's pump, or a CLI-initiated turn
         # the idle listener is tracking (`_turn_active`) — enqueue
