@@ -1,0 +1,47 @@
+import type { CapabilityNode, InitiativeNode, ProductNode, RoadmapMap } from '@/api/roadmap'
+
+export function cap(over: Partial<CapabilityNode> & { slug: string }): CapabilityNode {
+  return {
+    id: `f-${over.slug}`, title: over.slug, state: 'live', summary: null, docPath: null,
+    commitSha: null, prNumber: null, parentSlug: null, tier: 'idle',
+    counts: { openIssues: 0, inFlight: 0, blocked: 0, needsYou: 0 },
+    links: [], initiatives: [], children: [], ...over,
+  }
+}
+
+export function ini(over: Partial<InitiativeNode> & { slug: string; projectSlug: string }): InitiativeNode {
+  return {
+    title: over.slug, stage: 'build', status: 'active', primaryCapability: null,
+    capabilities: [], tier: 'in-flight', reason: null, epic: null, ...over,
+  }
+}
+
+export function product(over: Partial<ProductNode> & { slug: string }): ProductNode {
+  return {
+    name: over.slug, tier: 'idle',
+    counts: { inFlight: 0, blocked: 0, needsYou: 0, capabilities: 0, awaitingTriage: 0, needsHome: 0 },
+    capabilities: [], initiatives: [], ...over,
+  }
+}
+
+/** kindash: tasks ▸ (task-views) ; billing.  Initiative "views" primary=task-views. */
+export const MAP: RoadmapMap = {
+  generatedAt: '2026-09-08T00:00:00Z',
+  products: [
+    product({
+      slug: 'kindash', name: 'KinDash', tier: 'needs-you',
+      counts: { inFlight: 1, blocked: 0, needsYou: 1, capabilities: 3, awaitingTriage: 2, needsHome: 0 },
+      capabilities: [
+        cap({ slug: 'billing', title: 'Billing' }),
+        cap({ slug: 'tasks', title: 'Tasks', tier: 'in-flight', children: [
+          cap({ slug: 'task-views', title: 'Task views', parentSlug: 'tasks', tier: 'in-flight', initiatives: ['views'] }),
+        ] }),
+      ],
+      initiatives: [
+        ini({ slug: 'views', title: 'Use-case-first task views', projectSlug: 'kindash', primaryCapability: 'task-views', capabilities: ['task-views'] }),
+        ini({ slug: 'orphan', title: 'No home yet', projectSlug: 'kindash', tier: 'needs-you', reason: 'advance' }),
+      ],
+    }),
+    product({ slug: 'viberpit', name: 'ViberPit', capabilities: [cap({ slug: 'sessions', title: 'Sessions' })] }),
+  ],
+}
