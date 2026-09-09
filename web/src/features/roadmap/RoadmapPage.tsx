@@ -8,7 +8,6 @@ import { EmptyState } from '@/ui/EmptyState'
 import { Banner } from '@/ui/Banner'
 import { Button } from '@/ui/Button'
 import { Breadcrumb, type BreadcrumbItem } from '@/ui/Breadcrumb'
-import { useItemOrdering } from '@/session/useSessionOrdering'
 import { INITIATIVE, PRODUCT, ROADMAP } from '@/features/products/vocab'
 import {
   capabilityPath, inboxPath, inboxProductForSearch, productPath, roadmapOpenItem, roadmapPath,
@@ -20,7 +19,7 @@ import { ProductDetail } from './detail/ProductDetail'
 import { CapabilityDetail } from './detail/CapabilityDetail'
 import { NewInitiativeDialog } from './detail/NewInitiativeDialog'
 import { NewProductDialog } from './detail/NewProductDialog'
-import { INBOX_ORDERING_SPEC } from './inbox/inboxOrdering'
+import { useInboxOrder } from './inbox/inboxOrderStore'
 import { InboxWelcome } from './inbox/InboxWelcome'
 import { ProposalDetail } from './inbox/ProposalDetail'
 
@@ -72,23 +71,26 @@ export function RoadmapPage() {
       .map(({ node, depth }) => ({ id: node.id, slug: node.slug, title: node.title, depth })),
     [proposalProduct],
   )
-  // "Next" means next ON SCREEN, so it is computed through the SAME ordering
-  // hook and the SAME persisted prefs (`roadmap-inbox`) the list column orders
-  // its rows with — the server hands the queue over in `created_at DESC`, which
-  // is not what the user is looking at once anything is grouped or sorted. The
-  // column's search box is excluded on purpose: it narrows the view, not the
-  // queue, and advancing should not dead-end on text typed in the other pane.
-  const inboxOrder = useItemOrdering(triage.data ?? [], INBOX_ORDERING_SPEC).orderedSessions
+  // "Next" means next ON SCREEN, so it is the order the LIST COLUMN is actually
+  // rendering, published by it (`inboxOrderStore`) rather than recomputed here:
+  // the server hands the queue over in `created_at DESC`, which is not what the
+  // user is looking at once anything is grouped, sorted or searched, and a
+  // second `useItemOrdering` here would go stale the moment they change either
+  // control (the hook seeds its prefs from localStorage once).
+  const columnOrder = useInboxOrder()
   // Decided: the row is leaving the queue, so the pane cannot stay on it. The
   // next one in list order (or the one before it, when this was the last) keeps
   // the queue moving without a trip back to the list; `replace`, because the
   // address just left behind names a proposal that is no longer pending.
   const onDecided = () => {
-    const list = inboxOrder
-    const i = list.findIndex((p) => p.id === proposalId)
-    const next = i === -1 ? undefined : (list[i + 1] ?? list[i - 1])
+    // Empty store = no column is rendering an order — the phone layout unmounts
+    // the list while a proposal is open. Then, and only then, the server's order
+    // is the best sequence available; it is also what the user last saw.
+    const ids = columnOrder.length > 0 ? columnOrder : (triage.data ?? []).map((p) => p.id)
+    const i = proposalId === null ? -1 : ids.indexOf(proposalId)
+    const next = i === -1 ? undefined : (ids[i + 1] ?? ids[i - 1])
     navigate(
-      next ? inboxPath({ product: inboxProduct, proposal: next.id }) : inboxPath({ product: inboxProduct }),
+      next ? inboxPath({ product: inboxProduct, proposal: next }) : inboxPath({ product: inboxProduct }),
       { replace: true },
     )
   }

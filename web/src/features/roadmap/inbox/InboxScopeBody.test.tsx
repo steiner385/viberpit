@@ -13,6 +13,7 @@ import { cleanup, render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { TriageProposal } from '@/api/triage'
 import { InboxScopeBody } from './InboxScopeBody'
+import { clearInboxOrder, getInboxOrder } from './inboxOrderStore'
 
 const accept = vi.fn()
 const reject = vi.fn()
@@ -43,13 +44,13 @@ const ROWS = [
 function mount(over: Partial<React.ComponentProps<typeof InboxScopeBody>> = {}) {
   const onOpen = vi.fn()
   const onClearProduct = vi.fn()
-  render(
+  const { unmount } = render(
     <MemoryRouter>
       <InboxScopeBody proposals={ROWS} isLoading={false} isError={false} product={null}
         selectedKey={null} onOpen={onOpen} onClearProduct={onClearProduct} {...over} />
     </MemoryRouter>,
   )
-  return { onOpen, onClearProduct }
+  return { onOpen, onClearProduct, unmount }
 }
 
 // jsdom implements no scrolling, so the row's scroll-into-view is only
@@ -62,6 +63,7 @@ describe('InboxScopeBody', () => {
     accept.mockReset(); reject.mockReset(); bulk.mockReset()
     overlayOpen.mockReturnValue(false)
     localStorage.clear()
+    clearInboxOrder()
     scrollIntoView.mockReset()
     Element.prototype.scrollIntoView = scrollIntoView
   })
@@ -184,6 +186,31 @@ describe('InboxScopeBody', () => {
                      { target: { value: 'steiner385' } })
     expect(screen.getByRole('button', { name: 'Open proposal Second' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Open proposal First' })).toBeNull()
+  })
+
+  it('publishes the RENDERED order, and republishes it when the sort control changes', () => {
+    // The detail pane advances through this list (`inboxOrderStore`), so a
+    // group/sort/search change made here has to reach it — the whole point of
+    // the store is that the pane cannot compute the order for itself.
+    const rows = [
+      p({ id: 'zeta', title: 'Zeta', createdAt: '2026-09-08T10:00:00Z' }),
+      p({ id: 'alpha', title: 'Alpha', createdAt: '2026-09-07T10:00:00Z' }),
+    ]
+    const { unmount } = mount({ proposals: rows })
+    expect([...getInboxOrder()]).toEqual(['zeta', 'alpha'])
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Sort by' }), { target: { value: 'title' } })
+    expect([...getInboxOrder()]).toEqual(['alpha', 'zeta'])
+
+    // Search is part of "rendered": accepting the open row should advance to
+    // one the user can actually see.
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search inbox' }), { target: { value: 'zeta' } })
+    expect([...getInboxOrder()]).toEqual(['zeta'])
+
+    // Gone from the screen (the phone layout unmounts the column): the pane
+    // must fall back rather than follow a frozen order.
+    unmount()
+    expect([...getInboxOrder()]).toEqual([])
   })
 
   it('marks the open proposal selected — the URL IS the selection', () => {

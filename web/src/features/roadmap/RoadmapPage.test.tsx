@@ -2,12 +2,12 @@
 // tested with their own components; this file is only about which one the page
 // picks — and that an address the map does not contain says so.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, within } from '@testing-library/react'
+import { act, render, screen, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { ApiRequestError } from '@/api/client'
 import type { TriageProposal } from '@/api/triage'
-import { saveOrderPref } from '@/lib/sessionOrder'
 import { MAP } from './__fixtures__/map'
+import { clearInboxOrder, setInboxOrder } from './inbox/inboxOrderStore'
 import { RoadmapPage } from './RoadmapPage'
 import { CAPABILITY_ROUTE, PRODUCT_ROUTE, ROADMAP_PATH } from './roadmapNavState'
 
@@ -106,9 +106,10 @@ const QUEUE: TriageProposal[] = [
 ]
 
 beforeEach(() => {
-  // The Inbox ordering prefs are persisted and shared with the list column, so
-  // a test that sets them must not leak into the ones that assume the default.
-  window.localStorage.removeItem('ccswitch.sessionOrder.roadmap-inbox')
+  // The rendered order the list column publishes is module state shared with
+  // this page, so a test that publishes one must not leak into the ones that
+  // assert the no-column fallback.
+  clearInboxOrder()
   Object.assign(sync, { mutate: vi.fn(), isPending: false, isError: false, error: null })
   Object.assign(triage, { data: QUEUE, isLoading: false, isError: false })
   Object.assign(accept, { mutate: vi.fn(), isPending: false })
@@ -295,38 +296,47 @@ describe('RoadmapPage — Inbox scope', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/roadmap?scope=inbox&proposal=p2')
   })
 
-  it('takes "next" from the LIST order, not the order the server sent', () => {
-    // The list column orders through `INBOX_ORDERING_SPEC` under the persisted
-    // `roadmap-inbox` prefs; the server hands the queue over in `created_at
-    // DESC`. Sorted by title the queue reads Alpha · Bravo · Charlie, so the row
-    // after Alpha is p3 — while the server's own next is p2.
-    saveOrderPref('roadmap-inbox', { groupBy: 'none', sortBy: 'title' })
+  it('takes "next" from the order the column is RENDERING, not the order the server sent', () => {
+    // The server hands the queue over in `created_at DESC`; the column renders
+    // it grouped/sorted/searched and publishes what it actually listed. After
+    // p1 the user sees p3, so that is where an accept goes.
     Object.assign(triage, {
-      data: [
-        proposal({ id: 'p1', title: 'Alpha' }),
-        proposal({ id: 'p2', title: 'Charlie' }),
-        proposal({ id: 'p3', title: 'Bravo' }),
-      ],
+      data: [proposal({ id: 'p1' }), proposal({ id: 'p2' }), proposal({ id: 'p3' })],
     })
+    setInboxOrder(['p1', 'p3', 'p2'])
     mount('/roadmap?scope=inbox&proposal=p1')
     fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
     expect(screen.getByTestId('location')).toHaveTextContent('/roadmap?scope=inbox&proposal=p3')
   })
 
-  it('groups "next" the way the column groups it', () => {
-    // Grouped by product (the DEFAULT pref), the queue reads kindash · kindash ·
-    // viberpit, so the row after p1 is its product sibling p3 — while the
-    // server's order interleaves them and would have gone to p2.
+  it('follows the column after a RUNTIME sort change, not the order it started with', () => {
+    // The regression this store exists for: the page used to run its own
+    // `useItemOrdering`, which seeds group-by/sort-by from localStorage once
+    // and never re-reads. Change the sort in the column and the pane's copy was
+    // stale, so "next" stopped matching the screen. Here the column publishes
+    // p1 · p2 · p3, then re-publishes p1 · p3 · p2 the way changing the sort
+    // control does — and the accept has to honour the SECOND one.
     Object.assign(triage, {
-      data: [
-        proposal({ id: 'p1', projectSlug: 'kindash' }),
-        proposal({ id: 'p2', projectSlug: 'viberpit' }),
-        proposal({ id: 'p3', projectSlug: 'kindash' }),
-      ],
+      data: [proposal({ id: 'p1' }), proposal({ id: 'p2' }), proposal({ id: 'p3' })],
     })
+    setInboxOrder(['p1', 'p2', 'p3'])
     mount('/roadmap?scope=inbox&proposal=p1')
+    act(() => setInboxOrder(['p1', 'p3', 'p2']))
     fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
     expect(screen.getByTestId('location')).toHaveTextContent('/roadmap?scope=inbox&proposal=p3')
+  })
+
+  it('falls back to the queue order when no column is rendering one', () => {
+    // The phone layout unmounts the list while a proposal is open, so the store
+    // is empty (`clearInboxOrder` in the column's unmount effect). The pane
+    // still has to advance, and the server's order is the only one left.
+    Object.assign(triage, {
+      data: [proposal({ id: 'p1' }), proposal({ id: 'p2' }), proposal({ id: 'p3' })],
+    })
+    clearInboxOrder()
+    mount('/roadmap?scope=inbox&proposal=p1')
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    expect(screen.getByTestId('location')).toHaveTextContent('/roadmap?scope=inbox&proposal=p2')
   })
 
   it('steps back to the previous proposal when the decided one was last', () => {

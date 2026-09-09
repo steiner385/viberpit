@@ -39,6 +39,7 @@ import { PRODUCT, ROADMAP } from '@/features/products/vocab'
 import { ScopeBody } from '@/features/sessions/ScopeBody'
 import { proposalKey } from '../roadmapNavState'
 import { inboxReducer, initialInboxState, isTypingTarget, resolveCursorIndex } from './inboxKeys'
+import { clearInboxOrder, setInboxOrder } from './inboxOrderStore'
 import { INBOX_ORDERING_SPEC, type InboxGroupBy, type InboxSortBy } from './inboxOrdering'
 import { ProposalCard } from './ProposalCard'
 
@@ -71,6 +72,16 @@ export function InboxScopeBody({
   const ordering = useItemOrdering(visible, INBOX_ORDERING_SPEC)
   const ordered = ordering.orderedSessions
   const ids = useMemo(() => ordered.map((p) => p.id), [ordered])
+
+  // This list IS what "the next proposal" means to the detail pane, which is a
+  // sibling component and cannot see this hook's state (see `inboxOrderStore`).
+  // Published as rendered — grouping, sort, collapse and the search box all
+  // already applied — so an accept in the pane advances to the row the user can
+  // actually see below the one they just decided.
+  useEffect(() => setInboxOrder(ids), [ids])
+  // Unmounted (the column is gone, e.g. the phone layout while a proposal is
+  // open): the pane must fall back rather than follow a frozen order.
+  useEffect(() => clearInboxOrder, [])
 
   const [state, dispatch] = useReducer(inboxReducer, initialInboxState)
   // Re-anchor whenever the queue moves — an optimistic removal, a live prepend,

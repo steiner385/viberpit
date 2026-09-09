@@ -1,19 +1,13 @@
 /**
- * The Inbox list's group/sort spec, in a module of its own because TWO
- * components have to agree on it.
+ * The Inbox list's group/sort spec, in a module of its own so the ordering is
+ * named and testable apart from the component that renders it.
  *
- * `InboxScopeBody` renders the rows in this order; `RoadmapPage` walks the same
- * order to pick the next proposal after a decision. When the spec lived inside
- * the list body the pane could only walk the SERVER's order (`created_at DESC`),
- * so with the default grouping (by product) "next" jumped to whatever came next
- * chronologically — a different row from the one under it on screen.
- *
- * Both call `useItemOrdering` with this same `namespace`, so both read the same
- * persisted group-by/sort-by prefs and produce the same sequence. The list's
- * transient search box is deliberately NOT part of it: a search narrows what is
- * on screen, but a decision should still advance to the next proposal in the
- * queue rather than dead-end because the next one does not match the text
- * currently typed in a box on the other pane.
+ * `InboxScopeBody` is the ONLY caller: it feeds this spec to `useItemOrdering`
+ * and then publishes the resulting row ids through `inboxOrderStore`, which is
+ * where the detail pane reads "what comes next" from. The pane deliberately
+ * does NOT re-derive the order from this spec — two `useItemOrdering` instances
+ * cannot stay in step, because each seeds its group-by/sort-by from
+ * localStorage once and never re-reads it (see `inboxOrderStore`'s header).
  */
 import type { TriageProposal } from '@/api/triage'
 import type { OrderingSpec } from '@/session/useSessionOrdering'
