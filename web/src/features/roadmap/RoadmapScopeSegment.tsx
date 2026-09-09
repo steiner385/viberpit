@@ -1,4 +1,4 @@
-// Map | Initiatives — the roadmap list's scope switch.
+// Map | Initiatives | Inbox — the roadmap list's scope switch.
 //
 // Shaped exactly like the sessions `ScopeSegment`: links, no state,
 // `aria-current` marks the scope the URL names, and the name/count split is
@@ -15,6 +15,9 @@ export interface RoadmapScopeSegmentProps {
   scope: RoadmapScope
   productCount: number
   initiativeCount: number
+  /** Pending triage proposals. Counted in EVERY scope — a queue you are not
+   *  looking at is exactly the one worth a badge. */
+  inboxCount: number
 }
 
 const item = cn(
@@ -31,19 +34,25 @@ interface ScopeLinkProps {
   count: number
   label: string
   current: boolean
+  /** Tone of the count pill while the scope is NOT the current one. The Inbox
+   *  is the only scope whose count is a backlog rather than an inventory, so it
+   *  is the only one that asks for attention from another scope. */
+  awayTone?: 'neutral' | 'warning'
 }
 
-function ScopeLink({ to, label, count, current }: ScopeLinkProps) {
+function ScopeLink({ to, label, count, current, awayTone = 'neutral' }: ScopeLinkProps) {
   return (
     <Link to={to} aria-current={current ? 'page' : undefined} className={cn(item, current ? here : elsewhere)}>
       <span aria-hidden="true">{label}</span>
       <span className="sr-only">{badgedName({ label, count })}</span>
-      {count > 0 && <Badge tone={current ? 'accent' : 'neutral'} count={count} aria-hidden="true" />}
+      {count > 0 && <Badge tone={current ? 'accent' : awayTone} count={count} aria-hidden="true" />}
     </Link>
   )
 }
 
-export function RoadmapScopeSegment({ scope, productCount, initiativeCount }: RoadmapScopeSegmentProps) {
+export function RoadmapScopeSegment({
+  scope, productCount, initiativeCount, inboxCount,
+}: RoadmapScopeSegmentProps) {
   return (
     <nav aria-label="Roadmap scope" className="flex gap-1 rounded-md border border-edge bg-surface p-1">
       <ScopeLink to={roadmapPath('map')} label={ROADMAP.map} count={productCount} current={scope === 'map'} />
@@ -52,6 +61,13 @@ export function RoadmapScopeSegment({ scope, productCount, initiativeCount }: Ro
         label={ROADMAP.initiatives}
         count={initiativeCount}
         current={scope === 'initiatives'}
+      />
+      <ScopeLink
+        to={roadmapPath('inbox')}
+        label={ROADMAP.inbox}
+        count={inboxCount}
+        current={scope === 'inbox'}
+        awayTone="warning"
       />
     </nav>
   )

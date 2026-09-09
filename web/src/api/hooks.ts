@@ -1699,10 +1699,20 @@ export function useAdvanceLive() {
   })
 }
 
-export function useTriage(projectSlug?: string) {
+/**
+ * The pending triage queue, optionally scoped to one project.
+ *
+ * `enabled` for the same reason `useRoadmapMap` has one: the Roadmap list
+ * column's Inbox scope is mounted through `useRoadmapWorkspace`, which the
+ * shell calls on EVERY route (hooks always are). Without the gate this 15 s
+ * poll runs on Sessions, Pipeline, Automations, Insights, Settings and on a
+ * wall display, none of which render the column.
+ */
+export function useTriage(projectSlug?: string, { enabled = true }: { enabled?: boolean } = {}) {
   return useQuery<TriageProposal[]>({
     queryKey: [...QK.triage, projectSlug ?? null],
     queryFn: () => fetchTriage(projectSlug),
+    enabled,
     staleTime: 5_000,
     refetchInterval: 15_000,
   })

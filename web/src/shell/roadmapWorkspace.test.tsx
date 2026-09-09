@@ -55,6 +55,7 @@ import { ROADMAP } from '@/features/products/vocab'
 
 const get = vi.mocked(api.get)
 const askedForMap = () => get.mock.calls.some(([path]) => path === '/pm/map')
+const askedForTriage = () => get.mock.calls.some(([path]) => path.startsWith('/pm/triage'))
 
 /** The shell has mounted and made its first round of requests. `/config` is
  *  asked for on every route by `useSessionsWorkspace`, so it is the settle
@@ -76,6 +77,19 @@ describe('the shell only funds the roadmap map where the column renders', () => 
       renderApp({ path, mode: 'desktop' })
       await shellSettled()
       expect(askedForMap()).toBe(false)
+    },
+  )
+
+  // The Inbox scope's queue depth badges the Roadmap scope segment, so the
+  // workspace asks for it in EVERY scope — which is exactly why it needs the
+  // same section gate the map has. `/triage` is excluded: the standalone Triage
+  // page fetches the queue itself, and legitimately.
+  it.each(['/sessions', '/pipeline', '/automations', '/insights', '/settings/general'])(
+    'does not fetch the triage queue on %s either',
+    async (path) => {
+      renderApp({ path, mode: 'desktop' })
+      await shellSettled()
+      expect(askedForTriage()).toBe(false)
     },
   )
 
@@ -107,6 +121,17 @@ describe('the shell only funds the roadmap map where the column renders', () => 
     // would silently drop the list column beside the initiative page.
     renderApp({ path: '/initiatives/views', mode: 'desktop' })
     await waitFor(() => expect(askedForMap()).toBe(true))
+  })
+
+  it('scopes the Inbox to ?product= and mounts that scope in the column', async () => {
+    // The `?product=` chip is the query key AND the mutations' cache key, so a
+    // resolver that stopped reading it would leave the optimistic accept
+    // patching a list the rows did not come from.
+    renderApp({ path: '/roadmap?scope=inbox&product=kindash', mode: 'desktop' })
+    await waitFor(() =>
+      expect(get.mock.calls.some(([p]) => p === '/pm/triage?projectSlug=kindash')).toBe(true))
+    const link = await screen.findByRole('link', { name: new RegExp(`^${ROADMAP.inbox}`) })
+    expect(link).toHaveAttribute('aria-current', 'page')
   })
 
   it('starts fetching only once the user navigates to Roadmap', async () => {

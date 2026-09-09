@@ -29,7 +29,7 @@ import { PageContent } from '@/ui/PageContent'
 
 import {
   inboxReducer, initialInboxState, isTypingTarget, resolveCursorIndex, scoreInputValue,
-} from './keyboardState'
+} from '@/features/roadmap/inbox/inboxKeys'
 import './triage.css'
 
 /** Per-project queue depth for the header, from the server's `projectSlug` —
