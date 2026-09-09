@@ -317,7 +317,7 @@ def register_orchestrator_rpc(app, orch) -> None:
         "transcript_path", "resolve_transcript_path", "transcript_search_text",
         "has_transcript",
         "pending_questions", "orphaned_interaction", "pop_pending_initial_prompt",
-        "pop_pending_initial_attachment_ids", "command_catalog", "run_command", "list_archived",
+        "command_catalog", "run_command", "list_archived",
         # Task 8.4 (spec v2 §4.7 Pack N): post_notice returns bool, pop_pending_notices
         # returns list[dict] — both already JSON-safe, no bespoke handler needed.
         "post_notice", "pop_pending_notices",

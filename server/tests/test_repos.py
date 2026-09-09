@@ -340,7 +340,8 @@ def test_create_session_with_repo_clones(tmp_path):
 
 
 def test_create_session_accepts_attachment_ids(tmp_path):
-    """POST /api/sessions accepts attachmentIds and defers them for first attach."""
+    """POST /api/sessions accepts attachmentIds and sends them with the initial
+    prompt right away — nothing is parked for a first attach."""
     import base64
     import time as _time
     from ccswitch import paths
@@ -377,9 +378,13 @@ def test_create_session_accepts_attachment_ids(tmp_path):
                 resp = client.post("/api/sessions", headers=IDENTITY_HEADERS, json={
                     "name": "t", "initialPrompt": "see this",
                     "attachmentIds": [aid]})
-            assert resp.status_code == 201
-            sid = resp.json()["id"]
-            assert orch.pop_pending_initial_attachment_ids(sid) == [aid]
+                assert resp.status_code == 201
+                sid = resp.json()["id"]
+                # Inside the lifespan: the driver is torn down when the client exits.
+                # A prompt carrying images reaches the SDK as an async generator of
+                # content blocks (not a bare string), so count sends rather than text.
+                assert orch.pop_pending_initial_prompt(sid) is None
+                assert len(orch._drivers[sid]._client.sent) == 1
 
 
 def test_create_session_clone_error_502(tmp_path):

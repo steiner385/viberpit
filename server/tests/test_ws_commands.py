@@ -89,9 +89,6 @@ class FakeOrch:
     def pop_pending_initial_prompt(self, session_id):
         return None
 
-    def pop_pending_initial_attachment_ids(self, session_id):
-        return None
-
     # -- Task 6 surface --
     async def command_catalog(self, session_id):
         return [{"name": "help", "description": "Show help", "argumentHint": None, "kind": "client"}]

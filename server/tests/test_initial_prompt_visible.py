@@ -1,15 +1,18 @@
-"""Regression test for issue #4: initial prompt turn must be visible on first attach.
+"""A session's initial prompt runs at creation AND its turn is visible on attach.
 
-When a session is created with an initial_prompt, the prompt is deferred until the
-first WebSocket client attaches.  This guarantees visibility: the events appear live
-in front of the watching client rather than racing the transcript-file write or
-arriving as buffered events before any consumer exists.
+Originally (issue #4) the initial prompt was deferred until the first WebSocket
+client attached, so the turn would stream live in front of a watching client. That
+made every human-created session sit at "Ready" until somebody navigated into it.
+The prompt is now sent inside ``create_session`` — for every origin — and
+visibility is guaranteed the way it always was for automation-spawned sessions: a
+mid-turn attach gets the user echo and the in-flight content from the driver's
+turn-buffer snapshot (``open_stream``), and a settled turn replays from the
+transcript.
 
 Scenario tested:
-  create_session("name", initial_prompt="Hello!") [no initial run, prompt deferred]
-  → client attaches
-  → server sends prompt to Claude
-  → user echo + assistant response stream to the client live
+  create_session("name", initial_prompt="Hello!")  → prompt sent to Claude NOW
+  → client attaches while the turn is still open
+  → user echo + assistant response reach the client
 """
 from __future__ import annotations
 
@@ -21,7 +24,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from claude_agent_sdk import TextBlock
+from claude_agent_sdk import ResultMessage, TextBlock
 
 from ccswitch.selector import Picked
 from server.app import create_app
@@ -70,6 +73,28 @@ def _drain_events(ws, *, until_type: str, timeout: float = 8.0) -> list[dict]:
         if any(e.get("type") == until_type for e in events):
             return events
     return events
+
+
+def _holding_client_cls():
+    """A FakeSDKClient that delivers the scripted turn but WITHHOLDS its
+    ResultMessage until ``finish()`` — so the turn is still open when the test
+    attaches, the shape a real session is in when its creator navigates into it."""
+
+    class HoldingClient(FakeSDKClient):
+        instances: list = []
+
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            type(self).instances.append(self)
+
+        async def query(self, prompt: str):
+            self.sent.append(prompt)
+            self._deliver([m for m in self._messages if not isinstance(m, ResultMessage)])
+
+        def finish(self) -> None:
+            self._deliver([m for m in self._messages if isinstance(m, ResultMessage)])
+
+    return HoldingClient
 
 
 @pytest.fixture()
@@ -123,14 +148,13 @@ def ws_env_ip(tmp_path):
                     pass
 
 
-def test_initial_prompt_deferred_until_first_attach(ws_env_ip):
-    """The initial prompt must NOT be sent during create_session; it must be sent
-    only after the first WebSocket client attaches (deferred execution).
+def test_initial_prompt_runs_at_creation_and_is_visible_on_attach(ws_env_ip):
+    """The prompt goes to Claude inside create_session — no attach needed — and a
+    client that attaches while that turn is open sees the user echo and the
+    assistant's output.
 
-    Before the fix: the prompt was sent immediately inside create_session, so
-    events were emitted to driver._out before any consumer existed, and the
-    transcript file might not yet be flushed on attach — leaving the first turn
-    invisible.
+    Before the fix: the prompt was parked in ``_pending_initial_prompt`` until the
+    first attach, so a session nobody navigated into never started working.
     """
     msgs = [
         f.sys_init("sess-ip1"),
@@ -139,84 +163,49 @@ def test_initial_prompt_deferred_until_first_attach(ws_env_ip):
         f.assistant(TextBlock(text="Hello from initial prompt"), uuid="t1"),
         f.result(session_id="sess-ip1", uuid="t1"),
     ]
-    _app, orch, client = ws_env_ip(msgs)
+    cls = _holding_client_cls()
+    _app, orch, client = ws_env_ip(msgs, client_cls=cls)
 
-    # Create session WITH an initial prompt.
     session = client.portal.call(
         lambda: orch.create_session("test-initial-prompt", initial_prompt="Hello!")
     )
     session_id = session.id
 
-    # --- Verify the prompt was NOT sent immediately during create_session ---
-    # After create_session returns, the driver should have sent NO prompts yet
-    # (pending initial prompt is stored but deferred until first attach).
+    # --- The prompt was sent DURING create_session, with nobody attached ---
     driver = orch.driver(session_id)
     assert driver is not None
-    # The driver's underlying SDK client tracks sent prompts in .sent
-    assert len(driver._client.sent) == 0, (
-        f"initial prompt was sent immediately during create_session "
-        f"(driver._client.sent={driver._client.sent!r}); "
-        "it must be deferred until first attach"
+    assert driver._client.sent == ["Hello!"], (
+        f"initial prompt was not sent at creation (driver._client.sent="
+        f"{driver._client.sent!r}); the session would sit at 'Ready' until opened"
+    )
+    assert orch.pop_pending_initial_prompt(session_id) is None, (
+        "a normal initial prompt must not be parked for the WS bridge"
     )
 
-    # --- Verify the pending initial prompt is stored in the orchestrator ---
-    pending = orch.pop_pending_initial_prompt(session_id)
-    assert pending == "Hello!", (
-        f"expected pending initial prompt 'Hello!', got {pending!r}"
-    )
-    # Restore it (pop consumed it; we need it back for the attach test below)
-    # We test pop then re-create, but actually let's use a fresh session for the full flow.
-
-    # --- Full flow test: initial prompt is sent on first attach and events are delivered ---
-    session2 = client.portal.call(
-        lambda: orch.create_session("test-ip-flow", initial_prompt="Hello again!")
-    )
-    session_id2 = session2.id
-    driver2 = orch.driver(session_id2)
-    assert driver2 is not None
-    assert len(driver2._client.sent) == 0, "prompt must not be sent before first attach"
-
+    # --- A client attaching mid-turn sees the echo and the streamed response ---
     with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
-        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id2}))
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        events = _drain_events(ws, until_type="user", timeout=10.0)
+        # Let the turn settle and drain to its terminal event.
+        client.portal.call(driver._client.finish)
+        events += _drain_events(ws, until_type="turnEnd", timeout=10.0)
 
-        # After attach, the pending initial prompt should have been sent.
-        # Drain through the *whole* first turn in ONE pass, to its terminal
-        # event (turnEnd). All session frames now ride a single outbound FIFO,
-        # so replayComplete and the first turn's events can share one batch —
-        # a second drain "from replayComplete to turnEnd" would re-wait for a
-        # turnEnd that was already consumed and block forever.
-        all_events: list[dict] = _drain_events(ws, until_type="turnEnd", timeout=10.0)
-
-        types = [e.get("type") for e in all_events]
-
-        # The user echo for the initial prompt must be present
-        user_events = [e for e in all_events if e.get("type") == "user"]
-        assert len(user_events) >= 1, (
-            f"initial prompt user echo not found after first attach; "
-            f"got event types: {types}"
-        )
-        assert any(e.get("text") == "Hello again!" for e in user_events), (
-            f"user echo text 'Hello again!' missing; user events: {user_events}"
-        )
-
-        # The assistant response must also be present
-        assert "turnStart" in types or "textDelta" in types, (
-            f"assistant response events missing; got: {types}"
-        )
+    types = [e.get("type") for e in events]
+    user_events = [e for e in events if e.get("type") == "user"]
+    assert any(e.get("text") == "Hello!" for e in user_events), (
+        f"user echo 'Hello!' missing on attach; event types: {types}"
+    )
+    assert "turnStart" in types or "textDelta" in types, (
+        f"assistant response events missing; got: {types}"
+    )
+    assert "turnEnd" in types, f"turn never settled; got: {types}"
 
     client.portal.call(orch.close_session, session_id)
-    client.portal.call(orch.close_session, session_id2)
 
 
 def test_initial_prompt_sent_exactly_once_across_two_attaches(ws_env_ip):
-    """Regression test for issue #4: a second attach (simulated reconnect) must NOT
-    re-send the initial prompt.
-
-    The deferred initial prompt is consumed by pop_pending_initial_prompt on the
-    FIRST attach.  A second attach should find no pending prompt (the entry was
-    already popped) and therefore the SDK must have received the prompt exactly once
-    across both attaches combined.
-    """
+    """Attaching — once, twice, a reconnect — must never re-send the initial
+    prompt. The SDK sees it exactly once: at creation."""
     msgs = [
         f.sys_init("sess-ip2"),
         f.stream_start(uuid="u1"),
@@ -230,36 +219,18 @@ def test_initial_prompt_sent_exactly_once_across_two_attaches(ws_env_ip):
         lambda: orch.create_session("ip-once-test", initial_prompt="Ping!")
     )
     session_id = session.id
-
-    # First attach — should consume and send the deferred initial prompt.
-    # Single drain to the user echo (replayComplete precedes it, possibly in the
-    # SAME batch now that all session frames share one FIFO — a second drain
-    # would block on an already-consumed frame).
-    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
-        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
-        _drain_events(ws, until_type="user", timeout=10.0)
-
-    # Verify the pending slot is now empty (consumed on first attach).
-    assert orch.pop_pending_initial_prompt(session_id) is None, (
-        "pending initial prompt was not cleared after first attach"
-    )
-
-    # Capture how many times the SDK was called after the first attach.
     driver = orch.driver(session_id)
     assert driver is not None
-    sent_after_first = len(driver._client.sent)
-    assert sent_after_first >= 1, "SDK should have received the initial prompt on first attach"
+    assert driver._client.sent == ["Ping!"]
 
-    # Second attach — simulates a client reconnect.
-    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws2:
-        ws2.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
-        _drain_events(ws2, until_type="replayComplete", timeout=5.0)
+    for _ in range(2):
+        with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+            ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+            _drain_events(ws, until_type="replayComplete", timeout=5.0)
 
-    # No additional SDK calls should have been made (prompt was NOT re-sent).
-    sent_after_second = len(driver._client.sent)
-    assert sent_after_second == sent_after_first, (
-        f"initial prompt was re-sent on second attach: "
-        f"SDK call count went from {sent_after_first} to {sent_after_second}"
+    assert driver._client.sent == ["Ping!"], (
+        f"initial prompt was re-sent by an attach: SDK saw {driver._client.sent!r}"
     )
+    assert orch.pop_pending_initial_prompt(session_id) is None
 
     client.portal.call(orch.close_session, session_id)
