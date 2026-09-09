@@ -15,8 +15,9 @@ function resolveBuildSha(): string {
 }
 
 /** Emits the web app manifest at build time from the same source the app's
- *  brand comes from. `apply: 'build'` because the dev server serves it from the
- *  configureServer hook instead — emitFile output does not exist in dev. */
+ *  brand comes from. `emitFile` only runs on a real build, so
+ *  `/manifest.webmanifest` is absent under `vite dev` — testing installation
+ *  needs `npm run build && npm run preview`, not the dev server. */
 function webManifestPlugin(): Plugin {
   const body = () => JSON.stringify(buildManifest(), null, 2)
   return {
