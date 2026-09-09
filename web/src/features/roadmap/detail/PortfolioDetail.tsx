@@ -7,6 +7,7 @@ import { INITIATIVE, PRODUCT, TIER_LABEL } from '@/features/products/vocab'
 import { useTabParam } from '../useTabParam'
 import { StatTiles } from './StatTiles'
 import { NeedsYouList } from './NeedsYouList'
+import { needsYouCount } from './needsYou'
 import { RankedList } from './RankedList'
 import { InitiativeList } from './InitiativeList'
 
@@ -17,8 +18,12 @@ const panelId = (id: string) => `portfolio-panel-${id}`
 export function PortfolioDetail({ map }: { map: RoadmapMap }) {
   const [tab, setTab] = useTabParam(TABS, 'needs-you')
   const products = map.products
-  const sum = (k: 'inFlight' | 'blocked' | 'needsYou') => products.reduce((n, p) => n + p.counts[k], 0)
-  const needsYou = sum('needsYou')
+  const sum = (k: 'inFlight' | 'blocked') => products.reduce((n, p) => n + p.counts[k], 0)
+  // Both the tile and the tab badge count the ROWS the Needs-you list renders,
+  // not `counts.needsYou`: that stat counts initiatives only, so a portfolio
+  // whose only outstanding decision is a batch of proposals would read zero
+  // above a list with a row in it.
+  const needsYou = needsYouCount(products)
   const initiatives = products.flatMap((p) => p.initiatives)
 
   return (

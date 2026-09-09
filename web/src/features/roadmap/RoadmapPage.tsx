@@ -3,8 +3,9 @@ import { useRoadmapMap } from '@/api/hooks'
 import { PageHeader } from '@/ui/PageHeader'
 import { PageContent } from '@/ui/PageContent'
 import { EmptyState } from '@/ui/EmptyState'
+import { Banner } from '@/ui/Banner'
 import { Breadcrumb, type BreadcrumbItem } from '@/ui/Breadcrumb'
-import { ROADMAP } from '@/features/products/vocab'
+import { PRODUCT, ROADMAP } from '@/features/products/vocab'
 import { productPath, roadmapOpenItem, roadmapPath } from './roadmapNavState'
 import { findCapability, findProduct } from './lookup'
 import { PortfolioDetail } from './detail/PortfolioDetail'
@@ -16,13 +17,15 @@ export function RoadmapPage() {
   // An initiative is never open on THESE routes (it has its own page), so the
   // rest of the component reasons about the product/capability item alone.
   const opened = item && item.kind !== 'initiative' ? item : null
-  const { data: map, isLoading } = useRoadmapMap()
+  const { data: map, isLoading, isError } = useRoadmapMap()
   const product = opened ? findProduct(map, opened.productSlug) : null
   const capability = opened?.kind === 'capability' && product ? findCapability(product, opened.capSlug) : null
 
   // The address points at something the map does not contain — a renamed slug or
-  // a stale bookmark. Only meaningful once the map has arrived.
-  const missing = opened !== null
+  // a stale bookmark. Gated on the map having ARRIVED: a failed fetch also leaves
+  // `product` null with `isLoading` false, and that is a broken connection, not a
+  // renamed product.
+  const missing = map !== undefined && opened !== null
     && (product === null || (opened.kind === 'capability' && capability === null))
 
   const crumbs: BreadcrumbItem[] = [{ label: ROADMAP.label, to: roadmapPath() }]
@@ -44,20 +47,27 @@ export function RoadmapPage() {
     <div className="flex h-full min-h-0 flex-col" data-page-variant="standard">
       <PageHeader title={title} meta={crumbs.length > 1 ? <Breadcrumb items={crumbs} /> : undefined} />
       <PageContent busy={isLoading && !map}>
+        {/* Errors are a Banner, first child of the content region. Same copy as the
+            list column, which fails from the same query. */}
+        {isError && <Banner tone="danger" title="Could not load the roadmap." />}
         {/* Nothing open: the portfolio IS the page, not a "pick something" prompt. */}
-        {!opened && map && <PortfolioDetail map={map} />}
+        {map && !opened && <PortfolioDetail map={map} />}
         {/* Product and capability detail arrive with the next tasks; until then the
             open item is named rather than left blank. */}
-        {opened && !missing && <EmptyState title={title} />}
-        {/* Held back while the map is in flight, so a slow fetch does not read as
-            a dead link. */}
-        {missing && !isLoading && (
+        {map && opened && !missing && <EmptyState title={title} />}
+        {missing && (
           <EmptyState
             title="Not found"
             description={`Nothing on the ${ROADMAP.label.toLowerCase()} matches this address. It may have been renamed.`}
             action={<Link className="btn-ghost" to={roadmapPath()}>Back to the {ROADMAP.label.toLowerCase()}</Link>}
           />
         )}
+        {/* No map and not loading: the region always says something. The Banner
+            above carries the reason when there is one; the map re-fetches on its
+            own interval, so this state clears itself. */}
+        {!map && !isLoading && (isError
+          ? <EmptyState title={`No ${ROADMAP.label.toLowerCase()} to show`} description="It will fill in as soon as the map loads again." />
+          : <EmptyState title={PRODUCT.empty} />)}
       </PageContent>
     </div>
   )

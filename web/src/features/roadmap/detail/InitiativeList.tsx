@@ -16,7 +16,7 @@ export function InitiativeList({ initiatives }: { initiatives: InitiativeNode[] 
     <div role="list" aria-label={INITIATIVE.plural} className="flex flex-col gap-1">
       {initiatives.map((i) => (
         <InitiativeCard
-          key={`${i.projectSlug}/${i.slug}`}
+          key={i.slug}
           rowKey={initiativeKey(i.slug)}
           depth={0}
           initiative={i}

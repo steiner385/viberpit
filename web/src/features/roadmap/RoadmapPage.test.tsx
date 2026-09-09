@@ -8,7 +8,7 @@ import { MAP } from './__fixtures__/map'
 import { RoadmapPage } from './RoadmapPage'
 import { CAPABILITY_ROUTE, PRODUCT_ROUTE, ROADMAP_PATH } from './roadmapNavState'
 
-const map = vi.hoisted(() => ({ data: undefined as unknown, isLoading: false }))
+const map = vi.hoisted(() => ({ data: undefined as unknown, isLoading: false, isError: false }))
 
 vi.mock('@/api/hooks', () => ({
   useRoadmapMap: () => map,
@@ -18,7 +18,7 @@ vi.mock('@/api/hooks', () => ({
 }))
 
 function mount(path: string, over: Partial<typeof map> = {}) {
-  Object.assign(map, { data: MAP, isLoading: false }, over)
+  Object.assign(map, { data: MAP, isLoading: false, isError: false }, over)
   render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
@@ -52,5 +52,24 @@ describe('RoadmapPage', () => {
   it('holds the Not found back while the map is still loading', () => {
     mount('/roadmap/nope', { data: undefined, isLoading: true })
     expect(screen.queryByText('Not found')).toBeNull()
+  })
+
+  it('blames the failed fetch, not the address, when the map could not load', () => {
+    mount('/roadmap/kindash', { data: undefined, isLoading: false, isError: true })
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load the roadmap.')
+    // The product exists; the map does not. Saying "renamed" here would be a lie.
+    expect(screen.queryByText('Not found')).toBeNull()
+  })
+
+  it('never leaves the content region empty when the map is missing', () => {
+    mount('/roadmap', { data: undefined, isLoading: false, isError: true })
+    expect(screen.getByRole('alert')).toBeInTheDocument()
+    expect(screen.getByText('No roadmap to show')).toBeInTheDocument()
+  })
+
+  it('offers the empty-products copy when the map is simply absent', () => {
+    mount('/roadmap', { data: undefined, isLoading: false })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByText(/No products yet/)).toBeInTheDocument()
   })
 })

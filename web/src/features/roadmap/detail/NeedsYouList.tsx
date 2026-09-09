@@ -9,11 +9,10 @@ import { EmptyState } from '@/ui/EmptyState'
 import { NAV_BY_ID } from '@/shell/navDefs'
 import { initiativeStatusLabel, reasonLabel } from '@/features/products/vocab'
 import { initiativePath } from '../roadmapNavState'
+import { needsYouRows } from './needsYou'
 
 export function NeedsYouList({ products, repos }: { products: ProductNode[]; repos?: readonly string[] }) {
-  const initiatives = products.flatMap((p) =>
-    p.initiatives.filter((i) => i.tier === 'needs-you').map((i) => ({ product: p, initiative: i })))
-  const pseudo = products.filter((p) => p.counts.awaitingTriage > 0 || p.counts.needsHome > 0)
+  const { initiatives, pseudo } = needsYouRows(products)
   const empty = initiatives.length === 0 && pseudo.length === 0
 
   return (
@@ -24,9 +23,7 @@ export function NeedsYouList({ products, repos }: { products: ProductNode[]; rep
       {initiatives.length > 0 && (
         <ul className="flex flex-col gap-1" aria-label="Initiatives that need you">
           {initiatives.map(({ product, initiative }) => (
-            // Initiative slugs are unique per product, not per portfolio, so the
-            // key carries the product too.
-            <li key={`${product.slug}/${initiative.slug}`} className="rounded-md border border-edge bg-surface p-3">
+            <li key={initiative.slug} className="rounded-md border border-edge bg-surface p-3">
               <Link to={initiativePath(initiative.slug)} className="font-medium text-ink hover:underline">
                 {initiative.title ?? initiative.slug}
               </Link>
