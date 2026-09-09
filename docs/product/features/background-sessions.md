@@ -72,7 +72,15 @@ Active scope only.
 - Provenance labels (`originLabel`, `assistedByLabel`) are the registry's display names,
   published on the session; the card's hand-copied id→name map is gone.
 
+## Notifications
+
+The `needs_input`, `session_ended` and `pr_broke` pushes carry the session's `account`,
+`automation` (its origin; `None` for a human session) and `session_id`, so a
+`NotificationRule` can be scoped to a maintenance origin, or to an account, and actually
+match. Routing is otherwise unchanged: an unscoped rule and the no-rules fanout behave as
+before, so a background session that needs a human still alerts by default.
+
 ## Not changed
 
-Push notifications, the assistant's prose definition of "needs attention", and the server's
-list endpoint (no origin filter; the split is client-side over the same poll).
+The assistant's prose definition of "needs attention", and the server's list endpoint (no
+origin filter; the split is client-side over the same poll).
