@@ -76,6 +76,58 @@ class FleetRouter:
                 f"no orchestrator for host {name!r}; known hosts: {self.names()}"
             ) from None
 
+    async def reachable_names(self, *, always: str | None = None) -> list[str]:
+        """Hosts worth fanning out an aggregate read to right now.
+
+        Every no-id fan-out (``list_sessions``, the ``_make_merge_all`` family, the
+        codex account reads) asks EVERY host and waits for the slowest. A POWERED-OFF
+        host does not refuse the connection, it black-holes it, so each call pays the
+        full connect timeout plus its retry — 13.04s per request, measured 2026-09-09,
+        on an endpoint the UI polls every 5s, for the 17 hours rocky was down. The
+        registry knew the whole time (healthy=False, "DaemonTimeout"); the fan-out
+        simply never asked. ``_dispatchable`` reads exactly this state for dispatch.
+
+        The predicate is REACHABLE, not healthy, and the difference is load-bearing: a
+        host fenced by version skew or a protocol mismatch is undispatchable but answers
+        fine, and it is running live sessions — dropping it would trade a slow dashboard
+        for a wrong one. ``FENCED_REACHABLE_PREFIXES`` (host_probe) already draws that
+        line for the deploy targeter; this reads it back rather than restating it.
+
+        ``always`` is never dropped — the primary, whose failure is contractually a
+        raise rather than a silent partial result.
+
+        Fails OPEN: an unreadable registry returns every host, because slow beats blank.
+        Bounded staleness is the accepted cost — a host that recovers is skipped until
+        the next 30s probe, and its sessions come from the primary's mirror meanwhile,
+        exactly as they do today while it is timing out.
+        """
+        from server.sessions.host_probe import FENCED_REACHABLE_PREFIXES
+
+        names = set(self._orchs)
+        try:
+            async with db_session() as db:
+                rows = (await db.execute(sa_select(Host))).scalars().all()
+        except Exception:
+            log.warning("fleet: registry unreadable — fanning out to every host",
+                        exc_info=True)
+            return sorted(names)
+
+        skip = set()
+        for r in rows:
+            if r.name not in names or r.name == always:
+                continue
+            # healthy True (up) and None (never probed) both mean "ask it". Only an
+            # observed failure justifies skipping, and only a non-fenced one.
+            if r.healthy is not False:
+                continue
+            if (r.last_error or "").startswith(FENCED_REACHABLE_PREFIXES):
+                continue
+            skip.add(r.name)
+        if skip:
+            log.debug("fleet: skipping unreachable hosts for this fan-out: %s",
+                      sorted(skip))
+        return sorted(names - skip)
+
     async def candidates(self) -> list[HostCandidate]:
         """Build ranking inputs from the registry, limited to hosts we can reach.
 

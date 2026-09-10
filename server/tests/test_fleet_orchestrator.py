@@ -844,3 +844,68 @@ async def test_client_node_match_is_case_insensitive(monkeypatch):
     monkeypatch.setattr(fo, "_stamp_host", lambda sid, host: _acoro(None))
     await fo.create_session(client_node="Dobby")
     assert got == ["dobby"]
+
+
+# ---------------------------------------------------------------------------
+# A host the registry knows is unreachable must not be CALLED at all.
+#
+# The result was never the problem: an unreachable host is already skipped, just
+# 13.04s later, after its connect timeout and retry (2026-09-09, rocky powered off
+# for 17h, on an endpoint the UI polls every 5s). These pin that the fan-out asks
+# the router which hosts are worth calling, and that what comes back is identical
+# to the timeout path — same sessions, none of the wait.
+# ---------------------------------------------------------------------------
+
+class _ReachRouter(_FakeRouter):
+    """Router that reports some hosts unreachable, and records what was asked."""
+
+    def __init__(self, orchs, reachable):
+        super().__init__(orchs)
+        self._reachable = reachable
+        self.asked_always = None
+
+    async def reachable_names(self, *, always=None):
+        self.asked_always = always
+        return sorted(self._reachable)
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_does_not_call_a_known_unreachable_host():
+    live, dead = _ListOrch("dobby"), _ListOrch("rocky")
+    router = _ReachRouter({"dobby": live, "rocky": dead}, reachable={"dobby"})
+    fo = FleetOrchestrator(router, primary="dobby")
+
+    await fo.list_sessions()
+
+    assert dead.calls == [], "the powered-off host was still dialled — that is the 13s"
+    assert live.calls == ["list_sessions"]
+    assert router.asked_always == "dobby", "the primary must be exempt from skipping"
+
+
+@pytest.mark.asyncio
+async def test_skipping_yields_the_same_sessions_as_waiting_for_the_timeout():
+    """Behaviour-preserving: this changes latency, not the result set."""
+    class _Boom(_ListOrch):
+        async def list_sessions(self, **kw):
+            self.calls.append("list_sessions")
+            raise OSError("connect timed out")
+
+    slow = FleetOrchestrator(
+        _FakeRouter({"dobby": _ListOrch("dobby"), "rocky": _Boom("rocky")}), primary="dobby")
+    fast = FleetOrchestrator(
+        _ReachRouter({"dobby": _ListOrch("dobby"), "rocky": _Boom("rocky")},
+                     reachable={"dobby"}), primary="dobby")
+
+    assert ([r.id for r in await slow.list_sessions()]
+            == [r.id for r in await fast.list_sessions()])
+
+
+@pytest.mark.asyncio
+async def test_a_router_without_the_method_still_works():
+    """Mixed-version safety: degrade to asking everyone, never to asking no one."""
+    a, b = _ListOrch("dobby"), _ListOrch("rocky")
+    fo = FleetOrchestrator(_FakeRouter({"dobby": a, "rocky": b}), primary="dobby")
+
+    await fo.list_sessions()
+
+    assert a.calls and b.calls, "fell back to no hosts instead of all hosts"

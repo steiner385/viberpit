@@ -282,6 +282,28 @@ class FleetOrchestrator:
             await db.execute(_upd(_S).where(_S.id == session_id).values(host=host))
             await db.commit()
 
+    async def _fanout_names(self) -> list[str]:
+        """Hosts to fan an aggregate read out to — the ONE answer all four sites use.
+
+        Delegates to the router, which drops hosts the registry knows are unreachable
+        (see FleetRouter.reachable_names). Before this, every fan-out asked
+        ``_router.names()`` — every registered host, including one that had been
+        powered off for 17 hours — and paid its connect timeout plus retry on every
+        request: 13.04s on /api/sessions, which the UI polls every 5s (2026-09-09).
+
+        Degrades to ``names()`` if the router cannot answer, so a registry problem or a
+        router without the method makes the fan-out slow again, never blind.
+        """
+        fn = getattr(self._router, "reachable_names", None)
+        if fn is None:
+            return self._router.names()
+        try:
+            return await fn(always=self._primary)
+        except Exception:
+            log.warning("fleet: reachable_names failed — fanning out to every host",
+                        exc_info=True)
+            return self._router.names()
+
     def _make_fanout(self, name: str):
         async def _call(session_ids, *a, **k):
             groups: dict[str, list[str]] = {}
@@ -321,7 +343,7 @@ class FleetOrchestrator:
 
             parts: list[dict] = []
             for host, res, exc in await asyncio.gather(
-                    *(_one(n) for n in self._router.names())):
+                    *(_one(n) for n in await self._fanout_names())):
                 if exc is not None:
                     if host == self._primary:
                         raise exc
@@ -365,7 +387,7 @@ class FleetOrchestrator:
           "Session not found" — the zombie-session report. A record the primary
           actually drives (``detached`` False) is kept whatever its stamp.
         """
-        names = self._router.names()
+        names = await self._fanout_names()
         kw = {"include_assistant": True} if include_assistant else {}
 
         async def _one(name: str):
@@ -437,7 +459,7 @@ class FleetOrchestrator:
         invalidated: list[str] = []
         failed: dict[str, str] = {}
         for name, _res, exc in await asyncio.gather(
-            *(_one(n) for n in self._router.names())
+            *(_one(n) for n in await self._fanout_names())
         ):
             if exc is None:
                 invalidated.append(name)
@@ -469,7 +491,7 @@ class FleetOrchestrator:
 
         parts: list[dict] = []
         for host, result, exc in await asyncio.gather(
-            *(_one(name) for name in self._router.names())
+            *(_one(name) for name in await self._fanout_names())
         ):
             if exc is not None:
                 if host == self._primary:
