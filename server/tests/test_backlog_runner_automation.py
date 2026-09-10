@@ -87,6 +87,26 @@ def test_status_omits_blocked_when_zero():
     assert "blocked" not in BacklogRunner().status(ctx).text
 
 
+def test_status_shows_untriaged_count():
+    """A Ready-mode runner over an untriaged board must not read as "0 eligible"
+    with no explanation — the below-min-status skip gets its own gauge (#990)."""
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "eligible": 0,
+                                          "blocked": 0, "untriaged": 2})
+    assert "2 untriaged" in BacklogRunner().status(ctx).text
+
+
+def test_status_omits_untriaged_when_zero():
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "eligible": 2,
+                                          "blocked": 0, "untriaged": 0})
+    assert "untriaged" not in BacklogRunner().status(ctx).text
+
+
 # --------------------------------------------------------------------------- #
 # Queue provenance on the status card (#990)                                  #
 # --------------------------------------------------------------------------- #

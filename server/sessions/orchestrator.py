@@ -5278,24 +5278,28 @@ class SessionOrchestrator:
             return True
         return bool(row[0])
 
-    async def _backlog_count_candidates(self) -> "tuple[int, int]":
-        """(eligible, blocked) counts of unclaimed OPEN issues in configured repos.
+    async def _backlog_count_candidates(self) -> "tuple[int, int, int]":
+        """(eligible, blocked, untriaged) counts of unclaimed OPEN issues in the
+        configured repos.
 
         The honest backlog gauge for the Automation card — independent of how many
         runner slots are free (a saturated runner still reports the real depth).
         ``blocked`` is how many otherwise-eligible issues were skipped because a
         dependency is still open — the "why isn't the backlog draining" note.
-        Both numbers cover the SAME pool selection draws from: the queue scoped to
-        ``enabled_repos``, so another product's stuck backlog is never counted
-        against this runner."""
+        ``untriaged`` is the board-status skip (``queue_min_status``): in the
+        default ``Ready`` mode a board full of Backlog items would otherwise read
+        as a bare "0 eligible" with no hint that the work exists but is waiting on
+        triage. All three numbers cover the SAME pool selection draws from: the
+        queue scoped to ``enabled_repos``, so another product's stuck backlog is
+        never counted against this runner."""
         _mode, config = await self._backlog_read_config()
         skipped: dict[str, int] = {}
         try:
             entries = await self._backlog_query_queue(config, skipped_out=skipped)
         except Exception:  # pragma: no cover — a queue read must not break the tick
             log.warning("orchestrator._backlog_count_candidates_failed", exc_info=True)
-            return 0, 0
-        return len(entries), skipped.get("blocked", 0)
+            return 0, 0, 0
+        return len(entries), skipped.get("blocked", 0), skipped.get("status", 0)
 
     async def _backlog_spawn(self, batch, account: str):
         """Spawn a de-duped runner session for *batch*, seeded with the implement

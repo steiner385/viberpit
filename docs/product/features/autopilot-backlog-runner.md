@@ -81,7 +81,9 @@ PR linkage, never on labels alone.
   Candidates come from the **global priority queue** over the mirrored Projects v2 boards
   (spec 003 §7a, `server/pm/queue.py`) — the same ranking `GET /api/pm/queue` renders, so
   what the operator sees is what agents do next. It is scoped by `enabled_repos` (empty =
-  every onboarded product), gated by `queue_min_status` (`Ready`, the safe default, or
+  every onboarded product *for candidate selection only* — orphan healing and the
+  `priority` selection strategy read the list directly, so an empty list makes them
+  no-ops), gated by `queue_min_status` (`Ready`, the safe default, or
   `Backlog` to reach untriaged items), dependency-gated from the compiled graph
   (`respect_dependencies`; native blocked-by edges, `Depends on #N` body references and epic
   list order), and the top pick is re-verified against live GitHub immediately before the

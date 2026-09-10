@@ -143,9 +143,13 @@ def test_one_owner_gh_failure_does_not_blank_the_other_owners():
 # --------------------------------------------------------------------------- #
 
 def _ready_issue(*, state: str = "OPEN", assignees: int = 0,
-                 blockers: tuple[str, ...] = ()) -> dict:
+                 blockers: tuple[str, ...] = (), total: int | None = None) -> dict:
+    """One ``verify_ready_live`` issue node. ``total`` overrides the ``blockedBy``
+    ``totalCount`` (default: the page is complete) so a test can model GitHub
+    reporting more blockers than the page returned."""
     return {"state": state, "assignees": {"totalCount": assignees},
-            "blockedBy": {"nodes": [{"state": s} for s in blockers]}}
+            "blockedBy": {"totalCount": len(blockers) if total is None else total,
+                          "nodes": [{"state": s} for s in blockers]}}
 
 
 def _verify_payload(repos: dict[str, dict[str, dict]]) -> str:
@@ -165,7 +169,8 @@ def test_verify_ready_live_true_when_every_issue_is_open_unassigned_unblocked():
     assert len(gh.calls) == 1, "one query per owner"
     query = next(a for a in gh.calls[0] if a.startswith("query="))
     assert "i5: issue(number: 5)" in query and "i6: issue(number: 6)" in query
-    assert "blockedBy(first: 50)" in query and "assignees(first: 1)" in query
+    assert ("blockedBy(first: 50) { totalCount nodes { state } }" in query
+            and "assignees(first: 1)" in query)
     assert gh.tokens == ["tok-o"]
 
 
@@ -182,6 +187,14 @@ def test_verify_ready_live_false_on_blocker_with_unreadable_state():
         "state": "OPEN", "assignees": {"totalCount": 0},
         "blockedBy": {"nodes": [{"state": None}, None]}}}}}))})
     assert verify_ready_live(["o/r#5"], gh_run=gh) is False
+
+
+def test_verify_ready_live_none_when_blockers_are_truncated():
+    """More blockers than the page returned: the ones past the page are unknown,
+    and unknown is not clear — §10 fails closed, so this is ``None``, not True."""
+    gh = FakeGh({("api", "graphql"): _proc(stdout=_verify_payload(
+        {"o/r": {"5": _ready_issue(blockers=("CLOSED",) * 50, total=51)}}))})
+    assert verify_ready_live(["o/r#5"], gh_run=gh) is None
 
 
 def test_verify_ready_live_false_on_assignee():

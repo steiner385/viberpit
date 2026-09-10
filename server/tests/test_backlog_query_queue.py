@@ -111,7 +111,7 @@ def test_query_queue_records_the_last_ranked_result(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Counts: (eligible, blocked) both come from the queue                         #
+# Counts: (eligible, blocked, untriaged) all come from the queue               #
 # --------------------------------------------------------------------------- #
 
 def test_count_candidates_returns_queue_eligible_and_blocked(tmp_path):
@@ -129,7 +129,28 @@ def test_count_candidates_returns_queue_eligible_and_blocked(tmp_path):
             return "auto", _config()
         orch._backlog_read_config = _read_config
 
-        assert await orch._backlog_count_candidates() == (1, 1)
+        assert await orch._backlog_count_candidates() == (1, 1, 0)
+
+    asyncio.run(run())
+
+
+def test_count_candidates_reports_below_min_status_items_as_untriaged(tmp_path):
+    """In the default Ready mode, a board full of Backlog items would otherwise
+    read as a bare "0 eligible" — an empty backlog rather than one waiting on
+    triage. The status skip is its own gauge on the card (#990)."""
+    async def run():
+        await _init(tmp_path, "untriaged.db")
+        await _seed_product("ccswitch", "o/r")
+        await _seed_item("o/r", 1, score=5.0)                     # Ready → eligible
+        await _seed_item("o/r", 2, status="Backlog", score=9.0)   # untriaged
+        await _seed_item("o/r", 3, status="Backlog", score=8.0)   # untriaged
+        orch = _orch_with_ctx()
+
+        async def _read_config():
+            return "auto", _config()
+        orch._backlog_read_config = _read_config
+
+        assert await orch._backlog_count_candidates() == (1, 0, 2)
 
     asyncio.run(run())
 
@@ -171,7 +192,7 @@ def test_count_candidates_scopes_to_enabled_repos(tmp_path):
             return "auto", _config(enabled_repos=["o/r"])
         orch._backlog_read_config = _read_config
 
-        assert await orch._backlog_count_candidates() == (1, 0)
+        assert await orch._backlog_count_candidates() == (1, 0, 0)
 
     asyncio.run(run())
 
@@ -192,7 +213,7 @@ def test_count_candidates_blocked_gauge_ignores_out_of_scope_products(tmp_path):
             return "auto", _config(enabled_repos=["o/r"])
         orch._backlog_read_config = _read_config
 
-        assert await orch._backlog_count_candidates() == (1, 0)
+        assert await orch._backlog_count_candidates() == (1, 0, 0)
 
     asyncio.run(run())
 

@@ -51,7 +51,8 @@ async def _seed_row(automation_id: str = "backlog-runner") -> None:
 def build_loop(*, mode="auto", config=None, clock=None,
                candidates=None, healthy="a", in_flight_counter=None,
                pr_status=None, pr_doctor_active=True, claim_result=True,
-               candidate_count=None, blocked_count=0, heal_orphans_result=None,
+               candidate_count=None, blocked_count=0, untriaged_count=0,
+               heal_orphans_result=None,
                refresh_groups=None, spawn=None, close_out_result=None,
                credential_alerts=None, verify_ready=None, queue_tail=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
@@ -128,10 +129,10 @@ def build_loop(*, mode="auto", config=None, clock=None,
         return close_out_result
 
     async def count_candidates():
-        # The seam reports (eligible, blocked) — blocked = dependency-gated
-        # issues skipped this sweep, surfaced on the Automation card.
+        # The seam reports (eligible, blocked, untriaged) — dependency-gated and
+        # below-min-status skips this sweep, both surfaced on the Automation card.
         return (candidate_count if candidate_count is not None else 0,
-                blocked_count)
+                blocked_count, untriaged_count)
 
     async def heal_orphans(config, tracked):
         rec.heals.append((config, set(tracked)))
@@ -207,6 +208,29 @@ def test_blocked_count_surfaces_on_ctx(tmp_path):
         counts = getattr(ctx, "backlog_counts", {})
         assert counts.get("blocked") == 3
         assert counts.get("eligible") == 2
+
+    asyncio.run(run())
+
+
+def test_untriaged_count_surfaces_on_ctx(tmp_path):
+    """Below-min-status skips are the OTHER "why isn't the backlog draining"
+    answer: in the default Ready mode a board of untriaged items would read as a
+    bare "0 eligible" — an empty backlog, not one waiting on triage (#990)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'untriaged.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[],
+            candidate_count=0,
+            untriaged_count=4,          # 4 board items still sit below Ready
+        )
+        await loop.tick()
+        counts = getattr(ctx, "backlog_counts", {})
+        assert counts.get("untriaged") == 4
+        assert counts.get("eligible") == 0
 
     asyncio.run(run())
 

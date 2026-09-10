@@ -155,7 +155,11 @@ class BacklogRunner:
     engine_policy: EnginePolicy = EnginePolicy.CODEX_ALLOWED
     config_schema = [
         ConfigField(key="enabled_repos", label="Repositories", type="repo-multiselect",
-                    default=[], help="Repos to draw issues from (empty = all)."),
+                    default=[],
+                    help="Repos to draw issues from; empty means every onboarded "
+                         "product for candidate selection. Orphan healing and the "
+                         "'priority' selection strategy read this list directly, so "
+                         "with it empty they do nothing."),
         ConfigField(key="selection_strategy", label="Repo selection strategy",
                     type="enum", default="balanced",
                     choices=list(SELECTION_STRATEGIES),
@@ -229,8 +233,12 @@ class BacklogRunner:
             return AutomationStatus(text="idle", level="idle")
         n = counts.get("in_flight", 0)
         level = "active" if n else ("warn" if counts.get("needs_human") else "idle")
+        # ``untriaged`` is the below-min-status skip: in the default Ready mode a
+        # board full of untriaged items reads as "0 eligible", which looks like an
+        # empty backlog rather than one waiting on triage.
         text = (f"{n} implementing, {counts.get('eligible', 0)} eligible"
                 + (f", {counts['blocked']} blocked" if counts.get("blocked") else "")
+                + (f", {counts['untriaged']} untriaged" if counts.get("untriaged") else "")
                 + (f", {counts['needs_human']} needs-human" if counts.get("needs_human") else ""))
         # Queue provenance (#990): which ranked candidate this came from, and
         # what it was picked over — same formatter the ``picked`` event uses,
@@ -267,11 +275,13 @@ QueueTail = Callable[[], "list[dict]"]
 Claim = Callable[["Batch"], Awaitable[bool]]
 Spawn = Callable[["Batch", str], Awaitable[Any]]
 CountInFlight = Callable[[], Awaitable[int]]
-# (eligible, blocked): the true count of eligible, unclaimed OPEN issues — the
-# honest backlog gauge for the Automation card, independent of how many runner
-# slots are free — plus how many otherwise-eligible issues were skipped as
-# dependency-blocked this sweep (the "why isn't the backlog draining" note).
-CountCandidates = Callable[[], Awaitable["tuple[int, int]"]]
+# (eligible, blocked, untriaged): the true count of eligible, unclaimed OPEN
+# issues — the honest backlog gauge for the Automation card, independent of how
+# many runner slots are free — plus how many otherwise-eligible issues were
+# skipped as dependency-blocked this sweep (the "why isn't the backlog draining"
+# note) and how many were skipped for sitting below ``queue_min_status`` (in the
+# default Ready mode, an untriaged board would otherwise read as "0 eligible").
+CountCandidates = Callable[[], Awaitable["tuple[int, int, int]"]]
 HealthyAccount = Callable[[], Awaitable["str | None"]]
 PrStatusFor = Callable[[str], Awaitable["PullRequestInfo | None"]]
 PrDoctorActive = Callable[[str], Awaitable[bool]]
@@ -539,18 +549,21 @@ class BacklogRunnerLoop:
         # The honest backlog gauge: the true count of eligible, unclaimed issues,
         # independent of how many runner slots are free (a saturated runner still
         # reports real depth), plus how many were skipped as dependency-blocked
-        # this sweep. Best-effort — a query failure reports 0.
+        # and how many sit below the configured board status (untriaged).
+        # Best-effort — a query failure reports 0.
         eligible = 0
         blocked = 0
+        untriaged = 0
         if self._count_candidates is not None:
             try:
-                eligible, blocked = await self._count_candidates()
+                eligible, blocked, untriaged = await self._count_candidates()
             except Exception:  # pragma: no cover — a count read must not stall the tick
-                eligible = blocked = 0
+                eligible = blocked = untriaged = 0
         setattr(self._ctx, "backlog_counts", {
             "in_flight": in_flight,
             "eligible": eligible,
             "blocked": blocked,
+            "untriaged": untriaged,
             "needs_human": needs_human,
         })
         # Queue provenance (#990): the last successful spawn's pick, if any —
@@ -754,7 +767,7 @@ class BacklogRunnerLoop:
             self._last_pick = pick
             await self._ctx.emit("info", format_pick(pick), kind="picked",
                                  target=batch.primary, detail=pick)
-        except Exception:  # pragma: no cover — provenance must never stall a spawn
+        except Exception:  # provenance must never stall a spawn
             log.warning("backlog_runner.pick_provenance_failed target=%s", batch.primary,
                         exc_info=True)
 
@@ -798,8 +811,10 @@ class BacklogRunnerLoop:
             if st.get("gave_up"):
                 continue
             if self._verify_ready is not None and not await self._live_check(batch):
-                # break, not continue — same reason as the backoff gate above:
-                # select would hand us this batch straight back.
+                # break, not continue: ``select_batch`` already consumed this
+                # pick's plan group, so continuing would burn the REST of the
+                # plan on what is usually one GitHub hiccup. The slot waits a
+                # tick instead; the group returns at the next grouping refresh.
                 break
             if mode == "propose":
                 # RECORDS-BEFORE-LABELS: write the durable claim BEFORE the gh

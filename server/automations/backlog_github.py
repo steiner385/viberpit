@@ -158,8 +158,9 @@ _ISSUE_NODES = (
 
 def _open_sub_issue_count(issue: dict | None) -> int:
     """How many of *issue*'s native sub-issues are still open — the tracking-issue
-    signal. Works on both raw GraphQL shapes the runner sees (a candidate node
-    and an issue-signals payload), which share ``subIssues { nodes { state } }``.
+    signal. Reads the ``subIssues { nodes { state } }`` shape of an issue-signals
+    payload; its one caller is the close gate (the candidate search that also fed
+    it went away with the board-mirror queue, spec 003 §7a).
 
     An issue with open sub-issues is an epic under spec 003 D1: GitHub primitives
     are the planning truth, and the children ARE the work. The runner must
@@ -186,8 +187,10 @@ def verify_ready_live(refs: list[str], *, gh_run: GhRun = gitrepos._run_gh) -> b
 
     Returns ``True`` only when EVERY ref is ``OPEN``, has no assignee and no
     ``OPEN`` node in ``blockedBy``; ``False`` as soon as one is not; ``None`` on
-    any transport/parse failure, a malformed ref, or a ref the response does not
-    resolve (GitHub returns ``null`` for an alias it cannot serve). Spec 003 §10:
+    any transport/parse failure, a malformed ref, a ref the response does not
+    resolve (GitHub returns ``null`` for an alias it cannot serve), or a
+    ``blockedBy`` list longer than the page requested (the blockers past the page
+    are unknown, and unknown is never clear). Spec 003 §10:
     the check FAILS CLOSED — the caller treats ``None`` exactly like ``False``.
     Deliberately not built on :func:`_graphql_per_owner`, which skips a failed
     owner and would turn "unknown" into "no failing issue found".
@@ -208,7 +211,7 @@ def verify_ready_live(refs: list[str], *, gh_run: GhRun = gitrepos._run_gh) -> b
             _owner, _, name = repo.partition("/")
             lookups = " ".join(
                 f"i{n}: issue(number: {n}) {{ state assignees(first: 1) {{ totalCount }} "
-                "blockedBy(first: 50) { nodes { state } } }"
+                "blockedBy(first: 50) { totalCount nodes { state } } }"
                 for n in by_repo[repo])
             parts.append(
                 f"r{i}: repository(owner: {json.dumps(_owner)}, name: {json.dumps(name)}) "
@@ -244,7 +247,15 @@ def verify_ready_live(refs: list[str], *, gh_run: GhRun = gitrepos._run_gh) -> b
                     return False
                 # Same polarity as the mirror-side gate (backlog_deps): a
                 # blocker whose state cannot be read is BLOCKING, not clear.
-                blockers = (issue.get("blockedBy") or {}).get("nodes") or []
+                blocked_by = issue.get("blockedBy") or {}
+                blockers = blocked_by.get("nodes") or []
+                # More blockers than the page returned: the ones past the page are
+                # unknown, and unknown is not clear (§10 fails closed).
+                total = blocked_by.get("totalCount")
+                if isinstance(total, int) and total > len(blockers):
+                    log.warning("backlog_github.verify_ready_blockers_truncated "
+                                "ref=%s#%s total=%s page=%s", repo, n, total, len(blockers))
+                    return None
                 if any(not backlog_deps._is_done(b.get("state") if isinstance(b, dict) else None)
                        for b in blockers):
                     return False

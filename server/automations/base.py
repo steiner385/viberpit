@@ -216,6 +216,7 @@ class Automation(Protocol):
     #: Protocol — a declared member is mandatory for every implementer, and
     #: almost none has ever retired a field; ``retired_config_keys_of`` above is
     #: the accessor and answers ``()`` for those.
+
     #: The audited agent-engine ceiling for this origin (Phase 7, Task 7.1).
     #: Typed loosely here because ``engine_policy`` imports this module for
     #: ``ConfigField``; ``server.automations.engine_policy.policy_for`` is the
