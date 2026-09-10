@@ -1569,6 +1569,46 @@ def test_picked_event_pick_missing_from_tail_reports_none(tmp_path):
     asyncio.run(run())
 
 
+def test_queue_tail_raising_does_not_disturb_spawn_bookkeeping(tmp_path):
+    """Provenance is best-effort (#990): a raising ``queue_tail`` must NOT
+    abort ``_refill`` mid-spawn — the spawn already succeeded and the state
+    row must still get finalized with its session_id, or the row is left
+    looking like a crash-between-claim-and-spawn dangler that
+    ``_reconcile_dangling`` would release or re-spawn."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'pk5.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+
+        def raising_queue_tail():
+            raise RuntimeError("tail read blew up")
+
+        spawned: list = []
+
+        async def spawn(b, account):
+            spawned.append((b, account))
+            return SimpleNamespace(id="s-picked-1", branch="b-picked-1")
+
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1")],
+            queue_tail=raising_queue_tail,
+            spawn=spawn,
+        )
+        await loop.tick()  # must not raise
+
+        assert len(spawned) == 1  # the spawn itself still happened
+        assert await _picked_events() == []  # no picked event
+        assert loop._last_pick is None
+        st = await ctx.get_target_state("o/r#1")
+        assert st.get("session_id") == "s-picked-1"  # state row still finalized
+
+    asyncio.run(run())
+
+
 def test_no_queue_tail_seam_emits_no_picked_event(tmp_path):
     """Existing/legacy loop construction (no ``queue_tail``) must keep
     behaving exactly as before — no picked event, no last-pick state."""

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, cast
 
 from ccswitch.worktrees import DISK_EXHAUSTION_MARKERS
 from server.github.pr_status import PullRequestInfo
@@ -728,21 +728,32 @@ class BacklogRunnerLoop:
         was picked over (the next 3 tail entries not already in this batch).
         The ranked pool can have been refreshed since selection, so a primary
         missing from the tail reports score/product as ``None`` — provenance
-        is best-effort and never a reason to skip or undo the spawn. Requires
-        ``self._queue_tail`` to be set; callers guard on that."""
-        assert self._queue_tail is not None
-        tail = self._queue_tail()
-        entry = next((e for e in tail if e.get("ref") == batch.primary), None)
-        over = [e.get("ref") for e in tail if e.get("ref") not in batch.issues][:3]
-        pick = {
-            "ref": batch.primary,
-            "score": entry.get("score") if entry else None,
-            "product": entry.get("product") if entry else None,
-            "over": over,
-        }
-        self._last_pick = pick
-        await self._ctx.emit("info", format_pick(pick), kind="picked",
-                             target=batch.primary, detail=pick)
+        is best-effort and never a reason to skip or undo the spawn. Runs
+        AFTER the spawn already succeeded but BEFORE the state row records
+        the session id, so a raising ``_queue_tail`` (or a bad event write)
+        must never escape here: it would abort ``_refill`` mid-spawn, leaving
+        a live session whose state row was never finalized — exactly the
+        crash-between-claim-and-spawn shape ``_reconcile_dangling`` releases
+        or re-spawns. Callers guard on ``self._queue_tail`` being set."""
+        try:
+            # The call site already checked ``self._queue_tail is not None``;
+            # ``cast`` tells mypy the same thing without a second runtime
+            # check that would just duplicate the caller's guard.
+            tail = cast("QueueTail", self._queue_tail)()
+            entry = next((e for e in tail if e.get("ref") == batch.primary), None)
+            over = [e.get("ref") for e in tail if e.get("ref") not in batch.issues][:3]
+            pick = {
+                "ref": batch.primary,
+                "score": entry.get("score") if entry else None,
+                "product": entry.get("product") if entry else None,
+                "over": over,
+            }
+            self._last_pick = pick
+            await self._ctx.emit("info", format_pick(pick), kind="picked",
+                                 target=batch.primary, detail=pick)
+        except Exception:  # pragma: no cover — provenance must never stall a spawn
+            log.warning("backlog_runner.pick_provenance_failed target=%s", batch.primary,
+                        exc_info=True)
 
     async def _refill(self, mode: str, config: dict) -> None:
         if self._spawn_circuit_until is not None:
