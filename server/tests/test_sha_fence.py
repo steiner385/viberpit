@@ -66,3 +66,95 @@ def test_remote_raises_on_nonzero_exit(monkeypatch):
                         lambda cmd, **kw: _completed("", returncode=128, stderr="no remote"))
     with pytest.raises(RuntimeError):
         sha_fence._remote()
+
+
+# --------------------------------------------------------------------------- #
+# Edge-only commits do not fence the daemon (#1526)                            #
+# --------------------------------------------------------------------------- #
+
+TIP = "fff1234000000000000000000000000000000000"
+
+
+def _compare(status="ahead", behind_by=0, files=("docs/x.md",), total_commits=1):
+    return {"status": status, "ahead_by": total_commits, "behind_by": behind_by,
+            "total_commits": total_commits, "files": [{"filename": f} for f in files]}
+
+
+def _arm(monkeypatch, compare):
+    monkeypatch.setattr(sha_fence, "running_git_sha", lambda: "abc1234")
+    monkeypatch.setattr(sha_fence, "_remote", lambda: TIP)
+    monkeypatch.setattr(sha_fence, "_compare", compare)
+    sha_fence._cache.clear()
+
+
+def test_docs_only_commits_ahead_of_the_daemon_keep_the_fence_open(monkeypatch):
+    """The deploy controller restarts only the edge for docs/tests/workflow changes
+    (steps._EDGE_ONLY), so master legitimately runs ahead of the daemon by those
+    commits — the daemon's code IS the tip's daemon code."""
+    seen = {}
+
+    def compare(local, remote):
+        seen["args"] = (local, remote)
+        return _compare(files=("docs/superpowers/specs/x.md", "specs/003/plan.md",
+                               "server/tests/test_x.py", ".github/workflows/ci.yml"))
+
+    _arm(monkeypatch, compare)
+    assert asyncio.run(sha_fence.daemon_matches_origin_master(ttl_s=0)) is True
+    assert seen["args"] == ("abc1234", TIP)
+
+
+def test_a_daemon_code_change_ahead_of_the_daemon_closes_the_fence(monkeypatch):
+    _arm(monkeypatch, lambda local, remote: _compare(
+        files=("docs/x.md", "server/automations/gh_reconcile.py")))
+    assert asyncio.run(sha_fence.daemon_matches_origin_master(ttl_s=0)) is False
+
+
+def test_diverged_or_behind_local_closes_the_fence(monkeypatch):
+    for status, behind in (("diverged", 2), ("behind", 1)):
+        _arm(monkeypatch, lambda local, remote, s=status, b=behind: _compare(status=s, behind_by=b))
+        assert asyncio.run(sha_fence.daemon_matches_origin_master(ttl_s=0)) is False
+
+
+def test_compare_failure_or_truncated_file_list_fails_closed(monkeypatch):
+    _arm(monkeypatch, lambda local, remote: (_ for _ in ()).throw(RuntimeError("net")))
+    assert asyncio.run(sha_fence.daemon_matches_origin_master(ttl_s=0)) is False
+    # GitHub caps compare payloads at 300 files: a full page may hide a daemon change.
+    _arm(monkeypatch, lambda local, remote: _compare(
+        files=tuple(f"docs/{i}.md" for i in range(sha_fence._COMPARE_FILE_CAP))))
+    assert asyncio.run(sha_fence.daemon_matches_origin_master(ttl_s=0)) is False
+    # No files at all with commits ahead is not evidence of edge-only either.
+    _arm(monkeypatch, lambda local, remote: _compare(files=()))
+    assert asyncio.run(sha_fence.daemon_matches_origin_master(ttl_s=0)) is False
+
+
+def test_exact_tip_never_calls_compare(monkeypatch):
+    _arm(monkeypatch, lambda local, remote: (_ for _ in ()).throw(AssertionError("compare called")))
+    monkeypatch.setattr(sha_fence, "_remote", lambda: "abc1234" + "0" * 33)
+    sha_fence._cache.clear()
+    assert asyncio.run(sha_fence.daemon_matches_origin_master(ttl_s=0)) is True
+
+
+def test_compare_runs_gh_against_the_origin_repo(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen.setdefault("cmds", []).append(cmd)
+        if cmd[:3] == ["git", "config", "--get"]:
+            return _completed("git@github.com:steiner385/viberpit.git\n")
+        return _completed('{"status": "ahead", "behind_by": 0, "total_commits": 1, '
+                          '"files": [{"filename": "docs/a.md"}]}')
+
+    monkeypatch.setattr(sha_fence, "_run", fake_run)
+    out = sha_fence._compare("abc1234", TIP)
+    assert out["files"][0]["filename"] == "docs/a.md"
+    assert seen["cmds"][1][:3] == ["gh", "api", f"repos/steiner385/viberpit/compare/abc1234...{TIP}"]
+
+
+def test_origin_repo_parses_ssh_and_https_urls(monkeypatch):
+    for url in ("git@github.com:steiner385/viberpit.git", "https://github.com/steiner385/viberpit",
+                "https://github.com/steiner385/viberpit.git", "ssh://git@github.com/steiner385/viberpit.git"):
+        monkeypatch.setattr(sha_fence, "_run", lambda cmd, **kw: _completed(url + "\n"))
+        assert sha_fence._origin_repo() == "steiner385/viberpit", url
+    monkeypatch.setattr(sha_fence, "_run", lambda cmd, **kw: _completed("", returncode=1))
+    with pytest.raises(RuntimeError):
+        sha_fence._origin_repo()
