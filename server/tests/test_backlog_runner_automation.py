@@ -19,8 +19,6 @@ def test_config_schema_keys_and_types():
     keys = {f.key: f for f in BacklogRunner().config_schema}
     assert keys["enabled_repos"].type == "repo-multiselect"
     assert keys["enabled_repos"].default == []
-    assert keys["eligible_label"].type == "string"
-    assert keys["eligible_label"].default == "ready"
     assert keys["max_concurrent"].type == "int"
     assert keys["max_concurrent"].default == 1
     assert keys["max_spawns_per_day"].type == "int"
@@ -29,6 +27,17 @@ def test_config_schema_keys_and_types():
     assert keys["max_attempts"].default == 2
     assert keys["max_issues_per_pr"].type == "int"
     assert keys["max_issues_per_pr"].default == 1
+
+
+def test_eligible_label_is_retired_not_merely_absent():
+    """The label gate died with the GitHub label search (#990) — board status,
+    not a label, says what is workable now. Dropping the field alone would make
+    every stored row that still carries it invalid, so it must be RETIRED: the
+    key stays listed, and the row keeps the rest of its settings."""
+    from server.automations.backlog_runner import BacklogRunner
+    br = BacklogRunner()
+    assert "eligible_label" not in {f.key for f in br.config_schema}
+    assert "eligible_label" in br.retired_config_keys
 
 
 def test_status_idle_by_default():

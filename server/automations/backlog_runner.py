@@ -156,10 +156,6 @@ class BacklogRunner:
     config_schema = [
         ConfigField(key="enabled_repos", label="Repositories", type="repo-multiselect",
                     default=[], help="Repos to draw issues from (empty = all)."),
-        ConfigField(key="eligible_label", label="Eligible label", type="string",
-                    default="ready",
-                    help="Only issues with this label are candidates. Leave blank "
-                         "to consider ALL open, unassigned issues (no label gate)."),
         ConfigField(key="selection_strategy", label="Repo selection strategy",
                     type="enum", default="balanced",
                     choices=list(SELECTION_STRATEGIES),
@@ -219,6 +215,11 @@ class BacklogRunner:
                          "unassigned board item, including ones nobody has "
                          "triaged yet."),
     ]
+    # ``eligible_label`` gated the old GitHub label search; the runner now selects
+    # from the board-mirror queue (spec 003 §7a), where board status — not a label
+    # — says what is workable, so the key has no equivalent to migrate to. Listed
+    # here so the rows that still carry it keep the rest of their settings.
+    retired_config_keys: tuple[str, ...] = ("eligible_label",)
 
     def status(self, ctx) -> AutomationStatus:
         counts = getattr(ctx, "backlog_counts", None) if ctx is not None else None

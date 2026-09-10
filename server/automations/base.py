@@ -1,8 +1,12 @@
 """Automation contract value types + pure config validation (no I/O)."""
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
+
+log = logging.getLogger(__name__)
 
 FIELD_TYPES = {"bool", "int", "string", "enum", "repo-multiselect"}
 
@@ -98,14 +102,30 @@ def _type_ok(field_type: str, value: Any) -> bool:
     return False
 
 
-def validate_config(schema: ConfigSchema, config: dict) -> dict:
+def validate_config(schema: ConfigSchema, config: dict,
+                    *, retired: Iterable[str] = ()) -> dict:
     """Validate `config` against `schema`. Returns a coerced dict with every
     schema key present (defaults filled). Raises ValueError on an unknown key,
-    a wrong type, or a value outside an enum's choices."""
+    a wrong type, or a value outside an enum's choices.
+
+    *retired* names keys a schema deliberately DROPPED (``retired_config_keys``).
+    Rejecting them would be indistinguishable from a corrupt row: every reader
+    falls back to pure schema defaults on a ValueError, so removing one field
+    would silently reset an automation's whole config — for the backlog runner
+    that means ``enabled_repos: []``, a card reading "0 eligible" over a full
+    backlog with nothing in the logs. So a retired key is dropped and logged.
+    A key that is merely unknown (a typo, a foreign row) still raises: retiring
+    is an explicit, per-automation list, never a general amnesty.
+    """
     known = {f.key: f for f in schema}
+    retired_keys = frozenset(retired)
     for key in config:
-        if key not in known:
-            raise ValueError(f"unknown config key: {key!r}")
+        if key in known:
+            continue
+        if key in retired_keys:
+            log.info("config.retired_key_dropped key=%s", key)
+            continue
+        raise ValueError(f"unknown config key: {key!r}")
     out: dict = {}
     for f in schema:
         if f.key in config:
@@ -149,6 +169,17 @@ def work_class_of(automation: Any) -> str:
     return value
 
 
+def retired_config_keys_of(automation: Any) -> tuple[str, ...]:
+    """The keys *automation* declares retired — see ``Automation.retired_config_keys``.
+
+    An accessor rather than a ``getattr`` per call site, so the API's write path
+    and the loops' read path cannot disagree about which stored keys are dead
+    (one dropping a key the other 422s on would be worse than either behaviour
+    alone). Most automations never retired a field and declare nothing.
+    """
+    return tuple(getattr(automation, "retired_config_keys", ()) or ())
+
+
 def operator_triggered(automation: Any) -> bool:
     """Whether *automation* has no control loop — see ``Automation.modes``.
 
@@ -177,6 +208,11 @@ class Automation(Protocol):
     #: human. Read only through ``work_class_of`` (defaults to development).
     work_class: str
     config_schema: ConfigSchema
+    #: Keys this origin's schema USED to have and deliberately dropped. Stored
+    #: rows outlive a schema change, and ``validate_config`` rejects unknown
+    #: keys — so without this list removing a field silently resets every
+    #: existing row to defaults. Read only through ``retired_config_keys_of``.
+    retired_config_keys: tuple[str, ...]
     #: The audited agent-engine ceiling for this origin (Phase 7, Task 7.1).
     #: Typed loosely here because ``engine_policy`` imports this module for
     #: ``ConfigField``; ``server.automations.engine_policy.policy_for`` is the

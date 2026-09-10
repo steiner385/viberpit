@@ -30,7 +30,7 @@ from sqlalchemy import select
 from server.db import db_session
 from server.db.models import Automation as AutomationRow
 
-from .base import validate_config
+from .base import retired_config_keys_of, validate_config
 
 log = logging.getLogger(__name__)
 
@@ -66,15 +66,16 @@ async def read_automation_config(automation: Any, *,
                 enabled, mode, raw = bool(row.enabled), row.mode, dict(row.config or {})
     except Exception:
         log.debug("%s.config.load_failed", log_key or automation_id, exc_info=True)
+    retired = retired_config_keys_of(automation)
     try:
-        config = validate_config(schema, raw)
+        config = validate_config(schema, raw, retired=retired)
     except ValueError as exc:
         # Fail SAFE (pure defaults) but never fail SILENT: defaults can differ from the
         # operator's settings in ways that read as "working but idle" on the card, so a
         # rejected row has to be loud enough to find without a database session.
         log.warning("%s.config.invalid — falling back to schema defaults: %s",
                     log_key or automation_id, exc)
-        config = validate_config(schema, {})
+        config = validate_config(schema, {}, retired=retired)
     if not enabled:
         return "off", config
     if mode is not None and mode in modes:

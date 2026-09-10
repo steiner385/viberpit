@@ -6,7 +6,12 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from server.auth.middleware import current_identity
-from server.automations.base import operator_triggered, validate_config, work_class_of
+from server.automations.base import (
+    operator_triggered,
+    retired_config_keys_of,
+    validate_config,
+    work_class_of,
+)
 from server.automations.context import AutomationContext
 from server.automations.engine_policy import policy_for
 from server.automations.registry import registry
@@ -172,8 +177,11 @@ async def patch_automation(automation_id: str, body: PatchBody,
             # Validated against the ENGINE-AWARE schema: an origin with no Codex
             # acceptance evidence offers no `engine` field, so `{"engine": ...}`
             # lands here as an unknown key and 422s. That is the enforcement —
-            # not a special case downstream (Phase 7, Task 7.1).
-            row.config = validate_config(registry.schema_for(automation_id), body.config)
+            # not a special case downstream (Phase 7, Task 7.1). Keys the origin
+            # RETIRED are dropped instead of 422'd, so a client echoing back the
+            # config it was served before a field was removed still saves.
+            row.config = validate_config(registry.schema_for(automation_id), body.config,
+                                         retired=retired_config_keys_of(automation))
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
     if body.schedule is not None:
