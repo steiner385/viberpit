@@ -433,6 +433,83 @@ def _resolve_dep_states(refs: list[str], *, gh_run: GhRun) -> dict[str, str]:
 
 
 # --------------------------------------------------------------------------- #
+# Pre-dispatch live re-verification (spec 003 §7a safety net)                  #
+# --------------------------------------------------------------------------- #
+
+def verify_ready_live(refs: list[str], *, gh_run: GhRun = gitrepos._run_gh) -> bool | None:
+    """Re-check a batch's issues against live GitHub right before the claim.
+
+    The runner picks from the board mirror, which can lag GitHub by a sync
+    interval — an issue closed, assigned, or newly blocked in that window would
+    otherwise be claimed and a session spawned on stale work. One aliased query
+    per owner (``r<i>`` per repo, ``i<n>`` per issue; each owner's own App token,
+    never one owner's token against another's repo — it would 404).
+
+    Returns ``True`` only when EVERY ref is ``OPEN``, has no assignee and no
+    ``OPEN`` node in ``blockedBy``; ``False`` as soon as one is not; ``None`` on
+    any transport/parse failure, a malformed ref, or a ref the response does not
+    resolve (GitHub returns ``null`` for an alias it cannot serve). Spec 003 §10:
+    the check FAILS CLOSED — the caller treats ``None`` exactly like ``False``.
+    Deliberately not built on :func:`_graphql_per_owner`, which skips a failed
+    owner and would turn "unknown" into "no failing issue found".
+    """
+    by_repo: dict[str, list[str]] = {}
+    for ref in refs:
+        repo, number = _split_ref(ref)
+        if not repo or not number.isdigit():
+            log.warning("backlog_github.verify_ready_malformed_ref ref=%s", ref)
+            return None
+        by_repo.setdefault(repo, []).append(number)
+    if not by_repo:
+        return None
+
+    for owner, owner_repos in _group_repos_by_owner(list(by_repo)):
+        parts = ["query {"]
+        for i, repo in enumerate(owner_repos):
+            _owner, _, name = repo.partition("/")
+            lookups = " ".join(
+                f"i{n}: issue(number: {n}) {{ state assignees(first: 1) {{ totalCount }} "
+                "blockedBy(first: 50) { nodes { state } } }"
+                for n in by_repo[repo])
+            parts.append(
+                f"r{i}: repository(owner: {json.dumps(_owner)}, name: {json.dumps(name)}) "
+                f"{{ {lookups} }}")
+        parts.append("}")
+        query = "\n".join(parts)
+        proc = gh_run(["api", "graphql", "-f", f"query={query}"],
+                      token=gitrepos.app_token_for_owner(owner))
+        if getattr(proc, "returncode", 1) != 0:
+            log.warning("backlog_github.verify_ready_failed owner=%s err=%s",
+                        owner, (getattr(proc, "stderr", "") or "").strip())
+            return None
+        try:
+            data = json.loads(getattr(proc, "stdout", "") or "{}").get("data")
+        except (json.JSONDecodeError, AttributeError):
+            log.warning("backlog_github.verify_ready_unparseable owner=%s", owner,
+                        exc_info=True)
+            return None
+        if not isinstance(data, dict):
+            return None
+        for i, repo in enumerate(owner_repos):
+            repo_obj = data.get(f"r{i}")
+            if not isinstance(repo_obj, dict):
+                return None
+            for n in by_repo[repo]:
+                issue = repo_obj.get(f"i{n}")
+                if not isinstance(issue, dict):
+                    log.warning("backlog_github.verify_ready_unresolved ref=%s#%s", repo, n)
+                    return None
+                if issue.get("state") != "OPEN":
+                    return False
+                if (issue.get("assignees") or {}).get("totalCount", 0):
+                    return False
+                blockers = (issue.get("blockedBy") or {}).get("nodes") or []
+                if any(isinstance(b, dict) and b.get("state") == "OPEN" for b in blockers):
+                    return False
+    return True
+
+
+# --------------------------------------------------------------------------- #
 # Cross-reference PR lookup                                                    #
 # --------------------------------------------------------------------------- #
 

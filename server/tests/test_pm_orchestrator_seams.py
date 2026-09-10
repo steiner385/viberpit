@@ -568,3 +568,25 @@ async def test_diff_map_spawn_does_not_schedule_critic(db_env):
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
         await orch.pm_onboard_spawn_map("ccswitch", scope="diff", suggestion="x")
     assert scheduled == []   # drift path never chains a critic
+
+
+@pytest.mark.asyncio
+async def test_backlog_verify_ready_seam_threads_batch_issues_and_gh_run():
+    """The runner's live re-check (spec 003 §7a safety net) must run the real
+    ``verify_ready_live`` over the WHOLE batch with the orchestrator's ``gh``
+    seam, off the event loop, and pass its tri-state answer through unchanged
+    (``None`` stays ``None`` — the loop is what fails closed on it)."""
+    from server.automations.backlog_selection import Batch
+    orch = _bare_orch()
+    sentinel_gh = object()
+    orch._gh_run = sentinel_gh
+    seen: list = []
+
+    def fake_verify(refs, *, gh_run):
+        seen.append((list(refs), gh_run))
+        return None
+
+    batch = Batch(primary="o/r#1", issues=["o/r#1", "o/r#2"], repo="o/r")
+    with patch("server.automations.backlog_github.verify_ready_live", fake_verify):
+        assert await orch._backlog_verify_ready(batch) is None
+    assert seen == [(["o/r#1", "o/r#2"], sentinel_gh)]

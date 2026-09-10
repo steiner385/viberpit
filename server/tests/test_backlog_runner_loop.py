@@ -54,7 +54,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
                pr_status=None, pr_doctor_active=True, claim_result=True,
                candidate_count=None, blocked_count=0, heal_orphans_result=None,
                refresh_groups=None, spawn=None, close_out_result=None,
-               credential_alerts=None):
+               credential_alerts=None, verify_ready=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .claims /
@@ -157,6 +157,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
         heal_orphans=heal_orphans if heal_orphans_result is not None else None,
         refresh_groups=refresh_groups,
         credential_alerts=credential_alerts,
+        verify_ready=verify_ready,
     )
     return loop, rec, ctx
 
@@ -852,6 +853,154 @@ def test_handed_off_row_with_no_session_id_is_not_reconciled_away(tmp_path):
         assert rec.reconciles, "reconcile seam should have been called"
         _claimed, live = rec.reconciles[-1]
         assert "r#1" in live, "handed_off row must be carried as live, not dangled"
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# Pre-dispatch live re-verification (spec 003 §7a safety net, fails closed)    #
+# --------------------------------------------------------------------------- #
+
+async def _live_check_results() -> list[str]:
+    """``detail.result`` of every ``skipped_live_check`` event, oldest first
+    (``ctx.list_events`` does not surface ``detail``)."""
+    from sqlalchemy import select
+    from server.db.models import AutomationEvent
+    async with db_session() as db:
+        rows = (await db.execute(select(AutomationEvent).where(
+            AutomationEvent.kind == "skipped_live_check").order_by(
+            AutomationEvent.id))).scalars().all()
+    return [(r.detail or {})["result"] for r in rows]
+
+
+def _scripted_verify(results: list):
+    """A ``verify_ready`` seam that answers from *results* in order and records
+    the batches it was asked about."""
+    asked: list = []
+
+    async def verify_ready(batch):
+        asked.append(batch)
+        return results.pop(0)
+
+    verify_ready.asked = asked  # type: ignore[attr-defined]
+    return verify_ready
+
+
+def test_live_check_failure_skips_backs_off_and_retries_after_cooldown(tmp_path):
+    """``None`` (transport/parse failure) is NOT "ready": no claim, no spawn,
+    one ``skipped_live_check`` event, and the target cools down exactly like a
+    failed spawn — the next tick must not re-check it until the backoff expires."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'd.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        clk = FakeClock()
+        verify = _scripted_verify([None, True])
+        loop, rec, ctx = build_loop(
+            clock=clk, verify_ready=verify,
+            candidates=[batch("o/r#7"), batch("o/r#7"), batch("o/r#7")])
+        await loop.tick()
+        assert rec.claims == [] and rec.spawns == []
+        assert await _live_check_results() == ["check_failed"]
+        assert "o/r#7" in loop._spawn_backoff
+        # Cooling down: the same top pick is handed back, gated before any
+        # second live check, and nothing spawns.
+        await loop.tick()
+        assert rec.spawns == [] and len(verify.asked) == 1
+        # Cooldown over → re-checked live, now ready → claimed and spawned.
+        clk.advance(3600)
+        await loop.tick()
+        assert len(verify.asked) == 2
+        assert [b.primary for b in rec.claims] == ["o/r#7"]
+        assert len(rec.spawns) == 1
+        assert "o/r#7" not in loop._spawn_backoff
+
+    asyncio.run(run())
+
+
+def test_live_check_not_ready_skips_with_not_ready_result(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'd.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(verify_ready=_scripted_verify([False]),
+                                    candidates=[batch("o/r#7")])
+        await loop.tick()
+        assert rec.claims == [] and rec.spawns == []
+        assert await _live_check_results() == ["not_ready"]
+        assert "o/r#7" in loop._spawn_backoff
+
+    asyncio.run(run())
+
+
+def test_live_check_gates_propose_mode_claims_too(tmp_path):
+    """Propose mode claims (labels) before the user tap — a stale pick must not
+    be claimed there either."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'd.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(mode="propose",
+                                    verify_ready=_scripted_verify([False]),
+                                    candidates=[batch("o/r#7")])
+        await loop.tick()
+        assert rec.claims == []
+        assert await ctx.get_target_state("o/r#7") == {}
+        assert len(await ctx.list_events(kind="skipped_live_check")) == 1
+
+    asyncio.run(run())
+
+
+def test_live_check_seam_raising_is_treated_as_check_failed(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'd.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+
+        async def verify_ready(_batch):
+            raise RuntimeError("gh exploded")
+
+        loop, rec, ctx = build_loop(verify_ready=verify_ready,
+                                    candidates=[batch("o/r#7")])
+        await loop.tick()
+        assert rec.claims == [] and rec.spawns == []
+        assert await _live_check_results() == ["check_failed"]
+
+    asyncio.run(run())
+
+
+def test_live_check_true_proceeds_to_claim_and_spawn(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'd.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        verify = _scripted_verify([True])
+        loop, rec, ctx = build_loop(verify_ready=verify, candidates=[batch("o/r#7")])
+        await loop.tick()
+        assert [b.primary for b in verify.asked] == ["o/r#7"]
+        assert [b.primary for b in rec.claims] == ["o/r#7"]
+        assert len(rec.spawns) == 1
+        assert await ctx.list_events(kind="skipped_live_check") == []
+
+    asyncio.run(run())
+
+
+def test_live_check_absent_seam_keeps_legacy_behaviour(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'd.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(candidates=[batch("o/r#7")])
+        await loop.tick()
+        assert [b.primary for b in rec.claims] == ["o/r#7"]
+        assert len(rec.spawns) == 1
+        assert await ctx.list_events(kind="skipped_live_check") == []
 
     asyncio.run(run())
 

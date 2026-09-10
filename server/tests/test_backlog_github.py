@@ -21,6 +21,7 @@ from server.automations.backlog_github import (
     heal_orphan_claims,
     reconcile_dangling,
     unclaim_batch,
+    verify_ready_live,
 )
 from server.automations.backlog_selection import Batch
 from server.tests.fakes.fake_backlog import FakeGh
@@ -592,6 +593,107 @@ def test_query_candidates_blocked_out_collects_skips():
     out = query_candidates(_DEP_CFG, gh_run=gh, blocked_out=blocked_out)
     assert [c["ref"] for c in out] == ["o/r#12"]
     assert blocked_out == [{"ref": "o/r#7", "blockers": ["o/r#3"]}]
+
+
+# --------------------------------------------------------------------------- #
+# verify_ready_live — spec 003 §7a safety net, fails closed (§10)              #
+# --------------------------------------------------------------------------- #
+
+def _ready_issue(*, state: str = "OPEN", assignees: int = 0,
+                 blockers: tuple[str, ...] = ()) -> dict:
+    return {"state": state, "assignees": {"totalCount": assignees},
+            "blockedBy": {"nodes": [{"state": s} for s in blockers]}}
+
+
+def _verify_payload(repos: dict[str, dict[str, dict]]) -> str:
+    """``{"o/r": {"5": issue_node, ...}}`` → the aliased response body
+    ``verify_ready_live`` expects (``r<i>`` per repo, ``i<n>`` per issue)."""
+    data = {}
+    for i, (_repo, issues) in enumerate(repos.items()):
+        data[f"r{i}"] = {f"i{n}": node for n, node in issues.items()}
+    return json.dumps({"data": data})
+
+
+def test_verify_ready_live_true_when_every_issue_is_open_unassigned_unblocked():
+    gh = FakeGh({("api", "graphql"): _proc(stdout=_verify_payload(
+        {"o/r": {"5": _ready_issue(blockers=("CLOSED",)), "6": _ready_issue()}}))})
+    with _app_tokens():
+        assert verify_ready_live(["o/r#5", "o/r#6"], gh_run=gh) is True
+    assert len(gh.calls) == 1, "one query per owner"
+    query = next(a for a in gh.calls[0] if a.startswith("query="))
+    assert "i5: issue(number: 5)" in query and "i6: issue(number: 6)" in query
+    assert "blockedBy(first: 50)" in query and "assignees(first: 1)" in query
+    assert gh.tokens == ["tok-o"]
+
+
+def test_verify_ready_live_false_on_open_blocker():
+    gh = FakeGh({("api", "graphql"): _proc(stdout=_verify_payload(
+        {"o/r": {"5": _ready_issue(blockers=("CLOSED", "OPEN"))}}))})
+    assert verify_ready_live(["o/r#5"], gh_run=gh) is False
+
+
+def test_verify_ready_live_false_on_assignee():
+    gh = FakeGh({("api", "graphql"): _proc(stdout=_verify_payload(
+        {"o/r": {"5": _ready_issue(assignees=1)}}))})
+    assert verify_ready_live(["o/r#5"], gh_run=gh) is False
+
+
+def test_verify_ready_live_false_when_issue_no_longer_open():
+    gh = FakeGh({("api", "graphql"): _proc(stdout=_verify_payload(
+        {"o/r": {"5": _ready_issue(state="CLOSED")}}))})
+    assert verify_ready_live(["o/r#5"], gh_run=gh) is False
+
+
+def test_verify_ready_live_none_on_gh_failure():
+    gh = FakeGh({("api", "graphql"): _proc(returncode=1, stderr="boom")})
+    assert verify_ready_live(["o/r#5"], gh_run=gh) is None
+
+
+def test_verify_ready_live_none_on_unparseable_payload():
+    gh = FakeGh({("api", "graphql"): _proc(stdout="<html>rate limited</html>")})
+    assert verify_ready_live(["o/r#5"], gh_run=gh) is None
+
+
+def test_verify_ready_live_none_when_a_ref_is_missing_from_the_response():
+    # GitHub returns ``null`` for an alias it could not resolve (deleted or
+    # transferred issue, permissions) — that is not "ready", it is "unknown".
+    gh = FakeGh({("api", "graphql"): _proc(stdout=_verify_payload(
+        {"o/r": {"5": _ready_issue(), "6": None}}))})  # type: ignore[dict-item]
+    assert verify_ready_live(["o/r#5", "o/r#6"], gh_run=gh) is None
+
+
+def test_verify_ready_live_none_when_batch_is_empty_or_malformed():
+    gh = FakeGh()
+    assert verify_ready_live([], gh_run=gh) is None
+    assert verify_ready_live(["not-a-ref"], gh_run=gh) is None
+    assert gh.calls == []
+
+
+def test_verify_ready_live_consults_every_owner_with_its_own_token():
+    """Refs across two owners → one call per owner with that owner's token;
+    a not-ready issue under EITHER owner fails the whole batch."""
+    class ByOwner:
+        def __init__(self, ready_other: bool):
+            self.calls: list[list[str]] = []
+            self.tokens: list[str | None] = []
+            self._ready_other = ready_other
+
+        def __call__(self, args, token=None):
+            self.calls.append(list(args))
+            self.tokens.append(token)
+            query = next(a for a in args if a.startswith("query="))
+            if 'owner: "acme"' in query:
+                return _proc(stdout=_verify_payload({"acme/r1": {"1": _ready_issue()}}))
+            node = _ready_issue() if self._ready_other else _ready_issue(assignees=1)
+            return _proc(stdout=_verify_payload({"other/r2": {"2": node}}))
+
+    with _app_tokens():
+        gh = ByOwner(ready_other=True)
+        assert verify_ready_live(["acme/r1#1", "other/r2#2"], gh_run=gh) is True
+        assert len(gh.calls) == 2
+        assert set(gh.tokens) == {"tok-acme", "tok-other"}
+        gh = ByOwner(ready_other=False)
+        assert verify_ready_live(["acme/r1#1", "other/r2#2"], gh_run=gh) is False
 
 
 # --------------------------------------------------------------------------- #

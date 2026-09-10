@@ -243,6 +243,12 @@ class BacklogRunner:
 
 # Injected seam type aliases (the exact contract Plan B implements).
 SelectBatch = Callable[[dict], Awaitable["Batch | None"]]
+# Spec 003 §7a safety net: re-check the selected batch's issues against live
+# GitHub right before the claim (the mirror the queue ranks from can lag GitHub
+# by a sync interval). ``True`` = every issue still open, unassigned, unblocked;
+# ``False`` = at least one is not; ``None`` = the check itself failed. §10: the
+# loop treats ``None`` like ``False`` (fails closed) — never "ready".
+VerifyReady = Callable[["Batch"], Awaitable["bool | None"]]
 Claim = Callable[["Batch"], Awaitable[bool]]
 Spawn = Callable[["Batch", str], Awaitable[Any]]
 CountInFlight = Callable[[], Awaitable[int]]
@@ -359,9 +365,11 @@ class BacklogRunnerLoop:
         heal_orphans: HealOrphans | None = None,
         refresh_groups: RefreshGroups | None = None,
         credential_alerts: CredentialAlerts | None = None,
+        verify_ready: VerifyReady | None = None,
     ) -> None:
         self._ctx = ctx
         self._select_batch = select_batch          # Plan B: -> Batch | None
+        self._verify_ready = verify_ready           # (batch) -> bool | None; None seam = no check
         self._claim = claim                         # Plan B: (batch) -> bool
         self._spawn = spawn                         # (batch, account) -> SessionRecord
         self._count_in_flight = count_in_flight     # DB: origin==id, status!=ended
@@ -647,6 +655,34 @@ class BacklogRunnerLoop:
                 "info", f"group plan refreshed — {n} group(s) planned",
                 kind="groups_refreshed", detail={"groups": n})
 
+    async def _live_check(self, batch: "Batch") -> bool:
+        """Spec 003 §7a safety net, before ANY claim (propose mode claims too):
+        re-verify the batch live. Anything but ``True`` — not ready, the check
+        failed, the seam raised — is a skip (§10: fails closed). The target
+        cools down on the same schedule as a failed spawn so a persistently
+        unverifiable pick cannot spin the loop; a later successful spawn clears
+        the entry as usual."""
+        assert self._verify_ready is not None
+        try:
+            ok = await self._verify_ready(batch)
+        except Exception:
+            log.warning("backlog_runner.live_check_raised target=%s", batch.primary,
+                        exc_info=True)
+            ok = None
+        if ok is True:
+            return True
+        result = "not_ready" if ok is False else "check_failed"
+        fails = self._spawn_backoff.get(batch.primary, (0, 0.0))[0] + 1
+        delay = _spawn_backoff_delay(fails)
+        self._spawn_backoff[batch.primary] = (fails, self._clock() + delay)
+        await self._ctx.emit(
+            "info" if ok is False else "warn",
+            f"skipped {batch.primary}: live check {result.replace('_', ' ')} "
+            f"(retry in {int(delay)}s)",
+            kind="skipped_live_check", target=batch.primary,
+            detail={"result": result, "issues": batch.issues})
+        return False
+
     async def _refill(self, mode: str, config: dict) -> None:
         if self._spawn_circuit_until is not None:
             if self._clock() < self._spawn_circuit_until:
@@ -686,6 +722,10 @@ class BacklogRunnerLoop:
             st = await self._ctx.get_target_state(batch.primary)
             if st.get("gave_up"):
                 continue
+            if self._verify_ready is not None and not await self._live_check(batch):
+                # break, not continue — same reason as the backoff gate above:
+                # select would hand us this batch straight back.
+                break
             if mode == "propose":
                 # RECORDS-BEFORE-LABELS: write the durable claim BEFORE the gh
                 # label write so a crash after the label lands still leaves a

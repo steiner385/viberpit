@@ -988,6 +988,7 @@ class SessionOrchestrator:
             heal_orphans=self._backlog_heal_orphans,
             refresh_groups=self._backlog_refresh_groups,
             credential_alerts=self._backlog_credential_alerts,
+            verify_ready=self._backlog_verify_ready,
         )
         self._backlog_task: asyncio.Task | None = None
         # The last ranked candidate pool ``_backlog_query_queue`` produced, kept so
@@ -5155,6 +5156,16 @@ class SessionOrchestrator:
                    f"an implementation session is in progress.")
         return await asyncio.to_thread(
             backlog_github.claim_batch, batch, gh_run=self._gh_run, comment=comment)
+
+    async def _backlog_verify_ready(self, batch) -> "bool | None":
+        """Spec 003 §7a safety net: the queue ranks from the board mirror, which
+        can lag GitHub by a sync interval, so the selected batch is re-verified
+        live (open, unassigned, unblocked) immediately before the claim. Fails
+        closed (§10): ``None`` from a transport/parse failure is a skip, never a
+        go. Off the event loop like every other gh call."""
+        from server.automations import backlog_github
+        return await asyncio.to_thread(
+            backlog_github.verify_ready_live, list(batch.issues), gh_run=self._gh_run)
 
     async def _backlog_batch_for(self, target: str):
         """Reconstruct the claimed Batch for *target* from its durable state
