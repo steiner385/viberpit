@@ -5361,18 +5361,16 @@ class SessionOrchestrator:
     async def backlog_runner_implement_core(self, primary: str) -> str:
         """Propose-tap: claim (if needed) + spawn the batch for *primary*.
 
-        Re-queries the current label-gated candidate set, pins a batch on
-        *primary*, claims it (unless already claimed), resolves a healthy account,
-        and spawns the de-duped runner session. Returns a status string:
-        ``"spawned"`` / ``"unknown"`` (not a current candidate) /
-        ``"claim_failed"`` / ``"no_account"``."""
-        from server.automations.backlog_github import query_candidates
+        Re-reads the current priority queue, pins a batch on *primary*, claims it
+        (unless already claimed), resolves a healthy account, and spawns the
+        de-duped runner session. Returns a status string: ``"spawned"`` /
+        ``"unknown"`` (not a current candidate) / ``"claim_failed"`` /
+        ``"no_account"``."""
         from server.automations.backlog_selection import Batch
         _mode, config = await self._backlog_read_config()
-        # Query the current candidate set and pin the batch on the requested
-        # primary (the tap targets one issue explicitly; no re-ranking needed).
-        candidates = await asyncio.to_thread(
-            query_candidates, config, gh_run=self._gh_run)
+        # Read the current queue and pin the batch on the requested primary (the
+        # tap targets one issue explicitly; no re-ranking needed).
+        candidates = await self._backlog_query_queue(config)
         by_ref = {c["ref"]: c for c in candidates}
         if primary not in by_ref:
             return "unknown"
@@ -5430,10 +5428,11 @@ class SessionOrchestrator:
         return "spawned"
 
     async def backlog_candidates(self) -> list[dict]:
-        """Current label-gated backlog candidate dicts ({ref, repo, title, url})."""
-        from server.automations.backlog_github import query_candidates
+        """The runner's current candidate pool, ranked — what the manual-dispatch
+        picker offers. Same queue read the loop selects from, so the picker can
+        never offer work the runner itself would skip."""
         _mode, config = await self._backlog_read_config()
-        return await asyncio.to_thread(query_candidates, config, gh_run=self._gh_run)
+        return await self._backlog_query_queue(config)
 
     async def backlog_runner_dispatch(self, refs: list[str]) -> dict:
         """Manual dispatch: claim + spawn a batch for *refs*.
@@ -5442,14 +5441,12 @@ class SessionOrchestrator:
         require refs to be in the current candidate set — picker state may lag
         by seconds and blocking an explicit user request is worse than a missing
         title. Returns ``{"status": ..., "session_id": ..., "session_name": ...}``."""
-        from server.automations.backlog_github import query_candidates
         from server.automations.backlog_selection import Batch
         if not refs:
             return {"status": "no_refs", "session_id": None, "session_name": None}
         primary = refs[0]
         _mode, config = await self._backlog_read_config()
-        candidates = await asyncio.to_thread(
-            query_candidates, config, gh_run=self._gh_run)
+        candidates = await self._backlog_query_queue(config)
         by_ref = {c["ref"]: c for c in candidates}
         repo = by_ref.get(primary, {}).get("repo") or primary.split("#")[0]
         titles = {r: by_ref[r]["title"]

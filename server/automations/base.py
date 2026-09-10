@@ -208,11 +208,14 @@ class Automation(Protocol):
     #: human. Read only through ``work_class_of`` (defaults to development).
     work_class: str
     config_schema: ConfigSchema
-    #: Keys this origin's schema USED to have and deliberately dropped. Stored
-    #: rows outlive a schema change, and ``validate_config`` rejects unknown
-    #: keys — so without this list removing a field silently resets every
-    #: existing row to defaults. Read only through ``retired_config_keys_of``.
-    retired_config_keys: tuple[str, ...]
+    #: OPTIONAL sibling of ``config_schema``, declared by an automation as
+    #: ``retired_config_keys: tuple[str, ...]``: keys its schema USED to have and
+    #: deliberately dropped. Stored rows outlive a schema change and
+    #: ``validate_config`` rejects unknown keys, so without the list, removing a
+    #: field silently resets every existing row to defaults. Not a member of this
+    #: Protocol — a declared member is mandatory for every implementer, and
+    #: almost none has ever retired a field; ``retired_config_keys_of`` above is
+    #: the accessor and answers ``()`` for those.
     #: The audited agent-engine ceiling for this origin (Phase 7, Task 7.1).
     #: Typed loosely here because ``engine_policy`` imports this module for
     #: ``ConfigField``; ``server.automations.engine_policy.policy_for`` is the

@@ -78,6 +78,16 @@ PR linkage, never on labels alone.
 - Backlog runner (`backlog_runner.py`) refills slots under a single lock by
   select → claim → spawn, and sweeps for merged PRs (close-out), handoff readiness (free the
   slot once auto-merge is armed), and terminal sessions (charge an attempt, give up at max).
+  Candidates come from the **global priority queue** over the mirrored Projects v2 boards
+  (spec 003 §7a, `server/pm/queue.py`) — the same ranking `GET /api/pm/queue` renders, so
+  what the operator sees is what agents do next. It is scoped by `enabled_repos` (empty =
+  every onboarded product), gated by `queue_min_status` (`Ready`, the safe default, or
+  `Backlog` to reach untriaged items), dependency-gated from the compiled graph
+  (`respect_dependencies`; native blocked-by edges, `Depends on #N` body references and epic
+  list order), and the top pick is re-verified against live GitHub immediately before the
+  claim — that check **fails closed** (§10), so a mirror lagging reality costs a tick, never
+  a session spawned on stale work. The old `eligible_label` gate is retired: board status,
+  not a label, says what is workable.
   Grouping is a background Sonnet optimizer (#610) persisted in `backlog_groups`; selection
   ordering supports balanced / priority / weighted / concurrency-cap strategies (#773) for
   per-repo fairness (#771). Claims are atomic `in-progress` labels with rollback on partial

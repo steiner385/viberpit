@@ -305,7 +305,8 @@ async def pr_doctor_consolidate(body: ConsolidateBody, request: Request,
 @router.get("/backlog-runner/candidates")
 async def backlog_runner_candidates(request: Request,
                                     _identity: str = Depends(current_identity)) -> dict:
-    """Current eligible (unclaimed, open, label-gated) issues for manual dispatch."""
+    """The runner's current candidate pool (the ranked priority queue, unclaimed)
+    for manual dispatch."""
     _automation_or_404("backlog-runner")
     orch = request.app.state.sessions
     candidates = await orch.backlog_candidates()

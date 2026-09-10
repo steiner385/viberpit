@@ -102,9 +102,9 @@ def test_an_engine_capable_automation_reads_its_stored_config_whole(tmp_path):
     row and silently degrades to pure defaults.
 
     That is not a theoretical drift: it took the backlog runner down for two days. Defaults
-    mean ``enabled_repos: []``, and ``query_candidates`` returns ``[]`` on that before it
-    ever shells ``gh`` — so the card read "0 eligible" over a 156-issue backlog, with no
-    failing log line anywhere, while the row in the UI still showed 14 repos.
+    mean ``enabled_repos: []``, which scopes the candidate query to nothing — so the card
+    read "0 eligible" over a 156-issue backlog, with no failing log line anywhere, while
+    the row in the UI still showed 14 repos.
     """
     async def run():
         await _init_db(tmp_path)

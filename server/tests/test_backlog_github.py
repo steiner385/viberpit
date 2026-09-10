@@ -1,4 +1,5 @@
-"""GitHub I/O for the Backlog Runner — candidate query + atomic claim/unclaim/reconcile.
+"""GitHub I/O for the Backlog Runner — pre-dispatch verification, atomic
+claim/unclaim/reconcile, and the per-owner auth routing they share.
 
 Every gh call is routed through the injected ``gh_run`` seam, so these tests use
 ``FakeGh`` and never touch the network.
@@ -8,7 +9,6 @@ from __future__ import annotations
 import contextlib
 import json
 import subprocess
-from datetime import datetime, timezone
 from typing import Callable
 
 from ccswitch import gitrepos
@@ -16,7 +16,6 @@ from server.automations.backlog_github import (
     claim_batch,
     ensure_claim_labels,
     label_needs_human,
-    query_candidates,
     query_claimed_refs,
     heal_orphan_claims,
     reconcile_dangling,
@@ -50,295 +49,8 @@ def _app_tokens(mapping: dict[str, str] | None = None):
 
 
 # --------------------------------------------------------------------------- #
-# query_candidates                                                             #
+# _graphql_per_owner — one call per owner, per-owner failure isolation          #
 # --------------------------------------------------------------------------- #
-
-def _graphql_stdout(nodes: list[dict]) -> str:
-    return json.dumps({"data": {"issues": {"nodes": nodes}}})
-
-
-def test_query_candidates_builds_filtered_query_and_parses():
-    nodes = [
-        {"number": 7, "title": "Fix login", "url": "https://github.com/o/r/issues/7",
-         "repository": {"nameWithOwner": "o/r"}},
-        {"number": 12, "title": "Add search", "url": "https://github.com/o/r/issues/12",
-         "repository": {"nameWithOwner": "o/r"}},
-    ]
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
-    config = {"enabled_repos": ["o/r"], "eligible_label": "ready"}
-
-    out = query_candidates(config, gh_run=fake)
-
-    # The graphql read happened.
-    assert fake.calls, "expected a gh api graphql call"
-    argv = fake.calls[0]
-    assert argv[:2] == ["api", "graphql"]
-    query = next(a for a in argv if a.startswith("query="))
-    # The selection fetches url so the candidate can link out (#467).
-    assert "url" in query
-    # Carries the eligible label and excludes already-claimed / needs-human issues.
-    assert "label:ready" in query or 'label:"ready"' in query
-    assert "-label:in-progress" in query or '-label:"in-progress"' in query
-    assert "-label:needs-human" in query or '-label:"needs-human"' in query
-    # Scoped to the enabled repo, open, unassigned issues.
-    assert "repo:o/r" in query
-    assert "is:open" in query
-    assert "no:assignee" in query
-
-    # Parsed into the candidate shape the grouping optimizer consumes.
-    assert out == [
-        {"ref": "o/r#7", "number": 7, "repo": "o/r", "title": "Fix login",
-         "body": None, "url": "https://github.com/o/r/issues/7"},
-        {"ref": "o/r#12", "number": 12, "repo": "o/r", "title": "Add search",
-         "body": None, "url": "https://github.com/o/r/issues/12"},
-    ]
-
-
-def test_query_candidates_synthesizes_url_when_api_omits_it():
-    """If the GraphQL node lacks a url, fall back to the canonical issue path so
-    the ActionableItem still links out (#467)."""
-    nodes = [{"number": 9, "title": "No url", "repository": {"nameWithOwner": "o/r"}}]
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
-    out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": "ready"}, gh_run=fake)
-    assert out == [{"ref": "o/r#9", "number": 9, "repo": "o/r", "title": "No url",
-                    "body": None, "url": "https://github.com/o/r/issues/9"}]
-
-
-def test_query_candidates_skips_tracking_issue_with_open_sub_issues():
-    """An issue with OPEN sub-issues is a tracking epic, not implementable work:
-    its sub-issues ARE the work (spec 003 D1). The runner must never claim it
-    (#997 was claimed and then closed under ten open children). One whose
-    sub-issues are all done is ordinary work again and stays a candidate."""
-    nodes = [
-        {"number": 997, "title": "Epic: rollout", "url": "u997",
-         "repository": {"nameWithOwner": "o/r"},
-         "subIssues": {"nodes": [{"number": 988, "state": "OPEN"},
-                                 {"number": 987, "state": "CLOSED"}]}},
-        {"number": 50, "title": "Old epic, all done", "url": "u50",
-         "repository": {"nameWithOwner": "o/r"},
-         "subIssues": {"nodes": [{"number": 51, "state": "CLOSED"}]}},
-        {"number": 7, "title": "Fix login", "url": "u7",
-         "repository": {"nameWithOwner": "o/r"}},
-    ]
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
-
-    out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": "ready"}, gh_run=fake)
-
-    assert [c["number"] for c in out] == [50, 7]
-    # The candidate's OWN sub-issue states must ride along with the search
-    # (the fragment previously fetched only the parent's list, for ordering).
-    query = next(a for a in fake.calls[0] if a.startswith("query="))
-    assert query.count("subIssues(") >= 2
-
-
-def test_query_candidates_empty_enabled_repos_returns_empty_no_call():
-    fake = FakeGh()
-    out = query_candidates({"enabled_repos": [], "eligible_label": "ready"}, gh_run=fake)
-    assert out == []
-    assert fake.calls == []
-
-
-def test_query_candidates_gh_failure_returns_empty():
-    fake = FakeGh({("api", "graphql"): _proc(returncode=1, stderr="boom")})
-    out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": "ready"}, gh_run=fake)
-    assert out == []
-
-
-def test_query_candidates_blank_label_drops_the_label_gate():
-    """A blank eligible_label means "no label gate" — any open, unassigned issue
-    is a candidate. The query must NOT carry a `label:` qualifier (and must not
-    silently fall back to `ready`), while the other gates stay."""
-    nodes = [{"number": 7, "title": "Fix login", "url": "https://github.com/o/r/issues/7",
-              "repository": {"nameWithOwner": "o/r"}}]
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
-
-    out = query_candidates(
-        {"enabled_repos": ["o/r"], "eligible_label": "", "needs_human_retry_days": 0},
-        gh_run=fake)
-
-    query = next(a for a in fake.calls[0] if a.startswith("query="))
-    assert "label:ready" not in query          # no silent default
-    assert "label:\\\"ready\\\"" not in query
-    # No positive label gate at all (the only label quals are the exclusions).
-    assert "label:in-progress" in query and "label:needs-human" in query
-    assert " label:" not in query.replace("-label:", "")  # no bare `label:<x>` gate
-    # Other gates still present; the issue is still parsed.
-    assert "no:assignee" in query and "is:open" in query
-    assert out == [{"ref": "o/r#7", "number": 7, "repo": "o/r", "title": "Fix login",
-                    "body": None, "url": "https://github.com/o/r/issues/7"}]
-
-
-# --------------------------------------------------------------------------- #
-# needs-human retry pool                                                       #
-# --------------------------------------------------------------------------- #
-
-def _graphql_stdout_with_retry(fresh: list[dict], retry: list[dict]) -> str:
-    return json.dumps({"data": {"issues": {"nodes": fresh}, "retry": {"nodes": retry}}})
-
-
-_NOW = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
-
-
-def test_query_candidates_retry_pool_includes_cooled_needs_human_issues():
-    """With ``needs_human_retry_days`` > 0 the query carries a SECOND search for
-    ``needs-human`` issues untouched since the cutoff (escalation bumps
-    ``updatedAt``, so every give-up re-arms the cooldown). Retry candidates are
-    appended AFTER fresh ones — fresh work always outranks a retry."""
-    fresh = [{"number": 7, "title": "Fresh", "url": "https://github.com/o/r/issues/7",
-              "repository": {"nameWithOwner": "o/r"}}]
-    retry = [{"number": 3, "title": "Cooled", "url": "https://github.com/o/r/issues/3",
-              "repository": {"nameWithOwner": "o/r"}}]
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout_with_retry(fresh, retry))})
-    config = {"enabled_repos": ["o/r"], "eligible_label": "", "needs_human_retry_days": 7}
-
-    out = query_candidates(config, gh_run=fake, now=_NOW)
-
-    query = next(a for a in fake.calls[0] if a.startswith("query="))
-    # The retry search: needs-human ON, still unclaimed/unassigned, cooled off.
-    assert "retry:" in query
-    assert "label:needs-human" in query.replace("-label:needs-human", "")
-    assert "updated:<2026-07-02" in query  # now (2026-07-09) minus 7 days
-    # Both pools parsed; fresh first.
-    assert [c["ref"] for c in out] == ["o/r#7", "o/r#3"]
-
-
-def test_query_candidates_retry_search_keeps_claim_and_assignee_gates():
-    """The retry search must still exclude ``in-progress`` (the claim lock) and
-    assigned issues, and honor the eligible-label gate when one is set."""
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout_with_retry([], []))})
-    config = {"enabled_repos": ["o/r"], "eligible_label": "ready",
-              "needs_human_retry_days": 7}
-
-    query_candidates(config, gh_run=fake, now=_NOW)
-
-    query = next(a for a in fake.calls[0] if a.startswith("query="))
-    retry_part = query[query.index("retry:"):]
-    assert "-label:in-progress" in retry_part
-    assert "no:assignee" in retry_part
-    assert "label:ready" in retry_part
-
-
-def test_query_candidates_retry_days_zero_disables_retry_pool():
-    """``needs_human_retry_days: 0`` is the opt-out: needs-human stays a
-    permanent handoff and the query carries no retry search."""
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout([]))})
-    config = {"enabled_repos": ["o/r"], "eligible_label": "", "needs_human_retry_days": 0}
-
-    query_candidates(config, gh_run=fake, now=_NOW)
-
-    query = next(a for a in fake.calls[0] if a.startswith("query="))
-    assert "retry:" not in query
-    assert "updated:<" not in query
-
-
-def test_query_candidates_retry_defaults_on_when_key_missing():
-    """A pre-existing stored config has no ``needs_human_retry_days`` key — the
-    schema default (7 days) must apply so deployed runners pick up the retry
-    pool without a config re-save."""
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout_with_retry([], []))})
-    config = {"enabled_repos": ["o/r"], "eligible_label": ""}
-
-    query_candidates(config, gh_run=fake, now=_NOW)
-
-    query = next(a for a in fake.calls[0] if a.startswith("query="))
-    assert "retry:" in query
-    assert "updated:<2026-07-02" in query
-
-
-def test_query_candidates_dedupes_ref_across_pools():
-    """A ref surfacing in both searches (label edited mid-query) must appear once."""
-    dup = {"number": 3, "title": "Dup", "url": "https://github.com/o/r/issues/3",
-           "repository": {"nameWithOwner": "o/r"}}
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout_with_retry([dup], [dup]))})
-    config = {"enabled_repos": ["o/r"], "eligible_label": "", "needs_human_retry_days": 7}
-
-    out = query_candidates(config, gh_run=fake, now=_NOW)
-
-    assert [c["ref"] for c in out] == ["o/r#3"]
-
-
-# --------------------------------------------------------------------------- #
-# bot / meta-issue filtering (#637)                                            #
-# --------------------------------------------------------------------------- #
-
-def test_query_candidates_query_fetches_author_and_labels():
-    """The candidate query must request ``author { login }`` and issue labels so
-    the parse loop can filter out unimplementable bot/meta issues (#637)."""
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout([]))})
-    query_candidates({"enabled_repos": ["o/r"], "eligible_label": "ready"}, gh_run=fake)
-    query = next(a for a in fake.calls[0] if a.startswith("query="))
-    assert "author" in query and "login" in query
-    assert "labels" in query
-
-
-def test_query_candidates_skips_bot_authored_issues():
-    """Issues opened by a bot/app account (login ends in ``[bot]``) are automated
-    meta-tickets a Claude session cannot implement — Renovate's Dependency
-    Dashboard is the motivating case (#637). Filter them out."""
-    nodes = [
-        {"number": 7, "title": "Fix login", "url": "https://github.com/o/r/issues/7",
-         "author": {"login": "alice"}, "repository": {"nameWithOwner": "o/r"}},
-        {"number": 8, "title": "Dependency Dashboard",
-         "url": "https://github.com/o/r/issues/8",
-         "author": {"login": "renovate[bot]"}, "repository": {"nameWithOwner": "o/r"}},
-        {"number": 9, "title": "Bump deps", "url": "https://github.com/o/r/issues/9",
-         "author": {"login": "dependabot[bot]"}, "repository": {"nameWithOwner": "o/r"}},
-    ]
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
-    out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": "ready"}, gh_run=fake)
-    assert [c["ref"] for c in out] == ["o/r#7"]
-
-
-def test_query_candidates_skips_dependency_labels_and_dashboard_title():
-    """Defense in depth: even a human-authored issue is skipped when it carries a
-    dependency-bot label or the canonical ``Dependency Dashboard`` title (#637)."""
-    nodes = [
-        {"number": 1, "title": "Real feature", "url": "https://github.com/o/r/issues/1",
-         "author": {"login": "alice"}, "labels": {"nodes": [{"name": "enhancement"}]},
-         "repository": {"nameWithOwner": "o/r"}},
-        {"number": 2, "title": "Update lockfile", "url": "https://github.com/o/r/issues/2",
-         "author": {"login": "alice"}, "labels": {"nodes": [{"name": "dependencies"}]},
-         "repository": {"nameWithOwner": "o/r"}},
-        {"number": 3, "title": "Renovate config", "url": "https://github.com/o/r/issues/3",
-         "author": {"login": "alice"}, "labels": {"nodes": [{"name": "Renovate"}]},
-         "repository": {"nameWithOwner": "o/r"}},
-        {"number": 4, "title": "  Dependency Dashboard  ",
-         "url": "https://github.com/o/r/issues/4",
-         "author": {"login": "alice"}, "repository": {"nameWithOwner": "o/r"}},
-    ]
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
-    out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": ""}, gh_run=fake)
-    assert [c["ref"] for c in out] == ["o/r#1"]
-
-
-def test_query_candidates_keeps_human_issues_without_author_field():
-    """A node missing the author field (older cache / partial payload) must NOT be
-    dropped — absence of a bot signal means keep it."""
-    nodes = [{"number": 5, "title": "Fix bug", "url": "https://github.com/o/r/issues/5",
-              "repository": {"nameWithOwner": "o/r"}}]
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout(nodes))})
-    out = query_candidates({"enabled_repos": ["o/r"], "eligible_label": "ready"}, gh_run=fake)
-    assert [c["ref"] for c in out] == ["o/r#5"]
-
-
-def test_query_candidates_passes_owner_app_token_single_owner():
-    """When every enabled repo shares one owner, the single gh call carries that
-    owner's installation token (App-authenticated instead of ambient gh)."""
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout([]))})
-    with _app_tokens():
-        query_candidates({"enabled_repos": ["acme/r1", "acme/r2"], "eligible_label": ""},
-                         gh_run=fake)
-    assert fake.calls, "expected a gh api graphql call"
-    assert fake.tokens == ["tok-acme"]
-
-
-def test_query_candidates_no_provider_configured_uses_ambient_auth():
-    """No App configured (the default) → token=None on every call, i.e. current
-    ambient-gh behaviour is byte-for-byte unchanged."""
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout([]))})
-    query_candidates({"enabled_repos": ["acme/r1"], "eligible_label": ""}, gh_run=fake)
-    assert fake.tokens == [None]
-
 
 class OwnerRoutedGh:
     """Routes graphql calls by which owner's repo the query targets, returning a
@@ -346,7 +58,7 @@ class OwnerRoutedGh:
     verify multi-owner grouping issues exactly one call per owner with that
     owner's token, and merges every owner's results."""
 
-    def __init__(self, nodes_by_owner: dict[str, list[dict]], *, data_key: str = "issues"):
+    def __init__(self, nodes_by_owner: dict[str, list[dict]], *, data_key: str = "claimed"):
         self.calls: list[list[str]] = []
         self.tokens: list[str | None] = []
         self._nodes_by_owner = nodes_by_owner
@@ -362,19 +74,16 @@ class OwnerRoutedGh:
         raise AssertionError(f"query did not target a known owner: {query}")
 
 
-def test_query_candidates_groups_by_owner_and_merges_results():
-    """Enabled repos spanning two owners must never send one owner's token
-    against another owner's repo (it would 404) — group by owner, one call per
-    owner, each with that owner's own token, merged into one candidate list."""
+def test_per_owner_grouping_issues_one_call_per_owner_and_merges_results():
+    """Repos spanning two owners must never send one owner's token against
+    another owner's repo (it would 404) — group by owner, one call per owner,
+    each with that owner's own token, merged into one result."""
     gh = OwnerRoutedGh({
-        "acme": [{"number": 1, "title": "acme issue",
-                  "repository": {"nameWithOwner": "acme/r1"}}],
-        "other": [{"number": 2, "title": "other issue",
-                   "repository": {"nameWithOwner": "other/r2"}}],
+        "acme": [{"number": 1, "repository": {"nameWithOwner": "acme/r1"}}],
+        "other": [{"number": 2, "repository": {"nameWithOwner": "other/r2"}}],
     })
     with _app_tokens():
-        out = query_candidates(
-            {"enabled_repos": ["acme/r1", "other/r2"], "eligible_label": ""}, gh_run=gh)
+        out = query_claimed_refs(["acme/r1", "other/r2"], gh_run=gh)
 
     assert len(gh.calls) == 2, "one call per owner, not one call spanning both"
     assert set(gh.tokens) == {"tok-acme", "tok-other"}
@@ -387,62 +96,7 @@ def test_query_candidates_groups_by_owner_and_merges_results():
             assert "repo:other/r2" in query
             assert token == "tok-other"
             assert "repo:acme/r1" not in query
-    assert {c["ref"] for c in out} == {"acme/r1#1", "other/r2#2"}
-
-
-class OwnerFreshRetryGh:
-    """Routes graphql calls by owner, returning that owner's own fresh+retry
-    node sets (both pools, per call) — used to verify that grouping the
-    candidate query by owner (an AUTH decision) never reorders the product
-    invariant that fresh work always outranks a retry."""
-
-    def __init__(self, fresh_retry_by_owner: dict[str, tuple[list[dict], list[dict]]]):
-        self.calls: list[list[str]] = []
-        self._by_owner = fresh_retry_by_owner
-
-    def __call__(self, args, token=None):
-        self.calls.append(list(args))
-        query = next(a for a in args if a.startswith("query="))
-        for owner, (fresh, retry) in self._by_owner.items():
-            if f"repo:{owner}/" in query:
-                return _proc(stdout=_graphql_stdout_with_retry(fresh, retry))
-        raise AssertionError(f"query did not target a known owner: {query}")
-
-
-def test_query_candidates_owner_grouping_keeps_fresh_before_retry_globally():
-    """Regression for the ordering bug: grouping by owner (an AUTH decision)
-    must NOT change scheduling priority. With two owners, each contributing
-    one fresh and one retry item, every fresh item across BOTH owners must
-    precede every retry item in the merged output — never
-    owner1-fresh, owner1-retry, owner2-fresh, owner2-retry, which would let a
-    stale needs-human issue in one owner outrank fresh work in another."""
-    gh = OwnerFreshRetryGh({
-        "acme": (
-            [{"number": 1, "title": "acme fresh",
-              "repository": {"nameWithOwner": "acme/r1"}}],
-            [{"number": 2, "title": "acme retry",
-              "repository": {"nameWithOwner": "acme/r1"}}],
-        ),
-        "other": (
-            [{"number": 3, "title": "other fresh",
-              "repository": {"nameWithOwner": "other/r2"}}],
-            [{"number": 4, "title": "other retry",
-              "repository": {"nameWithOwner": "other/r2"}}],
-        ),
-    })
-    config = {"enabled_repos": ["acme/r1", "other/r2"], "eligible_label": "",
-              "needs_human_retry_days": 7}
-
-    out = query_candidates(config, gh_run=gh, now=_NOW)
-
-    refs = [c["ref"] for c in out]
-    assert set(refs) == {"acme/r1#1", "acme/r1#2", "other/r2#3", "other/r2#4"}
-    fresh_refs = {"acme/r1#1", "other/r2#3"}
-    retry_refs = {"acme/r1#2", "other/r2#4"}
-    last_fresh_index = max(refs.index(r) for r in fresh_refs)
-    first_retry_index = min(refs.index(r) for r in retry_refs)
-    assert last_fresh_index < first_retry_index, (
-        f"a retry item outranked a fresh item across owners: {refs}")
+    assert set(out) == {"acme/r1#1", "other/r2#2"}
 
 
 class OwnerFailureGh:
@@ -452,7 +106,7 @@ class OwnerFailureGh:
     bad owner must skip-and-continue, never blank out the rest)."""
 
     def __init__(self, nodes_by_owner: dict[str, list[dict]], *, failing_owner: str,
-                 data_key: str = "issues"):
+                 data_key: str = "claimed"):
         self.calls: list[list[str]] = []
         self._nodes_by_owner = nodes_by_owner
         self._failing_owner = failing_owner
@@ -469,130 +123,19 @@ class OwnerFailureGh:
         raise AssertionError(f"query did not target a known owner: {query}")
 
 
-def test_query_candidates_one_owner_gh_failure_does_not_blank_others():
+def test_one_owner_gh_failure_does_not_blank_the_other_owners():
     """``_graphql_per_owner`` must tolerate ONE owner's gh call failing while
     other owners succeed: a failing owner is logged and skipped (``continue``),
     not treated as a reason to give up on the whole call (``return []``) —
-    which would silently drop every healthy owner's results too."""
+    which would silently drop every healthy owner's results too. Here that
+    would strand every other owner's claims as untracked orphans."""
     gh = OwnerFailureGh({
-        "other": [{"number": 2, "title": "other issue",
-                   "repository": {"nameWithOwner": "other/r2"}}],
+        "other": [{"number": 2, "repository": {"nameWithOwner": "other/r2"}}],
     }, failing_owner="acme")
     with _app_tokens():
-        out = query_candidates(
-            {"enabled_repos": ["acme/r1", "other/r2"], "eligible_label": ""}, gh_run=gh)
+        out = query_claimed_refs(["acme/r1", "other/r2"], gh_run=gh)
 
-    assert {c["ref"] for c in out} == {"other/r2#2"}
-
-
-# --------------------------------------------------------------------------- #
-# query_candidates — dependency gating (issue readiness)                       #
-# --------------------------------------------------------------------------- #
-
-def _issue(number: int, repo: str = "o/r", **extra) -> dict:
-    return {"number": number, "title": f"t{number}",
-            "url": f"https://github.com/{repo}/issues/{number}",
-            "repository": {"nameWithOwner": repo}, **extra}
-
-
-class DepGh:
-    """Routes the candidate search vs. the dependency-state lookup by query
-    content (the state lookup is the only one using ``issueOrPullRequest``),
-    recording every call so tests can assert whether a lookup happened."""
-
-    def __init__(self, candidates: list[dict],
-                 states: "dict[str, dict] | None" = None, *, states_rc: int = 0):
-        self.calls: list[list[str]] = []
-        self._candidates = candidates
-        self._states = states or {}
-        self._states_rc = states_rc
-
-    def __call__(self, args, token=None):
-        self.calls.append(list(args))
-        query = next(a for a in args if a.startswith("query="))
-        if "issueOrPullRequest" in query:
-            return _proc(stdout=json.dumps({"data": self._states}),
-                         returncode=self._states_rc)
-        return _proc(stdout=_graphql_stdout(self._candidates))
-
-    @property
-    def state_lookups(self) -> int:
-        return sum(1 for c in self.calls
-                   if "issueOrPullRequest" in next(a for a in c if a.startswith("query=")))
-
-
-_DEP_CFG = {"enabled_repos": ["o/r"], "eligible_label": "ready"}
-
-
-def test_query_candidates_query_fetches_dependency_fields():
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_graphql_stdout([]))})
-    query_candidates(_DEP_CFG, gh_run=fake)
-    query = next(a for a in fake.calls[0] if a.startswith("query="))
-    assert "blockedBy" in query
-    assert "parent" in query
-    assert "trackedInIssues" in query
-
-
-def test_query_candidates_drops_natively_blocked_issue_without_lookup():
-    blocked = _issue(7, blockedBy={"nodes": [
-        {"number": 3, "state": "OPEN", "repository": {"nameWithOwner": "o/r"}}]})
-    gh = DepGh([blocked, _issue(12)])
-    out = query_candidates(_DEP_CFG, gh_run=gh)
-    assert [c["ref"] for c in out] == ["o/r#12"]
-    assert gh.state_lookups == 0  # native states arrive inline — no extra call
-
-
-def test_query_candidates_body_dep_closed_is_kept():
-    gh = DepGh([_issue(7, body="Depends on #12")],
-               states={"r0": {"nameWithOwner": "o/r",
-                              "i12": {"number": 12, "state": "CLOSED"}}})
-    out = query_candidates(_DEP_CFG, gh_run=gh)
-    assert [c["ref"] for c in out] == ["o/r#7"]
-    assert gh.state_lookups == 1
-
-
-def test_query_candidates_body_dep_open_is_dropped():
-    gh = DepGh([_issue(7, body="Depends on #12"), _issue(9)],
-               states={"r0": {"nameWithOwner": "o/r",
-                              "i12": {"number": 12, "state": "OPEN"}}})
-    out = query_candidates(_DEP_CFG, gh_run=gh)
-    assert [c["ref"] for c in out] == ["o/r#9"]
-
-
-def test_query_candidates_dep_lookup_failure_fails_closed():
-    """An unresolvable dependency state blocks (order is the point; the sweep
-    retries every tick) — but must never drop unrelated candidates."""
-    gh = DepGh([_issue(7, body="Depends on #12"), _issue(9)], states_rc=1)
-    out = query_candidates(_DEP_CFG, gh_run=gh)
-    assert [c["ref"] for c in out] == ["o/r#9"]
-
-
-def test_query_candidates_dep_in_candidate_pool_blocks_without_lookup():
-    """A body dep that is itself a fetched candidate is open by definition —
-    no state lookup call is spent on it."""
-    gh = DepGh([_issue(7, body="Depends on #12"), _issue(12)])
-    out = query_candidates(_DEP_CFG, gh_run=gh)
-    assert [c["ref"] for c in out] == ["o/r#12"]
-    assert gh.state_lookups == 0
-
-
-def test_query_candidates_respect_dependencies_off_disables_gating():
-    blocked = _issue(7, body="Depends on #12", blockedBy={"nodes": [
-        {"number": 3, "state": "OPEN", "repository": {"nameWithOwner": "o/r"}}]})
-    gh = DepGh([blocked])
-    out = query_candidates({**_DEP_CFG, "respect_dependencies": False}, gh_run=gh)
-    assert [c["ref"] for c in out] == ["o/r#7"]
-    assert gh.state_lookups == 0
-
-
-def test_query_candidates_blocked_out_collects_skips():
-    blocked = _issue(7, blockedBy={"nodes": [
-        {"number": 3, "state": "OPEN", "repository": {"nameWithOwner": "o/r"}}]})
-    gh = DepGh([blocked, _issue(12)])
-    blocked_out: list[dict] = []
-    out = query_candidates(_DEP_CFG, gh_run=gh, blocked_out=blocked_out)
-    assert [c["ref"] for c in out] == ["o/r#12"]
-    assert blocked_out == [{"ref": "o/r#7", "blockers": ["o/r#3"]}]
+    assert set(out) == {"other/r2#2"}
 
 
 # --------------------------------------------------------------------------- #

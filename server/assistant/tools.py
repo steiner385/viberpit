@@ -817,9 +817,10 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.get(f"/api/automations/{_slug(args['id'], field='id')}/sessions")
 
     @spec_tool("list_backlog_candidates",
-               "Issues the backlog runner considers eligible right now — unclaimed, open "
-               "and label-gated — in the order it would pick them. This is what it WOULD "
-               "do next; it dispatches nothing.", {})
+               "Issues the backlog runner considers eligible right now — unclaimed, open, "
+               "unblocked and on the board at or above its minimum status — in the order "
+               "it would pick them. This is what it WOULD do next; it dispatches nothing.",
+               {})
     @guarded
     async def list_backlog_candidates(args: dict[str, Any]) -> Any:
         data = await api.get("/api/automations/backlog-runner/candidates")

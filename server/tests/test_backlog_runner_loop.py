@@ -33,7 +33,6 @@ class FakeClock:
 def make_config(**over) -> dict:
     cfg = {
         "enabled_repos": [],
-        "eligible_label": "ready",
         "max_concurrent": 2,
         "max_spawns_per_day": 10,
         "max_attempts": 2,

@@ -200,9 +200,11 @@ class BacklogRunner:
                          "account's default model."),
         ConfigField(key="respect_dependencies", label="Respect issue dependencies",
                     type="bool", default=True,
-                    help="Skip issues whose dependencies are still open, per the "
-                         "mirrored dependency graph (native blocked-by edges plus "
-                         "'Depends on #N' edges harvested from issue bodies). A "
+                    help="Skip an issue while any of its dependencies is still "
+                         "open. The reconciler compiles native blocked-by "
+                         "relationships, 'Depends on #N' body references and epic "
+                         "list order into one dependency graph; the runner skips "
+                         "an issue while any edge points at an open blocker. A "
                          "blocker whose state is unknown counts as open. Skips are "
                          "counted as 'blocked'; the issue becomes eligible the "
                          "moment its blockers close."),

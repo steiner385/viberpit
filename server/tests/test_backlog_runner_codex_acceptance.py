@@ -353,28 +353,29 @@ def _orch_with_refusing_spawn(monkeypatch):
     return orch, state
 
 
+def _queue_of(monkeypatch, orch, candidates: list[dict]) -> None:
+    """Pin the runner's candidate pool — the priority-queue read both manual
+    entry points resolve repo/title through (spec 003 §7a)."""
+    async def _queue(_config, *, skipped_out=None):
+        return list(candidates)
+
+    monkeypatch.setattr(orch, "_backlog_query_queue", _queue, raising=False)
+
+
 def test_the_propose_tap_reports_a_refusal_instead_of_a_phantom_spawn(monkeypatch):
     """``backlog_runner_implement_core`` returned ``"spawned"`` with a null session
     id, so the dashboard said "Spawned implementation session" for a session that
     does not exist — and the claim row stayed behind holding a slot."""
-    import server.automations.backlog_github as bg
-
     orch, state = _orch_with_refusing_spawn(monkeypatch)
-    monkeypatch.setattr(bg, "query_candidates",
-                        lambda config, *, gh_run: [{"ref": "o/r#1", "repo": "o/r",
-                                                    "title": "one"}])
+    _queue_of(monkeypatch, orch, [{"ref": "o/r#1", "repo": "o/r", "title": "one"}])
     status = asyncio.run(orch.backlog_runner_implement_core("o/r#1"))
     assert status == "refused"
     assert state == {}, "a refused tap must not leave a claim row behind"
 
 
 def test_manual_dispatch_reports_a_refusal_instead_of_a_phantom_spawn(monkeypatch):
-    import server.automations.backlog_github as bg
-
     orch, state = _orch_with_refusing_spawn(monkeypatch)
-    monkeypatch.setattr(bg, "query_candidates",
-                        lambda config, *, gh_run: [{"ref": "o/r#1", "repo": "o/r",
-                                                    "title": "one"}])
+    _queue_of(monkeypatch, orch, [{"ref": "o/r#1", "repo": "o/r", "title": "one"}])
     out = asyncio.run(orch.backlog_runner_dispatch(["o/r#1"]))
     assert out["status"] == "refused"
     assert out["session_id"] is None

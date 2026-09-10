@@ -1,4 +1,12 @@
-"""GitHub I/O for the Backlog Runner — candidate discovery + claim lifecycle.
+"""GitHub I/O for the Backlog Runner — pre-dispatch verification + claim lifecycle.
+
+Candidate DISCOVERY no longer lives here: the runner selects from the global
+priority queue over the mirrored Projects v2 boards (spec 003 §7a,
+``SessionOrchestrator._backlog_query_queue``). What remains is the GitHub side
+of acting on a pick — re-verifying it against live GitHub immediately before the
+claim (:func:`verify_ready_live`, fails closed), taking and releasing the
+``in-progress`` lock, escalating to ``needs-human``, and closing out on a merged
+PR.
 
 Every GitHub call is routed through an injected ``gh_run`` seam (default
 :func:`ccswitch.gitrepos._run_gh`) so tests never hit the network.  The seam is
@@ -15,38 +23,21 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable
 
 from ccswitch import brand, gitrepos
 
-from ..pm.queue import (
-    IN_PROGRESS_LABEL,
-    NEEDS_HUMAN_LABEL,
-    NEEDS_HUMAN_RETRY_DAYS_DEFAULT,
-    SKIP_ISSUE_LABELS,
-    SKIP_ISSUE_TITLES,
-)
+from ..pm.queue import IN_PROGRESS_LABEL, NEEDS_HUMAN_LABEL
 from . import backlog_deps
 
 log = logging.getLogger(__name__)
 
 GhRun = Callable[..., "object"]
 
-# IN_PROGRESS_LABEL, NEEDS_HUMAN_LABEL, SKIP_ISSUE_LABELS, SKIP_ISSUE_TITLES,
-# NEEDS_HUMAN_RETRY_DAYS_DEFAULT moved to server/pm/queue.py (spec 003 Phase C,
-# §7a) — the pure ranking core is the single source of truth for these bot/meta
-# and cooldown signals now that the queue ranks from the mirror. Re-exported
-# here until Task 8 removes the last reader of this module's copy.
-#
-# Issues the runner must never treat as implementable work (#637). A backlog
-# session writes code and opens a PR — but bot/app accounts open automated
-# meta-tickets (Renovate's "Dependency Dashboard", Dependabot bumps) that have
-# nothing to implement, so a spawned session just burns a slot. GitHub suffixes
-# EVERY bot/app account login with ``[bot]`` (``renovate[bot]``,
-# ``dependabot[bot]``, ``github-actions[bot]``, …), so the suffix is the
-# canonical, future-proof author signal. Labels and title are defense-in-depth
-# for the rare human-authored (or login-less) mirror of the same meta-ticket.
+# The claim-lifecycle labels are the only queue constants this module still
+# needs: the bot/meta skip signals (``SKIP_ISSUE_*``) and the needs-human
+# cooldown moved with candidate selection into server/pm/queue.py, which ranks
+# the board mirror (spec 003 §7a) and is their single source of truth.
 
 # Human-gate signals (#784). Linkage (#642) proves a PR *references* an issue;
 # it does NOT prove the PR *did the work*. Two issue classes a merged PR can
@@ -80,10 +71,6 @@ ACTION_ISSUE_PHRASES = (
 )
 # A PR whose diff touches ONLY these is documentation, not implementation.
 DOC_PATH_SUFFIXES = (".md", ".mdx", ".markdown", ".rst", ".txt")
-
-# NEEDS_HUMAN_RETRY_DAYS_DEFAULT (how long an escalated ``needs-human`` issue
-# sits untouched before the runner reconsiders it) also moved to
-# server/pm/queue.py — imported above.
 
 
 # --------------------------------------------------------------------------- #
@@ -148,21 +135,15 @@ def _graphql_per_owner(repos: list[str], build_query: "Callable[[list[str]], str
 
 
 # --------------------------------------------------------------------------- #
-# Candidate query                                                             #
+# Shared issue-node fragment + epic gate                                       #
 # --------------------------------------------------------------------------- #
 
-# ``body`` feeds the grouping optimizer's relatedness analysis (titles alone
-# were what produced over-bundling); it is excerpted before prompting. ``author``
-# and ``labels`` drive the unimplementable-issue filter (:func:`_is_unimplementable`,
-# #637) — the shared fragment fetches them for every issue query at no extra cost.
-# ``blockedBy`` / ``parent`` / ``trackedInIssues`` feed the dependency-readiness
-# gate (:mod:`.backlog_deps`): native blocked-by relationships, sub-issue list
-# order, and task-list epic order all arrive inline with the search, so gating
-# on them costs no extra API call (only free-text ``Depends on #N`` body refs
-# need a follow-up state lookup, batched in :func:`_resolve_dep_states`). The
-# candidate's OWN ``subIssues`` feed the tracking-issue gate
-# (:func:`_open_sub_issue_count`): an issue with open children is an epic, and
-# its children are the work — never the epic itself.
+# The issue-node fragment for this module's issue searches. Its one reader is
+# the claimed-refs search (:func:`query_claimed_refs`), which needs ``number``
+# and ``repository``; the dependency/epic fields arrived with the candidate
+# search that spec 003 §7a replaced with the board-mirror queue. They are left
+# in place rather than narrowed: the whole claim-LABEL lifecycle this fragment
+# serves is retired in Phase D (#994), and they cost no extra API call.
 _ISSUE_NODES = (
     "nodes { ... on Issue { number title body url author { login } "
     "labels(first: 20) { nodes { name } } repository { nameWithOwner } "
@@ -173,26 +154,6 @@ _ISSUE_NODES = (
     "trackedInIssues(first: 5) { nodes { number body repository { nameWithOwner } "
     "trackedIssues(first: 50) { nodes { number state repository { nameWithOwner } } } } } } }"
 )
-
-
-def _is_unimplementable(node: dict) -> bool:
-    """True when *node* is an automated meta-issue no backlog session can act on.
-
-    Skipped when ANY holds (#637): the author is a bot/app account (login ends in
-    ``[bot]``), the issue carries a dependency-bot label
-    (:data:`SKIP_ISSUE_LABELS`), or its title is a canonical bot meta-ticket
-    (:data:`SKIP_ISSUE_TITLES`, e.g. Renovate's "Dependency Dashboard"). A node
-    with none of these signals (including one missing the author field entirely)
-    is kept — absence of a bot marker means treat it as human work.
-    """
-    login = ((node.get("author") or {}).get("login") or "").strip()
-    if login.endswith("[bot]"):
-        return True
-    labels = {((lbl or {}).get("name") or "").strip().lower()
-              for lbl in (((node.get("labels") or {}).get("nodes")) or [])}
-    if labels & SKIP_ISSUE_LABELS:
-        return True
-    return (node.get("title") or "").strip().lower() in SKIP_ISSUE_TITLES
 
 
 def _open_sub_issue_count(issue: dict | None) -> int:
@@ -208,228 +169,6 @@ def _open_sub_issue_count(issue: dict | None) -> int:
     """
     nodes = (((issue or {}).get("subIssues") or {}).get("nodes")) or []
     return sum(1 for n in nodes if n and not backlog_deps._is_done(n.get("state")))
-
-
-def _common_quals(repos: list[str], eligible_label: str) -> list[str]:
-    """Gates shared by BOTH candidate pools: repo scope, open, unassigned, the
-    optional eligible label, and never ``in-progress`` (the claim lock — a
-    claimed issue is live work, no pool may resurface it)."""
-    quals = [f"repo:{r}" for r in repos]
-    quals += ["is:issue", "is:open", "no:assignee"]
-    if eligible_label:
-        quals.append(f"label:{eligible_label}")
-    quals.append(f"-label:{IN_PROGRESS_LABEL}")
-    return quals
-
-
-def _build_candidates_query(repos: list[str], eligible_label: str,
-                            retry_cutoff: str | None) -> str:
-    """A GitHub search-issues GraphQL doc for eligible, unclaimed OPEN issues.
-
-    The search string carries every gate: the eligible label (OMITTED when
-    ``eligible_label`` is blank — then *any* open, unassigned issue is a
-    candidate), unassigned (``no:assignee``), and NOT already ``in-progress`` /
-    ``needs-human``.  Repos are OR'd via ``repo:`` qualifiers.  Strings are
-    JSON-encoded so a label or repo name can never break out of the search
-    literal.
-
-    When ``retry_cutoff`` (a ``YYYY-MM-DD`` date) is given, a second aliased
-    search adds the RETRY pool: ``needs-human`` issues whose last update
-    precedes the cutoff. Escalation bumps ``updatedAt``, so the qualifier doubles
-    as the cooldown clock — and a human commenting on an escalated issue keeps it
-    out of the pool for another window.
-    """
-    fresh = _common_quals(repos, eligible_label) + [f"-label:{NEEDS_HUMAN_LABEL}"]
-    parts = [
-        "query {\n"
-        f"  issues: search(query: {json.dumps(' '.join(fresh))}, type: ISSUE, first: 100) {{\n"
-        f"    {_ISSUE_NODES}\n"
-        "  }\n"
-    ]
-    if retry_cutoff:
-        retry = _common_quals(repos, eligible_label) + [
-            f"label:{NEEDS_HUMAN_LABEL}",
-            f"updated:<{retry_cutoff}",
-        ]
-        parts.append(
-            f"  retry: search(query: {json.dumps(' '.join(retry))}, type: ISSUE, first: 100) {{\n"
-            f"    {_ISSUE_NODES}\n"
-            "  }\n"
-        )
-    parts.append("}")
-    return "".join(parts)
-
-
-def query_candidates(config: dict, *, gh_run: GhRun = gitrepos._run_gh,
-                     now: datetime | None = None,
-                     blocked_out: "list[dict] | None" = None) -> list[dict]:
-    """Return eligible, unclaimed OPEN issues as candidate dicts.
-
-    Candidate shape (what the grouping optimizer and ``plan_to_batch`` consume)::
-
-        {"ref": "owner/repo#N", "number": N, "repo": "owner/repo", "title": ...,
-         "body": ..., "url": "https://github.com/owner/repo/issues/N"}
-
-    Issues with an unmet dependency are NOT candidates (``respect_dependencies``,
-    default on): native blocked-by relationships, ``Depends on #N`` body markers,
-    and epic list order (sub-issues / task-list checklists — list order is
-    execution order) all gate readiness via :mod:`.backlog_deps`. Each skip is
-    logged; pass *blocked_out* to also receive ``{"ref", "blockers"}`` dicts
-    (the dashboard's "why isn't the backlog draining" note).
-
-    Two pools, fresh first: never-escalated issues, then ``needs-human`` issues
-    untouched for ``needs_human_retry_days`` (missing key → the schema default,
-    so already-stored configs pick the retry pool up without a re-save; explicit
-    0 opts out). Fresh-first ordering means a retry can never displace new work.
-
-    For v1, ``enabled_repos`` must be non-empty — an empty list returns ``[]``
-    without a gh call (drawing from *all* repos is intentionally deferred).  A gh
-    failure or unparseable response returns ``[]`` (the sweep must not crash).
-    """
-    repos = list(config.get("enabled_repos") or [])
-    if not repos:
-        return []
-    # A blank eligible_label means "no label gate" — consider ALL open,
-    # unassigned issues. Do NOT coerce blank to a default here: the schema
-    # default ("ready") is applied to a *fresh* config by validate_config, so an
-    # explicit blank is the user opting out of the label gate.
-    eligible_label = (config.get("eligible_label") or "").strip()
-    raw_days = config.get("needs_human_retry_days")
-    retry_days = NEEDS_HUMAN_RETRY_DAYS_DEFAULT if raw_days is None else max(0, int(raw_days))
-    retry_cutoff = None
-    if retry_days:
-        moment = now or datetime.now(timezone.utc)
-        retry_cutoff = (moment - timedelta(days=retry_days)).strftime("%Y-%m-%d")
-
-    # A single search spanning repos owned by different owners can't be
-    # authenticated with one installation token — group by owner and issue one
-    # call per owner (each with that owner's own token). Grouping by owner is
-    # an AUTH concern only and must not silently change scheduling priority:
-    # fresh results across EVERY owner are concatenated before ANY owner's
-    # retry results, preserving "fresh-first, a retry can never displace new
-    # work" even when it spans owners (never interleaved owner-by-owner).
-    # Two side effects of grouping by owner: the GraphQL ``first: 100`` cap
-    # (see :func:`_build_candidates_query`) now applies per owner, so the
-    # effective ceiling is 100 x owners rather than 100 overall; and the
-    # relative ordering of results ACROSS owners now follows config
-    # (``enabled_repos``) order rather than GitHub's cross-repo best-match
-    # ranking — an unavoidable consequence of one token per owner.
-    fresh_nodes: list[dict] = []
-    retry_nodes: list[dict] = []
-    for data in _graphql_per_owner(
-        repos, lambda owner_repos: _build_candidates_query(owner_repos, eligible_label, retry_cutoff),
-        gh_run=gh_run, event="query",
-    ):
-        fresh_nodes += list((data.get("issues") or {}).get("nodes") or [])
-        retry_nodes += list((data.get("retry") or {}).get("nodes") or [])
-    nodes = fresh_nodes + retry_nodes
-
-    kept: list[tuple[dict, dict]] = []
-    seen: set[str] = set()
-    for node in nodes:
-        if not node:
-            continue
-        number = node.get("number")
-        repo = (node.get("repository") or {}).get("nameWithOwner")
-        if number is None or not repo:
-            continue
-        ref = f"{repo}#{number}"
-        if ref in seen:  # label edited between the two searches — keep first
-            continue
-        if _is_unimplementable(node):  # bot/meta issue — never spawn a session (#637)
-            log.info("backlog_github.skip_unimplementable ref=%s title=%r author=%s",
-                     ref, node.get("title"), ((node.get("author") or {}).get("login")))
-            continue
-        open_children = _open_sub_issue_count(node)
-        if open_children:  # tracking epic — its sub-issues are the work (#997)
-            log.info("backlog_github.skip_tracking ref=%s title=%r open_sub_issues=%d",
-                     ref, node.get("title"), open_children)
-            continue
-        seen.add(ref)
-        kept.append((node, {
-            "ref": ref,
-            "number": number,
-            "repo": repo,
-            "title": node.get("title"),
-            # body feeds the grouping optimizer (excerpted before prompting).
-            "body": node.get("body"),
-            # url lets the ActionableItem link out to the issue; fall back to the
-            # canonical /issues/N path if the API somehow omitted it (#467).
-            "url": node.get("url") or f"https://github.com/{repo}/issues/{number}",
-        }))
-
-    if not config.get("respect_dependencies", True) or not kept:
-        return [cand for _, cand in kept]
-
-    # Dependency-readiness gate. Native blocked-by / sub-issue / epic states
-    # arrived inline with the search; only free-text body deps need resolving.
-    # Every fetched candidate is open by definition (the search says is:open),
-    # so a body dep pointing at another candidate resolves to OPEN for free.
-    states: dict[str, str] = {cand["ref"]: "OPEN" for _, cand in kept}
-    unresolved: set[str] = set()
-    for node, _cand in kept:
-        unresolved |= {r for r in backlog_deps.body_dep_refs(node) if r not in states}
-    if unresolved:
-        states.update(_resolve_dep_states(sorted(unresolved), gh_run=gh_run))
-
-    out: list[dict] = []
-    blocked = 0
-    for node, cand in kept:
-        blockers = backlog_deps.blocked_refs(node, states=states)
-        if blockers:
-            # An unresolvable blocker state fails CLOSED (still blocks): the
-            # sweep retries every tick, and honoring declared order is the
-            # feature's whole point. The skip is visible here + in blocked_out.
-            log.info("backlog_github.skip_blocked ref=%s blockers=%s",
-                     cand["ref"], ",".join(blockers))
-            if blocked_out is not None:
-                blocked_out.append({"ref": cand["ref"], "blockers": blockers})
-            blocked += 1
-            continue
-        out.append(cand)
-    if blocked:
-        log.info("backlog_github.blocked_summary count=%d eligible=%d", blocked, len(out))
-    return out
-
-
-def _resolve_dep_states(refs: list[str], *, gh_run: GhRun) -> dict[str, str]:
-    """Resolve ``owner/repo#N`` refs to their GitHub state (OPEN/CLOSED/MERGED)
-    in one batched GraphQL call per owner (aliased ``issueOrPullRequest`` so a
-    dep may be an issue or a PR). A ref missing from the result (owner call
-    failed, nonexistent number) stays unresolved — the caller fails closed."""
-    by_repo: dict[str, list[str]] = {}
-    for ref in refs:
-        repo, number = _split_ref(ref)
-        if repo and number.isdigit():
-            by_repo.setdefault(repo, []).append(number)
-
-    def build(owner_repos: list[str]) -> str:
-        parts = ["query {"]
-        for i, repo in enumerate(owner_repos):
-            owner, _, name = repo.partition("/")
-            lookups = " ".join(
-                f"i{n}: issueOrPullRequest(number: {n}) "
-                "{ ... on Issue { number state } ... on PullRequest { number state } }"
-                for n in by_repo[repo])
-            parts.append(
-                f"r{i}: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) "
-                f"{{ nameWithOwner {lookups} }}")
-        parts.append("}")
-        return "\n".join(parts)
-
-    states: dict[str, str] = {}
-    for data in _graphql_per_owner(list(by_repo), build, gh_run=gh_run, event="dep_states"):
-        for repo_obj in (data or {}).values():
-            if not isinstance(repo_obj, dict):
-                continue
-            name_with_owner = repo_obj.get("nameWithOwner")
-            if not name_with_owner:
-                continue
-            for value in repo_obj.values():
-                if (isinstance(value, dict) and value.get("number") is not None
-                        and value.get("state")):
-                    states[f"{name_with_owner}#{value['number']}"] = value["state"]
-    return states
 
 
 # --------------------------------------------------------------------------- #
@@ -1057,16 +796,16 @@ def query_claimed_refs(repos: list[str], *, gh_run: GhRun = gitrepos._run_gh) ->
 
     The runner owns the ``in-progress`` label, so any labeled issue no target
     state tracks is an orphaned lock (crash, DB loss, or the pre-handed-off
-    handoff leak) silently excluded from the candidate pools. This is the
-    ground-truth read the heal pass diffs against. Failures return ``[]``.
+    handoff leak) holding an issue nobody is working. This is the ground-truth
+    read the heal pass diffs against. Failures return ``[]``.
     """
     if not repos:
         return []
-    # As in query_candidates: a search spanning multiple owners can't be
-    # authenticated with one installation token, so group by owner and issue
-    # one call per owner (via the shared _graphql_per_owner helper), merging
-    # results. Only one pool here (no fresh/retry split), so owner order
-    # doesn't carry a scheduling invariant the way it does in query_candidates.
+    # A search spanning repos owned by different owners can't be authenticated
+    # with one installation token, so group by owner and issue one call per
+    # owner (via the shared _graphql_per_owner helper), merging results. There
+    # is one pool here and the heal pass treats every ref alike, so owner order
+    # carries no invariant.
     def _build_claimed_query(owner_repos: list[str]) -> str:
         quals = [f"repo:{r}" for r in owner_repos] + [
             "is:issue", "is:open", f"label:{IN_PROGRESS_LABEL}"]
