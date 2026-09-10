@@ -19,9 +19,22 @@ function tryGetSocket() {
 }
 
 /**
+ * How long a socket must stay in `reconnecting` before the banner is raised for it.
+ *
+ * The banner renders IN FLOW above the content band (see BannerStack / DaemonRestartBanner
+ * for why banners are never `fixed`), so showing it moves everything below it down by its
+ * own height and hiding it moves everything back. A dropped socket normally comes back on
+ * the first backoff attempt (BACKOFF_BASE_MS = 500 ms plus jitter, ~0.6 s observed), and a
+ * transcript that jumps ~70px down and back within half a second reads as the content
+ * flickering under the pointer. Two seconds covers the first attempt and most of the second
+ * (1 s backoff plus the handshake), so only an outage a person would notice raises the banner.
+ */
+export const RECONNECT_BANNER_GRACE_MS = 2_000
+
+/**
  * True whenever the user's input cannot currently reach a session, so the UI should hold a
  * banner: a deploy drain is in progress, OR prompts are already buffered, OR the socket dropped
- * *after* being connected and is reconnecting.
+ * *after* being connected and has been reconnecting for longer than RECONNECT_BANNER_GRACE_MS.
  *
  * We deliberately key the disconnect case on the `reconnecting` state, NOT `!connected`: a fresh
  * socket starts in `connecting`/`disconnected` during the initial handshake, and treating that as
@@ -31,14 +44,30 @@ function tryGetSocket() {
 export function useInputHold(): InputHoldState {
   const pending = useUpdatePending()
   const socket = tryGetSocket()
-  const [conn, setConn] = useState<ConnectionState>(socket ? socket.connectionState : 'connected')
+  // True only once the socket has been `reconnecting` for the whole grace. The timer is
+  // armed on entering that state and disarmed (lowering the banner at once) on leaving it,
+  // so a quick reconnect never fires it and the banner never shows. State moves only from
+  // the socket listener and the timer callback — never synchronously inside the effect.
+  const [reconnecting, setReconnecting] = useState(false)
   useEffect(() => {
     if (!socket) return
-    const ch = (s: ConnectionState) => setConn(s)
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const arm = () => {
+      timer = setTimeout(() => { timer = null; setReconnecting(true) }, RECONNECT_BANNER_GRACE_MS)
+    }
+    const ch = (s: ConnectionState) => {
+      if (timer !== null) { clearTimeout(timer); timer = null }
+      if (s === 'reconnecting') arm()
+      else setReconnecting(false)
+    }
     socket.on('connectionStateChange', ch)
-    return () => socket.off('connectionStateChange', ch)
+    // A socket already mid-reconnect at mount gets the same grace as a live drop.
+    if (socket.connectionState === 'reconnecting') arm()
+    return () => {
+      if (timer !== null) clearTimeout(timer)
+      socket.off('connectionStateChange', ch)
+    }
   }, [socket])
-  const reconnecting = conn === 'reconnecting'
   return {
     holding: pending.active || pending.count > 0 || reconnecting,
     count: pending.count,
