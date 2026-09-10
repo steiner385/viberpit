@@ -50,6 +50,18 @@ def test_config_schema_respect_dependencies_defaults_on():
     assert keys["respect_dependencies"].default is True
 
 
+def test_config_schema_queue_min_status_is_the_queue_vocabulary():
+    """The operator picks how far down the board the runner reaches; the choices
+    are the queue's own (server/pm/queue.py), never a second copy of them."""
+    from server.automations.backlog_runner import BacklogRunner
+    from server.pm.desired_state import STATUS_READY
+    from server.pm.queue import MIN_STATUS_OPTIONS
+    field = {f.key: f for f in BacklogRunner().config_schema}["queue_min_status"]
+    assert field.type == "enum"
+    assert field.default == STATUS_READY
+    assert field.choices == list(MIN_STATUS_OPTIONS)
+
+
 def test_status_shows_blocked_count():
     from types import SimpleNamespace
 

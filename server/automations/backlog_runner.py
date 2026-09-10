@@ -10,6 +10,9 @@ from typing import Any, Awaitable, Callable
 from ccswitch.worktrees import DISK_EXHAUSTION_MARKERS
 from server.github.pr_status import PullRequestInfo
 
+from server.pm.desired_state import STATUS_READY
+from server.pm.queue import MIN_STATUS_OPTIONS
+
 from .backlog_github import NEEDS_HUMAN_RETRY_DAYS_DEFAULT, GhRun, query_candidates
 from .backlog_grouping import load_plan, mark_consumed, plan_to_batch
 from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
@@ -213,6 +216,14 @@ class BacklogRunner:
                          "— list order is execution order). Skips are logged and "
                          "counted; the issue becomes eligible the moment its "
                          "blockers close."),
+        ConfigField(key="queue_min_status", label="Minimum board status",
+                    type="enum", default=STATUS_READY,
+                    choices=list(MIN_STATUS_OPTIONS),
+                    help="How far down the board the runner may reach. 'Ready' "
+                         "takes only items triage classified and accepted — the "
+                         "safe default. 'Backlog' takes any open, unblocked, "
+                         "unassigned board item, including ones nobody has "
+                         "triaged yet."),
     ]
 
     def status(self, ctx) -> AutomationStatus:
