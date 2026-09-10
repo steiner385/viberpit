@@ -101,6 +101,35 @@ def parse_batch(payload: dict, alias_map: Mapping[str, Mutation]) -> BatchResult
     return BatchResult(by_alias, document_error)
 
 
+def payload_from_gh(proc: object, *, partial_ok: bool) -> dict:
+    """Turn a ``gh api graphql`` result into the GraphQL payload, or raise.
+
+    ``gh`` exits non-zero whenever the response carries an ``errors`` array — even
+    when the other aliases in the document succeeded and ``data`` is valid. For a
+    mutation batch that payload IS the result (`parse_batch` maps each error to its
+    alias, and the reconciler parks a mutation on its second failure), so with
+    ``partial_ok`` a non-zero exit whose stdout is a real GraphQL body is returned,
+    not raised. Without it (mirror reads) the exit stays fatal: a ``data.node: null``
+    next to a permission error would otherwise read as "board deleted" (#973).
+
+    Anything that is not a GraphQL body — empty stdout, HTML, a REST error object
+    such as ``{"message": "Bad credentials"}`` — is a transport failure and raises
+    in both modes, with gh's stderr as the message (#1508).
+    """
+    stdout = getattr(proc, "stdout", "") or ""
+    try:
+        payload = json.loads(stdout or "{}")
+    except json.JSONDecodeError:
+        payload = None
+    is_graphql = isinstance(payload, dict) and ("data" in payload or "errors" in payload)
+    if getattr(proc, "returncode", 1) == 0:
+        return payload if isinstance(payload, dict) else {}
+    if partial_ok and is_graphql:
+        return payload
+    raise RuntimeError(
+        f"gh graphql failed: {(getattr(proc, 'stderr', '') or '').strip()[:500]}")
+
+
 def build_rate_limit_query() -> str:
     return "query { rateLimit { cost remaining resetAt } }"
 
