@@ -4,6 +4,16 @@
 > (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use
 > checkbox (`- [ ]`) syntax for tracking.
 
+> **Status 2026-09-10:** PR C0 (Tasks 1–4, #1085) and PR C2 (Tasks 9–10, #1097, closed #991)
+> are merged. C1, C3 and C4 were parked on 2026-09-08 and are now finish-line **row 9**
+> (tracking #1520, decision D11 in `docs/superpowers/specs/2026-09-08-finish-line-persona-modes-design.md`),
+> sequenced after row 8 and executed in the order C1 (#990) → Phase D label retirement (#994,
+> plan written at execution time from spec §3) → C3 probe → C4 (#992). Before executing C1,
+> re-verify Tasks 5–8 against the current `backlog_runner.py` / `orchestrator.py` (the Roadmap
+> Phase 3 and Inbox work landed since this plan was written) and add the `origin_ref`
+> canonicalization precondition recorded on #990 and #1520 (the runner records the repo alias,
+> the mirror keys on `nameWithOwner`; #1517 needs the same normalization for its spawn claim).
+
 **Goal:** Make the Phase A/B mirror the thing ccswitch *acts on*: the backlog runner draws its
 candidates from the global priority queue over `GhProjectItem` rows instead of a live label search,
 GitHub-first epics get an Initiative overlay automatically, and a merged plan artifact becomes an
