@@ -604,3 +604,59 @@ def test_backlog_queue_tail_returns_copy_of_cache():
     assert tail == cached
     tail.append({"ref": "o/r#2", "score": 1, "product": "widget"})
     assert orch._backlog_last_queue == cached  # unaffected by the caller's mutation
+
+
+# --------------------------------------------------------------------------- #
+# GraphQL transport: partial per-alias errors reach the reconciler (#1508)     #
+# --------------------------------------------------------------------------- #
+
+_PARTIAL = ('{"data": {"m0": {"issue": {"id": "I_1"}}, "m1": null}, '
+            '"errors": [{"path": ["m1"], "message": "Validation failed: this dependency '
+            'would create a cycle where the target is already blocked by the source"}]}')
+
+
+def _gh(stdout: str, returncode: int, stderr: str = "") -> SimpleNamespace:
+    return SimpleNamespace(stdout=stdout, returncode=returncode, stderr=stderr)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_mutate_returns_payload_with_per_alias_errors():
+    """``gh api graphql`` exits 1 whenever the response carries ``errors`` — even when
+    every other alias succeeded. The mutate seam must hand that payload to the
+    reconciler (which maps errors per alias and parks a mutation on its second
+    failure) instead of raising and aborting the whole product cycle."""
+    orch = _bare_orch()
+    seen: list = []
+
+    def gh_run(args, token=None):
+        seen.append((list(args), token))
+        return _gh(_PARTIAL, 1, "gh: Validation failed: this dependency would create a cycle")
+
+    orch._gh_run = gh_run
+    with patch.dict(os.environ, {"CCSWITCH_GH_PROJECT_TOKEN": "tok-pat"}):
+        payload = await orch._pm_reconcile_mutate("steiner385", "mutation { m0: … }")
+    assert payload["errors"][0]["path"] == ["m1"]
+    assert payload["data"]["m0"]["issue"]["id"] == "I_1"
+    assert seen[0][1] == "tok-pat"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_mutate_still_raises_on_transport_failure():
+    orch = _bare_orch()
+    orch._gh_run = lambda args, token=None: _gh("", 1, "gh: HTTP 502 Bad Gateway")
+    with patch.dict(os.environ, {"CCSWITCH_GH_PROJECT_TOKEN": "tok-pat"}):
+        with pytest.raises(RuntimeError, match="502"):
+            await orch._pm_reconcile_mutate("steiner385", "mutation { m0: … }")
+
+
+@pytest.mark.asyncio
+async def test_mirror_read_seam_stays_strict_on_graphql_errors():
+    """Reads keep failing loudly: a payload with errors could read as 'board deleted'
+    to the mirror (node → null), so the read seams must not swallow it."""
+    orch = _bare_orch()
+    orch._gh_run = lambda args, token=None: _gh(_PARTIAL, 1, "gh: Validation failed")
+    with patch.dict(os.environ, {"CCSWITCH_GH_PROJECT_TOKEN": "tok-pat"}):
+        with pytest.raises(RuntimeError):
+            await orch._pm_sync_fetch_projects("steiner385", "query { … }")
+    with pytest.raises(RuntimeError):
+        await orch._pm_sync_fetch("query { … }")

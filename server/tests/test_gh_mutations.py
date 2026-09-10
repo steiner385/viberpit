@@ -85,3 +85,28 @@ def test_rate_limit_query_and_parser():
     payload = {"data": {"rateLimit": {"cost": 2, "remaining": 4990, "resetAt": "x"}}}
     assert parse_rate_limit(payload) == RateLimit(2, 4990, "x")
     assert parse_rate_limit({"data": {}}) is None
+
+
+def _proc(stdout="", returncode=0, stderr=""):
+    import subprocess
+    return subprocess.CompletedProcess(args=["gh"], returncode=returncode,
+                                       stdout=stdout, stderr=stderr)
+
+
+def test_payload_from_gh_accepts_partial_errors_only_when_asked():
+    """``gh api graphql`` exits 1 whenever the response has an ``errors`` array, even
+    with valid ``data`` for the other aliases. A mutation batch WANTS that payload
+    (per-alias verdicts); a mirror read does not (a null node would read as deleted)."""
+    from server.pm.gh_mutations import payload_from_gh
+    body = '{"data": {"m0": {"id": 1}, "m1": null}, "errors": [{"path": ["m1"], "message": "cycle"}]}'
+    partial = _proc(body, 1, "gh: cycle")
+    assert payload_from_gh(partial, partial_ok=True)["errors"][0]["path"] == ["m1"]
+    with pytest.raises(RuntimeError, match="cycle"):
+        payload_from_gh(partial, partial_ok=False)
+    # A clean exit returns the body either way.
+    assert payload_from_gh(_proc('{"data": {"ok": 1}}', 0), partial_ok=False) == {"data": {"ok": 1}}
+    # Transport failure: non-zero exit with no GraphQL body raises in both modes.
+    for proc in (_proc("", 1, "gh: HTTP 502"), _proc("<html>", 1, "gh: HTTP 502"),
+                 _proc('{"message": "Bad credentials"}', 1, "gh: HTTP 401")):
+        with pytest.raises(RuntimeError):
+            payload_from_gh(proc, partial_ok=True)

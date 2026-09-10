@@ -1056,7 +1056,7 @@ class SessionOrchestrator:
             read_config=self._gh_reconcile_read_config,
             list_products=self._pm_sync_list_products,
             load_facts=self._gh_reconcile_load_facts,
-            mutate=self._pm_sync_fetch_projects,
+            mutate=self._pm_reconcile_mutate,
             journal_record=self._gh_reconcile_journal_record,
             journal_applied=self._gh_reconcile_journal_applied,
             journal_failed=self._gh_reconcile_journal_failed,
@@ -5936,16 +5936,13 @@ class SessionOrchestrator:
 
     async def _pm_sync_fetch(self, query: str) -> dict:
         """Run a GraphQL query via the gh seam. GraphQL only — never REST."""
-        import json
+        from server.pm.gh_mutations import payload_from_gh
         proc = await asyncio.to_thread(
             self._gh_run, ["api", "graphql", "-f", f"query={query}"])
-        if getattr(proc, "returncode", 1) != 0:
-            raise RuntimeError(
-                f"gh graphql failed: {(getattr(proc, 'stderr', '') or '').strip()[:500]}")
-        return json.loads(getattr(proc, "stdout", "") or "{}")
+        return payload_from_gh(proc, partial_ok=False)
 
-    async def _pm_sync_fetch_projects(self, owner: str, query: str) -> dict:
-        """Owner-aware GraphQL fetch for the Projects v2 mirror.
+    async def _pm_gh_graphql(self, owner: str, query: str, *, partial_ok: bool) -> dict:
+        """Owner-aware GraphQL call for the Projects v2 mirror and reconciler.
 
         Token resolution order (injected via child env only — never logged):
         1. ``CCSWITCH_GH_PROJECT_TOKEN`` — a classic PAT with ``project``+``repo``
@@ -5954,21 +5951,34 @@ class SessionOrchestrator:
            2026-09-03).  Used for ALL owners when set.
         2. GitHub App installation token via ``token_for_owner(owner)`` — works
            for org-owned boards and is the Phase A default when the PAT is absent.
-        3. Ambient ``gh`` credential (plain fetch) when neither token is available;
-           lets scope errors surface through the caller's per-product handling."""
-        import json
+        3. Ambient ``gh`` credential when neither token is available; lets scope
+           errors surface through the caller's per-product handling.
+
+        ``partial_ok`` is the one behavioural switch (see ``payload_from_gh``):
+        reads must fail loudly on GraphQL errors, mutation batches must get the
+        per-alias verdicts back."""
         from server.github import app_auth
+        from server.pm.gh_mutations import payload_from_gh
         token: str | None = os.environ.get("CCSWITCH_GH_PROJECT_TOKEN") or None
         if token is None:
             token = await asyncio.to_thread(app_auth.token_for_owner, owner)
-        if token is None:
-            return await self._pm_sync_fetch(query)
-        proc = await asyncio.to_thread(
-            self._gh_run, ["api", "graphql", "-f", f"query={query}"], token)
-        if getattr(proc, "returncode", 1) != 0:
-            raise RuntimeError(
-                f"gh graphql failed: {(getattr(proc, 'stderr', '') or '').strip()[:500]}")
-        return json.loads(getattr(proc, "stdout", "") or "{}")
+        args = ["api", "graphql", "-f", f"query={query}"]
+        proc = await (asyncio.to_thread(self._gh_run, args) if token is None
+                      else asyncio.to_thread(self._gh_run, args, token))
+        return payload_from_gh(proc, partial_ok=partial_ok)
+
+    async def _pm_sync_fetch_projects(self, owner: str, query: str) -> dict:
+        """Mirror READ seam: a GraphQL error is fatal for the call (a null node next
+        to a permission error must never read as "board deleted", #973)."""
+        return await self._pm_gh_graphql(owner, query, partial_ok=False)
+
+    async def _pm_reconcile_mutate(self, owner: str, doc: str) -> dict:
+        """Reconciler MUTATE seam: the batch document's payload comes back even
+        when ``gh`` exited non-zero because some aliases failed — those failures
+        are per-mutation verdicts (cycle, duplicate edge, unknown node) that the
+        reconciler records and parks on the second occurrence. Raising here
+        instead aborted the whole product cycle on every tick (#1508)."""
+        return await self._pm_gh_graphql(owner, doc, partial_ok=True)
 
     async def _pm_sync_list_products(self) -> list:
         """ProductSyncView for every onboarded project (mirror discovery input).
