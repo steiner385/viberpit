@@ -54,6 +54,7 @@ took ~400 commits in the previous fourteen days. The causes, with evidence:
 | D8 | **Park, do not close.** Assistant v2 Phases 7–10, rebrand Phases 2b–7, continuity 002 Phases 2–4, projects 003 Phase C, UI-audit epics E3–E5, and every `needs-human` infrastructure issue stay open with `parked` and a reason. The UI-audit issues move from board #27 to board #26. | A parked decision is visible; a silently growing backlog is not. Closing would lose the plans. |
 | D9 | **Vocabulary.** Nav labels are `Sessions`, `Pipeline`, `Roadmap`, `Delivery`, `Settings`. Inside Roadmap the roadmap spec's D11 words hold (Product, Capability, Initiative, Epic, Issue) plus `Inbox` for the proposal queue. Code ids stay `projects`, `pm`, `automations`, `insights` where renaming would cascade through the API. | Labels come from `navDefs` and `features/products/vocab.ts`; copy cannot drift. |
 | D10 | **Nothing new below the line.** No new server capability, no new automation, no new assistant pack, no schema beyond what roadmap Phase 3 already needs. | The point is to finish, not to widen. |
+| D11 | **One exception to D10, placed last: 003 Phase C/D as row 9** (#1520). The runner reads the board queue (#990), the `in-progress` / `needs-human` labels retire (#994), plans materialize (#992). Nothing new is built; the wiring that already exists in `server/pm/` finally drives dispatch. Decided 2026-09-10. | A 2026-09-10 review of roadmap / triage / dispatch found the machinery mostly built but split across two truths: the Roadmap acts on the board mirror while the Backlog Runner still selects and claims by label. Every further automation on top of two truths widens the split, so the flip goes on the line rather than after it. It sits after row 8 so the visible rows still go first. The outcome feedback loop (#1521) is the first item *after* the line. |
 
 ## 3. Personas as modes
 
@@ -145,11 +146,14 @@ Each row is one PR series with its own implementation plan; each leaves master s
 | 5 | Pipeline → Workspace variant on the chassis | page-migration PR 10 | `.prdash-root` remap, `pipeline/kiosk.ts`, `useKioskCycle` | — |
 | 6 | Archived review → Reader; sub-agent view → Reader | page-migration PR 7 (remainder) | inline dialogs in review | — |
 | 7 | Sweep: `dark:`, raw palette, hex, `z-*` literals, ESLint rule to repo scope, `components/` bucket emptied, `docs/ACCESSIBILITY.md` and `web/README.md` rewritten | page-migration PR 11 | `components/`, `lib/useMediaQuery.ts` | target-state §9 |
-| 8 | Roadmap Phases 4–5 (issue leaves, inline edits, map-changes PRs) | roadmap spec Phases 4–5 | — | — |
+| 8 | Roadmap Phases 4–5 (issue leaves, inline edits, map-changes PRs) | roadmap spec Phases 4–5 | — | #1472 |
+| 9 | 003 Phase C/D (D11): runner candidates from the board queue, live blocker re-verification, label retirement, plan materialization | 003 spec §7a, §3, §7b; `plan-phase-c.md` Tasks 5–8, 11–16 | `backlog_github.query_candidates`, `backlog_deps.blocked_refs`, the `eligible_label` config field, every label write in `backlog_github.py` | #990, #994, #992 (tracking #1520) |
 
 Rows 2–4 are the visible payoff and go first. Rows 5–7 close the target-state spec. Row 8 is
-inside the line but last; if capacity runs out it is the only row that may slip without
-breaking the nav.
+inside the line but late; if capacity runs out it is the only UI row that may slip without
+breaking the nav. Row 9 is server work and goes last (D11); its C1 merge has operator
+preconditions listed on #1520 (products onboarded vs `enabled_repos`, `queue_min_status`,
+`origin_ref` canonicalization shared with #1517).
 
 ## 6. The parking lot
 
@@ -161,15 +165,18 @@ Labelled `parked`, each with a one-line reason comment, and `finish-line` remove
   the rest is internal identifiers and a host window.*
 - Continuity 002 Phases 2–4 (#947–#949, epic #945): *Phase 1 liveness shipped; the rest needs
   a human drill window.*
-- Projects 003 Phase B/C/ops (#988, #990, #992, #996) and Phase D hygiene (#994, #995): Phase D
-  portfolio UI (#993) is row 2 above and is *not* parked.
+- Projects 003 ops (#988, #996) and Phase D docs hygiene (#995): Phase D portfolio UI (#993) is
+  row 2 above and is *not* parked. #990, #992 and #994 were parked here on 2026-09-08 and
+  unparked on 2026-09-10 as row 9 (D11, tracking #1520); #988 stays parked but is a C1
+  precondition, so it is resolved as part of row 9 rather than after the line.
 - UI-audit epics E3–E5 (#1396–#1398) and their leaves (#1408–#1418): *evidence and kiosk-trust
   work after the surfaces they measure are settled.* E1–E2 leaves (#1399–#1407) get
   `finish-line` only where a row in §5 closes them; the rest are parked with a pointer.
 - Infrastructure `needs-human` issues (#816, #821, #831, #832, #838, #840, #851, #1010–#1014,
   #1023, #1035, #1273, #1383, #1432–#1434): *unchanged; they are not UI work.*
 
-`finish-line` goes on: #993, the tracking issue filed for each of rows 3–8, and the E1/E2
+`finish-line` goes on: #993, the tracking issue filed for each of rows 3–9, #990 / #992 / #994
+(row 9's leaves), and the E1/E2
 leaves a row closes (#1400 narrow-title, #1404 draft preservation, #1405 query-failure states,
 #1406 pipeline anchors are candidates; the plan for each row decides).
 
