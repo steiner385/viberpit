@@ -33,7 +33,6 @@ class FakeClock:
 def make_config(**over) -> dict:
     cfg = {
         "enabled_repos": [],
-        "eligible_label": "ready",
         "max_concurrent": 2,
         "max_spawns_per_day": 10,
         "max_attempts": 2,
@@ -52,9 +51,10 @@ async def _seed_row(automation_id: str = "backlog-runner") -> None:
 def build_loop(*, mode="auto", config=None, clock=None,
                candidates=None, healthy="a", in_flight_counter=None,
                pr_status=None, pr_doctor_active=True, claim_result=True,
-               candidate_count=None, blocked_count=0, heal_orphans_result=None,
+               candidate_count=None, blocked_count=0, untriaged_count=0,
+               heal_orphans_result=None,
                refresh_groups=None, spawn=None, close_out_result=None,
-               credential_alerts=None):
+               credential_alerts=None, verify_ready=None, queue_tail=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .claims /
@@ -129,10 +129,10 @@ def build_loop(*, mode="auto", config=None, clock=None,
         return close_out_result
 
     async def count_candidates():
-        # The seam reports (eligible, blocked) — blocked = dependency-gated
-        # issues skipped this sweep, surfaced on the Automation card.
+        # The seam reports (eligible, blocked, untriaged) — dependency-gated and
+        # below-min-status skips this sweep, both surfaced on the Automation card.
         return (candidate_count if candidate_count is not None else 0,
-                blocked_count)
+                blocked_count, untriaged_count)
 
     async def heal_orphans(config, tracked):
         rec.heals.append((config, set(tracked)))
@@ -157,6 +157,8 @@ def build_loop(*, mode="auto", config=None, clock=None,
         heal_orphans=heal_orphans if heal_orphans_result is not None else None,
         refresh_groups=refresh_groups,
         credential_alerts=credential_alerts,
+        verify_ready=verify_ready,
+        queue_tail=queue_tail,
     )
     return loop, rec, ctx
 
@@ -206,6 +208,29 @@ def test_blocked_count_surfaces_on_ctx(tmp_path):
         counts = getattr(ctx, "backlog_counts", {})
         assert counts.get("blocked") == 3
         assert counts.get("eligible") == 2
+
+    asyncio.run(run())
+
+
+def test_untriaged_count_surfaces_on_ctx(tmp_path):
+    """Below-min-status skips are the OTHER "why isn't the backlog draining"
+    answer: in the default Ready mode a board of untriaged items would read as a
+    bare "0 eligible" — an empty backlog, not one waiting on triage (#990)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'untriaged.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[],
+            candidate_count=0,
+            untriaged_count=4,          # 4 board items still sit below Ready
+        )
+        await loop.tick()
+        counts = getattr(ctx, "backlog_counts", {})
+        assert counts.get("untriaged") == 4
+        assert counts.get("eligible") == 0
 
     asyncio.run(run())
 
@@ -857,6 +882,154 @@ def test_handed_off_row_with_no_session_id_is_not_reconciled_away(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Pre-dispatch live re-verification (spec 003 §7a safety net, fails closed)    #
+# --------------------------------------------------------------------------- #
+
+async def _live_check_results() -> list[str]:
+    """``detail.result`` of every ``skipped_live_check`` event, oldest first
+    (``ctx.list_events`` does not surface ``detail``)."""
+    from sqlalchemy import select
+    from server.db.models import AutomationEvent
+    async with db_session() as db:
+        rows = (await db.execute(select(AutomationEvent).where(
+            AutomationEvent.kind == "skipped_live_check").order_by(
+            AutomationEvent.id))).scalars().all()
+    return [(r.detail or {})["result"] for r in rows]
+
+
+def _scripted_verify(results: list):
+    """A ``verify_ready`` seam that answers from *results* in order and records
+    the batches it was asked about."""
+    asked: list = []
+
+    async def verify_ready(batch):
+        asked.append(batch)
+        return results.pop(0)
+
+    verify_ready.asked = asked  # type: ignore[attr-defined]
+    return verify_ready
+
+
+def test_live_check_failure_skips_backs_off_and_retries_after_cooldown(tmp_path):
+    """``None`` (transport/parse failure) is NOT "ready": no claim, no spawn,
+    one ``skipped_live_check`` event, and the target cools down exactly like a
+    failed spawn — the next tick must not re-check it until the backoff expires."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'd.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        clk = FakeClock()
+        verify = _scripted_verify([None, True])
+        loop, rec, ctx = build_loop(
+            clock=clk, verify_ready=verify,
+            candidates=[batch("o/r#7"), batch("o/r#7"), batch("o/r#7")])
+        await loop.tick()
+        assert rec.claims == [] and rec.spawns == []
+        assert await _live_check_results() == ["check_failed"]
+        assert "o/r#7" in loop._spawn_backoff
+        # Cooling down: the same top pick is handed back, gated before any
+        # second live check, and nothing spawns.
+        await loop.tick()
+        assert rec.spawns == [] and len(verify.asked) == 1
+        # Cooldown over → re-checked live, now ready → claimed and spawned.
+        clk.advance(3600)
+        await loop.tick()
+        assert len(verify.asked) == 2
+        assert [b.primary for b in rec.claims] == ["o/r#7"]
+        assert len(rec.spawns) == 1
+        assert "o/r#7" not in loop._spawn_backoff
+
+    asyncio.run(run())
+
+
+def test_live_check_not_ready_skips_with_not_ready_result(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'd.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(verify_ready=_scripted_verify([False]),
+                                    candidates=[batch("o/r#7")])
+        await loop.tick()
+        assert rec.claims == [] and rec.spawns == []
+        assert await _live_check_results() == ["not_ready"]
+        assert "o/r#7" in loop._spawn_backoff
+
+    asyncio.run(run())
+
+
+def test_live_check_gates_propose_mode_claims_too(tmp_path):
+    """Propose mode claims (labels) before the user tap — a stale pick must not
+    be claimed there either."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'd.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(mode="propose",
+                                    verify_ready=_scripted_verify([False]),
+                                    candidates=[batch("o/r#7")])
+        await loop.tick()
+        assert rec.claims == []
+        assert await ctx.get_target_state("o/r#7") == {}
+        assert len(await ctx.list_events(kind="skipped_live_check")) == 1
+
+    asyncio.run(run())
+
+
+def test_live_check_seam_raising_is_treated_as_check_failed(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'd.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+
+        async def verify_ready(_batch):
+            raise RuntimeError("gh exploded")
+
+        loop, rec, ctx = build_loop(verify_ready=verify_ready,
+                                    candidates=[batch("o/r#7")])
+        await loop.tick()
+        assert rec.claims == [] and rec.spawns == []
+        assert await _live_check_results() == ["check_failed"]
+
+    asyncio.run(run())
+
+
+def test_live_check_true_proceeds_to_claim_and_spawn(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'd.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        verify = _scripted_verify([True])
+        loop, rec, ctx = build_loop(verify_ready=verify, candidates=[batch("o/r#7")])
+        await loop.tick()
+        assert [b.primary for b in verify.asked] == ["o/r#7"]
+        assert [b.primary for b in rec.claims] == ["o/r#7"]
+        assert len(rec.spawns) == 1
+        assert await ctx.list_events(kind="skipped_live_check") == []
+
+    asyncio.run(run())
+
+
+def test_live_check_absent_seam_keeps_legacy_behaviour(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'd.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(candidates=[batch("o/r#7")])
+        await loop.tick()
+        assert [b.primary for b in rec.claims] == ["o/r#7"]
+        assert len(rec.spawns) == 1
+        assert await ctx.list_events(kind="skipped_live_check") == []
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
 # Grouping-optimizer refresh gating (_maybe_refresh_groups)                    #
 # --------------------------------------------------------------------------- #
 
@@ -1305,5 +1478,176 @@ def test_credential_check_runs_even_when_off(tmp_path):
         loop, _, ctx = build_loop(mode="off", credential_alerts=lambda: list(alerts))
         await loop.tick()
         assert len(await ctx.list_events(kind="credential_refresh_needed")) == 1
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# Queue provenance on the status card (#990)                                  #
+# --------------------------------------------------------------------------- #
+
+def _tail_of(entries: list):
+    """A ``queue_tail`` seam returning a fixed, fresh-copied ranked pool."""
+    def queue_tail():
+        return list(entries)
+    return queue_tail
+
+
+async def _picked_events() -> "list[dict | None]":
+    """``detail`` of every ``picked`` event, oldest first (``ctx.list_events``
+    does not surface ``detail``)."""
+    from sqlalchemy import select
+    from server.db.models import AutomationEvent
+    async with db_session() as db:
+        rows = (await db.execute(select(AutomationEvent).where(
+            AutomationEvent.kind == "picked").order_by(
+            AutomationEvent.id))).scalars().all()
+    return [r.detail for r in rows]
+
+
+def test_picked_event_emitted_on_successful_spawn(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'pk1.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        tail = [
+            {"ref": "o/r#1", "score": 12.5, "product": "widget"},
+            {"ref": "o/r#2", "score": 10.0, "product": "widget"},
+            {"ref": "o/r#3", "score": 9.0, "product": "gadget"},
+            {"ref": "o/r#4", "score": 8.0, "product": "gadget"},
+        ]
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1")],
+            queue_tail=_tail_of(tail),
+        )
+        await loop.tick()
+        assert len(rec.spawns) == 1
+        events = await _picked_events()
+        assert len(events) == 1
+        assert events[0] == {
+            "ref": "o/r#1", "score": 12.5, "product": "widget",
+            "over": ["o/r#2", "o/r#3", "o/r#4"],
+        }
+        assert loop._last_pick == events[0]
+        assert getattr(ctx, "backlog_last_pick", None) == events[0]
+
+    asyncio.run(run())
+
+
+def test_picked_event_excludes_bundled_issues_from_over(tmp_path):
+    """A batch bundling two issues into one PR must exclude BOTH from the
+    'over' runners-up list, not just the primary."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'pk2.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        tail = [
+            {"ref": "o/r#1", "score": 12.5, "product": "widget"},
+            {"ref": "o/r#2", "score": 11.0, "product": "widget"},
+            {"ref": "o/r#3", "score": 9.0, "product": "gadget"},
+            {"ref": "o/r#4", "score": 8.0, "product": "gadget"},
+        ]
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1", issues=["o/r#1", "o/r#2"])],
+            queue_tail=_tail_of(tail),
+        )
+        await loop.tick()
+        events = await _picked_events()
+        assert len(events) == 1
+        assert events[0]["over"] == ["o/r#3", "o/r#4"]
+
+    asyncio.run(run())
+
+
+def test_picked_event_pick_missing_from_tail_reports_none(tmp_path):
+    """The ranked pool can have refreshed since selection — the spawned
+    primary may no longer be in the tail. Score/product report None but the
+    event still fires."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'pk3.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        tail = [
+            {"ref": "o/r#2", "score": 11.0, "product": "widget"},
+            {"ref": "o/r#3", "score": 9.0, "product": "gadget"},
+        ]
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1")],
+            queue_tail=_tail_of(tail),
+        )
+        await loop.tick()
+        events = await _picked_events()
+        assert len(events) == 1
+        assert events[0] == {
+            "ref": "o/r#1", "score": None, "product": None,
+            "over": ["o/r#2", "o/r#3"],
+        }
+
+    asyncio.run(run())
+
+
+def test_queue_tail_raising_does_not_disturb_spawn_bookkeeping(tmp_path):
+    """Provenance is best-effort (#990): a raising ``queue_tail`` must NOT
+    abort ``_refill`` mid-spawn — the spawn already succeeded and the state
+    row must still get finalized with its session_id, or the row is left
+    looking like a crash-between-claim-and-spawn dangler that
+    ``_reconcile_dangling`` would release or re-spawn."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'pk5.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+
+        def raising_queue_tail():
+            raise RuntimeError("tail read blew up")
+
+        spawned: list = []
+
+        async def spawn(b, account):
+            spawned.append((b, account))
+            return SimpleNamespace(id="s-picked-1", branch="b-picked-1")
+
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1")],
+            queue_tail=raising_queue_tail,
+            spawn=spawn,
+        )
+        await loop.tick()  # must not raise
+
+        assert len(spawned) == 1  # the spawn itself still happened
+        assert await _picked_events() == []  # no picked event
+        assert loop._last_pick is None
+        st = await ctx.get_target_state("o/r#1")
+        assert st.get("session_id") == "s-picked-1"  # state row still finalized
+
+    asyncio.run(run())
+
+
+def test_no_queue_tail_seam_emits_no_picked_event(tmp_path):
+    """Existing/legacy loop construction (no ``queue_tail``) must keep
+    behaving exactly as before — no picked event, no last-pick state."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'pk4.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1")],
+        )
+        await loop.tick()
+        assert len(rec.spawns) == 1
+        assert await _picked_events() == []
+        assert loop._last_pick is None
+        assert getattr(ctx, "backlog_last_pick", None) is None
 
     asyncio.run(run())

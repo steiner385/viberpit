@@ -102,9 +102,9 @@ def test_an_engine_capable_automation_reads_its_stored_config_whole(tmp_path):
     row and silently degrades to pure defaults.
 
     That is not a theoretical drift: it took the backlog runner down for two days. Defaults
-    mean ``enabled_repos: []``, and ``query_candidates`` returns ``[]`` on that before it
-    ever shells ``gh`` — so the card read "0 eligible" over a 156-issue backlog, with no
-    failing log line anywhere, while the row in the UI still showed 14 repos.
+    mean ``enabled_repos: []``, which scopes the candidate query to nothing — so the card
+    read "0 eligible" over a 156-issue backlog, with no failing log line anywhere, while
+    the row in the UI still showed 14 repos.
     """
     async def run():
         await _init_db(tmp_path)
@@ -140,4 +140,42 @@ def test_an_unreadable_db_resolves_to_off_and_defaults(tmp_path):
         mode, config = await read_automation_config(
             Unseeded, modes=("dry_run", "apply"))
         assert mode == "off" and config["migrate"] is False
+    asyncio.run(run())
+
+
+def test_validate_config_drops_a_retired_key_but_still_rejects_an_unknown_one():
+    """A field removed from a schema is still on every stored row that predates the
+    removal, and ``validate_config`` rejects unknown keys — so a plain removal turns
+    every one of those rows into "invalid", i.e. pure defaults (``enabled_repos: []``
+    for the backlog runner: the exact silent outage the module docstring describes).
+
+    ``retired`` names keys whose removal is deliberate: they are DROPPED, not rejected.
+    A key that is merely misspelled must still raise — retiring is an explicit list,
+    never a general amnesty on unknown keys."""
+    import pytest
+
+    from server.automations.base import ConfigField, validate_config
+
+    schema = [ConfigField(key="keep", label="Keep", type="string", default="x")]
+    assert validate_config(schema, {"keep": "y", "gone": "gate"},
+                           retired=("gone",)) == {"keep": "y"}
+    with pytest.raises(ValueError, match="unknown config key"):
+        validate_config(schema, {"keep": "y", "typo": "?"}, retired=("gone",))
+
+
+def test_a_stored_row_carrying_a_retired_key_still_loads_its_settings(tmp_path):
+    """End-to-end for the above through the reader every control loop uses: the live
+    backlog-runner row carries ``eligible_label`` (retired with the label search in
+    #990), and it must keep its ``enabled_repos`` rather than degrade to defaults."""
+    async def run():
+        await _init_db(tmp_path)
+        orch = _bare_orch()
+        await _set_row("backlog-runner", enabled=True, mode="auto", config={
+            "enabled_repos": ["steiner385/viberpit"], "eligible_label": "ready",
+            "max_concurrent": 6})
+        mode, config = await orch._backlog_read_config()
+        assert mode == "auto"
+        assert config["enabled_repos"] == ["steiner385/viberpit"]
+        assert config["max_concurrent"] == 6
+        assert "eligible_label" not in config
     asyncio.run(run())

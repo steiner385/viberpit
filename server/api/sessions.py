@@ -449,7 +449,7 @@ async def _autopilot_defer_seconds() -> int | None:
     reset the backlog runner's config; here the bare ``except`` below would have swallowed
     it into a missing badge."""
     from sqlalchemy import select
-    from server.automations.base import validate_config
+    from server.automations.base import retired_config_keys_of, validate_config
     from server.automations.registry import registry
     from server.db.models import Automation
     try:
@@ -458,7 +458,8 @@ async def _autopilot_defer_seconds() -> int | None:
                 select(Automation).where(Automation.id == "autopilot"))).scalar_one_or_none()
         if row is None or not row.enabled or row.mode == "off":
             return None
-        cfg = validate_config(registry.schema_for("autopilot"), dict(row.config or {}))
+        cfg = validate_config(registry.schema_for("autopilot"), dict(row.config or {}),
+                              retired=retired_config_keys_of(registry.get("autopilot")))
         return int(cfg.get("human_defer_seconds", 120))
     except Exception:
         return None

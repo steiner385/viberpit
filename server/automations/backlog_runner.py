@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, cast
 
 from ccswitch.worktrees import DISK_EXHAUSTION_MARKERS
 from server.github.pr_status import PullRequestInfo
+from server.pm.desired_state import STATUS_READY
+from server.pm.queue import MIN_STATUS_OPTIONS, NEEDS_HUMAN_RETRY_DAYS_DEFAULT
 
-from .backlog_github import NEEDS_HUMAN_RETRY_DAYS_DEFAULT, GhRun, query_candidates
 from .backlog_grouping import load_plan, mark_consumed, plan_to_batch
 from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
 from .base import AutomationStatus, ConfigField
@@ -66,14 +67,13 @@ def _spawn_backoff_delay(consecutive_failures: int) -> float:
 
 
 # --------------------------------------------------------------------------- #
-# select_batch (plan consumption: query live candidates → pop a plan group)   #
+# select_batch (plan consumption: read the priority queue → pop a plan group) #
 # --------------------------------------------------------------------------- #
 
 async def select_batch(
     config: dict,
     *,
-    query: Callable[..., list[dict]] = query_candidates,
-    gh_run: "GhRun | None" = None,
+    query: Callable[[dict], Awaitable[list[dict]]],
     repo_load: "dict[str, int] | None" = None,
     paused_repos: "set[str] | None" = None,
     load_plan: Callable[[], Awaitable[list[dict]]] = load_plan,
@@ -93,10 +93,10 @@ async def select_batch(
     config:
         Automation config dict.
     query:
-        Injectable candidate-discovery callable (default: ``query_candidates``).
-        Signature: ``(config, *, gh_run) -> list[dict]``.
-    gh_run:
-        Injectable GitHub API runner (forwarded to ``query``).
+        The candidate pool, awaited: ``async (config) -> list[dict]``. The
+        orchestrator injects the global priority queue
+        (``_backlog_query_queue``), so the pool is one ranking over the mirrored
+        Projects v2 board rather than a live GitHub label search (spec 003 §7a).
     repo_load:
         Optional ``{repo: active_run_count}`` map. When given, live plan groups
         are stable-reordered toward the repo with the FEWEST active runs
@@ -114,10 +114,7 @@ async def select_batch(
     -------
     ``Batch`` or ``None`` when there are no candidates or no live plan group.
     """
-    from ccswitch import gitrepos
-
-    _gh_run = gh_run if gh_run is not None else gitrepos._run_gh
-    candidates = query(config, gh_run=_gh_run)
+    candidates = await query(config)
     if not candidates:
         return None
 
@@ -158,11 +155,11 @@ class BacklogRunner:
     engine_policy: EnginePolicy = EnginePolicy.CODEX_ALLOWED
     config_schema = [
         ConfigField(key="enabled_repos", label="Repositories", type="repo-multiselect",
-                    default=[], help="Repos to draw issues from (empty = all)."),
-        ConfigField(key="eligible_label", label="Eligible label", type="string",
-                    default="ready",
-                    help="Only issues with this label are candidates. Leave blank "
-                         "to consider ALL open, unassigned issues (no label gate)."),
+                    default=[],
+                    help="Repos to draw issues from; empty means every onboarded "
+                         "product for candidate selection. Orphan healing and the "
+                         "'priority' selection strategy read this list directly, so "
+                         "with it empty they do nothing."),
         ConfigField(key="selection_strategy", label="Repo selection strategy",
                     type="enum", default="balanced",
                     choices=list(SELECTION_STRATEGIES),
@@ -207,25 +204,51 @@ class BacklogRunner:
                          "account's default model."),
         ConfigField(key="respect_dependencies", label="Respect issue dependencies",
                     type="bool", default=True,
-                    help="Skip issues whose dependencies are still open: native "
-                         "blocked-by relationships, 'Depends on #N' in the body, "
-                         "and epic list order (sub-issues / task-list checklists "
-                         "— list order is execution order). Skips are logged and "
-                         "counted; the issue becomes eligible the moment its "
-                         "blockers close."),
+                    help="Skip an issue while any of its dependencies is still "
+                         "open. The reconciler compiles native blocked-by "
+                         "relationships, 'Depends on #N' body references and epic "
+                         "list order into one dependency graph; the runner skips "
+                         "an issue while any edge points at an open blocker. A "
+                         "blocker whose state is unknown counts as open. Skips are "
+                         "counted as 'blocked'; the issue becomes eligible the "
+                         "moment its blockers close."),
+        ConfigField(key="queue_min_status", label="Minimum board status",
+                    type="enum", default=STATUS_READY,
+                    choices=list(MIN_STATUS_OPTIONS),
+                    help="How far down the board the runner may reach. 'Ready' "
+                         "takes only items triage classified and accepted — the "
+                         "safe default. 'Backlog' takes any open, unblocked, "
+                         "unassigned board item, including ones nobody has "
+                         "triaged yet."),
     ]
+    # ``eligible_label`` gated the old GitHub label search; the runner now selects
+    # from the board-mirror queue (spec 003 §7a), where board status — not a label
+    # — says what is workable, so the key has no equivalent to migrate to. Listed
+    # here so the rows that still carry it keep the rest of their settings.
+    retired_config_keys: tuple[str, ...] = ("eligible_label",)
 
     def status(self, ctx) -> AutomationStatus:
         counts = getattr(ctx, "backlog_counts", None) if ctx is not None else None
         if not counts:
             return AutomationStatus(text="idle", level="idle")
         n = counts.get("in_flight", 0)
-        return AutomationStatus(
-            text=f"{n} implementing, {counts.get('eligible', 0)} eligible"
-                 + (f", {counts['blocked']} blocked" if counts.get("blocked") else "")
-                 + (f", {counts['needs_human']} needs-human" if counts.get("needs_human") else ""),
-            level="active" if n else ("warn" if counts.get("needs_human") else "idle"),
-            counts=counts)
+        level = "active" if n else ("warn" if counts.get("needs_human") else "idle")
+        # ``untriaged`` is the below-min-status skip: in the default Ready mode a
+        # board full of untriaged items reads as "0 eligible", which looks like an
+        # empty backlog rather than one waiting on triage.
+        text = (f"{n} implementing, {counts.get('eligible', 0)} eligible"
+                + (f", {counts['blocked']} blocked" if counts.get("blocked") else "")
+                + (f", {counts['untriaged']} untriaged" if counts.get("untriaged") else "")
+                + (f", {counts['needs_human']} needs-human" if counts.get("needs_human") else ""))
+        # Queue provenance (#990): which ranked candidate this came from, and
+        # what it was picked over — same formatter the ``picked`` event uses,
+        # so the card and the activity feed can never say different things.
+        # Suppressed while idle: a stale pick from a prior spawn shouldn't
+        # clutter a card reporting nothing in flight.
+        pick = getattr(ctx, "backlog_last_pick", None)
+        if pick and level != "idle":
+            text += f" · {format_pick(pick)}"
+        return AutomationStatus(text=text, level=level, counts=counts)
 
     async def on_state_change(self, *, enabled, mode, config, ctx) -> None:
         # The orchestrator's loop reads mode/config each tick; nothing to start here.
@@ -238,14 +261,27 @@ class BacklogRunner:
 
 # Injected seam type aliases (the exact contract Plan B implements).
 SelectBatch = Callable[[dict], Awaitable["Batch | None"]]
+# Spec 003 §7a safety net: re-check the selected batch's issues against live
+# GitHub right before the claim (the mirror the queue ranks from can lag GitHub
+# by a sync interval). ``True`` = every issue still open, unassigned, unblocked;
+# ``False`` = at least one is not; ``None`` = the check itself failed. §10: the
+# loop treats ``None`` like ``False`` (fails closed) — never "ready".
+VerifyReady = Callable[["Batch"], Awaitable["bool | None"]]
+# Status-card queue provenance (#990): a SYNC, cheap seam returning a COPY of
+# the last ranked candidate pool ``_backlog_query_queue`` produced (the
+# orchestrator owns the cache — this never re-queries). ``None`` seam = no
+# ``picked`` event and ``status()`` renders exactly as before.
+QueueTail = Callable[[], "list[dict]"]
 Claim = Callable[["Batch"], Awaitable[bool]]
 Spawn = Callable[["Batch", str], Awaitable[Any]]
 CountInFlight = Callable[[], Awaitable[int]]
-# (eligible, blocked): the true count of eligible, unclaimed OPEN issues — the
-# honest backlog gauge for the Automation card, independent of how many runner
-# slots are free — plus how many otherwise-eligible issues were skipped as
-# dependency-blocked this sweep (the "why isn't the backlog draining" note).
-CountCandidates = Callable[[], Awaitable["tuple[int, int]"]]
+# (eligible, blocked, untriaged): the true count of eligible, unclaimed OPEN
+# issues — the honest backlog gauge for the Automation card, independent of how
+# many runner slots are free — plus how many otherwise-eligible issues were
+# skipped as dependency-blocked this sweep (the "why isn't the backlog draining"
+# note) and how many were skipped for sitting below ``queue_min_status`` (in the
+# default Ready mode, an untriaged board would otherwise read as "0 eligible").
+CountCandidates = Callable[[], Awaitable["tuple[int, int, int]"]]
 HealthyAccount = Callable[[], Awaitable["str | None"]]
 PrStatusFor = Callable[[str], Awaitable["PullRequestInfo | None"]]
 PrDoctorActive = Callable[[str], Awaitable[bool]]
@@ -292,6 +328,25 @@ CredentialAlerts = Callable[[], "list[dict]"]
 # The heal pass costs a gh search plus up to `limit` cross-ref lookups, so it
 # runs at most once per interval — orphans are a slow leak, not a hot path.
 _ORPHAN_SWEEP_INTERVAL = 3600.0
+
+
+def format_pick(pick: dict) -> str:
+    """Render a queue-provenance pick (``{ref, score, product, over}``) as the
+    ONE string both the ``picked`` event summary and ``status()`` show, so the
+    two can never drift (#990). ``score``/``product`` are omitted from the
+    parenthetical when ``None`` (or, for ``product``, empty); the "over ..."
+    clause is omitted entirely when ``over`` is empty."""
+    parts = []
+    score = pick.get("score")
+    if score is not None:
+        parts.append(f"score {score:g}")
+    product = pick.get("product")
+    if product:
+        parts.append(f"product {product}")
+    paren = f" ({', '.join(parts)})" if parts else ""
+    over = pick.get("over") or []
+    over_str = f" over {', '.join(over)}" if over else ""
+    return f"picked {pick.get('ref')}{paren}{over_str}"
 
 
 async def _stub_select_batch(_config: dict) -> Batch | None:
@@ -354,9 +409,13 @@ class BacklogRunnerLoop:
         heal_orphans: HealOrphans | None = None,
         refresh_groups: RefreshGroups | None = None,
         credential_alerts: CredentialAlerts | None = None,
+        verify_ready: VerifyReady | None = None,
+        queue_tail: QueueTail | None = None,
     ) -> None:
         self._ctx = ctx
         self._select_batch = select_batch          # Plan B: -> Batch | None
+        self._verify_ready = verify_ready           # (batch) -> bool | None; None seam = no check
+        self._queue_tail = queue_tail               # sync: () -> cached ranked pool copy; None = no picked event
         self._claim = claim                         # Plan B: (batch) -> bool
         self._spawn = spawn                         # (batch, account) -> SessionRecord
         self._count_in_flight = count_in_flight     # DB: origin==id, status!=ended
@@ -389,6 +448,7 @@ class BacklogRunnerLoop:
         self._spawn_circuit_until: float | None = None  # breaker open until this clock time
         self._consec_spawn_failures = 0             # resets on any successful spawn
         self._no_account_emitted = False            # debounce the skipped_no_account event
+        self._last_pick: dict | None = None          # queue provenance of the last successful spawn (#990)
 
     async def tick(self) -> None:
         async with self._lock:
@@ -489,20 +549,28 @@ class BacklogRunnerLoop:
         # The honest backlog gauge: the true count of eligible, unclaimed issues,
         # independent of how many runner slots are free (a saturated runner still
         # reports real depth), plus how many were skipped as dependency-blocked
-        # this sweep. Best-effort — a query failure reports 0.
+        # and how many sit below the configured board status (untriaged).
+        # Best-effort — a query failure reports 0.
         eligible = 0
         blocked = 0
+        untriaged = 0
         if self._count_candidates is not None:
             try:
-                eligible, blocked = await self._count_candidates()
+                eligible, blocked, untriaged = await self._count_candidates()
             except Exception:  # pragma: no cover — a count read must not stall the tick
-                eligible = blocked = 0
+                eligible = blocked = untriaged = 0
         setattr(self._ctx, "backlog_counts", {
             "in_flight": in_flight,
             "eligible": eligible,
             "blocked": blocked,
+            "untriaged": untriaged,
             "needs_human": needs_human,
         })
+        # Queue provenance (#990): the last successful spawn's pick, if any —
+        # a plain dict (never coerced into ``backlog_counts``, which stays
+        # int-only: the web types ``AutomationStatus.counts`` as
+        # ``Record<string, number>``).
+        setattr(self._ctx, "backlog_last_pick", self._last_pick)
 
     async def _reconcile_dangling(self) -> None:
         """Release claims that leaked (label written, session never came up).
@@ -642,6 +710,67 @@ class BacklogRunnerLoop:
                 "info", f"group plan refreshed — {n} group(s) planned",
                 kind="groups_refreshed", detail={"groups": n})
 
+    async def _live_check(self, batch: "Batch") -> bool:
+        """Spec 003 §7a safety net, before ANY claim (propose mode claims too):
+        re-verify the batch live. Anything but ``True`` — not ready, the check
+        failed, the seam raised — is a skip (§10: fails closed). The target
+        cools down on the same schedule as a failed spawn so a persistently
+        unverifiable pick cannot spin the loop; a later successful spawn clears
+        the entry as usual."""
+        assert self._verify_ready is not None
+        try:
+            ok = await self._verify_ready(batch)
+        except Exception:
+            log.warning("backlog_runner.live_check_raised target=%s", batch.primary,
+                        exc_info=True)
+            ok = None
+        if ok is True:
+            return True
+        result, why = (("not_ready", "no longer ready on GitHub") if ok is False
+                       else ("check_failed", "live check failed"))
+        fails = self._spawn_backoff.get(batch.primary, (0, 0.0))[0] + 1
+        delay = _spawn_backoff_delay(fails)
+        self._spawn_backoff[batch.primary] = (fails, self._clock() + delay)
+        await self._ctx.emit(
+            "info" if ok is False else "warn",
+            f"skipped {batch.primary}: {why} (retry in {int(delay)}s)",
+            kind="skipped_live_check", target=batch.primary,
+            detail={"result": result, "issues": batch.issues})
+        return False
+
+    async def _emit_pick(self, batch: "Batch") -> None:
+        """Queue provenance for a successful spawn (#990): which ranked
+        candidate the batch's primary was, its score/product, and the refs it
+        was picked over (the next 3 tail entries not already in this batch).
+        The ranked pool can have been refreshed since selection, so a primary
+        missing from the tail reports score/product as ``None`` — provenance
+        is best-effort and never a reason to skip or undo the spawn. Runs
+        AFTER the spawn already succeeded but BEFORE the state row records
+        the session id, so a raising ``_queue_tail`` (or a bad event write)
+        must never escape here: it would abort ``_refill`` mid-spawn, leaving
+        a live session whose state row was never finalized — exactly the
+        crash-between-claim-and-spawn shape ``_reconcile_dangling`` releases
+        or re-spawns. Callers guard on ``self._queue_tail`` being set."""
+        try:
+            # The call site already checked ``self._queue_tail is not None``;
+            # ``cast`` tells mypy the same thing without a second runtime
+            # check that would just duplicate the caller's guard.
+            tail = cast("QueueTail", self._queue_tail)()
+            entry = next((e for e in tail if e.get("ref") == batch.primary), None)
+            over = [e.get("ref") for e in tail if e.get("ref") not in batch.issues][:3]
+            pick = {
+                "ref": batch.primary,
+                "score": entry.get("score") if entry else None,
+                "product": entry.get("product") if entry else None,
+                "over": over,
+            }
+            self._last_pick = pick
+            await self._ctx.emit("info", format_pick(pick), kind="picked",
+                                 target=batch.primary, detail=pick)
+        except Exception:  # provenance must never stall a spawn
+            log.warning("backlog_runner.pick_provenance_failed target=%s", batch.primary,
+                        exc_info=True)
+
     async def _refill(self, mode: str, config: dict) -> None:
         if self._spawn_circuit_until is not None:
             if self._clock() < self._spawn_circuit_until:
@@ -681,6 +810,12 @@ class BacklogRunnerLoop:
             st = await self._ctx.get_target_state(batch.primary)
             if st.get("gave_up"):
                 continue
+            if self._verify_ready is not None and not await self._live_check(batch):
+                # break, not continue: ``select_batch`` already consumed this
+                # pick's plan group, so continuing would burn the REST of the
+                # plan on what is usually one GitHub hiccup. The slot waits a
+                # tick instead; the group returns at the next grouping refresh.
+                break
             if mode == "propose":
                 # RECORDS-BEFORE-LABELS: write the durable claim BEFORE the gh
                 # label write so a crash after the label lands still leaves a
@@ -788,6 +923,8 @@ class BacklogRunnerLoop:
                 await self._ctx.delete_target_state(batch.primary)
                 break
             self._spawn_backoff.pop(batch.primary, None)
+            if self._queue_tail is not None:
+                await self._emit_pick(batch)
             self._consec_spawn_failures = 0
             self._spawns_today.append(self._clock())
             # NB: ``attempts`` is charged when a session ENDS without a mergeable

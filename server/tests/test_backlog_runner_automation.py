@@ -19,8 +19,6 @@ def test_config_schema_keys_and_types():
     keys = {f.key: f for f in BacklogRunner().config_schema}
     assert keys["enabled_repos"].type == "repo-multiselect"
     assert keys["enabled_repos"].default == []
-    assert keys["eligible_label"].type == "string"
-    assert keys["eligible_label"].default == "ready"
     assert keys["max_concurrent"].type == "int"
     assert keys["max_concurrent"].default == 1
     assert keys["max_spawns_per_day"].type == "int"
@@ -29,6 +27,17 @@ def test_config_schema_keys_and_types():
     assert keys["max_attempts"].default == 2
     assert keys["max_issues_per_pr"].type == "int"
     assert keys["max_issues_per_pr"].default == 1
+
+
+def test_eligible_label_is_retired_not_merely_absent():
+    """The label gate died with the GitHub label search (#990) — board status,
+    not a label, says what is workable now. Dropping the field alone would make
+    every stored row that still carries it invalid, so it must be RETIRED: the
+    key stays listed, and the row keeps the rest of its settings."""
+    from server.automations.backlog_runner import BacklogRunner
+    br = BacklogRunner()
+    assert "eligible_label" not in {f.key for f in br.config_schema}
+    assert "eligible_label" in br.retired_config_keys
 
 
 def test_status_idle_by_default():
@@ -50,6 +59,18 @@ def test_config_schema_respect_dependencies_defaults_on():
     assert keys["respect_dependencies"].default is True
 
 
+def test_config_schema_queue_min_status_is_the_queue_vocabulary():
+    """The operator picks how far down the board the runner reaches; the choices
+    are the queue's own (server/pm/queue.py), never a second copy of them."""
+    from server.automations.backlog_runner import BacklogRunner
+    from server.pm.desired_state import STATUS_READY
+    from server.pm.queue import MIN_STATUS_OPTIONS
+    field = {f.key: f for f in BacklogRunner().config_schema}["queue_min_status"]
+    assert field.type == "enum"
+    assert field.default == STATUS_READY
+    assert field.choices == list(MIN_STATUS_OPTIONS)
+
+
 def test_status_shows_blocked_count():
     from types import SimpleNamespace
 
@@ -64,3 +85,94 @@ def test_status_omits_blocked_when_zero():
     from server.automations.backlog_runner import BacklogRunner
     ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "eligible": 2, "blocked": 0})
     assert "blocked" not in BacklogRunner().status(ctx).text
+
+
+def test_status_shows_untriaged_count():
+    """A Ready-mode runner over an untriaged board must not read as "0 eligible"
+    with no explanation — the below-min-status skip gets its own gauge (#990)."""
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "eligible": 0,
+                                          "blocked": 0, "untriaged": 2})
+    assert "2 untriaged" in BacklogRunner().status(ctx).text
+
+
+def test_status_omits_untriaged_when_zero():
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "eligible": 2,
+                                          "blocked": 0, "untriaged": 0})
+    assert "untriaged" not in BacklogRunner().status(ctx).text
+
+
+# --------------------------------------------------------------------------- #
+# Queue provenance on the status card (#990)                                  #
+# --------------------------------------------------------------------------- #
+
+def test_status_appends_pick_text_when_present_and_not_idle():
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(
+        backlog_counts={"in_flight": 1, "eligible": 2, "blocked": 0},
+        backlog_last_pick={"ref": "o/r#1", "score": 12.5, "product": "widget",
+                           "over": ["o/r#2", "o/r#3"]})
+    text = BacklogRunner().status(ctx).text
+    assert text.endswith(
+        " · picked o/r#1 (score 12.5, product widget) over o/r#2, o/r#3")
+
+
+def test_status_unchanged_when_no_pick():
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "eligible": 2, "blocked": 0})
+    text = BacklogRunner().status(ctx).text
+    assert "picked" not in text
+
+
+def test_status_omits_pick_when_idle():
+    """A stale pick from a prior spawn must not clutter the card once the
+    runner has gone idle (0 in flight, nothing needing a human)."""
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(
+        backlog_counts={"in_flight": 0, "eligible": 2, "blocked": 0, "needs_human": 0},
+        backlog_last_pick={"ref": "o/r#1", "score": 12.5, "product": "widget", "over": []})
+    status = BacklogRunner().status(ctx)
+    assert status.level == "idle"
+    assert "picked" not in status.text
+
+
+def test_format_pick_all_fields():
+    from server.automations.backlog_runner import format_pick
+    pick = {"ref": "o/r#1", "score": 12.5, "product": "widget",
+            "over": ["o/r#2", "o/r#3"]}
+    assert format_pick(pick) == "picked o/r#1 (score 12.5, product widget) over o/r#2, o/r#3"
+
+
+def test_format_pick_score_none():
+    from server.automations.backlog_runner import format_pick
+    pick = {"ref": "o/r#1", "score": None, "product": "widget", "over": []}
+    assert format_pick(pick) == "picked o/r#1 (product widget)"
+
+
+def test_format_pick_product_none():
+    from server.automations.backlog_runner import format_pick
+    pick = {"ref": "o/r#1", "score": 5, "product": None, "over": []}
+    assert format_pick(pick) == "picked o/r#1 (score 5)"
+
+
+def test_format_pick_over_empty():
+    from server.automations.backlog_runner import format_pick
+    pick = {"ref": "o/r#1", "score": 5, "product": "widget", "over": []}
+    assert format_pick(pick) == "picked o/r#1 (score 5, product widget)"
+
+
+def test_format_pick_no_score_no_product_no_over():
+    from server.automations.backlog_runner import format_pick
+    pick = {"ref": "o/r#1", "score": None, "product": None, "over": []}
+    assert format_pick(pick) == "picked o/r#1"

@@ -26,7 +26,7 @@ def dispatch_orch(tmp_path):
         # Patch the seams used by backlog_runner_dispatch
         orch._backlog_read_config = AsyncMock(return_value=(
             "auto",
-            {"enabled_repos": ["o/r"], "eligible_label": "ready",
+            {"enabled_repos": ["o/r"],
              "max_concurrent": 1, "max_spawns_per_day": 10,
              "max_issues_per_pr": 3, "default_model": None},
         ))
@@ -37,6 +37,9 @@ def dispatch_orch(tmp_path):
         rec.name = "backlog o/r#7"
         rec.branch = "backlog/o-r-7"
         orch._backlog_spawn = AsyncMock(return_value=rec)
+        # The candidate pool is the priority-queue read the loop itself selects
+        # from — dispatch resolves repo/title through the same seam.
+        orch._backlog_query_queue = AsyncMock(return_value=_CANDIDATES)
         # Patch _backlog_ctx so no DB initialisation is needed in unit tests
         ctx = MagicMock()
         ctx.get_target_state = AsyncMock(return_value={})
@@ -57,9 +60,7 @@ _CANDIDATES = [
 
 @pytest.mark.asyncio
 async def test_dispatch_single_ref_spawns(dispatch_orch):
-    with patch("server.automations.backlog_github.query_candidates",
-               return_value=_CANDIDATES):
-        r = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
+    r = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
     assert r["status"] == "spawned"
     assert r["session_id"] == "sess-42"
     assert r["session_name"] == "backlog o/r#7"
@@ -69,9 +70,7 @@ async def test_dispatch_single_ref_spawns(dispatch_orch):
 
 @pytest.mark.asyncio
 async def test_dispatch_multi_ref_bundles_all(dispatch_orch):
-    with patch("server.automations.backlog_github.query_candidates",
-               return_value=_CANDIDATES):
-        r = await dispatch_orch.backlog_runner_dispatch(["o/r#7", "o/r#8"])
+    r = await dispatch_orch.backlog_runner_dispatch(["o/r#7", "o/r#8"])
     assert r["status"] == "spawned"
     # The batch passed to _backlog_spawn must include both refs
     batch = dispatch_orch._backlog_spawn.call_args[0][0]
@@ -83,9 +82,7 @@ async def test_dispatch_multi_ref_bundles_all(dispatch_orch):
 @pytest.mark.asyncio
 async def test_dispatch_claim_failed(dispatch_orch):
     dispatch_orch._backlog_claim = AsyncMock(return_value=False)
-    with patch("server.automations.backlog_github.query_candidates",
-               return_value=_CANDIDATES):
-        r = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
+    r = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
     assert r["status"] == "claim_failed"
     dispatch_orch._backlog_spawn.assert_not_awaited()
 
@@ -93,9 +90,7 @@ async def test_dispatch_claim_failed(dispatch_orch):
 @pytest.mark.asyncio
 async def test_dispatch_no_account(dispatch_orch):
     dispatch_orch._backlog_healthy_account = AsyncMock(return_value=None)
-    with patch("server.automations.backlog_github.query_candidates",
-               return_value=_CANDIDATES):
-        r = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
+    r = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
     assert r["status"] == "no_account"
     dispatch_orch._backlog_spawn.assert_not_awaited()
 
@@ -103,8 +98,8 @@ async def test_dispatch_no_account(dispatch_orch):
 @pytest.mark.asyncio
 async def test_dispatch_ref_not_in_candidates_uses_fallback_repo(dispatch_orch):
     """A custom ref not in current candidates must still dispatch (uses ref split for repo)."""
-    with patch("server.automations.backlog_github.query_candidates", return_value=[]):
-        r = await dispatch_orch.backlog_runner_dispatch(["o/r#99"])
+    dispatch_orch._backlog_query_queue = AsyncMock(return_value=[])
+    r = await dispatch_orch.backlog_runner_dispatch(["o/r#99"])
     assert r["status"] == "spawned"
     batch = dispatch_orch._backlog_spawn.call_args[0][0]
     assert batch.repo == "o/r"
@@ -136,15 +131,14 @@ def _api_client(monkeypatch_orch=None):
 def test_candidates_returns_list():
     def patch_orch(orch):
         orch._backlog_read_config = AsyncMock(return_value=("auto", {
-            "enabled_repos": ["o/r"], "eligible_label": "ready",
+            "enabled_repos": ["o/r"],
             "max_concurrent": 1, "max_spawns_per_day": 10,
             "max_issues_per_pr": 1, "default_model": None,
         }))
-    with patch("server.automations.backlog_github.query_candidates",
-               return_value=_CANDIDATES):
-        with _api_client(patch_orch) as c:
-            _seed(c)
-            r = c.get("/api/automations/backlog-runner/candidates", headers=H)
+        orch._backlog_query_queue = AsyncMock(return_value=_CANDIDATES)
+    with _api_client(patch_orch) as c:
+        _seed(c)
+        r = c.get("/api/automations/backlog-runner/candidates", headers=H)
     assert r.status_code == 200
     body = r.json()
     assert "candidates" in body
@@ -159,20 +153,19 @@ def test_dispatch_api_happy_path():
 
     def patch_orch(orch):
         orch._backlog_read_config = AsyncMock(return_value=("auto", {
-            "enabled_repos": ["o/r"], "eligible_label": "ready",
+            "enabled_repos": ["o/r"],
             "max_concurrent": 1, "max_spawns_per_day": 10,
             "max_issues_per_pr": 3, "default_model": None,
         }))
         orch._backlog_claim = AsyncMock(return_value=True)
         orch._backlog_healthy_account = AsyncMock(return_value="acct-1")
         orch._backlog_spawn = AsyncMock(return_value=rec)
+        orch._backlog_query_queue = AsyncMock(return_value=_CANDIDATES)
 
-    with patch("server.automations.backlog_github.query_candidates",
-               return_value=_CANDIDATES):
-        with _api_client(patch_orch) as c:
-            _seed(c)
-            r = c.post("/api/automations/backlog-runner/dispatch",
-                       json={"refs": ["o/r#7"]}, headers=H)
+    with _api_client(patch_orch) as c:
+        _seed(c)
+        r = c.post("/api/automations/backlog-runner/dispatch",
+                   json={"refs": ["o/r#7"]}, headers=H)
     assert r.status_code == 200
     assert r.json()["status"] == "spawned"
     assert r.json()["session_id"] == "sess-1"

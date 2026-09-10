@@ -568,3 +568,39 @@ async def test_diff_map_spawn_does_not_schedule_critic(db_env):
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
         await orch.pm_onboard_spawn_map("ccswitch", scope="diff", suggestion="x")
     assert scheduled == []   # drift path never chains a critic
+
+
+@pytest.mark.asyncio
+async def test_backlog_verify_ready_seam_threads_batch_issues_and_gh_run():
+    """The runner's live re-check (spec 003 §7a safety net) must run the real
+    ``verify_ready_live`` over the WHOLE batch with the orchestrator's ``gh``
+    seam, off the event loop, and pass its tri-state answer through unchanged
+    (``None`` stays ``None`` — the loop is what fails closed on it)."""
+    from server.automations.backlog_selection import Batch
+    orch = _bare_orch()
+    sentinel_gh = object()
+    orch._gh_run = sentinel_gh
+    seen: list = []
+
+    def fake_verify(refs, *, gh_run):
+        seen.append((list(refs), gh_run))
+        return None
+
+    batch = Batch(primary="o/r#1", issues=["o/r#1", "o/r#2"], repo="o/r")
+    with patch("server.automations.backlog_github.verify_ready_live", fake_verify):
+        assert await orch._backlog_verify_ready(batch) is None
+    assert seen == [(["o/r#1", "o/r#2"], sentinel_gh)]
+
+
+def test_backlog_queue_tail_returns_copy_of_cache():
+    """The status-card queue-provenance seam (#990) must hand the loop a COPY
+    of the cached ranked pool — mutating what it returns must never corrupt
+    ``_backlog_last_queue``, which ``_backlog_select_batch`` /
+    ``_backlog_refresh_groups`` / the card's counts all share."""
+    orch = _bare_orch()
+    cached = [{"ref": "o/r#1", "score": 5, "product": "widget"}]
+    orch._backlog_last_queue = cached
+    tail = orch._backlog_queue_tail()
+    assert tail == cached
+    tail.append({"ref": "o/r#2", "score": 1, "product": "widget"})
+    assert orch._backlog_last_queue == cached  # unaffected by the caller's mutation
