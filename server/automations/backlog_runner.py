@@ -671,14 +671,14 @@ class BacklogRunnerLoop:
             ok = None
         if ok is True:
             return True
-        result = "not_ready" if ok is False else "check_failed"
+        result, why = (("not_ready", "no longer ready on GitHub") if ok is False
+                       else ("check_failed", "live check failed"))
         fails = self._spawn_backoff.get(batch.primary, (0, 0.0))[0] + 1
         delay = _spawn_backoff_delay(fails)
         self._spawn_backoff[batch.primary] = (fails, self._clock() + delay)
         await self._ctx.emit(
             "info" if ok is False else "warn",
-            f"skipped {batch.primary}: live check {result.replace('_', ' ')} "
-            f"(retry in {int(delay)}s)",
+            f"skipped {batch.primary}: {why} (retry in {int(delay)}s)",
             kind="skipped_live_check", target=batch.primary,
             detail={"result": result, "issues": batch.issues})
         return False

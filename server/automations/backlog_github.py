@@ -503,8 +503,11 @@ def verify_ready_live(refs: list[str], *, gh_run: GhRun = gitrepos._run_gh) -> b
                     return False
                 if (issue.get("assignees") or {}).get("totalCount", 0):
                     return False
+                # Same polarity as the mirror-side gate (backlog_deps): a
+                # blocker whose state cannot be read is BLOCKING, not clear.
                 blockers = (issue.get("blockedBy") or {}).get("nodes") or []
-                if any(isinstance(b, dict) and b.get("state") == "OPEN" for b in blockers):
+                if any(not backlog_deps._is_done(b.get("state") if isinstance(b, dict) else None)
+                       for b in blockers):
                     return False
     return True
 

@@ -632,6 +632,15 @@ def test_verify_ready_live_false_on_open_blocker():
     assert verify_ready_live(["o/r#5"], gh_run=gh) is False
 
 
+def test_verify_ready_live_false_on_blocker_with_unreadable_state():
+    """Same polarity as the mirror-side gate (``backlog_deps._is_done``): a
+    blocker whose state cannot be read is blocking, never clear."""
+    gh = FakeGh({("api", "graphql"): _proc(stdout=json.dumps({"data": {"r0": {"i5": {
+        "state": "OPEN", "assignees": {"totalCount": 0},
+        "blockedBy": {"nodes": [{"state": None}, None]}}}}}))})
+    assert verify_ready_live(["o/r#5"], gh_run=gh) is False
+
+
 def test_verify_ready_live_false_on_assignee():
     gh = FakeGh({("api", "graphql"): _proc(stdout=_verify_payload(
         {"o/r": {"5": _ready_issue(assignees=1)}}))})
