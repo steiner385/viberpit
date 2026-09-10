@@ -9,11 +9,9 @@ from typing import Any, Awaitable, Callable
 
 from ccswitch.worktrees import DISK_EXHAUSTION_MARKERS
 from server.github.pr_status import PullRequestInfo
-
 from server.pm.desired_state import STATUS_READY
-from server.pm.queue import MIN_STATUS_OPTIONS
+from server.pm.queue import MIN_STATUS_OPTIONS, NEEDS_HUMAN_RETRY_DAYS_DEFAULT
 
-from .backlog_github import NEEDS_HUMAN_RETRY_DAYS_DEFAULT, GhRun, query_candidates
 from .backlog_grouping import load_plan, mark_consumed, plan_to_batch
 from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
 from .base import AutomationStatus, ConfigField
@@ -69,14 +67,13 @@ def _spawn_backoff_delay(consecutive_failures: int) -> float:
 
 
 # --------------------------------------------------------------------------- #
-# select_batch (plan consumption: query live candidates → pop a plan group)   #
+# select_batch (plan consumption: read the priority queue → pop a plan group) #
 # --------------------------------------------------------------------------- #
 
 async def select_batch(
     config: dict,
     *,
-    query: Callable[..., list[dict]] = query_candidates,
-    gh_run: "GhRun | None" = None,
+    query: Callable[[dict], Awaitable[list[dict]]],
     repo_load: "dict[str, int] | None" = None,
     paused_repos: "set[str] | None" = None,
     load_plan: Callable[[], Awaitable[list[dict]]] = load_plan,
@@ -96,10 +93,10 @@ async def select_batch(
     config:
         Automation config dict.
     query:
-        Injectable candidate-discovery callable (default: ``query_candidates``).
-        Signature: ``(config, *, gh_run) -> list[dict]``.
-    gh_run:
-        Injectable GitHub API runner (forwarded to ``query``).
+        The candidate pool, awaited: ``async (config) -> list[dict]``. The
+        orchestrator injects the global priority queue
+        (``_backlog_query_queue``), so the pool is one ranking over the mirrored
+        Projects v2 board rather than a live GitHub label search (spec 003 §7a).
     repo_load:
         Optional ``{repo: active_run_count}`` map. When given, live plan groups
         are stable-reordered toward the repo with the FEWEST active runs
@@ -117,10 +114,7 @@ async def select_batch(
     -------
     ``Batch`` or ``None`` when there are no candidates or no live plan group.
     """
-    from ccswitch import gitrepos
-
-    _gh_run = gh_run if gh_run is not None else gitrepos._run_gh
-    candidates = query(config, gh_run=_gh_run)
+    candidates = await query(config)
     if not candidates:
         return None
 
@@ -210,12 +204,12 @@ class BacklogRunner:
                          "account's default model."),
         ConfigField(key="respect_dependencies", label="Respect issue dependencies",
                     type="bool", default=True,
-                    help="Skip issues whose dependencies are still open: native "
-                         "blocked-by relationships, 'Depends on #N' in the body, "
-                         "and epic list order (sub-issues / task-list checklists "
-                         "— list order is execution order). Skips are logged and "
-                         "counted; the issue becomes eligible the moment its "
-                         "blockers close."),
+                    help="Skip issues whose dependencies are still open, per the "
+                         "mirrored dependency graph (native blocked-by edges plus "
+                         "'Depends on #N' edges harvested from issue bodies). A "
+                         "blocker whose state is unknown counts as open. Skips are "
+                         "counted as 'blocked'; the issue becomes eligible the "
+                         "moment its blockers close."),
         ConfigField(key="queue_min_status", label="Minimum board status",
                     type="enum", default=STATUS_READY,
                     choices=list(MIN_STATUS_OPTIONS),

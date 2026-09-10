@@ -6,7 +6,12 @@ claim / spawn seams (grouping-plan refresh → ``store_plan`` → ``select_batch
 → ``plan_to_batch``, ``claim_batch`` / ``unclaim_batch`` / ``label_needs_human``)
 but with:
 
-- a FAKE ``gh`` (:class:`FakeGh`) — every GitHub call is scripted, no network;
+- a FAKE ``gh`` (:class:`FakeGh`) — every GitHub *write* (claim / release /
+  escalate labels, comments) is scripted, no network;
+- a candidate pool built from the real queue core (``rank`` / ``to_candidate``
+  over fixture ``QueueRow``s) rather than the mirror DB — the same composition
+  ``_backlog_query_queue`` runs in production (spec 003 §7a), so a ref this
+  runner has durably claimed drops out of the pool;
 - a canned grouping pass (all-singletons via ``parse_group_plan("")``) — the
   real Sonnet model is NEVER called; the REAL plan store (``backlog_groups``)
   carries the plan between refresh and selection;
@@ -19,8 +24,8 @@ de-dup) runs with NO network and NO real sessions.
 from __future__ import annotations
 
 import asyncio
-import json
 import subprocess
+from datetime import datetime, timezone
 
 from server.automations import backlog_github
 from server.automations.backlog_runner import BacklogRunnerLoop, select_batch
@@ -28,7 +33,11 @@ from server.automations.context import AutomationContext
 from server.db import db_session, init_db
 from server.db.models import Session as DbSession
 from server.github.pr_status import PullRequestInfo
+from server.pm.desired_state import STATUS_READY
+from server.pm.queue import QueueRow, rank, to_candidate
 from server.tests.fakes.fake_backlog import FakeGh
+
+NOW = datetime(2026, 9, 10, tzinfo=timezone.utc)
 
 
 # --------------------------------------------------------------------------- #
@@ -59,31 +68,27 @@ def make_config(**over) -> dict:
     return cfg
 
 
-def _candidates_proc(refs: list[tuple[str, int, str]]) -> subprocess.CompletedProcess:
-    """Scripted `gh api graphql` search response for the candidate query."""
-    nodes = [{"number": n, "title": t, "repository": {"nameWithOwner": repo}}
-             for (repo, n, t) in refs]
-    payload = {"data": {"issues": {"nodes": nodes}}}
-    return subprocess.CompletedProcess(args=[], returncode=0,
-                                       stdout=json.dumps(payload), stderr="")
+def _queue_row(repo: str, number: int, title: str, *, claimed: bool) -> QueueRow:
+    """A mirrored, board-linked, Ready issue — what ``load_queue_rows`` yields."""
+    return QueueRow(
+        ref=f"{repo}#{number}", repo=repo, number=number, product="ccswitch",
+        title=title, body="", url=f"https://github.com/{repo}/issues/{number}",
+        status=STATUS_READY, score=float(1000 - number),
+        gh_created_at=NOW, gh_updated_at=NOW, assignees=(), author="steiner385",
+        labels=(), open_children=0, open_blockers=(), live_session=False,
+        claimed=claimed)
 
 
 class LabelAwareGh(FakeGh):
-    """FakeGh that tracks in-progress labels and reflects them in the candidate
-    query — a claimed issue drops out of the candidate list, exactly like the
-    real ``-label:in-progress`` search gate."""
+    """FakeGh that tracks the in-progress labels the claim / release / escalate
+    paths write, so a test can assert on the real label bookkeeping."""
 
-    def __init__(self, candidate_refs):
+    def __init__(self):
         super().__init__()
-        self._refs = list(candidate_refs)  # (repo, number, title)
         self.in_progress: set[str] = set()
 
     def __call__(self, args, token=None):
         self.calls.append(list(args))
-        if args[:2] == ["api", "graphql"]:
-            live = [(r, n, t) for (r, n, t) in self._refs
-                    if f"{r}#{n}" not in self.in_progress]
-            return _candidates_proc(live)
         if args[:2] == ["issue", "edit"]:
             number, repo = args[2], args[4]
             ref = f"{repo}#{number}"
@@ -106,7 +111,8 @@ class Harness:
 
     def __init__(self, *, config, clock, candidate_refs, healthy="acct",
                  spawn_raises=False, pr_status=None, pr_doctor_active=True):
-        self.gh = LabelAwareGh(candidate_refs)
+        self.gh = LabelAwareGh()
+        self.candidate_refs = list(candidate_refs)  # (repo, number, title)
         self.config = config
         self.clock = clock
         self.spawn_raises = spawn_raises
@@ -138,20 +144,32 @@ class Harness:
     async def _read_config(self):
         return "auto", self.config
 
+    async def _query_queue(self, _config: dict | None = None) -> list[dict]:
+        """The candidate pool, ranked exactly as ``_backlog_query_queue`` does:
+        the runner's own durable claims are excluded, so an issue it holds
+        cannot be picked again until the sweep releases it."""
+        states = await self.ctx.list_target_states()
+        claimed = {ref for target, st in states.items() if st.get("claimed")
+                   for ref in (st.get("issues") or [target])}
+        rows = [_queue_row(r, n, t, claimed=f"{r}#{n}" in claimed)
+                for (r, n, t) in self.candidate_refs]
+        entries, _skipped = rank(rows, now=NOW)
+        return [to_candidate(e) for e in entries]
+
     async def _refresh_groups(self, config) -> int:
         # Canned grouping: all-singletons in issue-number order (what
         # parse_group_plan degrades to) written through the REAL plan store.
         # The real Sonnet model is never called; the grouping logic itself is
         # covered by test_backlog_grouping.
         from server.automations.backlog_grouping import parse_group_plan, store_plan
-        cands = backlog_github.query_candidates(config, gh_run=self.gh)
+        cands = await self._query_queue(config)
         groups = parse_group_plan("", cands, int(config.get("max_issues_per_pr") or 1))
         await store_plan(groups, cands)
         return len(groups)
 
     async def _select_batch(self, config):
-        # REAL plan-based selection: live candidates ∩ the stored group plan.
-        return await select_batch(config, gh_run=self.gh)
+        # REAL plan-based selection: the live queue pool ∩ the stored group plan.
+        return await select_batch(config, query=self._query_queue)
 
     async def _claim(self, batch) -> bool:
         return await asyncio.to_thread(backlog_github.claim_batch, batch, gh_run=self.gh)
@@ -604,7 +622,7 @@ def test_backlog_claim_posts_linking_comment(tmp_path, monkeypatch):
         _os.environ["CCSWITCH_DEV"] = "1"
         await init_db(db_url=_os.environ["CCSWITCH_DB_URL"])
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
-        gh = LabelAwareGh([("o/r", 1, "one")])
+        gh = LabelAwareGh()
         orch._gh_run = gh
         batch = Batch(primary="o/r#1", issues=["o/r#1"], repo="o/r")
         ok = await orch._backlog_claim(batch)

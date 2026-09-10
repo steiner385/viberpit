@@ -11,7 +11,6 @@ import pytest
 
 from server.automations.backlog_runner import select_batch
 from server.automations.backlog_selection import Batch
-from server.tests.fakes.fake_backlog import FakeGh
 
 
 # --------------------------------------------------------------------------- #
@@ -39,8 +38,8 @@ def make_config(**overrides) -> dict:
 
 
 def canned_query(candidates: list[dict]):
-    """Return a query function that always yields *candidates*, ignoring args."""
-    def _query(config: dict, *, gh_run=None) -> list[dict]:  # noqa: ARG001
+    """Return an async query seam that always yields *candidates*, ignoring config."""
+    async def _query(config: dict) -> list[dict]:  # noqa: ARG001
         return list(candidates)
     return _query
 
@@ -281,25 +280,25 @@ async def test_strategy_concurrency_cap_idles_when_all_capped():
 
 
 # --------------------------------------------------------------------------- #
-# FakeGh wiring (gh_run injected)                                              #
+# The candidate seam (the orchestrator injects the global priority queue)      #
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.asyncio
-async def test_select_batch_passes_gh_run_to_query():
-    """gh_run is forwarded to the query callable; FakeGh records the call."""
-    gh = FakeGh()
-    received_gh_run = None
+async def test_select_batch_awaits_the_query_seam_with_config_only():
+    """The pool is an AWAITED queue read taking exactly the config — no ``gh_run``
+    (selection no longer runs a live GitHub label search, spec 003 §7a)."""
+    calls: list[dict] = []
+    config = make_config()
 
-    def gh_aware_query(config: dict, *, gh_run=None) -> list[dict]:
-        nonlocal received_gh_run
-        received_gh_run = gh_run
+    async def recording_query(cfg: dict) -> list[dict]:
+        calls.append(cfg)
         return list(CANDIDATES)
 
-    await select_batch(
-        make_config(),
-        query=gh_aware_query,
-        gh_run=gh,
+    result = await select_batch(
+        config,
+        query=recording_query,
         load_plan=canned_plan([{"id": 1, "refs": ["o/r#2"], "repo": "o/r"}]),
         mark_consumed=consumed_recorder([]),
     )
-    assert received_gh_run is gh
+    assert result is not None and result.primary == "o/r#2"
+    assert calls == [config]

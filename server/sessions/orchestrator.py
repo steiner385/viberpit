@@ -961,7 +961,7 @@ class SessionOrchestrator:
         # network. Defaults to the real ``gh`` shell-out.
         self._gh_run = gitrepos._run_gh
         # Backlog Runner control loop. Every I/O seam is now the real Plan-B
-        # wiring: select_batch (label-gated gh query → LLM rank → batch), claim /
+        # wiring: select_batch (priority queue → planned group → batch), claim /
         # unclaim (in-progress label lifecycle), spawn (clone-resolve + de-duped
         # session), plus in-flight/account/PR-status/config/session-ended probes.
         from server.automations.backlog_runner import BacklogRunnerLoop
@@ -990,6 +990,9 @@ class SessionOrchestrator:
             credential_alerts=self._backlog_credential_alerts,
         )
         self._backlog_task: asyncio.Task | None = None
+        # The last ranked candidate pool ``_backlog_query_queue`` produced, kept so
+        # the automation card can show WHERE the runner's next pick comes from.
+        self._backlog_last_queue: list[dict] = []
         # SDLC Intake control loop: turns pending triggers into proposed intent.md
         # PRs (propose-only). Same injected-seam mold as BacklogRunnerLoop; the
         # trigger source (read_triggers) stays empty until a triage queue (#804) or
@@ -5002,9 +5005,56 @@ class SessionOrchestrator:
             log.debug("backlog_runner.pr_doctor_active_failed", exc_info=True)
             return False
 
+    async def _backlog_query_queue(self, config: dict, *,
+                                   skipped_out: dict | None = None) -> list[dict]:
+        """The runner's candidate pool: the global priority queue (spec 003 §7a).
+
+        ONE composition — ``rank(load_queue_rows(...))`` over the mirrored
+        Projects v2 boards — feeds selection, the grouping refresh and the card's
+        counts, and is the same one ``GET /api/pm/queue`` renders, so what the
+        operator sees is what agents will do next. Refs this runner has already
+        claimed are excluded up front (a claim is durable state, not a label
+        read), so a claimed-but-not-yet-spawned issue can never be picked twice.
+
+        ``skipped_out``, when given, receives ``rank``'s per-reason skip counts
+        (``blocked`` is the card's "why isn't the backlog draining" note).
+        """
+        from datetime import datetime, timezone
+
+        from server.pm.desired_state import STATUS_READY
+        from server.pm.queue import NEEDS_HUMAN_RETRY_DAYS_DEFAULT, rank, to_candidate
+        from server.pm.queue_store import load_queue_rows
+
+        states = await self._backlog_ctx.list_target_states()
+        # A bundle rides on the primary's row; a row written before bundling (or
+        # by the dispatch path) carries no ``issues``, and IS its own claim.
+        claimed = {ref for target, st in states.items() if st.get("claimed")
+                   for ref in (st.get("issues") or [target])}
+        now = datetime.now(timezone.utc)
+        async with db_session() as db:
+            rows = await db.run_sync(
+                lambda s: load_queue_rows(s, now=now, claimed_refs=claimed))
+        raw_days = config.get("needs_human_retry_days")
+        entries, skipped = rank(
+            rows,
+            min_status=config.get("queue_min_status") or STATUS_READY,
+            respect_dependencies=bool(config.get("respect_dependencies", True)),
+            needs_human_retry_days=(NEEDS_HUMAN_RETRY_DAYS_DEFAULT if raw_days is None
+                                    else max(0, int(raw_days))),
+            now=now)
+        # The queue spans every onboarded product; ``enabled_repos`` is still the
+        # operator's scope switch (empty = all of them).
+        repos = set(config.get("enabled_repos") or ())
+        if repos:
+            entries = [e for e in entries if e.repo in repos]
+        if skipped_out is not None:
+            skipped_out.update(skipped)
+        self._backlog_last_queue = [to_candidate(e) for e in entries]
+        return list(self._backlog_last_queue)
+
     async def _backlog_select_batch(self, config: dict):
-        """Real selection: label-gated ``gh`` candidate query → pop the next
-        live group off the precomputed grouping plan (``backlog_groups``).
+        """Real selection: the global priority queue → pop the next live group
+        off the precomputed grouping plan (``backlog_groups``).
 
         No model call here — grouping happens in the background via
         ``_backlog_refresh_groups``; this path only intersects the stored plan
@@ -5016,8 +5066,8 @@ class SessionOrchestrator:
         # branching a worktree off their stale ref would implement against
         # ancient code. Auto-resumes when a later fetch clears the registry.
         paused = {a["repo"] for a in gitrepos.stale_credential_repos()}
-        return await select_batch(config, gh_run=self._gh_run, repo_load=repo_load,
-                                  paused_repos=paused)
+        return await select_batch(config, query=self._backlog_query_queue,
+                                  repo_load=repo_load, paused_repos=paused)
 
     def _backlog_credential_alerts(self) -> list[dict]:
         """Stale-credential seam for the loop's dashboard notification (#670).
@@ -5029,7 +5079,7 @@ class SessionOrchestrator:
     async def _backlog_refresh_groups(self, config: dict) -> int:
         """The grouping-optimizer seam: recompute + persist the group plan.
 
-        Queries the live candidate pool, asks Sonnet (``propose_groups``) to
+        Reads the global priority queue, asks Sonnet (``propose_groups``) to
         partition it into coherent 1..K groups, and REPLACES the stored plan.
         An empty backlog stores an empty plan (cheap, no model call). A model
         failure over a real backlog RAISES instead of storing an empty plan, so
@@ -5040,10 +5090,8 @@ class SessionOrchestrator:
         ``CLAUDE_CONFIG_DIR`` — so bind it to a healthy account (same trick the
         old inline ranking used); with no healthy account the SDK default
         applies and a failure is caught by the raise-on-empty contract."""
-        from server.automations.backlog_github import query_candidates
         from server.automations.backlog_grouping import propose_groups, store_plan
-        candidates = await asyncio.to_thread(query_candidates, config,
-                                             gh_run=self._gh_run)
+        candidates = await self._backlog_query_queue(config)
         if not candidates:
             return await store_plan([], [])
         config_dir = None
@@ -5203,16 +5251,14 @@ class SessionOrchestrator:
         runner slots are free (a saturated runner still reports the real depth).
         ``blocked`` is how many otherwise-eligible issues were skipped because a
         dependency is still open — the "why isn't the backlog draining" note."""
-        from server.automations.backlog_github import query_candidates
         _mode, config = await self._backlog_read_config()
-        blocked_out: list[dict] = []
+        skipped: dict[str, int] = {}
         try:
-            cands = await asyncio.to_thread(query_candidates, config,
-                                            gh_run=self._gh_run, blocked_out=blocked_out)
-        except Exception:  # pragma: no cover — a gh failure must not break the tick
+            entries = await self._backlog_query_queue(config, skipped_out=skipped)
+        except Exception:  # pragma: no cover — a queue read must not break the tick
             log.warning("orchestrator._backlog_count_candidates_failed", exc_info=True)
             return 0, 0
-        return len(cands), len(blocked_out)
+        return len(entries), skipped.get("blocked", 0)
 
     async def _backlog_spawn(self, batch, account: str):
         """Spawn a de-duped runner session for *batch*, seeded with the implement
