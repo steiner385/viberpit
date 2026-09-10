@@ -122,3 +122,100 @@ def test_router_never_exposes_an_in_process_fallback():
     assert "SessionOrchestrator(" not in src, (
         "FleetRouter must never construct an in-process orchestrator — that is "
         "the 2026-06-23 split-brain incident")
+
+
+# ---------------------------------------------------------------------------
+# Which hosts are worth fanning out to.
+#
+# Every no-id aggregate read (list_sessions, the _make_merge_all family, the codex
+# account reads) asks EVERY registered host and waits for the slowest. A host that is
+# POWERED OFF does not refuse the connection, it black-holes it, so each call pays the
+# full connect timeout plus its retry — measured at 13.04s per request on 2026-09-09,
+# on an endpoint the UI polls every 5s, for the 17 hours rocky was down.
+#
+# The registry already knew: the 30s probe had rocky at healthy=False with
+# "DaemonTimeout". The fan-out just never asked. `_dispatchable` consults exactly this
+# state for dispatch; these reads reach past it.
+#
+# The distinction that matters is REACHABLE, not healthy. A host fenced by version skew
+# or a protocol mismatch is unhealthy for DISPATCH but answers perfectly well, and it is
+# running live sessions — skipping it would blank them from the dashboard. That is what
+# FENCED_REACHABLE_PREFIXES already encodes (host_probe.py), so this reads it back
+# rather than restating the rule.
+# ---------------------------------------------------------------------------
+
+def _reachable(tmp_path, dbname, *hosts, always=None):
+    async def run():
+        r = await _router_with(tmp_path, dbname, *hosts)()
+        return await r.reachable_names(always=always)
+    return asyncio.run(run())
+
+
+def test_an_unreachable_host_is_not_fanned_out_to(tmp_path):
+    """The 2026-09-09 case: a powered-off host must cost nothing, not 13s per request."""
+    from server.db.models import Host
+
+    assert _reachable(
+        tmp_path, "reach1.db",
+        Host(name="dobby", endpoint="unix:///a", healthy=True),
+        Host(name="rocky", endpoint="https://rocky:9443", healthy=False,
+             last_error="DaemonTimeout: /info timed out: "),
+    ) == ["dobby"]
+
+
+def test_a_skew_fenced_host_is_still_fanned_out_to(tmp_path):
+    """Fenced for DISPATCH, but reachable — and running sessions the dashboard needs.
+
+    Dropping it here would trade a slow dashboard for a WRONG one.
+    """
+    from server.db.models import Host
+
+    assert _reachable(
+        tmp_path, "reach2.db",
+        Host(name="dobby", endpoint="unix:///a", healthy=True),
+        Host(name="rocky", endpoint="https://rocky:9443", healthy=False,
+             last_error="version skew: checkout=abc process=abc deployed=def"),
+    ) == ["dobby", "rocky"]
+
+
+def test_a_never_probed_host_is_still_fanned_out_to(tmp_path):
+    """healthy IS NULL is "unknown", not "down" — a fresh registry row must be asked."""
+    from server.db.models import Host
+
+    assert _reachable(
+        tmp_path, "reach3.db",
+        Host(name="dobby", endpoint="unix:///a", healthy=True),
+        Host(name="newbie", endpoint="https://newbie:9443", healthy=None),
+    ) == ["dobby", "newbie"]
+
+
+def test_the_primary_is_never_skipped(tmp_path):
+    """The primary's failure is contractually a raise, not a silent partial result."""
+    from server.db.models import Host
+
+    assert _reachable(
+        tmp_path, "reach4.db",
+        Host(name="dobby", endpoint="unix:///a", healthy=False,
+             last_error="DaemonTimeout: /info timed out: "),
+        always="dobby",
+    ) == ["dobby"]
+
+
+def test_an_unreadable_registry_fans_out_to_everyone(tmp_path):
+    """Fail OPEN. A registry hiccup must not hide the fleet — slow beats blank."""
+    from unittest import mock
+
+    from server.db.models import Host
+
+    async def run():
+        r = await _router_with(
+            tmp_path, "reach5.db",
+            Host(name="dobby", endpoint="unix:///a", healthy=True),
+            Host(name="rocky", endpoint="https://rocky:9443", healthy=False,
+                 last_error="DaemonTimeout"),
+        )()
+        with mock.patch("server.sessions.fleet_router.db_session",
+                        side_effect=RuntimeError("registry down")):
+            return await r.reachable_names()
+
+    assert asyncio.run(run()) == ["dobby", "rocky"]
