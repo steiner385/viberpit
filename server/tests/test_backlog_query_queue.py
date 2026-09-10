@@ -176,6 +176,54 @@ def test_count_candidates_scopes_to_enabled_repos(tmp_path):
     asyncio.run(run())
 
 
+def test_count_candidates_blocked_gauge_ignores_out_of_scope_products(tmp_path):
+    """The blocked gauge is scoped too. An unscoped product's stuck backlog must
+    not read as "40 blocked" on a card whose runner can only see one repo — the
+    number is the "why isn't THIS backlog draining" note."""
+    async def run():
+        await _init(tmp_path, "blockedscope.db")
+        await _seed_product("ccswitch", "o/r")
+        await _seed_product("kindash", "o/k")
+        await _seed_item("o/r", 1, score=1.0)                    # in scope, eligible
+        await _seed_item("o/k", 2, status="Blocked", score=9.0)  # out of scope, blocked
+        orch = _orch_with_ctx()
+
+        async def _read_config():
+            return "auto", _config(enabled_repos=["o/r"])
+        orch._backlog_read_config = _read_config
+
+        assert await orch._backlog_count_candidates() == (1, 0)
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# A failed queue read costs a spawn, never the whole tick                      #
+# --------------------------------------------------------------------------- #
+
+def test_select_batch_survives_a_failing_queue_read(tmp_path, monkeypatch):
+    """The selection half of a tick shares its coroutine with the sweep half
+    (reconcile / orphan heal / give-up), so a raising pool read would skip all of
+    it. A queue read that blows up is "no batch this tick", exactly as the old
+    label search returning [] was."""
+    async def run():
+        await _init(tmp_path, "selectfail.db")
+        orch = _orch_with_ctx()
+
+        async def _boom(config, *, skipped_out=None):
+            raise RuntimeError("mirror unavailable")
+        orch._backlog_query_queue = _boom
+
+        async def _repo_load():
+            return {}
+        orch._backlog_repo_load = _repo_load
+        monkeypatch.setattr("ccswitch.gitrepos.stale_credential_repos", lambda: [])
+
+        assert await orch._backlog_select_batch(_config()) is None
+
+    asyncio.run(run())
+
+
 # --------------------------------------------------------------------------- #
 # queue_min_status: the operator's Ready-vs-Backlog choice reaches rank()      #
 # --------------------------------------------------------------------------- #

@@ -5034,6 +5034,13 @@ class SessionOrchestrator:
         async with db_session() as db:
             rows = await db.run_sync(
                 lambda s: load_queue_rows(s, now=now, claimed_refs=claimed))
+        # The queue spans every onboarded product; ``enabled_repos`` is still the
+        # operator's scope switch (empty = all of them). Scoping happens BEFORE
+        # ranking, not after: skip reasons are per-row, so an unscoped product's
+        # stuck backlog would otherwise land in this runner's ``blocked`` gauge.
+        repos = set(config.get("enabled_repos") or ())
+        if repos:
+            rows = [r for r in rows if r.repo in repos]
         raw_days = config.get("needs_human_retry_days")
         entries, skipped = rank(
             rows,
@@ -5042,11 +5049,6 @@ class SessionOrchestrator:
             needs_human_retry_days=(NEEDS_HUMAN_RETRY_DAYS_DEFAULT if raw_days is None
                                     else max(0, int(raw_days))),
             now=now)
-        # The queue spans every onboarded product; ``enabled_repos`` is still the
-        # operator's scope switch (empty = all of them).
-        repos = set(config.get("enabled_repos") or ())
-        if repos:
-            entries = [e for e in entries if e.repo in repos]
         if skipped_out is not None:
             skipped_out.update(skipped)
         self._backlog_last_queue = [to_candidate(e) for e in entries]
@@ -5061,12 +5063,24 @@ class SessionOrchestrator:
         with the live candidate pool. Returns ``None`` (the loop waits and
         nudges the optimizer) when no plan group is live."""
         from server.automations.backlog_runner import select_batch
+
+        async def _pool(cfg: dict) -> list[dict]:
+            """An empty pool on failure, never a raise: selection shares its
+            coroutine with the sweep (reconcile / orphan heal / give-up), so a
+            queue read that blows up must cost this tick a spawn, not its
+            bookkeeping. Same guard the count seam applies."""
+            try:
+                return await self._backlog_query_queue(cfg)
+            except Exception:
+                log.warning("orchestrator._backlog_select_queue_failed", exc_info=True)
+                return []
+
         repo_load = await self._backlog_repo_load()
         # Repos whose clone can't fetch (stale git credentials, #670) are paused:
         # branching a worktree off their stale ref would implement against
         # ancient code. Auto-resumes when a later fetch clears the registry.
         paused = {a["repo"] for a in gitrepos.stale_credential_repos()}
-        return await select_batch(config, query=self._backlog_query_queue,
+        return await select_batch(config, query=_pool,
                                   repo_load=repo_load, paused_repos=paused)
 
     def _backlog_credential_alerts(self) -> list[dict]:
@@ -5250,7 +5264,10 @@ class SessionOrchestrator:
         The honest backlog gauge for the Automation card — independent of how many
         runner slots are free (a saturated runner still reports the real depth).
         ``blocked`` is how many otherwise-eligible issues were skipped because a
-        dependency is still open — the "why isn't the backlog draining" note."""
+        dependency is still open — the "why isn't the backlog draining" note.
+        Both numbers cover the SAME pool selection draws from: the queue scoped to
+        ``enabled_repos``, so another product's stuck backlog is never counted
+        against this runner."""
         _mode, config = await self._backlog_read_config()
         skipped: dict[str, int] = {}
         try:
