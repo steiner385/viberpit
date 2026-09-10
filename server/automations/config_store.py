@@ -23,27 +23,40 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy import select
 
 from server.db import db_session
 from server.db.models import Automation as AutomationRow
 
-from .base import ConfigSchema, validate_config
+from .base import validate_config
 
 log = logging.getLogger(__name__)
 
 
-async def read_automation_config(automation_id: str, schema: ConfigSchema, *,
+async def read_automation_config(automation: Any, *,
                                  modes: Sequence[str],
                                  default_mode: str | None = None,
                                  log_key: str | None = None) -> tuple[str, dict]:
-    """``(effective_mode, validated_config)`` for *automation_id*.
+    """``(effective_mode, validated_config)`` for *automation*.
+
+    *automation* is the automation itself (class or instance), not a schema — the schema
+    is resolved here via ``effective_config_schema``, so a loop cannot read through the
+    base ``config_schema`` while the API validates and persists through the engine-policy
+    one. That split was a real outage: the backlog runner's own row carries ``engine`` /
+    ``codex_model`` / ``codex_reasoning_effort``, ``validate_config`` rejects unknown keys,
+    and the loop degraded to ``enabled_repos: []`` — a silent "0 eligible" over a full
+    backlog for two days.
 
     *modes* are the active (non-``off``) modes the row may carry. *default_mode* is the
     mode an ENABLED row with no explicit mode resolves to — leave it ``None`` for
     automations whose UI always writes an explicit mode.
     """
+    from .engine_policy import effective_config_schema
+
+    automation_id = getattr(automation, "id", None) or str(automation)
+    schema = effective_config_schema(automation)
     enabled, mode, raw = False, None, {}
     try:
         async with db_session() as db:
@@ -55,7 +68,12 @@ async def read_automation_config(automation_id: str, schema: ConfigSchema, *,
         log.debug("%s.config.load_failed", log_key or automation_id, exc_info=True)
     try:
         config = validate_config(schema, raw)
-    except ValueError:
+    except ValueError as exc:
+        # Fail SAFE (pure defaults) but never fail SILENT: defaults can differ from the
+        # operator's settings in ways that read as "working but idle" on the card, so a
+        # rejected row has to be loud enough to find without a database session.
+        log.warning("%s.config.invalid — falling back to schema defaults: %s",
+                    log_key or automation_id, exc)
         config = validate_config(schema, {})
     if not enabled:
         return "off", config
@@ -68,21 +86,18 @@ async def read_effective_config(automation_id: str) -> dict:
     """The validated config for a REGISTERED automation, schema resolved for you.
 
     ``read_automation_config`` above is for a control loop that already holds its
-    own schema and mode vocabulary. The spawn helper does not — it knows only an
-    ``automation_id`` — so it needs the registry's answer for both, including the
-    engine fields the origin's audited ceiling adds (Phase 7, Task 7.1).
+    own mode vocabulary. The spawn helper does not — it knows only an
+    ``automation_id`` — so it needs the registry's answer for that too.
 
     Same invariant as its sibling: any failure resolves to pure defaults, which
     for the engine fields means ``claude_code``. An unregistered id (a caller
     passing an ad-hoc origin) answers ``{}`` rather than raising into a spawn.
     """
-    from .engine_policy import effective_config_schema
     from .registry import registry
 
     try:
         automation = registry.get(automation_id)
     except KeyError:
         return {}
-    _mode, config = await read_automation_config(
-        automation_id, effective_config_schema(automation), modes=automation.modes)
+    _mode, config = await read_automation_config(automation, modes=automation.modes)
     return config

@@ -95,13 +95,49 @@ def test_an_invalid_config_falls_back_to_pure_defaults(tmp_path):
     asyncio.run(run())
 
 
+def test_an_engine_capable_automation_reads_its_stored_config_whole(tmp_path):
+    """The engine fields (``engine`` / ``codex_model`` / ``codex_reasoning_effort``) live on
+    the ENGINE-POLICY half of the schema, so a loop that validates against the automation's
+    base ``config_schema`` alone raises ``unknown config key: 'engine'`` on its OWN persisted
+    row and silently degrades to pure defaults.
+
+    That is not a theoretical drift: it took the backlog runner down for two days. Defaults
+    mean ``enabled_repos: []``, and ``query_candidates`` returns ``[]`` on that before it
+    ever shells ``gh`` — so the card read "0 eligible" over a 156-issue backlog, with no
+    failing log line anywhere, while the row in the UI still showed 14 repos.
+    """
+    async def run():
+        await _init_db(tmp_path)
+        orch = _bare_orch()
+        await _set_row("backlog-runner", enabled=True, mode="auto", config={
+            "enabled_repos": ["steiner385/viberpit"], "max_concurrent": 6,
+            "engine": "claude_code", "codex_model": "", "codex_reasoning_effort": ""})
+        mode, config = await orch._backlog_read_config()
+        assert mode == "auto"
+        assert config["enabled_repos"] == ["steiner385/viberpit"]
+        assert config["max_concurrent"] == 6
+        assert config["engine"] == "claude_code"
+        # PR Doctor persists the same fields and had its own hand-rolled copy of the read.
+        await _set_row("pr-doctor", enabled=True, mode="auto", config={
+            "enabled_repos": ["steiner385/viberpit"], "auto_resolve_conflicts": True,
+            "engine": "claude_code", "codex_model": "", "codex_reasoning_effort": ""})
+        pr_config = await orch._pr_doctor_config()
+        assert pr_config["enabled_repos"] == ["steiner385/viberpit"]
+        assert pr_config["auto_resolve_conflicts"] is True
+    asyncio.run(run())
+
+
 def test_an_unreadable_db_resolves_to_off_and_defaults(tmp_path):
     """The DB read is wrapped because a control loop must survive a transient DB failure
     without acting on stale or absent config."""
     async def run():
         from server.automations.gh_reconcile import GhReconcile
+
+        class Unseeded(GhReconcile):        # a registered schema, but no row to read
+            id = "no-such-automation"
+
         await _init_db(tmp_path)
         mode, config = await read_automation_config(
-            "no-such-automation", GhReconcile.config_schema, modes=("dry_run", "apply"))
+            Unseeded, modes=("dry_run", "apply"))
         assert mode == "off" and config["migrate"] is False
     asyncio.run(run())
