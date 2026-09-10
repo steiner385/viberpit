@@ -76,3 +76,74 @@ def test_status_omits_blocked_when_zero():
     from server.automations.backlog_runner import BacklogRunner
     ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "eligible": 2, "blocked": 0})
     assert "blocked" not in BacklogRunner().status(ctx).text
+
+
+# --------------------------------------------------------------------------- #
+# Queue provenance on the status card (#990)                                  #
+# --------------------------------------------------------------------------- #
+
+def test_status_appends_pick_text_when_present_and_not_idle():
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(
+        backlog_counts={"in_flight": 1, "eligible": 2, "blocked": 0},
+        backlog_last_pick={"ref": "o/r#1", "score": 12.5, "product": "widget",
+                           "over": ["o/r#2", "o/r#3"]})
+    text = BacklogRunner().status(ctx).text
+    assert text.endswith(
+        " · picked o/r#1 (score 12.5, product widget) over o/r#2, o/r#3")
+
+
+def test_status_unchanged_when_no_pick():
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "eligible": 2, "blocked": 0})
+    text = BacklogRunner().status(ctx).text
+    assert "picked" not in text
+
+
+def test_status_omits_pick_when_idle():
+    """A stale pick from a prior spawn must not clutter the card once the
+    runner has gone idle (0 in flight, nothing needing a human)."""
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(
+        backlog_counts={"in_flight": 0, "eligible": 2, "blocked": 0, "needs_human": 0},
+        backlog_last_pick={"ref": "o/r#1", "score": 12.5, "product": "widget", "over": []})
+    status = BacklogRunner().status(ctx)
+    assert status.level == "idle"
+    assert "picked" not in status.text
+
+
+def test_format_pick_all_fields():
+    from server.automations.backlog_runner import format_pick
+    pick = {"ref": "o/r#1", "score": 12.5, "product": "widget",
+            "over": ["o/r#2", "o/r#3"]}
+    assert format_pick(pick) == "picked o/r#1 (score 12.5, product widget) over o/r#2, o/r#3"
+
+
+def test_format_pick_score_none():
+    from server.automations.backlog_runner import format_pick
+    pick = {"ref": "o/r#1", "score": None, "product": "widget", "over": []}
+    assert format_pick(pick) == "picked o/r#1 (product widget)"
+
+
+def test_format_pick_product_none():
+    from server.automations.backlog_runner import format_pick
+    pick = {"ref": "o/r#1", "score": 5, "product": None, "over": []}
+    assert format_pick(pick) == "picked o/r#1 (score 5)"
+
+
+def test_format_pick_over_empty():
+    from server.automations.backlog_runner import format_pick
+    pick = {"ref": "o/r#1", "score": 5, "product": "widget", "over": []}
+    assert format_pick(pick) == "picked o/r#1 (score 5, product widget)"
+
+
+def test_format_pick_no_score_no_product_no_over():
+    from server.automations.backlog_runner import format_pick
+    pick = {"ref": "o/r#1", "score": None, "product": None, "over": []}
+    assert format_pick(pick) == "picked o/r#1"

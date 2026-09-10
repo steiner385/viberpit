@@ -590,3 +590,17 @@ async def test_backlog_verify_ready_seam_threads_batch_issues_and_gh_run():
     with patch("server.automations.backlog_github.verify_ready_live", fake_verify):
         assert await orch._backlog_verify_ready(batch) is None
     assert seen == [(["o/r#1", "o/r#2"], sentinel_gh)]
+
+
+def test_backlog_queue_tail_returns_copy_of_cache():
+    """The status-card queue-provenance seam (#990) must hand the loop a COPY
+    of the cached ranked pool — mutating what it returns must never corrupt
+    ``_backlog_last_queue``, which ``_backlog_select_batch`` /
+    ``_backlog_refresh_groups`` / the card's counts all share."""
+    orch = _bare_orch()
+    cached = [{"ref": "o/r#1", "score": 5, "product": "widget"}]
+    orch._backlog_last_queue = cached
+    tail = orch._backlog_queue_tail()
+    assert tail == cached
+    tail.append({"ref": "o/r#2", "score": 1, "product": "widget"})
+    assert orch._backlog_last_queue == cached  # unaffected by the caller's mutation

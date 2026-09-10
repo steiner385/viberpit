@@ -54,7 +54,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
                pr_status=None, pr_doctor_active=True, claim_result=True,
                candidate_count=None, blocked_count=0, heal_orphans_result=None,
                refresh_groups=None, spawn=None, close_out_result=None,
-               credential_alerts=None, verify_ready=None):
+               credential_alerts=None, verify_ready=None, queue_tail=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .claims /
@@ -158,6 +158,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
         refresh_groups=refresh_groups,
         credential_alerts=credential_alerts,
         verify_ready=verify_ready,
+        queue_tail=queue_tail,
     )
     return loop, rec, ctx
 
@@ -1454,5 +1455,136 @@ def test_credential_check_runs_even_when_off(tmp_path):
         loop, _, ctx = build_loop(mode="off", credential_alerts=lambda: list(alerts))
         await loop.tick()
         assert len(await ctx.list_events(kind="credential_refresh_needed")) == 1
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# Queue provenance on the status card (#990)                                  #
+# --------------------------------------------------------------------------- #
+
+def _tail_of(entries: list):
+    """A ``queue_tail`` seam returning a fixed, fresh-copied ranked pool."""
+    def queue_tail():
+        return list(entries)
+    return queue_tail
+
+
+async def _picked_events() -> "list[dict | None]":
+    """``detail`` of every ``picked`` event, oldest first (``ctx.list_events``
+    does not surface ``detail``)."""
+    from sqlalchemy import select
+    from server.db.models import AutomationEvent
+    async with db_session() as db:
+        rows = (await db.execute(select(AutomationEvent).where(
+            AutomationEvent.kind == "picked").order_by(
+            AutomationEvent.id))).scalars().all()
+    return [r.detail for r in rows]
+
+
+def test_picked_event_emitted_on_successful_spawn(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'pk1.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        tail = [
+            {"ref": "o/r#1", "score": 12.5, "product": "widget"},
+            {"ref": "o/r#2", "score": 10.0, "product": "widget"},
+            {"ref": "o/r#3", "score": 9.0, "product": "gadget"},
+            {"ref": "o/r#4", "score": 8.0, "product": "gadget"},
+        ]
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1")],
+            queue_tail=_tail_of(tail),
+        )
+        await loop.tick()
+        assert len(rec.spawns) == 1
+        events = await _picked_events()
+        assert len(events) == 1
+        assert events[0] == {
+            "ref": "o/r#1", "score": 12.5, "product": "widget",
+            "over": ["o/r#2", "o/r#3", "o/r#4"],
+        }
+        assert loop._last_pick == events[0]
+        assert getattr(ctx, "backlog_last_pick", None) == events[0]
+
+    asyncio.run(run())
+
+
+def test_picked_event_excludes_bundled_issues_from_over(tmp_path):
+    """A batch bundling two issues into one PR must exclude BOTH from the
+    'over' runners-up list, not just the primary."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'pk2.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        tail = [
+            {"ref": "o/r#1", "score": 12.5, "product": "widget"},
+            {"ref": "o/r#2", "score": 11.0, "product": "widget"},
+            {"ref": "o/r#3", "score": 9.0, "product": "gadget"},
+            {"ref": "o/r#4", "score": 8.0, "product": "gadget"},
+        ]
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1", issues=["o/r#1", "o/r#2"])],
+            queue_tail=_tail_of(tail),
+        )
+        await loop.tick()
+        events = await _picked_events()
+        assert len(events) == 1
+        assert events[0]["over"] == ["o/r#3", "o/r#4"]
+
+    asyncio.run(run())
+
+
+def test_picked_event_pick_missing_from_tail_reports_none(tmp_path):
+    """The ranked pool can have refreshed since selection — the spawned
+    primary may no longer be in the tail. Score/product report None but the
+    event still fires."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'pk3.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        tail = [
+            {"ref": "o/r#2", "score": 11.0, "product": "widget"},
+            {"ref": "o/r#3", "score": 9.0, "product": "gadget"},
+        ]
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1")],
+            queue_tail=_tail_of(tail),
+        )
+        await loop.tick()
+        events = await _picked_events()
+        assert len(events) == 1
+        assert events[0] == {
+            "ref": "o/r#1", "score": None, "product": None,
+            "over": ["o/r#2", "o/r#3"],
+        }
+
+    asyncio.run(run())
+
+
+def test_no_queue_tail_seam_emits_no_picked_event(tmp_path):
+    """Existing/legacy loop construction (no ``queue_tail``) must keep
+    behaving exactly as before — no picked event, no last-pick state."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'pk4.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1")],
+        )
+        await loop.tick()
+        assert len(rec.spawns) == 1
+        assert await _picked_events() == []
+        assert loop._last_pick is None
+        assert getattr(ctx, "backlog_last_pick", None) is None
 
     asyncio.run(run())

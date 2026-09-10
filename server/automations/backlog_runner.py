@@ -225,12 +225,19 @@ class BacklogRunner:
         if not counts:
             return AutomationStatus(text="idle", level="idle")
         n = counts.get("in_flight", 0)
-        return AutomationStatus(
-            text=f"{n} implementing, {counts.get('eligible', 0)} eligible"
-                 + (f", {counts['blocked']} blocked" if counts.get("blocked") else "")
-                 + (f", {counts['needs_human']} needs-human" if counts.get("needs_human") else ""),
-            level="active" if n else ("warn" if counts.get("needs_human") else "idle"),
-            counts=counts)
+        level = "active" if n else ("warn" if counts.get("needs_human") else "idle")
+        text = (f"{n} implementing, {counts.get('eligible', 0)} eligible"
+                + (f", {counts['blocked']} blocked" if counts.get("blocked") else "")
+                + (f", {counts['needs_human']} needs-human" if counts.get("needs_human") else ""))
+        # Queue provenance (#990): which ranked candidate this came from, and
+        # what it was picked over — same formatter the ``picked`` event uses,
+        # so the card and the activity feed can never say different things.
+        # Suppressed while idle: a stale pick from a prior spawn shouldn't
+        # clutter a card reporting nothing in flight.
+        pick = getattr(ctx, "backlog_last_pick", None)
+        if pick and level != "idle":
+            text += f" · {format_pick(pick)}"
+        return AutomationStatus(text=text, level=level, counts=counts)
 
     async def on_state_change(self, *, enabled, mode, config, ctx) -> None:
         # The orchestrator's loop reads mode/config each tick; nothing to start here.
@@ -249,6 +256,11 @@ SelectBatch = Callable[[dict], Awaitable["Batch | None"]]
 # ``False`` = at least one is not; ``None`` = the check itself failed. §10: the
 # loop treats ``None`` like ``False`` (fails closed) — never "ready".
 VerifyReady = Callable[["Batch"], Awaitable["bool | None"]]
+# Status-card queue provenance (#990): a SYNC, cheap seam returning a COPY of
+# the last ranked candidate pool ``_backlog_query_queue`` produced (the
+# orchestrator owns the cache — this never re-queries). ``None`` seam = no
+# ``picked`` event and ``status()`` renders exactly as before.
+QueueTail = Callable[[], "list[dict]"]
 Claim = Callable[["Batch"], Awaitable[bool]]
 Spawn = Callable[["Batch", str], Awaitable[Any]]
 CountInFlight = Callable[[], Awaitable[int]]
@@ -303,6 +315,25 @@ CredentialAlerts = Callable[[], "list[dict]"]
 # The heal pass costs a gh search plus up to `limit` cross-ref lookups, so it
 # runs at most once per interval — orphans are a slow leak, not a hot path.
 _ORPHAN_SWEEP_INTERVAL = 3600.0
+
+
+def format_pick(pick: dict) -> str:
+    """Render a queue-provenance pick (``{ref, score, product, over}``) as the
+    ONE string both the ``picked`` event summary and ``status()`` show, so the
+    two can never drift (#990). ``score``/``product`` are omitted from the
+    parenthetical when ``None`` (or, for ``product``, empty); the "over ..."
+    clause is omitted entirely when ``over`` is empty."""
+    parts = []
+    score = pick.get("score")
+    if score is not None:
+        parts.append(f"score {score:g}")
+    product = pick.get("product")
+    if product:
+        parts.append(f"product {product}")
+    paren = f" ({', '.join(parts)})" if parts else ""
+    over = pick.get("over") or []
+    over_str = f" over {', '.join(over)}" if over else ""
+    return f"picked {pick.get('ref')}{paren}{over_str}"
 
 
 async def _stub_select_batch(_config: dict) -> Batch | None:
@@ -366,10 +397,12 @@ class BacklogRunnerLoop:
         refresh_groups: RefreshGroups | None = None,
         credential_alerts: CredentialAlerts | None = None,
         verify_ready: VerifyReady | None = None,
+        queue_tail: QueueTail | None = None,
     ) -> None:
         self._ctx = ctx
         self._select_batch = select_batch          # Plan B: -> Batch | None
         self._verify_ready = verify_ready           # (batch) -> bool | None; None seam = no check
+        self._queue_tail = queue_tail               # sync: () -> cached ranked pool copy; None = no picked event
         self._claim = claim                         # Plan B: (batch) -> bool
         self._spawn = spawn                         # (batch, account) -> SessionRecord
         self._count_in_flight = count_in_flight     # DB: origin==id, status!=ended
@@ -402,6 +435,7 @@ class BacklogRunnerLoop:
         self._spawn_circuit_until: float | None = None  # breaker open until this clock time
         self._consec_spawn_failures = 0             # resets on any successful spawn
         self._no_account_emitted = False            # debounce the skipped_no_account event
+        self._last_pick: dict | None = None          # queue provenance of the last successful spawn (#990)
 
     async def tick(self) -> None:
         async with self._lock:
@@ -516,6 +550,11 @@ class BacklogRunnerLoop:
             "blocked": blocked,
             "needs_human": needs_human,
         })
+        # Queue provenance (#990): the last successful spawn's pick, if any —
+        # a plain dict (never coerced into ``backlog_counts``, which stays
+        # int-only: the web types ``AutomationStatus.counts`` as
+        # ``Record<string, number>``).
+        setattr(self._ctx, "backlog_last_pick", self._last_pick)
 
     async def _reconcile_dangling(self) -> None:
         """Release claims that leaked (label written, session never came up).
@@ -683,6 +722,28 @@ class BacklogRunnerLoop:
             detail={"result": result, "issues": batch.issues})
         return False
 
+    async def _emit_pick(self, batch: "Batch") -> None:
+        """Queue provenance for a successful spawn (#990): which ranked
+        candidate the batch's primary was, its score/product, and the refs it
+        was picked over (the next 3 tail entries not already in this batch).
+        The ranked pool can have been refreshed since selection, so a primary
+        missing from the tail reports score/product as ``None`` — provenance
+        is best-effort and never a reason to skip or undo the spawn. Requires
+        ``self._queue_tail`` to be set; callers guard on that."""
+        assert self._queue_tail is not None
+        tail = self._queue_tail()
+        entry = next((e for e in tail if e.get("ref") == batch.primary), None)
+        over = [e.get("ref") for e in tail if e.get("ref") not in batch.issues][:3]
+        pick = {
+            "ref": batch.primary,
+            "score": entry.get("score") if entry else None,
+            "product": entry.get("product") if entry else None,
+            "over": over,
+        }
+        self._last_pick = pick
+        await self._ctx.emit("info", format_pick(pick), kind="picked",
+                             target=batch.primary, detail=pick)
+
     async def _refill(self, mode: str, config: dict) -> None:
         if self._spawn_circuit_until is not None:
             if self._clock() < self._spawn_circuit_until:
@@ -833,6 +894,8 @@ class BacklogRunnerLoop:
                 await self._ctx.delete_target_state(batch.primary)
                 break
             self._spawn_backoff.pop(batch.primary, None)
+            if self._queue_tail is not None:
+                await self._emit_pick(batch)
             self._consec_spawn_failures = 0
             self._spawns_today.append(self._clock())
             # NB: ``attempts`` is charged when a session ENDS without a mergeable

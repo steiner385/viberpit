@@ -989,6 +989,7 @@ class SessionOrchestrator:
             refresh_groups=self._backlog_refresh_groups,
             credential_alerts=self._backlog_credential_alerts,
             verify_ready=self._backlog_verify_ready,
+            queue_tail=self._backlog_queue_tail,
         )
         self._backlog_task: asyncio.Task | None = None
         # The last ranked candidate pool ``_backlog_query_queue`` produced, kept so
@@ -5053,6 +5054,14 @@ class SessionOrchestrator:
         if skipped_out is not None:
             skipped_out.update(skipped)
         self._backlog_last_queue = [to_candidate(e) for e in entries]
+        return list(self._backlog_last_queue)
+
+    def _backlog_queue_tail(self) -> list[dict]:
+        """Status-card queue-provenance seam (#990): a cheap COPY of the last
+        ranked pool ``_backlog_query_queue`` produced, so the runner's
+        ``picked`` event / status text can cite score/product/"over" without
+        a second query. Sync — the loop calls this inline while building the
+        event; no I/O."""
         return list(self._backlog_last_queue)
 
     async def _backlog_select_batch(self, config: dict):
