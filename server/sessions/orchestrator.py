@@ -4825,7 +4825,7 @@ class SessionOrchestrator:
         from server.automations.backlog_runner import BacklogRunner
         from server.automations.config_store import read_automation_config
         return await read_automation_config(
-            "backlog-runner", BacklogRunner.config_schema, modes=("propose", "auto"),
+            BacklogRunner, modes=("propose", "auto"),
             log_key="backlog_runner")
 
     async def _backlog_count_in_flight(self) -> int:
@@ -5453,7 +5453,7 @@ class SessionOrchestrator:
         from server.automations.config_store import read_automation_config
         from server.automations.sdlc_intake import SdlcIntake
         return await read_automation_config(
-            "sdlc-intake", SdlcIntake.config_schema, modes=("propose", "auto"),
+            SdlcIntake, modes=("propose", "auto"),
             log_key="sdlc_intake")
 
     async def _sdlc_intake_read_triggers(self) -> list:
@@ -5636,7 +5636,7 @@ class SessionOrchestrator:
         from server.automations.config_store import read_automation_config
         from server.automations.control_band_monitor import ControlBandMonitor
         return await read_automation_config(
-            "control-band-monitor", ControlBandMonitor.config_schema,
+            ControlBandMonitor,
             modes=("monitor", "propose"), log_key="control_band_monitor")
 
     async def _control_band_read_bands(self):
@@ -5828,7 +5828,7 @@ class SessionOrchestrator:
         from server.automations.config_store import read_automation_config
         from server.automations.pm_sync import PmSync
         return await read_automation_config(
-            "pm-sync", PmSync.config_schema, modes=("on",), log_key="pm_sync")
+            PmSync, modes=("on",), log_key="pm_sync")
 
     async def _pm_sync_list_repos(self) -> list:
         """Query every ProjectRepo (+ owning Project slug) and return views."""
@@ -6227,7 +6227,7 @@ class SessionOrchestrator:
         from server.automations.config_store import read_automation_config
         from server.automations.pm_triage import PmTriage
         return await read_automation_config(
-            "pm-triage", PmTriage.config_schema, modes=("propose",),
+            PmTriage, modes=("propose",),
             log_key="pm_triage")
 
     async def _pm_triage_list_pending(self) -> list:
@@ -6537,7 +6537,7 @@ class SessionOrchestrator:
         from server.automations.config_store import read_automation_config
         from server.automations.gh_reconcile import GhReconcile
         return await read_automation_config(
-            "gh-reconcile", GhReconcile.config_schema, modes=("dry_run", "apply"),
+            GhReconcile, modes=("dry_run", "apply"),
             log_key="gh_reconcile")
 
     @staticmethod
@@ -7106,7 +7106,7 @@ class SessionOrchestrator:
         from server.automations.config_store import read_automation_config
         from server.automations.sdlc_synthesizer import SdlcSynthesizer
         return await read_automation_config(
-            "sdlc-synthesizer", SdlcSynthesizer.config_schema, modes=("propose", "auto"),
+            SdlcSynthesizer, modes=("propose", "auto"),
             log_key="sdlc_synthesizer")
 
     async def _sdlc_list_initiatives(self) -> list[dict]:
@@ -7371,7 +7371,7 @@ class SessionOrchestrator:
         # active mode by convention), else an enabled row is stuck 'off' forever.
         active = tuple(m for m in CicdDoctor.modes if m != "off")
         return await read_automation_config(
-            "cicd-doctor", CicdDoctor.config_schema, modes=active, default_mode=active[0],
+            CicdDoctor, modes=active, default_mode=active[0],
             log_key="cicd_doctor")
 
     async def _cicd_list_repos(self, config: dict) -> list[str]:
@@ -7411,7 +7411,7 @@ class SessionOrchestrator:
         from server.automations.config_store import read_automation_config
         active = tuple(m for m in ErrorTriage.modes if m != "off")
         return await read_automation_config(
-            "error-triage", ErrorTriage.config_schema, modes=active, default_mode=active[0],
+            ErrorTriage, modes=active, default_mode=active[0],
             log_key="error_triage")
 
     # ------------------------------------------------------------------
@@ -7444,7 +7444,7 @@ class SessionOrchestrator:
         # mode to the first non-off mode (act), else an enabled row is stuck 'off' forever.
         active = tuple(m for m in ArchiveAudit.modes if m != "off")
         return await read_automation_config(
-            "archive-audit", ArchiveAudit.config_schema, modes=active, default_mode=active[0],
+            ArchiveAudit, modes=active, default_mode=active[0],
             log_key="archive_audit")
 
     # ------------------------------------------------------------------
@@ -7670,7 +7670,7 @@ class SessionOrchestrator:
         from server.automations.autopilot import Autopilot
         from server.automations.config_store import read_automation_config
         effective, config = await read_automation_config(
-            "autopilot", Autopilot.config_schema, modes=("propose", "auto"),
+            Autopilot, modes=("propose", "auto"),
             log_key="autopilot")
         if getattr(self, "_draining", False):
             effective = "off"
@@ -8190,25 +8190,18 @@ class SessionOrchestrator:
 
         Single source of truth for the flags ``plan_recovery`` reads
         (``auto_*``, ``max_attempts``, ``mechanical_attempts``, ``enabled_repos``).
-        Best-effort: an absent/invalid row falls back to pure defaults."""
+        Best-effort: an absent/invalid row falls back to pure defaults.
+
+        Routed through ``read_automation_config`` rather than hand-rolling the row read
+        + validate: this was the last copy issue #985 missed, and it carried the same
+        base-schema bug that silently reset ``enabled_repos`` and ``auto_resolve_conflicts``
+        on a row carrying the engine fields. The mode is ignored here — the poll loop asks
+        this only for flags."""
+        from server.automations.config_store import read_automation_config
         from server.automations.pr_doctor import PrDoctor
-        from server.automations.base import validate_config
-        from sqlalchemy import select
-        from server.db.models import Automation
-        raw: dict = {}
-        try:
-            async with db_session() as db:
-                row = (await db.execute(select(Automation).where(
-                    Automation.id == "pr-doctor"))).scalar_one_or_none()
-                raw = dict(row.config) if row and row.config else {}
-        except Exception:
-            log.debug("pr_doctor.config.load_failed", exc_info=True)
-        try:
-            return validate_config(PrDoctor.config_schema, raw)
-        except ValueError:
-            # A stale/invalid stored config must not break the poll loop — fall
-            # back to pure schema defaults.
-            return validate_config(PrDoctor.config_schema, {})
+        _mode, config = await read_automation_config(
+            PrDoctor, modes=PrDoctor.modes, log_key="pr_doctor")
+        return config
 
     async def _bump_automation_active(self, automation_id: str) -> None:
         """Best-effort ``last_active_at`` heartbeat on an automation row.

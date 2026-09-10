@@ -442,10 +442,15 @@ async def _autopilot_defer_seconds() -> int | None:
     """Human-deference window (seconds) for the cooldown badge, or None when autopilot is
     disabled/off (→ no badge). Reads the autopilot Automation row directly: the edge process owns
     DB access, and the orchestrator's `_autopilot_read_config` is not exposed on the edge adapter.
-    Mirrors the row-read pattern in server/api/automations.py."""
+    Mirrors the row-read pattern in server/api/automations.py — including its schema: the
+    validation goes through ``registry.schema_for`` (automation fields PLUS whatever its
+    engine ceiling adds), never the bare ``config_schema``. Autopilot is ``claude_only``
+    today so the two are identical, but reading through the narrow half is what silently
+    reset the backlog runner's config; here the bare ``except`` below would have swallowed
+    it into a missing badge."""
     from sqlalchemy import select
-    from server.automations.autopilot import Autopilot
     from server.automations.base import validate_config
+    from server.automations.registry import registry
     from server.db.models import Automation
     try:
         async with db_session() as db:
@@ -453,7 +458,7 @@ async def _autopilot_defer_seconds() -> int | None:
                 select(Automation).where(Automation.id == "autopilot"))).scalar_one_or_none()
         if row is None or not row.enabled or row.mode == "off":
             return None
-        cfg = validate_config(Autopilot.config_schema, dict(row.config or {}))
+        cfg = validate_config(registry.schema_for("autopilot"), dict(row.config or {}))
         return int(cfg.get("human_defer_seconds", 120))
     except Exception:
         return None
