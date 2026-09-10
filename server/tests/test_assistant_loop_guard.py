@@ -19,7 +19,12 @@ _REPO = pathlib.Path(__file__).resolve().parents[2]
 # Orchestrator methods that iterate/act on session records on behalf of a background
 # loop or an enrichment read. Each must consult `is_assistant`.
 GUARDED_ORCH_METHODS = (
-    "_active_session_count",        # capacity gate
+    # The capacity chokepoint. BOTH counters route through this one predicate —
+    # _active_session_count (local admission gate) and owned_active_session_count
+    # (what /info publishes to the fleet ranker) — so guarding it guards both, and
+    # a third counter that bypassed it would be the parallel implementation this
+    # file exists to prevent.
+    "_consumes_capacity_slot",      # capacity gate
     "_autopilot_list_governed",     # autopilot
     "_autopilot_fleet_snapshot",    # autopilot's fleet context
     "_titling_sweep",               # auto-titles

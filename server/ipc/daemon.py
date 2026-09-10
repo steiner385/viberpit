@@ -414,7 +414,7 @@ def create_daemon_app() -> FastAPI:
         from server.sessions.host_engines import ENGINES_INFO_KEY, build_engines_info
         from server.version import checkout_git_sha, running_git_sha
         orch = getattr(app.state, "orchestrator", None)
-        active = len(getattr(orch, "_records", {}) or {})
+        active = await _owned_active_count(orch)
         # The engine advertisement the edge's dispatch gate reads. Derived from the
         # Codex manager's own availability verdict rather than re-probed here, so
         # "may I run Codex?" has exactly one answer per runner. Absent on a daemon
@@ -458,6 +458,35 @@ def _read_mem_available_mb() -> int | None:
     except Exception:  # pragma: no cover — unreadable /proc must not break /info
         return None
     return None
+
+
+async def _owned_active_count(orch) -> int:
+    """Capacity slots occupied on THIS daemon, for /info. Never raises.
+
+    This used to be ``len(orch._records)`` — every record, of every status, and on the
+    primary of every host, because the primary holds the whole fleet's rows for the
+    dashboard (#852). The fleet ranker drops a host on
+    ``active_sessions >= max_sessions``, so that over-count took the host out of
+    dispatch permanently and silently: on 2026-09-09 dobby published 11 against a cap
+    of 6 while running a single driver, and every launch failed with "no enabled,
+    healthy host with capacity".
+
+    Degrades like every other /info field rather than taking the endpoint down — but
+    degrades DOWNWARD, to the process-local count and then to 0. Reporting too FEW
+    slots costs at worst one over-scheduled session, which the local admission gate
+    still catches; reporting too many is what removes the host from the fleet.
+    """
+    if orch is None:
+        return 0
+    try:
+        return await orch.owned_active_session_count()
+    except Exception:
+        log.warning("/info: owned session count failed — falling back", exc_info=True)
+    try:
+        return orch._active_session_count()
+    except Exception:
+        log.warning("/info: local session count failed — reporting 0", exc_info=True)
+        return 0
 
 
 def _capacity_snapshot(active_sessions: int) -> dict:

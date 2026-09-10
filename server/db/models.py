@@ -57,7 +57,15 @@ INACTIVE_SESSION_STATUSES: frozenset[str] = frozenset({"ended", "archived"})
 # re-enters the count instead of running as an uncapped ghost.
 #
 # _ACTIVE_STATUSES in orchestrator.py is a separate allow-list counter with its own
-# consumers (/info, deploy drain) and is intentionally not unified with this set.
+# consumer (the deploy drain) and is intentionally not unified with this set.
+#
+# /info does NOT use it — it publishes SessionOrchestrator.owned_active_session_count(),
+# which reads THIS set (via _consumes_capacity_slot) and additionally filters to rows the
+# daemon owns. That matters because the fleet ranker drops a host on
+# `active_sessions >= max_sessions`: this set is what keeps a finished session from
+# holding a fleet slot. This comment used to name /info as an _ACTIVE_STATUSES consumer;
+# it never was — /info published a raw len(_records), and the drift between the comment
+# and the code is part of why the 2026-09-09 capacity outage read as intentional.
 CAPACITY_EXEMPT_STATUSES: frozenset[str] = INACTIVE_SESSION_STATUSES | {"queued", "complete", "pending_approval"}
 
 # Session.archived_by values written by an AUTOMATIC archive (vs a manual "user"

@@ -2392,14 +2392,50 @@ class SessionOrchestrator:
             owner_identity=owner_identity, engine=selected_engine,
             client_node=client_node, display=display)
 
-    def _active_session_count(self) -> int:
-        """Sessions consuming a runtime capacity slot (see CAPACITY_EXEMPT_STATUSES).
+    def _consumes_capacity_slot(self, record) -> bool:
+        """Does *record* occupy a runtime slot? The ONE definition (constitution VI).
+
+        Both counters below read this, so "what counts as active" cannot drift between
+        the local admission gate and the number the fleet ranks on — which is exactly
+        how the 2026-09-09 capacity outage happened.
 
         The assistant is excluded: it is a UI affordance, not fleet work, so counting it
         would silently shrink the operator's coding-session cap by one.
         """
+        return record.status not in CAPACITY_EXEMPT_STATUSES and not is_assistant(record)
+
+    def _active_session_count(self) -> int:
+        """Sessions consuming a runtime capacity slot (see CAPACITY_EXEMPT_STATUSES).
+
+        Process-local: every record this orchestrator holds. That is the right question
+        for the LOCAL admission gate, and it is correct on a worker (rehydrate
+        host-partitions _records there). It is NOT what /info should publish on the
+        primary — see owned_active_session_count.
+        """
+        return sum(1 for r in self._records.values() if self._consumes_capacity_slot(r))
+
+    async def owned_active_session_count(self) -> int:
+        """Slots occupied ON THIS DAEMON — the number /info publishes to the fleet.
+
+        The fleet ranker excludes a host on ``active_sessions >= max_sessions``, so this
+        number decides whether the host can receive work at all. It therefore needs BOTH
+        filters, and /info historically applied neither: it published
+        ``len(orch._records)``.
+
+        * status — a `complete` record holds no driver and is capacity-exempt everywhere
+          else; counting it means a finished session occupies a slot until somebody
+          archives it (and with auto-archive off, forever).
+        * ownership — the PRIMARY deliberately holds every host's rows so the fleet
+          dashboard can render them (#852, see _owns_record). Counting those bills one
+          host for the whole fleet's sessions.
+
+        Observed 2026-09-09: dobby reported 11/6 with a single live driver, was dropped
+        from the ranking, and — with the only other runner offline — every launch failed
+        with "no enabled, healthy host with capacity".
+        """
+        enabled = await self._enabled_host_names()
         return sum(1 for r in self._records.values()
-                   if r.status not in CAPACITY_EXEMPT_STATUSES and not is_assistant(r))
+                   if self._consumes_capacity_slot(r) and self._owns_record(r, enabled))
 
     async def _max_active_sessions(self) -> int:
         from sqlalchemy import select as sa_select
