@@ -599,3 +599,167 @@ def test_initiative_without_capabilities_has_null_fields():
         assert body["projectSlug"] is None
         assert body["primaryCapability"] is None
         assert body["capabilities"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Plan materialization — the human gate (spec 003 §7b, #992)                   #
+# --------------------------------------------------------------------------- #
+
+_MAT_PAYLOAD = {
+    "epic_title": "Dark mode",
+    "epic_body": "Ship dark mode.",
+    "tasks": [{"title": "Tokens", "body": "b0", "depends_on": []},
+              {"title": "Toggle", "body": "b1", "depends_on": [0]}],
+    "source_session": "sess-9",
+}
+
+
+@contextmanager
+def _materialization_client(*, proposals=(("pending", None),)):
+    """Client + orchestrator for an initiative carrying *proposals*.
+
+    Each entry is ``(status, created_at)``; the orchestrator is yielded so a test
+    can stub the apply seam — the router must never build a GitHub call itself.
+    """
+    from datetime import datetime, timedelta, timezone
+    from server.db import db_session, init_db
+    from server.db.models import Initiative, MaterializationProposal
+
+    async def _seed(db_url: str):
+        await init_db(db_url)
+        async with db_session() as db:
+            ini = Initiative(slug="dark-mode", repo="o/r", title="Dark mode",
+                             stage="plan", status="awaiting_human")
+            db.add(ini)
+            await db.flush()
+            base = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
+            for n, (st, created) in enumerate(proposals):
+                db.add(MaterializationProposal(
+                    initiative_id=ini.id, status=st, session_id=f"sess-{n}",
+                    rationale=f"because {n}", payload=dict(_MAT_PAYLOAD),
+                    created_at=created or (base + timedelta(minutes=n))))
+            await db.commit()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        asyncio.run(_seed(db_url))
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
+                                     "CCSWITCH_DEV": "1",
+                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+            from fastapi.testclient import TestClient
+            from server.app import create_app
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.tests.fakes.fake_factory import fake_sdk_factory
+
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            app = create_app(orchestrator=orch)
+            with TestClient(app, raise_server_exceptions=False) as c:
+                yield c, orch
+
+
+def _accept_seam(orch, *, ok: bool = True):
+    """Stand-in for ``_sdlc_materialize_apply`` that records its calls and moves
+    the proposal the way the real seam's apply does."""
+    from server.db import db_session
+    from server.db.models import MaterializationProposal
+    from sqlalchemy import select
+
+    calls: list[str] = []
+
+    async def fake(proposal_id: str) -> dict:
+        calls.append(proposal_id)
+        if not ok:
+            return {"ok": False, "step": "task:1", "error": "cannot create Toggle"}
+        async with db_session() as db:
+            prop = (await db.execute(select(MaterializationProposal).where(
+                MaterializationProposal.id == proposal_id))).scalar_one()
+            prop.status = "accepted"
+            await db.commit()
+        return {"ok": True, "epic": {"number": 101}, "tasks": 2, "edges": 1}
+
+    orch._sdlc_materialize_apply = fake
+    return calls
+
+
+def test_materialization_get_404_without_a_proposal():
+    with _materialization_client(proposals=()) as (c, _orch):
+        r = c.get("/api/sdlc/initiatives/dark-mode/materialization",
+                  headers=IDENTITY_HEADERS)
+        assert r.status_code == 404, r.text
+        assert r.json()["detail"]["error"] == "no_proposal"
+
+
+def test_materialization_get_returns_the_latest_proposal_of_any_status():
+    """A rejected proposal still has to be readable — the human needs to see what
+    they turned down next to whatever replaced it."""
+    with _materialization_client(proposals=(("rejected", None), ("pending", None))) \
+            as (c, _orch):
+        r = c.get("/api/sdlc/initiatives/dark-mode/materialization",
+                  headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "pending"
+        assert body["epicTitle"] == "Dark mode"
+        assert [t["title"] for t in body["tasks"]] == ["Tokens", "Toggle"]
+        assert body["tasks"][1]["dependsOn"] == [0]
+        assert body["sessionId"] == "sess-1"
+        assert body["rationale"] == "because 1"
+
+
+def test_materialization_accept_runs_the_seam_and_409s_on_a_second_tap():
+    with _materialization_client() as (c, orch):
+        calls = _accept_seam(orch)
+        r = c.post("/api/sdlc/initiatives/dark-mode/materialization/accept",
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["tasks"] == 2
+        assert len(calls) == 1
+
+        again = c.post("/api/sdlc/initiatives/dark-mode/materialization/accept",
+                       headers=IDENTITY_HEADERS)
+        assert again.status_code == 409, again.text
+        assert again.json()["detail"]["error"] == "not_pending"
+        assert len(calls) == 1  # the second tap never reached GitHub
+
+
+def test_materialization_accept_502_leaves_the_proposal_pending():
+    """A partial apply is resumable: the proposal must stay pending so the same
+    accept can be tapped again once the cause is fixed."""
+    with _materialization_client() as (c, orch):
+        _accept_seam(orch, ok=False)
+        r = c.post("/api/sdlc/initiatives/dark-mode/materialization/accept",
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 502, r.text
+        assert r.json()["detail"]["error"] == "materialize_failed"
+        assert r.json()["detail"]["step"] == "task:1"
+
+        after = c.get("/api/sdlc/initiatives/dark-mode/materialization",
+                      headers=IDENTITY_HEADERS)
+        assert after.json()["status"] == "pending"
+
+
+def test_materialization_reject_resolves_it_and_leaves_the_initiative_parked():
+    with _materialization_client() as (c, orch):
+        calls = _accept_seam(orch)
+        r = c.post("/api/sdlc/initiatives/dark-mode/materialization/reject",
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "rejected"
+        assert r.json()["resolvedAt"]
+        assert calls == []
+
+        detail = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS)
+        # NOT unparked: a rejection only frees the next tick to decompose again.
+        assert detail.json()["status"] == "awaiting_human"
+
+        again = c.post("/api/sdlc/initiatives/dark-mode/materialization/reject",
+                       headers=IDENTITY_HEADERS)
+        assert again.status_code == 409, again.text
+
+
+def test_materialization_routes_404_for_an_unknown_initiative():
+    with _materialization_client() as (c, _orch):
+        assert c.get("/api/sdlc/initiatives/nope/materialization",
+                     headers=IDENTITY_HEADERS).status_code == 404
+        assert c.post("/api/sdlc/initiatives/nope/materialization/accept",
+                      headers=IDENTITY_HEADERS).status_code == 404
