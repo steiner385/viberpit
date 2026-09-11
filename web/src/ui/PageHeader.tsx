@@ -1,4 +1,6 @@
 import * as React from 'react'
+import { Link } from 'react-router-dom'
+import { ArrowLeft } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { setBaseTitle, releaseBaseTitle } from '@/shell/documentTitle'
 import { useInteractive } from '@/shell/InteractionContext'
@@ -19,13 +21,20 @@ export interface PageHeaderProps {
    * Defaults to `title`, so every other page is unaffected.
    */
   documentTitle?: string
+  /**
+   * A leading Back link (Reader pages; page-migration §2.2). Rendered BEFORE
+   * the title so it is the first thing keyboard and screen-reader users reach,
+   * and as a real link so it has an href. Not gated on `useInteractive()`:
+   * leaving a page is navigation, not a mutation.
+   */
+  back?: { to: string; label: string }
   meta?: React.ReactNode
   actions?: React.ReactNode
   className?: string
 }
 
 /** Zone 1 of every page: the only h1 on the page, synced to document.title (WCAG 2.4.2). */
-export function PageHeader({ title, documentTitle, meta, actions, className }: PageHeaderProps) {
+export function PageHeader({ title, documentTitle, back, meta, actions, className }: PageHeaderProps) {
   // A stable per-instance identity for `shell/documentTitle.ts`'s base-title
   // stack. useState's initializer (not a ref) because this codebase's
   // react-hooks/refs rule rejects reading a ref during render.
@@ -59,6 +68,15 @@ export function PageHeader({ title, documentTitle, meta, actions, className }: P
 
   return (
     <header ref={clearRef} className={cn('shrink-0 flex items-center gap-3 px-4 py-3 md:px-6 md:py-4 border-b border-edge', className)}>
+      {back && (
+        <Link
+          to={back.to}
+          aria-label={back.label}
+          className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 text-sm font-medium text-accent min-h-target hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          <ArrowLeft size={16} aria-hidden="true" /> Back
+        </Link>
+      )}
       <div className="min-w-0 flex-1">
         <h1 className="text-lg font-semibold text-ink truncate">{title}</h1>
         {meta && <div className="text-sm text-ink-muted">{meta}</div>}
