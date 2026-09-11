@@ -66,7 +66,7 @@ vi.mock('@/components/ReviewView', () => ({
 vi.mock('@/features/sessions/ArchivedWelcome', () => ({ ArchivedWelcome: stub('archived') }))
 // Likewise `/sessions/background`: the background list is a scope of the column.
 vi.mock('@/features/sessions/BackgroundWelcome', () => ({ BackgroundWelcome: stub('background') }))
-vi.mock('@/pipeline/PipelineTab', () => ({ PipelineTab: stub('pipeline') }))
+vi.mock('@/features/pipeline/PipelinePage', () => ({ PipelinePage: stub('pipeline') }))
 vi.mock('@/features/roadmap/RoadmapPage', () => ({ RoadmapPage: stub('roadmap') }))
 vi.mock('@/features/roadmap/InitiativePage', () => ({ InitiativePage: stub('initiative') }))
 vi.mock('@/features/delivery/DeliveryPage', () => ({ DeliveryPage: stub('delivery') }))

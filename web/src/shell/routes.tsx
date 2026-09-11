@@ -72,7 +72,7 @@ import { BackgroundWelcome } from '@/features/sessions/BackgroundWelcome'
 import { useArchiveAdvance } from '@/features/sessions/useArchiveAdvance'
 import { SubSessionView } from '@/components/session/SubSessionView'
 import { ReviewView } from '@/components/ReviewView'
-import { PipelineTab } from '@/pipeline/PipelineTab'
+import { PipelinePage } from '@/features/pipeline/PipelinePage'
 import { RoadmapPage } from '@/features/roadmap/RoadmapPage'
 import { InitiativePage } from '@/features/roadmap/InitiativePage'
 import {
@@ -142,15 +142,6 @@ function SubAgentPage() {
       agentId={agentId}
       onBack={() => navigate(sessionPath(id, scope))}
     />
-  )
-}
-
-function PipelinePage() {
-  const navigate = useNavigate()
-  return (
-    <div className="flex flex-col h-full">
-      <PipelineTab onOpenCiHealth={() => navigate(deliveryPath('ci'))} />
-    </div>
   )
 }
 

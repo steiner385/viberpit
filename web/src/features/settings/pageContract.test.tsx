@@ -140,12 +140,24 @@ const PAGES: readonly PageContractRow[] = [
   { nav: 'delivery', path: '/delivery?scope=ci',                   variant: 'standard', title: 'Delivery' },
   { nav: 'delivery', path: '/delivery/automations/pr-doctor',      variant: 'standard', title: 'PR doctor' },
   { nav: 'delivery', path: '/delivery/ci/o/r',                     variant: 'standard', title: 'o/r' },
+  // The first Workspace-variant page (finish-line row 5). Kiosk-safe, so it also
+  // gets a kiosk cell. No SSE frame ever arrives here (`EventSource` is stubbed
+  // below), so what the row asserts is the loading state of the contract.
+  { nav: 'pipeline', path: '/pipeline',                            variant: 'workspace', title: 'Pipeline' },
 ]
+
+// jsdom has no EventSource; the Pipeline page opens one on mount.
+class StubEventSource {
+  onopen = null; onmessage = null; onerror = null
+  addEventListener() {}
+  close() {}
+}
 
 describe('page contract', () => {
   beforeEach(() => {
     localStorage.clear()
     resetDocumentTitle()
+    vi.stubGlobal('EventSource', StubEventSource as unknown as typeof EventSource)
   })
 
   for (const page of PAGES) {
