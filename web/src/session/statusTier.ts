@@ -20,7 +20,7 @@ export interface StatusPresentation {
   tier: StatusTier
   label: string
   Icon: ComponentType<{ className?: string; size?: number }>
-  /** Tailwind text-color classes (light + dark). */
+  /** Tailwind text-color token class — one class; the token flips with the theme. */
   textClass: string
 }
 
@@ -28,7 +28,6 @@ const NEEDS_YOU = 'text-warning'
 const ERROR = 'text-danger'
 const BUSY = 'text-success'
 const CALM = 'text-ink-muted'
-const SLATE = 'text-ink-muted'
 
 // A daemon not confirmed alive within the truth bound (spec 002 FR-104): a
 // "Working…" pulse and a "Ready"/"Your turn" affordance are equally promises it
@@ -36,7 +35,7 @@ const SLATE = 'text-ink-muted'
 // Module-private: the demotion is applied here in statusPresentation(), never by
 // callers, so nothing outside this file needs the constant (#961 item 7).
 const UNREACHABLE: StatusPresentation = {
-  tier: 'unreachable', label: 'Unreachable', Icon: WifiOff, textClass: SLATE,
+  tier: 'unreachable', label: 'Unreachable', Icon: WifiOff, textClass: CALM,
 }
 
 // The heartbeat snapshot could NOT be read (liveness 'unknown' — DB down at the edge):
@@ -45,7 +44,7 @@ const UNREACHABLE: StatusPresentation = {
 // does not scream "Unreachable" across the whole board (spec 002 NFR-5). Reuses the
 // 'unreachable' tier (muted, non-pulsing) to avoid a parallel tier vocabulary.
 const UNKNOWN_LIVENESS: StatusPresentation = {
-  tier: 'unreachable', label: 'Status unknown', Icon: HelpCircle, textClass: SLATE,
+  tier: 'unreachable', label: 'Status unknown', Icon: HelpCircle, textClass: CALM,
 }
 
 // Terminal states are truthfully finished without a live daemon — never demoted.

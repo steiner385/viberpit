@@ -16,10 +16,12 @@ const buttonVariants = cva(
         primary: 'bg-accent text-accent-ink hover:bg-accent/90',
         secondary: 'border border-edge bg-surface text-ink hover:bg-surface-raised',
         ghost: 'text-ink hover:bg-surface-raised',
-        // -strong is the theme-invariant fill: white text needs 4.5:1, and
+        // -strong is the theme-invariant fill: its ink needs 4.5:1, and
         // --t-danger only clears that in light mode (dark mode drops to
-        // 3.18:1). See web/src/index.css for the token contract.
-        danger: 'bg-danger-strong text-white hover:bg-danger-strong/90',
+        // 3.18:1). text-on-strong is that ink (#ffffff, no dark override), so
+        // this reads identically to the text-white it replaced while routing
+        // through the token. See web/src/index.css for the token contract.
+        danger: 'bg-danger-strong text-on-strong hover:bg-danger-strong/90',
       },
       size: {
         sm: 'h-9 px-3',

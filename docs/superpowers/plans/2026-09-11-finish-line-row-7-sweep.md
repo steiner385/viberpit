@@ -29,16 +29,21 @@
 - **R1 — Six PRs, not one.** The inventory is 300 files; one PR would sit `BEHIND` master for days and be unreviewable. Each PR leaves the gate green and the lint scope strictly wider. Cost if wrong: five extra CI cycles.
 - **R2 — The codemod is the lint rule's fixer.** `no-raw-palette` gains `meta.fixable = 'code'` and a `MAPPING` table; `eslint --fix` converts what the table knows, errors name the rest. Reuses the rule's `inClassContext` scoping exactly (the inventory showed bare-grep false positives: a JS object key `dark`, comments, `#NNN` issue refs). Cost if wrong: a second script that duplicates the rule's scoping.
 - **R3 — Non-class hex stays.** `shell/canvas.ts` (`<meta name="theme-color">` values, mirrored in `web/index.html`) and `components/BrandMark.tsx`'s SVG stroke are not class strings and not palette debt; the target-state criteria are about class strings. `BrandMark` moves to `shell/` in 7d and keeps its SVG (the logo is brand, not theme). Cost: none.
-- **R4 — Token semantics for the mapping** (§Mapping): gray text tiers → `ink` / `ink-muted` / `ink-faint`; white/gray surfaces → `surface` / `surface-raised` / `canvas`; gray borders → `edge` / `edge-strong`; blue → `accent`; red → `danger`; amber/yellow → `warning`; green/emerald → `success`; sky/indigo/violet/purple → `info`; `z-10`→`z-raised`, `z-20`→`z-sticky`, `z-30`→`z-popover`, `z-40`→`z-overlay`, `z-50`→`z-dialog` (the implementer re-checks every `z-50` site: a menu/popover is `z-popover`, an overlay `z-overlay`); `min-h-[44px]`→`min-h-target`; `text-[10px]`/`[11px]`→`text-2xs`, `text-[13px]`→`text-sm`. A residual the table cannot name is mapped by hand using the same families. Cost if wrong: a wrong tint, caught by the contrast test or a screenshot.
+- **R4 — Token semantics for the mapping** (§Mapping): gray text tiers → `ink` / `ink-muted` / `ink-faint`; white/gray surfaces → `surface` / `surface-raised` / `canvas`; gray borders → `edge` / `edge-strong`; blue → `accent`; red → `danger`; amber/yellow → `warning`; green/emerald → `success`; sky/indigo/violet/purple → `info`; `z-10`→`z-raised`, `z-20`→`z-sticky`, `z-30`→`z-popover`, `z-40`→`z-overlay`, `z-50`→`z-dialog` (the implementer re-checks every `z-50` site: a menu/popover is `z-popover`, an overlay `z-overlay`); `min-h-[44px]`→`min-h-target`; `text-[10px]`/`[11px]`→`text-2xs`, `text-[13px]`→`text-sm`. A residual the table cannot name is mapped by hand using the same families. The 7d/7e PR bodies enumerate every `z-` rewrite: the fixer applies the table's layer mapping and removes the error that would otherwise force the per-site check, so the PR body is where a `z-50` that should have been `z-popover` gets caught. Cost if wrong: a wrong tint, caught by the contrast test or a screenshot.
 - **R5 — Destinations** (7d/7e): banners (`AllLimitedBanner`, `DaemonHealthIndicator`, `DaemonRestartBanner`, `DeployFailureNotice`, `GitCredentialBanner`, `GlobalUpdateBanner`, `NewVersionBanner`, `UpdatePendingBanner`, `DeployOverlay`, `DeployPanel`, `BrandMark`, `ErrorBoundary`) → `shell/`; `AccountsManager`, `AddAccountDialog`, `DeviceCodePanel`, `ReauthBrowserPanel`, `UsageBadge` → `features/accounts/` (new); `BacklogGroupsPanel`, `ConsolidatePanel`, `ManualDispatchDialog`, `ScheduleEditor` → `features/delivery/automation/`; `BrowserTab` → `features/sessions/browser/`; `SessionCard`, `SessionList`, `SessionListControls`, `SidebarResizer`, `SubAgentRows`, `ArchivedSessionCard`, `ArchivedSessionList`, `AdoptPanel`, `PendingApprovalSection`, `QueuedSection`, `DispatchBar`, `dispatchError.ts`, `PrList`, `PrPill` → `features/sessions/list/`; `EmptyState` (components') is folded into `ui/EmptyState` (one implementation), `GroupedList`, `GroupHeader`, `ListSearchInput`, `listControlStyles.ts`, `PermanentDeleteDialog`, `card/*`, `list/*` → `ui/list/` (`PermanentDeleteDialog` → `features/sessions/list/`); `settings/*`, `library/*` → `features/settings/sections/`; `session/*` → `features/sessions/transcript/` (rendering: `Turn`, `TranscriptView`, block/result cards, `Markdown`, `DiffView`, …), `features/sessions/composer/` (`Composer`, `SessionComposer`, `MicButton`, `AttachmentChips`, `useImageAttachments`, `useSessionDraft`, `heicConvert`, `CommandPalette`, `CommandResultOverlay`), `features/sessions/panels/` (`Pending*Panel`, `YourTurnPanel`, `QuestionCard`, `PermissionCard`, `ModelSwitchDialog`), `features/sessions/` root (`SessionBody`, `SessionMeta`, `SessionActions`, `SessionRuntimeProvider`, `SessionAriaLive`, `StatusBar`, `WorkingIndicator`, `workingWords`, `brailleSpinner`, `elapsed`, `SubAgentList`, `subAgentDuration`, `SessionGoalText`, `SessionPlaceholder`, `ExportMenu`, `useCardKeyboard`). Cost if wrong: a second `git mv`.
 - **R6 — `useMediaQuery` retirement** (7c): `useViewport` gains `reducedMotion: boolean` and keeps `coarsePointer`; `CardFrame`'s ≥1024 read becomes `width === 'desktop' || width === 'wide'`; `SessionCard`/`CardFrame` read `reducedMotion`; `BrowserTab` reads `coarsePointer`; `shell/theme.tsx` keeps a private `matchMedia('(prefers-color-scheme: dark)')` subscription inside the provider (not a layout query, and the theme provider is the one legitimate reader); `useViewport.tsx` inlines the subscription helper as a module-private function. `lib/useMediaQuery.ts` deleted; `EXEMPT` shrinks to the one file. Cost if wrong: one hook.
 - **R7 — Storage namespace** (7b): `lib/storageKey.ts` exports `storageKey(name: string): string` → `` `ccswitch.${name}` `` and `migrateStorageKey(storage, from, to)` (copy-then-delete, idempotent). Keys renamed: `prdash.collapsed` → `ccswitch.pipeline.collapsed`, `workspace.focusedPipeline` → `ccswitch.pipeline.focused`, `ccswitch:auto-reloaded-from-sha` → `ccswitch.autoReloadedFromSha` (sessionStorage), `ccswitch:draft:<id>` → `ccswitch.draft.<id>`. Keys already `ccswitch.<x>` keep their string (the helper produces the identical value) so the 17 pinning tests only change for the four renamed keys. Cost if wrong: one more migration line.
 - **R8 — Playwright viewport projects** (deferred from row 5 R7): 7f adds `projects: [phone 390×844, tablet 820×1180, desktop 1440×900]` to `web/playwright.config.ts` and removes the per-spec `test.use({ viewport })` where a spec already loops viewports itself (`delivery.spec.ts`, `pipeline.spec.ts`, `archived-reader.spec.ts` keep their loops — projects would triple them; ruling: projects apply to specs that do NOT set a viewport; specs with their own loop opt out with `test.use({ viewport: null })`… simpler: **do not add projects**; the three page specs already cover the three widths and kiosk. Target-state §9's "verified by Playwright" is met by those specs. Cost: none; documented in `web/README.md`.
 - **R9 — Emoji glyphs**: only glyphs used AS ICONS convert to lucide (`✓`/`✗` in `ToolCallCard` → `Check`/`X`; `📎`/`✨` in `DispatchBar` → `Paperclip`/`Sparkles`; the pipeline `definitions.ts` label glyphs `🔔 ⚠ 💰 🛡` → `Bell`/`AlertTriangle`/`Coins`/`Shield` rendered by the consumer). Emoji inside user-facing copy or test fixtures stay. Cost if wrong: an icon swap.
+- **R10 — `text-white` beside an accent/-strong fill is reported** (`whiteOnFill`, no fix): the ink rule above is enforced by the rule, not by review. `bg-accent` flips with the theme (white on the dark-mode `--t-accent` is ~2.7:1), and the `-strong` fills are held theme-invariant precisely so `--t-on-strong` stays AA on them, so the ink must be `text-accent-ink` / `text-on-strong`. Which one applies depends on the fill, so the fixer reports and the implementer hand-maps. Cost if wrong: one hand map per site.
 
 ## Mapping (the fixer table — single source of truth, lives in `web/eslint-rules/no-raw-palette.js`)
 
-Keys are the LIGHT class (any variant prefix such as `hover:`/`focus-visible:`/`placeholder:` is preserved on the output). A `dark:` token whose base is in `DARK_DROP` is deleted when the same string also contains a light token that mapped; a `dark:` token with no light partner is mapped through the same table by its base and the `dark:` prefix removed.
+Keys are the LIGHT class (any variant prefix such as `hover:`/`focus-visible:`/`placeholder:` is preserved on the output, as is a `!` important marker — leading in v3, trailing in v4).
+
+A token's **partner key** is its non-`dark` variant chain plus its utility prefix (the first segment of the base): `hover:bg-gray-100` and `dark:hover:bg-gray-700` both key to `hover:|bg`; `text-gray-500` keys to `|text`. A `dark:` token is deleted **iff a light token with the SAME partner key mapped** — in the same string, in a sibling quasi of the same template literal, or in a sibling *unconditional* string argument (a `Literal`/`TemplateLiteral` directly in the args list, never one behind `&&`/`?:` or inside an object) of the enclosing `cn`/`cva`/`clsx`/`twMerge` call. Sibling arguments count because `cn` is `twMerge(clsx(…))` and the last argument wins, so a `dark:`-only argument is only meaningful beside its light sibling.
+
+A `dark:` token with **no** same-key mapped partner is left exactly as written and keeps an unfixable `dark` error — it is a hand-mapping residual. The fixer never strips `dark:` and emits the base's mapping: the dark value is not the light value, so that would apply the dark treatment in light mode and (under last-wins) clobber the light token beside it.
 
 ```js
 // text (ink tiers)
@@ -113,7 +118,7 @@ Hand-mapping rules for residuals (the rule reports them): a `text-white` on an `
 **Files:**
 - Modify: `web/eslint-rules/no-raw-palette.js`
 - Modify: `web/eslint-rules/no-raw-palette.test.ts`
-- Modify: `web/package.json` (add `"lint:fix-tokens": "eslint --fix --rule 'ccswitch/no-raw-palette: error'"`)
+- Modify: `web/package.json` (add `"lint:fix-tokens": "eslint --fix --fix-type problem"` — NOT `--rule 'ccswitch/no-raw-palette: error'`, which fails with "could not find plugin ccswitch" on any path outside the rule's configured scope. The config already sets the rule to `error` in scope and `no-raw-palette` is `type: 'problem'`, so `--fix-type problem` restricts the fixing to it.)
 
 **Interfaces:**
 - Produces: `export const MAPPING: Record<string, string | null>` (the §Mapping table) and `export function rewriteClassString(text: string): { out: string; changed: boolean }` — pure, unit-tested, used by the fixer.
@@ -140,16 +145,17 @@ Hand-mapping rules for residuals (the rule reports them): a `text-white` on an `
   output: null,
   errors: [{ messageId: 'palette' }],
 },
-// dark token with no light partner maps by its base
+// dark token with no same-key light partner: a residual, left exactly as written
 {
   code: `<div className="dark:text-gray-300" />`,
-  output: `<div className="text-ink" />`,
+  output: null,
   errors: [{ messageId: 'dark' }],
 },
-// template literal: only the static chunk is rewritten
+// template literal: only the static chunk is rewritten (an emptied quasi keeps
+// one space so the interpolations around it cannot glue together)
 {
   code: 'cn(`text-gray-500 ${x} dark:text-gray-400`)',
-  output: 'cn(`text-ink-muted ${x}`)',
+  output: 'cn(`text-ink-muted ${x} `)',
   errors: 2,
 },
 ```
@@ -160,9 +166,12 @@ describe('rewriteClassString', () => {
   it('leaves already-token strings alone', () => {
     expect(rewriteClassString('bg-surface text-ink')).toEqual({ out: 'bg-surface text-ink', changed: false })
   })
-  it('drops a dark twin only when its light side mapped', () => {
+  it('drops a dark twin only when a light token with the SAME partner key mapped', () => {
     expect(rewriteClassString('text-gray-500 dark:text-gray-400').out).toBe('text-ink-muted')
-    expect(rewriteClassString('text-fuchsia-500 dark:text-gray-400').out).toBe('text-fuchsia-500 text-ink-muted')
+    expect(rewriteClassString('border-gray-100 dark:border-gray-700')).toEqual({
+      out: 'border-gray-100 dark:border-gray-700', changed: false,
+    })
+    expect(rewriteClassString('text-gray-500 dark:border-gray-700').out).toBe('text-ink-muted dark:border-gray-700')
   })
   it('collapses duplicate tokens produced by a pair mapping to the same token', () => {
     expect(rewriteClassString('text-gray-700 dark:text-gray-300 text-gray-900').out).toBe('text-ink')
@@ -214,7 +223,7 @@ export function rewriteClassString(text) {
 ```
 Wire the fixer: in `check(...)`, compute `const { out, changed } = rewriteClassString(text)` once per node; for the FIRST report on that node attach `fix(fixer)` when `changed`: for `Literal` → `fixer.replaceText(node, node.raw[0] + out + node.raw[0])`; for `TemplateElement` → `fixer.replaceTextRange([node.range[0] + 1, node.range[1] - 1], out)` (ESLint's `TemplateElement` range includes the backtick/`${` delimiters — check with the RuleTester cases; adjust the offsets until the template case passes). Subsequent reports on the same node carry no fix (ESLint applies one fix per node per pass; `--fix` iterates up to 10 passes). Set `meta.fixable = 'code'`.
 
-Note on pass ordering: pass 2's "drop when any light token mapped" is deliberately string-wide, not pair-wise — a class string with `text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-700` maps both light tokens and drops both dark tokens; a string where only one light token mapped and an unrelated dark token remains (`text-fuchsia-500 dark:text-gray-400`) keeps the dark token mapped by base, per the unit test.
+Note on pass ordering: pass 2 is **partner-keyed**, not string-wide (§Mapping). A dark token is dropped iff a light token with the same partner key (non-`dark` variant chain + utility prefix) mapped — in this string, in a sibling quasi, or in an unconditional sibling argument of the enclosing class call (seed `externalLightKeys` from those). So `text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-700` maps both light tokens and drops both dark ones, while `border-gray-100 dark:border-gray-700` (light side unmapped) changes nothing at all. A dark token with no same-key partner is emitted verbatim and its `dark` error carries no fix; `dark:` is never stripped.
 
 - [ ] **Step 4: Run** — same command. Expected: PASS.
 
@@ -226,7 +235,7 @@ Note on pass ordering: pass 2's "drop when any light token mapped" is deliberate
 
 **Files:**
 - Modify: `web/eslint.config.js:23-31` → `files: ['src/**/*.{ts,tsx}'], ignores: ['src/components/**', 'src/features/pipeline/charts/**']`; update the comment: "…the whole tree in row 7 (7a: everything but `components/`; 7f: everything)".
-- Modify: `web/src/session/statusTier.ts:31` (`SLATE`), `web/src/projects/DependencyPanel.tsx:31`.
+- Modify: `web/src/session/statusTier.ts:31` (`SLATE`), `web/src/projects/DependencyPanel.tsx:31`. (Done; the 7a fix wave then folded `SLATE` into `CALM` — they had become the same string, i.e. two names for one constant.)
 
 - [ ] **Step 1: Widen, then run the fixer** — `(cd web && npm run lint:fix-tokens -- src/session src/projects src/lib src/hooks src/api src/obs src/vnc src/ws src/pwa src/initiatives src/test)`; then `npm run lint`. Expected: after the fixer, zero `ccswitch/no-raw-palette` errors (the inventory found only the two files; if the fixer leaves a residual, hand-map it per §Mapping).
 - [ ] **Step 2: Check the diff** — `git diff --stat`; expected: exactly the two files (plus config). Read each hunk; `statusTier.ts` `SLATE` becomes `'text-ink-muted'`; `DependencyPanel` `bg-amber-500 text-amber-600` becomes `bg-warning-strong text-warning` — the reviewer will judge whether `text-warning` on `bg-warning-strong` is intended; if the class pair styles the same element, use `bg-warning-strong text-on-strong`.
