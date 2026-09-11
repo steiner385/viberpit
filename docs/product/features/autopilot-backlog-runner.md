@@ -81,9 +81,9 @@ PR linkage, never on labels alone.
   Candidates come from the **global priority queue** over the mirrored Projects v2 boards
   (spec 003 §7a, `server/pm/queue.py`) — the same ranking `GET /api/pm/queue` renders, so
   what the operator sees is what agents do next. It is scoped by `enabled_repos` (empty =
-  every onboarded product *for candidate selection only* — orphan healing and the
-  `priority` selection strategy read the list directly, so an empty list makes them
-  no-ops), gated by `queue_min_status` (`Ready`, the safe default, or
+  every onboarded product *for candidate selection only* — the `priority` selection
+  strategy reads the list directly, so an empty list makes that strategy a
+  no-op), gated by `queue_min_status` (`Ready`, the safe default, or
   `Backlog` to reach untriaged items), dependency-gated from the compiled graph
   (`respect_dependencies`; native blocked-by edges, `Depends on #N` body references and epic
   list order), and the top pick is re-verified against live GitHub immediately before the
@@ -96,13 +96,18 @@ PR linkage, never on labels alone.
   the row is what takes the issue out of the pool, the session it spawns is what the reconciler
   renders as board Status `In progress`, and the issue comment that follows is the claim's
   human-visible trace only — a failed comment cannot lose a claim. Reconciliation heals dangling
-  claims (row, no session) and orphan sweep heals GitHub-truth orphans.
+  claims (row, no session) by deleting the row, which IS the release; the GitHub-truth orphan
+  sweep went away with the label search it diffed against (Phase D decision D-5), leaving the
+  row and the board as the only claim state there is.
   A **give-up is the same row marked `gave_up` and stamped
   `needs_human_at`**, which replaces the claim (a target waiting on a human holds no slot): the
   reconciler turns it into board Status `Needs human` and the queue into a cooldown that expires
-  after `needs_human_retry_days`, at which point the sweep deletes the row and the issue is
-  retried — or never, when that setting is 0. Backoff + disk-exhaustion circuit breaker in
-  #626/#683.
+  after `needs_human_retry_days`, at which point the runner deletes the row (before refill, so
+  the same tick can re-pick the issue) and the issue is retried — or never, when that setting is
+  0. A human takes an issue back from a give-up by **dispatching it manually**
+  (`POST /api/automations/backlog-runner/dispatch`, or the card's dispatch action), which
+  replaces the give-up row with a fresh claim; moving the board card alone does not shorten the
+  cooldown (follow-up #FOLLOWUP). Backoff + disk-exhaustion circuit breaker in #626/#683.
 - The runner had to learn to see its own PRs (#546 sweep-time resolution) and to fail-closed
   on PR↔issue linkage before closing (#643), and not to auto-close action-required /
   docs-only issues (#784/#786).

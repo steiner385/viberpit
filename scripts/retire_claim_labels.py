@@ -3,8 +3,11 @@
 
 Phase D made the runner's durable rows the carrier of claim and give-up state:
 ``in-progress`` / ``needs-human`` are no longer read by anything. Open issues
-labelled before the deploy still wear them, so this script runs ONCE, per product
-repo, after the deploy — see ``specs/003-gh-projects-integration/phase-d-runbook.md``.
+labelled before the rollout still wear them, so this script runs ONCE per product
+repo — at the point in the ordered sequence in
+``specs/003-gh-projects-integration/phase-d-runbook.md``, which is NOT
+interchangeable: the runner is stopped first, and this runs only after the first
+reconciler apply tick on the new build (§ "Why this order").
 
     python scripts/retire_claim_labels.py --repo steiner385/viberpit --repo cairnea/KinDash
     python scripts/retire_claim_labels.py --repo … --apply
@@ -21,8 +24,10 @@ What each action does (classification lives in ``server/pm/label_retirement.py``
   turns that into board Status ``Needs human`` and the queue into a cooldown.
 * ``status_from_human_label`` — a human placed it, so it becomes a human Status
   edit to ``Needs human`` on the product's board, which the reconciler never
-  overwrites. An issue that is on no board is SKIPPED with its label left in
-  place: never strip a human's signal without replacing it.
+  overwrites. An issue that is on no board — or that the runner holds a live
+  claim on, where the reconciler WOULD overwrite it with ``In progress`` — is
+  SKIPPED with its label left in place: never strip a human's signal without
+  replacing it.
 * ``strip_in_progress`` — remove the label, nothing else.
 
 This is the ONE sanctioned GitHub writer outside the reconciler (plan Task 4), and
@@ -125,7 +130,38 @@ def remove_label(ref: str, label: str) -> None:
 # apply                                                                        #
 # --------------------------------------------------------------------------- #
 
-async def write_gave_up_row(action: Action) -> None:
+async def _runner_state(ref: str) -> dict:
+    """The Backlog Runner's durable target-state row for *ref* (``{}`` if none).
+    Injectable so the guard below can be unit-tested without a database."""
+    from server.automations.context import AutomationContext
+    from server.pm.queue_store import RUNNER_AUTOMATION_ID
+
+    return await AutomationContext(RUNNER_AUTOMATION_ID).get_target_state(ref)
+
+
+async def state_unless_live_claim(ref: str, *, get_state=_runner_state) -> dict:
+    """The runner's row for *ref*, or ``LookupError`` when it is a LIVE claim.
+
+    ONE guard for BOTH replacement paths (constitution VI). A stale label can
+    outlive the deploy and the runner then re-claim the issue; writing the
+    migration's replacement over that is destructive in either direction:
+
+    * the bot path's ``set_target_state`` REPLACES, so it would clobber the live
+      claim with a weeks-old give-up;
+    * the human path would set board Status ``Needs human`` under a live session,
+      which the reconciler overwrites with ``In progress`` on its next tick — so
+      the human's signal would be lost WITH the label already stripped.
+
+    Either way the caller SKIPs and leaves the label alone for a person to judge.
+    A ``gave_up`` row is not a claim (Phase D), so the explicit exclusion keeps a
+    row carrying both flags from reading as live."""
+    existing = await get_state(ref)
+    if existing.get("claimed") and not existing.get("gave_up"):
+        raise LookupError("the runner holds a live claim on this issue")
+    return existing
+
+
+async def write_gave_up_row(action: Action, *, get_state=_runner_state) -> None:
     """Replace the runner's ``needs-human`` label with the row Phase D reads.
 
     Shape and writer are the runner's own (``_give_up``): the same
@@ -134,21 +170,16 @@ async def write_gave_up_row(action: Action) -> None:
     live one.
 
     A row already exists for this target when the label outlived the deploy and
-    the runner has since acted on the issue. ``set_target_state`` REPLACES, so
-    writing blindly would clobber live state with a stale label's date:
-
-    * a live claim — the issue is being worked right now; raise, and the caller
-      SKIPs it with the label intact for a human to look at;
-    * a real give-up — the row IS already the signal, dated by the decision that
-      made it; leave it untouched and let the caller just drop the label."""
+    the runner has since acted on the issue. A live claim is refused by
+    :func:`state_unless_live_claim`; a real give-up row IS already the signal,
+    dated by the decision that made it, so it is left untouched and the caller
+    just drops the label."""
     from server.automations.context import AutomationContext
     from server.pm.queue_store import RUNNER_AUTOMATION_ID
 
     repo, _ = _split_ref(action.ref)
+    existing = await state_unless_live_claim(action.ref, get_state=get_state)
     ctx = AutomationContext(RUNNER_AUTOMATION_ID)
-    existing = await ctx.get_target_state(action.ref)
-    if existing.get("claimed"):
-        raise LookupError("the runner holds a live claim on this issue")
     if existing.get("gave_up") and existing.get("reason") != MIGRATION_REASON:
         return  # already carried by a real give-up row; only the label is stale
     # An undated label event would make an unreadable ``needs_human_at`` — which
@@ -181,19 +212,24 @@ def _board_item(db, repo: str, number: int) -> tuple[str, str, dict] | None:
     return str(row[0]), str(row[1]), dict(row[2] or {})
 
 
-async def set_board_needs_human(action: Action, token: str) -> None:
+async def set_board_needs_human(action: Action, token: str, *,
+                                get_state=_runner_state) -> None:
     """Record a human's ``needs-human`` label as a human Status edit on the board.
 
     The mutation is built by the reconciler's own ``build_batch`` and read back by
     its ``parse_batch``, so this one-shot cannot drift from the shape the
     reconciler writes every tick (constitution VI).
 
-    Raises ``LookupError`` when the issue is on no board — the caller SKIPs it and
-    leaves the label alone."""
+    Raises ``LookupError`` — the caller SKIPs and leaves the label alone — when
+    the runner holds a live claim on the issue (the reconciler would overwrite
+    this Status with ``In progress``, losing the human's signal along with the
+    stripped label) or when the issue is on no board."""
     from server.db import db_session
     from server.pm.gh_mutations import build_batch, parse_batch, payload_from_gh
     from server.pm.reconcile_diff import Mutation
 
+    # BEFORE the board read: a live claim is refused without touching the DB.
+    await state_unless_live_claim(action.ref, get_state=get_state)
     repo, number = _split_ref(action.ref)
     async with db_session() as db:
         found = await db.run_sync(lambda s: _board_item(s, repo, number))

@@ -10,7 +10,19 @@ runner's own handoff, so it becomes a `gave_up` row dated by the label event; on
 placed by a human is a human's signal, so it becomes a board Status edit the
 reconciler never overwrites. `in-progress` is always just stripped.
 """
-from server.pm.label_retirement import plan_actions
+import asyncio
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+from server.pm.label_retirement import Action, plan_actions
+
+_SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "retire_claim_labels.py"
+_SPEC = importlib.util.spec_from_file_location("retire_claim_labels", _SCRIPT_PATH)
+assert _SPEC and _SPEC.loader
+retire = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(retire)
 
 
 def test_plan_actions_classifies_labels_by_actor():
@@ -72,3 +84,42 @@ def test_plan_actions_plans_every_label_and_leaves_filtering_to_the_shell():
     assert [a.kind for a in actions] == ["strip_in_progress", "status_from_human_label"]
     only = [a for a in actions if a.kind == "strip_in_progress"]
     assert [a.ref for a in only] == ["o/r#1"]
+
+
+# --------------------------------------------------------------------------- #
+# Live-claim guard (shared by both replacement paths)                          #
+# --------------------------------------------------------------------------- #
+
+def _state_of(row: dict):
+    """A fake target-state lookup — the guard's only I/O, so both apply helpers
+    are exercised with no database and no ``gh``."""
+    async def get_state(_ref: str) -> dict:
+        return row
+    return get_state
+
+
+def test_human_path_skips_while_the_runner_holds_a_live_claim():
+    """A stale ``needs-human`` label can outlive the deploy and the runner then
+    re-claim the issue. Writing board Status ``Needs human`` under that live
+    session would be overwritten with ``In progress`` by the reconciler on its
+    next tick — so the human's signal would be lost WITH the label stripped. The
+    human path must SKIP exactly as the bot path does."""
+    action = Action(kind="status_from_human_label", ref="o/r#7", at=None, actor="steiner385")
+    live = {"claimed": True, "session_id": "s1", "issues": ["o/r#7"]}
+    with pytest.raises(LookupError, match="live claim"):
+        asyncio.run(retire.set_board_needs_human(action, "tok", get_state=_state_of(live)))
+    # Same guard, same sentinel, on the bot path.
+    bot = Action(kind="row_from_bot_label", ref="o/r#7", at="2026-09-01T00:00:00+00:00",
+                 actor="viberpit[bot]")
+    with pytest.raises(LookupError, match="live claim"):
+        asyncio.run(retire.write_gave_up_row(bot, get_state=_state_of(live)))
+
+
+def test_a_gave_up_row_is_not_a_live_claim():
+    """Phase D: a ``gave_up`` row replaces the claim, so it must never read as
+    live — the label on top of it is simply stale."""
+    row = {"gave_up": True, "claimed": True, "needs_human_at": "2026-09-01T00:00:00+00:00"}
+    assert asyncio.run(
+        retire.state_unless_live_claim("o/r#7", get_state=_state_of(row))) == row
+    assert asyncio.run(
+        retire.state_unless_live_claim("o/r#7", get_state=_state_of({}))) == {}

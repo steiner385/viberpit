@@ -7,7 +7,9 @@ already hanging on open issues are the leftovers, and ``scripts/retire_claim_lab
 is the sweep that clears them once, after deploy.
 
 The planning half lives here, apart from that script's ``gh`` shell, for two
-reasons: ``scripts/`` is not importable by the test suite, and the decision this
+reasons: ``scripts/`` is not on the import path (a test must load that file by
+path, as ``server/tests/test_retire_claim_labels.py`` does for its apply
+helpers), and the decision this
 makes — whose signal is this label? — is exactly the part that must be reviewable
 before it runs. ``plan_actions`` is pure over canned ``gh`` output, so the dry run
 an operator reads and the ``--apply`` run are the same computation.

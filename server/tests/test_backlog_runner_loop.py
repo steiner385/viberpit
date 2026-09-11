@@ -570,6 +570,39 @@ def test_gave_up_row_inside_the_window_is_left_alone(tmp_path):
     asyncio.run(run())
 
 
+def test_expiry_runs_before_refill_so_the_tick_that_frees_a_ref_spawns_it(tmp_path):
+    """Expiry must happen BEFORE refill, not in the sweep that follows it.
+
+    On the tick a cooldown passes, the queue already offers the ref: selection
+    consumes its plan group, and with the row still present ``_refill``'s
+    ``gave_up`` guard would discard the pick — the group burned until the next
+    grouping refresh, the slot idle. One tick has to do both."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'exp_first.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        loop, rec, ctx = build_loop(
+            candidates=[batch("o/r#7")],
+            wall_clock=lambda: at + timedelta(days=8),
+            config=make_config(needs_human_retry_days=7))
+        await ctx.set_target_state("o/r#7", {"repo": "o/r", "issues": ["o/r#7"],
+                                             "gave_up": True,
+                                             "needs_human_at": at.isoformat(),
+                                             "reason": "x"})
+
+        await loop.tick()
+
+        assert len(await ctx.list_events(kind="needs_human_expired")) == 1
+        assert [b.primary for b, _acct in rec.spawns] == ["o/r#7"]
+        # The consumed plan group produced the spawn rather than being discarded.
+        assert rec.candidates == []
+        assert [b.primary for b in rec.announced] == ["o/r#7"]
+
+    asyncio.run(run())
+
+
 def test_restart_safety_counts_existing_rows(tmp_path):
     """A fresh loop counts existing origin='backlog-runner' rows via count_in_flight."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'h.db'}"
@@ -1033,8 +1066,8 @@ def test_live_check_not_ready_skips_with_not_ready_result(tmp_path):
 
 
 def test_live_check_gates_propose_mode_claims_too(tmp_path):
-    """Propose mode claims (labels) before the user tap — a stale pick must not
-    be claimed there either."""
+    """Propose mode writes a claim row before the user tap — a stale pick must
+    not be claimed there either."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'd.db'}"
 
     async def run():

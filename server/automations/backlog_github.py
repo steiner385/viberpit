@@ -313,9 +313,19 @@ def announce_claim(batch, comment: str, *, gh_run: GhRun = gitrepos._run_gh) -> 
     the runner's durable target-state row (records-before-anything) plus board
     Status ``In progress`` from the reconciler — Phase D retired the
     ``in-progress`` label, so nothing here can fail a spawn: a comment that does
-    not land is logged and the batch proceeds."""
+    not land is logged and the batch proceeds.
+
+    The per-ref guard is what makes "never raises" true: the comment path can
+    RAISE as well as return non-zero (minting the repo's App token does network
+    I/O), and an escaping exception would both abort the caller and skip the
+    bundle's remaining issues."""
     for ref in batch.issues:
-        if not _issue_comment(ref, comment, gh_run=gh_run):
+        try:
+            posted = _issue_comment(ref, comment, gh_run=gh_run)
+        except Exception:
+            log.warning("backlog_github.announce_claim_error ref=%s", ref, exc_info=True)
+            continue
+        if not posted:
             log.warning("backlog_github.announce_claim_failed ref=%s", ref)
 
 
@@ -330,7 +340,13 @@ def announce_needs_human(batch, reason: str, *,
             "Board Status is Needs human; the runner retries after the "
             "configured window.")
     for ref in batch.issues:
-        if not _issue_comment(ref, body, gh_run=gh_run):
+        try:
+            posted = _issue_comment(ref, body, gh_run=gh_run)
+        except Exception:
+            log.warning("backlog_github.announce_needs_human_error ref=%s", ref,
+                        exc_info=True)
+            continue
+        if not posted:
             log.warning("backlog_github.announce_needs_human_failed ref=%s", ref)
 
 

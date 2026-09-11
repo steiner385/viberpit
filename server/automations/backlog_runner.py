@@ -159,9 +159,9 @@ class BacklogRunner:
         ConfigField(key="enabled_repos", label="Repositories", type="repo-multiselect",
                     default=[],
                     help="Repos to draw issues from; empty means every onboarded "
-                         "product for candidate selection. Orphan healing and the "
-                         "'priority' selection strategy read this list directly, so "
-                         "with it empty they do nothing."),
+                         "product for candidate selection. The 'priority' "
+                         "selection strategy reads this list directly, so with it "
+                         "empty that strategy does nothing."),
         ConfigField(key="selection_strategy", label="Repo selection strategy",
                     type="enum", default="balanced",
                     choices=list(SELECTION_STRATEGIES),
@@ -445,6 +445,13 @@ class BacklogRunnerLoop:
         # Surface stale-credential alerts every tick, before refill — a paused
         # repo must both notify the dashboard and be excluded from selection.
         await self._check_credentials()
+        # Expire spent give-ups BEFORE refill, not as part of the sweep that
+        # follows it: on the very tick a cooldown passes, the queue already
+        # offers the ref, so ``select_batch`` would consume its plan group only
+        # for ``_refill``'s ``gave_up`` guard to discard the pick — burning the
+        # group until the next grouping refresh. Expiring first lets the same
+        # tick spawn it.
+        await self._expire_give_ups(config)
         if mode != "off":
             # The grouping optimizer runs BEFORE refill so a cold start (or a
             # just-consumed plan) can produce groups and spawn in the same tick.
@@ -866,30 +873,45 @@ class BacklogRunnerLoop:
 
     # -- sweep (handoff + terminal-watch) ----------------------------------- #
 
+    async def _expire_give_ups(self, config: dict) -> None:
+        """Drop ``gave_up`` rows whose needs-human window has passed.
+
+        The row IS the needs-human handoff (Phase D), so it stays put until the
+        retry window passes and DELETING it is what returns the issue to the
+        pool: the queue's cooldown reads ``needs_human_at`` off this row, and
+        nothing else does. ``needs_human_retry_days`` = 0 is a permanent handoff,
+        never expired. An UNDATED (or unreadable) stamp expires immediately: the
+        queue already treats it as no cooldown, and a row kept past that would
+        park the issue in the card's needs-human gauge while it was being picked
+        again.
+
+        Runs every tick regardless of mode (like the sweep it used to live in),
+        but BEFORE ``_refill`` — see the call site for why the ordering matters.
+        """
+        raw_days = config.get("needs_human_retry_days")
+        retry_days = (NEEDS_HUMAN_RETRY_DAYS_DEFAULT if raw_days is None
+                      else max(0, int(raw_days)))
+        if retry_days <= 0:
+            return
+        states = await self._ctx.list_target_states()
+        for target, st in states.items():
+            if not st.get("gave_up"):
+                continue
+            at = parse_iso_utc(st.get("needs_human_at"))
+            if at is None or self._wall_clock() - at >= timedelta(days=retry_days):
+                await self._ctx.delete_target_state(target)
+                await self._ctx.emit(
+                    "info", f"{target}: needs-human window passed — back in the pool",
+                    kind="needs_human_expired", target=target)
+
     async def _sweep(self, config: dict) -> None:
         states = await self._ctx.list_target_states()
         gave_up_targets = await self._pr_doctor_gave_up_targets()
         for target, st in states.items():
             if st.get("gave_up"):
-                # Terminal — the row IS the needs-human handoff (Phase D), so it
-                # stays put until the retry window passes. Deleting it is what
-                # returns the issue to the pool: the queue's cooldown reads
-                # ``needs_human_at`` off this row, and nothing else does. 0 =
-                # permanent handoff, never expired. An UNDATED (or unreadable)
-                # stamp expires immediately: the queue already treats it as no
-                # cooldown, and a row kept past that would park the issue in the
-                # card's needs-human gauge while it was being picked again.
-                raw_days = config.get("needs_human_retry_days")
-                retry_days = (NEEDS_HUMAN_RETRY_DAYS_DEFAULT if raw_days is None
-                              else max(0, int(raw_days)))
-                at = parse_iso_utc(st.get("needs_human_at"))
-                if retry_days > 0 and (
-                        at is None
-                        or self._wall_clock() - at >= timedelta(days=retry_days)):
-                    await self._ctx.delete_target_state(target)
-                    await self._ctx.emit(
-                        "info", f"{target}: needs-human window passed — back in the pool",
-                        kind="needs_human_expired", target=target)
+                # Terminal: a row still here survived ``_expire_give_ups`` this
+                # tick, so it is still inside its window. Never fall through to
+                # the claim bookkeeping below — it holds no claim and no slot.
                 continue
             try:
                 await self._sweep_one(target, st, config, gave_up_targets)

@@ -670,6 +670,26 @@ def test_announce_claim_passes_repo_app_token():
     assert all(tok == "tok-o" for tok in gh.tokens)
 
 
+def test_announce_helpers_survive_a_raising_seam():
+    """"Never raises" has to cover a seam that RAISES, not just one that returns
+    non-zero: minting the repo's App token does network I/O, so a failure on the
+    first ref must not abort the caller or skip the bundle's remaining issues."""
+    def raising_gh(args, token=None):
+        calls.append(list(args))
+        if args[:3] == ["issue", "comment", "7"]:
+            raise RuntimeError("token mint failed")
+        return _proc()
+
+    batch = Batch(primary="o/r#7", issues=["o/r#7", "o/r#9"], repo="o/r")
+    calls: list[list[str]] = []
+    announce_claim(batch, "Claimed by X", gh_run=raising_gh)
+    assert [c[2] for c in calls] == ["7", "9"]
+
+    calls = []
+    announce_needs_human(batch, "max attempts", gh_run=raising_gh)
+    assert [c[2] for c in calls] == ["7", "9"]
+
+
 def test_announce_needs_human_comments_with_reason():
     gh = FakeGh()
     announce_needs_human(Batch(primary="o/r#7", issues=["o/r#7"], repo="o/r"),
