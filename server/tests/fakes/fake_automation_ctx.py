@@ -37,7 +37,12 @@ class FakeAutomationContext:
 
     def __init__(self, engine: AgentEngine = AgentEngine.CLAUDE_CODE, *,
                  refuse: bool = False, config: dict | None = None,
-                 existing: Any = None) -> None:
+                 existing: Any = None,
+                 automation_id: str = "sdlc-synthesizer") -> None:
+        #: The ``Session.origin`` this context's sessions carry — a spawn site
+        #: that asks the DB about its own live sessions (the materialize gate,
+        #: C4-R14) filters on it.
+        self.automation_id = automation_id
         self._engine = engine
         self._refuse = refuse
         self._config = config if config is not None else {}

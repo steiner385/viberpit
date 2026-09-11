@@ -874,12 +874,25 @@ async def test_spawn_materialize_seeds_the_plan_and_chains_the_ingest(db_env):
     assert orch.chained == [("sess-1", "dark-mode")]
 
 
+async def _seed_materialize_session(status: str) -> None:
+    """A decompose session for dark-mode in *status*, as the spawn gate sees it."""
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        db.add(DbSession(id=f"sess-{status}", name="sdlc materialize dark-mode",
+                         account_name="acct1", cwd="/tmp/clone", status=status,
+                         origin="sdlc-synthesizer",
+                         origin_ref="dark-mode:materialize"))
+        await db.commit()
+
+
 @pytest.mark.asyncio
 async def test_spawn_materialize_skips_a_live_decompose_session(db_env):
     """The dedupe key would return the SAME session from spawn_session, and the
     caller would then chain a second ingest onto it and re-emit. Asking first
     makes a tick during the decompose session a no-op (C4-R13a)."""
-    ctx = FakeAutomationContext(existing=SimpleNamespace(id="sess-live"))
+    await _seed_initiative(db_env)
+    await _seed_materialize_session("in_progress")
+    ctx = FakeAutomationContext()
     orch = _spawn_materialize_orch(ctx)
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
         assert await orch._sdlc_spawn_materialize(_MAT_INI) is None
@@ -889,9 +902,37 @@ async def test_spawn_materialize_skips_a_live_decompose_session(db_env):
 
 
 @pytest.mark.asyncio
+async def test_spawn_materialize_ignores_a_finished_decompose_session(db_env):
+    """C4-R14: "already handled" is a session that still HOLDS the work — the
+    live set, not ``_existing_session``'s not-ended rule. A rejected proposal's
+    ``complete`` session must not block the next decompose forever."""
+    await _seed_initiative(db_env)
+    await _seed_materialize_session("complete")
+    orch = _spawn_materialize_orch()
+    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+        rec = await orch._sdlc_spawn_materialize(_MAT_INI)
+    assert rec is not None
+    for coro in orch.scheduled:
+        coro.close()
+
+
+@pytest.mark.asyncio
+async def test_spawn_materialize_waits_on_a_session_that_needs_a_human(db_env):
+    """A decompose session parked on a question still holds the plan."""
+    await _seed_initiative(db_env)
+    await _seed_materialize_session("waiting_question")
+    ctx = FakeAutomationContext()
+    orch = _spawn_materialize_orch(ctx)
+    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+        assert await orch._sdlc_spawn_materialize(_MAT_INI) is None
+    assert ctx.plans == []
+
+
+@pytest.mark.asyncio
 async def test_spawn_materialize_skips_an_unreadable_plan(db_env):
     """Seeding the fallback text would have the session invent a decomposition
     out of the slug — worse than no proposal."""
+    await _seed_initiative(db_env)
     ctx = FakeAutomationContext()
     orch = _spawn_materialize_orch(ctx, plan_body="(could not inline")
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
@@ -906,6 +947,7 @@ async def test_spawn_materialize_skips_an_unreadable_plan(db_env):
 async def test_spawn_materialize_honours_the_pinned_model(db_env):
     """Same model policy as the spec/plan sessions — an operator pinning a model
     for the synthesizer must reach the decompose session too."""
+    await _seed_initiative(db_env)
     orch = _spawn_materialize_orch(config={"default_model": "opus"})
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
         await orch._sdlc_spawn_materialize(_MAT_INI)
@@ -918,6 +960,7 @@ async def test_spawn_materialize_honours_the_pinned_model(db_env):
 
 @pytest.mark.asyncio
 async def test_spawn_materialize_refused_launch_spends_nothing(db_env):
+    await _seed_initiative(db_env)
     orch = _bare_orch()
     orch._sdlc_synth_ctx = FakeAutomationContext(refuse=True)
     assert await orch._sdlc_spawn_materialize(_MAT_INI) is None
@@ -933,3 +976,100 @@ async def test_has_pending_materialization_tracks_the_proposal(db_env):
     assert await orch._sdlc_has_pending_materialization(ini_id) is False
     assert await orch._sdlc_materialize_ingest("sess-9", "dark-mode") == 1
     assert await orch._sdlc_has_pending_materialization(ini_id) is True
+
+
+@pytest.mark.asyncio
+async def test_spawn_materialize_warns_once_per_slug_about_an_unreadable_plan(db_env):
+    """Every tick would otherwise re-emit the same warn forever — the same
+    once-per-slug suppression the loop's `materialization_unwired` warn has."""
+    await _seed_initiative(db_env)
+    ctx = FakeAutomationContext()
+    orch = _spawn_materialize_orch(ctx, plan_body="(could not inline")
+    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+        assert await orch._sdlc_spawn_materialize(_MAT_INI) is None
+        assert await orch._sdlc_spawn_materialize(_MAT_INI) is None
+    warns = [e for e in ctx.events if e[2].get("kind") == "materialization_plan_unreadable"]
+    assert len(warns) == 1
+
+
+async def _seed_proposal(db_url: str) -> tuple[str, str]:
+    from server.db.models import MaterializationProposal
+    ini_id = await _seed_initiative(db_url)
+    async with db_session() as db:
+        prop = MaterializationProposal(
+            initiative_id=ini_id, status="pending", session_id="sess-9",
+            payload={"epic_title": "Dark mode", "epic_body": "Ship it.",
+                     "tasks": [{"title": "Tokens", "body": "b0", "depends_on": []},
+                               {"title": "Toggle", "body": "b1", "depends_on": [0]}],
+                     "source_session": "sess-9"})
+        db.add(prop)
+        await db.flush()
+        return ini_id, prop.id
+
+
+def _apply_orch(payloads):
+    """Orchestrator whose mutate seam replays *payloads* (one per document)."""
+    orch = _materialize_orch()
+    orch.mutated: list = []
+
+    async def fake_mutate(owner, doc):
+        orch.mutated.append((owner, doc))
+        return payloads.pop(0)
+
+    orch._pm_reconcile_mutate = fake_mutate
+    return orch
+
+
+def _issue(n: int) -> dict:
+    return {"data": {"createIssue": {"issue": {
+        "id": f"I_{n}", "number": 100 + n,
+        "url": f"https://github.com/o/r/issues/{100 + n}"}}}}
+
+
+@pytest.mark.asyncio
+async def test_materialize_apply_seam_emits_materialized(db_env):
+    """The API calls THIS; the router must never build a GitHub call itself."""
+    from server.db.models import Initiative, MaterializationProposal
+    ini_id, prop_id = await _seed_proposal(db_env)
+    orch = _apply_orch([
+        {"data": {"repository": {"id": "R_1"}}}, _issue(1), _issue(2), _issue(3),
+        {"data": {"m0": {"clientMutationId": None}}},
+    ])
+    out = await orch._sdlc_materialize_apply(prop_id)
+    assert out["ok"] is True
+    assert out["tasks"] == 2 and out["edges"] == 1
+    ev = next(e for e in orch._sdlc_synth_ctx.events if e[2].get("kind") == "materialized")
+    assert ev[0] == "info"
+    assert ev[2]["detail"]["tasks"] == 2
+    async with db_session() as db:
+        from sqlalchemy import select
+        ini = (await db.execute(select(Initiative).where(
+            Initiative.id == ini_id))).scalar_one()
+        assert (ini.epic_repo, ini.epic_number) == ("o/r", 101)
+        prop = (await db.execute(select(MaterializationProposal).where(
+            MaterializationProposal.id == prop_id))).scalar_one()
+        assert prop.status == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_materialize_apply_seam_emits_the_failure(db_env):
+    _, prop_id = await _seed_proposal(db_env)
+    orch = _apply_orch([
+        {"data": {"repository": {"id": "R_1"}}}, _issue(1),
+        {"data": {"createIssue": None}, "errors": [{"message": "nope"}]},
+    ])
+    out = await orch._sdlc_materialize_apply(prop_id)
+    assert out["ok"] is False
+    assert out["step"] == "task:0"
+    ev = next(e for e in orch._sdlc_synth_ctx.events
+              if e[2].get("kind") == "materialization_failed")
+    assert ev[0] == "warn"
+    assert ev[2]["detail"]["step"] == "task:0"
+
+
+@pytest.mark.asyncio
+async def test_materialize_apply_seam_404s_on_an_unknown_proposal(db_env):
+    await _seed_initiative(db_env)
+    orch = _apply_orch([])
+    out = await orch._sdlc_materialize_apply("nope")
+    assert out == {"ok": False, "step": "load", "error": "no such proposal: nope"}

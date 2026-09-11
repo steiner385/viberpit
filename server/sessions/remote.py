@@ -1154,6 +1154,21 @@ class RemoteOrchestrator:
         """Advance map_merged/classifying → live, via the daemon."""
         await self._client.call("pm_advance_live", slug=slug)
 
+    async def sdlc_materialize_apply(self, proposal_id: str) -> dict:
+        """Apply an accepted materialization proposal, via the daemon (#992).
+
+        The daemon owns the gh credential ladder and the write journal, so the
+        edge never makes these calls itself. A dead RPC is reported as a failed
+        apply rather than raised: the proposal stays pending and resumable, which
+        is exactly what the caller does with any other failure."""
+        result = await self._client.call("sdlc_materialize_apply",
+                                         proposal_id=proposal_id,
+                                         timeout=SPAWN_RPC_TIMEOUT)
+        if not isinstance(result, dict):
+            return {"ok": False, "step": "rpc",
+                    "error": "session daemon did not answer"}
+        return result
+
     async def aclose(self) -> None:
         if self._global_pump is not None and not self._global_pump.done():
             self._global_pump.cancel()

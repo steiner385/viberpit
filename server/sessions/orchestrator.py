@@ -1133,6 +1133,9 @@ class SessionOrchestrator:
             clock=time.monotonic,
         )
         self._sdlc_synth_task: asyncio.Task | None = None
+        #: Slugs already warned about an unreadable plan artifact, so the
+        #: materialize seam's warn fires once rather than on every tick.
+        self._materialize_unreadable_slugs: set[str] = set()
         # Control-Band Monitor control loop (#804): the BACK of the SDLC loop.
         # Deterministic Western-Electric detection over ccswitch's own delivery
         # metrics against the committed `server/sdlc/bands.yaml` policy; a breach
@@ -7363,7 +7366,7 @@ class SessionOrchestrator:
         if not repo or not slug:
             return None
         origin_ref = f"{slug}:materialize"
-        if await self._sdlc_synth_ctx._existing_session(origin_ref) is not None:
+        if await self._sdlc_live_session(origin_ref):
             return None
         plan = await self._sdlc_synth_ctx.launch_plan_or_refuse(origin_ref)
         if plan is None:
@@ -7385,12 +7388,20 @@ class SessionOrchestrator:
             # Seeding the "read that file yourself" fallback is how the spec/plan
             # stages survive a stale clone, but a decompose session cannot: with
             # no plan text it would invent a decomposition from the slug, and a
-            # human would be asked to accept fiction. Skip loudly instead.
-            await self._sdlc_emit(
-                "warn", f"cannot decompose {slug}: {path} is unreadable on "
-                        f"origin/{default_branch}",
-                kind="materialization_plan_unreadable", target=slug,
-                detail={"path": path, "ref": f"origin/{default_branch}"})
+            # human would be asked to accept fiction. Skip loudly instead — but
+            # warn ONCE per slug (as the loop's `materialization_unwired` warn
+            # does): the condition persists, so every tick would re-emit it.
+            warned: set[str] | None = getattr(
+                self, "_materialize_unreadable_slugs", None)
+            if warned is None:
+                warned = self._materialize_unreadable_slugs = set()
+            if slug not in warned:
+                warned.add(slug)
+                await self._sdlc_emit(
+                    "warn", f"cannot decompose {slug}: {path} is unreadable on "
+                            f"origin/{default_branch}",
+                    kind="materialization_plan_unreadable", target=slug,
+                    detail={"path": path, "ref": f"origin/{default_branch}"})
             return None
         # The decomposition contract lives in the prompt builder (one source of
         # truth); only the operational shape of THIS session is added here.
@@ -7459,6 +7470,64 @@ class SessionOrchestrator:
                                   kind="materialization_ingest_failed", target=slug,
                                   session_id=session_id)
             return 0
+
+    async def _sdlc_live_session(self, origin_ref: str) -> bool:
+        """Is a session that still HOLDS *origin_ref*'s work running? (C4-R14)
+
+        Deliberately NOT ``AutomationContext._existing_session``'s "not ended"
+        rule: a decompose session that reached ``complete`` — including one whose
+        proposal a human then rejected — no longer holds the plan, and gating on
+        it would mean a rejected proposal could never be decomposed again. The
+        live set is the app's ONE definition of "a session holds this"
+        (``pm/desired_state.py``, the same sets that drive In progress / Needs
+        human on the board)."""
+        from sqlalchemy import select
+        from server.db.models import Session as DbSession
+        from server.pm.desired_state import (
+            ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES)
+        live = ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES
+        async with db_session() as db:
+            return (await db.execute(select(DbSession.id).where(
+                DbSession.origin == self._sdlc_synth_ctx.automation_id,
+                DbSession.origin_ref == origin_ref,
+                DbSession.status.in_(live)))).scalars().first() is not None
+
+    async def _sdlc_materialize_apply(self, proposal_id: str) -> dict:
+        """Apply an accepted MaterializationProposal (spec 003 §7b, human gate).
+
+        THE seam the API calls: the router decides that a human said yes, this
+        owns the GitHub transport (``_pm_reconcile_mutate``, the App/PAT ladder
+        every other 003 write uses) and the activity feed. Returns the apply
+        result dict unchanged — a failure is data, not an exception, because the
+        proposal stays pending and resumable."""
+        from sqlalchemy import select
+        from server.db.models import Initiative, MaterializationProposal
+        from server.pm.materialize_apply import apply
+        now = self._pm_sync_now_utc()
+        async with db_session() as db:
+            proposal = (await db.execute(select(MaterializationProposal).where(
+                MaterializationProposal.id == proposal_id))).scalar_one_or_none()
+            if proposal is None:
+                return {"ok": False, "step": "load",
+                        "error": f"no such proposal: {proposal_id}"}
+            slug = str((await db.execute(select(Initiative.slug).where(
+                Initiative.id == proposal.initiative_id))).scalars().first() or "")
+            result = await apply(db, proposal, mutate=self._pm_reconcile_mutate,
+                                 now=now)
+        if result.get("ok"):
+            epic = (result.get("epic") or {}).get("number")
+            await self._sdlc_emit(
+                "info", f"materialized {slug}: epic #{epic} with "
+                        f"{result.get('tasks')} tasks",
+                kind="materialized", target=slug,
+                detail={"epic": epic, "tasks": result.get("tasks"),
+                        "edges": result.get("edges")})
+        else:
+            await self._sdlc_emit(
+                "warn", f"could not materialize {slug}: {result.get('error')}",
+                kind="materialization_failed", target=slug,
+                detail={"step": result.get("step"), "error": result.get("error")})
+        return result
 
     @staticmethod
     async def _sdlc_pending_materialization_id(db, initiative_id: str) -> str | None:
