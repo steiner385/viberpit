@@ -286,3 +286,50 @@ def test_near_duplicate_outside_window_is_fresh():
     recent = [{"ts": 0.0, "text": "open a PR and arm auto-merge"}]
     assert near_duplicate("open a PR and arm auto-merge", recent,
                           now=7 * 3600.0) is False
+
+
+# --------------------------------------------------------------------------- #
+# Handed-back sessions are the human's, not autopilot's.                       #
+#                                                                              #
+# `hand_back` (tool or marker) derives to `waiting_question` WITHOUT a          #
+# structured question card (status.py). Live 2026-09-10/11: autopilot governed #
+# those and the composer nudged them on ("no operator reply is coming in this  #
+# async channel, so don't wait on it"), which (a) contradicts the tool's       #
+# contract, (b) erases the "Answer needed" state the user was meant to see and #
+# (c) loops: hand_back → nudge → hand_back (session 0898bcd5, three cycles in  #
+# two minutes). The guardrail escalates instead — the decider never sees it.   #
+# --------------------------------------------------------------------------- #
+
+def test_handed_back_session_is_escalated_never_nudged():
+    ctx = _ctx(status="waiting_question",
+               stuck={"kind": "waiting_question",
+                      "hand_back_reason": "Need your call on the 4GB memory limit"})
+    d = pre_decide(ctx, CONFIG, now=1000.0)
+    assert d is not None and d.action == "escalate"
+    assert "handed back" in d.reason and "4GB memory limit" in d.reason
+
+
+def test_waiting_question_without_a_card_is_escalated_even_without_a_reason():
+    """After a daemon restart the driver (and its reason) is gone, but the status
+    alone still means 'the user is needed'."""
+    ctx = _ctx(status="waiting_question", stuck={"kind": "waiting_question"})
+    d = pre_decide(ctx, CONFIG, now=1000.0)
+    assert d is not None and d.action == "escalate"
+
+
+def test_structured_question_still_defers_to_the_decider():
+    ctx = _ctx(status="waiting_question",
+               stuck={"kind": "question", "question_id": "q1", "question": "Which?",
+                      "options": ["a", "b"]})
+    assert pre_decide(ctx, CONFIG, now=1000.0) is None
+
+
+def test_hand_back_fingerprint_keys_on_the_reason():
+    """A NEW hand-back reason is new information: it must re-surface in the feed,
+    so it needs a fresh fingerprint (the escalate de-spam keys on it)."""
+    first = _ctx(status="waiting_question",
+                 stuck={"kind": "waiting_question", "hand_back_reason": "first ask"})
+    second = _ctx(status="waiting_question",
+                  stuck={"kind": "waiting_question", "hand_back_reason": "second ask"})
+    assert fingerprint(first) != fingerprint(second)
+    assert fingerprint(first) == fingerprint(first)

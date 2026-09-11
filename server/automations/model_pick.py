@@ -35,7 +35,7 @@ from collections.abc import Sequence
 
 from server.sessions.account_auth import helper_env
 from server.sessions.claude_bin import cli_path_kwargs
-from server.sessions.helper_call import pick_helper_config_dir, run_helper_call
+from server.sessions.helper_call import helper_cwd, pick_helper_config_dir, run_helper_call
 from server.sessions.model_catalog import ALIASES, TIER_ORDER
 
 log = logging.getLogger("ccswitch.automations")
@@ -109,7 +109,7 @@ async def assess_model(
     )
 
     config_dir = _config_dir or pick_helper_config_dir() or os.environ.get("CLAUDE_CONFIG_DIR", "")
-    cwd = _cwd or os.getcwd()
+    cwd = _cwd or helper_cwd()
 
     try:
         # SDK resolution stays INSIDE the try: an unimportable SDK must degrade

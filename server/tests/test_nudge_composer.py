@@ -89,3 +89,24 @@ async def test_prompt_carries_context_and_history():
     assert "arm the PR" in p and "PR #7 is open but not armed" in p
     assert "previous nudge text" in p and "please fix" in p
     assert '"facts_verified": true' in p
+
+
+@pytest.mark.asyncio
+async def test_no_helper_account_declines_without_opening_the_model_door(monkeypatch):
+    """Same contract as the decider: an empty config dir means 'Not logged in' —
+    decline (None → the loop escalates) rather than spawn a doomed CLI."""
+    import server.automations.nudge_composer as mod
+
+    opened = []
+
+    def door():
+        opened.append(True)
+        return _fake_query('{"nudge": "would have nudged"}')
+    monkeypatch.setattr(mod, "_default_sdk_query_fn", door)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+    out = await compose_nudge(
+        _ctx(), intent_hint="fix CI", verdict_reason=None, verdict_remedy=None,
+        recent_nudges=[], rich_tail=[], facts_verified=False, _config_dir="")
+    assert out is None
+    assert opened == [], "the SDK door must not be opened without a helper account"

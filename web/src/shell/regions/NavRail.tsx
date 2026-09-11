@@ -1,6 +1,7 @@
 import { useLocation } from 'react-router-dom'
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { BrandMark, Wordmark } from '@/components/BrandMark'
 import { IconButton } from '@/ui/IconButton'
 import { NAV_BY_ID, NAV_DEFS, navDefForPath } from '@/shell/navDefs'
 import { navBadgeProps, useNavBadges } from '@/shell/useNavBadges'
@@ -23,6 +24,12 @@ import { NavItem } from './NavItem'
  *
  * The bottom cluster's app-level controls live in `GlobalActions`, shared with
  * the phone `NavBar`'s More sheet.
+ *
+ * The brand sits at the top, where the phone `TopBar` puts it; the two rails
+ * never render together, so the app shows the name exactly once. It is not a
+ * link — Sessions is already the home item, and a second route to it would be
+ * a second `aria-current` candidate. Collapsed, the wordmark's visually-hidden
+ * name still reads to a screen reader.
  */
 
 export function NavRail() {
@@ -53,6 +60,10 @@ export function NavRail() {
         expanded ? 'w-56' : 'w-16',
       )}
     >
+      <div className={cn('mb-1 flex min-h-target items-center gap-2 px-2', !expanded && 'justify-center px-0')}>
+        <BrandMark size={28} />
+        <Wordmark className={cn('text-base font-bold tracking-tight', !expanded && 'sr-only')} />
+      </div>
       {NAV_DEFS.filter((d) => d.id !== 'settings').map((def) => (
         <NavItem
           key={def.id}

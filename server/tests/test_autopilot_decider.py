@@ -170,3 +170,22 @@ def test_build_prompt_includes_fleet_context():
              "goal": "fix parser", "pr": "PR #591 merged"}]})
     prompt = _build_prompt(ctx)
     assert "fleet" in prompt and "PR #591 merged" in prompt and "feat/sib" in prompt
+
+
+# Live 2026-09-09 05:35–10:02: two Codex-account sessions had no Anthropic helper
+# dir (pick_helper_config_dir() → None → ""), so every decide() spawned a CLI that
+# answered "Not logged in" and raised — 270 escalation events for one session in
+# 4.5h. An unusable lane is a known answer; it must never cost a model spawn.
+@pytest.mark.asyncio
+async def test_no_helper_account_escalates_without_opening_the_model_door(monkeypatch):
+    import server.automations.autopilot_decider as mod
+
+    def never():
+        raise AssertionError("the SDK door must not be opened without a helper account")
+    monkeypatch.setattr(mod, "_default_sdk_query_fn", never)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+    for cfg in ("", None):
+        d = await decide(_ctx(), _config_dir=cfg, _cwd="/tmp")
+        assert d.action == "escalate"
+        assert d.reason == "decider-skipped:no-helper-account"

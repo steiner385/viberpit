@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from server.sessions.account_auth import helper_env
 from server.sessions.claude_bin import cli_path_kwargs
-from server.sessions.helper_call import run_helper_call
+from server.sessions.helper_call import helper_cwd, run_helper_call
 
 log = logging.getLogger(__name__)
 
@@ -83,15 +83,21 @@ def _parse(raw: str) -> PrIntentVerdict:
 
 async def classify_pr_intent(transcript_tail: list[dict], goal: str, *,
                              _query_fn=None, _config_dir=None, _cwd=None) -> PrIntentVerdict:
+    config_dir = _config_dir if _config_dir is not None else os.environ.get("CLAUDE_CONFIG_DIR", "")
+    if _query_fn is None and not config_dir:
+        # No helper account: a spawn can only answer "Not logged in". Until 2026-09-11
+        # the orchestrator passed no config dir at all, so every one of the 44 classify
+        # calls in the preceding 14 days failed this way and the no-PR salvage never
+        # ran once. Degrade without a spawn (the bar then nudges, as it always did).
+        log.warning("pr_intent.classify skipped: no helper account")
+        return _UNRESOLVED
     try:
         query_fn = _query_fn or _default_sdk_query_fn()
-        config_dir = _config_dir if _config_dir is not None else os.environ.get("CLAUDE_CONFIG_DIR", "")
-        cwd = _cwd or os.getcwd()
         options = None
         if _query_fn is None:
             from claude_agent_sdk import ClaudeAgentOptions
             options = ClaudeAgentOptions(
-                model="haiku", system_prompt=_SYSTEM, cwd=cwd,
+                model="haiku", system_prompt=_SYSTEM, cwd=_cwd or helper_cwd(),
                 env=helper_env(config_dir),
                 allowed_tools=[], setting_sources=[], **cli_path_kwargs())
     except Exception as exc:

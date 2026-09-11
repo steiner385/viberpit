@@ -9,7 +9,7 @@ from pathlib import Path
 
 from server.sessions.account_auth import helper_env
 from server.sessions.claude_bin import cli_path_kwargs
-from server.sessions.helper_call import run_helper_call
+from server.sessions.helper_call import helper_cwd, run_helper_call
 
 from .autopilot_policy import Decision, DecisionContext
 
@@ -117,17 +117,25 @@ def _parse(raw: str) -> Decision:
 
 
 async def decide(ctx: DecisionContext, *, _query_fn=None, _config_dir=None, _cwd=None) -> Decision:
-    query_fn = _query_fn or _default_sdk_query_fn()
     config_dir = _config_dir if _config_dir is not None else os.environ.get("CLAUDE_CONFIG_DIR", "")
-    cwd = _cwd or os.getcwd()
     try:
         options = None
         if _query_fn is None:
+            if not config_dir:
+                # No helper account to run as (the orchestrator's engine-safe picker
+                # found no live Anthropic account, and the daemon exports no
+                # CLAUDE_CONFIG_DIR). A spawn would only answer "Not logged in" and
+                # raise — 2026-09-09 that cost 4.5h of doomed calls and 270 feed
+                # events for one Codex-account session. Known answer, no spawn.
+                log.warning("autopilot.decide skipped: no helper account (sid=%s)",
+                            ctx.session_id)
+                return Decision(action="escalate", reason="decider-skipped:no-helper-account")
             from claude_agent_sdk import ClaudeAgentOptions
             options = ClaudeAgentOptions(
-                model="haiku", system_prompt=_GUIDANCE, cwd=cwd,
+                model="haiku", system_prompt=_GUIDANCE, cwd=_cwd or helper_cwd(),
                 env=helper_env(config_dir),
                 allowed_tools=[], setting_sources=[], **cli_path_kwargs())
+        query_fn = _query_fn or _default_sdk_query_fn()
     except Exception as exc:  # bad/unimportable options
         log.warning("autopilot.decide failed: %s", exc)
         return Decision(action="escalate", reason=f"decider-failed:{type(exc).__name__}")

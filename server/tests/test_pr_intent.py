@@ -63,3 +63,23 @@ def test_system_prompt_treats_deferral_as_unresolved():
     assert "goal" in low
     assert "next step" in low
     assert "offering to" in low or "offer to" in low
+
+
+@pytest.mark.asyncio
+async def test_no_helper_account_is_unresolved_without_opening_the_model_door(monkeypatch):
+    """Live 2026-08-28..09-11: 44 of 44 classify calls failed "Not logged in" because
+    the orchestrator passed no config dir and the daemon has no CLAUDE_CONFIG_DIR. An
+    empty dir is a known-dead lane: degrade immediately, never spawn."""
+    import server.automations.pr_intent as pi
+
+    opened = []
+
+    def door():
+        opened.append(True)
+        return _fake_query('{"resolved": true, "reason": "cancelled", "confidence": "high"}')
+    monkeypatch.setattr(pi, "_default_sdk_query_fn", door)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+    v = await pi.classify_pr_intent([], "goal", _config_dir="")
+    assert v == pi.PrIntentVerdict(False, "", "low")
+    assert opened == [], "the SDK door must not be opened without a helper account"

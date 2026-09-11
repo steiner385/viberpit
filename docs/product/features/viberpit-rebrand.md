@@ -9,6 +9,9 @@ links:
   code:
     - src/ccswitch/brand.py
     - web/src/brand.ts
+    - web/src/components/BrandMark.tsx
+    - web/public/brand/
+    - web/scripts/gen-icons.sh
     - server/hostpaths.py
     - server/auth/middleware.py
     - server/sessions/export.py
@@ -115,6 +118,42 @@ other module spells the brand; each later phase flips one line, not five.
 - **Remaining phases are sequenced, not parallel** — #1368 → #1369 → #1370 → #1371 → (#1372 window)
   → #1373 → #1374 → #1375 → #1376 → #1377. Phase 6 can only describe behaviour that has already
   shipped.
+
+**Visual identity (2026-09-11)** — The owner supplied a mascot and wordmark, which supersedes the
+design's assumed decision D3 ("keep the two-lane mark"). The two-lane SVG and its Chromium
+renderer are gone; the brand is now three rasters under `web/public/brand/` and one script.
+
+| Asset | File | Used by |
+|---|---|---|
+| Mascot (viper in sunglasses at a laptop, transparent) | `viberpit-mascot.png` (1024 px) | source of every icon |
+| Horizontal logo (mascot + wordmark) | `viberpit-logo-horizontal.png` (1200 px) | `README.md` |
+| Stacked logo | `viberpit-logo-stacked.png` (800 px) | docs, social |
+| App icon / mark | derived: `favicon.png`, `apple-touch-icon.png`, `icons/icon-{192,512,512-maskable}.png` | tab, home screen, `BrandMark` |
+
+- **One mark, cropped, not drawn.** `web/scripts/gen-icons.sh` crops the mascot's head onto a
+  Deep Night plate with the head inside the centre 80% (Android's maskable safe zone) and the
+  coil and laptop running off the edges, so the crop's cut lines fall under the rounded corners
+  or the launcher's mask. Every icon target is a resize of that one plate; `BrandMark` in the UI
+  is the same `icon-192.png`. Re-run the script after changing the mascot or the crop, and
+  commit the PNGs — it is not part of `npm run build`.
+- **Wordmark in text, not an image.** `Wordmark` renders "Viber" in ink and "Pit" in
+  `text-brand` (`--t-brand`, Viper Green `#22c55e`), from `BRAND_NAME_PARTS` in `brand.ts`,
+  which `brand.test.ts` pins to `BRAND_NAME`. The full name is one visually-hidden node so
+  screen readers and `getByText` see "ViberPit" once. The phone `TopBar` and the desktop
+  `NavRail` each show it; they never render together.
+- **Brand colours are not UI tokens.** Viper Green (`#22c55e`) is 2.3:1 on white and Vibe Purple
+  (`#8b5cf6`) is 3.4:1 — both fail AA for text, which WCAG 1.4.3 permits for a logotype and
+  nothing else. `--t-brand` therefore exists for the wordmark only; `--t-accent` remains the
+  interactive colour and the status tones are unchanged. The sheet's Deep Night (`#0b1020`) is
+  the icon plate, not the dark canvas (`#16171d`, `shell/canvas.ts`), which stays as tuned.
+- **Copy from the brand sheet** (owner-approved; typos in the mockup fixed here): tagline
+  *Code it. Vibe it. Ship it.*; positioning *The open source cockpit for builders who'd rather
+  create than click around.*; loop *Plan · Build · Test · Ship · Repeat*; alternates *Ideas to
+  impact. On autopilot.* / *Your product lifecycle, less work.* / *Build more. Manage less.* /
+  *From concept to commit.* / *Serious ideas. Less serious attitude.* / *Less grind. More build.*
+- **Fonts stay system.** The sheet specifies Poppins / Inter / Caveat; the app keeps
+  `--font-sans: system-ui` — a webfont for an eight-character wordmark is not worth a network
+  fetch on a tailnet-only app, and the logo rasters already carry the display face.
 
 **Evidence** —
 - **Epic and sub-issues:** #1365 (tracking; name-forms table, standing rules, out-of-scope

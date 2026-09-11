@@ -152,7 +152,13 @@ class AutopilotLoop:
         if decision.action == "nudge":
             decision = await self._verify_nudge_facts(sid, ctx, decision, now)
         if decision.action == "skip":
-            await self._record_fingerprint(sid, ledger, ctx)
+            # A human-steering skip means the human has seen (and acted on) this
+            # session: a later escalation for the same stuck state — e.g. a session
+            # that hands back again with the same reason — is new information to
+            # them, so the de-spam flag is released here.
+            await self._record_fingerprint(
+                sid, ledger, ctx,
+                human_seen=decision.reason.startswith("human steering"))
             return False, False
         if decision.action == "complete":
             # A human unarchived this session — it must NEVER be auto-archived again
@@ -235,11 +241,14 @@ class AutopilotLoop:
                     "suppressed": "manual-unarchive"})
         return False, False
 
-    async def _record_fingerprint(self, sid: str, ledger: dict, ctx: DecisionContext) -> None:
+    async def _record_fingerprint(self, sid: str, ledger: dict, ctx: DecisionContext,
+                                  *, human_seen: bool = False) -> None:
         fp = fingerprint(ctx)
         repeat = ledger.get("repeat_count", 0) + 1 if ledger.get("last_fingerprint") == fp else 1
         new = dict(ledger)
         new.update(last_fingerprint=fp, repeat_count=repeat)
+        if human_seen and new.get("escalated"):
+            new["escalated"] = False
         await self._ctx.set_target_state(sid, new)
 
     async def _charge(self, sid: str, ledger: dict, ctx: DecisionContext,

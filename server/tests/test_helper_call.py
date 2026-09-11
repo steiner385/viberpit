@@ -176,3 +176,58 @@ def test_per_attempt_timeout_fails_open_without_retry():
     assert out.failure_kind == "timeout"
     assert counter["n"] == 1   # a wedged call is not retried
     assert delays == []
+
+
+# --------------------------------------------------------------------------- #
+# helper_cwd: where a stateless one-shot helper runs.                          #
+#                                                                              #
+# Live finding 2026-09-11: the decider, composer and PR-intent classifier ran  #
+# with cwd=os.getcwd() — the daemon's own checkout. Two effects, both verified #
+# against the running system: (1) Claude Code loaded THAT repo's CLAUDE.md    #
+# into every autopilot judgement for every governed repo ("ALWAYS flip        #
+# auto-merge on…"), (2) ~12,400 helper transcripts in 14 days landed in the   #
+# checkout's ~/.claude/projects entry, so a plain `claude --resume` there      #
+# listed autopilot's prompts as if they were the operator's own sessions.     #
+# --------------------------------------------------------------------------- #
+
+def test_helper_cwd_honours_env_override_and_creates_it(tmp_path, monkeypatch):
+    target = tmp_path / "scratch" / "cwd"
+    monkeypatch.setenv("CCSWITCH_HELPER_CWD", str(target))
+    got = helper_call.helper_cwd()
+    assert got == str(target)
+    assert target.is_dir()
+
+
+def test_helper_cwd_default_lives_under_the_cache_not_a_checkout(tmp_path, monkeypatch):
+    from pathlib import Path
+    monkeypatch.delenv("CCSWITCH_HELPER_CWD", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    got = Path(helper_call.helper_cwd())
+    assert got == tmp_path / ".cache" / "ccswitch" / "helper-cwd"
+    assert got.is_dir()
+    assert not (got / "CLAUDE.md").exists() and not (got / ".git").exists()
+
+
+_STATELESS_HELPER_MODULES = (
+    "server/automations/autopilot_decider.py",
+    "server/automations/nudge_composer.py",
+    "server/automations/pr_intent.py",
+    "server/automations/model_pick.py",
+    "server/automations/backlog_grouping.py",
+    "server/sessions/prompt_refiner.py",
+    "server/sessions/open_question.py",
+    # The Codex one-shot helpers (refine / suggest / goal) build an AgentDriverConfig
+    # whose cwd Codex roots its sandbox AND its AGENTS.md lookup in — same shape.
+    "server/sessions/orchestrator.py",
+)
+
+
+def test_no_stateless_helper_runs_in_the_daemon_cwd():
+    """Every one-shot helper must run in ``helper_cwd()`` — never the daemon's own
+    working directory (a repo checkout whose CLAUDE.md then leaks into the call)."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    for rel in _STATELESS_HELPER_MODULES:
+        src = (root / rel).read_text(encoding="utf-8")
+        assert "os.getcwd()" not in src, f"{rel} still runs in the daemon cwd"
+        assert "helper_cwd()" in src, f"{rel} does not route through helper_cwd()"

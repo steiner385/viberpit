@@ -297,3 +297,29 @@ def test_classifier_not_invoked_for_non_complete_status(monkeypatch):
     result = asyncio.run(run())
     assert result is None, "should return None for non-complete session"
     assert invocations == [], "classifier must NOT be called for non-complete status"
+
+
+# ---------------------------------------------------------------------------
+# (g) The classifier must run under an account that can answer
+# ---------------------------------------------------------------------------
+
+def test_classifier_runs_under_the_engine_safe_helper_config_dir(monkeypatch):
+    """Live 2026-08-28..09-11: every classify call failed "Not logged in" — the
+    orchestrator called it with no ``_config_dir`` and the daemon exports no
+    CLAUDE_CONFIG_DIR, so the salvage that stops the "open a PR" template nudge on a
+    legitimately PR-less session never once ran. Route through the same engine-safe
+    helper dir the decider and composer use (#1262)."""
+    from server.automations.pr_intent import PrIntentVerdict
+    seen: dict = {}
+
+    async def fake_classify(tail, goal, **kw):
+        seen.update(kw)
+        return PrIntentVerdict(resolved=False, reason="", confidence="high")
+
+    monkeypatch.setattr("server.automations.pr_intent.classify_pr_intent", fake_classify)
+    orch = _bare_orch()
+    orch._autopilot_helper_config_dir = lambda account: f"/safe/{account}"
+    rec = _rec()
+    asyncio.run(orch._autopilot_resolve_pr_intent(
+        rec, "fix ci", "explicit", _no_pr_facts(), []))
+    assert seen.get("_config_dir") == "/safe/a"
