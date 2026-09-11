@@ -411,6 +411,57 @@ def test_get_detail_no_epic_is_null():
         assert body["epic"] is None
 
 
+def test_detail_next_action_materialize_depends_on_the_epic_pointer():
+    """A merged plan with no epic → nextAction 'materialize' (#992); the same
+    initiative WITH an epic pointer keeps the pre-existing await_approval. The
+    detail endpoint builds its own InitiativeView, so it has to derive `epic`
+    from the row or it would report materialize forever."""
+    from server.db import db_session
+    from server.db.models import Initiative, InitiativeArtifact
+
+    async def _seed(db_url: str):
+        from server.db import init_db
+        await init_db(db_url)
+        async with db_session() as db:
+            for slug, epic_repo, epic_number in (("no-epic", None, None),
+                                                 ("has-epic", "o/r", 42)):
+                ini = Initiative(slug=slug, repo="o/r", title=slug, stage="plan",
+                                 status="active", epic_repo=epic_repo,
+                                 epic_number=epic_number)
+                db.add(ini)
+                await db.flush()
+                db.add(InitiativeArtifact(
+                    initiative_id=ini.id, kind="plan",
+                    repo_path=f"docs/sdlc/{slug}/plan.md", commit_sha="deadbeef",
+                    pr_number=7))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        asyncio.run(_seed(db_url))
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
+                                     "CCSWITCH_DEV": "1",
+                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.tests.fakes.fake_factory import fake_sdk_factory
+            from server.app import create_app
+            from fastapi.testclient import TestClient
+
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            app = create_app(orchestrator=orch)
+            with TestClient(app, raise_server_exceptions=False) as c:
+                r = c.get("/api/sdlc/initiatives/no-epic", headers=IDENTITY_HEADERS)
+                assert r.status_code == 200, r.text
+                assert r.json()["nextAction"] == {"type": "materialize", "kind": "plan"}
+
+                r2 = c.get("/api/sdlc/initiatives/has-epic", headers=IDENTITY_HEADERS)
+                assert r2.status_code == 200, r2.text
+                body = r2.json()
+                assert body["nextAction"] == {"type": "await_approval", "kind": "plan"}
+                # The wire `epic` key stays the progress object, never the
+                # engine view's internal "o/r#42" ref.
+                assert body["epic"] is None or isinstance(body["epic"], dict)
+
+
 def test_unauthenticated_401():
     """Request without identity headers → 401."""
     with _client() as c:

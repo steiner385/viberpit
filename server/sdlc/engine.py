@@ -62,6 +62,11 @@ class InitiativeView:
     status: str  # "proposed" | "active" | "awaiting_human" | "blocked" | "done"
     repo: str = ""
     issue: str | None = None
+    # The initiative's epic, "owner/repo#N", once one exists (adopted from GitHub
+    # or created by materialization); None means the plan has not been decomposed
+    # yet. Internal to the engine — the API's wire `epic` key is a progress
+    # object, not this ref.
+    epic: str | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -82,6 +87,14 @@ class AwaitApproval:
 
 
 @dataclass(frozen=True)
+class Materialize:
+    """Terminal action of the ``plan`` stage (spec 003 §7b): the plan artifact is
+    merged but the initiative has no epic yet, so the plan must be decomposed
+    into an epic + sub-issues before anything downstream can happen."""
+    kind: str = "plan"
+
+
+@dataclass(frozen=True)
 class HandoffToBuild:
     """Front chain is complete — hand the underlying issue to backlog_runner."""
     issue: str
@@ -99,7 +112,7 @@ class NeedsHuman:
     reason: str = ""
 
 
-StageAction = Propose | AwaitApproval | HandoffToBuild | Done | NeedsHuman
+StageAction = Propose | AwaitApproval | Materialize | HandoffToBuild | Done | NeedsHuman
 
 
 # --------------------------------------------------------------------------- #
@@ -190,6 +203,14 @@ def next_action(
     # Artifact PR open (not merged) → propose-only gate: wait for the human.
     if art.commit_sha is None:
         return AwaitApproval(kind)
+
+    # Merged plan with no epic yet → materialize (spec 003 §7b). Checked ahead of
+    # the approval gate and the auto-advance seam: until the plan is decomposed
+    # into an epic there is nothing for a human to advance to, nor anything for
+    # the Build stage to hand off. With an epic (adopted, or created by an
+    # earlier materialization) the plan stage behaves exactly as before.
+    if stage == "plan" and initiative.epic is None:
+        return Materialize()
 
     # Artifact merged. The engine never advances the stage itself under the
     # propose-only gate — it keeps awaiting the human advance. The only exception

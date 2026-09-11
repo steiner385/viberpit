@@ -35,13 +35,17 @@ ReadConfig = Callable[[], Awaitable["tuple[str, dict]"]]
 
 def _to_views(ini: dict, artifacts: list[dict]) -> tuple[InitiativeView, list[ArtifactView]]:
     """Adapt the injected dict rows into the engine's frozen views. ``issue`` is
-    the origin_ref — the GitHub issue the Build stage hands to backlog_runner."""
+    the origin_ref — the GitHub issue the Build stage hands to backlog_runner;
+    ``epic`` folds the epic pointer into the ``owner/repo#N`` ref the engine
+    tests for when deciding whether a merged plan still needs materializing."""
     return (
         InitiativeView(slug=str(ini.get("slug") or ""),
                        stage=str(ini.get("stage") or ""),
                        status=str(ini.get("status") or ""),
                        repo=str(ini.get("repo") or ""),
-                       issue=ini.get("origin_ref")),
+                       issue=ini.get("origin_ref"),
+                       epic=(f"{ini['epic_repo']}#{ini['epic_number']}"
+                             if ini.get("epic_number") else None)),
         [ArtifactView(kind=str(a.get("kind") or ""),
                       commit_sha=a.get("commit_sha"),
                       pr_number=a.get("pr_number"),

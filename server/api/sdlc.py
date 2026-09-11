@@ -31,6 +31,7 @@ from server.sdlc.engine import (
     Done,
     HandoffToBuild,
     InitiativeView,
+    Materialize,
     NeedsHuman,
     Propose,
     advance_stage,
@@ -207,6 +208,8 @@ def _action_to_dict(action: object) -> dict:
         return {"type": "propose", "kind": action.kind}
     if isinstance(action, AwaitApproval):
         return {"type": "await_approval", "kind": action.kind}
+    if isinstance(action, Materialize):
+        return {"type": "materialize", "kind": action.kind}
     if isinstance(action, HandoffToBuild):
         return {"type": "handoff_to_build", "issue": action.issue}
     if isinstance(action, Done):
@@ -358,6 +361,10 @@ async def get_initiative(
         status=ini.status,
         repo=ini.repo or "",
         issue=ini.origin_ref,
+        # Same fold as the synthesizer's projection: an epic pointer means the
+        # plan has already been materialized (spec 003 §7b). NOT the wire `epic`
+        # key below, which is the epic *progress* object.
+        epic=f"{ini.epic_repo}#{ini.epic_number}" if ini.epic_number else None,
     )
     artifact_views = [
         ArtifactView(

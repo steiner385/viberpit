@@ -127,6 +127,25 @@ async def test_enriched_artifact_is_left_alone():
     assert rec.updates == []
 
 
+def test_to_views_carries_the_epic_pointer():
+    """The engine's Materialize decision hangs off ``InitiativeView.epic`` (#992),
+    so the projection must fold epic_repo/epic_number into the ``owner/repo#N``
+    ref — otherwise every initiative would look un-materialized forever."""
+    from server.automations.sdlc_synthesizer import _to_views
+
+    ini = dict(_ini("plan"), epic_repo="o/r", epic_number=42)
+    view, _arts = _to_views(ini, [])
+    assert view.epic == "o/r#42"
+
+
+def test_to_views_epic_is_none_without_an_epic_number():
+    from server.automations.sdlc_synthesizer import _to_views
+
+    ini = dict(_ini("plan"), epic_repo=None, epic_number=None)
+    view, _arts = _to_views(ini, [])
+    assert view.epic is None
+
+
 def test_automation_contract():
     a = SdlcSynthesizer()
     assert a.id == "sdlc-synthesizer"

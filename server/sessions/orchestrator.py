@@ -7184,7 +7184,10 @@ class SessionOrchestrator:
                 Initiative.status != "done", Initiative.stage != "done"))).scalars().all()
         return [{"id": r.id, "slug": r.slug, "repo": r.repo, "title": r.title,
                  "stage": r.stage, "status": r.status, "origin": r.origin,
-                 "origin_ref": r.origin_ref} for r in rows]
+                 "origin_ref": r.origin_ref,
+                 # The engine decides plan-stage materialization off this pointer
+                 # (spec 003 §7b) — without it every merged plan looks un-decomposed.
+                 "epic_repo": r.epic_repo, "epic_number": r.epic_number} for r in rows]
 
     async def _sdlc_list_artifacts(self, initiative_id: str) -> list[dict]:
         """Every InitiativeArtifact index row for *initiative_id* as a plain dict."""
