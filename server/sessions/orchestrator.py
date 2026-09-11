@@ -961,16 +961,17 @@ class SessionOrchestrator:
         # network. Defaults to the real ``gh`` shell-out.
         self._gh_run = gitrepos._run_gh
         # Backlog Runner control loop. Every I/O seam is now the real Plan-B
-        # wiring: select_batch (priority queue → planned group → batch), claim /
-        # unclaim (in-progress label lifecycle), spawn (clone-resolve + de-duped
-        # session), plus in-flight/account/PR-status/config/session-ended probes.
+        # wiring: select_batch (priority queue → planned group → batch), announce
+        # (the claim's issue comment — the claim itself is the durable row), spawn
+        # (clone-resolve + de-duped session), plus
+        # in-flight/account/PR-status/config/session-ended probes.
         from server.automations.backlog_runner import BacklogRunnerLoop
         self._backlog_ctx = AutomationContext(
             "backlog-runner", create_session=self.create_session)
         self._backlog_loop = BacklogRunnerLoop(
             self._backlog_ctx,
             select_batch=self._backlog_select_batch,
-            claim=self._backlog_claim,
+            announce=self._backlog_announce,
             spawn=self._backlog_spawn,
             count_in_flight=self._backlog_count_in_flight,
             count_candidates=self._backlog_count_candidates,
@@ -979,13 +980,10 @@ class SessionOrchestrator:
             pr_doctor_active=self._backlog_pr_doctor_active,
             read_config=self._backlog_read_config,
             clock=time.monotonic,
-            release=self._backlog_release,
             needs_human=self._backlog_needs_human,
             session_ended=self._backlog_session_ended,
             session_ran=self._backlog_session_ran,
-            reconcile=self._backlog_reconcile,
             close_out=self._backlog_close_out,
-            heal_orphans=self._backlog_heal_orphans,
             refresh_groups=self._backlog_refresh_groups,
             credential_alerts=self._backlog_credential_alerts,
             verify_ready=self._backlog_verify_ready,
@@ -5016,7 +5014,9 @@ class SessionOrchestrator:
         counts, and is the same one ``GET /api/pm/queue`` renders, so what the
         operator sees is what agents will do next. Refs this runner has already
         claimed are excluded up front (a claim is durable state, not a label
-        read), so a claimed-but-not-yet-spawned issue can never be picked twice.
+        read), so a claimed-but-not-yet-spawned issue can never be picked twice,
+        and refs the runner GAVE UP on carry their give-up time into the queue's
+        needs-human cooldown (Phase D: the row is the signal, not a label).
 
         ``skipped_out``, when given, receives ``rank``'s per-reason skip counts
         (``blocked`` is the card's "why isn't the backlog draining" note).
@@ -5025,17 +5025,21 @@ class SessionOrchestrator:
 
         from server.pm.desired_state import STATUS_READY
         from server.pm.queue import NEEDS_HUMAN_RETRY_DAYS_DEFAULT, rank, to_candidate
-        from server.pm.queue_store import load_queue_rows
+        from server.pm.queue_store import load_queue_rows, runner_row_maps
 
-        states = await self._backlog_ctx.list_target_states()
-        # A bundle rides on the primary's row; a row written before bundling (or
-        # by the dispatch path) carries no ``issues``, and IS its own claim.
-        claimed = {ref for target, st in states.items() if st.get("claimed")
-                   for ref in (st.get("issues") or [target])}
         now = datetime.now(timezone.utc)
+
+        def _rows(s):
+            # The runner's claims and give-ups come from the SAME derivation
+            # ``GET /api/pm/queue`` uses (``runner_row_maps``), in the same session
+            # as the mirror read, so the operator's view cannot disagree with the
+            # pool selection draws from.
+            claimed, needs_human_at = runner_row_maps(s)
+            return load_queue_rows(s, now=now, claimed_refs=claimed,
+                                   needs_human_at=needs_human_at)
+
         async with db_session() as db:
-            rows = await db.run_sync(
-                lambda s: load_queue_rows(s, now=now, claimed_refs=claimed))
+            rows = await db.run_sync(_rows)
         # The queue spans every onboarded product; ``enabled_repos`` is still the
         # operator's scope switch (empty = all of them). Scoping happens BEFORE
         # ranking, not after: skip reasons are per-row, so an unscoped product's
@@ -5155,16 +5159,23 @@ class SessionOrchestrator:
                 load[repo] = load.get(repo, 0) + 1
         return load
 
-    async def _backlog_claim(self, batch) -> bool:
-        """Atomically claim every issue in *batch* (add the ``in-progress`` label).
+    async def _backlog_announce(self, batch) -> None:
+        """Announce a claim: a brief linking comment on each issue so a human sees
+        who claimed it and can trace back to the runner via the ``origin_ref``.
 
-        Posts a brief linking comment on each issue so a human sees who claimed
-        it and can trace back to the runner via the ``origin_ref``."""
+        The claim ITSELF is the runner's durable target-state row (Phase D retired
+        the ``in-progress`` label), so this can only ever add or fail to add a
+        comment — never gate a spawn. Best-effort and non-raising: the callers
+        (loop refill, the propose tap, manual dispatch) have already claimed."""
         from server.automations import backlog_github
         comment = (f"Claimed by {brand.NAME} Backlog Runner ({batch.primary}) — "
                    f"an implementation session is in progress.")
-        return await asyncio.to_thread(
-            backlog_github.claim_batch, batch, gh_run=self._gh_run, comment=comment)
+        try:
+            await asyncio.to_thread(
+                backlog_github.announce_claim, batch, comment, gh_run=self._gh_run)
+        except Exception:
+            log.warning("backlog.claim_announce_failed target=%s", batch.primary,
+                        exc_info=True)
 
     async def _backlog_verify_ready(self, batch) -> "bool | None":
         """Spec 003 §7a safety net: the queue ranks from the board mirror, which
@@ -5185,67 +5196,33 @@ class SessionOrchestrator:
         return Batch(primary=target, issues=list(issues),
                      repo=target.split("#", 1)[0])
 
-    async def _backlog_release(self, target: str) -> None:
-        """RELEASE-only path (spawn failure): remove ``in-progress`` and return
-        the batch to the pool. Does NOT add ``needs-human`` — a transient spawn
-        failure is retried, not escalated. Best-effort, off the event loop."""
-        from server.automations import backlog_github
-        batch = await self._backlog_batch_for(target)
-        await asyncio.to_thread(
-            backlog_github.unclaim_batch, batch, gh_run=self._gh_run)
+    async def _backlog_needs_human(self, target: str, reason: str) -> None:
+        """GIVE-UP path: comment the handoff, carrying the ``reason`` a human needs
+        in order to pick the target up. Used only after ``max_attempts``, a
+        PR-Doctor give-up or a merged PR the human gate blocked.
 
-    async def _backlog_needs_human(self, target: str) -> None:
-        """GIVE-UP path: add ``needs-human`` and remove ``in-progress`` so a human
-        picks the target up. Used only after ``max_attempts`` or a PR-Doctor
-        give-up. Best-effort, off the event loop."""
+        The handoff SIGNAL is the runner's durable ``gave_up`` row (Phase D) —
+        the reconciler stamps board Status ``Needs human`` from it and the queue
+        reads its cooldown; this only says so on the issue. Best-effort, off the
+        event loop."""
         from server.automations import backlog_github
         batch = await self._backlog_batch_for(target)
         await asyncio.to_thread(
-            backlog_github.label_needs_human, batch, gh_run=self._gh_run)
+            backlog_github.announce_needs_human, batch, reason, gh_run=self._gh_run)
 
     async def _backlog_close_out(self, target: str, info) -> str:
         """MERGED path: close every issue in the batch with a comment linking
-        the merged PR — the PR body may have lacked ``Fixes #N``, and an issue
-        left open under ``in-progress``/``needs-human`` is excluded from the
-        candidate pools forever. Fails CLOSED on PR↔issue linkage (#642): the
-        returned outcome (``"closed"`` / ``"unlinked"`` / ``"retry"``) tells the
-        sweep whether the PR really was the batch's implementation, so a
+        the merged PR — the PR body may have lacked ``Fixes #N``, and nothing else
+        would ever close the issues it implemented. Fails CLOSED on PR↔issue
+        linkage (#642): the returned outcome (``"closed"`` / ``"escalated"`` /
+        ``"unlinked"`` / ``"retry"``) tells the sweep whether the PR really was the
+        batch's implementation and whether a human still has to finish it, so a
         shared-clone branch misattribution can never close unrelated issues.
         Best-effort, off the event loop."""
         from server.automations import backlog_github
         batch = await self._backlog_batch_for(target)
         return await asyncio.to_thread(
             backlog_github.close_batch_issues, batch, info, gh_run=self._gh_run)
-
-    async def _backlog_reconcile(self, claimed_refs: list[str],
-                                 live_refs: set[str]) -> None:
-        """Return orphaned claims to the pool (crash-between-claim-and-spawn).
-
-        For each durably-claimed ref with no live runner session (not in
-        ``live_refs``), remove the ``in-progress`` label. Best-effort, off the
-        event loop."""
-        from server.automations import backlog_github
-        await asyncio.to_thread(
-            backlog_github.reconcile_dangling, list(claimed_refs), set(live_refs),
-            gh_run=self._gh_run)
-
-    async def _backlog_heal_orphans(self, config: dict,
-                                    tracked: set[str]) -> list[tuple[str, str]]:
-        """GitHub-truth orphan healing: diff the open ``in-progress`` labels in
-        the enabled repos against the refs the state rows track, and heal the
-        rest (close if the referencing PR merged, release the claim if nothing
-        carries it). Best-effort, off the event loop; the per-pass lookup cap
-        lives in ``heal_orphan_claims``."""
-        from server.automations import backlog_github
-        repos = list(config.get("enabled_repos") or [])
-        if not repos:
-            return []
-        refs = await asyncio.to_thread(
-            backlog_github.query_claimed_refs, repos, gh_run=self._gh_run)
-        if not refs:
-            return []
-        return await asyncio.to_thread(
-            backlog_github.heal_orphan_claims, refs, tracked, gh_run=self._gh_run)
 
     async def _backlog_session_ended(self, session_id: str) -> bool:
         """True once the runner session *session_id* has reached a terminal state.
@@ -5368,8 +5345,8 @@ class SessionOrchestrator:
         Re-reads the current priority queue, pins a batch on *primary*, claims it
         (unless already claimed), resolves a healthy account, and spawns the
         de-duped runner session. Returns a status string: ``"spawned"`` /
-        ``"unknown"`` (not a current candidate) / ``"claim_failed"`` /
-        ``"no_account"``."""
+        ``"unknown"`` (not a current candidate) / ``"no_account"`` /
+        ``"refused"``."""
         from server.automations.backlog_selection import Batch
         _mode, config = await self._backlog_read_config()
         # Read the current queue and pin the batch on the requested primary (the
@@ -5383,20 +5360,17 @@ class SessionOrchestrator:
         st = await self._backlog_ctx.get_target_state(primary)
         already_claimed = bool(st.get("issues"))
         if not already_claimed:
-            # RECORDS-BEFORE-LABELS: write the durable claim row BEFORE the gh
-            # label write so a crash after the label lands still leaves a
-            # recoverable state row (reconciliation sees a claimed ref with no
-            # session_id and no proposed flag → dangler → released).
+            # RECORDS-BEFORE-ANYTHING: the durable row IS the claim (Phase D), so
+            # it is written before the announce and the spawn — reconciliation
+            # sees a claimed ref with no session_id and no proposed flag as a
+            # dangler and releases it by deleting the row.
             await self._backlog_ctx.set_target_state(primary, {
                 "repo": batch.repo,
                 "attempts": st.get("attempts", 0),
                 "issues": batch.issues,
                 "claimed": True,
             })
-            if not await self._backlog_claim(batch):
-                # Never actually held the claim → drop the speculative row.
-                await self._backlog_ctx.delete_target_state(primary)
-                return "claim_failed"
+            await self._backlog_announce(batch)
             await self._backlog_ctx.emit("info", f"claimed {primary}",
                                          kind="claimed", target=primary,
                                          detail={"issues": batch.issues})
@@ -5416,7 +5390,6 @@ class SessionOrchestrator:
             # "spawned" here told the dashboard a session exists and left the
             # claim row holding a concurrency slot forever. Undo the claim and
             # say so; the spawn path already recorded the reason.
-            await self._backlog_release(primary)
             await self._backlog_ctx.delete_target_state(primary)
             return "refused"
         # A de-dup hit returns the existing row without appending to spawns; treat
@@ -5465,10 +5438,7 @@ class SessionOrchestrator:
                 "issues": batch.issues,
                 "claimed": True,
             })
-            if not await self._backlog_claim(batch):
-                await self._backlog_ctx.delete_target_state(primary)
-                return {"status": "claim_failed", "session_id": None,
-                        "session_name": None}
+            await self._backlog_announce(batch)
             await self._backlog_ctx.emit("info", f"manual dispatch {primary}",
                                          kind="claimed", target=primary,
                                          detail={"issues": batch.issues})
@@ -5478,7 +5448,6 @@ class SessionOrchestrator:
                     "session_name": None}
         rec = await self._backlog_spawn(batch, account)
         if rec is None:
-            await self._backlog_release(primary)
             await self._backlog_ctx.delete_target_state(primary)
             return {"status": "refused", "session_id": None, "session_name": None}
         await self._backlog_ctx.set_target_state(primary, {

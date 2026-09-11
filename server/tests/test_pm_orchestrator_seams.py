@@ -592,6 +592,52 @@ async def test_backlog_verify_ready_seam_threads_batch_issues_and_gh_run():
     assert seen == [(["o/r#1", "o/r#2"], sentinel_gh)]
 
 
+@pytest.mark.asyncio
+async def test_backlog_announce_threads_batch_and_gh_run_into_announce_claim():
+    """Phase D: the claim is the durable row, and the orchestrator seam only
+    announces it — the whole batch and the orchestrator's ``gh`` seam go into
+    ``announce_claim``, with a comment naming the runner and the primary."""
+    from server.automations.backlog_selection import Batch
+    orch = _bare_orch()
+    sentinel_gh = object()
+    orch._gh_run = sentinel_gh
+    seen: list = []
+
+    def fake_announce(batch, comment, *, gh_run):
+        seen.append((list(batch.issues), comment, gh_run))
+
+    batch = Batch(primary="o/r#1", issues=["o/r#1", "o/r#2"], repo="o/r")
+    with patch("server.automations.backlog_github.announce_claim", fake_announce):
+        assert await orch._backlog_announce(batch) is None
+    (issues, comment, gh_run) = seen[0]
+    assert issues == ["o/r#1", "o/r#2"] and gh_run is sentinel_gh
+    assert "Backlog Runner" in comment and "o/r#1" in comment
+
+
+@pytest.mark.asyncio
+async def test_backlog_needs_human_threads_batch_and_reason(db_env):
+    """The give-up announcement carries the REASON (what a human needs in order
+    to pick the target up) and the batch reconstructed from the durable row."""
+    from server.automations.context import AutomationContext
+    await init_db(db_env)
+    orch = _bare_orch()
+    orch._gh_run = object()
+    orch._backlog_ctx = AutomationContext("backlog-runner")
+    async with db_session() as db:
+        from server.db.models import Automation
+        db.add(Automation(id="backlog-runner"))
+    await orch._backlog_ctx.set_target_state(
+        "o/r#1", {"repo": "o/r", "issues": ["o/r#1", "o/r#2"], "gave_up": True})
+    seen: list = []
+
+    def fake_announce(batch, reason, *, gh_run):
+        seen.append((list(batch.issues), reason, gh_run))
+
+    with patch("server.automations.backlog_github.announce_needs_human", fake_announce):
+        await orch._backlog_needs_human("o/r#1", "max attempts (2) reached")
+    assert seen == [(["o/r#1", "o/r#2"], "max attempts (2) reached", orch._gh_run)]
+
+
 def test_backlog_queue_tail_returns_copy_of_cache():
     """The status-card queue-provenance seam (#990) must hand the loop a COPY
     of the cached ranked pool — mutating what it returns must never corrupt

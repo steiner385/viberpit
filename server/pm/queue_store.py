@@ -1,16 +1,25 @@
 """Global priority queue loader (spec 003 §7a): turns the mirror's ``GhProjectItem`` rows,
 across every onboarded product with a linked Projects v2 board, into ``queue.QueueRow`` — the
-shape ``queue.rank`` ranks against. No ranking here; that stays in the pure core (``queue.py``,
-Task 2). Nothing calls this yet (Task 4 wires it into the API)."""
+shape ``queue.rank`` ranks against. No ranking here; that stays in the pure core (``queue.py``).
+
+Three readers, one composition: the backlog runner's candidate pool
+(``SessionOrchestrator._backlog_query_queue``), the operator's ``GET /api/pm/queue``, and —
+for ``parse_iso_utc`` — the reconciler's inputs (``reconcile_inputs``), which from Phase D
+Task 2 derive board Status ``Needs human`` from the same runner rows ``runner_row_maps``
+reads here. Both queue readers go through ``runner_row_maps``, so what the operator sees is
+what agents will do next."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from datetime import datetime
 
 from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session
 
-from server.db.models import GhProjectItem, Session as DbSession, WorkItem, WorkItemDep
+from server.db.models import (AutomationTargetState, GhProjectItem, Session as DbSession,
+                              WorkItem, WorkItemDep)
+from server.time_iso import parse_iso_utc
 
 from .desired_state import ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES
 from .mirror_store import deps_in_repos, list_product_views
@@ -18,6 +27,53 @@ from .queue import QueueRow
 from .reconcile_inputs import _aware
 
 _LIVE_SESSION_STATUSES = ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES
+
+# Immutable empty default for the ``needs_human_at`` map (no mutable default arg).
+_NO_TIMES: Mapping[str, datetime] = {}
+
+# ``BacklogRunner.id``, as a literal: ``backlog_runner`` imports this module for
+# ``parse_iso_utc``, so importing it back would be a cycle.
+RUNNER_AUTOMATION_ID = "backlog-runner"
+
+
+# ``parse_iso_utc`` is THE parser for the runner's durable row timestamps — the
+# orchestrator's queue read, the runner's expiry sweep and the reconciler all call
+# it, so they can never disagree about what a stamp means. It is re-exported from
+# ``server.time_iso`` (the app's ISO boundary, constitution VI) rather than
+# reimplemented here: the two had already drifted, since only that one tolerates
+# GitHub's trailing ``Z``. Importers keep this name; direct importers of
+# ``server.time_iso`` (e.g. the pure ``label_retirement`` planner, which must not
+# drag the ORM in) get the identical function.
+
+
+def runner_row_maps(db: Session) -> tuple[frozenset[str], dict[str, datetime]]:
+    """The backlog runner's durable target-state rows, as the two queue inputs:
+    ``(claimed_refs, needs_human_at)``.
+
+    ONE derivation, read by both queue consumers (the runner's own pool and
+    ``GET /api/pm/queue``) so the operator's view cannot disagree with what agents
+    will do next. A bundle rides on the primary's row; a row written before
+    bundling (or by the dispatch path) carries no ``issues`` and IS its own claim.
+
+    A ``gave_up`` row is NOT a claim — its session is long gone; it is the
+    needs-human handoff itself (Phase D), which the queue reads as a cooldown. An
+    undated or unreadable stamp yields neither: a row we cannot date must not park
+    an issue forever (``_sweep`` deletes such a row on its next pass).
+    """
+    claimed: set[str] = set()
+    needs_human_at: dict[str, datetime] = {}
+    rows = db.scalars(select(AutomationTargetState).where(
+        AutomationTargetState.automation_id == RUNNER_AUTOMATION_ID))
+    for row in rows:
+        st = row.state or {}
+        refs = st.get("issues") or [row.target]
+        if st.get("gave_up"):
+            at = parse_iso_utc(st.get("needs_human_at"))
+            if at is not None:
+                needs_human_at.update({ref: at for ref in refs})
+        elif st.get("claimed"):
+            claimed.update(refs)
+    return frozenset(claimed), needs_human_at
 
 
 def _split_ref(ref: str) -> tuple[str, int] | None:
@@ -28,7 +84,8 @@ def _split_ref(ref: str) -> tuple[str, int] | None:
 
 
 def load_queue_rows(db: Session, *, now: datetime,
-                    claimed_refs: AbstractSet[str] = frozenset()) -> list[QueueRow]:
+                    claimed_refs: AbstractSet[str] = frozenset(),
+                    needs_human_at: Mapping[str, datetime] = _NO_TIMES) -> list[QueueRow]:
     """One ``QueueRow`` per open, board-linked issue across every onboarded product.
 
     A product without a linked board (``gh_project_db_id`` is ``None``) contributes
@@ -37,6 +94,10 @@ def load_queue_rows(db: Session, *, now: datetime,
     mirrored destination counts only while it is itself open. ``now`` is accepted
     (not read here) to match every other mirror_store-style loader's signature —
     ``rank()`` is what actually needs it, for the needs-human cooldown window.
+
+    ``needs_human_at`` maps a ref to the moment the backlog runner gave up on it
+    (its durable ``gave_up`` row, Phase D); the loader only threads it onto the
+    rows — the cooldown rule itself lives in ``queue.skip_reason``.
     """
     rows: list[QueueRow] = []
     # Only origin_ref is read here, so select that column directly rather than
@@ -106,5 +167,6 @@ def load_queue_rows(db: Session, *, now: datetime,
                 open_children=int(open_children.get(w.id, 0)),
                 open_blockers=tuple(sorted(blockers.get(ref, ()))),
                 live_session=ref in live_refs, claimed=ref in claimed_refs,
+                needs_human_at=needs_human_at.get(ref),
             ))
     return rows

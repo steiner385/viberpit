@@ -2,12 +2,11 @@
 zero real sessions.
 
 The whole loop rides the real ``BacklogRunnerLoop`` wired to the real selection /
-claim / spawn seams (grouping-plan refresh → ``store_plan`` → ``select_batch``
-→ ``plan_to_batch``, ``claim_batch`` / ``unclaim_batch`` / ``label_needs_human``)
-but with:
+announce / spawn seams (grouping-plan refresh → ``store_plan`` → ``select_batch``
+→ ``plan_to_batch``, ``announce_claim`` / ``announce_needs_human``) but with:
 
-- a FAKE ``gh`` (:class:`FakeGh`) — every GitHub *write* (claim / release /
-  escalate labels, comments) is scripted, no network;
+- a FAKE ``gh`` (:class:`FakeGh`) — every GitHub *write* (the claim and
+  needs-human comments) is scripted, no network;
 - a candidate pool built from the real queue core (``rank`` / ``to_candidate``
   over fixture ``QueueRow``s) rather than the mirror DB — the same composition
   ``_backlog_query_queue`` runs in production (spec 003 §7a), so a ref this
@@ -18,8 +17,10 @@ but with:
 - a fake ``create_session`` that writes a DB row — no real PTY / SDK session.
 
 Acceptance criterion: the full path (select→claim→spawn, in-flight cap,
-spawn-failure unclaim, ended-without-PR give-up, PR-Doctor handoff give-up,
-de-dup) runs with NO network and NO real sessions.
+spawn-failure row release, ended-without-PR give-up, PR-Doctor handoff give-up,
+de-dup) runs with NO network and NO real sessions. Phase D (#994) retired the
+``in-progress``/``needs-human`` labels, so no assertion here may expect one: the
+claim is the durable row, and the only GitHub writes are comments.
 """
 from __future__ import annotations
 
@@ -35,6 +36,7 @@ from server.db.models import Session as DbSession
 from server.github.pr_status import PullRequestInfo
 from server.pm.desired_state import STATUS_READY
 from server.pm.queue import QueueRow, rank, to_candidate
+from server.pm.queue_store import parse_iso_utc
 from server.tests.fakes.fake_backlog import FakeGh
 
 NOW = datetime(2026, 9, 10, tzinfo=timezone.utc)
@@ -78,24 +80,19 @@ def _queue_row(repo: str, number: int, title: str, *, claimed: bool) -> QueueRow
         claimed=claimed)
 
 
-class LabelAwareGh(FakeGh):
-    """FakeGh that tracks the in-progress labels the claim / release / escalate
-    paths write, so a test can assert on the real label bookkeeping."""
+class CommentTrackingGh(FakeGh):
+    """FakeGh that records the issue comments the announce paths post, so a test
+    can assert on the human-visible trace a claim / handoff leaves."""
 
     def __init__(self):
         super().__init__()
-        self.in_progress: set[str] = set()
+        self.comments: list[tuple[str, str]] = []   # (ref, body)
 
     def __call__(self, args, token=None):
         self.calls.append(list(args))
-        if args[:2] == ["issue", "edit"]:
+        if args[:2] == ["issue", "comment"]:
             number, repo = args[2], args[4]
-            ref = f"{repo}#{number}"
-            if "--add-label" in args and "in-progress" in args:
-                self.in_progress.add(ref)
-            if "--remove-label" in args and "in-progress" in args:
-                self.in_progress.discard(ref)
-            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            self.comments.append((f"{repo}#{number}", args[args.index("--body") + 1]))
         return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
 
@@ -110,7 +107,7 @@ class Harness:
 
     def __init__(self, *, config, clock, candidate_refs, healthy="acct",
                  spawn_raises=False, pr_status=None, pr_doctor_active=True):
-        self.gh = LabelAwareGh()
+        self.gh = CommentTrackingGh()
         self.candidate_refs = list(candidate_refs)  # (repo, number, title)
         self.config = config
         self.clock = clock
@@ -123,7 +120,7 @@ class Harness:
         self.loop = BacklogRunnerLoop(
             self.ctx,
             select_batch=self._select_batch,
-            claim=self._claim,
+            announce=self._announce,
             spawn=self._spawn,
             count_in_flight=self._count_in_flight,
             healthy_account=lambda: self._healthy(healthy),
@@ -131,14 +128,12 @@ class Harness:
             pr_doctor_active=self._pr_doctor_active_fn,
             read_config=self._read_config,
             clock=clock,
-            release=self._release,
             needs_human=self._needs_human,
             session_ended=self._session_ended,
-            reconcile=self._reconcile,
             refresh_groups=self._refresh_groups,
         )
-        self.released: list[str] = []
         self.needs_humaned: list[str] = []
+        self.needs_human_reasons: list[str] = []
 
     async def _read_config(self):
         return "auto", self.config
@@ -170,8 +165,10 @@ class Harness:
         # REAL plan-based selection: the live queue pool ∩ the stored group plan.
         return await select_batch(config, query=self._query_queue)
 
-    async def _claim(self, batch) -> bool:
-        return await asyncio.to_thread(backlog_github.claim_batch, batch, gh_run=self.gh)
+    async def _announce(self, batch) -> None:
+        await asyncio.to_thread(
+            backlog_github.announce_claim, batch,
+            f"Claimed by Backlog Runner ({batch.primary}).", gh_run=self.gh)
 
     async def _batch_for(self, target: str):
         from server.automations.backlog_selection import Batch
@@ -179,21 +176,13 @@ class Harness:
         return Batch(primary=target, issues=st.get("issues") or [target],
                      repo=target.split("#", 1)[0])
 
-    async def _release(self, target: str) -> None:
-        """RELEASE-only: remove in-progress, NO needs-human."""
-        self.released.append(target)
-        batch = await self._batch_for(target)
-        await asyncio.to_thread(backlog_github.unclaim_batch, batch, gh_run=self.gh)
-
-    async def _needs_human(self, target: str) -> None:
-        """GIVE-UP: add needs-human + remove in-progress."""
+    async def _needs_human(self, target: str, reason: str) -> None:
+        """GIVE-UP: comment the handoff (the row is the signal)."""
         self.needs_humaned.append(target)
+        self.needs_human_reasons.append(reason)
         batch = await self._batch_for(target)
-        await asyncio.to_thread(backlog_github.label_needs_human, batch, gh_run=self.gh)
-
-    async def _reconcile(self, claimed_refs, live_refs) -> None:
-        await asyncio.to_thread(backlog_github.reconcile_dangling,
-                                list(claimed_refs), set(live_refs), gh_run=self.gh)
+        await asyncio.to_thread(backlog_github.announce_needs_human, batch, reason,
+                                gh_run=self.gh)
 
     async def _spawn(self, batch, account: str):
         if self.spawn_raises:
@@ -267,10 +256,10 @@ def test_auto_selects_claims_spawns_one_batch(tmp_path):
         await h.loop.tick()
         # Exactly one batch spawned (in-flight cap = 1).
         assert len(h.created) == 1
-        # It claimed via the in-progress label on the primary.
-        claim_calls = [c for c in h.gh.calls if c[:2] == ["issue", "edit"]
-                       and "--add-label" in c and "in-progress" in c]
-        assert claim_calls, "expected an in-progress claim label call"
+        # The claim announced itself with a comment on the primary — and wrote
+        # no label at all (Phase D).
+        assert [ref for ref, _b in h.gh.comments] == ["o/r#1"]
+        assert not any("--add-label" in c or "--remove-label" in c for c in h.gh.calls)
         # `spawned` event carries detail.issues.
         events = await _events("spawned")
         assert events and events[0].detail and events[0].detail.get("issues")
@@ -297,7 +286,7 @@ def test_in_flight_cap_respected(tmp_path):
 # Spawn failure → unclaim, attempt NOT consumed                                #
 # --------------------------------------------------------------------------- #
 
-def test_spawn_failure_unclaims_and_no_attempt(tmp_path):
+def test_spawn_failure_releases_the_row_and_no_attempt(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'sf.db'}"
 
     async def go():
@@ -307,18 +296,14 @@ def test_spawn_failure_unclaims_and_no_attempt(tmp_path):
                     candidate_refs=[("o/r", 1, "one")], spawn_raises=True)
         await h.loop.tick()
         assert h.created == []               # no session written
-        assert "o/r#1" in h.released         # claim RELEASED (back to pool)
         assert "o/r#1" not in h.needs_humaned  # NOT escalated to needs-human
         assert h.loop._spawns_today == []    # no daily-cap slot consumed
         st = await h.ctx.get_target_state("o/r#1")
-        assert st == {}                      # no attempt / state recorded
-        # A transient spawn failure must leave NO needs-human label — only the
-        # in-progress claim is removed (released to the pool).
-        nh = [c for c in h.gh.calls if "--add-label" in c and "needs-human" in c]
-        assert nh == [], "spawn failure must NOT add needs-human"
-        removed = [c for c in h.gh.calls if c[:2] == ["issue", "edit"]
-                   and "--remove-label" in c and "in-progress" in c]
-        assert removed, "spawn failure must remove in-progress (release)"
+        # Deleting the row IS the release now (Phase D) — no attempt recorded,
+        # nothing holding the slot, and no handoff comment posted.
+        assert st == {}
+        assert not [b for _ref, b in h.gh.comments if "Handed to a human" in b]
+        assert not any("--add-label" in c or "--remove-label" in c for c in h.gh.calls)
         # An `unclaimed` event was emitted for the release.
         unc = await _events("unclaimed")
         assert unc
@@ -347,11 +332,15 @@ def test_ended_without_pr_increments_then_gives_up(tmp_path):
         assert st.get("_ended") is True
         await h.loop.tick()                  # sweep again: attempts -> 2 == max → give up
         st2 = await h.ctx.get_target_state("o/r#1")
-        assert st2 == {}                     # state deleted on give-up
+        # Phase D: the row survives the give-up, stamped — it IS the handoff.
+        assert st2["gave_up"] is True and st2["issues"] == ["o/r#1"]
+        assert parse_iso_utc(st2["needs_human_at"]) is not None
         assert "o/r#1" in h.needs_humaned    # GIVE-UP path escalated
-        # needs-human label was applied via label_needs_human.
-        nh = [c for c in h.gh.calls if "--add-label" in c and "needs-human" in c]
-        assert nh, "expected needs-human escalation"
+        assert "max attempts" in h.needs_human_reasons[0]
+        # The handoff announced itself as a comment carrying the reason.
+        handoffs = [b for _ref, b in h.gh.comments if "Handed to a human" in b]
+        assert handoffs and "max attempts" in handoffs[0]
+        assert not any("--add-label" in c or "--remove-label" in c for c in h.gh.calls)
         gave = await _events("gave_up")
         assert gave
 
@@ -379,10 +368,9 @@ def test_pr_doctor_gave_up_target_needs_human(tmp_path):
         await h.loop.tick()                  # spawn o/r#1
         await h.loop.tick()                  # sweep sees pr-doctor gave_up → give up
         assert "o/r#1" in h.needs_humaned
-        nh = [c for c in h.gh.calls if "--add-label" in c and "needs-human" in c]
-        assert nh
+        assert [b for _ref, b in h.gh.comments if "Handed to a human" in b]
         st = await h.ctx.get_target_state("o/r#1")
-        assert st == {}
+        assert st["gave_up"] is True and st["reason"] == "pr-doctor gave up"
 
     run(go())
 
@@ -557,8 +545,8 @@ def test_status_reflects_non_idle_counts_after_tick(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# C2(b): a dangling in-progress claim (no live session, no state) is           #
-# reconciled away by the sweep.                                                #
+# C2(b): a dangling claim ROW (no live session) is reconciled away by the      #
+# sweep — deleting the row is what returns the issue to the pool.              #
 # --------------------------------------------------------------------------- #
 
 def test_sweep_reconciles_dangling_claim(tmp_path):
@@ -569,19 +557,15 @@ def test_sweep_reconciles_dangling_claim(tmp_path):
         await _seed_rows()
         h = Harness(config=make_config(max_concurrent=1), clock=FakeClock(),
                     candidate_refs=[("o/r", 1, "one")])
-        # Simulate a crash-after-claim: label written + a durable `claimed` state
-        # row with NO session_id (spawn never completed), and no live session.
-        h.gh.in_progress.add("o/r#5")
+        # Simulate a crash-after-claim: a durable `claimed` state row with NO
+        # session_id (spawn never completed), and no live session.
         await h.ctx.set_target_state("o/r#5", {
             "repo": "o/r", "issues": ["o/r#5"], "claimed": True, "attempts": 0})
         # Drive only the reconciliation path (sweep runs it every tick).
         await h.loop._reconcile_dangling()
-        # The dangling claim's in-progress label was removed (released to pool).
-        removed = [c for c in h.gh.calls if c[:2] == ["issue", "edit"]
-                   and "--remove-label" in c and "in-progress" in c
-                   and c[2] == "5"]
-        assert removed, "dangling claim #5 should be released"
-        assert "o/r#5" not in h.gh.in_progress
+        assert await h.ctx.get_target_state("o/r#5") == {}, \
+            "dangling claim row should be deleted (that IS the release)"
+        assert h.gh.calls == [], "reconciliation makes no GitHub writes"
 
     run(go())
 
@@ -595,21 +579,20 @@ def test_reconcile_leaves_live_claim_alone(tmp_path):
         h = Harness(config=make_config(max_concurrent=1), clock=FakeClock(),
                     candidate_refs=[("o/r", 1, "one")])
         # A claimed row WITH a live session_id must not be reconciled.
-        h.gh.in_progress.add("o/r#9")
         await h.ctx.set_target_state("o/r#9", {
             "repo": "o/r", "issues": ["o/r#9"], "claimed": True,
             "session_id": "sess-live", "attempts": 0})
         await h.loop._reconcile_dangling()
-        assert "o/r#9" in h.gh.in_progress, "live claim must stay labeled"
+        assert (await h.ctx.get_target_state("o/r#9")).get("session_id") == "sess-live"
 
     run(go())
 
 
 # --------------------------------------------------------------------------- #
-# I1: the real orchestrator claim seam posts a linking comment                 #
+# I1: the real orchestrator announce seam posts a linking comment              #
 # --------------------------------------------------------------------------- #
 
-def test_backlog_claim_posts_linking_comment(tmp_path, monkeypatch):
+def test_backlog_announce_posts_linking_comment(tmp_path, monkeypatch):
     import os as _os
 
     from server.automations.backlog_selection import Batch
@@ -621,14 +604,14 @@ def test_backlog_claim_posts_linking_comment(tmp_path, monkeypatch):
         _os.environ["CCSWITCH_DEV"] = "1"
         await init_db(db_url=_os.environ["CCSWITCH_DB_URL"])
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
-        gh = LabelAwareGh()
+        gh = CommentTrackingGh()
         orch._gh_run = gh
         batch = Batch(primary="o/r#1", issues=["o/r#1"], repo="o/r")
-        ok = await orch._backlog_claim(batch)
-        assert ok is True
+        assert await orch._backlog_announce(batch) is None
         comments = [c for c in gh.calls if c[:2] == ["issue", "comment"]]
         assert comments, "expected a linking comment on claim"
         body = comments[0][comments[0].index("--body") + 1]
         assert "Backlog Runner" in body and "o/r#1" in body
+        assert not any("--add-label" in c or "--remove-label" in c for c in gh.calls)
 
     run(go())

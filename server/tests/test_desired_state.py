@@ -13,7 +13,7 @@ def _f(**over):
     base = dict(ref="o/r#1", issue_state="open", issue_closed_at=None, triage_state="unclassified",
                 classified_at=None, reach=None, impact=None, effort=None, confidence=None,
                 session_status=None, session_at=None, merged_pr_at=None, open_blocker_refs=(),
-                blockers_at=None, needs_human_label=False, initiative_stage=None,
+                blockers_at=None, needs_human_at=None, initiative_stage=None,
                 initiative_stage_at=None)
     base.update(over)
     return ItemFacts(**base)
@@ -38,10 +38,19 @@ def test_status_session_signals():
 
 def test_status_needs_human_blocked_ready_backlog():
     assert derive_status(_f(triage_state="needs_human", classified_at=T1)) == Decision(STATUS_NEEDS_HUMAN, T1)
-    assert derive_status(_f(needs_human_label=True)) .value == STATUS_NEEDS_HUMAN
     assert derive_status(_f(open_blocker_refs=("o/r#2",), blockers_at=T2)) == Decision(STATUS_BLOCKED, T2)
     assert derive_status(_f(triage_state="classified", classified_at=T1)) == Decision(STATUS_READY, T1)
     assert derive_status(_f()) == Decision(STATUS_BACKLOG, None)
+
+
+def test_status_needs_human_from_runner_row():
+    """Phase D: the give-up handoff is the runner's durable row, not a `needs-human`
+    label — and it carries the moment the runner gave up, so the ownership rule can
+    tell a fresh handoff from one the board already reflects."""
+    assert derive_status(_f(needs_human_at=T1)) == Decision(STATUS_NEEDS_HUMAN, T1)
+    # An active session outranks the give-up mark (the runner is retrying it).
+    assert derive_status(_f(needs_human_at=T1, session_status="in_progress", session_at=T2)) \
+        == Decision(STATUS_IN_PROGRESS, T2)
 
 
 def test_derive_bundles_score_and_stage():

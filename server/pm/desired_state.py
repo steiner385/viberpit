@@ -2,7 +2,8 @@
 
 Every value carries the timestamp of the decision that produced it so the diff engine can apply
 the ownership rule (§3): push only when decided_at is strictly newer than GitHub's gh_updated_at.
-Status precedence: Done > session signals > needs-human > Blocked > Ready > Backlog.
+Status precedence: Done > session signals > needs-human (runner row or triage) > Blocked >
+Ready > Backlog.
 """
 from __future__ import annotations
 
@@ -41,7 +42,9 @@ class ItemFacts:
     merged_pr_at: datetime | None
     open_blocker_refs: tuple[str, ...]
     blockers_at: datetime | None
-    needs_human_label: bool
+    # When the Backlog Runner gave up on this issue (its durable give-up row), or None.
+    # Phase D: the handoff is that row, not a `needs-human` label.
+    needs_human_at: datetime | None
     initiative_stage: str | None
     initiative_stage_at: datetime | None
 
@@ -69,8 +72,9 @@ def derive_status(f: ItemFacts) -> Decision:
         return Decision(STATUS_NEEDS_HUMAN, f.session_at)
     if f.session_status in ACTIVE_SESSION_STATUSES:
         return Decision(STATUS_IN_PROGRESS, f.session_at)
-    if f.needs_human_label or f.triage_state == "needs_human":
-        return Decision(STATUS_NEEDS_HUMAN, f.classified_at)
+    if f.needs_human_at is not None or f.triage_state == "needs_human":
+        # The give-up moment is the decision; triage's needs_human dates from classification.
+        return Decision(STATUS_NEEDS_HUMAN, f.needs_human_at or f.classified_at)
     if f.open_blocker_refs:
         return Decision(STATUS_BLOCKED, f.blockers_at)
     if f.triage_state == "classified":

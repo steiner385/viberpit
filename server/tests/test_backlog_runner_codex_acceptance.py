@@ -211,31 +211,30 @@ def _loop(ctx, *, spawn, **overrides):
     from server.automations.backlog_runner import BacklogRunnerLoop
 
     clock = overrides.pop("clock", lambda: 1000.0)
-    released: list[str] = []
+    announced: list[str] = []
     escalated: list[str] = []
 
-    async def _release(target):
-        released.append(target)
+    async def _announce(batch):
+        announced.append(batch.primary)
 
-    async def _needs_human(target):
+    async def _needs_human(target, _reason):
         escalated.append(target)
 
     seams = dict(
         select_batch=overrides.pop("select_batch", lambda _c: _some(BATCH)),
-        claim=overrides.pop("claim", lambda _b: _some(True)),
+        announce=overrides.pop("announce", _announce),
         spawn=spawn,
         count_in_flight=lambda: _some(0),
         healthy_account=overrides.pop("healthy_account", lambda: _some("acct")),
         pr_status_for=lambda _t: _some(None),
         pr_doctor_active=lambda _r: _some(False),
         read_config=overrides.pop("read_config", lambda: _some(("auto", _CONFIG))),
-        release=_release,
         needs_human=_needs_human,
         clock=clock,
     )
     seams.update(overrides)
     loop = BacklogRunnerLoop(ctx, **seams)
-    return loop, released, escalated
+    return loop, announced, escalated
 
 
 _CONFIG = {"max_concurrent": 1, "max_spawns_per_day": 10, "max_attempts": 2}
@@ -250,10 +249,10 @@ def _some(value):
 def test_a_refused_launch_releases_the_claim_instead_of_holding_a_slot(
         tmp_path, monkeypatch):
     """A spawn that returns ``None`` (policy or precondition refusal) used to be
-    recorded as a successful spawn with a null session id: the claim label stayed
-    on the issue, the target state occupied a concurrency slot, and the sweep
-    could later escalate it to ``needs-human`` on the evidence of a session that
-    never existed."""
+    recorded as a successful spawn with a null session id: the claim row occupied
+    a concurrency slot and the sweep could later escalate it to needs-human on the
+    evidence of a session that never existed. The claim IS the row (Phase D), so
+    releasing it means deleting it."""
 
     async def run():
         ctx = await _codex_runner_ctx(tmp_path, "cx_d.db", monkeypatch)
@@ -261,10 +260,10 @@ def test_a_refused_launch_releases_the_claim_instead_of_holding_a_slot(
         async def refusing_spawn(_batch, _account):
             return None
 
-        loop, released, escalated = _loop(ctx, spawn=refusing_spawn)
+        loop, announced, escalated = _loop(ctx, spawn=refusing_spawn)
         await loop.tick()
 
-        assert released == ["o/r#1"], "a refused launch must return the claim"
+        assert announced == ["o/r#1"], "the claim was announced before the spawn"
         assert escalated == [], "a refusal is not a needs-human escalation"
         assert await ctx.list_target_states() == {}, "no slot may be held"
 
@@ -278,7 +277,7 @@ def test_a_refused_launch_does_not_burn_the_daily_spawn_cap(tmp_path, monkeypatc
         async def refusing_spawn(_batch, _account):
             return None
 
-        loop, _released, _escalated = _loop(ctx, spawn=refusing_spawn)
+        loop, _announced, _escalated = _loop(ctx, spawn=refusing_spawn)
         await loop.tick()
         assert loop._spawns_today == []
 
@@ -297,12 +296,12 @@ def test_a_successful_codex_spawn_records_the_session_and_holds_the_slot(
         async def ok_spawn(_batch, _account):
             return Rec()
 
-        loop, released, _escalated = _loop(ctx, spawn=ok_spawn)
+        loop, announced, _escalated = _loop(ctx, spawn=ok_spawn)
         await loop.tick()
         states = await ctx.list_target_states()
         assert states["o/r#1"]["session_id"] == "sess-1"
         assert states["o/r#1"]["issues"] == ["o/r#1", "o/r#2"]
-        assert released == []
+        assert announced == ["o/r#1"]
 
     asyncio.run(run())
 
@@ -313,7 +312,7 @@ def test_a_successful_codex_spawn_records_the_session_and_holds_the_slot(
 
 def _orch_with_refusing_spawn(monkeypatch):
     """A SessionOrchestrator shell whose ``_backlog_spawn`` refuses, with the
-    claim/state seams stubbed — enough to exercise the two tap paths."""
+    announce/state seams stubbed — enough to exercise the two tap paths."""
     from server.sessions.orchestrator import SessionOrchestrator
 
     orch = SessionOrchestrator.__new__(SessionOrchestrator)
@@ -335,8 +334,8 @@ def _orch_with_refusing_spawn(monkeypatch):
     async def read_config():
         return "auto", _CONFIG
 
-    async def claim(_batch):
-        return True
+    async def announce(_batch):
+        return None
 
     async def account(*_a, **_k):
         return "acct"
@@ -346,7 +345,7 @@ def _orch_with_refusing_spawn(monkeypatch):
 
     monkeypatch.setattr(orch, "_backlog_ctx", Ctx(), raising=False)
     monkeypatch.setattr(orch, "_backlog_read_config", read_config, raising=False)
-    monkeypatch.setattr(orch, "_backlog_claim", claim, raising=False)
+    monkeypatch.setattr(orch, "_backlog_announce", announce, raising=False)
     monkeypatch.setattr(orch, "_automation_account_for", account, raising=False)
     monkeypatch.setattr(orch, "_backlog_spawn", spawn, raising=False)
     monkeypatch.setattr(orch, "_gh_run", lambda *a, **k: "", raising=False)
@@ -397,8 +396,11 @@ def test_the_dashboard_has_a_message_for_a_refused_action():
 def test_two_runners_on_one_account_cannot_claim_the_same_batch(tmp_path, monkeypatch):
     """OpenAI allows one managed auth home per machine, so the same account
     legitimately serves sessions on several runners. The collision that must not
-    happen is at the CLAIM, and it is engine-independent: the loser's claim
-    returns False and it spawns nothing rather than opening a second PR."""
+    happen is at the CLAIM, and it is engine-independent. Phase D moved the claim
+    off the ``in-progress`` label onto the runner's durable target-state row: the
+    priority queue excludes every ref a claim row already holds
+    (``_backlog_query_queue``), so the second runner is handed no batch at all and
+    spawns nothing rather than opening a second PR."""
 
     async def run():
         ctx = await _codex_runner_ctx(tmp_path, "cx_g.db", monkeypatch)
@@ -412,13 +414,21 @@ def test_two_runners_on_one_account_cannot_claim_the_same_batch(tmp_path, monkey
             spawned.append(batch.primary)
             return Rec()
 
-        async def losing_claim(_batch):
-            return False
+        async def claimed_aware_select(_config):
+            # What the real queue does: a ref any claim row holds is not a candidate.
+            states = await ctx.list_target_states()
+            held = {ref for target, st in states.items() if st.get("claimed")
+                    for ref in (st.get("issues") or [target])}
+            return None if BATCH.primary in held else BATCH
 
-        loop, _r, _e = _loop(ctx, spawn=ok_spawn, claim=losing_claim)
-        await loop.tick()
-        assert spawned == [], "the runner that lost the claim must not spawn"
-        assert await ctx.list_target_states() == {}, "and must not hold a slot"
+        # The first runner claims the batch (durable row), then the second runs.
+        first, _a, _e = _loop(ctx, spawn=ok_spawn, select_batch=claimed_aware_select)
+        await first.tick()
+        assert spawned == ["o/r#1"]
+
+        second, _a2, _e2 = _loop(ctx, spawn=ok_spawn, select_batch=claimed_aware_select)
+        await second.tick()
+        assert spawned == ["o/r#1"], "the runner that lost the claim must not spawn"
 
     asyncio.run(run())
 

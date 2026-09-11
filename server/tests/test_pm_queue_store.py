@@ -3,9 +3,11 @@ from datetime import datetime, timezone
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from server.db.models import (Base, GhProject, GhProjectItem, Project, ProjectRepo,
+from server.db.models import (Automation, AutomationTargetState, Base, GhProject,
+                              GhProjectItem, Project, ProjectRepo,
                               Session as DbSession, WorkItem, WorkItemDep)
-from server.pm.queue_store import load_queue_rows
+from server.pm import queue_store
+from server.pm.queue_store import load_queue_rows, parse_iso_utc, runner_row_maps
 
 NOW = datetime(2026, 9, 4, tzinfo=timezone.utc)
 
@@ -92,6 +94,74 @@ def test_open_blocker_resolves_dst_across_products_and_closed_releases_it():
 
     assert rows["steiner385/ccswitch#10"].open_blockers == ()  # closed dst releases the blocker
     assert rows["steiner385/ccswitch#11"].open_blockers == ("cairnea/KinDash#21",)  # open dst still blocks
+
+
+def test_parse_iso_utc_is_the_one_row_timestamp_parser():
+    """The single ISO parser both the orchestrator and the runner read row stamps
+    with. A stamp we cannot read is None — never a crash, never a cooldown."""
+    at = datetime(2026, 9, 1, 12, 30, tzinfo=timezone.utc)
+    assert parse_iso_utc(at.isoformat()) == at
+    # A naive stamp (written before the runner stamped tz) is read as UTC.
+    assert parse_iso_utc("2026-09-01T12:30:00") == at
+    assert parse_iso_utc(None) is None
+    assert parse_iso_utc("") is None
+    assert parse_iso_utc("not-a-date") is None
+
+
+def test_runner_automation_id_matches_the_registered_automation():
+    """``queue_store`` holds the id as a literal (importing ``BacklogRunner`` there
+    would be a cycle), so pin the two together — a renamed automation that silently
+    matched no rows would empty the claim and give-up maps with no test failing."""
+    from server.automations.backlog_runner import BacklogRunner
+    assert queue_store.RUNNER_AUTOMATION_ID == BacklogRunner.id
+
+
+def test_runner_row_maps_derives_claims_and_give_ups_from_the_runner_rows():
+    """The ONE derivation of the backlog runner's durable rows into queue inputs —
+    the runner's own pool read and ``GET /api/pm/queue`` both call it, so the
+    operator's view and what agents do next can never disagree."""
+    db = _db()
+    db.add_all([Automation(id="backlog-runner"), Automation(id="pr-doctor")])
+    at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+
+    def _state(target, state, automation_id="backlog-runner"):
+        db.add(AutomationTargetState(automation_id=automation_id, target=target,
+                                     state=state))
+
+    _state("o/r#1", {"claimed": True, "issues": ["o/r#1", "o/r#2"]})   # bundle claim
+    _state("o/r#3", {"claimed": True})                                # target IS the claim
+    _state("o/r#4", {"claimed": False})                               # not a claim
+    _state("o/r#5", {"gave_up": True, "issues": ["o/r#5", "o/r#6"],   # bundle give-up
+                     "needs_human_at": at.isoformat()})
+    _state("o/r#7", {"gave_up": True, "claimed": True,                # give-up wins over claim
+                     "needs_human_at": at.isoformat()})
+    _state("o/r#8", {"gave_up": True, "claimed": True})               # undated: neither map
+    _state("o/r#9", {"claimed": True}, automation_id="pr-doctor")     # another automation
+    db.commit()
+
+    claimed, needs_human_at = runner_row_maps(db)
+
+    assert claimed == frozenset({"o/r#1", "o/r#2", "o/r#3"})
+    assert needs_human_at == {"o/r#5": at, "o/r#6": at, "o/r#7": at}
+
+
+def test_load_queue_rows_threads_needs_human_at():
+    """Phase D: the runner's durable give-up stamps ride onto the rows the pure
+    core cools down from — the loader only threads the map, it never reads a label."""
+    db = _db()
+    _seed_product(db, "ccswitch", "steiner385/ccswitch", board=True)
+    _item(db, "steiner385/ccswitch", 5, status="Ready")
+    _item(db, "steiner385/ccswitch", 6, status="Ready")
+    db.commit()
+    at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+
+    rows = load_queue_rows(db, now=NOW,
+                           needs_human_at={"steiner385/ccswitch#5": at})
+
+    by_ref = {r.ref: r for r in rows}
+    assert by_ref["steiner385/ccswitch#5"].needs_human_at == at
+    assert all(r.needs_human_at is None for ref, r in by_ref.items()
+               if ref != "steiner385/ccswitch#5")
 
 
 def test_load_queue_rows_skips_products_without_a_board_and_closed_items():
