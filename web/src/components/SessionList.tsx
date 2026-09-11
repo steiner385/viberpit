@@ -143,10 +143,18 @@ export function SessionList({
   const accountMap = new Map(accounts.map((a) => [a.name, a]))
 
   const renderCard = (session: Session) => {
+    // Lineage (child-session spec §4.6) is derived from the same list, not a new wire
+    // field: children of this card, and the parent's name for a child's pill.
+    const childSessions = sessions.filter((s) => s.parentSessionId === session.id)
+    const parentName = session.parentSessionId
+      ? (sessions.find((s) => s.id === session.parentSessionId)?.name ?? null)
+      : null
     const card = (
       <SessionCard
         session={session}
         account={accountMap.get(session.accountName)}
+        childSessions={childSessions}
+        parentName={parentName}
         selected={session.id === selectedId}
         listMode={listMode}
         onOpen={onOpen}
