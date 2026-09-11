@@ -435,6 +435,28 @@ describe('kiosk end to end', () => {
     expect(screen.getByRole('button', { name: 'New probe' })).toBeVisible()
   })
 
+  // Shell spec §5 "PR 10 completion": a wall display holds a screen wake lock.
+  // The attract cycle is unit-tested (`useAttractCycle.test.tsx`) because the
+  // real map has one kiosk-safe page and nothing to rotate to; the idle cursor
+  // likewise (`useIdleCursor.test.ts`) because it needs fake timers.
+  it('requests a screen wake lock in kiosk and not on a desk', async () => {
+    const request = vi.fn().mockResolvedValue({ release: vi.fn().mockResolvedValue(undefined) })
+    Object.defineProperty(navigator, 'wakeLock', { value: { request }, configurable: true })
+    try {
+      const app = renderApp(true)
+      await screen.findByTestId('probe-page')
+      expect(request).toHaveBeenCalledWith('screen')
+      app.unmount()
+
+      request.mockClear()
+      renderApp(false)
+      await screen.findByTestId('probe-page')
+      expect(request).not.toHaveBeenCalled()
+    } finally {
+      delete (navigator as { wakeLock?: unknown }).wakeLock
+    }
+  })
+
   it('renders StatusStrip tiles as read-only divs, not filter buttons', async () => {
     const app = renderApp(true)
     await screen.findByTestId('probe-page')

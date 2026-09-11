@@ -260,3 +260,7 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .working-shimmer { animation: none; background: none; -webkit-background-clip: border-box; background-clip: border-box; color: inherit; }
 }
+
+/* Kiosk idle cursor (shell spec §5): `shell/useIdleCursor` sets the attribute
+   after 5 s without input on a wall display; any input clears it. */
+html[data-idle] { cursor: none; }

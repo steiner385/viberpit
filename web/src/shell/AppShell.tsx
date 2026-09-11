@@ -29,6 +29,9 @@ import { InteractionProvider } from './InteractionContext'
 import { readKioskConfig } from './kiosk'
 import { listColumnFor } from './listColumns'
 import { NAV_BY_ID, navDefForPath } from './navDefs'
+import { useAttractCycle } from './useAttractCycle'
+import { useIdleCursor } from './useIdleCursor'
+import { useWakeLock } from './useWakeLock'
 import { useOpenItem, useOpenSessionId } from './openSessionId'
 import { SessionGestureProvider, useSessionGestureHandle } from './sessionGestures'
 import { overlayIsOpen } from './useOverlayState'
@@ -220,7 +223,7 @@ function KioskPageGuard({ children }: { children: React.ReactNode }) {
 }
 
 function AppShellInner() {
-  const { mode } = useViewport()
+  const { mode, kiosk } = useViewport()
   const { pathname } = useLocation()
   // Layout-route `useParams()` sees the child route's params (react-router
   // shares one params object across a matched branch) — the same read
@@ -254,6 +257,15 @@ function AppShellInner() {
   // fetched where the CI scope can render. Its automation list is deliberately
   // NOT gated — that key is the Delivery nav badge's, live on every route.
   const delivery = useDeliveryWorkspace(def?.id === 'delivery')
+
+  // Kiosk completion (shell spec §5): rotate through the configured pages,
+  // keep the screen awake, hide the idle pointer. All three are gated on the
+  // MODE, so a desk browser never rotates, never holds a wake lock and never
+  // loses its cursor. `--scale` (below) is the fourth kiosk effect.
+  const isKiosk = mode === 'kiosk'
+  useAttractCycle(isKiosk, kiosk?.pages ?? [], kiosk?.cycleSeconds ?? 0)
+  useWakeLock(isKiosk)
+  useIdleCursor(isKiosk)
 
   // Kiosk enlarges the whole type scale by overriding `--scale` on `<html>`.
   // It goes on the document element rather than on the shell's root `<div>`
