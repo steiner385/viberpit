@@ -39,6 +39,15 @@
   --t-ink: #1a1f29;     --t-ink-muted: #646a77;  --t-ink-faint: #8b929e;
   --t-accent: #2461e7;  --t-accent-ink: #ffffff; --t-accent-wash: #e8effc;
 
+  /* Brand green ("Viper Green"), for the logotype ONLY — the "Pit" half of the
+     wordmark (components/BrandMark.tsx). Not an accent: at 2.3:1 on white it
+     fails AA for text, which is fine for a logotype (WCAG 1.4.3 exempts them)
+     and wrong for anything a person has to read. `--t-accent` stays the
+     interactive colour. Theme-invariant: the logo is one green everywhere.
+     The mascot and app icon are rasters (public/brand/) and carry their own
+     palette; nothing else in the UI is brand-coloured. */
+  --t-brand: #22c55e;
+
   /* semantic status — base is AA as text on surface; -strong is AA behind white
      text; -wash is a tint for backgrounds.
      -strong is deliberately theme-invariant: declared once, here, with NO dark
@@ -135,6 +144,7 @@
   --color-accent: var(--t-accent);
   --color-accent-ink: var(--t-accent-ink);
   --color-accent-wash: var(--t-accent-wash);
+  --color-brand: var(--t-brand);
   --color-success: var(--t-success);  --color-success-wash: var(--t-success-wash);  --color-success-strong: var(--t-success-strong);
   --color-warning: var(--t-warning);  --color-warning-wash: var(--t-warning-wash);  --color-warning-strong: var(--t-warning-strong);
   --color-danger:  var(--t-danger);   --color-danger-wash:  var(--t-danger-wash);   --color-danger-strong:  var(--t-danger-strong);
