@@ -25,10 +25,15 @@ function ExampleNode({ status, glyph }: { status: string; glyph: string }) {
   );
 }
 
+/** The example slot carries `pipeline-chart`, the chart stylesheet's scope root
+ *  — the swatches inside it (`.node`, `.seg`) are the live chart classes and
+ *  render unstyled without it. It deliberately does NOT carry `track`: the
+ *  root class is what gates the active-node pulse, so a legend swatch stays
+ *  static, as a swatch should. */
 function LegendRow({ example, children }: { example: ReactNode; children: ReactNode }) {
   return (
     <div className="legend-row">
-      <span className="legend-ex">{example}</span>
+      <span className="pipeline-chart legend-ex">{example}</span>
       <span className="legend-text">{children}</span>
     </div>
   );
@@ -147,7 +152,7 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
           {/* (c) Expanded job bars */}
           <section className="settings-section">
             <h3>Expanded job bars</h3>
-            <ul className="checks gantt legend-gantt">
+            <ul className="pipeline-chart checks gantt legend-gantt">
               <ExampleBar kind="g-done" name="passed" fillPct={70} time="4m ✓" />
               <ExampleBar kind="g-running" name="running" fillPct={45} time="2m / ~5m"
                 band={[40, 75]} tick={55} />
@@ -189,12 +194,14 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
           <section className="settings-section">
             <h3>Queue train</h3>
             <p className="legend-caption">One car per merge-queue grouping, front of the queue first.</p>
-            <div className="queue-train legend-train">
-              <ExampleCar cls="building" header="▶ group" body="#101 #102" />
-              <ExampleCar cls="building failed" header="✗ failing" body="#103" />
-              <ExampleCar cls="queued" header="next batch" body="#104 #105" />
-              <ExampleCar cls="unmergeable" header="✗ unmergeable" body="#106" />
-              <ExampleCar cls="queue-blocked" header="⊘ blocked behind conflict" body="#107" />
+            <div className="pipeline-chart">
+              <div className="queue-train legend-train">
+                <ExampleCar cls="building" header="▶ group" body="#101 #102" />
+                <ExampleCar cls="building failed" header="✗ failing" body="#103" />
+                <ExampleCar cls="queued" header="next batch" body="#104 #105" />
+                <ExampleCar cls="unmergeable" header="✗ unmergeable" body="#106" />
+                <ExampleCar cls="queue-blocked" header="⊘ blocked behind conflict" body="#107" />
+              </div>
             </div>
             <dl className="legend-dl">
               <div className="legend-dl-row">

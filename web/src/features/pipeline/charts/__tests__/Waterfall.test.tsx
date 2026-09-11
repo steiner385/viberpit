@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
 import { Waterfall, waterfallSegments } from '../Waterfall';
-import type { PrTimeline } from '../types';
+import type { PrTimeline } from '@/pipeline/types';
 
 /** Full spine: created 08:00 → green 09:00 → enqueued 09:30 → merged 10:00
  *  → qa 10:20 → prod 12:20 (total 4h20m). */

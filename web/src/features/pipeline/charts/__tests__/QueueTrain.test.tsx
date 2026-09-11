@@ -2,7 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueueTrain } from '../QueueTrain';
-import type { RepoQueueView, QueueGroupView } from '../types';
+import type { RepoQueueView, QueueGroupView } from '@/pipeline/types';
 
 const group = (over: Partial<QueueGroupView>): QueueGroupView => ({
   oid: 'abc123',

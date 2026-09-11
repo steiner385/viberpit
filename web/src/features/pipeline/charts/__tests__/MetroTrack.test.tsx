@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
 import { MetroTrack, trackState } from '../MetroTrack';
-import type { StageResult } from '../types';
+import type { StageResult } from '@/pipeline/types';
 
 const stage = (over: Partial<StageResult>): StageResult => ({
   stage: 'ci', substate: null, percent: null, etaSeconds: null, etaRangeSeconds: null, overdue: false,

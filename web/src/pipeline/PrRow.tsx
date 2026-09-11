@@ -7,9 +7,9 @@ import { useInteractive } from '@/shell/InteractionContext';
 import { useApiBase } from './ApiBaseContext';
 import type { PrView } from './types';
 import { formatDur, formatEta, formatSince, stageLabel } from './format';
-import { MetroTrack } from './MetroTrack';
-import { CheckGantt } from './CheckGantt';
-import { Waterfall, waterfallSegments } from './Waterfall';
+import { MetroTrack } from '@/features/pipeline/charts/MetroTrack';
+import { CheckGantt } from '@/features/pipeline/charts/CheckGantt';
+import { Waterfall, waterfallSegments } from '@/features/pipeline/charts/Waterfall';
 import { DEFS, defTitle, subLineTitle } from './definitions';
 
 /** Muted one-line status under the track: percent + active-check for ci,

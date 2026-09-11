@@ -18,6 +18,7 @@ import { useKioskCycle } from './useKioskCycle'
 import type { Bucket } from './StatusStrip'
 import type { LaneStatus } from './types'
 import './plotroom.css'
+import '@/features/pipeline/charts/plotroom.css'
 
 /** Lane chip → richest existing ccswitch surface (spec §5): the Pipeline status
  *  filter for the PR-flow lanes, Delivery's CI health scope for the rest until
@@ -103,7 +104,7 @@ function Inner({ onOpenCiHealth }: { onOpenCiHealth?: () => void }) {
 export function PipelineTab({ onOpenCiHealth }: { onOpenCiHealth?: () => void } = {}) {
   return (
     <ApiBaseProvider base="/api/pipeline">
-      <div className="prdash-root flex-1 min-h-0 overflow-y-auto">
+      <div className="pipeline-legacy flex-1 min-h-0 overflow-y-auto">
         <Inner onOpenCiHealth={onOpenCiHealth} />
       </div>
     </ApiBaseProvider>

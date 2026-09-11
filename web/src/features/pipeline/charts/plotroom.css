@@ -1,0 +1,204 @@
+/* The four pipeline charts — metro track, check Gantt, lead-time waterfall,
+   queue train — and nothing else. Split out of src/pipeline/plotroom.css when
+   the charts moved here (finish-line row 5): this is the ONE stylesheet the
+   token rule allowlists, so every colour below is a `--t-*` token straight from
+   index.css. No legacy alias (`--bg`, `--done`, …), no literal, no dark
+   override — the tokens flip at `:root`.
+
+   Scope: each chart root carries `pipeline-chart` plus its own class
+   (`track` / `checks` / `gantt-inline-legend` / `chart-svg` / `queue-section`),
+   which the `&.` rules below select; everything else is a descendant, exactly
+   as it was. LegendPanel's static swatches render the same class names inside a
+   bare `.pipeline-chart` wrapper, so they inherit the live look for free. */
+
+@keyframes prdash-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--t-accent) 22%, transparent); }
+  50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--t-accent) 11%, transparent); }
+}
+
+.pipeline-chart {
+
+/* --- Metro-map track (V3) --- */
+&.track { display: flex; align-items: flex-start; }
+.node { display: flex; flex-direction: column; align-items: center; width: 70px;
+  flex-shrink: 0; }
+.node .c { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; font-size: 11px; background: var(--t-edge); color: var(--t-ink-muted); }
+/* Glyph colour on a filled node is the CANVAS token, not a literal white: the
+   `-strong` fills are theme-invariant (index.css), so canvas lands near-white on
+   light and near-black on dark — both ~4.3:1 against the fill. */
+.node.done .c { background: var(--t-success-strong); color: var(--t-canvas); }
+.node.active .c { background: var(--t-accent); color: var(--t-canvas);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--t-accent) 22%, transparent); }
+.node.fail .c { background: var(--t-danger); color: var(--t-canvas); }
+.node.parked .c { background: var(--t-warning-strong); color: var(--t-canvas); font-weight: 700; }
+.node-label { font-size: 9px; color: var(--t-ink-muted); margin-top: 3px; }
+.node.active .node-label { color: var(--t-accent); font-weight: 700; }
+.node.fail .node-label { color: var(--t-danger); font-weight: 700; }
+.node.parked .node-label { color: var(--t-warning); font-weight: 700; }
+.node-eta { font-size: 9px; color: var(--t-accent); font-variant-numeric: tabular-nums; }
+.seg { flex: 1; height: 4px; background: var(--t-edge); border-radius: 2px;
+  margin-top: 9px; min-width: 24px; }
+.seg.done { background: var(--t-success); }
+@media (prefers-reduced-motion: no-preference) {
+  /* Only a LIVE track pulses. The legend's "active" node is a static swatch
+     rendered in a bare `.pipeline-chart` (no `.track`), so scoping the
+     animation to the root is what keeps it still — it replaces the old
+     `.legend-panel .node.active .c { animation: none }` opt-out. */
+  &.track .node.active .c { animation: prdash-pulse 1.5s infinite; }
+}
+
+/* --- Check Gantt (expanded panel, V4) --- */
+&.checks { list-style: none; margin: 0; padding: 6px 14px 10px; border-top: 1px solid var(--t-edge);
+  font-size: 12px; }
+.g-row { display: grid; grid-template-columns: 170px 1fr 80px; gap: 8px; align-items: center;
+  padding: 3px 0; font-size: 11px; }
+.g-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-name a { color: var(--t-ink); }
+.g-bar { height: 12px; background: var(--t-edge); border-radius: 3px; position: relative;
+  overflow: hidden; display: block; }
+.g-bar i { position: absolute; left: 0; top: 0; bottom: 0; width: 100%; }
+@media (prefers-reduced-motion: no-preference) {
+  .g-bar i { transition: transform 1s linear; }
+}
+.g-done .g-bar i { background: var(--t-success); }
+.g-running .g-bar i { background: var(--t-accent); }
+/* issue 172: a texture overlay gives failed/overdue a non-color channel, so they're
+   distinguishable from each other AND from done/running under colour-vision
+   deficiency + grayscale (the bar fill alone was the only signal). The overlay
+   is the canvas token, which contrasts with the fill in both themes;
+   done/running stay solid. */
+.g-overdue .g-bar i {
+  background:
+    repeating-linear-gradient(90deg, transparent 0 4px,
+      color-mix(in srgb, var(--t-canvas) 24%, transparent) 4px 6px),
+    var(--t-warning);
+}
+.g-failed .g-bar i {
+  background:
+    repeating-linear-gradient(-45deg,
+      color-mix(in srgb, var(--t-canvas) 30%, transparent) 0 2px, transparent 2px 6px),
+    var(--t-danger);
+}
+/* row color exposed for the p10–p90 band tint (matches the fill color) */
+.g-done { --row-color: var(--t-success); }
+.g-running { --row-color: var(--t-accent); }
+.g-overdue { --row-color: var(--t-warning); }
+.g-failed { --row-color: var(--t-danger); }
+/* p10–p90 expected-duration band: subtle static tint behind the elapsed fill */
+.g-bar .band { position: absolute; top: 0; bottom: 0; border-radius: 3px;
+  background: color-mix(in srgb, var(--row-color, var(--t-ink-muted)) 22%, transparent); }
+.g-queued .g-bar i, .g-skipped .g-bar i { background: var(--t-ink-muted); opacity: 0.35; }
+.g-runner-wait .g-bar i {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--t-ink-muted) 0px, var(--t-ink-muted) 3px,
+    transparent 3px, transparent 7px
+  );
+  opacity: 0.55;
+}
+.g-runner-wait-amber .g-bar i {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--t-warning) 0px, var(--t-warning) 3px,
+    transparent 3px, transparent 7px
+  );
+  opacity: 0.65;
+}
+.g-runner-wait-amber .g-t { color: var(--t-warning); }
+/* issue 185: compact persistent key under the Gantt. It is a SIBLING of the `.checks`
+   list (CheckGantt returns a fragment), so it carries the root class itself.
+   Each swatch is a mini .g-bar, reusing the exact fills/textures above. */
+&.gantt-inline-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center;
+  margin: 4px 14px 8px; font-size: 10px; color: var(--t-ink-muted); }
+&.gantt-inline-legend span { display: inline-flex; align-items: center; gap: 4px; }
+&.gantt-inline-legend .gil-bar { width: 18px; height: 9px; display: inline-block; flex: none; }
+.g-bar .exp { position: absolute; top: 0; bottom: 0; width: 2px;
+  background: color-mix(in srgb, var(--t-ink) 55%, transparent); }
+.g-t { color: var(--t-ink-muted); text-align: right; font-variant-numeric: tabular-nums;
+  white-space: nowrap; }
+.g-overdue .g-t { color: var(--t-warning); }
+.g-failed .g-t { color: var(--t-danger); }
+/* duration-regression badge (issue #41): small amber step-up marker after the name */
+.g-regress { color: var(--t-warning); font-weight: 700; margin-left: 4px; cursor: help; }
+/* advisory job rows: name recedes so required rows stay visually dominant */
+.g-advisory .g-name { font-style: italic; color: var(--t-ink-muted); }
+.g-advisory .g-name a { color: var(--t-ink-muted); }
+.divider { color: var(--t-ink-muted); text-transform: uppercase; font-size: 10px;
+  letter-spacing: 0.05em; padding: 6px 0 2px; }
+/* workflow header rows in a grouped panel (e.g. CI / Auto-merge PRs / other checks) */
+.g-workflow { font-weight: 600; padding-top: 8px; opacity: 0.85; }
+
+/* --- Lead-time waterfall (issue #50) --- */
+&.chart-svg { width: 100%; height: auto; display: block; }
+
+/* --- Queue ops strip (issue #39) --- */
+.queue-ops {
+  display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;
+  font-size: 11px; color: var(--t-ink-muted); margin-bottom: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.ops-health { font-weight: 700; }
+.ops-health.healthy { color: var(--t-success); }
+.ops-health.cap-backlog { color: var(--t-warning); }
+.ops-health.dispatch-stall { color: var(--t-danger); }
+.ops-remediation { font-weight: 600; color: var(--t-ink); }
+&.queue-section { margin-bottom: 10px; }
+&.queue-section .queue-train { margin-bottom: 0; }
+
+/* --- Queue train (V5) --- */
+.queue-train {
+  display: flex; gap: 6px; align-items: stretch;
+  overflow-x: auto; padding-bottom: 6px; margin-bottom: 10px;
+}
+.car {
+  border-radius: 8px; padding: 6px 8px; font-size: 11px;
+  min-width: 105px; flex-shrink: 0;
+}
+.car.building {
+  background: color-mix(in srgb, var(--t-accent) 12%, var(--t-surface));
+  border: 2px solid var(--t-accent);
+}
+.car.building.failed {
+  background: color-mix(in srgb, var(--t-danger) 12%, var(--t-surface));
+  border-color: var(--t-danger);
+}
+.car.queued {
+  background: var(--t-canvas); border: 2px dashed var(--t-edge); color: var(--t-ink-muted);
+}
+.car.unmergeable {
+  background: color-mix(in srgb, var(--t-danger) 8%, var(--t-canvas));
+  border: 2px dashed var(--t-danger); color: var(--t-ink-muted);
+}
+/* cascade victims: stuck behind a conflicting entry, not conflicting themselves */
+.car.queue-blocked {
+  background: color-mix(in srgb, var(--t-warning) 8%, var(--t-canvas));
+  border: 2px dashed var(--t-warning); color: var(--t-ink-muted);
+}
+.car-header { font-weight: 700; font-size: 10px; margin-bottom: 4px; }
+.car.building .car-header { color: var(--t-accent); }
+.car.building.failed .car-header { color: var(--t-danger); }
+.car.queued .car-header { color: var(--t-ink-muted); }
+.car.unmergeable .car-header { color: var(--t-danger); }
+.car.queue-blocked .car-header { color: var(--t-warning); }
+.car-numbers { font-size: 11px; line-height: 1.6; }
+.car-numbers a { color: var(--t-ink); text-decoration: none; font-weight: 600; }
+.car-numbers a:hover { text-decoration: underline; }
+.car-count { font-style: italic; }
+.car-pct {
+  height: 5px; background: var(--t-edge); border-radius: 3px;
+  margin-top: 5px; overflow: hidden;
+}
+.car-pct i { display: block; height: 100%; background: var(--t-accent); border-radius: 3px; }
+.car.building.failed .car-pct i { background: var(--t-danger); }
+.car-progress { font-size: 10px; color: var(--t-ink-muted); margin-top: 3px;
+  font-variant-numeric: tabular-nums; }
+
+/* Phones (≤560px): nodes are flex-shrink:0 × 70px, so a long pipeline overflows.
+   Narrow them and let the track scroll as a backstop. */
+@media (max-width: 560px) {
+  &.track { overflow-x: auto; padding-bottom: 2px; }
+  .node { width: 52px; }
+  .seg { min-width: 10px; }
+}
+}

@@ -1,9 +1,9 @@
 // Ported from plotroom@5166b52 frontend/src/Waterfall.tsx; edits: import repointing (./types, ./leadtime, ./format); eslint-disable react-refresh/only-export-components (mixed export file — intentional port)
 /* eslint-disable react-refresh/only-export-components */
 import { useId } from 'react';
-import type { LeadTimeSegmentId, PrTimeline } from './types';
-import { LEAD_TIME_SEGMENTS } from './leadtime';
-import { formatDur } from './format';
+import type { LeadTimeSegmentId, PrTimeline } from '@/pipeline/types';
+import { LEAD_TIME_SEGMENTS } from '@/pipeline/leadtime';
+import { formatDur } from '@/pipeline/format';
 
 /* #172: a distinct white-line texture per segment, overlaid on the segment color,
    so the waterfall is readable under colour-vision deficiency + grayscale (not by
@@ -96,7 +96,7 @@ export function Waterfall({ timeline }: { timeline: PrTimeline }) {
     + segs.map((s) => `${s.label} ${formatDur((s.endMs - s.startMs) / 1000)}`).join(', ');
   return (
     <div className="waterfall" data-testid="waterfall">
-      <svg className="chart-svg" width="100%" viewBox={`0 0 ${VB_W} ${height}`}
+      <svg className="pipeline-chart chart-svg" width="100%" viewBox={`0 0 ${VB_W} ${height}`}
         role="img" aria-label={svgAriaLabel}>
         <defs>
           {segs.map((s) => SEG_PATTERN[s.id] && (

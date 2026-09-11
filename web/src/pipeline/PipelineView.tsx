@@ -21,7 +21,7 @@
 import { useState, useMemo } from 'react';
 import type { DashboardState } from './types';
 import { PrRow } from './PrRow';
-import { QueueTrain } from './QueueTrain';
+import { QueueTrain } from '@/features/pipeline/charts/QueueTrain';
 import { StatusStrip, bucketPr, isActivePr, isFailedPr, type Bucket } from './StatusStrip';
 import { splitCohort, deployBreakdown } from './ordering';
 import { nextToMerge } from './queueFront';

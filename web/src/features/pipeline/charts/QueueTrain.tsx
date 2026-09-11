@@ -1,8 +1,8 @@
 // Ported from plotroom@5166b52 frontend/src/QueueTrain.tsx; edits: none (all imports are pipeline-local siblings)
-import type { RepoQueueView, QueueGroupView, MergeEtaSimulation, QueueHealthState } from './types';
-import { formatDur } from './format';
-import { scrollBehavior } from './motion';
-import { DEFS, defTitle } from './definitions';
+import type { RepoQueueView, QueueGroupView, MergeEtaSimulation, QueueHealthState } from '@/pipeline/types';
+import { formatDur } from '@/pipeline/format';
+import { scrollBehavior } from '@/pipeline/motion';
+import { DEFS, defTitle } from '@/pipeline/definitions';
 
 const MAX_NUMBERS_PER_CAR = 6;
 
@@ -193,7 +193,7 @@ export function QueueTrain({ queue }: { queue: RepoQueueView | null }) {
     && unmergeable.length === 0 && queueBlocked.length === 0) return null;
 
   return (
-    <div className="queue-section">
+    <div className="pipeline-chart queue-section">
       <OpsStrip queue={queue} />
       <div className="queue-train">
         {queue.groups.map((g) => (
