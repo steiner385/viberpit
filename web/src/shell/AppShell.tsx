@@ -22,7 +22,7 @@ import { setServerSttEnabled } from '@/lib/sttCapability'
 import { textEntryClaimsKey } from '@/lib/detachKeyGuard'
 import { nextSessionAfterClose } from '@/session/nextAfterArchive'
 import {
-  BACKGROUND_PATH, SESSIONS_PATH, archivedSessionPath, listScopeForPath, sessionPath,
+  BACKGROUND_PATH, SESSIONS_PATH, archivedSessionPath, listScopeForPath, readerRouteForPath, sessionPath,
 } from '@/session/sessionNavState'
 import { useDrawerName, useOpenDrawer, type DrawerName } from './drawerParam'
 import { InteractionProvider } from './InteractionContext'
@@ -96,6 +96,10 @@ export interface RegionContext {
   itemOpen: boolean
   /** The current section is Sessions (DEC-10 gates the dock on it). */
   inSessions: boolean
+  /** `readerRouteForPath(pathname) !== null` — a Reader page (archived
+   *  transcript, sub-agent drill-down) is open. Readers have no composer, so
+   *  the dock is hidden behind them (page-migration §2.2, finish-line row 6). */
+  reader: boolean
   /** The open drawer, or null. An unrecognised `?drawer=` reads as null. */
   drawer: DrawerName | null
 }
@@ -121,7 +125,7 @@ export const REGION_VISIBILITY: Record<RegionId, (c: RegionContext) => boolean> 
   // tablet give the one band to the item instead.
   'app.list': (c) => c.mode !== 'kiosk' && c.hasList && (c.mode === 'desktop' || !c.itemOpen),
   'app.main': () => true,
-  'app.dock': (c) => c.mode !== 'kiosk' && c.inSessions,
+  'app.dock': (c) => c.mode !== 'kiosk' && c.inSessions && !c.reader,
   'app.drawer': (c) => c.mode !== 'kiosk' && c.drawer !== null,
   'app.overlays': () => true,
 }
@@ -241,6 +245,7 @@ function AppShellInner() {
     // `:id` and must still take the phone's single content band.
     itemOpen: openItem !== null,
     inSessions: def?.id === 'sessions',
+    reader: readerRouteForPath(pathname) !== null,
     drawer,
   }
   const shows = (r: RegionId) => REGION_VISIBILITY[r](region)

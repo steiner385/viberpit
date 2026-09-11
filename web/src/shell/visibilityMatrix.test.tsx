@@ -26,6 +26,7 @@ const BASE: Omit<RegionContext, 'mode'> = {
   hasList: true,
   itemOpen: false,
   inSessions: true,
+  reader: false,
   drawer: 'help',
 }
 
@@ -39,7 +40,7 @@ type Cell = [LayoutMode, RegionId, Partial<RegionContext>, boolean]
  * | app.rail     | 1 (NavBar+TopBar)| 1 (NavRail)      | 1 (NavRail)      | 0     |
  * | app.list     | 1 when no item   | 1 when no item   | 1                | 0     |
  * | app.main     | 1                | 1                | 1                | 1     |
- * | app.dock     | 1 in Sessions    | 1 in Sessions    | 1 in Sessions    | 0     |
+ * | app.dock     | 1 in Sessions, no Reader | … | 0 |
  * | app.drawer   | 1 when ?drawer=  | 1 when ?drawer=  | 1 when ?drawer=  | 0     |
  * | app.overlays | 1                | 1                | 1                | 1     |
  */
@@ -108,6 +109,15 @@ const EXPECTED: Cell[] = [
   ['tablet', 'app.dock', { inSessions: false }, false],
   ['desktop', 'app.dock', { inSessions: false }, false],
   ['kiosk', 'app.dock', { inSessions: false }, false],
+
+  // app.dock — hidden behind a Reader (page-migration §2.2 as amended by
+  // finish-line row 6): the archived transcript and the sub-agent drill-down
+  // have no composer, so the new-session dock would be the only control in the
+  // band and a phone would give it a row of the transcript for nothing.
+  ['phone', 'app.dock', { reader: true }, false],
+  ['tablet', 'app.dock', { reader: true }, false],
+  ['desktop', 'app.dock', { reader: true }, false],
+  ['kiosk', 'app.dock', { reader: true }, false],
 
   // app.drawer — only with a recognised `?drawer=`. `useDrawerName()` already
   // maps an unknown value to null, so null is the whole of "no drawer".

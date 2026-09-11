@@ -116,6 +116,7 @@ import { LAYOUT_MODE_QUERIES, MEDIA, stubMatchMedia } from '@/test/matchMedia'
 import { APP_REGION_PREFIX, appRegionCounts, presentAppRegions, regionCounts } from '@/test/regions'
 import { ThemeProvider } from '@/shell/theme'
 import { buildRoutes } from '@/shell/routes'
+import { SUBAGENT_ROUTE } from '@/session/sessionNavState'
 import { LAYOUT_MODES, type LayoutMode } from './useViewport'
 import { AppShell, REGION_IDS, REGION_VISIBILITY, type RegionContext, type RegionId } from './AppShell'
 
@@ -130,6 +131,7 @@ function Page({ name }: { name: string }) {
 const PROBE_PAGES: Record<string, string> = {
   '/sessions': 'sessions',
   '/sessions/:id': 'session',
+  [SUBAGENT_ROUTE]: 'subagent',
   '/pipeline': 'pipeline',
 }
 
@@ -188,6 +190,7 @@ const SESSIONS_CTX: Omit<RegionContext, 'mode'> = {
   hasList: true,
   itemOpen: false,
   inSessions: true,
+  reader: false,
   drawer: 'help',
 }
 
@@ -206,6 +209,7 @@ const KIOSK_CTX: Omit<RegionContext, 'mode'> = {
   hasList: false,
   itemOpen: false,
   inSessions: false,
+  reader: false,
   drawer: 'help',
 }
 
@@ -405,6 +409,20 @@ describe('AppShell — the conditional regions', () => {
     expect(regionCounts().has('app.dock')).toBe(false)
     expect(regionCounts().has('app.list')).toBe(false)
     expect(regionCounts().get('app.main')).toBe(1)
+  })
+
+  it('drops app.dock behind the archived reader', async () => {
+    renderShell({ path: '/sessions/archived/abc', mode: 'desktop' })
+    await waitFor(() => expect(presentAppRegions()).toContain('app.list'))
+    expect(regionCounts().has('app.dock')).toBe(false)
+    // The list column is still beside it on desktop — only the dock goes.
+    expect(regionCounts().get('app.list')).toBe(1)
+  })
+
+  it('drops app.dock behind the sub-agent reader', async () => {
+    renderShell({ path: '/sessions/abc/agents/toolu_1', mode: 'phone' })
+    await screen.findByTestId('page-subagent')
+    expect(regionCounts().has('app.dock')).toBe(false)
   })
 
   it('renders app.drawer only for a recognised ?drawer=', async () => {
