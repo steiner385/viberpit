@@ -18,6 +18,13 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("mark_no_pr", ToolClass.SIGNAL, "Finish without a pull request"),
     ToolSpec("hand_back", ToolClass.SIGNAL, "Hand this session back to the user"),
     ToolSpec("request_model", ToolClass.SIGNAL, "Request a different model"),
+    # MUTATION: it creates a session the user sees on the board. Gated on its
+    # annotation by the permission layer, exactly like the assistant drawer's
+    # create_session: our own MUTATION tools raise a card in EVERY session mode
+    # (full-auto included) until the user grants "always allow" — see
+    # PermissionRegistry.request's is_mcp_tool branch. Mounted only on the durable
+    # surface with the kill switch on (child-session spec §4.2).
+    ToolSpec("dispatch_session", ToolClass.MUTATION, "Start a child session"),
 ]}
 
 #: THE set of signalling tool names, derived from the table above rather than
@@ -54,7 +61,8 @@ def mounted_signal_names(*, signalling_tools: bool, self_model_switch: bool) -> 
     return tuple(names)
 
 
-def mounted_names(*, signalling_tools: bool, self_model_switch: bool) -> tuple[str, ...]:
+def mounted_names(*, signalling_tools: bool, self_model_switch: bool,
+                  child_sessions: bool = False) -> tuple[str, ...]:
     """THE full predicate for which tool names a session gets, in declaration order —
     READ_TOOL_NAMES (unconditional) followed by the SIGNAL half. ``tools.mounted_tool_names``
     (the ctx-unpacking adapter used by ``build_session_tools``) and ``tools/instruction.py``'s
@@ -62,8 +70,14 @@ def mounted_names(*, signalling_tools: bool, self_model_switch: bool) -> tuple[s
     tools does this session get": two copies of that condition is how a session ends up
     told about a tool it does not have, or declared one it was never told about.
     """
-    return READ_TOOL_NAMES + mounted_signal_names(
+    names = READ_TOOL_NAMES + mounted_signal_names(
         signalling_tools=signalling_tools, self_model_switch=self_model_switch)
+    # `dispatch_session` rides only on the durable (Claude) surface — Codex loses its
+    # declared tools on resume and has no marker for a dispatch — and only while the
+    # kill switch (``child_sessions``) is on.
+    if signalling_tools and child_sessions:
+        names = names + ("dispatch_session",)
+    return names
 
 
 register_surface("session", SESSION_TOOL_SPECS)

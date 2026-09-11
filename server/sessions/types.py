@@ -60,7 +60,9 @@ class SessionRecord:
     origin: str | None = None        # automation_id that spawned this session (None = human-created)
     origin_ref: str | None = None    # automation's reference key (e.g. "owner/repo#123")
     assisted_by: str | None = None   # automation_id that has acted on this session (e.g. "autopilot")
-    detached: bool = False           # no live driver — DERIVED on read (orchestrator._sync_detached), never hand-set
+    parent_session_id: str | None = None      # dispatching parent session (child-session spec §4.1); None = root
+    parent_notified_status: str | None = None # last child status reported to the parent (§4.4 idempotency)
+    detached: bool = False          # no live driver — DERIVED on read (orchestrator._sync_detached), never hand-set
     status: str = "idle"             # idle / in_progress / condensing / waiting_input / ready_review / done / waiting_external / limited / ended
     name_is_auto: bool = True        # False once the user manually renames the session
     permission_mode: str = "interactive"
@@ -192,6 +194,8 @@ class SessionRecord:
             "cwd": self.cwd, "repo": self.repo, "branch": self.branch, "detached": self.detached,
             "origin": self.origin, "origin_ref": self.origin_ref,
             "assistedBy": self.assisted_by,
+            "parentSessionId": self.parent_session_id,
+            "parentNotifiedStatus": self.parent_notified_status,
             "status": self.status, "nameIsAuto": self.name_is_auto,
             "permissionMode": self.permission_mode,
             "createdAt": iso_utc(self.created_at),
@@ -255,6 +259,8 @@ class SessionRecord:
             cwd=d["cwd"], repo=d.get("repo"), branch=d.get("branch"), detached=d.get("detached", False),
             origin=d.get("origin"), origin_ref=d.get("origin_ref"),
             assisted_by=d.get("assistedBy"),
+            parent_session_id=d.get("parentSessionId"),
+            parent_notified_status=d.get("parentNotifiedStatus"),
             status=d.get("status", "idle"), name_is_auto=d.get("nameIsAuto", True),
             permission_mode=d.get("permissionMode", "interactive"),
             created_at=datetime.fromisoformat(created) if created else None,

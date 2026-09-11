@@ -32,6 +32,7 @@ _BLURBS: dict[str, str] = {
     "hand_back": ("you need a decision, review, approval or information from the user "
                   "before the objective can be finished."),
     "request_model": "you want to run the rest of the work on a different model tier.",
+    "dispatch_session": "you need a linked child session the user can steer independently.",
 }
 
 #: The ONE cross-tool sentence the index may carry beyond naming tools: the
@@ -44,7 +45,8 @@ _THREE_WAYS_LINE = (
 )
 
 
-def _session_tools_instruction(*, signalling_tools: bool, self_model_switch: bool) -> str:
+def _session_tools_instruction(*, signalling_tools: bool, self_model_switch: bool,
+                               child_sessions: bool = False) -> str:
     """The paragraph naming exactly the tools THIS session was mounted with.
 
     Built from ``registry.mounted_names`` — THE predicate ``build_session_tools`` and
@@ -53,7 +55,8 @@ def _session_tools_instruction(*, signalling_tools: bool, self_model_switch: boo
     tools" that stopped being true the day a third tool was added.
     """
     names = mounted_names(signalling_tools=signalling_tools,
-                          self_model_switch=self_model_switch)
+                          self_model_switch=self_model_switch,
+                          child_sessions=child_sessions)
     lines = "\n".join(f"`{name}`: {_BLURBS[name]}" for name in names)
     tail = f"\n{_THREE_WAYS_LINE}" if signalling_tools else ""
     return (
@@ -64,7 +67,7 @@ def _session_tools_instruction(*, signalling_tools: bool, self_model_switch: boo
 
 
 def session_instructions(*, session_tools: bool, signalling_tools: bool,
-                         self_model_switch: bool) -> str:
+                         self_model_switch: bool, child_sessions: bool = False) -> str:
     """THE one composition of "engine instructions + session-tools paragraph", called by
     both engines: ``claude_sdk_factory._build_append_string`` (the SDK's system-prompt
     append) and ``CodexAgentDriver.start``'s fresh ``thread/start``
@@ -93,7 +96,8 @@ def session_instructions(*, session_tools: bool, signalling_tools: bool,
         return marker_instructions(self_model_switch=self_model_switch)
 
     tools_paragraph = _session_tools_instruction(
-        signalling_tools=signalling_tools, self_model_switch=self_model_switch)
+        signalling_tools=signalling_tools, self_model_switch=self_model_switch,
+        child_sessions=child_sessions)
     if signalling_tools:
         return tools_paragraph
     return f"{marker_instructions(self_model_switch=self_model_switch)}\n\n{tools_paragraph}"

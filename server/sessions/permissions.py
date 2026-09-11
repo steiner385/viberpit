@@ -18,6 +18,21 @@ _FILE_WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 # gated entirely by ``PermissionRegistry.request`` below.
 _SDK_PASSTHROUGH_MODES = frozenset({"plan", "acceptEdits", "bypassPermissions"})
 
+#: How much a ccswitch permission mode lets a session do without asking — the ONE
+#: ordering for "is mode A wider than mode B". A child session may never run wider
+#: than its parent (child-session spec §4.3); an unknown mode ranks widest so it can
+#: never be picked as the "narrower" of two.
+MODE_WIDTH: dict[str, int] = {"plan": 0, "interactive": 1, "auto": 2, "full-auto": 3}
+
+
+def narrowest(requested: str | None, parent: str) -> str:
+    """The narrower of a requested mode and the parent's mode; the parent's when
+    nothing was requested or the request is unknown."""
+    if not requested:
+        return parent
+    widest = max(MODE_WIDTH.values()) + 1
+    return requested if MODE_WIDTH.get(requested, widest) <= MODE_WIDTH.get(parent, widest) else parent
+
 
 def to_sdk_permission_mode(mode: str) -> str:
     """Map a ccswitch session mode to the Claude Agent SDK ``permission_mode``.
