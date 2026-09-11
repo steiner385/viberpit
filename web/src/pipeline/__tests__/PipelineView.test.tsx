@@ -34,6 +34,13 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
     expect(headers[0]).toContain('acme/beta');
   });
 
+  // Workspace variant (row 5): the page's PageContent is scroll={false}, so the
+  // pipeline pane owns its own scroll.
+  it('owns its scroll — the root pane scrolls, not the page', () => {
+    const { container } = render(<PipelineView state={state()} focusedRepo={null} />);
+    expect(container.firstElementChild).toHaveClass('overflow-y-auto');
+  });
+
   it('has a section heading matching its rail label (#184)', () => {
     render(<PipelineView state={state()} focusedRepo={null} />);
     expect(screen.getByRole('heading', { level: 2, name: 'Pipeline' })).toBeInTheDocument();
@@ -46,11 +53,6 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
     fireEvent.click(alphaHeader);
     expect(screen.queryByText('alpha fix')).not.toBeInTheDocument();
     expect(alphaHeader).toHaveAttribute('aria-expanded', 'false');
-  });
-
-  it('shows a loading state when state is null', () => {
-    render(<PipelineView state={null} focusedRepo={null} />);
-    expect(screen.getByRole('status')).toBeInTheDocument();
   });
 
   it('surfaces "what merges next" from the queue (roadmap 4.4)', () => {

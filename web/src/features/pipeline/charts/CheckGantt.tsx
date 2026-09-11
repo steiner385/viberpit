@@ -1,8 +1,8 @@
 // Ported from plotroom@5166b52 frontend/src/CheckGantt.tsx; edits: import repointing (./types, ./format); eslint-disable react-refresh/only-export-components (mixed export file — intentional port)
 /* eslint-disable react-refresh/only-export-components */
 import { Fragment, useMemo } from 'react';
-import type { CheckView } from './types';
-import { formatDur, formatSince } from './format';
+import type { CheckView } from '@/pipeline/types';
+import { formatDur, formatSince } from '@/pipeline/format';
 
 type RowKind = 'done' | 'running' | 'overdue' | 'failed' | 'queued' | 'skipped';
 
@@ -180,7 +180,7 @@ export function CheckGantt({ checks, stage, showLegend = false }: {
   const grouped = groups.length > 1;
   return (
     <>
-      <ul className="checks gantt" aria-label={`checks for ${stage} stage`}>
+      <ul className="pipeline-chart checks gantt" aria-label={`checks for ${stage} stage`}>
         {groups.map((g, gi) => {
           const required = g.checks.filter((c) => c.isRequired);
           const advisory = g.checks.filter((c) => !c.isRequired);
@@ -194,9 +194,11 @@ export function CheckGantt({ checks, stage, showLegend = false }: {
         })}
       </ul>
       {/* #185: persistent inline key for the bar vocabulary. Swatches reuse the
-          .g-bar fills, so the #172 failed/overdue textures show automatically. */}
+          .g-bar fills, so the #172 failed/overdue textures show automatically.
+          It is a sibling of the list, not a descendant, so it carries the
+          `pipeline-chart` scope class of its own. */}
       {showLegend && (
-        <p className="gantt-inline-legend" aria-hidden="true">
+        <p className="pipeline-chart gantt-inline-legend" aria-hidden="true">
           <span className="g-done"><span className="g-bar gil-bar"><i /></span> done</span>
           <span className="g-running"><span className="g-bar gil-bar"><i /></span> running</span>
           <span className="g-overdue"><span className="g-bar gil-bar"><i /></span> overdue</span>

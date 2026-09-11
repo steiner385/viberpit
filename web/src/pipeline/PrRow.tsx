@@ -2,15 +2,21 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useState, useMemo, memo, type MouseEvent, type KeyboardEvent } from 'react';
 import { Link } from 'react-router-dom'
+import { cn } from '@/lib/utils';
+import { Badge } from '@/ui/Badge';
+import { Button } from '@/ui/Button';
 import { sessionPath } from '@/session/sessionNavState';
 import { useInteractive } from '@/shell/InteractionContext';
 import { useApiBase } from './ApiBaseContext';
 import type { PrView } from './types';
 import { formatDur, formatEta, formatSince, stageLabel } from './format';
-import { MetroTrack } from './MetroTrack';
-import { CheckGantt } from './CheckGantt';
-import { Waterfall, waterfallSegments } from './Waterfall';
+import { MetroTrack } from '@/features/pipeline/charts/MetroTrack';
+import { CheckGantt } from '@/features/pipeline/charts/CheckGantt';
+import { Waterfall, waterfallSegments } from '@/features/pipeline/charts/Waterfall';
 import { DEFS, defTitle, subLineTitle } from './definitions';
+
+/** The expanded panel's section caption ("merge group build", …). */
+const PANEL_LABEL = 'px-3.5 pt-2 text-2xs font-semibold uppercase tracking-wider text-ink-muted';
 
 /** Muted one-line status under the track: percent + active-check for ci,
  *  substate reason for parked, group/position info for queue.
@@ -191,11 +197,12 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
   // useMemo: subLine scans pr.checks and reads queueCulprit — re-run only when either changes
   const sub = useMemo(() => subLine(pr, queueCulprit), [pr, queueCulprit]);
   return (
-    <div id={`pr-${pr.number}`} className={`pr-row ${parked ? `parked ${s.substate ?? ''}` : ''}`}>
+    <div id={`pr-${pr.number}`} className={cn('mb-1.5 rounded-lg border border-edge bg-surface',
+      parked && (s.substate === 'ci-failed' ? 'border-l-4 border-l-danger' : 'opacity-75'))}>
       {/* Keyboard-operable expand toggle (UX-H1). role="button" rather than a
           real <button> because the row nests interactive children (title link,
           ready-merge action) which a <button> can't legally contain. */}
-      <div className="pr-main"
+      <div className={cn('pr-main rounded-lg px-3.5 pb-2.5 pt-2', expandable && 'cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent')}
         {...(expandable ? {
           role: 'button' as const,
           tabIndex: 0,
@@ -206,27 +213,27 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
             if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(!open); }
           },
         } : {})}>
-        <div className="pr-head">
-          <span className="pr-num">#{pr.number}</span>
-          <a className="pr-title" href={pr.url} target="_blank" rel="noreferrer"
+        <div className="mb-2 flex items-baseline gap-2.5">
+          <span className="whitespace-nowrap text-sm font-semibold">#{pr.number}</span>
+          <a className="flex-1 truncate text-ink hover:underline" href={pr.url} target="_blank" rel="noreferrer"
             onClick={(e) => e.stopPropagation()}>{pr.title}</a>
           {pr.touchesWorkflows && (
             /* workflow-change badge (issue #49): the PR edits .github/workflows/** —
                summary lines (when a derived-graph diff exists) ride the tooltip */
-            <span className="ci-change-badge"
+            <Badge tone="warning" className="whitespace-nowrap"
               title={pr.workflowImpact?.summary.join('\n')
                 ?? 'touches .github/workflows — CI behavior may change'}>
               ⚙ CI change
-            </span>
+            </Badge>
           )}
           {s.stage === 'ready' && s.substate === 'stuck-enqueue' && (
-            <span className="stuck-enqueue-badge"
+            <Badge tone="warning" className="whitespace-nowrap"
               title="auto-merge is armed and checks are green, but GitHub has not enqueued this PR — typically a shadowed required check; re-arm or re-run the required check to unstick">
               ⚠ stuck
-            </span>
+            </Badge>
           )}
           {sim ? (
-            <span className="eta eta-sim"
+            <span className="eta eta-sim whitespace-nowrap text-right text-xs tabular-nums text-ink-muted"
               title={`merges in ~${formatDur(sim.p50Secs)} (p50) / ~${formatDur(sim.p90Secs)} (p90${sim.assumesEjects ? ', assumes ≤1 eject' : ''}); ${sim.trainsAhead} train${sim.trainsAhead === 1 ? '' : 's'} ahead`}>
               ~{formatDur(sim.p50Secs)} / ~{formatDur(sim.p90Secs)} p90
             </span>
@@ -236,7 +243,9 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
                  last-good ETA is dimmed and captioned "(est.)"; the tooltip
                  dates it so a stale number never reads as fresh. */
               <span
-                className={`eta ${s.overdue ? 'overdue' : ''} ${s.etaStale ? 'eta-stale' : ''}`}
+                className={cn('eta whitespace-nowrap text-right text-xs tabular-nums', s.overdue ? 'text-danger' : 'text-ink-muted',
+                  // stale-while-revalidate (#671): dimmed + dotted so it reads as an estimate
+                  s.etaStale && 'eta-stale cursor-help italic underline decoration-dotted underline-offset-2 opacity-60')}
                 title={s.etaStale && s.etaUpdatedAt
                   ? `estimate — ETA last updated ${formatSince(s.etaUpdatedAt)}`
                   : undefined}>
@@ -248,12 +257,12 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
               Fix action. Kept OUT of the row's role="button" (nested-interactive
               a11y rule); stopPropagation guards the expand handler like .pr-title. */}
           {session && (
-            <span className="pr-session-wrap" onClick={(e) => e.stopPropagation()}>
-              <Link className="pr-session" to={sessionPath(session.id)}
+            <span className="ml-auto inline-flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+              <Link className="text-xs text-ink-muted hover:underline" to={sessionPath(session.id)}
                     title={`Open session ${session.name}`}>⌗ {session.name}</Link>
               {session.fixable && onFixPr && (
-                <button type="button" className="pr-fix"
-                        onClick={() => onFixPr(session.id, pr.number)}>Fix</button>
+                <Button type="button" size="sm" variant="secondary" className="h-6 border-warning px-2 text-xs text-warning"
+                        onClick={() => onFixPr(session.id, pr.number)}>Fix</Button>
               )}
             </span>
           )}
@@ -261,21 +270,21 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
         <MetroTrack stage={s} hasDeploy={hasDeploy} />
         {/* sub-line vocabulary tooltips (issue #66): the definitions of every
             recognized term in the line, from the shared SUBLINE_TERMS map */}
-        {sub && <div className="sub" title={subLineTitle(sub)}>{sub}</div>}
+        {sub && <div className="mt-1 truncate text-2xs text-ink-muted" title={subLineTitle(sub)}>{sub}</div>}
         {/* ready+auto-merge action (drafts only; disabled when conflicting or a
             required check has already failed). Own click-guarded row so it never
             toggles the expand panel. */}
         {expandable && gate.show && (
-          <div className="pr-actions" onClick={(e) => e.stopPropagation()}>
-            <button type="button" className="pr-ready-merge" data-testid="pr-ready-merge"
+          <div className="mt-1.5 flex flex-wrap items-center gap-2" onClick={(e) => e.stopPropagation()}>
+            <Button type="button" size="sm" variant="primary" className="h-7 px-2.5 text-xs" data-testid="pr-ready-merge"
               disabled={busy || gate.blocked}
               title={gate.blocked ? gate.reason : 'Mark this draft ready for review and arm auto-merge (squash)'}
               onClick={onReadyMerge}>
               {busy ? 'arming…' : 'Ready + auto-merge'}
-            </button>
-            {gate.blocked && <span className="pr-action-blocked">{gate.reason}</span>}
+            </Button>
+            {gate.blocked && <span className="text-xs text-ink-muted">{gate.reason}</span>}
             {actionResult && (
-              <span className={`pr-action-msg ${actionResult.ok ? 'ok' : 'err'}`}
+              <span className={cn('pr-action-msg text-xs', actionResult.ok ? 'ok text-success' : 'err text-danger')}
                 data-testid="pr-action-msg">
                 {/* glyph + text prefix so success/failure isn't conveyed by colour
                     alone (UX-L4) */}
@@ -290,7 +299,7 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
           (running checks count started→now), priced when rates are configured —
           minutes-only otherwise. Hidden entirely when no check has started. */}
       {open && pr.costMinutes != null && (
-        <div className="check-sections pr-cost" data-testid="pr-cost"
+        <div className="check-sections border-t border-edge px-3.5 py-1 text-xs tabular-nums text-ink-muted" data-testid="pr-cost"
           title={defTitle(DEFS.prCiCost)}>
           CI cost this run: {formatDur(pr.costMinutes * 60)}
           {pr.costDollars != null
@@ -301,9 +310,9 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
       {/* workflow-change impact card (issue #49): derived-graph diff summary,
           above the gantt in the expanded panel. */}
       {open && pr.workflowImpact && pr.workflowImpact.summary.length > 0 && (
-        <div className="check-sections workflow-impact" data-testid="workflow-impact">
-          <div className="panel-label">CI workflow change</div>
-          <ul className="workflow-impact-lines">
+        <div className="check-sections border-t border-edge" data-testid="workflow-impact">
+          <div className={PANEL_LABEL}>CI workflow change</div>
+          <ul className="list-none px-3.5 py-0.5 text-xs tabular-nums text-ink">
             {pr.workflowImpact.summary.map((line, i) => <li key={i}>{line}</li>)}
           </ul>
         </div>
@@ -313,20 +322,20 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
           endpoint timestamps (Waterfall itself returns null then, but the
           label must not render either). */}
       {open && pr.timeline && waterfallSegments(pr.timeline).length > 0 && (
-        <div className="check-sections waterfall-section">
-          <div className="panel-label">where did the time go</div>
+        <div className="check-sections border-t border-edge">
+          <div className={PANEL_LABEL}>where did the time go</div>
           <Waterfall timeline={pr.timeline} />
         </div>
       )}
       {open && pr.groupChecks && pr.groupChecks.length > 0 ? (
         /* Queued PR: the merge-group build (the run driving the stage ETA) gets
            its own labeled section, head-commit PR checks render below it. */
-        <div className="check-sections">
-          <div className="panel-label">merge group build</div>
+        <div className="check-sections border-t border-edge">
+          <div className={PANEL_LABEL}>merge group build</div>
           <CheckGantt checks={pr.groupChecks} stage={s.stage} />
           {pr.checks.length > 0 && (
             <>
-              <div className="panel-label">PR checks (head commit)</div>
+              <div className={PANEL_LABEL}>PR checks (head commit)</div>
               <CheckGantt checks={pr.checks} stage={s.stage} />
             </>
           )}

@@ -1,7 +1,7 @@
 // @vitest-environment node
 // Ported from plotroom@5166b52 frontend/src/spine/__tests__/laneStatus.test.ts; edits: ../laneStatus → ../spine/laneStatus; ../../types → ../types
 import { describe, it, expect } from 'vitest';
-import { LANE_GLYPH, LANE_WORD, rollup, attentionPhrase } from '../spine/laneStatus';
+import { LANE_GLYPH, LANE_WORD, LANE_TONE, rollup, attentionPhrase } from '../spine/laneStatus';
 import type { LaneView } from '../types';
 
 const lane = (p: Partial<LaneView>): LaneView => ({
@@ -12,6 +12,17 @@ describe('lane status vocabulary', () => {
   it('maps each status to a distinct glyph and word', () => {
     expect(new Set(Object.values(LANE_GLYPH)).size).toBe(5);
     expect(LANE_WORD.blind).toBe('blind');
+  });
+});
+
+describe('LANE_TONE — the one lane-status → design-system tone map', () => {
+  it('maps each status to its tone (blind and idle are both neutral)', () => {
+    expect(LANE_TONE).toEqual({
+      green: 'success', amber: 'warning', red: 'danger', blind: 'neutral', idle: 'neutral',
+    });
+  });
+  it('covers every LaneStatus the glyph vocabulary knows — no unstyled lane', () => {
+    expect(Object.keys(LANE_TONE).sort()).toEqual(Object.keys(LANE_GLYPH).sort());
   });
 });
 

@@ -213,35 +213,28 @@ function TrackTab({ initiative }: { initiative: Initiative }) {
   // LAST committed one is the latest — `find` would link the intent commit.
   const newestCommitted = initiative.artifacts.findLast((a) => a.commitSha)
   return (
-    // The gate sits OUTSIDE `prdash-root`: plotroom.css restyles bare elements
-    // (`header`, buttons) inside that scope, and this card is token-styled.
     <div className="flex flex-col gap-3">
       <MaterializationCard slug={initiative.slug} stage={initiative.stage} />
-      {/* `prdash-root` scopes plotroom.css for the track; it goes when
-          finish-line row 5 moves the track onto tokens (same note as
-          ProductDetail). */}
-      <div className="prdash-root flex flex-col gap-3">
-        <InitiativeTrack stage={initiative.stage} status={initiative.status} epic={initiative.epic} />
-        {next && (
-          <p className="text-sm text-ink-muted">
-            {nextActionLabel(next.type)}{next.reason ? ` — ${next.reason}` : ''}
-          </p>
+      <InitiativeTrack stage={initiative.stage} status={initiative.status} epic={initiative.epic} />
+      {next && (
+        <p className="text-sm text-ink-muted">
+          {nextActionLabel(next.type)}{next.reason ? ` — ${next.reason}` : ''}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-3 text-sm">
+        {initiative.artifacts.length === 0
+          ? <span className="text-ink-muted">No artifacts committed yet.</span>
+          : initiative.artifacts.map((a) => <ArtifactLink key={a.id} repo={initiative.repo} artifact={a} />)}
+        {initiative.repo && newestCommitted && (
+          <a
+            className="text-accent hover:underline"
+            target="_blank"
+            rel="noreferrer"
+            href={commitUrl(initiative.repo, newestCommitted.commitSha!)}
+          >
+            latest commit ↗
+          </a>
         )}
-        <div className="flex flex-wrap items-center gap-3 text-sm">
-          {initiative.artifacts.length === 0
-            ? <span className="text-ink-muted">No artifacts committed yet.</span>
-            : initiative.artifacts.map((a) => <ArtifactLink key={a.id} repo={initiative.repo} artifact={a} />)}
-          {initiative.repo && newestCommitted && (
-            <a
-              className="text-accent hover:underline"
-              target="_blank"
-              rel="noreferrer"
-              href={commitUrl(initiative.repo, newestCommitted.commitSha!)}
-            >
-              latest commit ↗
-            </a>
-          )}
-        </div>
       </div>
     </div>
   )

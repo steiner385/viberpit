@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
 import { Waterfall, waterfallSegments } from '../Waterfall';
-import type { PrTimeline } from '../types';
+import type { PrTimeline } from '@/pipeline/types';
 
 /** Full spine: created 08:00 → green 09:00 → enqueued 09:30 → merged 10:00
  *  → qa 10:20 → prod 12:20 (total 4h20m). */
@@ -65,9 +65,9 @@ describe('Waterfall', () => {
   it('uses the lead-time panel legend colors', () => {
     const { getByTestId } = render(<Waterfall timeline={FULL} />);
     expect(getByTestId('waterfall-seg-queue').querySelector('rect')!.getAttribute('fill'))
-      .toBe('var(--purple)');
+      .toBe('var(--t-info)');
     expect(getByTestId('waterfall-seg-qaDeploy').querySelector('rect')!.getAttribute('fill'))
-      .toBe('var(--done)');
+      .toBe('var(--t-success)');
   });
 
   it('renders hour/minute axis labels on the shared scale', () => {
@@ -128,7 +128,7 @@ describe('Waterfall — a11y: per-segment texture for colour-vision deficiency (
     // a textured segment has TWO rects: the colour fill + a pattern overlay via url(#…)
     const queueRects = getByTestId('waterfall-seg-queue').querySelectorAll('rect');
     expect(queueRects.length).toBe(2);
-    expect(queueRects[0].getAttribute('fill')).toBe('var(--purple)');          // colour preserved
+    expect(queueRects[0].getAttribute('fill')).toBe('var(--t-info)');          // colour preserved
     expect(queueRects[1].getAttribute('fill')).toMatch(/^url\(#.*-queue\)$/);   // texture overlay
     // the solid baseline segment carries only the colour rect, no overlay
     expect(getByTestId('waterfall-seg-toFirstGreen').querySelectorAll('rect').length).toBe(1);

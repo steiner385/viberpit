@@ -33,14 +33,15 @@ describe('HealthHeader', () => {
   it('rolls up to "need attention" when a wired lane is red', () => {
     render(<HealthHeader state={redState()} onJumpToLane={vi.fn()} />);
     expect(screen.getByTestId('health-rollup')).toHaveTextContent(/needs? attention/i);
-    expect(screen.getByTestId('health-rollup')).toHaveClass('r-red');
+    // the state reads as a tone via LANE_TONE — red → the danger dot
+    expect(screen.getByTestId('health-rollup').querySelector('.bg-danger')).not.toBeNull();
   });
 
   it('rolls up to all-green when nothing needs attention', () => {
     render(<HealthHeader state={greenState()} onJumpToLane={vi.fn()} />);
     const rollup = screen.getByTestId('health-rollup');
     expect(rollup).toHaveTextContent(/all systems green/i);
-    expect(rollup).toHaveClass('r-green');
+    expect(rollup.querySelector('.bg-success')).not.toBeNull();
   });
 
   it('clicking the rollup jumps to the first lane needing attention, with its status', () => {
@@ -60,10 +61,10 @@ describe('HealthHeader', () => {
   it('dims lanes with no data source (not-wired)', () => {
     render(<HealthHeader state={greenState()} onJumpToLane={vi.fn()} />);
     // no repo ships deploy/scheduled data and no rates → those lanes are not-wired
-    expect(screen.getByTestId('health-lane-deploy')).toHaveClass('not-wired');
-    expect(screen.getByTestId('health-lane-cost')).toHaveClass('not-wired');
+    expect(screen.getByTestId('health-lane-deploy')).toHaveClass('opacity-60');
+    expect(screen.getByTestId('health-lane-cost')).toHaveClass('opacity-60');
     // a wired lane is not dimmed
-    expect(screen.getByTestId('health-lane-main')).not.toHaveClass('not-wired');
+    expect(screen.getByTestId('health-lane-main')).not.toHaveClass('opacity-60');
   });
 
   it('lane chip exposes its title + summary to assistive tech via aria-label', () => {
@@ -74,13 +75,14 @@ describe('HealthHeader', () => {
 
   it('surfaces the lane summary inline on a non-green chip (#189)', () => {
     render(<HealthHeader state={redState()} onJumpToLane={vi.fn()} />);
-    const summary = screen.getByTestId('health-lane-pr-ci').querySelector('.health-lane-summary');
+    // the muted-ink span is the inline summary (the chip's only muted text)
+    const summary = screen.getByTestId('health-lane-pr-ci').querySelector('.text-ink-muted');
     expect(summary).not.toBeNull();
     expect(summary!.textContent!.length).toBeGreaterThan(0);
   });
 
   it('hides the inline summary on a green lane (#189)', () => {
     render(<HealthHeader state={greenState()} onJumpToLane={vi.fn()} />);
-    expect(screen.getByTestId('health-lane-main').querySelector('.health-lane-summary')).toBeNull();
+    expect(screen.getByTestId('health-lane-main').querySelector('.text-ink-muted')).toBeNull();
   });
 });

@@ -109,9 +109,7 @@ export function ProductDetail({ product }: { product: ProductNode }) {
               {inFlight.length === 0
                 ? <p className="text-sm text-ink-muted">Nothing in flight.</p>
                 : inFlight.map((i) => (
-                  // `prdash-root` scopes plotroom.css for the track; it goes when
-                  // finish-line row 5 moves the track onto tokens.
-                  <div key={i.slug} className="prdash-root rounded-md border border-edge bg-surface p-3">
+                  <div key={i.slug} className="rounded-md border border-edge bg-surface p-3">
                     <Link to={initiativePath(i.slug)} className="font-medium text-ink hover:underline">
                       {i.title ?? i.slug}
                     </Link>

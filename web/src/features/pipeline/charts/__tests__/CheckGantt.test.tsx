@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { CheckGantt, ganttScale } from '../CheckGantt';
-import type { CheckView } from '../types';
+import type { CheckView } from '@/pipeline/types';
 
 const check = (over: Partial<CheckView>): CheckView => ({
   name: 'fast-checks / ESLint', status: 'COMPLETED', conclusion: 'SUCCESS', isRequired: true, workflowName: null,

@@ -1,8 +1,8 @@
 // Ported from plotroom@5166b52 frontend/src/MetroTrack.tsx; edits: import repointing (./types, ./format); eslint-disable react-refresh/only-export-components (mixed export file — intentional port); dead currentIdx/lastDone/pos locals removed (unused in upstream source; our tsc -b noUnusedLocals rejects them)
 /* eslint-disable react-refresh/only-export-components */
 import { Fragment } from 'react';
-import type { StageResult } from './types';
-import { formatDur } from './format';
+import type { StageResult } from '@/pipeline/types';
+import { formatDur } from '@/pipeline/format';
 
 export type NodeStatus = 'done' | 'active' | 'fail' | 'pending' | 'parked';
 export interface TrackNode { label: string; status: NodeStatus; }
@@ -101,7 +101,7 @@ function segment(prev: TrackNode, percent: number | null, key: string) {
   if (prev.status === 'active' && percent != null && percent > 0) {
     return (
       <i key={key} className="seg part"
-        style={{ background: `linear-gradient(90deg, var(--accent) ${percent}%, var(--border) ${percent}%)` }} />
+        style={{ background: `linear-gradient(90deg, var(--t-accent) ${percent}%, var(--t-edge) ${percent}%)` }} />
     );
   }
   return <i key={key} className="seg" />;
@@ -112,7 +112,7 @@ export function MetroTrack({ stage, hasDeploy }: { stage: StageResult; hasDeploy
   const nodeEta = stage.etaSeconds != null && stage.etaSeconds > 0 && !stage.overdue
     ? `~${formatDur(stage.etaSeconds)}` : null;
   return (
-    <div className="track" aria-label={trackAriaLabel(nodes)}>
+    <div className="pipeline-chart track" aria-label={trackAriaLabel(nodes)}>
       {nodes.map((n, i) => (
         <Fragment key={`${n.label}-${i}`}>
           {i > 0 && segment(nodes[i - 1]!, stage.percent, `seg-${i}`)}

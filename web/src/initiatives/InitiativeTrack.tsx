@@ -2,13 +2,14 @@
    mapper colocated with (and unit-tested against) InitiativeTrack, mirroring the
    MetroTrack idiom it reuses; a separate module for one helper over-splits. */
 // Horizontal artifact/stage track for one Initiative — reuses the pipeline
-// "metro" idiom and its `.track`/`.node`/`.seg` design tokens (plotroom.css,
-// scoped to .prdash-root) rather than re-styling (constitution VI). Unlike
-// MetroTrack it maps the SDLC lifecycle stages, not PR StageResult substates.
+// "metro" idiom and its `.track`/`.node`/`.seg` rules from the chart stylesheet
+// (features/pipeline/charts/plotroom.css, scoped to .pipeline-chart) rather than
+// re-styling (constitution VI). Unlike MetroTrack it maps the SDLC lifecycle
+// stages, not PR StageResult substates.
 import { Fragment } from 'react'
 import { INITIATIVE_STAGES, type InitiativeEpic, type InitiativeStage } from '@/api/sdlc'
 import { STAGE_LABEL } from '@/features/products/vocab'
-import '../pipeline/plotroom.css'
+import '@/features/pipeline/charts/plotroom.css'
 
 export type NodeStatus = 'done' | 'active' | 'fail' | 'pending' | 'parked'
 export interface TrackNode { label: string; status: NodeStatus }
@@ -74,7 +75,7 @@ export function InitiativeTrack(
 ) {
   const nodes = trackState(stage, status)
   return (
-    <div className="track" aria-label={ariaLabel(nodes, epic)}>
+    <div className="pipeline-chart track" aria-label={ariaLabel(nodes, epic)}>
       {nodes.map((n, i) => {
         const isBuild = epic != null && INITIATIVE_STAGES[i] === 'build'
         const label = isBuild ? `${n.label} ${epic.done}/${epic.total}` : n.label

@@ -57,7 +57,7 @@ One `h1` · `document.title` set · `data-page-variant` present · header render
 | 7 | **Archived** + **Review** (`/archived`, `/archived/:id`) | Standard + Reader | `ArchivedManager` split into `ArchivedPage` + `ArchivedList`; `ReviewView` → `ReviewPage` (Reader) with sticky Back; sub-agent view → Reader | inline dialogs in `ArchivedManager` |
 | 8 | **Insights** | Standard | `InsightsView` → `InsightsPage`; check-health tiles as stat tiles | |
 | 9 | **Products** + **Initiatives** | Standard | `ProjectsTab`/`InitiativesTab` → pages; `.pm-*`/`.init-*` CSS rewritten as token utilities on `Card`/`Badge`; `InitiativeTrack` keeps the metro idiom but on tokens | `projects.css`, `initiatives.css`, the `.prdash-root` wrapper on Initiatives |
-| 10 | **Pipeline** | Workspace | `PipelineTab` → `PipelinePage`; `PipelineSwitcher` → `page.subnav` `Tabs`; `HealthHeader` into `PageHeader.meta`; chrome bar actions (bell, legend) into `PageHeader.actions`; `plotroom.css` rewritten onto token utilities except the metro/gantt chart rules, which move to `features/pipeline/charts/plotroom.css` (lint allowlist) | `.prdash-root` remap, `pipeline/kiosk.ts`, `useKioskCycle` (→ page-local `useRepoCycle`) |
+| 10 | **Pipeline** | Workspace | `PipelineTab` → `PipelinePage`; `PipelineSwitcher` → `page.subnav` `Tabs`; `HealthHeader` into `PageHeader.meta`; chrome bar actions (bell, legend) into `PageHeader.actions`; `plotroom.css` rewritten onto token utilities except the metro/gantt chart rules, which move to `features/pipeline/charts/plotroom.css` (lint allowlist) | `.prdash-root` remap, `pipeline/kiosk.ts`, `useKioskCycle` (→ page-local `useRepoCycle`) — landed 2026-09-11 (finish-line row 5, #1469) |
 | 11 | **Sweep** | — | remaining `dark:`, raw palette, hex, emoji glyphs (→ lucide), `text-[Npx]`, `z-*` literals, `min-h-[44px]` (→ `min-h-target`); `localStorage` keys to `ccswitch.*` with one-time migration; ESLint rule to repo scope; `docs/ACCESSIBILITY.md` rewritten from the umbrella + this spec; `web/README.md` replaced with a real one (structure, gates, conventions, how to add a page) | `components/` bucket (must be empty), `lib/useMediaQuery.ts` |
 
 Sessions (PR 4) already conforms; its page test is added in PR 5's `pageContract.test.tsx`.
@@ -95,7 +95,10 @@ Sessions (PR 4) already conforms; its page test is added in PR 5's `pageContract
 ## 7. Risks
 
 - **Pipeline CSS rewrite** is the largest single page (1,216 lines). Mitigation: charts stay as CSS
-  in the allowlisted folder; only chrome/board rules convert.
+  in the allowlisted folder; only chrome/board rules convert. *Outcome (PR 10, finish-line row 5,
+  2026-09-11): ~550 of the lines were dead and deleted outright; the chart rules (metro, gantt,
+  waterfall, queue train) moved to `features/pipeline/charts/plotroom.css` on `--t-*` tokens; the
+  rest became utilities on `StatusStrip`, `HealthHeader`, `PipelineView`, `PrRow`, `LegendPanel`.*
 - **Settings sub-routes on phone** change navigation depth; Back must return to `/settings`, tested.
 - The **sweep PR** touches many files mechanically; the lint rule at repo scope is the acceptance,
   reviewed by CI rather than by eye.

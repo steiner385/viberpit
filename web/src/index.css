@@ -51,6 +51,10 @@
      normal text — pills and banner copy are 12px) by
      src/__tests__/contrast.test.ts. Retune a hex here and that test tells you
      which pair you broke; do not add a parallel `-on-wash` token family. */
+  /* Ink for glyphs/labels sitting ON a `-strong` fill. Theme-invariant with NO
+     dark override, because the `-strong` fills it pairs with never flip either:
+     letting it follow the theme would drop white-on-green to 3.58:1 in dark. */
+  --t-on-strong: #ffffff;
   --t-success: #147c3b; --t-success-wash: #e6f4ea; --t-success-strong: #15803d;
   --t-warning: #9a5d00; --t-warning-wash: #fbf0dc; --t-warning-strong: #9a5d00;
   --t-danger:  #c23636; --t-danger-wash:  #fbe9e7; --t-danger-strong:  #b42318;
@@ -71,12 +75,6 @@
   --fs-lg: calc(1.125rem * var(--scale));   --fs-xl: calc(1.25rem * var(--scale));
   --fs-2xl: calc(1.5rem * var(--scale));
 
-  /* Legacy aliases — consumed by plotroom.css and a few settings sections
-     until sub-spec C removes the last use. */
-  --bg: var(--t-canvas); --surface: var(--t-surface); --text: var(--t-ink);
-  --muted: var(--t-ink-muted); --border: var(--t-edge); --accent: var(--t-accent);
-  --done: var(--t-success); --fail: var(--t-danger); --amber: var(--t-warning); --purple: var(--t-info);
-  --accent-strong: var(--t-accent); --done-strong: var(--t-success-strong); --amber-strong: var(--t-warning-strong);
 
   font: 16px/1.5 var(--font-sans);
   color-scheme: light dark;
@@ -255,3 +253,7 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .working-shimmer { animation: none; background: none; -webkit-background-clip: border-box; background-clip: border-box; color: inherit; }
 }
+
+/* Kiosk idle cursor (shell spec §5): `shell/useIdleCursor` sets the attribute
+   after 5 s without input on a wall display; any input clears it. */
+html[data-idle] { cursor: none; }

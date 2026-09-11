@@ -22,8 +22,9 @@ export default defineConfig([
   },
   {
     // Token discipline is enforced folder-by-folder: the new UI system and
-    // shell first, features/ joined in PR 4 (task 1), the whole tree in PR 11.
-    files: ['src/ui/**/*.{ts,tsx}', 'src/shell/**/*.{ts,tsx}', 'src/features/**/*.{ts,tsx}'],
+    // shell first, features/ joined in PR 4 (task 1), pipeline/ once row 5 put it
+    // on tokens, the whole tree in PR 11.
+    files: ['src/ui/**/*.{ts,tsx}', 'src/shell/**/*.{ts,tsx}', 'src/features/**/*.{ts,tsx}', 'src/pipeline/**/*.{ts,tsx}'],
     ignores: ['src/features/pipeline/charts/**'],
     plugins: { ccswitch: { rules: { 'no-raw-palette': noRawPalette } } },
     rules: { 'ccswitch/no-raw-palette': 'error' },

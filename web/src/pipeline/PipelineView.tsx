@@ -19,9 +19,10 @@
 // status filter are identical to the classic dashboard; only the framing (focused
 // repo first) is workspace-native. Data is the live Tier-1 state.
 import { useState, useMemo } from 'react';
+import { Button } from '@/ui/Button';
 import type { DashboardState } from './types';
 import { PrRow } from './PrRow';
-import { QueueTrain } from './QueueTrain';
+import { QueueTrain } from '@/features/pipeline/charts/QueueTrain';
 import { StatusStrip, bucketPr, isActivePr, isFailedPr, type Bucket } from './StatusStrip';
 import { splitCohort, deployBreakdown } from './ordering';
 import { nextToMerge } from './queueFront';
@@ -58,7 +59,9 @@ function eta(secs: number | null): string | null {
 
 
 export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: controlledFilter, onFilter }: {
-  state: DashboardState | null;
+  /** Non-null: the page renders its own loading skeleton before the first
+   *  frame and only mounts the board once a frame exists. */
+  state: DashboardState;
   focusedRepo: string | null;
   onFixPr?: (sessionId: string, prNumber: number) => void;
   /** Controlled status filter: when provided (including null), the host owns the
@@ -72,13 +75,10 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
   const [collapsed, setCollapsed] = useState<Set<string>>(readCollapsedSet);
   const [openCohorts, setOpenCohorts] = useState<Set<string>>(new Set());
 
-  // Hooks must come before any early return (Rules of Hooks).
   // focused repo first (stable otherwise) — the workspace's "current pipeline" lead.
   // Memoized on [state, focusedRepo] so SSE frames that don't change these skip the sort.
   const repos = useMemo(
-    () => state
-      ? [...state.repos].sort((a, b) => (a.repo === focusedRepo ? -1 : b.repo === focusedRepo ? 1 : 0))
-      : [],
+    () => [...state.repos].sort((a, b) => (a.repo === focusedRepo ? -1 : b.repo === focusedRepo ? 1 : 0)),
     [state, focusedRepo],
   );
   // Tile counts reflect the focused repo so the strip answers "what's happening
@@ -88,7 +88,6 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
     [repos, focusedRepo],
   );
 
-  if (!state) return <div className="pipeline-view" role="status">Loading pipeline…</div>;
   const toggle = (repo: string) => setCollapsed((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); writeCollapsedSet(n); return n; }); // eslint-disable-line @typescript-eslint/no-unused-expressions -- ternary-as-statement, verbatim from the plotroom source (port fidelity)
   const toggleCohort = (repo: string) => setOpenCohorts((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); return n; }); // eslint-disable-line @typescript-eslint/no-unused-expressions -- ternary-as-statement, verbatim from the plotroom source (port fidelity)
   const row = (pr: typeof allPrs[number], r: typeof repos[number]) => (
@@ -96,7 +95,9 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
   );
 
   return (
-    <div className="pipeline-view">
+    // The Workspace variant mounts this pane under a `scroll={false}`
+    // PageContent, so the pane itself is what scrolls.
+    <div className="flex h-full min-h-0 flex-col overflow-y-auto px-4 py-3 md:px-6">
       <h2 className="sr-only">Pipeline</h2>
       <StatusStrip prs={allPrs} activeFilter={activeFilter} onFilter={setFilter} />
       {repos.map((r) => {
@@ -107,19 +108,28 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
         const failedCount = r.prs.filter(isFailedPr).length;
         return (
           <section key={r.repo}>
-            <h3 className="repo-header">
-              <button type="button" className="repo-header-btn" aria-expanded={!isCollapsed} onClick={() => toggle(r.repo)}>
-                <span aria-hidden="true" className="repo-chevron">{isCollapsed ? '▸' : '▾'}</span>
+            {/* The heading exists for SR heading navigation (UX-L1); the button
+                inside it carries the styling and the collapse affordance. */}
+            <h3 className="mt-4 mb-2 border-b border-edge font-normal">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start gap-1.5 px-0 text-ink-muted hover:bg-transparent hover:text-ink"
+                aria-expanded={!isCollapsed}
+                onClick={() => toggle(r.repo)}
+              >
+                <span aria-hidden="true" className="text-2xs">{isCollapsed ? '▸' : '▾'}</span>
                 {r.repo}
-                {!isCollapsed && hiddenCount > 0 && <span className="hidden-count"> ({hiddenCount} hidden)</span>}
+                {!isCollapsed && hiddenCount > 0 && <span className="text-xs font-normal text-ink-muted"> ({hiddenCount} hidden)</span>}
                 {isCollapsed && (
-                  <span className="repo-summary">
-                    <span className="repo-summary-prs">{r.prs.length} PRs</span>
-                    {activeCount > 0 && <span className="repo-summary-active"> · {activeCount} active</span>}
-                    {failedCount > 0 && <span className="repo-summary-failed"> · {failedCount} failed</span>}
+                  <span className="text-xs font-normal text-ink-muted">
+                    <span>{r.prs.length} PRs</span>
+                    {activeCount > 0 && <span> · {activeCount} active</span>}
+                    {failedCount > 0 && <span className="text-danger"> · {failedCount} failed</span>}
                   </span>
                 )}
-              </button>
+              </Button>
             </h3>
             {!isCollapsed && (() => {
               const { lead, cohort } = splitCohort(visiblePrs);
@@ -155,7 +165,7 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
                       </p>
                     );
                   })()}
-                  {visiblePrs.length === 0 && hiddenCount === 0 && <p className="empty">no active PRs</p>}
+                  {visiblePrs.length === 0 && hiddenCount === 0 && <p className="text-xs text-ink-muted">no active PRs</p>}
                   {lead.map((pr) => row(pr, r))}
                   {cohort.length > 0 && (() => {
                     // Disjoint deploy stages — never lump awaiting-QA into "awaiting prod".

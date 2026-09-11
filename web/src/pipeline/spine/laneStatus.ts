@@ -1,4 +1,5 @@
 // Ported from plotroom@5166b52 frontend/src/spine/laneStatus.ts; edits: ../types → ../types (path unchanged, spine/ is one level below pipeline/)
+import type { Tone } from '@/ui/Badge';
 import type { LaneStatus, LaneView } from '../types';
 
 export const LANE_GLYPH: Record<LaneStatus, string> = {
@@ -6,6 +7,13 @@ export const LANE_GLYPH: Record<LaneStatus, string> = {
 };
 export const LANE_WORD: Record<LaneStatus, string> = {
   green: 'green', amber: 'watch', red: 'red', blind: 'blind', idle: 'idle',
+};
+/** Lane status → design-system tone, beside the glyph and the word so the three
+ *  halves of the lane vocabulary cannot drift. Blind and idle share `neutral`:
+ *  neither is a health verdict, and the GLYPH is what tells them apart (the
+ *  legacy `.spine-glyph.s-*` colours this replaces did the same). */
+export const LANE_TONE: Record<LaneStatus, Tone> = {
+  green: 'success', amber: 'warning', red: 'danger', blind: 'neutral', idle: 'neutral',
 };
 
 export type RollupState = 'red' | 'blind' | 'amber' | 'green';

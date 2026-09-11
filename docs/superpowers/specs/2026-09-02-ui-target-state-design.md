@@ -205,7 +205,7 @@ Redirects kept: `/session/:id`, `/session/:id/subagent/:a`, `/review/:id`, `/set
 | 3 | `navDefs`, `useViewport`, `AppShell` + regions + `BannerStack` + `DrawerHost` (help) + route table; kiosk at shell level; hosts existing pages | B | `Dashboard.tsx`, `DesktopShell.tsx`, `tabDefs.ts`, the `App.tsx` mode fork |
 | 4 | Sessions workspace: `SessionHeader`, composer row, shortcuts, list filters, `PromptDock` | B | `SessionView` top bar, `MainPaneSession` |
 | 5–9 | Settings (Split) · Automations · Archived + Reader · Insights · Products + Initiatives | C | each page's feature CSS and ad-hoc headers |
-| 10 | Pipeline as Workspace; attract cycle + wake-lock + `--scale`; Playwright viewport projects | B/C | `pipeline/kiosk.ts`, `useKioskCycle` (moved) |
+| 10 | Pipeline as Workspace; attract cycle + wake-lock + `--scale`; Playwright viewport projects | B/C | `pipeline/kiosk.ts`, `useKioskCycle` (moved) — landed 2026-09-11 (finish-line row 5, #1469; viewport projects deferred to row 7) |
 | 11 | Repo-wide palette sweep; ESLint to full scope; rewrite `docs/ACCESSIBILITY.md`, `web/README.md` | C | remaining `dark:` / raw palette |
 | 12 | `AssistantSheet` UI against the assistant API | B (after backend spec) | "coming soon" sheet |
 
