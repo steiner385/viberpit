@@ -67,6 +67,26 @@ def test_parse_accepts_a_bare_object_without_a_fence():
     assert d.tasks[0] == TaskSpec(title="T", body="", depends_on=())
 
 
+def test_parse_ignores_an_echoed_shape_and_takes_the_last_fence():
+    """A model that restates the requested shape does so BEFORE it answers.
+
+    Echoing the contract back produces a perfectly valid object — with
+    placeholder tasks — so "first fence that parses" would return the echo."""
+    text = '''I will answer in exactly this shape:
+```json
+{"epic_title": "...", "epic_body": "...",
+ "tasks": [{"title": "...", "body": "...", "depends_on": []}]}
+```
+Here is the decomposition:
+```json
+{"epic_title": "Ship it", "epic_body": "The epic.",
+ "tasks": [{"title": "T1", "body": "B1"}]}
+```'''
+    d = parse_materialization_output(text)
+    assert d.epic_title == "Ship it"
+    assert d.tasks == (TaskSpec(title="T1", body="B1", depends_on=()),)
+
+
 def test_parse_rejects_missing_tasks():
     with pytest.raises(MaterializationParseError):
         parse_materialization_output('{"epic_title": "E", "epic_body": "B"}')

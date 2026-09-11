@@ -279,6 +279,31 @@ def test_extract_fenced_json_prefers_the_fenced_block():
     assert extract_fenced_json(text, shape="array") == [{"a": 1}]
 
 
+def test_extract_fenced_json_prefers_the_LAST_fence():
+    """A session that shows a decoy/example block does it BEFORE its answer.
+
+    The fence the answer lives in is the final one, so a leading block — the
+    restated schema, a quoted snippet, a first draft — must never win."""
+    text = '''```text
+["decoy"]
+```
+```json
+[{"number": 1}]
+```'''
+    assert extract_fenced_json(text, shape="array") == [{"number": 1}]
+
+
+def test_parse_classification_output_ignores_a_decoy_fence():
+    text = '''```text
+[{"number": 99, "kind": "issue", "feature_slug": "wrong", "rationale": "decoy"}]
+```
+```json
+[{"number": 1, "kind": "issue", "feature_slug": "sessions", "rationale": "real"}]
+```'''
+    (c,) = parse_classification_output(text)
+    assert (c.number, c.feature_slug) == (1, "sessions")
+
+
 def test_extract_fenced_json_falls_back_to_bare_brackets():
     assert extract_fenced_json('chatter [1, 2] tail', shape="array") == [1, 2]
     assert extract_fenced_json('chatter {"a": 1} tail', shape="object") == {"a": 1}

@@ -18,7 +18,10 @@ def upgrade() -> None:
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("initiative_id", sa.String(), nullable=True),
         sa.Column("payload", sa.JSON(), nullable=True),
-        sa.Column("status", sa.String(), nullable=False, server_default="pending"),
+        # Nullable with a Python-side default, exactly as the model declares it
+        # (mirroring TriageProposal.status) — reconcile is what actually builds
+        # this table, so the revision must describe what it builds.
+        sa.Column("status", sa.String(), nullable=True),
         sa.Column("session_id", sa.String(), nullable=True),
         sa.Column("rationale", sa.String(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),

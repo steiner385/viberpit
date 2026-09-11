@@ -1744,8 +1744,8 @@ class MaterializationProposal(Base):
     initiative_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("initiatives.id"), nullable=True, index=True)
     payload: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
-    status: Mapped[str] = mapped_column(
-        String, nullable=False, default="pending", index=True)  # TRIAGE_PROPOSAL_STATUSES
+    status: Mapped[str | None] = mapped_column(
+        String, nullable=True, default="pending", index=True)  # TRIAGE_PROPOSAL_STATUSES
     session_id: Mapped[str | None] = mapped_column(String, nullable=True)
     rationale: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
