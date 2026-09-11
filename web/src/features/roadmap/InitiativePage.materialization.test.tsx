@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { ApiRequestError } from '@/api/client'
+import { BRAND_NAME } from '@/brand'
 import { InitiativePage } from './InitiativePage'
 
 const h = vi.hoisted(() => {
@@ -50,8 +51,10 @@ const h = vi.hoisted(() => {
     proposal: proposal as Record<string, unknown> | null,
     acceptIsError: false,
     acceptError: null as unknown,
+    acceptIsPending: false,
     rejectIsError: false,
     rejectError: null as unknown,
+    rejectIsPending: false,
   }
   return { acceptMutate, rejectMutate, proposal, initiative, state }
 })
@@ -62,11 +65,11 @@ vi.mock('@/api/hooks', () => ({
   useAdvanceInitiative: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useMaterialization: () => ({ data: h.state.proposal }),
   useAcceptMaterialization: () => ({
-    mutate: h.acceptMutate, isPending: false,
+    mutate: h.acceptMutate, isPending: h.state.acceptIsPending,
     isError: h.state.acceptIsError, error: h.state.acceptError,
   }),
   useRejectMaterialization: () => ({
-    mutate: h.rejectMutate, isPending: false,
+    mutate: h.rejectMutate, isPending: h.state.rejectIsPending,
     isError: h.state.rejectIsError, error: h.state.rejectError,
   }),
 }))
@@ -91,8 +94,10 @@ describe('InitiativePage — materialization gate', () => {
     h.state.proposal = h.proposal
     h.state.acceptIsError = false
     h.state.acceptError = null
+    h.state.acceptIsPending = false
     h.state.rejectIsError = false
     h.state.rejectError = null
+    h.state.rejectIsPending = false
   })
 
   it('shows the proposed epic, every task, and what each task waits on', () => {
@@ -102,9 +107,11 @@ describe('InitiativePage — materialization gate', () => {
     const tasks = within(screen.getByRole('list', { name: /proposed tasks/i })).getAllByRole('listitem')
     expect(tasks).toHaveLength(3)
     expect(tasks[0]).toHaveTextContent('Phase A — schema')
-    // Index-based, exactly as the API states them: nothing is on GitHub yet.
-    expect(within(tasks[1]!).getByText('after #0')).toBeInTheDocument()
-    expect(within(tasks[2]!).getByText('after #0, #1')).toBeInTheDocument()
+    // 1-BASED on screen while `dependsOn` stays 0-based on the wire: the row
+    // labels and the references have to count the same way for a human.
+    expect(within(tasks[0]!).getByText('Task 1')).toBeInTheDocument()
+    expect(within(tasks[1]!).getByText('after task 1')).toBeInTheDocument()
+    expect(within(tasks[2]!).getByText('after tasks 1, 2')).toBeInTheDocument()
     // The first task waits on nothing, and says nothing rather than "after".
     expect(within(tasks[0]!).queryByText(/after/)).not.toBeInTheDocument()
   })
@@ -114,14 +121,46 @@ describe('InitiativePage — materialization gate', () => {
     expect(screen.getByText(/decompose/i)).toBeInTheDocument()
   })
 
-  it('Accept applies the proposal, and the card goes once the decision lands', () => {
+  it('Accept confirms first — like Advance — and says what it will create', () => {
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    // Nothing has been written yet: the tap opened the gate, it did not pass it.
+    expect(h.acceptMutate).not.toHaveBeenCalled()
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('3 sub-issues')
+    expect(dialog).toHaveTextContent(`cannot be undone from ${BRAND_NAME}`)
+  })
+
+  it('cancelling the confirm writes nothing and leaves the card up', () => {
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(h.acceptMutate).not.toHaveBeenCalled()
+    expect(card()).toBeInTheDocument()
+  })
+
+  it('confirming applies the proposal, and the card goes once the decision lands', () => {
     const { rerender } = mount()
     fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
-    expect(h.acceptMutate).toHaveBeenCalledWith('views')
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm materialize' }))
+    expect(h.acceptMutate).toHaveBeenCalledWith('views', expect.anything())
     // The refetch the mutation's invalidation triggers: same proposal, decided.
     h.state.proposal = { ...h.proposal, status: 'accepted' }
     rerender(page())
     expect(card()).not.toBeInTheDocument()
+  })
+
+  it('either decision in flight disables both controls', () => {
+    h.state.rejectIsPending = true
+    const { rerender } = mount()
+    expect(screen.getByRole('button', { name: 'Accept' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeDisabled()
+    h.state.rejectIsPending = false
+    h.state.acceptIsPending = true
+    rerender(page())
+    expect(screen.getByRole('button', { name: 'Accept' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeDisabled()
   })
 
   it('Reject turns the decomposition down, and the card goes with it', () => {

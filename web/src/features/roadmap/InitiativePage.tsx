@@ -11,6 +11,7 @@ import {
   useMaterialization, useRejectMaterialization, useRoadmapMap,
 } from '@/api/hooks'
 import { ApiRequestError } from '@/api/client'
+import { BRAND_NAME } from '@/brand'
 import type { Initiative, InitiativeArtifact } from '@/api/sdlc'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { PageHeader } from '@/ui/PageHeader'
@@ -85,62 +86,106 @@ function ArtifactLink({ repo, artifact }: { repo: string | null; artifact: Initi
  * and the proposal is still `pending` — so the card stays put with the server's
  * reason on it, and tapping Accept again continues rather than creating a second
  * epic.
+ *
+ * Accept is a TWO-STEP, the same `Dialog` confirm the page's Advance gate uses
+ * and for a stronger reason: Advance moves a row between stages, this creates
+ * issues on GitHub that nothing here can take back. Reject stays one tap —
+ * it decides nothing that cannot be decomposed again on a later tick.
+ *
+ * Tasks are numbered 1-based FOR THE READER while `dependsOn` stays 0-based on
+ * the wire: "Task 1" is what a human counts, and the "after task k" references
+ * are mapped through the same +1 so the two always agree on screen.
  */
 function MaterializationCard({ slug }: { slug: string }) {
   const { data: proposal } = useMaterialization(slug)
   const accept = useAcceptMaterialization()
   const reject = useRejectMaterialization()
+  const [confirming, setConfirming] = useState(false)
   if (!proposal || proposal.status !== 'pending') return null
+  // EITHER decision in flight disables BOTH controls: the 409 a double-tap earns
+  // is graceful, but a second irreversible write must not be reachable at all.
+  const busy = accept.isPending || reject.isPending
+  const tasks = proposal.tasks.length
   return (
-    <section
-      aria-label="Materialize plan"
-      className="flex flex-col gap-3 rounded-md border border-edge bg-surface p-3"
-    >
-      <div className="flex flex-col gap-1">
-        <h2 className="text-sm font-semibold text-ink">Materialize plan</h2>
-        <p className="text-sm text-ink">{proposal.epicTitle ?? `Untitled ${EPIC.singular.toLowerCase()}`}</p>
-      </div>
-      {/* The session's stated reason — the one piece of evidence a human has
-          before an accept that writes to GitHub, so it reads before the list. */}
-      {proposal.rationale && <p className="text-sm text-ink-muted">{proposal.rationale}</p>}
-      <ul className="flex flex-col gap-1" aria-label="Proposed tasks">
-        {proposal.tasks.map((t, i) => (
-          // The INDEX is the identity here: `dependsOn` addresses tasks by their
-          // position in this array, and no issue number exists to key on yet.
-          <li key={i} className="flex items-center gap-2 rounded-md border border-edge p-2 text-sm">
-            <span className="shrink-0 tabular-nums text-xs text-ink-muted">#{i}</span>
-            <span className="truncate text-ink">{t.title ?? '(untitled)'}</span>
-            {t.dependsOn.length > 0 && (
-              <span className="ml-auto shrink-0 text-xs text-ink-muted">
-                after {t.dependsOn.map((d) => `#${d}`).join(', ')}
-              </span>
-            )}
-          </li>
-        ))}
-      </ul>
-      {accept.isError && (
-        <Banner
-          tone="danger"
-          title={extractMutationErrorMessage(accept.error, 'Could not materialize this plan')}
-        />
-      )}
-      {reject.isError && (
-        <Banner
-          tone="danger"
-          title={extractMutationErrorMessage(reject.error, 'Could not reject this proposal')}
-        />
-      )}
-      {/* The inbox's decision idiom (`inbox/ProposalDetail`): ghost Reject, then
-          the primary, both `lg` — the only size carrying a 44px touch target. */}
-      <div className="flex flex-wrap justify-end gap-2">
-        <Button type="button" variant="ghost" size="lg" onClick={() => reject.mutate(slug)} disabled={reject.isPending}>
-          Reject
-        </Button>
-        <Button type="button" size="lg" onClick={() => accept.mutate(slug)} disabled={accept.isPending}>
-          Accept
-        </Button>
-      </div>
-    </section>
+    <>
+      <section
+        aria-label="Materialize plan"
+        className="flex flex-col gap-3 rounded-md border border-edge bg-surface p-3"
+      >
+        <div className="flex flex-col gap-1">
+          <h2 className="text-sm font-semibold text-ink">Materialize plan</h2>
+          <p className="text-sm text-ink">{proposal.epicTitle ?? `Untitled ${EPIC.singular.toLowerCase()}`}</p>
+        </div>
+        {/* The session's stated reason — the one piece of evidence a human has
+            before an accept that writes to GitHub, so it reads before the list. */}
+        {proposal.rationale && <p className="text-sm text-ink-muted">{proposal.rationale}</p>}
+        <ul className="flex flex-col gap-1" aria-label="Proposed tasks">
+          {proposal.tasks.map((t, i) => (
+            // The INDEX is the identity here: `dependsOn` addresses tasks by
+            // their position in this array, and no issue number exists to key on
+            // yet.
+            <li key={i} className="flex items-center gap-2 rounded-md border border-edge p-2 text-sm">
+              <span className="shrink-0 tabular-nums text-xs text-ink-muted">Task {i + 1}</span>
+              <span className="truncate text-ink">{t.title ?? '(untitled)'}</span>
+              {t.dependsOn.length > 0 && (
+                <span className="ml-auto shrink-0 text-xs text-ink-muted">
+                  after {t.dependsOn.length > 1 ? 'tasks' : 'task'} {t.dependsOn.map((d) => d + 1).join(', ')}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+        {accept.isError && (
+          <Banner
+            tone="danger"
+            title={extractMutationErrorMessage(accept.error, 'Could not materialize this plan')}
+          />
+        )}
+        {reject.isError && (
+          <Banner
+            tone="danger"
+            title={extractMutationErrorMessage(reject.error, 'Could not reject this proposal')}
+          />
+        )}
+        {/* The inbox's decision idiom (`inbox/ProposalDetail`): ghost Reject,
+            then the primary, both `lg` — the only size carrying a 44px touch
+            target. */}
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button type="button" variant="ghost" size="lg" onClick={() => reject.mutate(slug)} disabled={busy}>
+            Reject
+          </Button>
+          <Button type="button" size="lg" onClick={() => setConfirming(true)} disabled={busy}>
+            Accept
+          </Button>
+        </div>
+      </section>
+      {/* `Dialog` portals to the overlay root, so this sits beside the card in
+          the tree without ever being part of the tab panel's scroll. */}
+      <Dialog
+        open={confirming}
+        onClose={() => setConfirming(false)}
+        title={`Materialize this ${INITIATIVE.singular.toLowerCase()}'s plan?`}
+        size="sm"
+        description={
+          `This creates the ${EPIC.singular.toLowerCase()} and ${tasks} sub-issue${tasks === 1 ? '' : 's'} `
+          + `on GitHub. It cannot be undone from ${BRAND_NAME}.`
+        }
+      >
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setConfirming(false)}>Cancel</Button>
+          {/* `lg` is the only size with a 44px touch target — the house rule for
+              a primary confirm in a dialog footer (same as Advance). */}
+          <Button
+            size="lg"
+            aria-label="Confirm materialize"
+            loading={accept.isPending}
+            onClick={() => accept.mutate(slug, { onSettled: () => setConfirming(false) })}
+          >
+            Materialize
+          </Button>
+        </div>
+      </Dialog>
+    </>
   )
 }
 

@@ -4,7 +4,7 @@
  * Mirrors the `api/automations.ts` shape: plain fetchers here, React Query hooks
  * in `api/hooks.ts`. Field names are the server's camelCase JSON verbatim.
  */
-import { api, ApiRequestError } from './client'
+import { api, apiErrorCode, ApiRequestError } from './client'
 
 /** Lifecycle stages, in order — mirrors server INITIATIVE_STAGES. Single source
  *  of truth on the web side; the board renders the track from this. */
@@ -175,16 +175,21 @@ export interface MaterializationApplied {
  * The initiative's latest proposal, whatever its status, or `null` when it has
  * never been decomposed.
  *
- * The 404 is NOT a failure: most initiatives have no proposal, and the endpoint
- * says exactly that (`{"error": "no_proposal"}`). Only that one status is
- * swallowed — anything else stays an error, so a real outage is never rendered
- * as "nothing to decide".
+ * One 404 is NOT a failure: most initiatives have no proposal, and the endpoint
+ * says exactly that with `no_proposal`. The route answers 404 for TWO different
+ * things, though — the other is `not_found`, meaning the initiative itself does
+ * not exist — so the code is matched rather than the status. A missing
+ * initiative must still reach the page as an error; rendering it as "nothing to
+ * decide" would put a calm, empty Track tab on a dead address.
+ *
+ * `apiErrorCode` is the one decoder for that code (it already knows the server
+ * spells it `detail.error` under FastAPI's envelope).
  */
 export function fetchMaterialization(slug: string): Promise<MaterializationProposal | null> {
   return api
     .get<MaterializationProposal>(`/sdlc/initiatives/${encodeURIComponent(slug)}/materialization`)
     .catch((e: unknown) => {
-      if (e instanceof ApiRequestError && e.status === 404) return null
+      if (e instanceof ApiRequestError && e.status === 404 && apiErrorCode(e) === 'no_proposal') return null
       throw e
     })
 }
