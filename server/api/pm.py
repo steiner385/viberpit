@@ -33,7 +33,7 @@ from server.db.models import (
 from server.pm.desired_state import STATUS_READY
 from server.pm.mirror_store import deps_in_repos
 from server.pm.queue import MIN_STATUS_OPTIONS, rank
-from server.pm.queue_store import load_queue_rows
+from server.pm.queue_store import load_queue_rows, runner_row_maps
 from server.pm.repo_project import owning_projects_by_repo
 from server.pm.score import RICE_FIELDS, validate_rice
 from server.pm.sync_request import request_project_sync
@@ -487,14 +487,16 @@ async def queue(
     the backlog runner uses — "what you see is what agents will do next". ``body`` is
     deliberately omitted from the payload (large, UI/runner don't need it here).
 
-    This endpoint does NOT yet fully match the backlog runner's composition — PR C1
-    (#990) unifies them. Until then:
-    - No ``claimed_refs`` are passed to ``load_queue_rows``, so issues the runner has
-      already claimed (but not yet assigned/started a session for) still appear here.
+    The runner's durable rows — its claims and its give-ups — ride the SAME
+    derivation the runner's own pool read uses (``runner_row_maps``), so a claimed
+    issue reads as ``claimed`` here and one waiting on a human as
+    ``needs_human_cooldown``, exactly as selection sees them.
+
+    Two knobs still differ from the runner's composition:
     - ``needs_human_retry_days`` uses ``queue.NEEDS_HUMAN_RETRY_DAYS_DEFAULT`` rather
       than the backlog runner's stored config.
-    - ``min_status`` and ``respect_dependencies`` come from query params here; in C1
-      they come from the runner's stored config instead.
+    - ``min_status`` and ``respect_dependencies`` come from query params here; the
+      runner reads them from its stored config.
     """
     if min_status not in MIN_STATUS_OPTIONS:
         raise HTTPException(
@@ -504,7 +506,13 @@ async def queue(
                                f"got {min_status!r}"})
 
     now = datetime.now(timezone.utc)
-    rows = await db.run_sync(lambda s: load_queue_rows(s, now=now))
+
+    def _rows(s):
+        claimed, needs_human_at = runner_row_maps(s)
+        return load_queue_rows(s, now=now, claimed_refs=claimed,
+                               needs_human_at=needs_human_at)
+
+    rows = await db.run_sync(_rows)
     entries, skipped = rank(
         rows, min_status=min_status, respect_dependencies=respect_dependencies, now=now)
 

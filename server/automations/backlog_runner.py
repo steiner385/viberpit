@@ -964,13 +964,18 @@ class BacklogRunnerLoop:
                 # Terminal — the row IS the needs-human handoff (Phase D), so it
                 # stays put until the retry window passes. Deleting it is what
                 # returns the issue to the pool: the queue's cooldown reads
-                # ``needs_human_at`` off this row, and nothing else does. 0 (or an
-                # unreadable stamp) = permanent handoff, never expired.
-                retry_days = int(config.get("needs_human_retry_days",
-                                            NEEDS_HUMAN_RETRY_DAYS_DEFAULT))
+                # ``needs_human_at`` off this row, and nothing else does. 0 =
+                # permanent handoff, never expired. An UNDATED (or unreadable)
+                # stamp expires immediately: the queue already treats it as no
+                # cooldown, and a row kept past that would park the issue in the
+                # card's needs-human gauge while it was being picked again.
+                raw_days = config.get("needs_human_retry_days")
+                retry_days = (NEEDS_HUMAN_RETRY_DAYS_DEFAULT if raw_days is None
+                              else max(0, int(raw_days)))
                 at = parse_iso_utc(st.get("needs_human_at"))
-                if (retry_days > 0 and at is not None
-                        and self._wall_clock() - at >= timedelta(days=retry_days)):
+                if retry_days > 0 and (
+                        at is None
+                        or self._wall_clock() - at >= timedelta(days=retry_days)):
                     await self._ctx.delete_target_state(target)
                     await self._ctx.emit(
                         "info", f"{target}: needs-human window passed — back in the pool",
@@ -990,8 +995,14 @@ class BacklogRunnerLoop:
         ``needs_human_retry_days`` has passed so the issue is retried (never, when 0).
 
         The row REPLACES the claim row — a target waiting on a human holds no claim
-        and no concurrency slot."""
-        await self._needs_human(target, reason)
+        and no concurrency slot.
+
+        ROW BEFORE ANNOUNCE, and the announce swallows its own failures: the
+        announce is a best-effort side channel (a ``gh`` comment), while the row is
+        the signal. Announcing first, unguarded, would let a GitHub hiccup abort
+        this into ``_sweep``'s per-target guard with the claim row still in place —
+        the target would sit claimed at max attempts, hold a concurrency slot and
+        re-emit ``gave_up`` on every sweep, forever."""
         await self._ctx.set_target_state(target, {
             "repo": st.get("repo"),
             "issues": st.get("issues") or [target],
@@ -999,6 +1010,11 @@ class BacklogRunnerLoop:
             "needs_human_at": self._wall_clock().isoformat(),
             "reason": reason,
         })
+        try:
+            await self._needs_human(target, reason)
+        except Exception:
+            log.warning("backlog_runner.needs_human_announce_failed target=%s", target,
+                        exc_info=True)
 
     async def _sweep_one(self, target: str, st: dict, config: dict,
                          gave_up_targets: set[str]) -> None:

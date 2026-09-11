@@ -130,6 +130,49 @@ def test_queue_endpoint_ranks_ready_and_skips_blocked():
         assert body["generatedAt"]
 
 
+def _seed_runner_row(c, target: str, state: dict) -> None:
+    """One durable backlog-runner target-state row, through the app's own loop."""
+    from server.db import db_session
+    from server.db.models import Automation, AutomationTargetState
+
+    async def _seed_async() -> None:
+        async with db_session() as db:
+            if await db.get(Automation, "backlog-runner") is None:
+                db.add(Automation(id="backlog-runner"))
+                await db.flush()
+            db.add(AutomationTargetState(automation_id="backlog-runner",
+                                         target=target, state=state))
+            await db.commit()
+
+    assert c.portal is not None
+    c.portal.call(_seed_async)
+
+
+def test_queue_endpoint_reads_the_runners_claims_and_give_ups():
+    """The operator's queue view is the runner's pool: an issue the runner holds is
+    ``claimed`` here too, and one it gave up on is cooling down — not quietly
+    ranked as if it were up for grabs (ruling D-R1)."""
+    from datetime import datetime, timezone
+    with _client() as c:
+        _seed_ready_and_blocked(c)
+        _seed_runner_row(c, "steiner385/cc-account-switcher#100",
+                         {"gave_up": True,
+                          "issues": ["steiner385/cc-account-switcher#100"],
+                          "needs_human_at": datetime.now(timezone.utc).isoformat(),
+                          "reason": "max attempts"})
+        _seed_runner_row(c, "steiner385/cc-account-switcher#101",
+                         {"claimed": True,
+                          "issues": ["steiner385/cc-account-switcher#101"]})
+
+        # ``respect_dependencies=false`` so #101 reports its CLAIM rather than the
+        # open dep it also has (the dep gate runs first).
+        body = c.get("/api/pm/queue?respect_dependencies=false",
+                     headers=IDENTITY_HEADERS).json()
+
+        assert body["entries"] == []
+        assert body["skipped"] == {"needs_human_cooldown": 1, "claimed": 1}
+
+
 def test_queue_endpoint_invalid_min_status_422():
     with _client() as c:
         resp = c.get("/api/pm/queue?min_status=Nope", headers=IDENTITY_HEADERS)

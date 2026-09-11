@@ -3,9 +3,10 @@ from datetime import datetime, timezone
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from server.db.models import (Base, GhProject, GhProjectItem, Project, ProjectRepo,
+from server.db.models import (Automation, AutomationTargetState, Base, GhProject,
+                              GhProjectItem, Project, ProjectRepo,
                               Session as DbSession, WorkItem, WorkItemDep)
-from server.pm.queue_store import load_queue_rows, parse_iso_utc
+from server.pm.queue_store import load_queue_rows, parse_iso_utc, runner_row_maps
 
 NOW = datetime(2026, 9, 4, tzinfo=timezone.utc)
 
@@ -104,6 +105,35 @@ def test_parse_iso_utc_is_the_one_row_timestamp_parser():
     assert parse_iso_utc(None) is None
     assert parse_iso_utc("") is None
     assert parse_iso_utc("not-a-date") is None
+
+
+def test_runner_row_maps_derives_claims_and_give_ups_from_the_runner_rows():
+    """The ONE derivation of the backlog runner's durable rows into queue inputs —
+    the runner's own pool read and ``GET /api/pm/queue`` both call it, so the
+    operator's view and what agents do next can never disagree."""
+    db = _db()
+    db.add_all([Automation(id="backlog-runner"), Automation(id="pr-doctor")])
+    at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+
+    def _state(target, state, automation_id="backlog-runner"):
+        db.add(AutomationTargetState(automation_id=automation_id, target=target,
+                                     state=state))
+
+    _state("o/r#1", {"claimed": True, "issues": ["o/r#1", "o/r#2"]})   # bundle claim
+    _state("o/r#3", {"claimed": True})                                # target IS the claim
+    _state("o/r#4", {"claimed": False})                               # not a claim
+    _state("o/r#5", {"gave_up": True, "issues": ["o/r#5", "o/r#6"],   # bundle give-up
+                     "needs_human_at": at.isoformat()})
+    _state("o/r#7", {"gave_up": True, "claimed": True,                # give-up wins over claim
+                     "needs_human_at": at.isoformat()})
+    _state("o/r#8", {"gave_up": True, "claimed": True})               # undated: neither map
+    _state("o/r#9", {"claimed": True}, automation_id="pr-doctor")     # another automation
+    db.commit()
+
+    claimed, needs_human_at = runner_row_maps(db)
+
+    assert claimed == frozenset({"o/r#1", "o/r#2", "o/r#3"})
+    assert needs_human_at == {"o/r#5": at, "o/r#6": at, "o/r#7": at}
 
 
 def test_load_queue_rows_threads_needs_human_at():

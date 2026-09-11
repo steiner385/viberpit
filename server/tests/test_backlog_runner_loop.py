@@ -56,7 +56,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
                heal_orphans_result=None,
                refresh_groups=None, spawn=None, close_out_result=None,
                credential_alerts=None, verify_ready=None, queue_tail=None,
-               wall_clock=None):
+               wall_clock=None, needs_human_raises=False):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .claims /
@@ -122,6 +122,8 @@ def build_loop(*, mode="auto", config=None, clock=None,
 
     async def needs_human(target, reason):
         rec.needs_humans.append((target, reason))
+        if needs_human_raises:
+            raise RuntimeError("gh comment failed (injected)")
 
     async def reconcile(claimed_refs, live_refs):
         rec.reconciles.append((list(claimed_refs), set(live_refs)))
@@ -481,6 +483,39 @@ def test_give_up_keeps_a_row_with_needs_human_at(tmp_path):
     asyncio.run(run())
 
 
+def test_give_up_row_is_stamped_even_when_the_announce_fails(tmp_path):
+    """The announce is a best-effort side channel (Task 3 makes it a real ``gh``
+    comment); the ROW is the signal. If the announce raises after the row were
+    written second, the sweep's per-target guard would swallow it and the target
+    would sit claimed at max attempts, holding a slot and re-emitting ``gave_up``
+    every sweep. Row first, announce guarded."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gu2.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        at = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+        loop, rec, ctx = build_loop(candidates=[], pr_status={},
+                                    wall_clock=lambda: at, needs_human_raises=True,
+                                    config=make_config(max_attempts=2))
+        await ctx.set_target_state("o/r#7", {
+            "session_id": "s1", "repo": "o/r", "issues": ["o/r#7"],
+            "claimed": True, "attempts": 1, "_ended": True})
+
+        await loop.tick()          # must not raise out of the sweep
+
+        st = await ctx.get_target_state("o/r#7")
+        assert st["gave_up"] is True and st["needs_human_at"] == at.isoformat()
+        assert not st.get("claimed")
+        assert len(rec.needs_humans) == 1
+        # Second sweep: the row is terminal, so no repeat give-up / announce.
+        await loop.tick()
+        assert len(rec.needs_humans) == 1
+        assert len(await ctx.list_events(kind="gave_up")) == 1
+
+    asyncio.run(run())
+
+
 def test_sweep_expires_gave_up_rows_after_retry_days(tmp_path):
     """The runner owns the cooldown's end: once ``needs_human_retry_days`` has
     passed it deletes the row, which is what returns the issue to the pool."""
@@ -514,6 +549,19 @@ def test_sweep_expires_gave_up_rows_after_retry_days(tmp_path):
                                     config=make_config(needs_human_retry_days=0))
         await loop2.tick()
         assert (await ctx2.get_target_state("o/r#8"))["gave_up"] is True
+
+        # An undated (or unreadable) stamp expires IMMEDIATELY while retrying is
+        # on: the queue already treats it as no cooldown, so a row the sweep kept
+        # would park the issue in the card's needs-human gauge forever while it
+        # was in fact being picked again.
+        await ctx.set_target_state("o/r#9", {"repo": "o/r", "issues": ["o/r#9"],
+                                             "gave_up": True,
+                                             "needs_human_at": "not-a-date"})
+        loop3, _, ctx3 = build_loop(candidates=[],
+                                    wall_clock=lambda: at,
+                                    config=make_config(needs_human_retry_days=7))
+        await loop3.tick()
+        assert await ctx3.get_target_state("o/r#9") == {}
 
     asyncio.run(run())
 

@@ -5027,30 +5027,21 @@ class SessionOrchestrator:
 
         from server.pm.desired_state import STATUS_READY
         from server.pm.queue import NEEDS_HUMAN_RETRY_DAYS_DEFAULT, rank, to_candidate
-        from server.pm.queue_store import load_queue_rows, parse_iso_utc
+        from server.pm.queue_store import load_queue_rows, runner_row_maps
 
-        states = await self._backlog_ctx.list_target_states()
-        # Two maps out of ONE read of the runner's durable rows. A bundle rides on
-        # the primary's row; a row written before bundling (or by the dispatch
-        # path) carries no ``issues``, and IS its own claim.
-        claimed: set[str] = set()
-        # A ``gave_up`` row is NOT a claim (its session is long gone) — it is the
-        # needs-human handoff itself (Phase D), which the queue reads as a
-        # cooldown. An undated or unreadable stamp is no cooldown at all: a row we
-        # cannot date must not park an issue forever.
-        needs_human_at: dict[str, datetime] = {}
-        for target, st in states.items():
-            refs = st.get("issues") or [target]
-            if st.get("gave_up"):
-                at = parse_iso_utc(st.get("needs_human_at"))
-                if at is not None:
-                    needs_human_at.update({ref: at for ref in refs})
-            elif st.get("claimed"):
-                claimed.update(refs)
         now = datetime.now(timezone.utc)
+
+        def _rows(s):
+            # The runner's claims and give-ups come from the SAME derivation
+            # ``GET /api/pm/queue`` uses (``runner_row_maps``), in the same session
+            # as the mirror read, so the operator's view cannot disagree with the
+            # pool selection draws from.
+            claimed, needs_human_at = runner_row_maps(s)
+            return load_queue_rows(s, now=now, claimed_refs=claimed,
+                                   needs_human_at=needs_human_at)
+
         async with db_session() as db:
-            rows = await db.run_sync(lambda s: load_queue_rows(
-                s, now=now, claimed_refs=claimed, needs_human_at=needs_human_at))
+            rows = await db.run_sync(_rows)
         # The queue spans every onboarded product; ``enabled_repos`` is still the
         # operator's scope switch (empty = all of them). Scoping happens BEFORE
         # ranking, not after: skip reasons are per-row, so an unscoped product's
