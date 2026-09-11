@@ -56,6 +56,8 @@
 /* --- Check Gantt (expanded panel, V4) --- */
 &.checks { list-style: none; margin: 0; padding: 6px 14px 10px; border-top: 1px solid var(--t-edge);
   font-size: 12px; }
+/* Inside a PR row's expanded panel the section already draws the divider. */
+.check-sections &.checks { border-top: none; }
 .g-row { display: grid; grid-template-columns: 170px 1fr 80px; gap: 8px; align-items: center;
   padding: 3px 0; font-size: 11px; }
 .g-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -201,6 +203,18 @@
 .car.building.failed .car-pct i { background: var(--t-danger); }
 .car-progress { font-size: 10px; color: var(--t-ink-muted); margin-top: 3px;
   font-variant-numeric: tabular-nums; }
+
+/* --- Legend swatches: the live chart classes at swatch size --------------
+   The legend renders REAL .node/.seg/.g-row/.car markup so it can never drift
+   from the board; these overrides shrink them to swatch proportions. They live
+   here, not on the legend, because the legend portals into #overlays — outside
+   any page wrapper — and only the chart scope reaches it. */
+&.legend-ex .node { width: auto; }
+.legend-track-segs .seg { flex: none; width: 26px; margin-top: 0; }
+&.legend-gantt { border-top: none; padding: 0; }
+&.legend-gantt .g-row { grid-template-columns: 90px 1fr 120px; }
+.queue-train.legend-train { margin-bottom: 4px; flex-wrap: wrap; overflow-x: visible; }
+.legend-train .car { min-width: 88px; }
 
 /* Phones (≤560px): nodes are flex-shrink:0 × 70px, so a long pipeline overflows.
    Narrow them and let the track scroll as a backstop. */

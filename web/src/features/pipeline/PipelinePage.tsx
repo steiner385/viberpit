@@ -17,10 +17,8 @@ import { Skeleton } from '@/ui/Skeleton'
 import { Tabs } from '@/ui/Tabs'
 import { useViewport } from '@/shell/useViewport'
 import { deliveryPath } from '@/features/delivery/deliveryNavState'
-// The legacy dashboard rules (PR rows, legend body) still live under
-// `.pipeline-legacy` until row 5's Task 4 converts them; the charts have their
-// own token-only sheet already.
-import '@/pipeline/plotroom.css'
+// The charts are the one allowlisted stylesheet (geometry, not palette); every
+// other pipeline rule is a token utility on its component.
 import '@/features/pipeline/charts/plotroom.css'
 import { laneJumpTarget } from './laneJump'
 import { useFocusedPipeline } from './useFocusedPipeline'
@@ -138,7 +136,7 @@ function Inner() {
             </div>
           )
           : (
-            <div className="pipeline-legacy flex min-h-0 flex-1 flex-col">
+            <div className="flex min-h-0 flex-1 flex-col">
               <PipelineView
                 state={state}
                 focusedRepo={focused}

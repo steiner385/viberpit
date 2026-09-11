@@ -101,7 +101,7 @@ function segment(prev: TrackNode, percent: number | null, key: string) {
   if (prev.status === 'active' && percent != null && percent > 0) {
     return (
       <i key={key} className="seg part"
-        style={{ background: `linear-gradient(90deg, var(--accent) ${percent}%, var(--border) ${percent}%)` }} />
+        style={{ background: `linear-gradient(90deg, var(--t-accent) ${percent}%, var(--t-edge) ${percent}%)` }} />
     );
   }
   return <i key={key} className="seg" />;

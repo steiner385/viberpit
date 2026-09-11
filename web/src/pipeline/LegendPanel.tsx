@@ -34,9 +34,9 @@ function ExampleNode({ status, glyph }: { status: string; glyph: string }) {
  *  static, as a swatch should. */
 function LegendRow({ example, children }: { example: ReactNode; children: ReactNode }) {
   return (
-    <div className="legend-row">
-      <span className="pipeline-chart legend-ex">{example}</span>
-      <span className="legend-text">{children}</span>
+    <div className="my-2 flex items-center gap-3">
+      <span className="pipeline-chart legend-ex flex min-w-8 shrink-0 items-center justify-center">{example}</span>
+      <span className="text-xs text-ink-muted [&_b]:font-semibold [&_b]:text-ink [&_code]:text-2xs [&_code]:text-ink">{children}</span>
     </div>
   );
 }
@@ -76,29 +76,29 @@ function ExampleBar({ kind, name, fillPct, time, band, tick, nameTitle }: {
 export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps) {
   return (
     <Sheet open={open} onClose={onClose} title="Legend" side="right" width={420} returnFocusRef={returnFocusRef}>
-      <div className="settings-body legend-panel">
+      <div className="space-y-5 px-4 pb-6 pt-3">
         {/* Delivery spine — the 5-state lane vocabulary (spec §16); the
               glyphs mirror the live rail rendering exactly. */}
-          <section className="settings-section">
-            <h3>Delivery spine</h3>
-            <p className="legend-caption">
+          <section className="space-y-2">
+            <h3 className="text-2xs font-semibold uppercase tracking-wider text-ink-muted">Delivery spine</h3>
+            <p className="text-2xs leading-relaxed text-ink-muted [&_b]:text-ink [&_code]:text-2xs [&_code]:text-ink">
               The lifecycle rail colors the <b>glyph</b> only; lane text stays in the
               default color. Worst lane wins the rollup pill at the top.
             </p>
-            <dl className="legend-dl">
+            <dl className="m-0">
               {Object.entries(LANE_STATE_DEFINITIONS).map(([key, def]) => (
-                <div className="legend-dl-row" key={key}>
+                <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink" key={key}>
                   <dt>{def.label}</dt>
                   <dd>{def.text}</dd>
                 </div>
               ))}
             </dl>
-            <p className="legend-caption">
+            <p className="text-2xs leading-relaxed text-ink-muted [&_b]:text-ink [&_code]:text-2xs [&_code]:text-ink">
               The rail has one lane per delivery stage — what each lane covers:
             </p>
-            <dl className="legend-dl">
+            <dl className="m-0">
               {Object.entries(LANE_DEFINITIONS).map(([key, def]) => (
-                <div className="legend-dl-row" key={key}>
+                <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink" key={key}>
                   <dt>{def.label}</dt>
                   <dd>{def.text}</dd>
                 </div>
@@ -107,8 +107,8 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
           </section>
 
           {/* (a) Pipeline track */}
-          <section className="settings-section">
-            <h3>Pipeline track</h3>
+          <section className="space-y-2">
+            <h3 className="text-2xs font-semibold uppercase tracking-wider text-ink-muted">Pipeline track</h3>
             <LegendRow example={<ExampleNode status="done" glyph="✓" />}>
               <b>Done</b> — stage complete
             </LegendRow>
@@ -126,10 +126,10 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
               unmergeable, or blocked behind a queue conflict (the node label names the reason)
             </LegendRow>
             <LegendRow example={
-              <span className="legend-track-segs">
+              <span className="legend-track-segs flex items-center">
                 <i className="seg done" />
                 <i className="seg part"
-                  style={{ background: 'linear-gradient(90deg, var(--accent) 60%, var(--border) 60%)' }} />
+                  style={{ background: 'linear-gradient(90deg, var(--t-accent) 60%, var(--t-edge) 60%)' }} />
                 <i className="seg" />
               </span>
             }>
@@ -139,11 +139,11 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
           </section>
 
           {/* (b) Row sub-line terms */}
-          <section className="settings-section">
-            <h3>Row sub-line terms</h3>
-            <dl className="legend-dl">
+          <section className="space-y-2">
+            <h3 className="text-2xs font-semibold uppercase tracking-wider text-ink-muted">Row sub-line terms</h3>
+            <dl className="m-0">
               {SUBLINE_TERMS.map(({ term, text }) => (
-                <div className="legend-dl-row" key={term}>
+                <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink" key={term}>
                   <dt>{term}</dt>
                   <dd>{text}</dd>
                 </div>
@@ -152,8 +152,8 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
           </section>
 
           {/* (c) Expanded job bars */}
-          <section className="settings-section">
-            <h3>Expanded job bars</h3>
+          <section className="space-y-2">
+            <h3 className="text-2xs font-semibold uppercase tracking-wider text-ink-muted">Expanded job bars</h3>
             <ul className="pipeline-chart checks gantt legend-gantt">
               <ExampleBar kind="g-done" name="passed" fillPct={70} time="4m ✓" />
               <ExampleBar kind="g-running" name="running" fillPct={45} time="2m / ~5m"
@@ -169,22 +169,22 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
               <ExampleBar kind="g-done g-advisory" name="advisory job" fillPct={50} time="2m ✓"
                 nameTitle="advisory — does not gate merging" />
             </ul>
-            <p className="legend-caption">
+            <p className="text-2xs leading-relaxed text-ink-muted [&_b]:text-ink [&_code]:text-2xs [&_code]:text-ink">
               Bar fill = elapsed time on a shared scale. Tinted <b>band</b> = the job&apos;s typical
               p10–p90 duration range; dark <b>tick</b> = its typical (p50) duration.
               Striped fill = waiting for a CI runner (amber once the wait exceeds 2× typical).
             </p>
-            <p className="legend-caption">
+            <p className="text-2xs leading-relaxed text-ink-muted [&_b]:text-ink [&_code]:text-2xs [&_code]:text-ink">
               <b>Required</b> job names render normally — a failure blocks merge.{' '}
-              <em style={{ color: 'var(--muted)' }}>Advisory</em> job names are italic and muted — they
+              <em className="text-ink-muted">Advisory</em> job names are italic and muted — they
               run but do not gate merging (hover for tooltip).
             </p>
-            <p className="legend-caption">
+            <p className="text-2xs leading-relaxed text-ink-muted [&_b]:text-ink [&_code]:text-2xs [&_code]:text-ink">
               <code>⧗ waiting for runner</code> — queued, no runner assigned yet ·{' '}
               <code>⊘ blocked on X</code> — waiting for upstream job X to finish ·{' '}
               <code>–</code> — skipped
             </p>
-            <p className="legend-caption">
+            <p className="text-2xs leading-relaxed text-ink-muted [&_b]:text-ink [&_code]:text-2xs [&_code]:text-ink">
               <code>⚐ flakes N%</code> — this failing check has failed-then-passed on the
               same commit in N% of its recent runs (7 days) — likely a flake; consider a
               re-run before debugging. The row stays red: a flake rate is a probability,
@@ -193,9 +193,9 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
           </section>
 
           {/* (d) Queue train */}
-          <section className="settings-section">
-            <h3>Queue train</h3>
-            <p className="legend-caption">One car per merge-queue grouping, front of the queue first.</p>
+          <section className="space-y-2">
+            <h3 className="text-2xs font-semibold uppercase tracking-wider text-ink-muted">Queue train</h3>
+            <p className="text-2xs leading-relaxed text-ink-muted [&_b]:text-ink [&_code]:text-2xs [&_code]:text-ink">One car per merge-queue grouping, front of the queue first.</p>
             <div className="pipeline-chart">
               <div className="queue-train legend-train">
                 <ExampleCar cls="building" header="▶ group" body="#101 #102" />
@@ -205,24 +205,24 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
                 <ExampleCar cls="queue-blocked" header="⊘ blocked behind conflict" body="#107" />
               </div>
             </div>
-            <dl className="legend-dl">
-              <div className="legend-dl-row">
+            <dl className="m-0">
+              <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink">
                 <dt>solid blue</dt>
                 <dd>merge group building — speculative merge running the full CI suite (shows % and ETA)</dd>
               </div>
-              <div className="legend-dl-row">
+              <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink">
                 <dt>solid red</dt>
                 <dd>that group&apos;s build failed — the queue re-batches without the culprit</dd>
               </div>
-              <div className="legend-dl-row">
+              <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink">
                 <dt>dashed gray</dt>
                 <dd>waiting — &ldquo;next batch&rdquo; starts building when a slot frees; &ldquo;then&rdquo; collapses the rest</dd>
               </div>
-              <div className="legend-dl-row">
+              <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink">
                 <dt>dashed red</dt>
                 <dd>unmergeable — conflicts with the base branch; needs a rebase, facing ejection</dd>
               </div>
-              <div className="legend-dl-row">
+              <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink">
                 <dt>dashed amber</dt>
                 <dd>blocked behind a conflicting entry ahead — not conflicting itself; revalidates once the culprit is ejected</dd>
               </div>
@@ -230,33 +230,33 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
           </section>
 
           {/* (e) Status tiles */}
-          <section className="settings-section">
-            <h3>Status tiles</h3>
-            <dl className="legend-dl">
+          <section className="space-y-2">
+            <h3 className="text-2xs font-semibold uppercase tracking-wider text-ink-muted">Status tiles</h3>
+            <dl className="m-0">
               {TILE_DEFINITIONS.map(({ bucket, label, tone, title }) => (
-                <div className="legend-dl-row" key={bucket}>
+                <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink" key={bucket}>
                   <dt>
                     {/* The swatch reads the SAME TILE_TONE the board's tiles do, so
                         the legend cannot describe a colour the board no longer uses. */}
-                    <span className={cn('legend-swatch', TONE_FILL[tone])} aria-hidden="true" /> {label}
+                    <span className={cn('legend-swatch inline-block size-3 shrink-0 rounded-sm', TONE_FILL[tone])} aria-hidden="true" /> {label}
                   </dt>
                   <dd>{title}</dd>
                 </div>
               ))}
             </dl>
-            <p className="legend-caption">Click a tile to filter the board to that bucket; click again to clear.</p>
+            <p className="text-2xs leading-relaxed text-ink-muted [&_b]:text-ink [&_code]:text-2xs [&_code]:text-ink">Click a tile to filter the board to that bucket; click again to clear.</p>
           </section>
 
           {/* (f) Settings sub-pages — the same per-page copy the Settings dialog
               shows on each section heading; the deep-dive lists all 5 together. */}
-          <section className="settings-section">
-            <h3>Settings</h3>
-            <p className="legend-caption">
+          <section className="space-y-2">
+            <h3 className="text-2xs font-semibold uppercase tracking-wider text-ink-muted">Settings</h3>
+            <p className="text-2xs leading-relaxed text-ink-muted [&_b]:text-ink [&_code]:text-2xs [&_code]:text-ink">
               What each section of the Settings dialog (⚙) controls:
             </p>
-            <dl className="legend-dl">
+            <dl className="m-0">
               {Object.entries(SETTINGS_DEFINITIONS).map(([key, def]) => (
-                <div className="legend-dl-row" key={key}>
+                <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink" key={key}>
                   <dt>{def.label}</dt>
                   <dd>{def.text}</dd>
                 </div>
@@ -266,11 +266,11 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
 
           {/* (g) Designer (protection map) — the tab had no legend coverage; this
               explains the matrix, its cell states, drift, overlays, and findings. */}
-          <section className="settings-section">
-            <h3>Designer (protection map)</h3>
-            <dl className="legend-dl">
+          <section className="space-y-2">
+            <h3 className="text-2xs font-semibold uppercase tracking-wider text-ink-muted">Designer (protection map)</h3>
+            <dl className="m-0">
               {Object.entries(DESIGNER_DEFINITIONS).map(([key, def]) => (
-                <div className="legend-dl-row" key={key}>
+                <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink" key={key}>
                   <dt>{def.label}</dt>
                   <dd>{def.text}</dd>
                 </div>
@@ -281,18 +281,18 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
           {/* (h) Metrics & ops figures — the same copy the in-place tooltips
               carry (issue #66); this is the browsable deep-dive, grouped by the
               Metrics tab's own sub-pages instead of one flat list. */}
-          <section className="settings-section">
-            <h3>Metrics &amp; ops figures</h3>
-            <p className="legend-caption">
+          <section className="space-y-2">
+            <h3 className="text-2xs font-semibold uppercase tracking-wider text-ink-muted">Metrics &amp; ops figures</h3>
+            <p className="text-2xs leading-relaxed text-ink-muted [&_b]:text-ink [&_code]:text-2xs [&_code]:text-ink">
               Every headline number also explains itself in place — hover it.
               The full vocabulary, by where it appears:
             </p>
             {METRIC_SECTION_GROUPS.map((group) => (
-              <div className="legend-subgroup" key={group.label}>
-                <h4>{group.label}</h4>
-                <dl className="legend-dl">
+              <div className="mt-2.5" key={group.label}>
+                <h4 className="mb-0.5 text-2xs font-semibold uppercase tracking-wider text-ink opacity-75">{group.label}</h4>
+                <dl className="m-0">
                   {group.keys.map((key) => (
-                    <div className="legend-dl-row" key={key}>
+                    <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink" key={key}>
                       <dt>{METRIC_DEFINITIONS[key].label}</dt>
                       <dd>{METRIC_DEFINITIONS[key].text}</dd>
                     </div>

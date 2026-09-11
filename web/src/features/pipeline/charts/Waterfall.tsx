@@ -101,15 +101,15 @@ export function Waterfall({ timeline }: { timeline: PrTimeline }) {
         <defs>
           {segs.map((s) => SEG_PATTERN[s.id] && (
             <pattern key={s.id} id={`${uid}-${s.id}`} patternUnits="userSpaceOnUse" width="8" height="8">
-              <path d={SEG_PATTERN[s.id]!} stroke="#fff" strokeOpacity="0.32" strokeWidth="1.4" />
+              <path d={SEG_PATTERN[s.id]!} stroke="var(--t-canvas)" strokeOpacity="0.32" strokeWidth="1.4" />
             </pattern>
           ))}
         </defs>
         {ticks.map((tk, i) => (
           <g key={`tick${i}`}>
             <line x1={x(t0 + tk.off)} x2={x(t0 + tk.off)} y1={PAD_T} y2={axisY}
-              stroke="var(--border)" strokeDasharray="3 4" />
-            <text x={x(t0 + tk.off)} y={axisY + FONT + 2} fontSize={FONT} fill="var(--muted)"
+              stroke="var(--t-edge)" strokeDasharray="3 4" />
+            <text x={x(t0 + tk.off)} y={axisY + FONT + 2} fontSize={FONT} fill="var(--t-ink-muted)"
               textAnchor={i === 0 ? 'start' : i === ticks.length - 1 ? 'end' : 'middle'}>
               {tk.text}
             </text>
@@ -123,7 +123,7 @@ export function Waterfall({ timeline }: { timeline: PrTimeline }) {
             <g key={s.id} data-testid={`waterfall-seg-${s.id}`}>
               <title>{`${s.label}: ${formatDur(durSecs)} (${localTime(s.startMs)} → ${localTime(s.endMs)}) — ${META.get(s.id)!.desc}`}</title>
               <text x={PAD_L - 8} y={y + ROW_H / 2 + FONT / 2 - 1} textAnchor="end"
-                fontSize={FONT} fill="var(--muted)">{s.label}</text>
+                fontSize={FONT} fill="var(--t-ink-muted)">{s.label}</text>
               <rect x={x(s.startMs)} y={y + (ROW_H - BAR_H) / 2} width={w} height={BAR_H}
                 rx={2} fill={s.color} />
               {SEG_PATTERN[s.id] && (
@@ -132,7 +132,7 @@ export function Waterfall({ timeline }: { timeline: PrTimeline }) {
               )}
               <text data-testid={`waterfall-dur-${s.id}`}
                 x={VB_W - 4} y={y + ROW_H / 2 + FONT / 2 - 1} textAnchor="end"
-                fontSize={FONT} fill="var(--text)">{formatDur(durSecs)}</text>
+                fontSize={FONT} fill="var(--t-ink)">{formatDur(durSecs)}</text>
             </g>
           );
         })}

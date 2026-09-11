@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 const here = join(__dirname)
@@ -42,14 +42,10 @@ describe('charts/plotroom.css — the one allowlisted stylesheet', () => {
     expect(indexCss.match(/--t-on-strong\s*:/g)).toHaveLength(1)
   })
 
-  /* Inherited from the deleted plotroomTokens.test.ts: src/pipeline/plotroom.css
-     is still written against plotroom's own alias names and only resolves
-     because index.css keeps them on `:root`. Task 4 deletes that sheet; until
-     then, dropping an alias silently unstyles the legacy dashboard. */
-  it('index.css still carries the legacy aliases the legacy sheet needs', () => {
-    for (const v of ['--bg', '--surface', '--text', '--muted', '--border',
-      '--accent', '--amber', '--done', '--fail', '--purple']) {
-      expect(indexCss, v).toMatch(new RegExp(v.replace(/-/g, '\\-') + ':\\s*var\\(--t-'))
-    }
+  /* The legacy plotroom sheet is gone (finish-line row 5, Task 4): every
+     non-chart rule became a token utility on its component. Its reappearance
+     would be a second stylesheet for one feature. */
+  it('the legacy src/pipeline/plotroom.css no longer exists', () => {
+    expect(existsSync(join(here, '..', '..', '..', 'pipeline', 'plotroom.css'))).toBe(false)
   })
 })

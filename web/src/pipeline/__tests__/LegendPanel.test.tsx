@@ -145,9 +145,10 @@ describe('LegendPanel', () => {
     const swatches = [...document.querySelectorAll('.legend-swatch')];
     // Each swatch is tinted by the bucket's TILE_TONE — the same map the board's
     // tiles read, so the legend can never describe a colour the board dropped.
-    expect(swatches.map((s) => s.className)).toEqual(
-      TILE_DEFINITIONS.map(({ bucket }) => `legend-swatch ${TONE_FILL[TILE_TONE[bucket]]}`),
-    );
+    swatches.forEach((s, i) => {
+      expect(s).toHaveClass('legend-swatch', TONE_FILL[TILE_TONE[TILE_DEFINITIONS[i]!.bucket]]);
+    });
+    expect(swatches).toHaveLength(TILE_DEFINITIONS.length);
     const dtLabels = swatches.map((s) => s.parentElement!.textContent!.trim());
     expect(dtLabels).toEqual(['CI running', 'In queue', 'Deploying', 'Failed', 'Ready', 'Merged / other']);
   });

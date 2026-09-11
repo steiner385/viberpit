@@ -59,7 +59,9 @@ function eta(secs: number | null): string | null {
 
 
 export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: controlledFilter, onFilter }: {
-  state: DashboardState | null;
+  /** Non-null: the page renders its own loading skeleton before the first
+   *  frame and only mounts the board once a frame exists. */
+  state: DashboardState;
   focusedRepo: string | null;
   onFixPr?: (sessionId: string, prNumber: number) => void;
   /** Controlled status filter: when provided (including null), the host owns the
@@ -77,9 +79,7 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
   // focused repo first (stable otherwise) — the workspace's "current pipeline" lead.
   // Memoized on [state, focusedRepo] so SSE frames that don't change these skip the sort.
   const repos = useMemo(
-    () => state
-      ? [...state.repos].sort((a, b) => (a.repo === focusedRepo ? -1 : b.repo === focusedRepo ? 1 : 0))
-      : [],
+    () => [...state.repos].sort((a, b) => (a.repo === focusedRepo ? -1 : b.repo === focusedRepo ? 1 : 0)),
     [state, focusedRepo],
   );
   // Tile counts reflect the focused repo so the strip answers "what's happening
@@ -89,7 +89,6 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
     [repos, focusedRepo],
   );
 
-  if (!state) return <div className="p-4 text-sm text-ink-muted" role="status">Loading pipeline…</div>;
   const toggle = (repo: string) => setCollapsed((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); writeCollapsedSet(n); return n; }); // eslint-disable-line @typescript-eslint/no-unused-expressions -- ternary-as-statement, verbatim from the plotroom source (port fidelity)
   const toggleCohort = (repo: string) => setOpenCohorts((p) => { const n = new Set(p); n.has(repo) ? n.delete(repo) : n.add(repo); return n; }); // eslint-disable-line @typescript-eslint/no-unused-expressions -- ternary-as-statement, verbatim from the plotroom source (port fidelity)
   const row = (pr: typeof allPrs[number], r: typeof repos[number]) => (

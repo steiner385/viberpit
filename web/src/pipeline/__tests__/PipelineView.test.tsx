@@ -55,11 +55,6 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
     expect(alphaHeader).toHaveAttribute('aria-expanded', 'false');
   });
 
-  it('shows a loading state when state is null', () => {
-    render(<PipelineView state={null} focusedRepo={null} />);
-    expect(screen.getByRole('status')).toBeInTheDocument();
-  });
-
   it('surfaces "what merges next" from the queue (roadmap 4.4)', () => {
     const st = state({ repos: [{ repo: 'acme/alpha', hasDeploy: false, prs: [pr('acme/alpha', 1, 'p')], queue: {
       groups: [{ oid: 'a', prNumbers: [42], percent: 80, etaSeconds: 120, failed: false }],

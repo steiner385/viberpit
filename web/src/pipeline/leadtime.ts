@@ -7,14 +7,14 @@ import type { LeadTimeSegmentId } from './types';
  *  tooltips (issue #66), so colors and copy always agree. `desc` names the
  *  two timeline waypoints the segment is measured between. */
 export const LEAD_TIME_SEGMENTS: { id: LeadTimeSegmentId; label: string; color: string; desc: string }[] = [
-  { id: 'toFirstGreen', label: 'to first green', color: 'var(--accent)',
+  { id: 'toFirstGreen', label: 'to first green', color: 'var(--t-accent)',
     desc: 'PR created → its checks first all green' },
-  { id: 'greenToEnqueued', label: 'green → enqueued', color: 'var(--amber)',
+  { id: 'greenToEnqueued', label: 'green → enqueued', color: 'var(--t-warning)',
     desc: 'checks green → entered the merge queue (review + arming lag)' },
-  { id: 'queue', label: 'queue', color: 'var(--purple)',
+  { id: 'queue', label: 'queue', color: 'var(--t-info)',
     desc: 'entered the merge queue → merged' },
-  { id: 'qaDeploy', label: 'QA deploy', color: 'var(--done)',
+  { id: 'qaDeploy', label: 'QA deploy', color: 'var(--t-success)',
     desc: 'merged → live on QA' },
-  { id: 'awaitingProd', label: 'awaiting prod', color: 'var(--fail)',
+  { id: 'awaitingProd', label: 'awaiting prod', color: 'var(--t-danger)',
     desc: 'live on QA → live on production (manual deploy lag)' },
 ];
