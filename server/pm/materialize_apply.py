@@ -231,6 +231,21 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
     pending = [m for m in mutations
                if m.key() not in already and m.key() not in parked]
     failures: list[str] = []
+    transient = ""
+
+    async def fail_batch_transiently(row_ids: list[str], reason: str) -> None:
+        """Every row in the batch failed for a reason that judges none of them.
+
+        A transport error, a 502, an abuse limit or a document-level GraphQL error
+        is copied onto every alias by ``parse_batch``. Recorded as ordinary
+        failures, two such blips would PARK the whole chain — real edges never
+        created and suppressed forever after. The marker keeps them visible in the
+        journal but out of ``failure_count`` (same rule as the reconciler)."""
+        for rid in row_ids:
+            await db.run_sync(lambda s: journal.mark_failed(
+                s, rid, journal.TRANSIENT_PREFIX + reason, now))
+        await db.commit()
+
     for group in chunk(pending):  # build_batch caps a document at 20 aliases
         row_ids = await db.run_sync(lambda s: journal.record_pending(
             s, group, batch_id=batch_id, now=now, dry_run=False))
@@ -241,13 +256,14 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
         try:
             payload = await mutate(owner, doc)
         except Exception as e:
-            error = f"{journal.TRANSIENT_PREFIX}{e}"
-            for rid in row_ids:
-                await db.run_sync(lambda s: journal.mark_failed(s, rid, error, now))
-            failures.append(str(e))
-            await db.commit()
+            transient = str(e)
+            await fail_batch_transiently(row_ids, transient)
             break
         result = parse_batch(payload, alias_map)
+        if result.failed_transiently():
+            transient = result.document_error or "the mutation document failed"
+            await fail_batch_transiently(row_ids, transient)
+            break
         for (alias, mutation), rid in zip(alias_map.items(), row_ids, strict=True):
             error = result.errors.get(alias) or ""
             if not error:
@@ -266,6 +282,10 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
                 failures.append(f"{alias}: {error}")
                 await db.run_sync(lambda s: journal.mark_failed(s, rid, error, now))
         await db.commit()
+    if transient:
+        # Retryable by construction: nothing was judged, so the same accept can be
+        # tapped again and will re-send exactly these edges.
+        return await fail("edges_transient", transient)
     if failures:
         return await fail("edges", "; ".join(failures)[:500])
 

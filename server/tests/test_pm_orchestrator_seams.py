@@ -941,8 +941,10 @@ async def test_spawn_materialize_after_a_reject_starts_a_new_attempt(db_env):
 
 @pytest.mark.asyncio
 async def test_spawn_materialize_never_chains_a_deduped_session(db_env):
-    """If ``spawn_session`` hands back a session this call did not create, the
-    chain must not attach: its transcript is somebody else's answer."""
+    """A finished session on the CURRENT attempt key (its ingest never wrote a
+    proposal, so the attempt never moved) is what spawn_session's dedupe would
+    hand back. Chaining onto it would re-harvest somebody else's transcript — and
+    the refusal must cost nothing: no launch plan, no account probe, no clone."""
     ini_id = await _seed_initiative(db_env)
     old = await _seed_materialize_session("complete", attempt=0)
     ctx = FakeAutomationContext(existing=SimpleNamespace(
@@ -953,6 +955,8 @@ async def test_spawn_materialize_never_chains_a_deduped_session(db_env):
         assert await orch._sdlc_spawn_materialize(ini) is None
         assert await orch._sdlc_spawn_materialize(ini) is None
     assert orch.scheduled == []
+    assert ctx.calls == []
+    assert ctx.plans == []  # not even the launch plan was paid for
     warns = [e for e in ctx.events
              if e[2].get("kind") == "materialization_spawn_deduped"]
     # Latched: the condition holds until the attempt moves, so it is said once.
@@ -1084,6 +1088,8 @@ async def test_materialize_apply_seam_emits_materialized(db_env):
     ev = next(e for e in orch._sdlc_synth_ctx.events if e[2].get("kind") == "materialized")
     assert ev[0] == "info"
     assert ev[2]["detail"]["tasks"] == 2
+    # A chain that dropped an edge must be visible in the feed, not only in the journal.
+    assert ev[2]["detail"]["parkedEdges"] == 0
     async with db_session() as db:
         from sqlalchemy import select
         ini = (await db.execute(select(Initiative).where(

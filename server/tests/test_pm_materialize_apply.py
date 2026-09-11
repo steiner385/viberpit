@@ -88,7 +88,11 @@ class FakeGh:
     def __init__(self, *, fail_titles: tuple[str, ...] = (),
                  fail_edges: tuple[str, ...] = (),
                  fail_pairs: tuple[tuple[str, str], ...] = (),
+                 fail_document: str = "",
                  repo_id: str | None = "R_repo"):
+        #: A document-level GraphQL error (502, abuse limit): no `path`, so it
+        #: judges no single alias — parse_batch copies it onto all of them.
+        self.fail_document = fail_document
         self.fail_titles = fail_titles
         #: Aliases to fail, for a single-shot batch. ``fail_pairs`` names the edge
         #: by its (issue, blocker) node ids instead — the alias of a given edge
@@ -119,6 +123,8 @@ class FakeGh:
                 "id": f"I_{self._n}", "number": n,
                 "url": f"https://github.com/o/r/issues/{n}"}}}}
         if "addBlockedBy" in doc:
+            if self.fail_document:
+                return {"data": None, "errors": [{"message": self.fail_document}]}
             entries = re.findall(
                 r'(m\d+): addBlockedBy\(input: \{issueId: "([^"]+)", '
                 r'blockingIssueId: "([^"]+)"\}', doc)
@@ -475,3 +481,40 @@ async def test_a_parked_edge_is_not_re_sent(db_env):
     assert out["ok"] is True
     assert gh3.edge_docs == []
     assert out["parkedEdges"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_document_level_edge_failure_is_transient_not_parked(db_env):
+    """A 502 / abuse limit fails every alias at once and judges none of them.
+    Counting those as own-merits failures would PARK the whole chain on the second
+    blip — real edges never created and suppressed on every future reconcile."""
+    from server.pm.journal import TRANSIENT_PREFIX, state_of
+    _, prop_id = await _seed(db_env)
+    for _ in range(2):  # two consecutive blips
+        out = await _apply(prop_id, FakeGh(fail_document="502 Bad Gateway"))
+        assert out["ok"] is False
+        assert out["step"] == "edges_transient"
+        assert "502" in out["error"]
+
+    edges = [r for r in await _journal() if r.field == "add_blocked_by"]
+    assert len(edges) == 4  # both edges, twice
+    assert {state_of(r) for r in edges} == {"failed"}  # nothing parked
+    assert all((r.error or "").startswith(TRANSIENT_PREFIX) for r in edges)
+    async with db_session() as db:
+        from server.pm import journal as _j
+        keys = {r.mutation_id for r in edges}
+        parked = await db.run_sync(
+            lambda s: {k for k in keys if _j.is_parked(s, k)})
+        assert parked == set()
+        # …and the blips left no failure "on the merits" to park against later.
+        counts = await db.run_sync(
+            lambda s: {_j.failure_count(s, k) for k in keys})
+        assert counts == {0}
+
+    gh = FakeGh()
+    out = await _apply(prop_id, gh)
+    assert out["ok"] is True
+    assert out["parkedEdges"] == 0
+    applied = [r for r in await _journal()
+               if r.field == "add_blocked_by" and state_of(r) == "applied"]
+    assert len(applied) == 2

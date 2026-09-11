@@ -7381,13 +7381,32 @@ class SessionOrchestrator:
             attempt = await self._sdlc_materialization_attempts(
                 db, str(ini.get("id") or ""))
         origin_ref = f"{slug}:materialize:{attempt}"
-        prior_id = await self._sdlc_session_id_for(origin_ref, live_only=True)
-        if prior_id is not None:
+        # Both no-op cases up front, before the account probe and the clone: a
+        # refusal must cost nothing, and BOTH conditions persist across ticks.
+        prior = await self._sdlc_dedupe_session_for(origin_ref)
+        if prior is not None:
+            prior_id, prior_status = prior
+            from server.pm.desired_state import (
+                ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES)
+            if prior_status in (ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES):
+                return None  # still decomposing (C4-R14) — a silent no-op
+            # Finished, but still what spawn_session's dedupe would hand back, and
+            # the attempt number has not moved (its ingest never wrote a proposal).
+            # Chaining onto it would re-harvest a transcript this tick did not
+            # produce (C4-R15). Latched: the condition holds until the attempt
+            # moves, so an unlatched emit would repeat on every tick forever.
+            seen: set[str] | None = getattr(self, "_materialize_deduped_keys", None)
+            if seen is None:
+                seen = self._materialize_deduped_keys = set()
+            if origin_ref not in seen:
+                seen.add(origin_ref)
+                await self._sdlc_emit(
+                    "warn", f"{slug}: the decompose session {prior_id} for this "
+                            "attempt has finished without a proposal — not "
+                            "re-running it; review that session",
+                    kind="materialization_spawn_deduped", target=slug,
+                    session_id=prior_id)
             return None
-        # Any session already on this key (settled but not ended — e.g. `complete`)
-        # would be handed back by spawn_session's dedupe; remember it so the chain
-        # is never attached to a transcript this call did not produce.
-        prior_id = await self._sdlc_session_id_for(origin_ref, live_only=False)
         plan = await self._sdlc_synth_ctx.launch_plan_or_refuse(origin_ref)
         if plan is None:
             return None
@@ -7465,27 +7484,10 @@ class SessionOrchestrator:
         )
         if rec is None:
             return None
-        # Only chain onto a session THIS call created. Identity, not status, is the
-        # test: a fresh record's status is "idle", which is itself in
-        # ``_CHAINED_SESSION_SETTLED``, so a status check would refuse every real
-        # spawn. Re-ingesting a session we did not create is the C4-R15 bug —
-        # a stale transcript becomes a byte-identical "new" proposal.
-        if prior_id is not None and getattr(rec, "id", None) == prior_id:
-            # Latched per key, like the unreadable-plan warn: the condition holds
-            # until the attempt number moves, so an unlatched emit would repeat on
-            # every tick forever (e.g. a decompose whose ingest failed, leaving a
-            # finished session and no proposal to bump the attempt).
-            seen: set[str] | None = getattr(self, "_materialize_deduped_keys", None)
-            if seen is None:
-                seen = self._materialize_deduped_keys = set()
-            if origin_ref not in seen:
-                seen.add(origin_ref)
-                await self._sdlc_emit(
-                    "warn", f"{slug}: decompose spawn was deduped onto the existing "
-                            f"session {prior_id} — not re-ingesting it",
-                    kind="materialization_spawn_deduped", target=slug,
-                    session_id=prior_id)
-            return None
+        # No post-spawn identity guard: ``_sdlc_dedupe_session_for`` above runs the
+        # SAME query ``spawn_session``'s find-or-create does (origin + key + not
+        # ended), so reaching this line means the dedupe found nothing and ``rec``
+        # is this call's own session. A second check here would be dead code.
         # Harvest wiring: without the chain the session finishes and its JSON is
         # never read (the bug the classify chain was added for).
         self._spawn(self._sdlc_materialize_chain_ingest(rec.id, slug),
@@ -7515,36 +7517,27 @@ class SessionOrchestrator:
                                   session_id=session_id)
             return 0
 
-    async def _sdlc_session_id_for(self, origin_ref: str, *,
-                                   live_only: bool) -> str | None:
-        """Id of this automation's session on *origin_ref*, or None.
+    async def _sdlc_dedupe_session_for(self, origin_ref: str) -> tuple[str, str] | None:
+        """``(id, status)`` of the session ``spawn_session`` would hand back for
+        *origin_ref*, or None — deliberately the SAME query its find-or-create
+        runs (this automation's origin, the key, and not ended).
 
-        ``live_only`` is the C4-R14 gate: a session that still HOLDS the work,
-        deliberately NOT ``AutomationContext._existing_session``'s "not ended"
-        rule. A decompose session that reached ``complete`` — including one whose
-        proposal a human then rejected — no longer holds the plan, and gating on
-        it would mean a rejected proposal could never be decomposed again. The
-        live set is the app's ONE definition of "a session holds this"
-        (``pm/desired_state.py``, the same sets that drive In progress / Needs
-        human on the board).
-
-        ``live_only=False`` answers the other question the spawn site has: is
-        there ANY session on this key that ``spawn_session``'s find-or-create
-        could hand back instead of spawning (C4-R15)?"""
+        The caller splits it two ways. A status in the live set (``desired_state``,
+        the app's one definition of "a session holds this") means the decompose is
+        still running and the tick is a silent no-op — C4-R14, deliberately NOT
+        ``_existing_session``'s "not ended" rule, which would let a REJECTED
+        proposal's ``complete`` session block every future decompose. Any other
+        status means the dedupe WOULD return a finished session for an attempt
+        that never produced a proposal, which must not be re-chained (C4-R15)."""
         from sqlalchemy import select
         from server.db.models import INACTIVE_SESSION_STATUSES, Session as DbSession
-        from server.pm.desired_state import (
-            ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES)
-        stmt = select(DbSession.id).where(
-            DbSession.origin == self._sdlc_synth_ctx.automation_id,
-            DbSession.origin_ref == origin_ref)
-        if live_only:
-            stmt = stmt.where(DbSession.status.in_(
-                ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES))
-        else:  # exactly what spawn_session's dedupe would find
-            stmt = stmt.where(DbSession.status.not_in(INACTIVE_SESSION_STATUSES))
         async with db_session() as db:
-            return (await db.execute(stmt)).scalars().first()
+            row = (await db.execute(
+                select(DbSession.id, DbSession.status).where(
+                    DbSession.origin == self._sdlc_synth_ctx.automation_id,
+                    DbSession.origin_ref == origin_ref,
+                    DbSession.status.not_in(INACTIVE_SESSION_STATUSES)))).first()
+        return (str(row[0]), str(row[1] or "")) if row is not None else None
 
     async def _sdlc_materialize_apply(self, proposal_id: str) -> dict:
         """Apply an accepted MaterializationProposal (spec 003 §7b, human gate).
@@ -7574,8 +7567,11 @@ class SessionOrchestrator:
                 "info", f"materialized {slug}: epic #{epic} with "
                         f"{result.get('tasks')} tasks",
                 kind="materialized", target=slug,
+                # parkedEdges is part of the outcome, not a detail: a chain with a
+                # dropped edge looks identical on the board otherwise.
                 detail={"epic": epic, "tasks": result.get("tasks"),
-                        "edges": result.get("edges")})
+                        "edges": result.get("edges"),
+                        "parkedEdges": result.get("parkedEdges")})
         else:
             await self._sdlc_emit(
                 "warn", f"could not materialize {slug}: {result.get('error')}",
