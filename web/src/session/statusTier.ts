@@ -28,7 +28,7 @@ const NEEDS_YOU = 'text-warning'
 const ERROR = 'text-danger'
 const BUSY = 'text-success'
 const CALM = 'text-ink-muted'
-const SLATE = 'text-slate-500 dark:text-slate-400'
+const SLATE = 'text-ink-muted'
 
 // A daemon not confirmed alive within the truth bound (spec 002 FR-104): a
 // "Working…" pulse and a "Ready"/"Your turn" affordance are equally promises it
