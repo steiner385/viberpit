@@ -457,3 +457,17 @@ def test_dashboard_state_emits_timeline_for_merged_only():
     assert by_num[7]["stage"]["stage"] == "awaiting-prod"
     # Open PR stays timeline None even though a dict was passed for it.
     assert by_num[8]["timeline"] is None
+
+
+def test_dashboard_state_emits_lane_health_only_for_repos_the_controller_vouches_for():
+    prs = {"o/r": [PipelinePr(pr=_pr(number=1))],
+           "o/other": [PipelinePr(pr=_pr(number=2, repo="o/other"))]}
+    ctx = {"o/r": {"main": "amber", "tipSha": "5c8056c0", "tipCi": "pending"}}
+    st = dashboard_state(prs, {}, {}, {}, generated_at="x", lane_health_ctx=ctx)
+    by_repo = {r["repo"]: r for r in st["repos"]}
+    assert by_repo["o/r"]["laneHealth"] == ctx["o/r"]
+    # No verdict for a repo → no laneHealth key at all (the lane stays honestly blind).
+    assert "laneHealth" not in by_repo["o/other"]
+    # Backward compatible: callers that pass no ctx get frames without the key.
+    st2 = dashboard_state(prs, {}, {}, {}, generated_at="x")
+    assert all("laneHealth" not in r for r in st2["repos"])

@@ -7,7 +7,6 @@ import-time regressions in the orchestrator and confirms the seams are bound.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 import tempfile
@@ -68,7 +67,11 @@ def test_sdlc_list_initiatives_empty_on_fresh_db():
         app = create_app(orchestrator=orch)
         client = TestClient(app, raise_server_exceptions=False)
         with client:  # lifespan runs init_db → the initiative table exists
-            result = asyncio.run(orch._sdlc_list_initiatives())
+            # On the lifespan's loop, not a fresh asyncio.run(): init_db bound the
+            # engine's connection pool to that loop, and a pooled connection used
+            # from another loop fails with "bound to a different event loop"
+            # (flaked on PR #1549's CI shard).
+            result = client.portal.call(orch._sdlc_list_initiatives)
     assert result == []
 
 
@@ -93,7 +96,7 @@ def test_sdlc_list_initiatives_projects_the_epic_pointer():
         orch = _make_orch()
         app = create_app(orchestrator=orch)
         client = TestClient(app, raise_server_exceptions=False)
-        with client:  # lifespan runs init_db
-            rows = asyncio.run(_seed_and_list(orch))
+        with client:  # lifespan runs init_db; same loop for the pool (see above)
+            rows = client.portal.call(_seed_and_list, orch)
     assert [(r["slug"], r["epic_repo"], r["epic_number"]) for r in rows] == \
         [("dark-mode", "o/r", 42)]

@@ -1106,7 +1106,6 @@ def test_onboarding_view_carries_the_map_pr_search_link():
 
 def test_advance_live_transitions_state():
     """advance-live: 200 from map_merged or classifying → live; 409 otherwise."""
-    import asyncio
     from server.db import db_session
     from sqlalchemy import select
     from server.db.models import Project
@@ -1123,7 +1122,8 @@ def test_advance_live_transitions_state():
                 p = (await db.execute(select(Project).where(
                     Project.slug == "ccswitch"))).scalar_one()
                 p.onboarding_state = state
-        asyncio.run(_set("classifying"))
+        assert c.portal is not None
+        c.portal.call(_set, "classifying")
 
         r = c.post("/api/pm/projects/ccswitch/advance-live", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
@@ -1134,7 +1134,7 @@ def test_advance_live_transitions_state():
                 p = (await db.execute(select(Project).where(
                     Project.slug == "ccswitch"))).scalar_one()
                 assert p.onboarding_state == "live"
-        asyncio.run(_check())
+        c.portal.call(_check)
 
         # live is absorbing: a second tap is a 409, not a silent no-op
         r = c.post("/api/pm/projects/ccswitch/advance-live", headers=IDENTITY_HEADERS)

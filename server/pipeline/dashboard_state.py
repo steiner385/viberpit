@@ -274,10 +274,12 @@ def dashboard_state(
     deploy_ctx: dict[str, dict] | None = None,
     timeline_ctx: dict[str, dict[int, dict]] | None = None,
     workflow_impact_ctx: dict[str, dict[int, dict]] | None = None,
+    lane_health_ctx: dict[str, dict] | None = None,
 ) -> dict:
     deploy_ctx = deploy_ctx or {}
     timeline_ctx = timeline_ctx or {}
     workflow_impact_ctx = workflow_impact_ctx or {}
+    lane_health_ctx = lane_health_ctx or {}
     repos = []
     for repo in sorted(prs_by_repo):
         entries = queues.get(repo, [])
@@ -331,6 +333,12 @@ def dashboard_state(
         }
         if repo_deploy is not None:
             entry["deploy"] = repo_deploy
+        # Main-lane verdict (server/pipeline/lane_health.py): only for the repo the
+        # deploy controller vouches for; every other repo omits the key so the
+        # lane reads honestly blind for it rather than a fabricated green.
+        lane_health = lane_health_ctx.get(repo)
+        if lane_health is not None:
+            entry["laneHealth"] = lane_health
         # Per-repo qa/prod/admin backlog from GitHub-Deployments data (SPEC —
         # flat 3-way). Independent of deploy-config: derived from the merged PRs'
         # deployed_envs already in this frame. Absent when the repo has no

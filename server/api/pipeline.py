@@ -13,6 +13,7 @@ import asyncio
 import inspect
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -20,9 +21,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from server.auth.middleware import current_identity
+from server.deploy.client import DeployControllerUnavailable
 from server.github import ci_issues
 from server.pipeline.dashboard_state import dashboard_state
 from server.pipeline.deploy_status import compute_repo_deploy
+from server.pipeline.lane_health import lane_health_ctx
 from server.pipeline.group_history import (
     count_group_ejects,
     count_group_runs,
@@ -111,7 +114,41 @@ async def list_stage_models(
     return {repo: m.to_dict() for repo, m in models.items()}
 
 
-async def _build_state(orch) -> dict:
+DeployStatusFn = Callable[[], Awaitable[dict]]
+
+
+def deploy_status_fn_for(app) -> DeployStatusFn:
+    """The frame builder's read of the deploy controller: ``/status`` over the app's
+    one client (``server.api.deploy.deploy_client_for``), resolved per call so a
+    client stubbed onto ``app.state`` after construction is honoured."""
+    from server.api.deploy import deploy_client_for
+
+    async def fetch() -> dict:
+        return await deploy_client_for(app).get_status()
+
+    return fetch
+
+
+async def _lane_health_ctx(deploy_status_fn: DeployStatusFn | None) -> dict[str, dict]:
+    """Per-repo ``laneHealth`` from the deploy controller's status, or ``{}``.
+
+    The controller is optional (runner hosts and tests have none) and its socket can
+    blip mid-deploy; either way the frame must still build, with the main lane
+    honestly blind rather than the whole Pipeline failing.
+    """
+    if deploy_status_fn is None:
+        return {}
+    try:
+        status = await deploy_status_fn()
+    except DeployControllerUnavailable:
+        return {}
+    except Exception:
+        log.warning("deploy status unreadable — main lane stays blind", exc_info=True)
+        return {}
+    return lane_health_ctx(status if isinstance(status, dict) else None)
+
+
+async def _build_state(orch, deploy_status_fn: DeployStatusFn | None = None) -> dict:
     prs = await orch.all_prs()
     trains = await orch.all_merge_trains()
     queues = await orch.latest_queue_entries()
@@ -127,6 +164,7 @@ async def _build_state(orch) -> dict:
     sim_ctx = await _sim_ctx(list(prs_by_repo))
     deploy_ctx, timeline_ctx = await _deploy_ctx(orch, prs_by_repo)
     workflow_impact_ctx = await _workflow_impact_ctx(prs_by_repo)
+    lane_health = await _lane_health_ctx(deploy_status_fn)
     return dashboard_state(
         prs_by_repo, queues, trains, has_deploy,
         generated_at=datetime.now(timezone.utc).isoformat(),
@@ -134,6 +172,7 @@ async def _build_state(orch) -> dict:
         deploy_ctx=deploy_ctx,
         timeline_ctx=timeline_ctx,
         workflow_impact_ctx=workflow_impact_ctx,
+        lane_health_ctx=lane_health,
     )
 
 
@@ -286,7 +325,8 @@ async def pipeline_snapshot(
         if state is None:
             state = await poller.build_now()
         return state
-    return await _build_state(request.app.state.sessions)
+    return await _build_state(request.app.state.sessions,
+                              deploy_status_fn=deploy_status_fn_for(request.app))
 
 
 @repos_router.get("/events")
@@ -334,7 +374,8 @@ async def pipeline_events(
             if await request.is_disconnected():
                 return
             try:
-                state = await _build_state(orch)
+                state = await _build_state(
+                    orch, deploy_status_fn=deploy_status_fn_for(request.app))
             except Exception:                 # carry-forward (b): one bad frame must
                 log.exception("pipeline SSE frame build failed")  # not kill the feed
                 await asyncio.sleep(_EVENTS_INTERVAL_S)

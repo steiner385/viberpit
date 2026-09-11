@@ -5,6 +5,7 @@ import time
 from typing import Callable
 
 from server.deploy.steps import err_reason
+from server.github.remote_url import slug_from_remote_url
 
 log = logging.getLogger("server.deploy.git")
 
@@ -30,6 +31,12 @@ def remote_sha(repo: str, ref: str = "origin/master", run: Run = subprocess.run)
 
 def short_sha(repo: str, sha: str, run: Run = subprocess.run) -> str:
     return _out(repo, "rev-parse", "--short", sha, run=run)
+
+
+def origin_slug(repo: str, run: Run = subprocess.run) -> str:
+    """``owner/name`` of the checkout's ``origin`` remote. Raises when there is no
+    origin or its URL is not a recognisable GitHub remote."""
+    return slug_from_remote_url(_out(repo, "config", "--get", "remote.origin.url", run=run))
 
 
 def is_ancestor(repo: str, ancestor: str, descendant: str, run: Run = subprocess.run) -> bool:

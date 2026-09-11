@@ -187,7 +187,12 @@ export interface Lane extends LaneView {
 export interface DashboardState {
   generatedAt: string; staleSince: string | null;
   repos: { repo: string; hasDeploy: boolean; prs: PrView[]; queue: RepoQueueView | null;
-    laneHealth?: { main: LaneStatus; lastGreenSha?: string | null; lastGreenAt?: string | null; mainSeries?: { ok: boolean | null }[] };
+    /** Server-vouched lane facts (server/pipeline/lane_health.py). `main` is the deploy
+     *  controller's CI verdict for the default-branch tip — the same reading the deploy
+     *  banner shows — with the tip sha + raw verdict (ci_verdict vocabulary) so the lane
+     *  can name what it is watching. Absent for repos no controller watches. */
+    laneHealth?: { main: LaneStatus; tipSha?: string | null; tipCi?: string | null;
+      lastGreenSha?: string | null; lastGreenAt?: string | null; mainSeries?: { ok: boolean | null }[] };
     /** Advisory Deploy-lane snapshot (Spec 2): per-env live commit sha (from
      *  /health) + awaiting-QA/awaiting-prod drift. Absent for repos with no
      *  deploy config. Mirror of server estimator/deploy-status.ts. */
