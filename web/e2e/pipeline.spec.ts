@@ -17,13 +17,39 @@ import { test, expect, type Page } from '@playwright/test'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
-/** Two tracked repos, no PRs: enough for the strip, the band, the tabs and the
- *  per-repo sections; PR rows have their own vitest coverage. */
+/** One check row as the server's `check_view` emits it. */
+const check = (name: string, over: Record<string, unknown> = {}) => ({
+  name, status: 'COMPLETED', conclusion: 'SUCCESS', isRequired: true, workflowName: 'CI',
+  elapsedSeconds: 240, expectedSeconds: 240, url: null, expectedLowSeconds: 180, expectedHighSeconds: 420,
+  waitKind: null, blockedOn: null, waitingSeconds: null, expectedRunnerWaitSeconds: null,
+  flakeRatePct: null, likelyFlake: false, regressed: false, regression: null, rerunInProgress: false,
+  ...over,
+})
+
+/** A queued PR with head checks and a merge-group build — the widest content
+ *  the board renders (metro track, two gantts, a queue car), so the phone and
+ *  tablet cases measure overflow against something real. */
+const QUEUED_PR = {
+  repo: 'o/a', number: 7, title: 'Widen the check gantt on phones', url: 'https://github.com/o/a/pull/7',
+  stage: { stage: 'queue', substate: null, percent: 60, etaSeconds: 120, etaRangeSeconds: null, overdue: false, etaStale: false, etaUpdatedAt: null },
+  mergeStateStatus: 'CLEAN', queueAheadCount: 0,
+  checks: [check('lint-and-test'), check('frontend', { status: 'IN_PROGRESS', conclusion: null, elapsedSeconds: 90 })],
+  timeline: null, touchesWorkflows: false, workflowImpact: null,
+  groupChecks: [check('lint-and-test (merge group)', { status: 'IN_PROGRESS', conclusion: null, elapsedSeconds: 150 })],
+  mergeEtaSim: null, costMinutes: null, costDollars: null, costDollarsPartial: false, session: null,
+}
+
+const QUEUE = {
+  groups: [{ oid: 'g1', prNumbers: [7], percent: 60, etaSeconds: 120, failed: false }],
+  waiting: [], unmergeable: [], queueBlocked: [], unmergeableCulprit: null, batchSize: 6,
+  depth: 1, trainsPerHour: null, batchSuccessRatePct: null, ejects24h: 0,
+}
+
 const FRAME = {
   generatedAt: '2026-09-11T10:00:00Z',
   staleSince: null,
   repos: [
-    { repo: 'o/a', hasDeploy: false, prs: [], queue: null },
+    { repo: 'o/a', hasDeploy: false, prs: [QUEUED_PR], queue: QUEUE },
     { repo: 'o/b', hasDeploy: false, prs: [], queue: null },
   ],
 }
@@ -114,6 +140,10 @@ for (const [name, viewport] of [['phone', { width: 390, height: 844 }], ['tablet
       await expect(page.getByRole('heading', { level: 1 })).toHaveText('Pipeline')
       await expect(page.getByRole('tablist', { name: 'Pipeline repository' })).toBeVisible()
       await expect(page.getByRole('group', { name: 'Status overview' })).toBeVisible()
+      // Expand the queued PR so the gantts and the queue car are on screen —
+      // the widest things the board draws — before measuring.
+      await page.getByRole('button', { name: /Expand PR #7 details/ }).click()
+      await expect(page.locator('.pipeline-chart.checks').first()).toBeVisible()
       expect(await noHorizontalOverflow(page)).toBe(true)
     })
   })

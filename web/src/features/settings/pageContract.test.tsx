@@ -10,7 +10,7 @@
  * It lives beside Settings because Settings is the first (and, today, only) row.
  * Later PRs add rows rather than files.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
 
 // Same arrangement as `SettingsPage.test.tsx`: the transport is faked and the
@@ -158,6 +158,10 @@ describe('page contract', () => {
     localStorage.clear()
     resetDocumentTitle()
     vi.stubGlobal('EventSource', StubEventSource as unknown as typeof EventSource)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   for (const page of PAGES) {

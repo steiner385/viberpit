@@ -149,6 +149,9 @@ describe('LegendPanel', () => {
       expect(s).toHaveClass('legend-swatch', TONE_FILL[TILE_TONE[TILE_DEFINITIONS[i]!.bucket]]);
     });
     expect(swatches).toHaveLength(TILE_DEFINITIONS.length);
+    // The term column keeps its 110px floor so descriptions align across rows
+    // (each row is its own grid) — lost once in row 5, caught by review.
+    expect(swatches[0]!.closest('dl > div')!.className).toMatch(/grid-cols-\[minmax\(/);
     const dtLabels = swatches.map((s) => s.parentElement!.textContent!.trim());
     expect(dtLabels).toEqual(['CI running', 'In queue', 'Deploying', 'Failed', 'Ready', 'Merged / other']);
   });

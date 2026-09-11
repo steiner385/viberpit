@@ -75,12 +75,6 @@
   --fs-lg: calc(1.125rem * var(--scale));   --fs-xl: calc(1.25rem * var(--scale));
   --fs-2xl: calc(1.5rem * var(--scale));
 
-  /* Legacy aliases — consumed by plotroom.css and a few settings sections
-     until sub-spec C removes the last use. */
-  --bg: var(--t-canvas); --surface: var(--t-surface); --text: var(--t-ink);
-  --muted: var(--t-ink-muted); --border: var(--t-edge); --accent: var(--t-accent);
-  --done: var(--t-success); --fail: var(--t-danger); --amber: var(--t-warning); --purple: var(--t-info);
-  --accent-strong: var(--t-accent); --done-strong: var(--t-success-strong); --amber-strong: var(--t-warning-strong);
 
   font: 16px/1.5 var(--font-sans);
   color-scheme: light dark;
@@ -141,7 +135,6 @@
   --color-accent: var(--t-accent);
   --color-accent-ink: var(--t-accent-ink);
   --color-accent-wash: var(--t-accent-wash);
-  --color-on-strong: var(--t-on-strong);
   --color-success: var(--t-success);  --color-success-wash: var(--t-success-wash);  --color-success-strong: var(--t-success-strong);
   --color-warning: var(--t-warning);  --color-warning-wash: var(--t-warning-wash);  --color-warning-strong: var(--t-warning-strong);
   --color-danger:  var(--t-danger);   --color-danger-wash:  var(--t-danger-wash);   --color-danger-strong:  var(--t-danger-strong);
