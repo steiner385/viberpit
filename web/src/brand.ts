@@ -8,6 +8,14 @@
 export const BRAND_NAME = 'ViberPit'
 
 /**
+ * The wordmark's two halves — "Viber" in ink, "Pit" in brand green — as the
+ * logo draws them. Spelled here, beside `BRAND_NAME`, so the split cannot
+ * drift from the name: `brand.test.ts` asserts they join back to it. Only
+ * `Wordmark` (components/BrandMark.tsx) renders this; prose uses `BRAND_NAME`.
+ */
+export const BRAND_NAME_PARTS = ['Viber', 'Pit'] as const
+
+/**
  * Wire prefix of the app's own MCP tools (`mcp__<server>__<tool>`). A contract
  * with the server's `brand.MCP_SERVER_NAME` — never edit it on its own.
  */
