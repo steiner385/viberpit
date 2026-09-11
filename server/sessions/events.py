@@ -139,6 +139,44 @@ class ToolResult:
                                "payload": self.payload, "srcUuid": self.src_uuid,
                                "parentToolUseId": self.parent_tool_use_id, "ts": self.ts}
 
+# ── Task sub-agent lifecycle (spec: 2026-09-11-subagent-live-view-design.md §4.1) ──
+# All three carry the spawning Task's tool-use id as `parentToolUseId`, the key the web
+# reducer already routes sub-agent threads by. Sourced from the CLI's system/task_*
+# notices (translator.py), never from the transcript.
+
+@dataclass
+class SubAgentStarted:
+    parent_tool_use_id: str; task_id: str; description: str; agent_type: str
+    backgrounded: bool = False; depth: int = 1
+    ts: float | None = field(default_factory=_now_ms)
+    def to_wire(self): return {"type": "subAgentStarted", "parentToolUseId": self.parent_tool_use_id,
+                               "taskId": self.task_id, "description": self.description,
+                               "agentType": self.agent_type, "backgrounded": self.backgrounded,
+                               "depth": self.depth, "ts": self.ts}
+
+@dataclass
+class SubAgentProgress:
+    parent_tool_use_id: str; task_id: str; activity: str
+    total_tokens: int | None = None; tool_uses: int | None = None; duration_ms: int | None = None
+    last_tool: str | None = None
+    ts: float | None = field(default_factory=_now_ms)
+    def to_wire(self): return {"type": "subAgentProgress", "parentToolUseId": self.parent_tool_use_id,
+                               "taskId": self.task_id, "activity": self.activity,
+                               "totalTokens": self.total_tokens, "toolUses": self.tool_uses,
+                               "durationMs": self.duration_ms, "lastTool": self.last_tool,
+                               "ts": self.ts}
+
+@dataclass
+class SubAgentEnded:
+    parent_tool_use_id: str; task_id: str; status: str   # "completed" | "failed" | "stopped"
+    summary: str = ""
+    total_tokens: int | None = None; tool_uses: int | None = None; duration_ms: int | None = None
+    ts: float | None = field(default_factory=_now_ms)
+    def to_wire(self): return {"type": "subAgentEnded", "parentToolUseId": self.parent_tool_use_id,
+                               "taskId": self.task_id, "status": self.status, "summary": self.summary,
+                               "totalTokens": self.total_tokens, "toolUses": self.tool_uses,
+                               "durationMs": self.duration_ms, "ts": self.ts}
+
 @dataclass
 class PermissionRequest:
     perm_id: str; turn_id: str; tool: str; kind: ToolKind; input: dict; plan: bool = False

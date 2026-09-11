@@ -75,6 +75,61 @@ def result(session_id: str = "sess-1", usage: dict | None = None, uuid: str = "u
                          total_cost_usd=cost, result=result, errors=errors,
                          api_error_status=api_error_status)
 
+def task_started(task_id: str, tool_use_id: str | None, description: str = "sleep probe",
+                 subagent_type: str = "general-purpose", backgrounded: bool = False,
+                 depth: int = 1, task_type: str = "local_agent", sid: str = "sess-1",
+                 uuid: str = "ts1"):
+    """system/task_started as claude 2.1.268 emits it when a Task sub-agent spawns."""
+    from claude_agent_sdk import TaskStartedMessage
+    data = {"type": "system", "subtype": "task_started", "task_id": task_id,
+            "description": description, "subagent_type": subagent_type,
+            "is_backgrounded": backgrounded, "spawn_depth": depth, "task_type": task_type,
+            "uuid": uuid, "session_id": sid}
+    if tool_use_id is not None:
+        data["tool_use_id"] = tool_use_id
+    return TaskStartedMessage(subtype="task_started", data=data, task_id=task_id,
+                              description=description, uuid=uuid, session_id=sid,
+                              tool_use_id=tool_use_id, task_type=task_type)
+
+def task_progress(task_id: str, tool_use_id: str | None, activity: str = "Running Bash",
+                  total_tokens: int = 19591, tool_uses: int = 1, duration_ms: int = 4098,
+                  last_tool: str | None = "Bash", sid: str = "sess-1", uuid: str = "tp1"):
+    from claude_agent_sdk import TaskProgressMessage
+    usage = {"total_tokens": total_tokens, "tool_uses": tool_uses, "duration_ms": duration_ms}
+    data = {"type": "system", "subtype": "task_progress", "task_id": task_id,
+            "description": activity, "usage": usage, "last_tool_name": last_tool,
+            "uuid": uuid, "session_id": sid}
+    if tool_use_id is not None:
+        data["tool_use_id"] = tool_use_id
+    return TaskProgressMessage(subtype="task_progress", data=data, task_id=task_id,
+                               description=activity, usage=usage, uuid=uuid, session_id=sid,
+                               tool_use_id=tool_use_id, last_tool_name=last_tool)
+
+def task_updated(task_id: str, status: str = "killed", sid: str = "sess-1", uuid: str = "tu1"):
+    from claude_agent_sdk import TaskUpdatedMessage
+    patch = {"status": status, "end_time": 1789150650196}
+    data = {"type": "system", "subtype": "task_updated", "task_id": task_id, "patch": patch,
+            "uuid": uuid, "session_id": sid}
+    return TaskUpdatedMessage(subtype="task_updated", data=data, task_id=task_id, patch=patch,
+                              status=status, session_id=sid, uuid=uuid)
+
+def task_notification(task_id: str, tool_use_id: str | None, status: str = "completed",
+                      summary: str = "sleep probe", usage: dict | None = None,
+                      sid: str = "sess-1", uuid: str = "tn1"):
+    from claude_agent_sdk import TaskNotificationMessage
+    data = {"type": "system", "subtype": "task_notification", "task_id": task_id,
+            "status": status, "output_file": f"/tmp/tasks/{task_id}.output",
+            "summary": summary, "uuid": uuid, "session_id": sid}
+    if tool_use_id is not None:
+        data["tool_use_id"] = tool_use_id
+    if usage is not None:
+        data["usage"] = usage
+    return TaskNotificationMessage(subtype="task_notification", data=data, task_id=task_id,
+                                   status=status, output_file=data["output_file"],
+                                   summary=summary, uuid=uuid, session_id=sid,
+                                   tool_use_id=tool_use_id, usage=usage)
+
+
 async def drain_turn(stream) -> list:
     """Pull ONE turn — up to and including its ResultMessage — from a persistent
     ``receive_messages()`` stream: the segmentation the driver does. Pass the SAME
