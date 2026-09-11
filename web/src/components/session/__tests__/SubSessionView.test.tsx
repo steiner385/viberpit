@@ -3,8 +3,9 @@ import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mutate = vi.fn()
+let stopIsSuccess = false
 vi.mock('@/api/hooks', () => ({
-  useStopSubAgent: () => ({ mutate, isPending: false }),
+  useStopSubAgent: () => ({ mutate, isPending: false, isSuccess: stopIsSuccess }),
 }))
 
 const onDecision = vi.fn()
@@ -32,6 +33,7 @@ function view() {
 
 beforeEach(() => {
   mutate.mockReset(); onDecision.mockReset(); onAnswer.mockReset()
+  stopIsSuccess = false
   thread = {
     turns: [{ id: 's1', role: 'assistant', blocks: [{ kind: 'text', id: 's1:t0', text: 'SUBWORK' }] }],
     openBlockId: null,
@@ -63,6 +65,18 @@ describe('SubSessionView', () => {
     view()
     fireEvent.click(screen.getByRole('button', { name: /Stop sub-agent/ }))
     expect(mutate).toHaveBeenCalledWith({ id: 's1', toolUseId: 'toolu_A' })
+  })
+
+  it('hides Stop for a running agent with no live task state (replayed/detached)', () => {
+    agents = [{ ...(agents[0] as object), taskId: undefined }]
+    view()
+    expect(screen.queryByRole('button', { name: /Stop sub-agent/ })).toBeNull()
+  })
+
+  it('disables Stop once the mutation succeeds (until subAgentEnded unmounts it)', () => {
+    stopIsSuccess = true
+    view()
+    expect(screen.getByRole('button', { name: /Stop sub-agent/ })).toBeDisabled()
   })
 
   it('a finished sub-agent shows its status and summary and no Stop button', () => {

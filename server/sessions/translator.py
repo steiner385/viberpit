@@ -91,6 +91,8 @@ class Translator:
                 backgrounded=bool(d.get("is_backgrounded", False)),
                 depth=int(d.get("spawn_depth") or 1))]
         if isinstance(msg, TaskProgressMessage):
+            if msg.tool_use_id and (msg.data or {}).get("task_type") not in (None, "local_agent"):
+                return []
             tuid = msg.tool_use_id or self._task_tool.get(msg.task_id)
             if not tuid:
                 return []

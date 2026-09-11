@@ -94,18 +94,17 @@ export function selectSubAgents(turns: Turn[], threads: Record<string, SubThread
 
 /**
  * Count sub-agents (Task or Agent tool calls) that are still running (no
- * result yet). Used by the busy indicator to show a more specific label.
+ * result yet, or live task state that hasn't reached a terminal status). Used
+ * by the busy indicator to show a more specific label.
  *
- * Intentionally derived from the parent thread's `turns` (the Task tool block +
- * its result), NOT from the reducer's `state.subAgents` map. The two are
- * complementary, not redundant: `state.subAgents` holds each sub-agent's nested
- * thread *content* and is only created once the sub-agent emits its first child
- * event, whereas the spawning Task block appears in `turns` immediately. Reading
- * `turns` therefore reflects a just-spawned sub-agent as "running" before any
- * child event arrives — the more responsive signal for a live busy indicator.
+ * Delegates to `selectSubAgents`, the one place `turns` and the reducer's
+ * `state.subAgents` thread map are merged into a status per sub-agent — see
+ * that function's docstring for how the two combine. Accepting the optional
+ * `threads` here keeps this the single "how many sub-agents are running"
+ * derivation (Principle VI) rather than a second one that only reads `turns`.
  */
-export function selectRunningSubAgentCount(turns: Turn[]): number {
-  return selectSubAgents(turns).filter((a) => a.status === 'running').length
+export function selectRunningSubAgentCount(turns: Turn[], threads?: Record<string, SubThread>): number {
+  return selectSubAgents(turns, threads).filter((a) => a.status === 'running').length
 }
 
 // ── Sub-agent tree (for the dashboard session-list drill-down) ────────────────

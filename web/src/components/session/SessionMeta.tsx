@@ -89,6 +89,7 @@ const DASH = '—'
 function summaryDot(subAgents: SubAgent[]): SubAgentStatus {
   if (subAgents.some((a) => a.status === 'failed')) return 'failed'
   if (subAgents.some((a) => a.status === 'running')) return 'running'
+  if (subAgents.some((a) => a.status === 'stopped')) return 'stopped'
   return 'done'
 }
 

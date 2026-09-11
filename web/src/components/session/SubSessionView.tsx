@@ -48,6 +48,11 @@ export function SubSessionView({ sessionId, agentId, onBack }: Props) {
   const meta = rt.subAgents.find((a) => a.toolId === agentId)
   const status: SubAgentStatus = meta?.status ?? 'running'
   const running = status === 'running'
+  // Stop can only ever act on a LIVE task (spec §6): a replayed/detached session's
+  // Task call with no paired result reads 'running' forever, and taskId is only ever
+  // set from a live subAgentStarted/subAgentProgress. Gate on that, not on
+  // `rt.connectionState` — a detached session attaches fine over a connected socket.
+  const canStop = running && meta?.taskId != null
   const now = useNow(1000, running)
   const duration = meta ? agentDuration(meta, now) : null
   const stop = useStopSubAgent()
@@ -86,11 +91,11 @@ export function SubSessionView({ sessionId, agentId, onBack }: Props) {
             <span aria-hidden className="mx-1.5 opacity-50">›</span>
             <span className="font-medium">{label}</span>
           </nav>
-          {running && (
+          {canStop && (
             <button
               type="button"
               onClick={() => stop.mutate({ id: sessionId, toolUseId: agentId })}
-              disabled={stop.isPending}
+              disabled={stop.isPending || stop.isSuccess}
               aria-label="Stop sub-agent"
               className={cn('ml-auto rounded px-3 py-1.5 text-sm font-medium min-h-[44px]',
                 'border border-red-300 dark:border-red-700 text-red-700 dark:text-red-300',

@@ -299,7 +299,7 @@ export interface SubAgentSummary {
   parentAgentId: string | null
   agentType: string
   description: string
-  status: 'running' | 'done' | 'failed' | 'stopped'
+  status: 'running' | 'done' | 'failed'
 }
 
 export interface Session {
