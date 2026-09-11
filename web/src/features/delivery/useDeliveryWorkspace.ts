@@ -21,11 +21,12 @@ export function useDeliveryWorkspace(active: boolean): { list: DeliveryListColum
   const { pathname, search } = useLocation()
   const params = useParams()
   // Ungated on purpose, unlike the repo set below: `QK.automations` is the
-  // Delivery NAV BADGE's key (`useNavBadges`), polled app-wide so the badge is
-  // right while you are looking at another section. Gating it here would not
-  // save a request — it would only make the column a second observer of a key
-  // that is already live, which is what `useAutomations` has no `enabled`
-  // parameter to express anyway.
+  // Delivery NAV BADGE's key (`useNavBadges`), read on every route so the badge
+  // is right while you are looking at another section. Gating it here would not
+  // save a request — the column is an OBSERVER of a key that is already live,
+  // not a second fetch of it, which is why `useAutomations` has no `enabled`
+  // parameter to express the difference. If that key ever earns a
+  // `refetchInterval`, it belongs on ONE observer (the badge's), never on both.
   const automations = useAutomations()
   // `enabled: active` is the gate — nothing else keeps the 30 s repo poll off
   // the four sections that never render this column. `poll: false` is the

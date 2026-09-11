@@ -3,8 +3,8 @@
  * scope: every automation, tier-sorted, with its actionable count.
  * CI health scope: every tracked repo's 7-day check summary. Region-neutral
  * like `RoadmapListColumn`/`SessionListColumn`: it fills whatever
- * `ContextList` gives it and owns no width, no header and no route. Not
- * mounted anywhere yet — the shell wiring is Task 5.
+ * `ContextList` gives it and owns no width, no header and no route. Mounted
+ * by `shell/listColumns.tsx`, from `useDeliveryWorkspace`'s props.
  */
 import type { Automation } from '@/api/automations'
 import { AutomationsScopeBody } from './AutomationsScopeBody'

@@ -30,10 +30,11 @@ export function DeliveryPage() {
   const item = deliveryOpenItem(useParams(), new URLSearchParams(search))
   const scope = deliveryScope(pathname, search)
 
-  // `poll: false` on both: the shell's list column observes these exact cache
-  // entries and, for the repo set, owns the decision not to poll at all
-  // (`useDeliveryWorkspace`). `useAutomations` has no poll of its own — it rides
-  // the nav badge's app-wide observer.
+  // `poll: false` on the repo set: the shell's list column observes that exact
+  // cache entry and owns the decision not to poll it (`useDeliveryWorkspace`),
+  // and two polling observers of one key are two requests. `useAutomations`
+  // takes no `poll` — that key has a `staleTime` and no interval at all — so
+  // this is a third observer of it, not a third fetch.
   const automations = useAutomations()
   const repos = useStageModels({ poll: false })
 
@@ -48,7 +49,7 @@ export function DeliveryPage() {
   // The window is URL state so a shared link carries it; `replace`, because
   // changing a filter must not grow the Back stack. Declared unconditionally —
   // the CI branch is the only reader.
-  const [window, setWindow] = useSearchParamState<CiWindow>('window', WINDOWS, '7d')
+  const [ciWindow, setCiWindow] = useSearchParamState<CiWindow>('window', WINDOWS, '7d')
 
   // The address names an automation the list does not contain — a retired
   // origin or a stale bookmark. Gated on the list having ARRIVED: a failed
@@ -103,8 +104,8 @@ export function DeliveryPage() {
                 <Select
                   aria-label="Window"
                   size="sm"
-                  value={window}
-                  onChange={(e) => setWindow(e.target.value as CiWindow)}
+                  value={ciWindow}
+                  onChange={(e) => setCiWindow(e.target.value as CiWindow)}
                 >
                   {WINDOWS.map((w) => <option key={w} value={w}>{w}</option>)}
                 </Select>
@@ -138,7 +139,7 @@ export function DeliveryPage() {
             )}
           />
         )}
-        {item?.kind === 'ciRepo' && <CiRepoDetail repo={item.repo} window={window} />}
+        {item?.kind === 'ciRepo' && <CiRepoDetail repo={item.repo} window={ciWindow} />}
         {/* Nothing open: the pane says what is waiting rather than sitting blank. */}
         {item === null && (
           <DeliveryWelcome

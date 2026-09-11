@@ -14,8 +14,9 @@
  * 2. `poll` — the CI detail (`useStageModels` in `DeliveryPage`) owns no timer
  *    either, so the column's copy must not add one: one fetch, no interval.
  *
- * `/automations` is the deliberate exception: it is the badge's key, already
- * polled app-wide, so the column reads it ungated in both cases.
+ * `/automations` is the deliberate exception: it is the badge's key, read on
+ * every route, so the column reads it ungated in both cases — one more observer
+ * of a live key, not one more request.
  *
  * Both are invisible to the component (a disabled query and an un-fetched one
  * both read `data: undefined`), so the api CLIENT is faked and the real hooks
