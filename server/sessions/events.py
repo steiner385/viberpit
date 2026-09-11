@@ -188,10 +188,14 @@ class PermissionRequest:
     # would act on — the card must enumerate them, not just say "3 sessions" (spec v2
     # B4). None for every other tool. Populated by `assistant_tools.batch_items`.
     items: list[str] | None = None
+    # The spawning Task's tool-use id when the request came from a sub-agent (its
+    # can_use_tool ctx.agent_id, mapped by the driver). None for the main thread.
+    parent_tool_use_id: str | None = None
     ts: float | None = field(default_factory=_now_ms)
     def to_wire(self): return {"type": "permissionRequest", "permId": self.perm_id, "turnId": self.turn_id,
                                "tool": self.tool, "toolKind": self.kind.value, "input": self.input, "plan": self.plan,
-                               "alwaysAllowed": self.always_allowed, "items": self.items, "ts": self.ts}
+                               "alwaysAllowed": self.always_allowed, "items": self.items,
+                               "parentToolUseId": self.parent_tool_use_id, "ts": self.ts}
 
 @dataclass
 class PermissionResolved:
@@ -212,10 +216,13 @@ class Question:
     # server/sessions/orphaned_asks.py). The card is re-offered as answerable, but
     # answering sends a NEW prompt — there is no future left to resolve.
     orphaned: bool = False
+    # The spawning Task's tool-use id when the question came from a sub-agent (its
+    # can_use_tool ctx.agent_id, mapped by the driver). None for the main thread.
+    parent_tool_use_id: str | None = None
     def to_wire(self): return {"type": "question", "questionId": self.question_id, "turnId": self.turn_id,
                                "header": self.header, "question": self.question, "options": self.options,
                                "multiSelect": self.multi_select, "ts": self.ts,
-                               "orphaned": self.orphaned}
+                               "orphaned": self.orphaned, "parentToolUseId": self.parent_tool_use_id}
 
 @dataclass
 class QuestionResolved:

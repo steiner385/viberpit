@@ -544,7 +544,8 @@ class ClaudeAgentDriver:
             return f"- {q_text} → (in their own words) {answer_str}"
         return f"- {q_text} → {answer_str}"
 
-    async def _handle_ask_user_question(self, tool_input: dict, turn_id: str) -> PermissionResultDeny:
+    async def _handle_ask_user_question(self, tool_input: dict, turn_id: str,
+                                        parent_tool_use_id: str | None = None) -> PermissionResultDeny:
         """Block the SDK callback, emit ev.Question events, await user answers.
 
         The SDK offers no channel to return an answer via PermissionResultAllow; the
@@ -576,6 +577,7 @@ class ClaudeAgentDriver:
                 question=question_text,
                 options=options,
                 multi_select=multi_select,
+                parent_tool_use_id=parent_tool_use_id,
             ))
             # Emit QuestionResolved the moment THIS future settles (answered or
             # dismissed) — per-question, not after the whole gather, so a reattach
@@ -721,8 +723,13 @@ class ClaudeAgentDriver:
 
     async def _can_use_tool(self, tool_name, tool_input, ctx=None):
         turn_id = self._turn()
+        # A sub-agent's request names its task id as ctx.agent_id (== task_started.task_id,
+        # verified 2026-09-11); map it to the spawning Task call so the card can render
+        # inside that sub-agent's thread. Best-effort: unmapped → unattributed, as before.
+        agent_id = getattr(ctx, "agent_id", None) if ctx is not None else None
+        pid = self.subagent_tool_use_id(agent_id) if agent_id else None
         if tool_name == "AskUserQuestion":
-            return await self._handle_ask_user_question(tool_input, turn_id)
+            return await self._handle_ask_user_question(tool_input, turn_id, parent_tool_use_id=pid)
         if is_assistant_kind(self.kind) and not is_mcp_tool(tool_name):
             # An assistant-kind session's model is scoped to our own MCP
             # server only (spec §4.4) — anything else (Bash, a third-party MCP
@@ -751,7 +758,7 @@ class ClaudeAgentDriver:
             self._emit(ev.PermissionRequest(
                 perm_id, turn_id, tool_name, ev.tool_kind(tool_name),
                 tool_input, plan=(tool_name == "ExitPlanMode"), always_allowed=always_allowed,
-                items=items))
+                items=items, parent_tool_use_id=pid))
             # A prompt is now pending for the user → waiting_input / ready_review.
             await self._emit_status()
         allowed = await fut
