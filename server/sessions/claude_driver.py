@@ -256,6 +256,11 @@ class ClaudeAgentDriver:
         # its header and its transcript chip when it finally starts — rendering
         # happens at DEQUEUE time in _start_turn, never here.
         self._queue: list[tuple[str, list[dict], PromptContext | None]] = []
+        # Live Task sub-agents: spawning tool-use id -> CLI task id, from the translator's
+        # SubAgentStarted/Ended events. Powers stop_subagent (stop_task needs the task id)
+        # and permission attribution (a sub-agent's can_use_tool ctx.agent_id IS its task
+        # id — verified against claude 2.1.268, spec §2).
+        self._subagent_tasks: dict[str, str] = {}
         self._turn_active: bool = False
         # Epoch seconds of the in-progress turn's start; None whenever no turn is
         # active. Consumed by the WS attach path (→ replay_window.turn_started_at)
@@ -1096,6 +1101,10 @@ class ClaudeAgentDriver:
                     self._emit(ev.Recovering(
                         turn_id=e.turn_id, message=_RECOVERING_MSG))
                     continue
+            if isinstance(e, ev.SubAgentStarted):
+                self._subagent_tasks[e.parent_tool_use_id] = e.task_id
+            elif isinstance(e, ev.SubAgentEnded):
+                self._subagent_tasks.pop(e.parent_tool_use_id, None)
             if isinstance(e, (ev.TextDelta, ev.ToolCall, ev.ToolResult)):
                 self._turn_produced_output = True
             self._note_progress(e)
@@ -1489,6 +1498,31 @@ class ClaudeAgentDriver:
             self._emit(ev.Condensing(active=False))
         self._emit(ev.QueueUpdate(self.queue_wire()))
         await self._emit_status()
+
+    def subagent_task_id(self, tool_use_id: str) -> str | None:
+        """CLI task id of a live Task sub-agent, or None once it ended / never started."""
+        return self._subagent_tasks.get(tool_use_id)
+
+    def subagent_tool_use_id(self, task_id: str) -> str | None:
+        """Reverse lookup: the spawning Task tool-use id for a live task id."""
+        for tuid, tid in self._subagent_tasks.items():
+            if tid == task_id:
+                return tuid
+        return None
+
+    async def stop_subagent(self, tool_use_id: str) -> str | None:
+        """Stop ONE running Task sub-agent via the SDK's stop_task control request.
+        Returns the task id it stopped, or None when the sub-agent is not running
+        (unknown id, already ended, or no live client). The map entry is NOT dropped
+        here: the CLI's own task_notification(stopped) does that, so a stop that the
+        CLI rejected leaves the sub-agent visibly running rather than silently gone."""
+        task_id = self._subagent_tasks.get(tool_use_id)
+        if task_id is None or self._client is None:
+            return None
+        log.info("driver.stop_subagent session=%s tool_use_id=%s task_id=%s",
+                 self.session_id, tool_use_id, task_id)
+        await self._client.stop_task(task_id)
+        return task_id
 
     async def set_permission_mode(self, mode: str):
         # Plan mode is a temporary overlay. The web plan toggle turns it OFF by

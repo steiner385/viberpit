@@ -170,6 +170,7 @@ class FakeSDKClient:
                                 else list(startup_frames))
         self.on_can_use_tool = on_can_use_tool
         self.interrupted = False
+        self.stopped_tasks: list[str] = []
         self.permission_mode = "default"
         self.model = None
         self.sent: list[str] = []
@@ -226,6 +227,10 @@ class FakeSDKClient:
             self._turn_open = False
         if any(m is _EOF for m in rest):
             q.put_nowait(_EOF)
+    async def stop_task(self, task_id: str) -> None:
+        """Record the stop. The real CLI answers on the stream (killed/stopped notices);
+        a test that needs them injects ``task_updated`` / ``task_notification`` itself."""
+        self.stopped_tasks.append(task_id)
     async def set_permission_mode(self, mode: str): self.permission_mode = mode
     async def set_model(self, model=None): self.model = model
     async def get_server_info(self): return self._server_info
