@@ -128,10 +128,7 @@ In the `SystemMessage` branch, before the generic `return []`:
   **Ended is idempotent on the client** (see §5.2), so the killed/stopped pair the spike
   showed simply arrives twice; the second carries the summary and wins. The map entry is
   dropped on the notification (the last of the pair), not on the update.
-- `_reset()` clears the map. It is keyed per driver lifetime, not per turn: background
-  sub-agents outlive the turn that spawned them and their notices arrive while the
-  driver is idle, through `_idle_listen`, which already feeds every message to the
-  translator.
+- The map is NOT cleared by `_reset()` (the per-turn reset on `ResultMessage`); it lives for the translator's lifetime. It is keyed per driver lifetime, not per turn: background sub-agents outlive the turn that spawned them and their notices arrive while the driver is idle, through `_idle_listen`, which already feeds every message to the translator.
 
 ### 4.3 Driver (`server/sessions/claude_driver.py`)
 
@@ -177,13 +174,7 @@ dot colour and the list already treats an errored Task result as failed.
 
 ### 4.6 Replay (`server/sessions/replay.py`)
 
-Out of scope for live status: the CLI journals no task notices into the transcript, so a
-reopened session cannot reconstruct progress or usage. The view degrades to today's
-tool-result-derived status. The one addition is that `_subagent_events` also emits a
-`SubAgentEnded` for a sidecar whose Task result is present on disk (status from
-`tool_result.is_error`), so a finished sub-agent's header reads "completed"/"failed"
-after a reload instead of blank. No `SubAgentStarted` on replay: the Task `ToolCall`
-block already carries type, description and start time.
+Out of scope. The CLI journals no task notices into the transcript, so a reopened session shows tool-result-derived status through `selectSubAgents`'s fallback (§5.3); no replay change is needed. (An earlier draft proposed emitting `SubAgentEnded` for finished sidecars; that duplicated the fallback and was dropped during planning.)
 
 ## 5. Web design
 
