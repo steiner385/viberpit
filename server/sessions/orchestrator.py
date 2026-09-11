@@ -106,6 +106,7 @@ from server.sessions.recovery import (
 from server.sessions.selection import AllAccountsBusy, Picked, select_account  # noqa: F401
 from server.sessions.display_policy import DISPLAY_NATIVE, DISPLAY_VIRTUAL, resolve_display_mode
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
+from server.sessions import child_sessions as _cs
 from server.obs.context import log_event, PROC_EPOCH
 from server.sessions.title_generator import generate_title
 from server.sessions.titles import read_ai_title_from_file, read_user_prompts_from_file
@@ -1468,7 +1469,14 @@ class SessionOrchestrator:
             self_model_switch=bool(
                 caps is not None and caps.self_model_switch
                 and get_settings().self_model_switch_enabled),
-            signalling_tools=bool(caps is not None and caps.durable_tool_surface))
+            signalling_tools=bool(caps is not None and caps.durable_tool_surface),
+            # Child sessions (spec §4.2): the dispatch handler's ONE call is bound here
+            # with the parent's id and owner identity, never taken from tool args.
+            child_sessions=bool(caps is not None and caps.durable_tool_surface
+                                and get_settings().child_sessions_enabled),
+            dispatch_child=functools.partial(self.dispatch_child_session, session_id,
+                                             identity=identity),
+            children=lambda: self.children_of(session_id))
         if selected is AgentEngine.CODEX:
             from server.sessions.tools.codex import CodexSessionTools
             self.register_overlay(session_id, CodexSessionTools.build(ctx))
@@ -4345,6 +4353,27 @@ class SessionOrchestrator:
             await db.execute(
                 sa_update(DbSession).where(DbSession.id == session_id).values(**values)
             )
+        # Child sessions (spec §4.4): tell the parent about a stop transition, once per
+        # transition. A non-stop status in between (busy again) clears the guard so the
+        # next stop notifies again; the guard is persisted so a restart keeps it.
+        # Spawned, never awaited — this runs inside the child's status callback.
+        parent_id = getattr(rec, "parent_session_id", None) if rec is not None else None
+        if rec is not None and parent_id:
+            notified = getattr(rec, "parent_notified_status", None)
+            if status in _cs.CHILD_NOTIFY_STATUSES and notified != status:
+                rec.parent_notified_status = status
+                async with db_session() as db:
+                    from sqlalchemy import update as sa_update
+                    await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                                     .values(parent_notified_status=status))
+                self._spawn(self._notify_parent(parent_id, rec, status, hand_back_reason),
+                            name="child-notify")
+            elif status not in _cs.CHILD_NOTIFY_STATUSES and notified is not None:
+                rec.parent_notified_status = None
+                async with db_session() as db:
+                    from sqlalchemy import update as sa_update
+                    await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                                     .values(parent_notified_status=None))
         if hand_back_reason:
             log.info("session.hand_back sid=%s reason_len=%d", session_id, len(hand_back_reason))
             # Best-effort audit in its own transaction: the status write above must
@@ -12655,6 +12684,90 @@ class SessionOrchestrator:
         d = self._drivers.get(session_id)
         if d:
             await d.interrupt()
+
+    # ── Child sessions (spec 2026-09-11-child-session-dispatch) ────────────────────
+    def children_of(self, parent_id: str) -> list:
+        """Records whose parent is *parent_id*, in creation order (record-map order)."""
+        return [r for r in self._records.values()
+                if getattr(r, "parent_session_id", None) == parent_id]
+
+    def child_depth(self, session_id: str) -> int:
+        """0 for a root; 1 + the parent's depth otherwise (a missing parent counts as 1)."""
+        depth, seen, cur = 0, set(), self._records.get(session_id)
+        while cur is not None and cur.id not in seen:
+            pid = getattr(cur, "parent_session_id", None)
+            if not pid:
+                break
+            seen.add(cur.id)
+            depth += 1
+            cur = self._records.get(pid)
+        return depth
+
+    async def dispatch_child_session(self, parent_id: str, *, name: str, prompt: str,
+                                     model: str | None, permission_mode: str | None,
+                                     identity: str) -> dict:
+        """Create a CHILD session of *parent_id* (spec §4.3): same repo, fresh worktree,
+        same owner, mode never wider than the parent's. Raises ChildSessionLimit for the
+        cap/depth/kill-switch refusals (the tool reports str(exc) to the model)."""
+        from server.config import get_settings
+        from server.sessions.permissions import narrowest
+        parent = self._records.get(parent_id)
+        if parent is None:
+            raise KeyError(f"No session with id {parent_id!r}")
+        cfg = get_settings()
+        live = [c for c in self.children_of(parent_id)
+                if getattr(c, "status", None) not in _cs.LIVE_CHILD_EXCLUDED]
+        _cs.check_limits(enabled=cfg.child_sessions_enabled,
+                         parent_depth=self.child_depth(parent_id), live_children=len(live),
+                         cap=cfg.child_session_cap, max_depth=cfg.child_session_max_depth)
+        mode = narrowest(permission_mode, getattr(parent, "permission_mode", None) or "interactive")
+        repo = getattr(parent, "repo", None)
+        rec = await self.create_session(
+            name=name, initial_prompt=prompt, repo=repo,
+            # A repo-backed parent gives the child a fresh worktree of the same repo; a
+            # scratch parent (cwd only) shares its directory — there is no repo to clone.
+            cwd=None if repo else getattr(parent, "cwd", None),
+            identity=identity, permission_mode=mode, name_is_auto=False,
+            model=model or getattr(parent, "model", None),
+            engine=getattr(parent, "engine", AgentEngine.CLAUDE_CODE))
+        rec.parent_session_id = parent_id
+        async with db_session() as db:
+            from sqlalchemy import update as sa_update
+            await db.execute(sa_update(DbSession).where(DbSession.id == rec.id)
+                             .values(parent_session_id=parent_id))
+            await record_audit(db, "session.child_dispatch", identity,
+                               {"parentSessionId": parent_id, "childSessionId": rec.id, "name": name},
+                               via="session")
+            await db.commit()
+        log.info("session.child_dispatch parent=%s child=%s mode=%s", parent_id, rec.id, mode)
+        return {"id": rec.id, "name": rec.name, "url": f"/sessions/{rec.id}", "status": rec.status}
+
+    async def _notify_parent(self, parent_id: str, child, status: str,
+                             hand_back_reason: str | None) -> None:
+        """Deliver a <child-session-notification> to the parent as a prompt (spec §4.4).
+        Resumes a detached parent first — a bare send_prompt drops the text without a
+        driver. Best-effort: logs, never raises (it runs inside the child's status
+        callback)."""
+        from server.sessions.types import SYSTEM_IDENTITY
+        try:
+            parent = self._records.get(parent_id)
+            if parent is None or getattr(parent, "status", None) in ("archived", "ended"):
+                log.info("child_notify.skip parent=%s child=%s parent_status=%s",
+                         parent_id, child.id, getattr(parent, "status", None))
+                return
+            text = _cs.build_child_notice(
+                session_id=child.id, name=getattr(child, "name", None) or child.id, status=status,
+                last_message=self._last_assistant_prose(child.id),
+                hand_back_reason=hand_back_reason,
+                pr_resolution=getattr(child, "pr_resolution", None))
+            drv = await self.ensure_driver(parent_id, SYSTEM_IDENTITY)
+            if drv is None:
+                log.warning("child_notify.no_driver parent=%s child=%s", parent_id, child.id)
+                return
+            await self.send_prompt(parent_id, text)
+            log.info("child_notify.sent parent=%s child=%s status=%s", parent_id, child.id, status)
+        except Exception:  # noqa: BLE001 — a notice failure must never fail the child's status persist
+            log.warning("child_notify.failed parent=%s child=%s", parent_id, child.id, exc_info=True)
 
     async def stop_subagent(self, session_id, tool_use_id: str) -> str | None:
         """Stop ONE running Task sub-agent of a live session (spec §4.4). Returns the
