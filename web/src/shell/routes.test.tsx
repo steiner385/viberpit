@@ -56,8 +56,8 @@ vi.mock('@/components/session/SubSessionView', () => ({
     <div data-testid="page-subagent">{`${sessionId}/${agentId}`}</div>
   ),
 }))
-vi.mock('@/components/ReviewView', () => ({
-  ReviewView: ({ sessionId }: { sessionId: string }) => (
+vi.mock('@/features/sessions/ReviewPage', () => ({
+  ArchivedReviewPage: ({ sessionId }: { sessionId: string }) => (
     <div data-testid="page-review">{sessionId}</div>
   ),
 }))
