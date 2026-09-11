@@ -3,8 +3,10 @@
  * the set of COLLAPSED group keys (empty/absent ⇒ all expanded). Namespace 'live'
  * maps to the original key so existing collapse state survives.
  */
+import { storageKey } from '@/lib/storageKey'
+
 const keyFor = (ns: string): string =>
-  ns === 'live' ? 'ccswitch.groupCollapse' : `ccswitch.groupCollapse.${ns}`
+  ns === 'live' ? storageKey('groupCollapse') : storageKey(`groupCollapse.${ns}`)
 
 export function loadGroupCollapseNs(ns: string): Set<string> {
   try {

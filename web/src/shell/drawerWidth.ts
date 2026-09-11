@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { storageKey } from '@/lib/storageKey'
 
 /**
  * Persisted width for the shell's drawer column (`app.drawer`), sub-spec B §4.2.
@@ -21,7 +22,7 @@ import { useSyncExternalStore } from 'react'
 export const DRAWER_MIN = 320
 export const DRAWER_MAX = 640
 export const DRAWER_DEFAULT = 448
-export const DRAWER_STORAGE_KEY = 'ccswitch.drawerWidth'
+export const DRAWER_STORAGE_KEY = storageKey('drawerWidth')
 
 /** Clamp to [MIN, MAX] and round; non-finite input falls back to the default. */
 export function clampDrawerWidth(px: number): number {

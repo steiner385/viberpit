@@ -4,9 +4,20 @@
 // hardcoded "primary". The focused repo's name is the guardrail that any
 // authoring action targets the intended pipeline, so it stays pinned and visible.
 import { useCallback, useEffect, useState } from 'react'
+import { storageKey, migrateStorageKey } from '@/lib/storageKey'
 
-const STORE_KEY = 'workspace.focusedPipeline'
+const STORE_KEY = storageKey('pipeline.focused')
+/** Pre-namespace key. Migrated forward on first read (row 7b). */
+const LEGACY_STORE_KEY = 'workspace.focusedPipeline'
 const URL_PARAM = 'pipeline'
+
+/** Migrates the legacy key forward (once, idempotent) and reads the current value. */
+function readStore(): string | null {
+  try {
+    migrateStorageKey(localStorage, LEGACY_STORE_KEY, STORE_KEY)
+    return localStorage.getItem(STORE_KEY)
+  } catch { return null }
+}
 
 /** #191: the focused pipeline is shareable via ?pipeline=org/repo. */
 function readPipelineParam(): string | null {
@@ -25,7 +36,7 @@ function writePipelineParam(repo: string): void {
 export function useFocusedPipeline(repos: readonly string[], enabled = true, useUrl = true): [string | null, (repo: string) => void] {
   const [focused, setFocused] = useState<string | null>(() => {
     if (useUrl) { const p = readPipelineParam(); if (p && repos.includes(p)) return p }
-    try { const s = localStorage.getItem(STORE_KEY); if (s && repos.includes(s)) return s } catch { /* ignore */ }
+    const s = readStore(); if (s && repos.includes(s)) return s
     return repos[0] ?? null
   })
   // Adopt a focus once repos load (repos is empty on first render before the live
@@ -40,8 +51,7 @@ export function useFocusedPipeline(repos: readonly string[], enabled = true, use
     if (repos.length === 0) return
     if (!focused || !repos.includes(focused)) {
       const fromUrl = useUrl ? readPipelineParam() : null
-      let stored: string | null = null
-      try { stored = localStorage.getItem(STORE_KEY) } catch { /* ignore */ }
+      const stored = readStore()
       // eslint-disable-next-line react-hooks/set-state-in-effect -- async repo adoption: repos arrive after mount; setState is the intended outcome (verbatim from source)
       setFocused(
         fromUrl && repos.includes(fromUrl) ? fromUrl

@@ -10,12 +10,14 @@
  * `SessionCard.layout.test.tsx` asserts the consequence. Changing it silently
  * changes the card layout.
  */
+import { storageKey } from '@/lib/storageKey'
+
 export const SIDEBAR_MIN = 280
 export const SIDEBAR_MAX = 560
 export const SIDEBAR_DEFAULT = 320
-export const SIDEBAR_STORAGE_KEY = 'ccswitch.listWidth'
+export const SIDEBAR_STORAGE_KEY = storageKey('listWidth')
 /** Pre-AppShell key (DEC-11). Read once, then written forward under the new key. */
-const LEGACY_STORAGE_KEY = 'ccswitch.sidebarWidth'
+const LEGACY_STORAGE_KEY = storageKey('sidebarWidth')
 
 /** Clamp to [MIN, MAX] and round; non-finite input falls back to the default. */
 export function clampSidebarWidth(px: number): number {

@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { storageKey } from '@/lib/storageKey'
 import { useAutoReload } from './useAutoReload'
 import * as hooks from '@/api/hooks'
 import * as updatePending from '@/hooks/useUpdatePending'
 import * as wsClient from '@/ws/client'
+import { BUILD_SHA } from '@/lib/version'
+
+const RELOADED_FROM_KEY = storageKey('autoReloadedFromSha')
+const LEGACY_RELOADED_FROM_KEY = 'ccswitch:auto-reloaded-from-sha'
 
 function Harness({ updateAvailable }: { updateAvailable: boolean }) {
   useAutoReload(updateAvailable)
@@ -74,5 +79,18 @@ describe('useAutoReload', () => {
     reload.mockReset()
     renderWith(true)
     expect(reload).not.toHaveBeenCalled()
+  })
+
+  it('migrates the legacy ccswitch:auto-reloaded-from-sha key once', () => {
+    sessionStorage.setItem(LEGACY_RELOADED_FROM_KEY, BUILD_SHA)
+    vi.spyOn(hooks, 'useSessions').mockReturnValue({ data: [{ id: 's1', status: 'idle' }] } as ReturnType<typeof hooks.useSessions>)
+    vi.spyOn(updatePending, 'useUpdatePending').mockReturnValue({ active: false, count: 0 })
+
+    renderWith(true)
+
+    // Already-reloaded-from-this-bundle, now recorded under the new key — no reload.
+    expect(reload).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem(RELOADED_FROM_KEY)).toBe(BUILD_SHA)
+    expect(sessionStorage.getItem(LEGACY_RELOADED_FROM_KEY)).toBeNull()
   })
 })

@@ -1,7 +1,8 @@
+import { storageKey } from '@/lib/storageKey'
 import { isSettingsSectionId, type SettingsSectionId } from './settingsDefs'
 
 /** DEC-9: bare /settings on desktop reopens the last section (C1 "restore the most recently viewed pane"). */
-export const LAST_SECTION_KEY = 'ccswitch.settings.last'
+export const LAST_SECTION_KEY = storageKey('settings.last')
 
 export function readLastSection(): SettingsSectionId | null {
   try {

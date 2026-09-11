@@ -3,16 +3,20 @@ import { useSessions } from '@/api/hooks'
 import { useUpdatePending } from '@/hooks/useUpdatePending'
 import { getSessionSocket } from '@/ws/client'
 import { isSafeToReload, BUILD_SHA } from '@/lib/version'
+import { storageKey, migrateStorageKey } from '@/lib/storageKey'
 
 // Per-tab marker: the bundle sha we last auto-reloaded FROM. If we reload and come back on the
 // SAME bundle still flagged outdated — a deploy left the edge reporting a sha this bundle can
 // never match, or a stale cache — reloading again is futile and loops forever (observed in prod:
 // ~50 reloads/sec pegging the renderer). Guard so we auto-reload at most once per bundle; after
 // that the NewVersionBanner offers a manual reload instead.
-const RELOADED_FROM_KEY = 'ccswitch:auto-reloaded-from-sha'
+const RELOADED_FROM_KEY = storageKey('autoReloadedFromSha')
+/** Pre-namespace key (colon-separated). Migrated forward on first read (row 7b). */
+const LEGACY_RELOADED_FROM_KEY = 'ccswitch:auto-reloaded-from-sha'
 
 function alreadyAutoReloadedFromThisBundle(): boolean {
   try {
+    migrateStorageKey(sessionStorage, LEGACY_RELOADED_FROM_KEY, RELOADED_FROM_KEY)
     return sessionStorage.getItem(RELOADED_FROM_KEY) === BUILD_SHA
   } catch {
     return false // sessionStorage unavailable → fall through (no worse than before the guard)
