@@ -38,13 +38,15 @@ def test_session_context_stays_read_class():
     assert SESSION_TOOL_SPECS["session_context"].tool_class is ToolClass.READ
 
 
-def test_session_tool_specs_declares_all_six_unconditionally():
+def test_session_tool_specs_declares_all_seven_unconditionally():
     """The permission layer resolves a tool by name across every surface — a name
     missing from this table fails open into the mutation branch, so every tool the
-    handlers can build must have a spec regardless of what any one context mounts."""
+    handlers can build must have a spec regardless of what any one context mounts.
+    `dispatch_session` (child-session spec §4.2) is the seventh: declared here, mounted
+    only with `signalling_tools` and the child-sessions switch."""
     assert set(SESSION_TOOL_SPECS) == {"session_context", "report_feedback",
                                        "mark_complete", "mark_no_pr", "hand_back",
-                                       "request_model"}
+                                       "request_model", "dispatch_session"}
 
 
 def test_signalling_tools_are_absent_when_the_engine_cannot_keep_them():

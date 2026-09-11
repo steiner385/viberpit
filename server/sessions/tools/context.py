@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,6 +25,14 @@ class SessionToolContext:
     #: (``AgentCapabilities.durable_tool_surface``). False → Codex, which loses its
     #: declared tools on `thread/resume` and keeps the markers instead.
     signalling_tools: bool = False
+    #: Child sessions are enabled on this host (``CCSWITCH_CHILD_SESSIONS_ENABLED``) —
+    #: with `signalling_tools`, the mount predicate for `dispatch_session`.
+    child_sessions: bool = False
+    #: Bound by the orchestrator to ``dispatch_child_session(parent_id, identity=…)``;
+    #: the `dispatch_session` handler's ONE call. None when the surface is off.
+    dispatch_child: Callable[..., Awaitable[Any]] | None = None
+    #: Live accessor for this session's children (records), read by `session_context`.
+    children: Callable[[], list[Any]] | None = None
 
 
 def context_snapshot(ctx: SessionToolContext) -> dict[str, Any]:
@@ -49,4 +57,10 @@ def context_snapshot(ctx: SessionToolContext) -> dict[str, Any]:
         "originRef": getattr(rec, "origin_ref", None),
         "goal": goal,
         "permissionMode": getattr(rec, "permission_mode", None),
+        # Lineage (child-session spec §4.5): how a parent waits on or reconciles its
+        # children without a second tool.
+        "parentSessionId": getattr(rec, "parent_session_id", None),
+        "children": [{"id": c.id, "name": getattr(c, "name", None),
+                      "status": getattr(c, "status", None)}
+                     for c in (ctx.children() if ctx.children else [])],
     }

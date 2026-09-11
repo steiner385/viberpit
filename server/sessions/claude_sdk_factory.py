@@ -33,7 +33,8 @@ def _build_append_string() -> str:
         session_tools=cfg.session_tools_enabled,
         signalling_tools=(cfg.session_tools_enabled
                           and ClaudeAgentDriver.capabilities.durable_tool_surface),
-        self_model_switch=cfg.self_model_switch_enabled)
+        self_model_switch=cfg.self_model_switch_enabled,
+        child_sessions=cfg.child_sessions_enabled)
 
 # Inline flag-settings payload (--settings layer, highest priority).  Auto-approves any
 # project-scoped `.mcp.json` MCP server so the CLI's trust gate (LX1 → "pending" → prompt)
