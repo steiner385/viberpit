@@ -145,6 +145,9 @@
   --color-accent-ink: var(--t-accent-ink);
   --color-accent-wash: var(--t-accent-wash);
   --color-brand: var(--t-brand);
+  /* Bridged so the ink for a `-strong` fill is spellable as a utility
+     (text-on-strong) — the rule's whiteOnFill error names it. */
+  --color-on-strong: var(--t-on-strong);
   --color-success: var(--t-success);  --color-success-wash: var(--t-success-wash);  --color-success-strong: var(--t-success-strong);
   --color-warning: var(--t-warning);  --color-warning-wash: var(--t-warning-wash);  --color-warning-strong: var(--t-warning-strong);
   --color-danger:  var(--t-danger);   --color-danger-wash:  var(--t-danger-wash);   --color-danger-strong:  var(--t-danger-strong);

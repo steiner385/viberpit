@@ -28,7 +28,7 @@ export function DependencyPanel({ slug }: { slug: string }) {
       {badges.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {badges.map((b) => (
-            <span key={b} className="rounded bg-amber-500/15 px-2 py-0.5 text-xs text-amber-600">
+            <span key={b} className="rounded bg-warning-wash px-2 py-0.5 text-xs text-warning">
               {b}
             </span>
           ))}
