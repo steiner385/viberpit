@@ -94,7 +94,7 @@ class Translator:
             tuid = msg.tool_use_id or self._task_tool.get(msg.task_id)
             if not tuid:
                 return []
-            u = msg.usage or {}
+            u: dict = dict(msg.usage) if msg.usage else {}
             return [ev.SubAgentProgress(
                 tuid, msg.task_id, msg.description or "",
                 total_tokens=u.get("total_tokens"), tool_uses=u.get("tool_uses"),
@@ -111,7 +111,7 @@ class Translator:
             self._task_tool.pop(msg.task_id, None)
             if not tuid:
                 return []
-            u = msg.usage or {}
+            u = dict(msg.usage) if msg.usage else {}
             return [ev.SubAgentEnded(
                 tuid, msg.task_id, _ENDED_STATUS.get(msg.status, "failed"),
                 summary=msg.summary or "", total_tokens=u.get("total_tokens"),
