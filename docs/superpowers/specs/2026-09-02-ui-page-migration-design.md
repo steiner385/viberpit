@@ -40,7 +40,7 @@ sweeps what's left and widens the lint rule.
 | **Standard** | content scrolls; stat tiles (if any) first; list/cards after; `Skeleton` → `EmptyState` → content |
 | **Split** | no `page.subnav`; `SettingsNav` (vertical, from `settingsDefs`) + scrolling panel on desktop/tablet-landscape; on phone/tablet-portrait the nav is `/settings` and each section is `/settings/:section` with Back |
 | **Workspace** | `PageContent overflow-hidden`; inner panes own scroll; the header may be the feature's own (`SessionHeader` for Sessions, Pipeline's `HealthHeader` row inside `PageHeader.meta`) |
-| **Reader** | read-only; sticky header with Back; `app.dock` hidden (the route tells `AppShell`) |
+| **Reader** | no composer; `app.dock` hidden (`readerRouteForPath` tells `AppShell`); `PageHeader` with the `back` slot outside the scroller; the page's own few actions (Unarchive, Stop) live in `PageHeader.actions`; `PageContent scroll={false}` when a virtualized transcript owns the scroll |
 
 ### 2.3 Invariants (tested)
 
@@ -54,7 +54,7 @@ One `h1` · `document.title` set · `data-page-variant` present · header render
 |---|---|---|---|---|
 | 5 | **Settings** (`/settings/:section`) | Split | `settingsDefs.ts` (id, label, icon, component); `SettingsNav`; a `SettingsSection` chassis (`title`, `description`, `children`, `footer` with the Save row) that the 14 sections instantiate; `AccountsManager` and `AutomationView` become sections; theme toggle in General | `SettingsView` tablist; per-section heading markup |
 | 6 | **Automations** | Standard | `AutomationCard` on `Card`; `ScheduleEditor`, `ManualDispatchDialog` on primitives; stat tiles for active/queued | ad-hoc headers |
-| 7 | **Archived** + **Review** (`/archived`, `/archived/:id`) | Standard + Reader | `ArchivedManager` split into `ArchivedPage` + `ArchivedList`; `ReviewView` → `ReviewPage` (Reader) with sticky Back; sub-agent view → Reader | inline dialogs in `ArchivedManager` |
+| 7 | **Archived** + **Review** (`/archived`, `/archived/:id`) | Standard + Reader | `ArchivedManager` split into `ArchivedPage` + `ArchivedList`; archived review → `features/sessions/ReviewPage.tsx` (Reader, Back in the header); sub-agent view → `features/sessions/SubAgentPage.tsx` (Reader) — landed 2026-09-11 (finish-line row 6, #1470); the Archived list had become a Sessions scope in #1261 and its dialogs were already on `ui/Dialog` | inline dialogs in `ArchivedManager` |
 | 8 | **Insights** | Standard | `InsightsView` → `InsightsPage`; check-health tiles as stat tiles | |
 | 9 | **Products** + **Initiatives** | Standard | `ProjectsTab`/`InitiativesTab` → pages; `.pm-*`/`.init-*` CSS rewritten as token utilities on `Card`/`Badge`; `InitiativeTrack` keeps the metro idiom but on tokens | `projects.css`, `initiatives.css`, the `.prdash-root` wrapper on Initiatives |
 | 10 | **Pipeline** | Workspace | `PipelineTab` → `PipelinePage`; `PipelineSwitcher` → `page.subnav` `Tabs`; `HealthHeader` into `PageHeader.meta`; chrome bar actions (bell, legend) into `PageHeader.actions`; `plotroom.css` rewritten onto token utilities except the metro/gantt chart rules, which move to `features/pipeline/charts/plotroom.css` (lint allowlist) | `.prdash-root` remap, `pipeline/kiosk.ts`, `useKioskCycle` (→ page-local `useRepoCycle`) — landed 2026-09-11 (finish-line row 5, #1469) |

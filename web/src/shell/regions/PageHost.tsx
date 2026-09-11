@@ -75,8 +75,9 @@ export interface PageHostProps {
  * ## Landmark
  *
  * This region IS the page's `<main>`. It could not be until Task 17: `App.tsx`,
- * `ReviewView` and `SubSessionView` each declared their own, so promoting the
- * region would have nested two. Task 17 deleted `App.tsx`'s shell fork and
+ * the archived review and sub-agent views (now `features/sessions/ReviewPage.tsx`
+ * and `SubAgentPage.tsx`) each declared their own, so promoting the region
+ * would have nested two. Task 17 deleted `App.tsx`'s shell fork and
  * demoted the other two to `<div>`s, which puts the single `main` landmark
  * here — one owner, present in every layout mode, wrapping exactly the routed
  * page and the dock. `AppShell.test.tsx`'s axe passes run with the `region`

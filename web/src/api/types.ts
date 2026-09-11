@@ -402,6 +402,9 @@ export interface Session {
   origin?: string | null
   /** The automation's reference key (e.g. 'owner/repo#123'); null/absent when origin is absent. */
   originRef?: string | null
+  /** The session whose dispatch_session call created this one (child-session spec §4.6);
+   *  null/absent for a root. */
+  parentSessionId?: string | null
   /** Server-derived from the automation registry: whether this session is new
    *  work (`development` — every human session, backlog and SDLC sessions) or
    *  routine housekeeping (`maintenance`) the list keeps in the Background

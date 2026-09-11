@@ -13,7 +13,9 @@ from claude_agent_sdk import SdkMcpTool, tool
 from ccswitch import brand
 from server.mcp_spec import ToolArgError, ToolSpec, annotations_for, tool_err
 from server.obs.metrics import session_tool_calls_total
+from server.sessions.child_sessions import ChildSessionLimit
 from server.sessions.completion import NO_PR_RESOLUTIONS, parse_hand_back, parse_mark_no_pr
+from server.sessions.permissions import MODE_WIDTH
 from server.sessions.feedback import CATEGORIES, IMPACTS, record_feedback, validate_item
 from server.sessions.model_request import MODEL_TIERS, parse_request_model
 
@@ -61,7 +63,8 @@ def mounted_tool_names(ctx: SessionToolContext) -> tuple[str, ...]:
     system-prompt paragraph in `tools/instruction.py` — so `build_session_tools` and
     the paragraph can never disagree about which tool a session was declared."""
     return mounted_names(signalling_tools=ctx.signalling_tools,
-                         self_model_switch=ctx.self_model_switch)
+                         self_model_switch=ctx.self_model_switch,
+                         child_sessions=ctx.child_sessions)
 
 
 def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
@@ -92,8 +95,10 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
     @spec_tool("session_context",
                f"What {brand.NAME} knows about THIS session: id, name, repo, branch, cwd, host, "
                "engine, model, account, the automation that dispatched it (origin) and its "
-               "reference (originRef, e.g. owner/repo#123), the effective goal, and the "
-               "permission mode. Call it when you need to know how you were dispatched.",
+               "reference (originRef, e.g. owner/repo#123), the effective goal, the "
+               "permission mode, and this session's lineage: parentSessionId and its "
+               "children (id, name, status). Call it when you need to know how you were "
+               "dispatched or how your child sessions are doing.",
                {"type": "object", "properties": {}, "required": []})
     @guarded
     async def session_context(args: dict[str, Any]) -> Any:
@@ -194,7 +199,53 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
     async def request_model(args: dict[str, Any]) -> Any:
         return {"acknowledged": True, **parse_request_model(args)}
 
+    @spec_tool("dispatch_session",
+               "Start a CHILD session of this one: a separate session on the same repo, in "
+               "its own worktree, owned by the same user, that the user can open, steer, "
+               "approve and stop like any session. Use it for a unit of work the user must "
+               "be able to interact with independently — a sub-task that will need its own "
+               "decisions, review or a long runtime; keep using the Agent tool for quick, "
+               "self-contained research. name (3-60 chars): the board title. prompt: the "
+               "child's COMPLETE brief — it does not see this conversation. model "
+               f"(optional, one of {', '.join(MODEL_TIERS)}): default is this session's model. "
+               "permission_mode (optional, one of plan, interactive, auto, full-auto): never "
+               "wider than this session's. Returns the child's id and URL immediately; you "
+               "receive a <child-session-notification> prompt when the child completes, hands "
+               "back or ends, carrying its last message. Call session_context to list your "
+               "children and their status. Live children are capped and grandchildren are "
+               "limited; a refusal comes back as the tool result.",
+               {"type": "object",
+                "properties": {"name": {"type": "string"}, "prompt": {"type": "string"},
+                               "model": {"type": "string"}, "permission_mode": {"type": "string"}},
+                "required": ["name", "prompt"]})
+    @guarded
+    async def dispatch_session(args: dict[str, Any]) -> Any:
+        name = str(args.get("name") or "").strip()
+        prompt = str(args.get("prompt") or "").strip()
+        model = args.get("model")
+        mode = args.get("permission_mode")
+        if not (3 <= len(name) <= 60):
+            raise ToolArgError("name must be 3-60 characters")
+        if not prompt:
+            raise ToolArgError("prompt must not be empty — it is the child's whole brief")
+        if model is not None and model not in MODEL_TIERS:
+            raise ToolArgError(f"model must be one of {', '.join(MODEL_TIERS)}")
+        if mode is not None and mode not in MODE_WIDTH:
+            raise ToolArgError("permission_mode must be one of plan, interactive, auto, full-auto")
+        if ctx.dispatch_child is None:
+            raise ToolArgError("child sessions are not available in this session")
+        try:
+            return await ctx.dispatch_child(name=name, prompt=prompt, model=model, permission_mode=mode)
+        except ChildSessionLimit as e:
+            raise ToolArgError(str(e)) from e
+        except Exception as e:  # noqa: BLE001 - a refused/failed create (busy accounts, clone,
+            # branch, model gate) must reach the model as its message, not a class name
+            log.warning("dispatch_session: child create failed session=%s", ctx.session_id,
+                        exc_info=True)
+            raise ToolArgError(f"could not start the child session: {e}") from e
+
     by_name = {"session_context": session_context, "report_feedback": report_feedback,
                "mark_complete": mark_complete, "mark_no_pr": mark_no_pr,
-               "hand_back": hand_back, "request_model": request_model}
+               "hand_back": hand_back, "request_model": request_model,
+               "dispatch_session": dispatch_session}
     return [by_name[name] for name in mounted_tool_names(ctx)]

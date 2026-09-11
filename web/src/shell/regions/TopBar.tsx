@@ -24,7 +24,7 @@ export function TopBar() {
       data-rail="top"
       className="z-nav flex shrink-0 items-center gap-2 border-b border-edge bg-surface px-3 pb-2"
       // Clears the iOS status bar; env() is 0 elsewhere. Inline style to match
-      // the existing mobile chrome (App.tsx, SessionView, ReviewView).
+      // the pre-shell mobile chrome.
       style={{ paddingTop: 'calc(env(safe-area-inset-top) + 0.5rem)' }}
     >
       <BrandMark size={22} />

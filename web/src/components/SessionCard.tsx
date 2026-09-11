@@ -16,6 +16,7 @@ import { engineBadge, isGatedTier, tierLabel } from '@/session/modelName'
 import { UsageBadge } from './UsageBadge'
 import { PrList } from './PrList'
 import { SubAgentRows } from './SubAgentRows'
+import { ChildSessionRows } from './ChildSessionRows'
 import { CardFrame } from './card/CardFrame'
 import { CardMenu, Sep, actionBtn, menuItem } from './card/CardMenu'
 import { useMediaQuery } from '@/lib/useMediaQuery'
@@ -76,11 +77,23 @@ interface SessionCardProps {
   onFixPr?: (id: string, number: number) => void
   /** Called when the user toggles this session's autopilot opt-out — parent owns the mutation. */
   onToggleAutopilot?: (id: string, paused: boolean) => void
+  /** Sessions this one dispatched (child-session spec §4.6); derived by the list from the
+   *  same sessions array, so the card never fetches. */
+  childSessions?: Session[]
+  /** Name of the session that dispatched this one, for the "child of" pill; null when
+   *  the parent is not in the loaded list. */
+  parentName?: string | null
 }
 
-export function SessionCard({ session, account, selected = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onGenerateSuggestion, onNavigate, onExit, prAutofixMode, onFixPr, onToggleAutopilot }: SessionCardProps) {
+export function SessionCard({ session, account, selected = false, listMode = false, onOpen, onRename, onClose, onDelete, onQuickResume, onGenerateSuggestion, onNavigate, onExit, prAutofixMode, onFixPr, onToggleAutopilot, childSessions = [], parentName = null }: SessionCardProps) {
   const subAgents = session.subAgents ?? []
   const hasSubAgents = subAgents.length > 0
+  const hasChildren = childSessions.length > 0
+  // One chevron expands both nested lists (sub-agent threads and child sessions), and
+  // says which it holds so a screen reader is not told "sub-agents" for a children-only card.
+  const hasNested = hasSubAgents || hasChildren
+  const nestedNoun = hasSubAgents && hasChildren ? 'sub-agents and child sessions'
+    : hasChildren ? 'child sessions' : 'sub-agents'
   const [expanded, setExpanded] = useState(false)
   const [generating, setGenerating] = useState(false)
 
@@ -240,11 +253,11 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         testId: 'swipe-panel-delete',
         className: 'bg-red-600 text-white',
       }}
-      leading={hasSubAgents ? (
+      leading={hasNested ? (
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          aria-label={expanded ? 'Hide sub-agents' : 'Show sub-agents'}
+          aria-label={expanded ? `Hide ${nestedNoun}` : `Show ${nestedNoun}`}
           aria-expanded={expanded}
           className={cn(
             'flex-shrink-0 h-6 w-6 flex items-center justify-center rounded',
@@ -304,6 +317,23 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               {session.originLabel ?? session.origin ?? 'Maintenance'}
             </span>
           )}
+          {/* Lineage pill (child-session spec §4.6): this session was dispatched by
+              another session's model. Opens the parent. */}
+          {session.parentSessionId && (
+            <button
+              type="button"
+              data-testid="card-parent-pill"
+              onClick={(e) => { e.stopPropagation(); onOpen(session.parentSessionId!) }}
+              className={cn(
+                'flex-shrink-0 max-w-[10rem] truncate rounded px-1.5 py-0.5 text-[11px] font-medium leading-4',
+                'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300 hover:underline',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+              )}
+              title="Open the session that dispatched this one"
+            >
+              child of {parentName ?? session.parentSessionId.slice(0, 8)}
+            </button>
+          )}
           <span
             className="min-w-0 truncate text-sm font-semibold text-gray-900 dark:text-gray-100"
             title={session.nameIsAuto ? 'Auto-named by Claude' : undefined}
@@ -319,6 +349,11 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           {hasSubAgents && !expanded && (
             <span className="flex-shrink-0 text-xs tabular-nums px-1.5 py-0.5 rounded bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
               {subAgents.length} {subAgents.length === 1 ? 'agent' : 'agents'}
+            </span>
+          )}
+          {hasChildren && !expanded && (
+            <span className="flex-shrink-0 text-xs tabular-nums px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300">
+              {childSessions.length} {childSessions.length === 1 ? 'child' : 'children'}
             </span>
           )}
 
@@ -722,6 +757,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
       </div>
 
       {hasSubAgents && expanded && <SubAgentRows sessionId={session.id} subAgents={subAgents} />}
+      {hasChildren && expanded && <ChildSessionRows sessions={childSessions} />}
     </CardFrame>
   )
 }

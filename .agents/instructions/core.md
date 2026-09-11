@@ -284,6 +284,6 @@ replaced the HTML-comment markers. Codex lacks the capability and keeps the mark
 **the marker parsers are permanent**. The Translator reads the signal from the tool-use block, not the handler, to
 keep the sub-agent (`parent_tool_use_id is None`) guard.
 The coding overlay is exactly `{"mcp_servers": …}` — never add `strict_mcp_config` or `system_prompt`. Kill switch
-`CCSWITCH_SESSION_TOOLS_ENABLED` drops all six tools. Registry primitives live in `server/mcp_spec.py`; add a tool by
+`CCSWITCH_SESSION_TOOLS_ENABLED` drops all seven tools. Registry primitives live in `server/mcp_spec.py`; add a tool by
 adding a `ToolSpec` + handler + eval case. Details: `docs/product/features/session-tools.md`.
 

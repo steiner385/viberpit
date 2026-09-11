@@ -254,6 +254,16 @@ try:
         # are recorded as "capped": visible, never filed.
         session_feedback_cap: int = Field(
             default=3, alias="CCSWITCH_SESSION_FEEDBACK_CAP")
+        # Child sessions (spec 2026-09-11-child-session-dispatch §4.7): a Claude session
+        # may spawn linked child sessions through the `dispatch_session` tool. Off = the
+        # tool is not mounted and the orchestrator refuses a dispatch.
+        child_sessions_enabled: bool = Field(
+            default=True, alias="CCSWITCH_CHILD_SESSIONS_ENABLED")
+        # Live (not complete/done/ended/archived) children one parent may have at once.
+        child_session_cap: int = Field(default=3, alias="CCSWITCH_CHILD_SESSION_CAP")
+        # Deepest nesting: 1 = children only, 2 = grandchildren, …
+        child_session_max_depth: int = Field(
+            default=2, alias="CCSWITCH_CHILD_SESSION_MAX_DEPTH")
         # Error-triage capture (spec 2026-09-07): install the WARNING+ log sink that
         # feeds error_signatures. Off = configure_logging() installs no handler.
         error_sink_enabled: bool = Field(
@@ -549,6 +559,15 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         session_feedback_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_SESSION_FEEDBACK_CAP", "")) and v.isdigit() else 3
+        )
+        child_sessions_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("CCSWITCH_CHILD_SESSIONS_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+        )
+        child_session_cap: int = dataclasses.field(
+            default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_CHILD_SESSION_CAP", "")) and v.isdigit() else 3
+        )
+        child_session_max_depth: int = dataclasses.field(
+            default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_CHILD_SESSION_MAX_DEPTH", "")) and v.isdigit() else 2
         )
         error_sink_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_ERROR_SINK_ENABLED", "true").lower() in ("1", "true", "yes", "on")

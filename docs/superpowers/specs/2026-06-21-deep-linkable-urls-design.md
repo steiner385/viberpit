@@ -66,7 +66,8 @@ Unknown top-level path → SPA renders, router catch-all redirects to `/sessions
   - `/` → `<Navigate to="/sessions" replace />`
   - `/sessions`, `/accounts`, `/archived` → `<Dashboard>` with the active tab derived from the path.
   - `/session/:sessionId` → `<SessionView>` (reads `sessionId` from `useParams`).
-  - `/review/:sessionId` → `<ReviewView>` (reads `sessionId` from `useParams`).
+  - `/review/:sessionId` → the archived review component (reads `sessionId` from `useParams`;
+    renamed `ArchivedReviewPage` in `features/sessions/ReviewPage.tsx` at finish-line row 6, 2026-09-11).
   - catch-all `*` → `<Navigate to="/sessions" replace />`.
 - **`web/src/components/Dashboard.tsx`** — `activeTab` derived from the current route instead of
   local `useState`; tab buttons navigate (`useNavigate`/`<Link>`) instead of `setState`.
@@ -135,7 +136,8 @@ Backend:
 - `web/src/App.tsx` — routes replace the view state machine.
 - `web/src/components/Dashboard.tsx` — tab from route; navigation on tab change; dialogs from
   search param.
-- `web/src/components/SessionCard.tsx`, `DispatchBar.tsx`, `SessionView.tsx`, `ReviewView.tsx` —
+- `web/src/components/SessionCard.tsx`, `DispatchBar.tsx`, `SessionView.tsx`, the archived review
+  component (renamed `features/sessions/ReviewPage.tsx` at finish-line row 6) —
   navigation via router instead of `setView`/callbacks where applicable.
 - `server/app.py` — SPA catch-all fallback.
 - Test files alongside the above.

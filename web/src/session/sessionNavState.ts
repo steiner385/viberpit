@@ -38,6 +38,8 @@
  * back/forward entry can carry state written by an older build), so it is
  * validated rather than asserted.
  */
+import { matchPath } from 'react-router-dom'
+
 import { NAV_BY_ID } from '@/shell/navDefs'
 
 /** `/sessions` — the session list. */
@@ -50,8 +52,8 @@ export const SESSIONS_PATH = NAV_BY_ID.sessions.path
  * scope now, so its paths hang off `SESSIONS_PATH`: `navDefForPath` resolves
  * them to `sessions`, which is what keeps the list column beside the
  * read-only transcript on desktop. The constant keeps its name — every caller
- * (`useArchiveAdvance`, the automations page, `ReviewView`'s back button) was
- * already routing through it and needs no edit.
+ * (`useArchiveAdvance`, the automations page, the archived reader's Back link)
+ * was already routing through it and needs no edit.
  */
 export const ARCHIVED_PATH = `${SESSIONS_PATH}/archived`
 
@@ -132,6 +134,24 @@ export function listScopeForPath(pathname: string): ListScope {
   if (under(pathname, ARCHIVED_PATH)) return 'archived'
   if (under(pathname, BACKGROUND_PATH)) return 'background'
   return 'live'
+}
+
+/** The two page shapes the shell treats as a Reader (page-migration §2.2). */
+export type ReaderRoute = 'archived' | 'subagent'
+
+/**
+ * Whether the route is a Reader page, and which — the archived transcript or a
+ * sub-agent drill-down. The shell hides `app.dock` behind a Reader (there is no
+ * composer to sit above it) and this is the ONE derivation of that fact, beside
+ * `listScopeForPath` and the route constants it reads. A Reader is recognised
+ * by its ROUTE, never by an `OpenItem` kind: the sub-agent route must keep
+ * resolving to `{ kind: 'session' }` so `useOpenSessionId` mounts the live
+ * runtime the page reads.
+ */
+export function readerRouteForPath(pathname: string): ReaderRoute | null {
+  if (matchPath(ARCHIVED_SESSION_ROUTE, pathname)) return 'archived'
+  if (matchPath(SUBAGENT_ROUTE, pathname) || matchPath(BACKGROUND_SUBAGENT_ROUTE, pathname)) return 'subagent'
+  return null
 }
 
 /** Router state understood by the session route. */
