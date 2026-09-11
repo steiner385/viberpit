@@ -25,7 +25,9 @@ export interface PageHeaderProps {
    * A leading Back link (Reader pages; page-migration §2.2). Rendered BEFORE
    * the title so it is the first thing keyboard and screen-reader users reach,
    * and as a real link so it has an href. Not gated on `useInteractive()`:
-   * leaving a page is navigation, not a mutation.
+   * leaving a page is navigation, not a mutation. That is only safe because no
+   * kiosk-visible page passes it — kiosk ships no navigation affordance at all
+   * (the rail is hidden), so do not pass `back` from a `showInKiosk` page.
    */
   back?: { to: string; label: string }
   meta?: React.ReactNode

@@ -40,7 +40,8 @@ type Cell = [LayoutMode, RegionId, Partial<RegionContext>, boolean]
  * | app.rail     | 1 (NavBar+TopBar)| 1 (NavRail)      | 1 (NavRail)      | 0     |
  * | app.list     | 1 when no item   | 1 when no item   | 1                | 0     |
  * | app.main     | 1                | 1                | 1                | 1     |
- * | app.dock     | 1 in Sessions, no Reader | … | 0 |
+ * | app.dock     | 1 in Sessions¹   | 1 in Sessions¹   | 1 in Sessions¹   | 0     |
+ * ¹ and not behind a Reader page (finish-line row 6).
  * | app.drawer   | 1 when ?drawer=  | 1 when ?drawer=  | 1 when ?drawer=  | 0     |
  * | app.overlays | 1                | 1                | 1                | 1     |
  */

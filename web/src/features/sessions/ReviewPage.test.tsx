@@ -77,6 +77,16 @@ describe('ArchivedReviewPage', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'arc-99ab' })).toBeInTheDocument()
   })
 
+  it('omits the archive date when the server sent none (no "Invalid Date" in the meta line)', () => {
+    vi.mocked(hooks.useArchivedSessions).mockReturnValue(
+      queryResult([{ ...ARCHIVED[0], archivedAt: null as unknown as string }]) as never,
+    )
+    vi.mocked(hooks.useSessionTranscript).mockReturnValue(queryResult({ events: [] }) as never)
+    renderPage()
+    expect(screen.getByText(/^Archived · read-only · o\/r$/)).toBeInTheDocument()
+    expect(screen.queryByText(/Invalid Date|1970/)).toBeNull()
+  })
+
   it('shows the busy state while the transcript is fetching', () => {
     vi.mocked(hooks.useSessionTranscript).mockReturnValue({ data: undefined, isLoading: true } as never)
     renderPage()

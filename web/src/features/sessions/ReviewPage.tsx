@@ -20,6 +20,7 @@ import { Archive } from 'lucide-react'
 import { transcriptReducer, initialTranscript } from '@/session/reducer'
 import { useSessionTranscript, useUnarchiveSession, useArchivedSessions } from '@/api/hooks'
 import { fetchOlderTurns } from '@/api/transcript'
+import { isValidTimestamp } from '@/lib/relativeTime'
 import { ARCHIVED_PATH } from '@/session/sessionNavState'
 import { TranscriptView } from '@/components/session/TranscriptView'
 import { PageHeader } from '@/ui/PageHeader'
@@ -61,7 +62,9 @@ export function ArchivedReviewPage({ sessionId }: { sessionId: string }) {
       .finally(() => { loadingOlderRef.current = false })
   }, [sessionId, state.earliestTurn])
 
-  const archivedOn = record ? new Date(record.archivedAt).toLocaleDateString() : null
+  // `archivedAt` is typed as a string but the server sends null for a row with
+  // no archive time; the sibling card guards it the same way.
+  const archivedOn = isValidTimestamp(record?.archivedAt) ? new Date(record.archivedAt).toLocaleDateString() : null
   const meta = [archivedOn ? `Archived ${archivedOn}` : 'Archived', 'read-only', record?.repo ?? null]
     .filter(Boolean).join(' · ')
 

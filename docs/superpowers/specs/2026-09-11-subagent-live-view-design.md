@@ -9,8 +9,9 @@ ViberPit sessions, the interactive path this spec deliberately does not attempt.
 
 ## 1. Problem
 
-Clicking a sub-agent row opens the sub-agent Reader page (`features/sessions/SubAgentPage.tsx`), a
-transcript with no composer and a "Read-only sub-agent" badge. It shows the sub-agent's turns only if the parent was open
+Before this spec, clicking a sub-agent row opened a read-only transcript with a "Read-only
+sub-agent" badge (since finish-line row 6 that view is the Reader page `features/sessions/SubAgentPage.tsx`,
+which implements §5.5 below). It showed the sub-agent's turns only if the parent was open
 while it streamed, knows nothing about the sub-agent's progress or usage, cannot stop it,
 and does not show the permission cards the sub-agent itself is blocked on (those land in
 the parent's transcript, unattributed). Tony's ask: "click into sub-agent sessions and
