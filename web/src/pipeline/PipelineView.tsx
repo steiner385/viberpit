@@ -75,7 +75,6 @@ export function PipelineView({ state, focusedRepo, onFixPr, activeFilter: contro
   const [collapsed, setCollapsed] = useState<Set<string>>(readCollapsedSet);
   const [openCohorts, setOpenCohorts] = useState<Set<string>>(new Set());
 
-  // Hooks must come before any early return (Rules of Hooks).
   // focused repo first (stable otherwise) — the workspace's "current pipeline" lead.
   // Memoized on [state, focusedRepo] so SSE frames that don't change these skip the sort.
   const repos = useMemo(

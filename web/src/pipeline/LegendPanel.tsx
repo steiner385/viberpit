@@ -11,6 +11,12 @@ import { Sheet } from '@/ui/Sheet';
 import { TONE_FILL } from '@/ui/Badge';
 import { cn } from '@/lib/utils';
 
+/** One definition-list row: a term column with a 110 px (6.875 rem) floor so
+ *  the descriptions line up across rows — each row is its own grid, so without
+ *  the floor every row would size its term column to its own label. */
+const LEGEND_DL_ROW = 'my-1.5 grid grid-cols-[minmax(6.875rem,auto)_1fr] gap-x-3 gap-y-0.5 text-xs '
+  + '[&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink';
+
 interface LegendPanelProps {
   open: boolean;
   onClose: () => void;
@@ -87,7 +93,7 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
             </p>
             <dl className="m-0">
               {Object.entries(LANE_STATE_DEFINITIONS).map(([key, def]) => (
-                <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink" key={key}>
+                <div className={LEGEND_DL_ROW} key={key}>
                   <dt>{def.label}</dt>
                   <dd>{def.text}</dd>
                 </div>
@@ -98,7 +104,7 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
             </p>
             <dl className="m-0">
               {Object.entries(LANE_DEFINITIONS).map(([key, def]) => (
-                <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink" key={key}>
+                <div className={LEGEND_DL_ROW} key={key}>
                   <dt>{def.label}</dt>
                   <dd>{def.text}</dd>
                 </div>
@@ -143,7 +149,7 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
             <h3 className="text-2xs font-semibold uppercase tracking-wider text-ink-muted">Row sub-line terms</h3>
             <dl className="m-0">
               {SUBLINE_TERMS.map(({ term, text }) => (
-                <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink" key={term}>
+                <div className={LEGEND_DL_ROW} key={term}>
                   <dt>{term}</dt>
                   <dd>{text}</dd>
                 </div>
@@ -206,23 +212,23 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
               </div>
             </div>
             <dl className="m-0">
-              <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink">
+              <div className={LEGEND_DL_ROW}>
                 <dt>solid blue</dt>
                 <dd>merge group building — speculative merge running the full CI suite (shows % and ETA)</dd>
               </div>
-              <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink">
+              <div className={LEGEND_DL_ROW}>
                 <dt>solid red</dt>
                 <dd>that group&apos;s build failed — the queue re-batches without the culprit</dd>
               </div>
-              <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink">
+              <div className={LEGEND_DL_ROW}>
                 <dt>dashed gray</dt>
                 <dd>waiting — &ldquo;next batch&rdquo; starts building when a slot frees; &ldquo;then&rdquo; collapses the rest</dd>
               </div>
-              <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink">
+              <div className={LEGEND_DL_ROW}>
                 <dt>dashed red</dt>
                 <dd>unmergeable — conflicts with the base branch; needs a rebase, facing ejection</dd>
               </div>
-              <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink">
+              <div className={LEGEND_DL_ROW}>
                 <dt>dashed amber</dt>
                 <dd>blocked behind a conflicting entry ahead — not conflicting itself; revalidates once the culprit is ejected</dd>
               </div>
@@ -234,7 +240,7 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
             <h3 className="text-2xs font-semibold uppercase tracking-wider text-ink-muted">Status tiles</h3>
             <dl className="m-0">
               {TILE_DEFINITIONS.map(({ bucket, label, tone, title }) => (
-                <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink" key={bucket}>
+                <div className={LEGEND_DL_ROW} key={bucket}>
                   <dt>
                     {/* The swatch reads the SAME TILE_TONE the board's tiles do, so
                         the legend cannot describe a colour the board no longer uses. */}
@@ -256,7 +262,7 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
             </p>
             <dl className="m-0">
               {Object.entries(SETTINGS_DEFINITIONS).map(([key, def]) => (
-                <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink" key={key}>
+                <div className={LEGEND_DL_ROW} key={key}>
                   <dt>{def.label}</dt>
                   <dd>{def.text}</dd>
                 </div>
@@ -270,7 +276,7 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
             <h3 className="text-2xs font-semibold uppercase tracking-wider text-ink-muted">Designer (protection map)</h3>
             <dl className="m-0">
               {Object.entries(DESIGNER_DEFINITIONS).map(([key, def]) => (
-                <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink" key={key}>
+                <div className={LEGEND_DL_ROW} key={key}>
                   <dt>{def.label}</dt>
                   <dd>{def.text}</dd>
                 </div>
@@ -292,7 +298,7 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
                 <h4 className="mb-0.5 text-2xs font-semibold uppercase tracking-wider text-ink opacity-75">{group.label}</h4>
                 <dl className="m-0">
                   {group.keys.map((key) => (
-                    <div className="my-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs [&>dd]:m-0 [&>dd]:text-ink-muted [&>dt]:flex [&>dt]:items-center [&>dt]:gap-1 [&>dt]:font-mono [&>dt]:text-2xs [&>dt]:text-ink" key={key}>
+                    <div className={LEGEND_DL_ROW} key={key}>
                       <dt>{METRIC_DEFINITIONS[key].label}</dt>
                       <dd>{METRIC_DEFINITIONS[key].text}</dd>
                     </div>
