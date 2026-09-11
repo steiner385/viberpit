@@ -49,7 +49,14 @@ export function useNavBadges(): NavBadges {
   return {
     sessions: sessions.filter((s) => !isBackgroundSession(s)).length || undefined,
     pipeline: inFlightPrCount(prs) || undefined,
-    automations: automationsActiveSessions || undefined,
+    // Live automation sessions — the count the deleted Automations nav row wore.
+    // Automations are the Delivery section's Automations scope now (finish-line
+    // row 4, R3), so the badge follows the rows onto Delivery. This observer of
+    // `QK.automations` is app-wide and ungated; the Delivery list column shares
+    // the key, so it adds an observer rather than a request. `QK.automations`
+    // has a `staleTime` and no `refetchInterval` today — if it gains one, it
+    // goes on THIS observer alone, never on both.
+    delivery: automationsActiveSessions || undefined,
     // Proposals awaiting a decision — the count the deleted Triage nav row wore.
     // The queue is the Roadmap section's Inbox scope now (finish-line row 3), so
     // the badge follows it onto Roadmap rather than disappearing with the row.

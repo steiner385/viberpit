@@ -73,19 +73,20 @@ import { useArchiveAdvance } from '@/features/sessions/useArchiveAdvance'
 import { SubSessionView } from '@/components/session/SubSessionView'
 import { ReviewView } from '@/components/ReviewView'
 import { PipelineTab } from '@/pipeline/PipelineTab'
-import { AutomationsTab } from '@/automations/AutomationsTab'
-import { InsightsView } from '@/components/InsightsView'
 import { RoadmapPage } from '@/features/roadmap/RoadmapPage'
 import { InitiativePage } from '@/features/roadmap/InitiativePage'
 import {
   CAPABILITY_ROUTE, INITIATIVE_ROUTE, INITIATIVES_PATH, PRODUCT_ROUTE,
   inboxPath, productPath, roadmapPath,
 } from '@/features/roadmap/roadmapNavState'
+import { DeliveryPage } from '@/features/delivery/DeliveryPage'
+import {
+  AUTOMATION_ROUTE, CI_REPO_ROUTE, DELIVERY_PATH, deliveryPath,
+} from '@/features/delivery/deliveryNavState'
 import { SettingsPage } from '@/features/settings/SettingsPage'
 import { SettingsIndexPage } from '@/features/settings/SettingsIndexPage'
 
 const SETTINGS_PATH = NAV_BY_ID.settings.path
-const INSIGHTS_PATH = NAV_BY_ID.insights.path
 
 // ── section pages (hosted unchanged; containers copied from DesktopShell) ─────
 
@@ -148,25 +149,9 @@ function PipelinePage() {
   const navigate = useNavigate()
   return (
     <div className="flex flex-col h-full">
-      <PipelineTab onOpenInsights={() => navigate(INSIGHTS_PATH)} />
+      <PipelineTab onOpenCiHealth={() => navigate(deliveryPath('ci'))} />
     </div>
   )
-}
-
-function AutomationsPage() {
-  const navigate = useNavigate()
-  return (
-    <div className="overflow-y-auto h-full">
-      <AutomationsTab
-        onOpenSession={(id) => navigate(sessionPath(id))}
-        onReviewSession={(id) => navigate(archivedSessionPath(id))}
-      />
-    </div>
-  )
-}
-
-function InsightsPage() {
-  return <div className="p-4 overflow-y-auto h-full"><InsightsView /></div>
 }
 
 /** `/sessions/archived` — the archived scope's page slot. The archived LIST is
@@ -313,7 +298,12 @@ const PAGES: RouteObject[] = [
   { path: SESSION_ROUTE, element: <SessionsPage /> },
   { path: SUBAGENT_ROUTE, element: <SubAgentPage /> },
   { path: NAV_BY_ID.pipeline.path, element: <PipelinePage /> },
-  { path: NAV_BY_ID.automations.path, element: <AutomationsPage /> },
+  // One page at three levels — the section welcome (whose scope `?scope=`
+  // chooses), one automation, one CI repo — chosen from the params by
+  // `deliveryOpenItem`, never from the path.
+  { path: DELIVERY_PATH, element: <DeliveryPage /> },
+  { path: AUTOMATION_ROUTE, element: <DeliveryPage /> },
+  { path: CI_REPO_ROUTE, element: <DeliveryPage /> },
   // One page at three detail levels — portfolio, product, capability — chosen
   // from the params by `roadmapOpenItem`, never from the path.
   { path: NAV_BY_ID.roadmap.path, element: <RoadmapPage /> },
@@ -322,7 +312,10 @@ const PAGES: RouteObject[] = [
   // Initiative detail keeps its own `/initiatives` prefix; `navDefForPath`'s
   // section alias is what puts it in the Roadmap section anyway.
   { path: INITIATIVE_ROUTE, element: <InitiativePage /> },
-  { path: INSIGHTS_PATH, element: <InsightsPage /> },
+  // Finish-line row 4, task 6: the Automations Settings section is retired
+  // (R1) — its controls moved to the Delivery detail, so the settings-scoped
+  // legacy spelling redirects there too, above the dynamic `:section` route.
+  { path: '/settings/automation', element: <Navigate to={deliveryPath()} replace /> },
   { path: `${SETTINGS_PATH}/:section`, element: <SettingsPage /> },
   // Bare `/settings` is a PAGE, not a redirect: on phone and tablet-portrait it
   // is the grouped section list (the list half of list-then-detail). It still
@@ -337,7 +330,9 @@ const PAGES: RouteObject[] = [
   { path: LEGACY_ARCHIVED_PATH, element: <RedirectLegacyArchived /> },
   { path: LEGACY_ARCHIVED_SESSION_ROUTE, element: <RedirectLegacyArchivedSession /> },
   { path: '/accounts', element: <Navigate to={settingsSectionPath('accounts')} replace /> },
-  { path: '/automation', element: <Navigate to={settingsSectionPath('automation')} replace /> },
+  // Task 6: the Automations Settings section is retired (R1); its controls
+  // moved to the Delivery detail, so this legacy spelling lands there too.
+  { path: '/automation', element: <Navigate to={deliveryPath()} replace /> },
   { path: '/library', element: <LibraryRedirect /> },
   // Roadmap Phase 3 folded the Products and Initiatives sections into `/roadmap`.
   // The Initiatives tab becomes the list column's Initiatives SCOPE, so its
@@ -347,6 +342,10 @@ const PAGES: RouteObject[] = [
   { path: INITIATIVES_PATH, element: <Navigate to={roadmapPath('initiatives')} replace /> },
   // Finish-line row 3 folded the Triage section in as the Roadmap Inbox scope.
   { path: '/triage', element: <RedirectTriage /> },
+  // Finish-line row 4 folded the Automations and Insights sections into the two
+  // scopes of `/delivery`, so each bookmark lands on the scope it named.
+  { path: '/automations', element: <Navigate to={deliveryPath()} replace /> },
+  { path: '/insights', element: <Navigate to={deliveryPath('ci')} replace /> },
 
   { path: '*', element: <Navigate to={SESSIONS_PATH} replace /> },
 ]

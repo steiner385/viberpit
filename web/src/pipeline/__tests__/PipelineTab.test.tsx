@@ -33,10 +33,10 @@ describe('laneJumpTarget', () => {
   it('maps failures → failed filter', () => {
     expect(laneJumpTarget('failures', 'red')).toEqual({ kind: 'filter', bucket: 'failed' })
   })
-  it('maps main / scheduled / cost / null → insights', () => {
-    expect(laneJumpTarget('main', 'green')).toEqual({ kind: 'insights' })
-    expect(laneJumpTarget('scheduled', 'amber')).toEqual({ kind: 'insights' })
-    expect(laneJumpTarget('cost', null)).toEqual({ kind: 'insights' })
-    expect(laneJumpTarget(null, null)).toEqual({ kind: 'insights' })
+  it('maps main / scheduled / cost / null → ci-health', () => {
+    expect(laneJumpTarget('main', 'green')).toEqual({ kind: 'ci-health' })
+    expect(laneJumpTarget('scheduled', 'amber')).toEqual({ kind: 'ci-health' })
+    expect(laneJumpTarget('cost', null)).toEqual({ kind: 'ci-health' })
+    expect(laneJumpTarget(null, null)).toEqual({ kind: 'ci-health' })
   })
 })

@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, useQueries, type QueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState, useRef, useCallback, useSyncExternalStore } from 'react'
 import { api, ApiRequestError } from './client'
 import {
@@ -1110,12 +1110,13 @@ export function useAllPrs() {
   })
 }
 
-export function useStageModels() {
+export function useStageModels({ enabled = true, poll = true }: { enabled?: boolean; poll?: boolean } = {}) {
   return useQuery<Record<string, StageModel>>({
     queryKey: QK.pipelineRepos,
     queryFn: () => api.get<Record<string, StageModel>>('/pipeline/repos'),
     staleTime: 15_000,
-    refetchInterval: 30_000,
+    refetchInterval: poll ? 30_000 : false,
+    enabled,
   })
 }
 
@@ -1146,14 +1147,14 @@ export function usePatchAutomation() {
   })
 }
 
-export function useCheckInsights(repo: string | undefined, window: string) {
+export function useCheckInsights(repo: string | undefined, window: string, { poll = true }: { poll?: boolean } = {}) {
   return useQuery<CheckInsights>({
     queryKey: QK.pipelineInsights(repo, window),
     queryFn: () =>
       api.get<CheckInsights>(
         `/pipeline/insights/checks?repo=${encodeURIComponent(repo as string)}&window=${window}`),
     staleTime: 15_000,
-    refetchInterval: 30_000,
+    refetchInterval: poll ? 30_000 : false,
     enabled: !!repo,
   })
 }
@@ -1163,6 +1164,23 @@ export function useAutomationActionable(id: string, enabled = true) {
     queryKey: QK.automationActionable(id),
     queryFn: () => fetchAutomationActionable(id),
     enabled, staleTime: 10_000 })
+}
+
+/** Actionable-item counts for many automations at once — the Delivery list's
+ *  tier input (finish-line §4.4). One `/actionable` read per id, no poll: the
+ *  detail page's own `useAutomationActionable` shares each key and refreshes
+ *  it on every trigger. */
+export function useAutomationActionableCounts(ids: readonly string[], enabled = true): Record<string, number> {
+  const results = useQueries({
+    queries: ids.map((id) => ({
+      queryKey: QK.automationActionable(id),
+      queryFn: () => fetchAutomationActionable(id),
+      enabled, staleTime: 10_000,
+    })),
+  })
+  const out: Record<string, number> = {}
+  ids.forEach((id, i) => { out[id] = results[i]?.data?.length ?? 0 })
+  return out
 }
 
 export function useAutomationTrigger(id: string) {

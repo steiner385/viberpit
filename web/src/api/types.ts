@@ -256,7 +256,7 @@ export function isPreSpawnStatus(status: string | null | undefined): boolean {
 // ---------------------------------------------------------------------------
 // Session-status vocabularies — the single home for "which statuses count as X"
 // (constitution VI). These used to live as three independent inline Sets in
-// statusTier.ts, AutomationsTab.tsx and SessionList.tsx, which silently drifted;
+// statusTier.ts, the deleted AutomationsTab.tsx and SessionList.tsx, which drifted;
 // they are DISTINCT concepts (a session can be terminal-for-liveness without
 // being bulk-archivable), so they stay separate named sets — but co-located here
 // beside PRE_SPAWN_STATUSES so every classification has ONE definition.

@@ -30,8 +30,8 @@ import { TopBar } from './TopBar'
  *  existing is a type error here rather than a silently dead override. */
 function navBadges(over: Partial<NavBadges> = {}): NavBadges {
   return {
-    sessions: undefined, pipeline: undefined, automations: undefined,
-    roadmap: undefined, settings: undefined,
+    sessions: undefined, pipeline: undefined, roadmap: undefined,
+    delivery: undefined, settings: undefined,
     ...over,
   }
 }
@@ -164,12 +164,12 @@ describe('NavBar', () => {
   })
 
   it('marks a section active inside the More sheet when the route is behind More', async () => {
-    renderPhoneNav('/insights')
+    renderPhoneNav('/settings/general')
     for (const el of within(bar()).getAllByRole('link')) {
       expect(el).not.toHaveAttribute('aria-current')
     }
     const sheet = await openMore()
-    expect(within(sheet).getByRole('link', { name: 'Insights' })).toHaveAttribute('aria-current', 'page')
+    expect(within(sheet).getByRole('link', { name: /^Settings/ })).toHaveAttribute('aria-current', 'page')
   })
 
   it('pads its bottom by the safe-area inset so the bar clears the gesture bar', () => {

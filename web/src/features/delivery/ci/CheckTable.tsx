@@ -13,16 +13,16 @@ export function CheckTable<T>({ title, columns, rows, empty }: {
   empty: string
 }) {
   return (
-    <section className="rounded border border-gray-200 dark:border-gray-700">
-      <h3 className="px-3 py-2 text-sm font-semibold border-b border-gray-200 dark:border-gray-700">
+    <section className="rounded-md border border-edge bg-surface">
+      <h3 className="border-b border-edge px-3 py-2 text-sm font-semibold text-ink">
         {title}
       </h3>
       {rows.length === 0 ? (
-        <p className="px-3 py-3 text-xs text-gray-500">{empty}</p>
+        <p className="px-3 py-3 text-xs text-ink-muted">{empty}</p>
       ) : (
         <table className="w-full text-xs">
           <thead>
-            <tr className="text-left text-gray-500">
+            <tr className="text-left text-ink-muted">
               {columns.map((c) => (
                 <th key={c.header} className={`px-3 py-1 font-medium ${c.className ?? ''}`}>
                   {c.header}
@@ -32,7 +32,7 @@ export function CheckTable<T>({ title, columns, rows, empty }: {
           </thead>
           <tbody>
             {rows.map((row, i) => (
-              <tr key={i} className="border-t border-gray-100 dark:border-gray-800">
+              <tr key={i} className="border-t border-edge">
                 {columns.map((c) => (
                   <td key={c.header} className={`px-3 py-1 ${c.className ?? ''}`}>
                     {c.cell(row)}

@@ -1,12 +1,14 @@
 import type { Params } from 'react-router-dom'
 import type { NavId } from './navDefs'
 import { roadmapOpenItem, type RoadmapOpenItem } from '@/features/roadmap/roadmapNavState'
+import { deliveryOpenItem, type DeliveryOpenItem } from '@/features/delivery/deliveryNavState'
 
 /** What the current route has open, if anything. */
 export type OpenItem =
   | { kind: 'session'; id: string }
   | { kind: 'archived'; id: string }
   | RoadmapOpenItem
+  | DeliveryOpenItem
 
 export type OpenItemResolver = (params: Readonly<Params<string>>, search: URLSearchParams) => OpenItem | null
 
@@ -28,4 +30,7 @@ export const OPEN_ITEM_RESOLVERS: Partial<Record<NavId, OpenItemResolver>> = {
   // Product / capability / initiative detail, by PARAM NAME (never `id`, so a
   // roadmap route can never be mistaken for a live session).
   roadmap: roadmapOpenItem,
+  // Automation / CI-repo detail, by PARAM NAME for the same reason
+  // (`automationId`, `owner` + `repo`).
+  delivery: deliveryOpenItem,
 }

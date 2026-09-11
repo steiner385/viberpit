@@ -21,14 +21,14 @@
 //
 // ## Two harnesses, on purpose
 //
-// Everything above the "64-cell matrix" divider mounts the table under
+// Everything above the "68-cell matrix" divider mounts the table under
 // `TestLayout`, a stand-in that renders an `<Outlet/>` and the URL. That keeps
 // the redirect and page tests about the TABLE.
 //
 // The matrix at the bottom mounts the REAL `AppShell` as the layout, because its
 // claim is not about the table alone: "every route renders in every layout mode"
 // is only worth asserting if the layout mode is load-bearing. Under `TestLayout`
-// the four modes would be four identical renders and the matrix would be twelve
+// the four modes would be four identical renders and the matrix would be seventeen
 // tests wearing a sixty-eight-cell costume.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
@@ -67,10 +67,9 @@ vi.mock('@/features/sessions/ArchivedWelcome', () => ({ ArchivedWelcome: stub('a
 // Likewise `/sessions/background`: the background list is a scope of the column.
 vi.mock('@/features/sessions/BackgroundWelcome', () => ({ BackgroundWelcome: stub('background') }))
 vi.mock('@/pipeline/PipelineTab', () => ({ PipelineTab: stub('pipeline') }))
-vi.mock('@/automations/AutomationsTab', () => ({ AutomationsTab: stub('automations') }))
 vi.mock('@/features/roadmap/RoadmapPage', () => ({ RoadmapPage: stub('roadmap') }))
 vi.mock('@/features/roadmap/InitiativePage', () => ({ InitiativePage: stub('initiative') }))
-vi.mock('@/components/InsightsView', () => ({ InsightsView: stub('insights') }))
+vi.mock('@/features/delivery/DeliveryPage', () => ({ DeliveryPage: stub('delivery') }))
 // The Settings pages are stubbed like every other page, and for one extra
 // reason: both read `useViewport()` (phone and tablet-portrait drill), which
 // `TestLayout` does not provide. Their real behaviour — which mode drills, where
@@ -201,8 +200,15 @@ describe('route table — redirects', () => {
     // `?projectSlug=` — the only param the old page took — becomes `?product=`.
     ['/triage', '/roadmap?scope=inbox'],
     ['/triage?projectSlug=kindash', '/roadmap?scope=inbox&product=kindash'],
+    // Finish-line row 4: the Automations and Insights sections became the two
+    // scopes of one Delivery section, so each bookmark lands on its own scope.
+    ['/automations', '/delivery'],
+    ['/insights', '/delivery?scope=ci'],
     ['/accounts', '/settings/accounts'],
-    ['/automation', '/settings/automation'],
+    // Task 6: the Automations Settings section is retired (R1) — both legacy
+    // spellings land on the Delivery detail that replaced its controls.
+    ['/automation', '/delivery'],
+    ['/settings/automation', '/delivery'],
     // `/settings` and `/settings?section=X` are NOT redirects any more: they are
     // `SettingsIndexPage`, whose element depends on the layout mode, so they
     // cannot be asserted under `TestLayout` (no ViewportProvider). Every row
@@ -303,12 +309,13 @@ describe('route table — pages', () => {
     ['/sessions/abc', 'page-session-detail'],
     ['/sessions/abc/agents/x', 'page-subagent'],
     ['/pipeline', 'page-pipeline'],
-    ['/automations', 'page-automations'],
     ['/roadmap', 'page-roadmap'],
     ['/roadmap/kindash', 'page-roadmap'],
     ['/roadmap/kindash/capabilities/tasks', 'page-roadmap'],
     ['/initiatives/views', 'page-initiative'],
-    ['/insights', 'page-insights'],
+    ['/delivery', 'page-delivery'],
+    ['/delivery/automations/pr-doctor', 'page-delivery'],
+    ['/delivery/ci/o/r', 'page-delivery'],
     ['/sessions/archived', 'page-archived'],
     ['/sessions/archived/abc', 'page-review'],
     ['/sessions/background', 'page-background'],
@@ -358,8 +365,11 @@ describe('route table — pages', () => {
    * own inner scrolling and would fail this as written. So is Settings, since
    * the redesign: its scroll owner is `ui/PageContent` rather than a wrapper in
    * this file, and `features/settings/SettingsPage.test.tsx` asserts it there.
+   * Delivery joined them in finish-line row 4: `DeliveryPage` is a
+   * `PageHeader`/`PageContent` page like Roadmap, so `PageContent` owns its
+   * scrolling and `DeliveryPage.test.tsx` is where that is asserted.
    */
-  it.each(['/automations', '/insights', '/sessions/archived'])(
+  it.each(['/sessions/archived'])(
     '%s owns a vertical scroll container',
     (path) => {
       renderAt(path)
@@ -411,10 +421,10 @@ describe('route table — every nav destination exists', () => {
   )
 })
 
-// ── the 64-cell matrix: every route × every layout mode ──────────────────────
+// ── the 68-cell matrix: every route × every layout mode ──────────────────────
 //
 // Umbrella §9: "Every route in §6 renders the same page at 390, 820, 1440 and
-// `?kiosk=1`." This is the jsdom half — 16 non-redirect paths × 4 layout modes.
+// `?kiosk=1`." This is the jsdom half — 17 non-redirect paths × 4 layout modes.
 // (The Playwright half, which asserts it at real pixel widths, is PR 10.)
 //
 // ## What each cell asserts, and why it is not one assertion
@@ -443,20 +453,23 @@ describe('route table — every nav destination exists', () => {
 // visibility here would encode "phone shows the welcome pane over its own list"
 // as the requirement, which is the opposite of the layout.
 
-/** The 16 non-redirect paths, each with the page it must land on. */
+/** The 17 non-redirect paths, each with the page it must land on. */
 const MATRIX_PATHS: ReadonlyArray<readonly [path: string, testid: string]> = [
   ['/sessions', 'page-sessions'],
   ['/sessions/abc', 'page-session-detail'],
   ['/sessions/abc/agents/x', 'page-subagent'],
   ['/pipeline', 'page-pipeline'],
-  ['/automations', 'page-automations'],
+  // One page at three levels — the section welcome, one automation, one CI repo
+  // — chosen from the params by `deliveryOpenItem`, never from the path.
+  ['/delivery', 'page-delivery'],
+  ['/delivery/automations/pr-doctor', 'page-delivery'],
+  ['/delivery/ci/o/r', 'page-delivery'],
   // One page at three detail levels, plus the initiative page that keeps its own
   // `/initiatives` prefix (roadmap spec §4) and reaches Roadmap by section alias.
   ['/roadmap', 'page-roadmap'],
   ['/roadmap/kindash', 'page-roadmap'],
   ['/roadmap/kindash/capabilities/tasks', 'page-roadmap'],
   ['/initiatives/views', 'page-initiative'],
-  ['/insights', 'page-insights'],
   ['/sessions/archived', 'page-archived'],
   ['/sessions/archived/abc', 'page-review'],
   ['/sessions/background', 'page-background'],
@@ -482,8 +495,9 @@ const REDIRECT_ROUTE_PATTERNS = new Set([
   '/', '/settings',
   '/session/:sessionId', '/session/:sessionId/subagent/:agentId', '/review/:sessionId',
   '/archived', '/archived/:sessionId',
-  '/accounts', '/automation', '/library',
+  '/accounts', '/automation', '/settings/automation', '/library',
   '/projects', '/projects/:slug', '/initiatives', '/triage',
+  '/automations', '/insights',
   '*',
 ])
 
@@ -549,8 +563,8 @@ describe('every route renders in every layout mode', () => {
     })
 
     expect([...new Set(covered)].sort()).toEqual([...pageRoutes].sort())
-    expect(pageRoutes).toHaveLength(16)
-    expect(MATRIX_PATHS).toHaveLength(16)
+    expect(pageRoutes).toHaveLength(17)
+    expect(MATRIX_PATHS).toHaveLength(17)
   })
 
   /**
@@ -563,17 +577,17 @@ describe('every route renders in every layout mode', () => {
   /**
    * R9 successor map for the kiosk cells that asserted
    * `kiosk · <path> renders <that path's page>` for a section kiosk is not
-   * allowed on — the fourteen listed in the refusal test below.
+   * allowed on — the sixteen listed in the refusal test below.
    *
    * That claim is now false BY DESIGN: `AppShell`'s `KioskPageGuard` redirects a
    * kiosk URL off any section not marked `showInKiosk` (verified read-only), so
    * a wall display cannot be parked on Archive/Unarchive/permission-card
    * surfaces with no rail to leave by. Those cells are not dropped and are
    * not weakened — each keeps all five assertions and merely names a different
-   * expected landing: `page-pipeline` at `/pipeline`. The other 50 cells
-   * (including `kiosk · /pipeline` and `kiosk · /insights`, the two kiosk-safe
-   * sections) are unchanged, so the "renders where it was asked" property still
-   * has kiosk coverage and the redirect cannot pass by rendering nothing.
+   * expected landing: `page-pipeline` at `/pipeline`. The other 52 cells
+   * (including `kiosk · /pipeline`, the one kiosk-safe section) are unchanged,
+   * so the "renders where it was asked" property still has kiosk coverage and
+   * the redirect cannot pass by rendering nothing.
    */
   const CELLS = LAYOUT_MODES.flatMap((mode) =>
     MATRIX_PATHS.map(([path, testid]) => {
@@ -587,23 +601,27 @@ describe('every route renders in every layout mode', () => {
     }),
   )
 
-  it('the matrix is 64 cells', () => {
-    expect(CELLS).toHaveLength(64)
+  it('the matrix is 68 cells', () => {
+    expect(CELLS).toHaveLength(68)
   })
 
-  // The fourteen refused cells are exactly the kiosk rows for a section that is not
+  // The sixteen refused cells are exactly the kiosk rows for a section that is not
   // kiosk-safe — pinned so a `showInKiosk` flip has to come here and say so.
   // `/roadmap` now carries the reason `/triage` used to be the least negotiable of
   // them: the Inbox scope accepts and bulk-accepts on a single unconfirmed
   // keystroke. `/initiatives/views` reaches Roadmap through the SECTION ALIAS
   // rather than a path prefix; it is refused either way (a null def fails the
   // `showInKiosk` check exactly as `false` does), so what that row pins is that
-  // the alias does not accidentally ADMIT it.
+  // the alias does not accidentally ADMIT it. The three `/delivery` rows are the
+  // finish-line row 4 successors of `/automations` (refused for the same reason:
+  // its trigger buttons fire a job for real) and of `/insights`, which WAS
+  // kiosk-safe — CI health is still read-only, but it is now a scope of a section
+  // whose other scope mutates, so the section as a whole is not.
   it('kiosk refuses exactly the sections that are not kiosk-safe', () => {
     const refused = CELLS.filter(([mode, path, , url]) => mode === 'kiosk' && url !== path)
     expect(refused.map(([, path]) => path)).toEqual([
       '/sessions', '/sessions/abc', '/sessions/abc/agents/x',
-      '/automations',
+      '/delivery', '/delivery/automations/pr-doctor', '/delivery/ci/o/r',
       '/roadmap', '/roadmap/kindash', '/roadmap/kindash/capabilities/tasks', '/initiatives/views',
       '/sessions/archived', '/sessions/archived/abc',
       '/sessions/background', '/sessions/background/abc', '/sessions/background/abc/agents/x',
@@ -636,8 +654,8 @@ describe('every route renders in every layout mode', () => {
       expect(screen.queryByTestId(testid), `${mode} ${path} — page`).not.toBeNull()
     })
 
-    // 3. the URL is where this cell must land — the path itself for 50 cells,
-    //    and the kiosk home for the fourteen a kiosk URL is refused on. Either way
+    // 3. the URL is where this cell must land — the path itself for 52 cells,
+    //    and the kiosk home for the sixteen a kiosk URL is refused on. Either way
     //    no OTHER redirect (the catch-all especially) swallowed it.
     const { pathname, search } = router.state.location
     expect(pathname + search, `${mode} ${path}`).toBe(expectedUrl)

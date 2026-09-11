@@ -15,7 +15,8 @@ links:
     - server/automations/consolidation_engine.py
     - server/automations/completion_bar.py
     - server/api/automations.py
-    - web/src/automations/AutomationsTab.tsx
+    - web/src/features/delivery/automation/AutomationDetail.tsx
+    - web/src/features/delivery/automation/actions.tsx
   prs: [610, 618, 626, 645, 575, 640, 683, 786, 550, 469]
 ---
 
@@ -114,8 +115,10 @@ PR linkage, never on labels alone.
 - Consolidation (`consolidation_engine.py`) clusters same-scope open PRs into low-risk merge
   candidates for a human-driven consolidation session; PRs already being consolidated are
   flagged and linked (#555). Manual actions for all automations are enumerated by
-  `action_providers.py` and driven through `server/api/automations.py`; the UI is the
-  top-level Automations tab (#578) with per-automation session model selection (#550).
+  `action_providers.py` and driven through `server/api/automations.py`; the UI was the
+  top-level Automations tab (#578), later folded into the Delivery section's automation
+  detail (`/delivery/automations/:id`, `web/src/features/delivery/automation/AutomationDetail.tsx`
+  + `actions.tsx`) with per-automation session model selection (#550).
 
 **Evidence** —
 - Autopilot core / decision: `server/automations/autopilot.py`,
@@ -128,7 +131,8 @@ PR linkage, never on labels alone.
   `scripts/retire_claim_labels.py`, `specs/003-gh-projects-integration/phase-d-runbook.md`.
 - Action surface / consolidation / API / web: `server/automations/action_providers.py`,
   `server/automations/consolidation_engine.py`, `server/api/automations.py`,
-  `web/src/automations/AutomationsTab.tsx`.
+  `web/src/features/delivery/automation/AutomationDetail.tsx`,
+  `web/src/features/delivery/automation/actions.tsx`.
 - PRs: #610 (precomputed grouping optimizer), #618 (manual issue dispatch), #626 (spawn
   backoff + disk circuit breaker), #645 (contextual nudges, two-tier decider), #575 (human
   deference), #640 (armed-PR requirement for `--squash --auto`), #683 (per-target backoff

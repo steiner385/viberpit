@@ -16,6 +16,7 @@ import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
 import { useSessionListState } from '@/features/sessions/useSessionListState'
 import type { SessionListColumnProps } from '@/features/sessions/SessionListColumn'
 import { useRoadmapWorkspace } from '@/features/roadmap/useRoadmapWorkspace'
+import { useDeliveryWorkspace } from '@/features/delivery/useDeliveryWorkspace'
 import { isPendingSessionId } from '@/lib/pendingSessions'
 import { setServerSttEnabled } from '@/lib/sttCapability'
 import { textEntryClaimsKey } from '@/lib/detachKeyGuard'
@@ -243,12 +244,16 @@ function AppShellInner() {
 
   const workspace = useSessionsWorkspace(openDrawer)
   // The hook always runs (hooks do); its QUERY is gated on the section, so
-  // `/pm/map`'s 15 s poll does not fund a list column the five other sections
+  // `/pm/map`'s 15 s poll does not fund a list column the four other sections
   // never render — nor a wall display, which `KioskPageGuard` has already
   // redirected off Roadmap and which has no `app.list` region at all. On
   // Roadmap it is the same `QK.roadmapMap` entry `RoadmapPage` reads, so the
   // page adds no second fetch.
   const roadmap = useRoadmapWorkspace(def?.id === 'roadmap')
+  // Same gate, same reason, for the Delivery column: `/pipeline/repos` is only
+  // fetched where the CI scope can render. Its automation list is deliberately
+  // NOT gated — that key is the Delivery nav badge's, live on every route.
+  const delivery = useDeliveryWorkspace(def?.id === 'delivery')
 
   // Kiosk enlarges the whole type scale by overriding `--scale` on `<html>`.
   // It goes on the document element rather than on the shell's root `<div>`
@@ -352,7 +357,9 @@ function AppShellInner() {
         >
           {listVisible && (
             <ContextList
-              column={listColumnFor(def?.id, { sessions: workspace.list, roadmap: roadmap.list })}
+              column={listColumnFor(def?.id, {
+                sessions: workspace.list, roadmap: roadmap.list, delivery: delivery.list,
+              })}
             />
           )}
           <PageHost
