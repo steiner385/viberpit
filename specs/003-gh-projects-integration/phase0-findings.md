@@ -243,3 +243,36 @@ preserving, not non-destructive" verdict holds only for a names-only input. `bui
 now takes `option_ids` and `_ensure_fields` passes the board's name → option-id map straight from
 `field_cache`, so the reconciler's own union keeps ids and per-item values. The pre-apply caveat in
 the runbook is kept for hand-rolled repairs (spike script, rollback section) that omit the ids.
+
+---
+
+## Materialization probe (Phase C Task 11, #992) — 2026-09-11
+
+Ran `python scripts/spike_gh_projects_v2.py materialize` under the ambient `steiner385` gh
+credential against the archived scratch repo (unarchived for the run, re-archived at the end;
+the four probe issues #4–#7 were closed, the three Phase 0 issues remain as before). Raw log:
+`/tmp/spike-003-materialize.log` (not committed).
+
+| Probe | Result | Shape / evidence |
+|---|---|---|
+| `createIssue` returns the node id immediately | **y** | `CreateIssuePayload { clientMutationId, issue }`; `issue { id number url }` came back on all four calls (`I_kwDOUNO88M8AAAABQzze6w` = #4). `CreateIssueInput`: `repositoryId: ID!`, `title: String!`, `body: String`, `assigneeIds`, `milestoneId: ID`, `labelIds`, `projectIds`, `projectV2Ids`, `issueTemplate`, `issueTypeId: ID`, **`parentIssueId: ID`**, `issueFields`, `agentAssignment`. |
+| A just-created issue's id is usable at once | **y** | Three `addSubIssue` calls ran with no sleep after `createIssue`; all returned `{ issue { number: 4 }, subIssue { number: 5/6/7 } }`. Constitution III satisfied: no eventual-consistency window observed. |
+| `addSubIssue` input | **y** | `AddSubIssueInput`: `issueId: ID!` (the parent), `subIssueId: ID` **or** `subIssueUrl: String`, `replaceParent: Boolean`. Payload `{ issue, subIssue }`. |
+| `addBlockedBy` chain on fresh issues | **y** | `AddBlockedByInput`: `issueId: ID!` (the blocked), `blockingIssueId: ID!`. Payload `{ clientMutationId }` only (null) — success is the absence of `errors`. t2←t1 and t3←t2 both accepted. |
+| `subIssues` order == creation order | **y** | Read-back `epic.subIssues.nodes` = [#5, #6, #7] in creation order; no `reprioritizeSubIssue` needed for a plan whose tasks are created in phase order. `t3.parent.number == 4` and `t3.blockedBy` = [#6]. |
+| Rate cost | 1 point per mutation call | 4 × `createIssue`: remaining 3633 → 3629; 3 × `addSubIssue` + 2 × `addBlockedBy`: 3629 → 3624. A plan of N tasks costs `1 + N + N + (N−1)` points with separate `addSubIssue` calls — or `1 + N + (N−1)` using `parentIssueId` (below). |
+| GraphQL introspection limit | n/a | GitHub rejects a document with more than two `__Type.inputFields` selections (`INTROSPECTION_LIMIT_EXCEEDED`); the probe splits introspection into two calls. Irrelevant to production code, which never introspects. |
+
+**Implication for Task 13's builders:** `CreateIssueInput.parentIssueId` lets a task be created
+**as a sub-issue of the epic in the same call**, so `build_create_issue(repository_id, title,
+body, alias, parent_issue_id=None)` should carry it and Task 15's apply can skip the
+`add_sub_issue` journal rows entirely (one fewer journaled write per task, and no dependence
+on the fresh-id window at all). Keep `build_add_sub_issue` only for the resume path where the
+epic exists but a task row was recorded before its parent link — or drop it and rely on
+`parentIssueId` end to end; the plan should pick one (recommendation: drop it, constitution VI).
+`addBlockedBy` stays a separate journaled call per edge; its input shape is exactly the
+reconciler's `gh_mutations._render("add_blocked_by")`, so materialization reuses that builder.
+
+**Correction vs. the plan's Task 11 text:** the brief expected `subIssues` ordering to possibly
+need `reprioritizeSubIssue`; it does not for creation-ordered tasks. The brief's "repositoryId
+lookup" is one `repository(owner,name){ id }` query, as assumed.

@@ -8,6 +8,7 @@ Usage:
     python scripts/spike_gh_projects_v2.py mutations   # Task 2
     python scripts/spike_gh_projects_v2.py phaseb      # Phase B Task 1
     python scripts/spike_gh_projects_v2.py optionids   # Phase B pre-apply check (#987)
+    python scripts/spike_gh_projects_v2.py materialize # Phase C Task 11 probe (#992)
 """
 from __future__ import annotations
 
@@ -420,11 +421,104 @@ def probe_optionids() -> None:  # noqa: C901 - spike probe, deliberate length
             print("cleanup deleteProjectV2 errors:", err)
 
 
+def probe_materialize() -> None:  # noqa: C901 - spike probe, deliberate length
+    """Phase C Task 11 (#992): verify the whole materialization sequence end to end —
+    ``createIssue`` for an epic and three tasks, ``addSubIssue`` ×3 on the fresh
+    issues, a sibling ``addBlockedBy`` chain, then a read-back of ``subIssues``
+    order and ``blockedBy`` — against the archived scratch repo, which is
+    unarchived for the run and re-archived at the end. Everything printed also
+    lands in ``/tmp/spike-003-materialize.log``."""
+    import os
+    import time
+    repo = f"{OWNER}/gh-projects-spike-003"
+    log_path = "/tmp/spike-003-materialize.log"
+    log = open(log_path, "w")  # noqa: SIM115 - spike log, closed at the end
+
+    def out(label: str, payload: object) -> None:
+        text = f"=== {label} ===\n{json.dumps(payload, indent=2) if not isinstance(payload, str) else payload}"
+        print(text)
+        log.write(text + "\n")
+        log.flush()
+
+    def rate() -> int:
+        r = gh_graphql("query { rateLimit { remaining } }")
+        return int(r["data"]["rateLimit"]["remaining"])
+
+    # GitHub allows at most two introspection fields per document
+    # (INTROSPECTION_LIMIT_EXCEEDED on a third `__Type.inputFields`), so two calls.
+    out("introspect CreateIssueInput / AddSubIssueInput",
+        gh_graphql(
+            'query { c: __type(name: "CreateIssueInput") { inputFields { name type { name kind ofType { name } } } }'
+            ' s: __type(name: "AddSubIssueInput") { inputFields { name type { name kind ofType { name } } } } }'))
+    out("introspect AddBlockedByInput / CreateIssuePayload",
+        gh_graphql(
+            'query { b: __type(name: "AddBlockedByInput") { inputFields { name type { name kind ofType { name } } } }'
+            ' p: __type(name: "CreateIssuePayload") { fields { name } } }'))
+
+    out("unarchive scratch repo", gh("api", "-X", "PATCH", f"repos/{repo}", "-F", "archived=false"))
+    repo_id = gh_graphql(
+        'query { repository(owner: "%s", name: "gh-projects-spike-003") { id nameWithOwner isArchived } }'
+        % OWNER)
+    out("repository id", repo_id)
+    rid = repo_id["data"]["repository"]["id"]
+
+    before = rate()
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    created: dict[str, dict] = {}
+    for key, title in (("epic", f"[spike] epic {stamp}"), ("t1", "[spike] task 1"),
+                       ("t2", "[spike] task 2"), ("t3", "[spike] task 3")):
+        resp = gh_graphql(
+            'mutation { createIssue(input: {repositoryId: "%s", title: "%s", body: "materialize probe — safe to close"})'
+            ' { issue { id number url } } }' % (rid, title))
+        out(f"createIssue {key}", resp)
+        created[key] = resp["data"]["createIssue"]["issue"]
+    after_create = rate()
+    out("createIssue rate cost (4 calls)", {"remaining_before": before, "remaining_after": after_create})
+
+    # A just-created issue's node id must be usable IMMEDIATELY (constitution III):
+    # no sleep between createIssue and addSubIssue.
+    for key in ("t1", "t2", "t3"):
+        resp = gh_graphql(
+            'mutation { addSubIssue(input: {issueId: "%s", subIssueId: "%s"})'
+            ' { issue { id number } subIssue { id number } } }' % (created["epic"]["id"], created[key]["id"]))
+        out(f"addSubIssue epic <- {key}", resp)
+    for blocked, blocker in (("t2", "t1"), ("t3", "t2")):
+        resp = gh_graphql(
+            'mutation { addBlockedBy(input: {issueId: "%s", blockingIssueId: "%s"}) { clientMutationId } }'
+            % (created[blocked]["id"], created[blocker]["id"]))
+        out(f"addBlockedBy {blocked} blocked by {blocker}", resp)
+    after_links = rate()
+    out("link rate cost (3 addSubIssue + 2 addBlockedBy)",
+        {"remaining_before": after_create, "remaining_after": after_links})
+
+    readback = gh_graphql(
+        'query { repository(owner: "%s", name: "gh-projects-spike-003") {'
+        ' epic: issue(number: %d) { subIssues(first: 10) { nodes { number title } } }'
+        ' t3: issue(number: %d) { blockedBy(first: 10) { nodes { number } } parent { number } } } }'
+        % (OWNER, created["epic"]["number"], created["t3"]["number"]))
+    out("read-back: epic.subIssues order + t3.blockedBy + t3.parent", readback)
+    sub_order = [n["number"] for n in readback["data"]["repository"]["epic"]["subIssues"]["nodes"]]
+    out("VERDICT subIssues order == creation order",
+        {"creation_order": [created[k]["number"] for k in ("t1", "t2", "t3")], "readback": sub_order,
+         "equal": sub_order == [created[k]["number"] for k in ("t1", "t2", "t3")]})
+
+    for key in ("t1", "t2", "t3", "epic"):
+        out(f"close {key}", gh("issue", "close", str(created[key]["number"]), "-R", repo,
+                               "-c", "spike probe complete — closed by the materialize probe"))
+    out("re-archive scratch repo", gh("api", "-X", "PATCH", f"repos/{repo}", "-F", "archived=true"))
+    out("post-run", gh_graphql(
+        'query { repository(owner: "%s", name: "gh-projects-spike-003") { isArchived issues(states: OPEN) { totalCount } } }'
+        % OWNER))
+    log.close()
+    print(f"log written to {log_path}")
+    _ = os.path.getsize(log_path)
+
+
 def main() -> int:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "auth"
     {"auth": probe_auth, "introspect": probe_introspect,
      "mutations": probe_mutations, "phaseb": probe_phaseb,
-     "optionids": probe_optionids}[cmd]()
+     "optionids": probe_optionids, "materialize": probe_materialize}[cmd]()
     return 0
 
 
