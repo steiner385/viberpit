@@ -63,9 +63,12 @@ Non-goals:
   `mounted_names()` in `registry.py` is THE predicate for which tools a session gets, read
   by both `build_session_tools` and the system-prompt paragraph in `tools/instruction.py`.
 - **Permission classes**: a MUTATION tool of our own MCP server is gated on its
-  annotation, not the session mode (`PermissionRegistry.request`, spec §4.4 of the
-  assistant design): it raises a card in interactive mode and is auto-allowed in
-  full-auto. The assistant drawer's `create_session` is exactly such a MUTATION tool.
+  annotation, not the session mode (`PermissionRegistry.request`'s `is_mcp_tool` branch
+  sits ABOVE the full-auto shortcut): it raises a card in EVERY mode, full-auto
+  included, until the user grants "always allow" for it. The assistant drawer's
+  `create_session` is exactly such a MUTATION tool. Consequence for an unattended
+  full-auto parent (backlog runner, autopilot): its first `dispatch_session` parks it on
+  an "Answer needed" card until a human allows it (once, with "always allow").
 - **Session creation**: `SessionOrchestrator.create_session(name, account, initial_prompt,
   cwd, branch, repo, identity, permission_mode, attachment_ids, name_is_auto, origin,
   origin_ref, model, reasoning_effort, kind, owner_identity, engine, client_node, display)`
@@ -281,9 +284,9 @@ order). The orchestrator passes a `children()` accessor on the context, mirrorin
 
 The child is owned by the parent's identity; `dispatch_child_session` takes `identity`
 from the tool context, never from args. The tool cannot choose the account (the selector
-does) or the host. Permission mode can only narrow. The MUTATION class means an
-interactive parent asks the human before spawning; a full-auto parent is already trusted
-to act. Audit rows tie every child to its parent.
+does) or the host. Permission mode can only narrow. The MUTATION class means every parent
+asks the human before spawning until an "always allow" grant exists (§3) — full-auto does
+not bypass our own mutation tools. Audit rows tie every child to its parent.
 
 ## 7. Testing
 

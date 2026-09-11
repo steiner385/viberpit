@@ -18,18 +18,25 @@ sub-task independently, the model dispatches it as a child session instead.
 
 `dispatch_session(name, prompt, model?, permission_mode?)` — `ToolClass.MUTATION` on the
 session tool surface (`server/sessions/tools/`). Mounted only on the durable surface (Claude)
-and only while `CCSWITCH_CHILD_SESSIONS_ENABLED` is on. Interactive parents get a permission
-card before a child is created; full-auto parents do not. The handler makes ONE call,
-`SessionOrchestrator.dispatch_child_session`, which:
+and only while `CCSWITCH_CHILD_SESSIONS_ENABLED` is on. Like every MUTATION tool of our own
+MCP server, it raises a permission card in **every** session mode — full-auto included —
+until the user grants "always allow" for it (`PermissionRegistry.request` checks our own
+tools before the full-auto shortcut). An unattended full-auto parent therefore parks on an
+"Answer needed" card the first time it dispatches; allow it once with "always allow" and later
+dispatches go through. The handler makes ONE call, `SessionOrchestrator.dispatch_child_session`,
+which:
 
 - refuses over the cap (`CCSWITCH_CHILD_SESSION_CAP`, default 3 live children per parent) or
   beyond the depth (`CCSWITCH_CHILD_SESSION_MAX_DEPTH`, default 2) — the refusal comes back as
   the tool result, nothing is created;
 - narrows the requested permission mode to the parent's (`permissions.narrowest`; a child never
   runs wider than its parent);
-- creates the session with `create_session` (parent's repo, fresh worktree, parent's model by
-  default, `name_is_auto=False`), stamps `parent_session_id`, and audits
-  `session.child_dispatch {parentSessionId, childSessionId, name}`.
+- creates the session with `create_session` (parent's repo → fresh worktree; a git-tree parent
+  with no repo column → a nested worktree; a scratch parent → the child's own scratch
+  directory, never a shared one; parent's model by default, `name_is_auto=False`), stamps
+  `parent_session_id`, and audits `session.child_dispatch {parentSessionId, childSessionId,
+  name}`. A child dispatched at capacity is queued and reports `"queued"`; its lineage
+  survives the queue → spawn hand-off.
 
 The model is told to use it for work the user must interact with independently and to keep
 using the Agent tool for quick, self-contained research. The eval case
@@ -37,8 +44,9 @@ using the Agent tool for quick, self-contained research. The eval case
 
 ## The parent hears back
 
-When a child reaches `complete`, `done`, `waiting_question` or `ended`, `_persist_status`
-delivers a prompt to the parent (resuming it if detached):
+When a child reaches `complete`, `waiting_question`, `done`, `ended` or `archived`, the
+orchestrator delivers a prompt to the parent (resuming it if detached — but never a parent
+that is `complete`, `ended` or `archived`, which would resurrect a finished session):
 
 ```
 <child-session-notification>
@@ -52,10 +60,19 @@ delivers a prompt to the parent (resuming it if detached):
 </child-session-notification>
 ```
 
-Once per stop transition: `Session.parent_notified_status` remembers the last status reported;
-a non-stop status in between (the child ran again) clears it. An archived or ended parent is
-not woken. `session_context` lists the parent's `children` (id, name, status) and its own
-`parentSessionId`.
+Which stops notify is decided by `child_sessions.notify_decision` and persisted as
+`Session.parent_notified_status`:
+
+- `done` is what every ended turn produces, so it notifies only for the child's FIRST stop
+  and then latches — once the user is steering the child, its later turn-ends do not wake
+  the parent.
+- `complete`, `waiting_question`, `ended` and `archived` notify on every change of status.
+- After a hand-back (`waiting_question`) the child running again clears the guard, so the
+  stop that follows the user's answer is reported.
+- `ended`/`archived` come from `close_session` / `archive_session`, which write their status
+  directly; both call the same decision before the record is popped.
+
+`session_context` lists the parent's `children` (id, name, status) and its own `parentSessionId`.
 
 ## On the board
 
@@ -65,5 +82,7 @@ the board never hides a session.
 
 ## Not in this version
 
-A user-facing "dispatch as session" button (the orchestrator method is the seam for it),
-cascading stop/archive from parent to children, Codex parents, and inline result return.
+A user-facing "dispatch as session" button (the orchestrator method is the seam for it; note
+it runs in-process in the daemon that owns the parent, so an edge-side button will need
+`dispatch_child_session` and `children_of` added to the fleet RPC surface), cascading
+stop/archive from parent to children, Codex parents, and inline result return.

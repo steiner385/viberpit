@@ -3529,6 +3529,11 @@ class SessionOrchestrator:
             cols=cols, rows=rows, cwd=cwd, repo=repo, branch=branch_name,
             status="idle", name_is_auto=name_is_auto,
             created_at=getattr(_prior, "created_at", None) or _now,
+            # Lineage survives the queue → spawn hand-off (child-session spec §4.1): a
+            # child dispatched at capacity is stamped on the queued record, and this
+            # fresh record would otherwise drop it until the next restart rehydrates.
+            parent_session_id=getattr(_prior, "parent_session_id", None),
+            parent_notified_status=getattr(_prior, "parent_notified_status", None),
             updated_at=_now, usage_unverified=usage_unverified,
             origin=origin, origin_ref=origin_ref, model=None,
             reasoning_effort=reasoning_effort, host=_host,
@@ -4028,6 +4033,12 @@ class SessionOrchestrator:
         driver = await self._teardown_driver_state(session_id)
         if driver is not None:
             await driver.aclose()
+        record = self._records.get(session_id)
+        # A child that is closed is a stop its parent must hear about (child-session
+        # spec §4.4); this path never reaches _persist_status, so decide here, BEFORE
+        # the record is popped.
+        if record is not None and getattr(record, "parent_session_id", None):
+            await self._child_stop_transition(record, "ended", None)
         record = self._records.pop(session_id, None)
         await self._cleanup_session_paths(session_id, record)
 
@@ -4353,27 +4364,10 @@ class SessionOrchestrator:
             await db.execute(
                 sa_update(DbSession).where(DbSession.id == session_id).values(**values)
             )
-        # Child sessions (spec §4.4): tell the parent about a stop transition, once per
-        # transition. A non-stop status in between (busy again) clears the guard so the
-        # next stop notifies again; the guard is persisted so a restart keeps it.
-        # Spawned, never awaited — this runs inside the child's status callback.
-        parent_id = getattr(rec, "parent_session_id", None) if rec is not None else None
-        if rec is not None and parent_id:
-            notified = getattr(rec, "parent_notified_status", None)
-            if status in _cs.CHILD_NOTIFY_STATUSES and notified != status:
-                rec.parent_notified_status = status
-                async with db_session() as db:
-                    from sqlalchemy import update as sa_update
-                    await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
-                                     .values(parent_notified_status=status))
-                self._spawn(self._notify_parent(parent_id, rec, status, hand_back_reason),
-                            name="child-notify")
-            elif status not in _cs.CHILD_NOTIFY_STATUSES and notified is not None:
-                rec.parent_notified_status = None
-                async with db_session() as db:
-                    from sqlalchemy import update as sa_update
-                    await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
-                                     .values(parent_notified_status=None))
+        # Child sessions (spec §4.4): tell the parent about a stop transition. The
+        # decision and the persisted guard live in child_sessions.notify_decision.
+        if rec is not None and getattr(rec, "parent_session_id", None):
+            await self._child_stop_transition(rec, status, hand_back_reason)
         if hand_back_reason:
             log.info("session.hand_back sid=%s reason_len=%d", session_id, len(hand_back_reason))
             # Best-effort audit in its own transaction: the status write above must
@@ -12722,11 +12716,17 @@ class SessionOrchestrator:
                          cap=cfg.child_session_cap, max_depth=cfg.child_session_max_depth)
         mode = narrowest(permission_mode, getattr(parent, "permission_mode", None) or "interactive")
         repo = getattr(parent, "repo", None)
+        parent_cwd = getattr(parent, "cwd", None)
+        # Two sessions never share a working tree (spec §4.3). A repo-backed parent
+        # gives the child a fresh worktree of the same repo (cwd=None + repo=). A parent
+        # whose cwd is itself a git tree but has no repo column (an adopted session)
+        # gets a nested worktree from that tree. A scratch parent gets the child its
+        # own scratch directory (cwd=None, repo=None) rather than sharing.
+        parent_is_git = isinstance(parent_cwd, str) and bool(parent_cwd) \
+            and os.path.exists(os.path.join(parent_cwd, ".git"))
         rec = await self.create_session(
             name=name, initial_prompt=prompt, repo=repo,
-            # A repo-backed parent gives the child a fresh worktree of the same repo; a
-            # scratch parent (cwd only) shares its directory — there is no repo to clone.
-            cwd=None if repo else getattr(parent, "cwd", None),
+            cwd=parent_cwd if (not repo and parent_is_git) else None,
             identity=identity, permission_mode=mode, name_is_auto=False,
             model=model or getattr(parent, "model", None),
             engine=getattr(parent, "engine", AgentEngine.CLAUDE_CODE))
@@ -12742,32 +12742,57 @@ class SessionOrchestrator:
         log.info("session.child_dispatch parent=%s child=%s mode=%s", parent_id, rec.id, mode)
         return {"id": rec.id, "name": rec.name, "url": f"/sessions/{rec.id}", "status": rec.status}
 
-    async def _notify_parent(self, parent_id: str, child, status: str,
-                             hand_back_reason: str | None) -> None:
+    async def _child_stop_transition(self, rec, status: str,
+                                     hand_back_reason: str | None) -> None:
+        """A child session's status changed: decide whether its parent is told, persist
+        the guard, and spawn the notice (spec §4.4). Called from ``_persist_status`` (the
+        driver callback) and from ``archive_session`` / ``close_session``, which write
+        their status directly and must call this BEFORE popping the record. The notice
+        text is built here, synchronously, so a record popped a moment later cannot
+        starve the spawned delivery."""
+        parent_id = getattr(rec, "parent_session_id", None)
+        if not parent_id:
+            return
+        notify, guard = _cs.notify_decision(status, getattr(rec, "parent_notified_status", None))
+        if guard != getattr(rec, "parent_notified_status", None):
+            rec.parent_notified_status = guard
+            async with db_session() as db:
+                from sqlalchemy import update as sa_update
+                await db.execute(sa_update(DbSession).where(DbSession.id == rec.id)
+                                 .values(parent_notified_status=guard))
+        if not notify:
+            return
+        text = _cs.build_child_notice(
+            session_id=rec.id, name=getattr(rec, "name", None) or rec.id, status=status,
+            last_message=self._last_assistant_prose(rec.id),
+            hand_back_reason=hand_back_reason,
+            pr_resolution=getattr(rec, "pr_resolution", None))
+        self._spawn(self._notify_parent(parent_id, rec.id, status, text), name="child-notify")
+
+    #: Parent statuses that must NOT be woken by a child notice: a finished parent has
+    #: had its driver released and its slot freed; resurrecting it to read a notice
+    #: would flip it out of "Complete" and retake capacity.
+    _CHILD_NOTIFY_SKIP_PARENT = frozenset({"archived", "ended", "complete"})
+
+    async def _notify_parent(self, parent_id: str, child_id: str, status: str, text: str) -> None:
         """Deliver a <child-session-notification> to the parent as a prompt (spec §4.4).
         Resumes a detached parent first — a bare send_prompt drops the text without a
-        driver. Best-effort: logs, never raises (it runs inside the child's status
-        callback)."""
-        from server.sessions.types import SYSTEM_IDENTITY
+        driver. Best-effort: logs, never raises (it runs as a spawned task off the
+        child's status callback)."""
         try:
             parent = self._records.get(parent_id)
-            if parent is None or getattr(parent, "status", None) in ("archived", "ended"):
+            if parent is None or getattr(parent, "status", None) in self._CHILD_NOTIFY_SKIP_PARENT:
                 log.info("child_notify.skip parent=%s child=%s parent_status=%s",
-                         parent_id, child.id, getattr(parent, "status", None))
+                         parent_id, child_id, getattr(parent, "status", None))
                 return
-            text = _cs.build_child_notice(
-                session_id=child.id, name=getattr(child, "name", None) or child.id, status=status,
-                last_message=self._last_assistant_prose(child.id),
-                hand_back_reason=hand_back_reason,
-                pr_resolution=getattr(child, "pr_resolution", None))
             drv = await self.ensure_driver(parent_id, SYSTEM_IDENTITY)
             if drv is None:
-                log.warning("child_notify.no_driver parent=%s child=%s", parent_id, child.id)
+                log.warning("child_notify.no_driver parent=%s child=%s", parent_id, child_id)
                 return
             await self.send_prompt(parent_id, text)
-            log.info("child_notify.sent parent=%s child=%s status=%s", parent_id, child.id, status)
+            log.info("child_notify.sent parent=%s child=%s status=%s", parent_id, child_id, status)
         except Exception:  # noqa: BLE001 — a notice failure must never fail the child's status persist
-            log.warning("child_notify.failed parent=%s child=%s", parent_id, child.id, exc_info=True)
+            log.warning("child_notify.failed parent=%s child=%s", parent_id, child_id, exc_info=True)
 
     async def stop_subagent(self, session_id, tool_use_id: str) -> str | None:
         """Stop ONE running Task sub-agent of a live session (spec §4.4). Returns the
@@ -14890,6 +14915,12 @@ class SessionOrchestrator:
         # the shared teardown close_session and the assistant reap also use.
         driver = await self._teardown_driver_state(session_id)
 
+        # A child that is archived is a stop its parent must hear about (child-session
+        # spec §4.4); this path never reaches _persist_status, so decide here, BEFORE
+        # the record is popped below.
+        _child = self._records.get(session_id)
+        if _child is not None and getattr(_child, "parent_session_id", None):
+            await self._child_stop_transition(_child, "archived", None)
         # Remove from active records BEFORE driver.aclose() so the session
         # disappears from list_sessions() immediately and a background refetch
         # can never see it half-archived.

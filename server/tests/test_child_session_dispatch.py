@@ -82,9 +82,10 @@ def test_child_stop_notifies_parent_once_per_transition(tmp_path):
             parent = await orch.create_session(name="P", cwd=str(tmp_path), identity="u@x")
             out = await orch.dispatch_child_session(parent.id, name="child", prompt="x", model=None,
                                                     permission_mode=None, identity="u@x")
-            # The fake SDK answers the child's initial prompt at once, and that real
-            # `done` persist races this test's sequence (it would pre-arm the guard).
-            # Let it land, then start from a clean guard with the child live.
+            # The fake SDK answers the child's initial prompt at once, so the child's
+            # first real `done` (the one production notice for "first stop") lands
+            # before this test's sequence. Let it land, then start from a clean guard
+            # with the child live so the sequence below is the one under test.
             await _settle()
             orch._records[out["id"]].parent_notified_status = None
             orch._records[out["id"]].status = "in_progress"
@@ -104,6 +105,41 @@ def test_child_stop_notifies_parent_once_per_transition(tmp_path):
             assert "<status>done</status>" in sent[0][1] and "<summary>all done</summary>" in sent[0][1]
             assert "<status>waiting_question</status>" in sent[1][1]
             assert orch._records[out["id"]].parent_notified_status == "waiting_question"
+        finally:
+            await _stop_orch(orch)
+    _run(run())
+
+
+def test_done_latches_and_archiving_the_child_notifies(tmp_path):
+    """Steering a child (in_progress → done again) stays silent after the first stop;
+    archive_session — which never reaches _persist_status — still tells the parent."""
+    async def run():
+        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path/'e.db'}", tmp_path=tmp_path,
+                                max_active_sessions=20)
+        try:
+            parent = await orch.create_session(name="P", cwd=str(tmp_path), identity="u@x")
+            out = await orch.dispatch_child_session(parent.id, name="child", prompt="x", model=None,
+                                                    permission_mode=None, identity="u@x")
+            await _settle()
+            child = orch._records[out["id"]]
+            child.parent_notified_status = "done"        # first stop already reported
+            child.status = "in_progress"
+            sent: list[tuple[str, str]] = []
+
+            async def fake_send(sid, text, *a, **k):
+                sent.append((sid, text)); return "sent"
+            orch.send_prompt = fake_send                                   # type: ignore[method-assign]
+            orch.ensure_driver = AsyncMock(return_value=object())          # type: ignore[method-assign]
+            with patch.object(SessionOrchestrator, "_last_assistant_prose", return_value="more"):
+                await orch._persist_status(out["id"], "done")            # a later turn-end: silent
+                await orch._persist_status(out["id"], "in_progress")
+                await orch._persist_status(out["id"], "done")            # still silent
+                await _settle()
+                assert sent == []
+                await orch.archive_session(out["id"])
+                await _settle()
+            assert [s for s, _ in sent] == [parent.id]
+            assert "<status>archived</status>" in sent[0][1]
         finally:
             await _stop_orch(orch)
     _run(run())

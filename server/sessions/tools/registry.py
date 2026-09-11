@@ -19,9 +19,11 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("hand_back", ToolClass.SIGNAL, "Hand this session back to the user"),
     ToolSpec("request_model", ToolClass.SIGNAL, "Request a different model"),
     # MUTATION: it creates a session the user sees on the board. Gated on its
-    # annotation by the permission layer — a card in interactive mode, auto-allowed in
-    # full-auto — exactly like the assistant drawer's create_session (child-session
-    # spec §4.2). Mounted only on the durable surface with the kill switch on.
+    # annotation by the permission layer, exactly like the assistant drawer's
+    # create_session: our own MUTATION tools raise a card in EVERY session mode
+    # (full-auto included) until the user grants "always allow" — see
+    # PermissionRegistry.request's is_mcp_tool branch. Mounted only on the durable
+    # surface with the kill switch on (child-session spec §4.2).
     ToolSpec("dispatch_session", ToolClass.MUTATION, "Start a child session"),
 ]}
 

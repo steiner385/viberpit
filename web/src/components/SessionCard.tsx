@@ -89,8 +89,11 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   const subAgents = session.subAgents ?? []
   const hasSubAgents = subAgents.length > 0
   const hasChildren = childSessions.length > 0
-  // One chevron expands both nested lists (sub-agent threads and child sessions).
+  // One chevron expands both nested lists (sub-agent threads and child sessions), and
+  // says which it holds so a screen reader is not told "sub-agents" for a children-only card.
   const hasNested = hasSubAgents || hasChildren
+  const nestedNoun = hasSubAgents && hasChildren ? 'sub-agents and child sessions'
+    : hasChildren ? 'child sessions' : 'sub-agents'
   const [expanded, setExpanded] = useState(false)
   const [generating, setGenerating] = useState(false)
 
@@ -254,7 +257,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          aria-label={expanded ? 'Hide sub-agents' : 'Show sub-agents'}
+          aria-label={expanded ? `Hide ${nestedNoun}` : `Show ${nestedNoun}`}
           aria-expanded={expanded}
           className={cn(
             'flex-shrink-0 h-6 w-6 flex items-center justify-center rounded',
@@ -754,7 +757,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
       </div>
 
       {hasSubAgents && expanded && <SubAgentRows sessionId={session.id} subAgents={subAgents} />}
-      {hasChildren && expanded && <ChildSessionRows children={childSessions} />}
+      {hasChildren && expanded && <ChildSessionRows sessions={childSessions} />}
     </CardFrame>
   )
 }

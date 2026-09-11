@@ -95,8 +95,10 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
     @spec_tool("session_context",
                f"What {brand.NAME} knows about THIS session: id, name, repo, branch, cwd, host, "
                "engine, model, account, the automation that dispatched it (origin) and its "
-               "reference (originRef, e.g. owner/repo#123), the effective goal, and the "
-               "permission mode. Call it when you need to know how you were dispatched.",
+               "reference (originRef, e.g. owner/repo#123), the effective goal, the "
+               "permission mode, and this session's lineage: parentSessionId and its "
+               "children (id, name, status). Call it when you need to know how you were "
+               "dispatched or how your child sessions are doing.",
                {"type": "object", "properties": {}, "required": []})
     @guarded
     async def session_context(args: dict[str, Any]) -> Any:
@@ -236,6 +238,11 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
             return await ctx.dispatch_child(name=name, prompt=prompt, model=model, permission_mode=mode)
         except ChildSessionLimit as e:
             raise ToolArgError(str(e)) from e
+        except Exception as e:  # noqa: BLE001 - a refused/failed create (busy accounts, clone,
+            # branch, model gate) must reach the model as its message, not a class name
+            log.warning("dispatch_session: child create failed session=%s", ctx.session_id,
+                        exc_info=True)
+            raise ToolArgError(f"could not start the child session: {e}") from e
 
     by_name = {"session_context": session_context, "report_feedback": report_feedback,
                "mark_complete": mark_complete, "mark_no_pr": mark_no_pr,

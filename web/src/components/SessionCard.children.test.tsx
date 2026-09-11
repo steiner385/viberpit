@@ -50,7 +50,7 @@ describe('SessionCard lineage', () => {
     renderCard(makeSession(), { childSessions: [child] })
     expect(screen.getByText(/1 child/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Open child session/ })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /Show sub-agents/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Show child sessions$/ }))
     expect(screen.getByRole('button', { name: /Open child session API redesign/ })).toBeInTheDocument()
   })
 

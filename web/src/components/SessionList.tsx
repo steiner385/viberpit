@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Archive, RotateCcw, Shuffle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAutomations, useFixPr, useGenerateSuggestions, useSetAutopilotPaused, useBulkArchiveSessions, useResumeInterrupted, useRotateStalled } from '@/api/hooks'
@@ -76,6 +76,22 @@ export function SessionList({
   // which is already collapse-aware, and that is the set today's behaviour
   // prunes against.
   const selection = useBulkSelection(sessions.map((s) => s.id))
+  // Lineage (child-session spec §4.6) is derived from the same list, not a new wire
+  // field: one pass builds children-by-parent and id→name, so each card is O(1).
+  // `sessions` here is the ordered/filtered list, so a child outside the current
+  // scope (e.g. queued, shown in its own section) is not counted on its parent.
+  // Hooks: declared here with the others, ABOVE the loading/empty early returns.
+  const childrenByParent = useMemo(() => {
+    const m = new Map<string, Session[]>()
+    for (const s of sessions) {
+      if (!s.parentSessionId) continue
+      const arr = m.get(s.parentSessionId) ?? []
+      arr.push(s)
+      m.set(s.parentSessionId, arr)
+    }
+    return m
+  }, [sessions])
+  const nameById = useMemo(() => new Map(sessions.map((s) => [s.id, s.name] as const)), [sessions])
 
   function clearSelection() {
     selection.clear()
@@ -143,12 +159,8 @@ export function SessionList({
   const accountMap = new Map(accounts.map((a) => [a.name, a]))
 
   const renderCard = (session: Session) => {
-    // Lineage (child-session spec §4.6) is derived from the same list, not a new wire
-    // field: children of this card, and the parent's name for a child's pill.
-    const childSessions = sessions.filter((s) => s.parentSessionId === session.id)
-    const parentName = session.parentSessionId
-      ? (sessions.find((s) => s.id === session.parentSessionId)?.name ?? null)
-      : null
+    const childSessions = childrenByParent.get(session.id) ?? []
+    const parentName = session.parentSessionId ? (nameById.get(session.parentSessionId) ?? null) : null
     const card = (
       <SessionCard
         session={session}
