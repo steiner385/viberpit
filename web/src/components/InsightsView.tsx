@@ -1,15 +1,10 @@
 import { useMemo, useState } from 'react'
 import { useStageModels, useCheckInsights } from '../api/hooks'
-import { CheckTable, type Column } from './CheckTable'
+import { CheckTable, type Column } from '../features/delivery/ci/CheckTable'
+import { fmtSecs } from '../features/delivery/ci/format'
 import type { CheckDurationStat, CheckFlakeStat, CheckRegressionStat, RunnerWaitStat } from '../api/types'
 
 const WINDOWS = ['24h', '7d', '14d', '30d']
-
-function fmtSecs(s: number): string {
-  if (s < 60) return `${Math.round(s)}s`
-  const m = Math.floor(s / 60)
-  return m < 60 ? `${m}m ${Math.round(s % 60)}s` : `${Math.floor(m / 60)}h ${m % 60}m`
-}
 
 export function InsightsView() {
   const { data: models } = useStageModels()
