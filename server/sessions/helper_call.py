@@ -36,13 +36,39 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
 
 from . import failure
 
 log = logging.getLogger(__name__)
+
+
+def helper_cwd() -> str:
+    """Working directory for every stateless one-shot helper call.
+
+    A dedicated scratch directory (``~/.cache/ccswitch/helper-cwd``, or
+    ``CCSWITCH_HELPER_CWD``), created on demand — never the daemon's own cwd and never
+    a session's worktree. Claude Code treats the working directory as a project: it
+    loads that directory's ``CLAUDE.md`` into the call and files the call's transcript
+    under ``~/.claude/projects/<cwd>``. Verified live 2026-09-11: the decider and
+    composer ran in the daemon's checkout, so (1) that repo's "ALWAYS flip auto-merge
+    on" completion workflow was in the context of every autopilot judgement for every
+    governed repo, and (2) ~12,400 helper transcripts in 14 days sat in the checkout's
+    projects entry, where a plain ``claude --resume`` listed autopilot's prompts as if
+    they were the operator's own sessions. Sibling of :func:`pick_helper_config_dir`:
+    that picks WHO the helper runs as, this picks WHERE.
+    """
+    env = os.environ.get("CCSWITCH_HELPER_CWD")
+    path = Path(env) if env else Path.home() / ".cache" / "ccswitch" / "helper-cwd"
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:  # pragma: no cover — best-effort; the SDK reports a missing cwd
+        log.warning("helper_cwd: cannot create %s: %s", path, exc)
+    return str(path)
 
 
 def _pick_enabled_account(provider: str) -> str | None:

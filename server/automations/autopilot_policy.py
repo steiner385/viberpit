@@ -129,7 +129,9 @@ def fingerprint(ctx: DecisionContext) -> str:
     Collapsing to the goal keeps ONE identity across the flapping, so the counter climbs
     monotonically and escalation sticks."""
     s = ctx.stuck or {}
-    concrete = s.get("tool_name") or s.get("question") or (s.get("plan_text") or "")[:60]
+    concrete = (s.get("tool_name") or s.get("question")
+                or (s.get("hand_back_reason") or "")[:60]
+                or (s.get("plan_text") or "")[:60])
     if concrete:
         return f"{s.get('kind')}|{concrete}|{ctx.effective_goal}"
     return f"advance|{ctx.effective_goal}"
@@ -204,6 +206,17 @@ def pre_decide(ctx: DecisionContext, config: dict, now: float) -> Decision | Non
     # 1. Human deference — stand down while the human is actively steering this session.
     if ctx.seconds_since_human is not None and ctx.seconds_since_human < int(config.get("human_defer_seconds", 120)):
         return Decision(action="skip", reason="human steering — deferring")
+
+    # 1b. Handed back — "Answer needed" with no structured question card is the
+    # session's own `hand_back` (or a closing question for the user; status.py). That
+    # turn belongs to the human: surface it, never nudge it onward. Until 2026-09-11
+    # the decider governed these and the composer told sessions "no operator reply is
+    # coming in this async channel" — erasing the very state the user was meant to
+    # see, and looping hand_back → nudge → hand_back (session 0898bcd5, 3 cycles/2 min).
+    if stuck.get("kind") == "waiting_question" and not stuck.get("question"):
+        reason = (stuck.get("hand_back_reason") or "").strip()
+        return Decision(action="escalate",
+                        reason="handed back to the user" + (f": {reason[:200]}" if reason else ""))
 
     # 2. Destructive deny-list (permission/plan only).
     if stuck.get("kind") in ("permission", "plan"):

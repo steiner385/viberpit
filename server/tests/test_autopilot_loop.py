@@ -280,6 +280,32 @@ async def test_escalation_emits_once_for_same_stuck_state():
 
 
 @pytest.mark.asyncio
+async def test_escalation_reemits_after_a_human_has_steered():
+    """A handed-back session escalates once; the human answers (human-deference
+    skip); the session hands back again with the SAME reason → that is news to the
+    human again, so the feed line must reappear (the de-spam flag is released by
+    the human-steering skip, the one signal that the human saw it)."""
+    ctx = FakeCtx()
+    loop = _loop(ctx, decision=Decision(action="escalate", reason="handed back to the user"))
+    await loop.tick()
+    assert len([e for e in ctx.emits if e[2] == "escalated"]) == 1
+
+    async def human_steering(sid):
+        dc = _dc(sid)
+        dc.seconds_since_human = 5.0        # pre_decide → skip "human steering"
+        return dc
+    loop._get_context = human_steering
+    await loop.tick()
+    assert ctx.states["s1"].get("escalated") is False
+
+    async def handed_back_again(sid):
+        return _dc(sid)
+    loop._get_context = handed_back_again
+    await loop.tick()
+    assert len([e for e in ctx.emits if e[2] == "escalated"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_escalation_reemits_when_stuck_state_changes():
     ctx = FakeCtx()
     loop = _loop(ctx, decision=Decision(action="escalate", reason="needs a human"))

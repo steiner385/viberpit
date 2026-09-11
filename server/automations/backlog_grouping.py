@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from server.sessions.account_auth import helper_env
+from server.sessions.helper_call import helper_cwd
 from server.sessions.claude_bin import cli_path_kwargs
 from server.time_iso import iso_utc
 
@@ -159,7 +160,7 @@ async def propose_groups(
     max_k = max(1, int(config.get("max_issues_per_pr") or 1))
     query_fn = _query_fn or _default_sdk_query_fn()
     config_dir = _config_dir or os.environ.get("CLAUDE_CONFIG_DIR", "")
-    cwd = _cwd or os.getcwd()
+    cwd = _cwd or helper_cwd()
 
     try:
         from claude_agent_sdk import ClaudeAgentOptions

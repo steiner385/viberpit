@@ -25,5 +25,9 @@ No prose, no preamble, no code fences.
   over asserting the cache is right.
 - `verdict_reason` / `verdict_remedy` explain why completion was rejected — use
   them as input, not as the message.
+- `transcript` entries are EXCERPTS. A long entry is shortened by the harness with an
+  inline marker — `[… N chars omitted here by the … harness … not the reply
+  ending …]`. That is the harness cutting the excerpt, never the session's reply being
+  cut off: never tell the session its reply was truncated or ask it to re-post the rest.
 - If you have nothing concrete to add — the transcript gives no artifact to name
   and no new strategy — escalate. A human beats filler.
