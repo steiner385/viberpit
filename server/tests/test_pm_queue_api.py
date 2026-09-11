@@ -131,7 +131,20 @@ def test_queue_endpoint_ranks_ready_and_skips_blocked():
 
 
 def _seed_runner_row(c, target: str, state: dict) -> None:
-    """One durable backlog-runner target-state row, through the app's own loop."""
+    """One durable backlog-runner target-state row, through the app's own loop.
+
+    A CLAIM row seeded here MUST carry a ``session_id``. ``_client()`` starts the
+    real orchestrator, whose ``_backlog_tick_loop`` ticks ONCE IMMEDIATELY at
+    startup (``while True: tick(); sleep(60)``) and runs concurrently with the
+    test body. That tick's ``_reconcile_dangling`` deletes every ``claimed`` row
+    with no ``session_id`` — by the runner's own definition that shape is the
+    crash-between-claim-and-spawn leak, not a held claim. A claim seeded without
+    one is garbage the runner is designed to collect, so the assertion below
+    passes or fails on whether the tick happened to win the race (it usually
+    loses locally and wins on a loaded CI runner). A ``gave_up`` row needs no
+    such guard: the reconciler skips it and ``_expire_give_ups`` only deletes it
+    once the cooldown window has passed.
+    """
     from server.db import db_session
     from server.db.models import Automation, AutomationTargetState
 
@@ -160,12 +173,43 @@ def test_queue_endpoint_reads_the_runners_claims_and_give_ups():
                           "issues": ["steiner385/cc-account-switcher#100"],
                           "needs_human_at": datetime.now(timezone.utc).isoformat(),
                           "reason": "max attempts"})
+        # ``session_id`` is what makes this a HELD claim rather than a dangler the
+        # startup tick reclaims — see _seed_runner_row's docstring.
         _seed_runner_row(c, "steiner385/cc-account-switcher#101",
-                         {"claimed": True,
+                         {"claimed": True, "session_id": "sess-101",
                           "issues": ["steiner385/cc-account-switcher#101"]})
 
         # ``respect_dependencies=false`` so #101 reports its CLAIM rather than the
         # open dep it also has (the dep gate runs first).
+        body = c.get("/api/pm/queue?respect_dependencies=false",
+                     headers=IDENTITY_HEADERS).json()
+
+        assert body["entries"] == []
+        assert body["skipped"] == {"needs_human_cooldown": 1, "claimed": 1}
+
+
+def test_queue_reads_a_held_claim_after_a_runner_tick():
+    """Pins the race the test above only sidesteps: a HELD claim (one with a
+    ``session_id``) is still reported as ``claimed`` after the backlog runner has
+    actually ticked. ``_client()`` starts the real orchestrator, so a tick fires
+    on its own schedule anyway — here we drive one deliberately, between the seed
+    and the read, so the interleaving CI produces under load is the one asserted.
+    Without the ``session_id`` this read leaks #101 into ``entries``."""
+    from datetime import datetime, timezone
+    with _client() as c:
+        _seed_ready_and_blocked(c)
+        _seed_runner_row(c, "steiner385/cc-account-switcher#100",
+                         {"gave_up": True,
+                          "issues": ["steiner385/cc-account-switcher#100"],
+                          "needs_human_at": datetime.now(timezone.utc).isoformat(),
+                          "reason": "max attempts"})
+        _seed_runner_row(c, "steiner385/cc-account-switcher#101",
+                         {"claimed": True, "session_id": "sess-101",
+                          "issues": ["steiner385/cc-account-switcher#101"]})
+
+        assert c.portal is not None
+        c.portal.call(c.app.state.sessions._orch._backlog_tick_once)
+
         body = c.get("/api/pm/queue?respect_dependencies=false",
                      headers=IDENTITY_HEADERS).json()
 

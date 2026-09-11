@@ -1,6 +1,12 @@
 from __future__ import annotations
+import logging
 import subprocess
+import time
 from typing import Callable
+
+from server.deploy.steps import err_reason
+
+log = logging.getLogger("server.deploy.git")
 
 Run = Callable[..., subprocess.CompletedProcess]
 
@@ -39,9 +45,34 @@ def is_ancestor(repo: str, ancestor: str, descendant: str, run: Run = subprocess
     return r.returncode == 0
 
 
-def fetch(repo: str, ref: str = "master", run: Run = subprocess.run) -> None:
-    run(["git", "-C", repo, "fetch", "--quiet", "origin", ref], check=True,
-        capture_output=True, text=True)
+def fetch(repo: str, ref: str = "master", run: Run = subprocess.run, *,
+          attempts: int = 3, backoff_s: float = 2.0,
+          sleep: Callable[[float], object] = time.sleep) -> None:
+    """``git fetch origin <ref>``, retried with doubling backoff on a non-zero exit.
+
+    The deploy checkout fetches over HTTPS and gets its credentials from the
+    ``gh auth git-credential`` helper, whose token lives in the desktop keyring. When
+    that keyring call times out (a swapped-out daemon under memory pressure — 2026-09-09
+    14:55 coincided with an OOM kill, 2026-09-11 06:36 with swap at 97%), gh prints
+    nothing, git tries to prompt with no tty and dies with exit 128 ("could not read
+    Username"). Each blip cleared within one 30s detect tick, but preflight ran the
+    fetch once, so a blip at the moment of "Deploy now" aborted the whole deploy.
+    Three attempts over ~6s ride it out; a genuine auth/config break still raises.
+    """
+    delay = backoff_s
+    for attempt in range(1, attempts + 1):
+        try:
+            run(["git", "-C", repo, "fetch", "--quiet", "origin", ref], check=True,
+                capture_output=True, text=True)
+            return
+        except subprocess.CalledProcessError as e:
+            if attempt >= attempts:
+                raise
+            log.warning("git fetch origin %s in %s failed (attempt %d/%d): %s — "
+                        "retrying in %.0fs", ref, repo, attempt, attempts,
+                        err_reason(e), delay)
+            sleep(delay)
+            delay *= 2
 
 
 def log_range(repo: str, a: str, b: str, run: Run = subprocess.run) -> list[dict]:

@@ -364,7 +364,12 @@ class DeployController:
                       exc_info=True)
             if failed is not None:
                 self._set(Phase(failed), PhaseState.FAILED)
-            self.status.error = f"{failed or 'deploy'}: unexpected {type(e).__name__}: {e}"
+            # err_reason, not str(e): a git wrapper's CalledProcessError keeps git's own
+            # diagnostic on .stderr, and str(e) is only "returned non-zero exit status 128"
+            # — which is all the dialog showed on 2026-09-11 06:36 EDT for a credential
+            # blip ("could not read Username for 'https://github.com'").
+            self.status.error = (f"{failed or 'deploy'}: unexpected {type(e).__name__}: "
+                                 f"{_steps.err_reason(e)}")
             self.status.running = False
             if failed not in (None, Phase.PREFLIGHT.value) and local:
                 await self._rollback(local, daemon_changed=daemon_changed)
