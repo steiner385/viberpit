@@ -97,7 +97,7 @@ describe('useNavBadges', () => {
     const { result } = renderHook(() => useNavBadges())
     expect(result.current.sessions).toBeUndefined()
     expect(result.current.pipeline).toBeUndefined()
-    expect(result.current.automations).toBeUndefined()
+    expect(result.current.delivery).toBeUndefined()
     expect(result.current.roadmap).toBeUndefined()
   })
 
@@ -195,7 +195,7 @@ describe('useNavBadges', () => {
     expect(result.current.sessions).toBe(2)
   })
 
-  it('pipeline counts in-flight PRs; automations counts its own data', () => {
+  it('pipeline counts in-flight PRs; delivery counts live automation sessions', () => {
     const prs: PullRequestInfo[] = [
       { number: 1, url: 'https://example/pr/1', state: 'open', checks: 'pending', title: 't', deployed: false },
     ]
@@ -203,6 +203,6 @@ describe('useNavBadges', () => {
     useAutomations.mockReturnValue({ data: [automation({ activeSessions: 3 })] })
     const { result } = renderHook(() => useNavBadges())
     expect(result.current.pipeline).toBe(1)
-    expect(result.current.automations).toBe(3)
+    expect(result.current.delivery).toBe(3)
   })
 })

@@ -3,8 +3,8 @@
  *
  * The subject is the GATE. `AppShellInner` calls the hook unconditionally (hooks
  * always are), so nothing about the code's shape stops `/pm/map` being polled
- * every 15 s on Sessions, Pipeline, Automations, Insights and Settings —
- * five sections that never render the Roadmap column — and on a wall display,
+ * every 15 s on Sessions, Pipeline, Delivery and Settings —
+ * four sections that never render the Roadmap column — and on a wall display,
  * which has no `app.list` region at all. Only `enabled` stops it, and only a test
  * that watches the TRANSPORT can tell a disabled query from an enabled one: both
  * return `data: undefined` to the component.
@@ -71,7 +71,7 @@ describe('the shell only funds the roadmap map where the column renders', () => 
     get.mockClear()
   })
 
-  it.each(['/sessions', '/pipeline', '/automations', '/insights', '/settings/general'])(
+  it.each(['/sessions', '/pipeline', '/delivery', '/settings/general'])(
     'does not fetch the map on %s',
     async (path) => {
       renderApp({ path, mode: 'desktop' })
@@ -93,7 +93,7 @@ describe('the shell only funds the roadmap map where the column renders', () => 
   // already fetched, not requests. That gate (and the `poll` ownership below
   // it) is guarded at the hook, in
   // `features/roadmap/useRoadmapWorkspace.test.tsx`.
-  it.each(['/sessions', '/pipeline', '/automations', '/insights', '/settings/general'])(
+  it.each(['/sessions', '/pipeline', '/delivery', '/settings/general'])(
     'funds exactly one unscoped triage read — the nav badge\'s — on %s',
     async (path) => {
       renderApp({ path, mode: 'desktop' })

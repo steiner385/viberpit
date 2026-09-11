@@ -4,7 +4,7 @@
  *
  * @param active whether the Roadmap list column is the one the shell is about to
  *   render. The hook is called unconditionally (hooks always are), so this is
- *   what keeps the map's 15 s poll off the five other sections and off kiosk,
+ *   what keeps the map's 15 s poll off the four other sections and off kiosk,
  *   where `app.list` does not exist at all.
  */
 import { useCallback } from 'react'

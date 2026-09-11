@@ -20,23 +20,23 @@ import type { LaneStatus } from './types'
 import './plotroom.css'
 
 /** Lane chip → richest existing ccswitch surface (spec §5): the Pipeline status
- *  filter for the PR-flow lanes, the Insights tab for the rest until richer
- *  targets exist. Pure so PipelineTab can unit-test the mapping. */
+ *  filter for the PR-flow lanes, Delivery's CI health scope for the rest until
+ *  richer targets exist. Pure so PipelineTab can unit-test the mapping. */
 export function laneJumpTarget(laneId: string | null, status: LaneStatus | null):
-  { kind: 'filter'; bucket: Bucket | null } | { kind: 'insights' } {
+  { kind: 'filter'; bucket: Bucket | null } | { kind: 'ci-health' } {
   switch (laneId) {
     case 'pr-ci': return { kind: 'filter', bucket: status === 'red' ? 'failed' : 'running' }
     case 'merge-queue': return { kind: 'filter', bucket: 'queued' }
     case 'deploy': return { kind: 'filter', bucket: 'deploy' }
     case 'failures': return { kind: 'filter', bucket: 'failed' }
-    default: return { kind: 'insights' } // main / scheduled / cost / null
+    default: return { kind: 'ci-health' } // main / scheduled / cost / null
   }
 }
 
 /** ccswitch tabs are component-state driven (not URL/hash-routed), so the host
- *  shell passes a callback to switch to the Insights tab for the lane-jumps that
- *  land there. */
-function Inner({ onOpenInsights }: { onOpenInsights?: () => void }) {
+ *  shell passes a callback to navigate to Delivery's CI health scope for the
+ *  lane-jumps that land there. */
+function Inner({ onOpenCiHealth }: { onOpenCiHealth?: () => void }) {
   const fixPr = useFixPr()
   // Depend on the stable `fixPr.mutate` (not the whole `fixPr` object, a fresh
   // ref each render) so onFixPr stays reference-stable — PrRow's areEqual
@@ -56,8 +56,8 @@ function Inner({ onOpenInsights }: { onOpenInsights?: () => void }) {
   const onJumpToLane = useCallback((laneId: string | null, status: LaneStatus | null) => {
     const t = laneJumpTarget(laneId, status)
     if (t.kind === 'filter') setFilter(t.bucket)
-    else onOpenInsights?.()
-  }, [onOpenInsights])
+    else onOpenCiHealth?.()
+  }, [onOpenCiHealth])
   return (
     <InteractionProvider interactive={!kiosk}>
       {!kiosk && (
@@ -100,11 +100,11 @@ function Inner({ onOpenInsights }: { onOpenInsights?: () => void }) {
   )
 }
 
-export function PipelineTab({ onOpenInsights }: { onOpenInsights?: () => void } = {}) {
+export function PipelineTab({ onOpenCiHealth }: { onOpenCiHealth?: () => void } = {}) {
   return (
     <ApiBaseProvider base="/api/pipeline">
       <div className="prdash-root flex-1 min-h-0 overflow-y-auto">
-        <Inner onOpenInsights={onOpenInsights} />
+        <Inner onOpenCiHealth={onOpenCiHealth} />
       </div>
     </ApiBaseProvider>
   )

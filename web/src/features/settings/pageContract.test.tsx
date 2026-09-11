@@ -20,6 +20,7 @@ vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>()
   const { appSettings } = await import('@/test/factories')
   const { MAP } = await import('@/features/roadmap/__fixtures__/map')
+  const { AUTOMATIONS } = await import('@/features/delivery/__fixtures__/automations')
   return {
     ...actual,
     api: {
@@ -28,6 +29,19 @@ vi.mock('@/api/client', async (importOriginal) => {
         if (path === '/config') return { adoptionEnabled: false }
         if (path === '/settings') return appSettings()
         if (path === '/pm/map') return MAP
+        // Delivery's two scopes: the automation list names the automation row
+        // below, and `/pipeline/repos` is the CI scope's repo set. The per-id
+        // `/automations/<id>/…` reads (actionable, events, sessions) fall
+        // through to `[]` and must NOT be answered with the list.
+        if (path === '/automations') return AUTOMATIONS
+        if (path.startsWith('/automations/')) return []
+        if (path === '/pipeline/repos') return { 'o/r': { repo: 'o/r', nodes: [] } }
+        if (path.startsWith('/pipeline/insights/checks')) {
+          return {
+            repo: 'o/r', window: '7d',
+            slowest: [], flakiest: [], regressions: [], runner_wait_health: [],
+          }
+        }
         if (path === '/pm/queue') return { entries: [], skipped: 0, generatedAt: 'now' }
         if (path === '/sdlc/triage') return { items: [] }
         // The Roadmap section's Inbox scope, in every scope: the list column
@@ -120,6 +134,12 @@ const PAGES: readonly PageContractRow[] = [
   { nav: 'roadmap',  path: '/roadmap/kindash/capabilities/tasks',  variant: 'standard', title: 'Tasks' },
   { nav: 'roadmap',  path: '/roadmap?scope=inbox',                 variant: 'standard', title: 'Inbox' },
   { nav: 'roadmap',  path: '/initiatives/views',                   variant: 'standard', title: 'Use-case-first task views' },
+  // Both Delivery welcome scopes keep the SECTION title: `?scope=ci` is a scope
+  // of Delivery, not a page of its own. Only a detail route retitles.
+  { nav: 'delivery', path: '/delivery',                            variant: 'standard', title: 'Delivery' },
+  { nav: 'delivery', path: '/delivery?scope=ci',                   variant: 'standard', title: 'Delivery' },
+  { nav: 'delivery', path: '/delivery/automations/pr-doctor',      variant: 'standard', title: 'PR doctor' },
+  { nav: 'delivery', path: '/delivery/ci/o/r',                     variant: 'standard', title: 'o/r' },
 ]
 
 describe('page contract', () => {

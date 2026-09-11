@@ -32,8 +32,8 @@ import { NavRail } from './NavRail'
  *  existing is a type error here rather than a silently dead override. */
 function navBadges(over: Partial<NavBadges> = {}): NavBadges {
   return {
-    sessions: undefined, pipeline: undefined, automations: undefined,
-    roadmap: undefined, settings: undefined,
+    sessions: undefined, pipeline: undefined, roadmap: undefined,
+    delivery: undefined, settings: undefined,
     ...over,
   }
 }

@@ -202,11 +202,11 @@ describe('App routing', () => {
     expect(await screen.findByRole('region', { name: 'Accounts' })).toBeInTheDocument()
   })
 
-  it('clicking the Automations rail item updates the URL to /automations', async () => {
+  it('clicking the Delivery rail item updates the URL to /delivery', async () => {
     const user = userEvent.setup()
     const app = renderApp({ path: '/sessions', mode: 'desktop' })
-    await user.click(await screen.findByRole('link', { name: /^Automations/ }))
-    expect(app.path()).toBe('/automations')
+    await user.click(await screen.findByRole('link', { name: /^Delivery/ }))
+    expect(app.path()).toBe('/delivery')
   })
 
   it('clicking the Settings rail item updates the URL to /settings', async () => {

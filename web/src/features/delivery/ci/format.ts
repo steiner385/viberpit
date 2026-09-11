@@ -1,6 +1,6 @@
 /**
- * Duration formatting shared by every CI-health surface. Originally lived
- * in `components/InsightsView.tsx`, which now imports this copy too.
+ * Duration formatting shared by every CI-health surface. Originally lived in
+ * the deleted `components/InsightsView.tsx`; this is the only copy.
  */
 export function fmtSecs(s: number): string {
   if (s < 60) return `${Math.round(s)}s`

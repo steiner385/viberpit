@@ -16,10 +16,16 @@ export const STARTERS: Record<NavId, readonly string[]> = {
     'Which PRs are blocked, and why?',
     'Which checks are flakiest this week?',
   ],
-  automations: [
+  // One section, so one set: the Automations and Insights chips merged when
+  // finish-line row 4 merged those sections into Delivery's two scopes. Every
+  // string was already backed by an eval case and stays backed by the same one
+  // (`starters.coverage.test.ts`).
+  delivery: [
     'What did autopilot do in the last hour?',
     'Which automations are failing?',
     'What is the PR doctor proposing?',
+    'What regressed in CI recently?',
+    'Which repo has the slowest checks?',
   ],
   // One section, so one set: the Products and Initiatives chips merged when
   // Roadmap Phase 3 merged the sections, and the Triage chips joined them when
@@ -34,10 +40,6 @@ export const STARTERS: Record<NavId, readonly string[]> = {
     'What is blocked by a dependency?',
     "What's at the top of the priority queue?",
     "What's waiting in the triage inbox?",
-  ],
-  insights: [
-    'What regressed in CI recently?',
-    'Which repo has the slowest checks?',
   ],
   settings: [
     'Which accounts are near their weekly limit?',

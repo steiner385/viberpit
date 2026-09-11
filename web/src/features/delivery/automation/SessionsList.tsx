@@ -1,6 +1,6 @@
 /**
- * The Sessions tab: sessions this automation spawned. Moved from
- * `AutomationsTab.tsx`'s `SpawnedSessionsSection`, but rows now navigate via a
+ * The Sessions tab: sessions this automation spawned. Moved from the deleted
+ * `automations/AutomationsTab.tsx`'s `SpawnedSessionsSection`, but rows now navigate via a
  * real `Link` (`sessionNavState.ts`) instead of an `onOpenSession`/
  * `onReviewSession` callback pair — the detail pane has a URL of its own to
  * link out from, where the old monitor list did not.

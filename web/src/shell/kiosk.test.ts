@@ -31,8 +31,11 @@ describe('readKioskConfig', () => {
     expect(readKioskConfig('?cycle=').cycleSeconds).toBe(DEFAULT_CYCLE_SECONDS)
   })
 
+  // Finish-line row 4 folded Insights into Delivery, which is not kiosk-safe, so
+  // `pipeline` is the only id that survives the filter today — the list is still
+  // parsed as a list, and the rejected id proves the filter runs.
   it('parses a comma-separated page list', () => {
-    expect(readKioskConfig('?pages=pipeline,insights').pages).toEqual(['pipeline', 'insights'])
+    expect(readKioskConfig('?pages=pipeline,insights').pages).toEqual(['pipeline'])
   })
 
   it('drops unknown pages and pages that are not kiosk-safe', () => {
@@ -46,7 +49,7 @@ describe('readKioskConfig', () => {
   })
 
   it('de-duplicates the page list while preserving order', () => {
-    expect(readKioskConfig('?pages=insights,pipeline,insights').pages).toEqual(['insights', 'pipeline'])
+    expect(readKioskConfig('?pages=pipeline,pipeline').pages).toEqual(['pipeline'])
   })
 
   it('accepts only light or dark for theme', () => {
@@ -57,7 +60,7 @@ describe('readKioskConfig', () => {
   })
 
   it('parses a full kiosk URL', () => {
-    const c = readKioskConfig('?kiosk=1&pages=pipeline,insights&cycle=15&theme=dark')
-    expect(c).toEqual({ enabled: true, cycleSeconds: 15, pages: ['pipeline', 'insights'], theme: 'dark' })
+    const c = readKioskConfig('?kiosk=1&pages=pipeline&cycle=15&theme=dark')
+    expect(c).toEqual({ enabled: true, cycleSeconds: 15, pages: ['pipeline'], theme: 'dark' })
   })
 })

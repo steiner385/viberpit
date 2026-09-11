@@ -1,6 +1,6 @@
 /**
  * The Status tab's "Actionable items" list and its per-item action buttons.
- * Moved verbatim (behaviour) from `automations/AutomationsTab.tsx`'s
+ * Moved verbatim (behaviour) from the deleted `automations/AutomationsTab.tsx`'s
  * `AutomationActions`/`ActionButton` — only the classes changed, to `ui/`
  * primitives on tokens.
  */

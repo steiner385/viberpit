@@ -1,6 +1,6 @@
 /**
  * The automation detail pane: five tabs over one automation, re-homing both
- * the old monitor page (`automations/AutomationsTab.tsx`) and the old
+ * the deleted monitor page (`automations/AutomationsTab.tsx`) and the old
  * Settings card (`components/AutomationCard.tsx`) behind `ui/Tabs` + URL state
  * (finish-line spec §4.4). `AutomationControls` (header actions) is a sibling
  * component, not rendered here — the page assembling this pane puts it beside
@@ -8,9 +8,7 @@
  */
 import { useState } from 'react'
 import type { Automation } from '@/api/automations'
-import { useAutomationActionable } from '@/api/hooks'
 import { AUTOMATION_TAB, AUTOMATION_TABS, type AutomationTab } from '@/features/products/vocab'
-import { TierDot } from '@/features/roadmap/rows/TierDot'
 import { useSearchParamState } from '@/lib/useSearchParamState'
 import { Button } from '@/ui/Button'
 import { Tabs } from '@/ui/Tabs'
@@ -18,7 +16,6 @@ import { BacklogGroupsPanel } from '@/components/BacklogGroupsPanel'
 import { ConsolidatePanel } from '@/components/ConsolidatePanel'
 import { ManualDispatchDialog } from '@/components/ManualDispatchDialog'
 import { AutomationActions } from './actions'
-import { automationTier } from '../automationTier'
 import { ConfigPanel } from './ConfigPanel'
 import { EventsList } from './EventsList'
 import { SchedulePanel } from './SchedulePanel'
@@ -33,10 +30,6 @@ export function AutomationDetail({ automation: a, onOpenSession }: {
     !(t === 'schedule' && operatorTriggered) && !(t === 'config' && a.configSchema.length === 0))
   const [tab, setTab] = useSearchParamState<AutomationTab>('tab', items, 'status')
   const [customDispatch, setCustomDispatch] = useState(false)
-  // Shares the `useAutomationActionable` query key with `AutomationActions`
-  // below, so this costs no extra request — only the status line's tier.
-  const actionable = useAutomationActionable(a.id)
-  const tier = automationTier(a, actionable.data?.length ?? 0)
 
   return (
     <>
@@ -52,10 +45,9 @@ export function AutomationDetail({ automation: a, onOpenSession }: {
         {tab === 'status' && (
           <>
             {a.description && <p className="text-sm text-ink-muted">{a.description}</p>}
-            <div className="flex items-center gap-2 text-sm text-ink-muted">
-              <TierDot tier={tier} />
-              {a.status.text}
-            </div>
+            {/* The tier dot and `status.text` are NOT repeated here: the page
+                header carries them (R9), where they stay visible on every tab
+                rather than only on this one. */}
             <AutomationActions automationId={a.id} enabled />
             {a.id === 'pr-doctor' && <ConsolidatePanel enabled onOpenSession={onOpenSession} />}
             {a.id === 'backlog-runner' && (

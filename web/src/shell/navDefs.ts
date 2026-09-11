@@ -1,12 +1,13 @@
 import {
   MessagesSquare, GitPullRequest, Workflow, Map as MapIcon,
-  LineChart, Settings,
+  Settings,
   type LucideIcon,
 } from 'lucide-react'
-import { ROADMAP } from '@/features/products/vocab'
+import { DELIVERY_PATH } from '@/features/delivery/deliveryNavState'
+import { DELIVERY, ROADMAP } from '@/features/products/vocab'
 
 /** Which count `useNavBadges()` supplies for this section, if any. */
-export type NavBadgeKey = 'sessions' | 'pipeline' | 'automations' | 'roadmap' | 'settings'
+export type NavBadgeKey = 'sessions' | 'pipeline' | 'roadmap' | 'delivery' | 'settings'
 
 /** Shape of a nav entry, before `id` is narrowed to the derived union. */
 interface NavDefShape {
@@ -41,20 +42,25 @@ interface NavDefShape {
    * a destructive one that opens a `Dialog` is worse than live — kiosk refuses
    * the dialog, so the button is silently inert.
    *
-   * Two sections qualify today:
+   * One section qualifies today:
    * - `pipeline` — the only kiosk section before the AppShell cutover, and the
    *   only one whose action surface is gated (`StatusStrip` tiles render as
    *   plain divs; `PrRow` does not expand, which is where ready-merge lives).
-   * - `insights` — genuinely read-only: two `<select>`s over local view state
-   *   feeding `useStageModels`/`useCheckInsights` (both `useQuery`) into
-   *   `CheckTable`, which renders `<table>` and nothing else.
+   *
+   * The old `insights` row was the second, and finish-line row 4 cost it the
+   * flag: the check tables are still read-only, but they are now the CI health
+   * SCOPE of `delivery`, whose other scope triggers automation jobs for real —
+   * and `showInKiosk` gates a SECTION, not a scope. R5's follow-up is to decide
+   * whether a scope-level kiosk claim is worth the machinery; until it lands,
+   * `?pages=` has one member and a wall display cannot reach CI health.
    *
    * The other four are `false` with the mutation that disqualifies each named
    * beside the row. Widening this is a per-section change with evidence, not a
    * default — see `navDefs.test.ts`'s pinned kiosk-safe set.
    */
   showInKiosk: boolean
-  /** Renders a list column in `app.list`. Sessions and Roadmap do today. */
+  /** Renders a list column in `app.list`. Sessions, Roadmap and Delivery do
+   *  today. */
   hasList: boolean
 }
 
@@ -67,9 +73,11 @@ interface NavDefShape {
  * here from `Dashboard.tsx` and is renamed `NavId`.
  *
  * Order and labels came over verbatim from the deleted `TAB_DEFS`, and are
- * pinned by equality in `navDefs.test.ts`. One row has changed since: Roadmap
+ * pinned by equality in `navDefs.test.ts`. Two rows have changed since: Roadmap
  * Phase 3 replaced the `initiatives` and `projects` rows with a single
- * `roadmap` section (finish-line spec §4.1), whose old paths now redirect.
+ * `roadmap` section, and finish-line row 4 replaced the `automations` and
+ * `insights` rows with a single `delivery` section (finish-line spec §4.1). The
+ * old paths of all four now redirect.
  *
  * `NavId` is derived from this array (below) rather than declared separately,
  * so there is nothing to keep in sync: adding a row adds a `NavId` member.
@@ -84,10 +92,6 @@ const DEFS = [
   // consult `useInteractive()` (`StatusStrip` tiles, `PrRow` expansion).
   { id: 'pipeline',    label: 'Pipeline',    icon: GitPullRequest,  path: '/pipeline',    badge: 'pipeline',    showInKiosk: true,  hasList: false,
     help: 'Pull-request health for each repo, lane by lane, with the fix actions each lane offers.' },
-  // showInKiosk:false — `AutomationsTab`'s action buttons run
-  // `trigger.mutateAsync({ item_id, kind })`, which fires the job for real.
-  { id: 'automations', label: 'Automations', icon: Workflow,        path: '/automations', badge: 'automations', showInKiosk: false, hasList: false,
-    help: 'Scheduled and triggered jobs, their recent events, and the sessions they spawned.' },
   // showInKiosk:false — `RoadmapPage` advances initiatives (`advance.mutate`),
   // creates them, and syncs products; every one is a mutation. Since finish-line
   // row 3 folded Triage in as the Inbox scope it also carries the reason the flag
@@ -100,10 +104,13 @@ const DEFS = [
   // a queue nothing points at from outside the section is a queue nobody drains.
   { id: 'roadmap',     label: ROADMAP.label, icon: MapIcon,         path: '/roadmap',     badge: 'roadmap',     showInKiosk: false, hasList: true,
     help: ROADMAP.help },
-  // showInKiosk:true — verified read-only: `InsightsView` is two `<select>`s over
-  // local state, two `useQuery` hooks, and `CheckTable`, which renders a table.
-  { id: 'insights',    label: 'Insights',    icon: LineChart,       path: '/insights',                          showInKiosk: true,  hasList: false,
-    help: 'Usage and account-rotation trends over time.' },
+  // showInKiosk:false — `AutomationControls` patches the automation (mode select,
+  // enable switch) and `AutomationActions` runs
+  // `trigger.mutateAsync({ item_id, kind })`, which fires the job for real. The
+  // CI health scope is read-only, but the flag is per SECTION — see the
+  // `showInKiosk` docstring.
+  { id: 'delivery',    label: DELIVERY.label, icon: Workflow,       path: DELIVERY_PATH,  badge: 'delivery',    showInKiosk: false, hasList: true,
+    help: DELIVERY.help },
   // showInKiosk:false — accounts, rotation and preferences are all mutations.
   { id: 'settings',    label: 'Settings',    icon: Settings,        path: '/settings',    badge: 'settings',    showInKiosk: false, hasList: false,
     help: 'Accounts, rotation and preferences. Each account is an isolated CLAUDE_CONFIG_DIR.' },

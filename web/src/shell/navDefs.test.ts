@@ -11,9 +11,8 @@ describe('navDefs', () => {
     expect(NAV_DEFS.map((d) => [d.id, d.label])).toEqual([
       ['sessions', 'Sessions'],
       ['pipeline', 'Pipeline'],
-      ['automations', 'Automations'],
       ['roadmap', 'Roadmap'],
-      ['insights', 'Insights'],
+      ['delivery', 'Delivery'],
       ['settings', 'Settings'],
     ])
   })
@@ -45,8 +44,8 @@ describe('navDefs', () => {
     }
   })
 
-  it('Sessions and Roadmap own list columns', () => {
-    expect(NAV_DEFS.filter((d) => d.hasList).map((d) => d.id)).toEqual(['sessions', 'roadmap'])
+  it('Sessions, Roadmap and Delivery own list columns', () => {
+    expect(NAV_DEFS.filter((d) => d.hasList).map((d) => d.id)).toEqual(['sessions', 'roadmap', 'delivery'])
   })
 
   // One path, two spellings: the nav row and `roadmapNavState`'s `ROADMAP_PATH`,
@@ -55,6 +54,13 @@ describe('navDefs', () => {
   it('the roadmap section path is the one roadmapNavState builds from', async () => {
     const { ROADMAP_PATH } = await import('@/features/roadmap/roadmapNavState')
     expect(NAV_BY_ID.roadmap.path).toBe(ROADMAP_PATH)
+  })
+
+  // Same drift guard for Delivery, whose links and route patterns are all built
+  // from `deliveryNavState`'s `DELIVERY_PATH`.
+  it('the delivery section path is the one deliveryNavState builds from', async () => {
+    const { DELIVERY_PATH } = await import('@/features/delivery/deliveryNavState')
+    expect(NAV_BY_ID.delivery.path).toBe(DELIVERY_PATH)
   })
 
   /**
@@ -71,7 +77,7 @@ describe('navDefs', () => {
    */
   it('marks exactly the verified read-only sections kiosk-safe', () => {
     const inKiosk = NAV_DEFS.filter((d) => d.showInKiosk).map((d) => d.id)
-    expect(inKiosk).toEqual(['pipeline', 'insights'])
+    expect(inKiosk).toEqual(['pipeline'])
   })
 
   it('NAV_BY_ID indexes every entry', () => {
@@ -83,7 +89,7 @@ describe('navDefs', () => {
   // key useNavBadges actually produces. Kept here (not in useNavBadges.test) so
   // the failure names the offending nav entry.
   it('declares only known badge keys', () => {
-    const known = new Set(['sessions', 'pipeline', 'automations', 'roadmap', 'settings'])
+    const known = new Set(['sessions', 'pipeline', 'roadmap', 'delivery', 'settings'])
     for (const d of NAV_DEFS) {
       if (d.badge !== undefined) expect(known.has(d.badge), `${d.id} badge=${d.badge}`).toBe(true)
     }
@@ -95,6 +101,15 @@ describe('navDefs', () => {
   it('the pending-proposal count badges Roadmap, and Triage is not a section', () => {
     expect(NAV_BY_ID.roadmap.badge).toBe('roadmap')
     expect(NAV_DEFS.map((d) => d.id)).not.toContain('triage')
+  })
+
+  // Finish-line row 4 folded the Automations and Insights sections into one
+  // `delivery` section (spec §4.1): automations are its Automations scope, the
+  // check-insights tables its CI health scope. Both old paths redirect.
+  it('the live-automation-session count badges Delivery, and neither old section survives', () => {
+    expect(NAV_BY_ID.delivery.badge).toBe('delivery')
+    expect(NAV_DEFS.map((d) => d.id)).not.toContain('automations')
+    expect(NAV_DEFS.map((d) => d.id)).not.toContain('insights')
   })
 })
 

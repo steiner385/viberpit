@@ -5,6 +5,9 @@ import { SESSION_ROUTE, SUBAGENT_ROUTE, ARCHIVED_SESSION_ROUTE, ARCHIVED_PATH, S
 import {
   CAPABILITY_ROUTE, INITIATIVE_ROUTE, PRODUCT_ROUTE, ROADMAP_PATH,
 } from '@/features/roadmap/roadmapNavState'
+import {
+  AUTOMATION_ROUTE, CI_REPO_ROUTE, DELIVERY_PATH,
+} from '@/features/delivery/deliveryNavState'
 import type { OpenItem } from './openItems'
 import { useOpenItem, useOpenSessionId } from './openSessionId'
 
@@ -19,6 +22,8 @@ function describeItem(item: OpenItem | null): string {
     case 'capability': return `capability:${item.productSlug}/${item.capSlug}`
     case 'initiative': return `initiative:${item.initiativeSlug}`
     case 'proposal': return `proposal:${item.proposalId}`
+    case 'automation': return `automation:${item.automationId}`
+    case 'ciRepo': return `ciRepo:${item.repo}`
   }
 }
 
@@ -36,6 +41,7 @@ function renderAt(path: string) {
           SESSIONS_PATH, SESSION_ROUTE, SUBAGENT_ROUTE, ARCHIVED_PATH, ARCHIVED_SESSION_ROUTE,
           '/pipeline',
           ROADMAP_PATH, PRODUCT_ROUTE, CAPABILITY_ROUTE, INITIATIVE_ROUTE,
+          DELIVERY_PATH, AUTOMATION_ROUTE, CI_REPO_ROUTE,
         ].map((p) => (
           <Route key={p} path={p} element={<Probe />} />
         ))}
@@ -59,6 +65,12 @@ describe('useOpenItem', () => {
     ['/roadmap/kindash/capabilities/tasks', 'capability:kindash/tasks|-'],
     ['/initiatives/views', 'initiative:views|-'],
     ['/roadmap?scope=inbox&proposal=p1', 'proposal:p1|-'],
+    // Delivery detail routes, same property: the resolver discriminates on
+    // `automationId` / `owner`+`repo`, so no Delivery URL can attach a live
+    // session runtime either.
+    ['/delivery', 'none|-'],
+    ['/delivery/automations/pr-doctor', 'automation:pr-doctor|-'],
+    ['/delivery/ci/o/r', 'ciRepo:o/r|-'],
   ])('%s → %s', (path, expected) => {
     renderAt(path)
     expect(screen.getByTestId('probe')).toHaveTextContent(expected)

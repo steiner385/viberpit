@@ -6,17 +6,19 @@
  *
  * It used to mount `SettingsView` and assert `role="tab"` ids, and when that
  * component was deleted the natural reading was that the file went with it —
- * DEC-10 said Automations had moved to the top-level `/automations` page.
+ * DEC-10 said Automations had moved to a top-level page of its own.
  *
  * That reading was wrong, and this file is the guard against making it again:
- * `automations/AutomationsTab.tsx` is a MONITOR. It renders events, spawned
- * sessions, actionable items and manual dispatch, and it has no enable switch,
- * no mode select, no config form and no schedule editor. Those three controls
- * exist ONLY in `AutomationView` → `AutomationCard` → `ScheduleEditor`, which
- * this section hosts. So the assertions below are no longer about a tab strip:
- * they name the controls, so deleting the section again fails here rather than
- * in a user's hands. PR 6 folds them into the Automations page and retires the
- * section; until then, this is the room and this is its only door.
+ * that page was a MONITOR. It rendered events, spawned sessions, actionable
+ * items and manual dispatch, and it had no enable switch, no mode select, no
+ * config form and no schedule editor. Those three controls exist ONLY in
+ * `AutomationView` → `AutomationCard` → `ScheduleEditor`, which this section
+ * hosts. So the assertions below are no longer about a tab strip: they name the
+ * controls, so deleting the section again fails here rather than in a user's
+ * hands. Finish-line row 4 gave the monitor and the controls one home —
+ * `features/delivery`'s automation detail, whose header carries the mode select
+ * and the enable switch; the row's next task retires this section and this
+ * file with it. Until then, this is the room and this is its only door.
  *
  * It renders the real page at `/settings/automation` (not the component in
  * isolation) because "reachable" is half the claim.

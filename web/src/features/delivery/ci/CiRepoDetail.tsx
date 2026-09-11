@@ -1,7 +1,7 @@
 /**
  * The CI health detail — the four check tables (slowest/most-variable,
- * flakiest, duration regressions, runner-wait health), moved from
- * `components/InsightsView.tsx` onto tokens. The repo comes from the route
+ * flakiest, duration regressions, runner-wait health), moved onto tokens from
+ * the deleted `components/InsightsView.tsx`. The repo comes from the route
  * and the window selector lives in the page header (`DeliveryPage`, via
  * `useSearchParamState('window', WINDOWS, '7d')`); this component only
  * renders the data for a given repo + window.

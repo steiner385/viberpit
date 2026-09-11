@@ -1,6 +1,6 @@
 /**
- * The Events tab: an automation's activity feed. Moved from
- * `AutomationsTab.tsx`'s `AutomationLiveCard` Activity section — same rows,
+ * The Events tab: an automation's activity feed. Moved from the deleted
+ * `automations/AutomationsTab.tsx`'s `AutomationLiveCard` Activity section — same rows,
  * always fetched (the tab being open replaces the old expand/collapse gate).
  */
 import { useAutomationEvents } from '@/api/hooks'
