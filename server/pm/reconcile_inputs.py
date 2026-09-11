@@ -133,9 +133,15 @@ def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) 
     # skipped_stale on every tick without ever converging. Session-driven pushes stay
     # safe by another route: they carry that same near-now timestamp as their decided_at,
     # so the ownership rule lets them through against any older gh_updated_at.
+    #
+    # A runner give-up IS folded in, and is not the same kind of value: `needs_human_at`
+    # is a decision time the runner stamps once, at the moment it hands the issue to a
+    # human (it flips the board to Needs human), so unlike `Session.updated_at` it does
+    # not churn and cannot hold the gate at ~now.
     newest = _max(*(_aware(w.classified_at) for w in issues),
                   *(_aware(i.updated_at) for i in initiatives.values()),
                   *(_aware(d.updated_at) for d in deps),
+                  *(f.needs_human_at for f in items),
                   last_applied)
     return ProductFacts(
         project_id=product.project_id, slug=product.slug or product.project_id,

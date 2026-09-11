@@ -77,6 +77,25 @@ def test_a_runner_give_up_row_marks_every_issue_in_the_bundle():
     assert by_ref[f"{REPO}#5"].needs_human_at is None
 
 
+def test_a_give_up_makes_the_mirror_stale():
+    """A give-up is a DECISION — it flips the board to ``Needs human`` — so a row
+    stamped after the last sync must make the mirror stale, exactly like a dep edge.
+    Otherwise the reconciler plans that push against a board it has not re-read."""
+    db = _db(); _seed(db)
+    product = list_product_views(db)[0]
+    assert load_product_facts(db, product, now=T).newest_decision_at == T   # no rows: unchanged
+
+    later = datetime(2026, 9, 9, tzinfo=timezone.utc)
+    db.add(AutomationTargetState(
+        automation_id="backlog-runner", target=f"{REPO}#3",
+        state={"gave_up": True, "needs_human_at": later.isoformat()}))
+    db.commit()
+
+    facts = load_product_facts(db, product, now=later)
+    assert facts.newest_decision_at == later
+    assert facts.mirror_synced_at < facts.newest_decision_at
+
+
 def test_a_runner_row_without_a_give_up_is_not_needs_human():
     """A live claim is the runner working the issue, not a handoff to a human."""
     db = _db(); _seed(db)
