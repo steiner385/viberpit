@@ -32,7 +32,7 @@ signal, the runner simply no longer reads it. `in-progress` is deleted after the
 manually — `POST /api/automations/backlog-runner/dispatch` with `{"refs": ["owner/repo#N"]}`, or
 the Backlog Runner card's dispatch action — which replaces the `gave_up` row with a fresh claim
 and spawns a session. Moving the board card out of `Needs human` by hand does **not** shorten the
-cooldown: the row is the carrier, and the reconciler will put the card back. Follow-up #FOLLOWUP.
+cooldown: the row is the carrier, and the reconciler will put the card back. Follow-up #1540.
 
 ## Preconditions
 - **The reconciler is in `apply`** (Automations → GitHub Reconcile, mode `apply`), and pm-sync is

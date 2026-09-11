@@ -107,7 +107,7 @@ PR linkage, never on labels alone.
   0. A human takes an issue back from a give-up by **dispatching it manually**
   (`POST /api/automations/backlog-runner/dispatch`, or the card's dispatch action), which
   replaces the give-up row with a fresh claim; moving the board card alone does not shorten the
-  cooldown (follow-up #FOLLOWUP). Backoff + disk-exhaustion circuit breaker in #626/#683.
+  cooldown (follow-up #1540). Backoff + disk-exhaustion circuit breaker in #626/#683.
 - The runner had to learn to see its own PRs (#546 sweep-time resolution) and to fail-closed
   on PR↔issue linkage before closing (#643), and not to auto-close action-required /
   docs-only issues (#784/#786).
