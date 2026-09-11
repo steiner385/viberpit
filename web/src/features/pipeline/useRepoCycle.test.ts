@@ -39,6 +39,34 @@ describe('useRepoCycle', () => {
     expect(focus).not.toHaveBeenCalled()
   })
 
+  // Every dashboard frame hands the hook a NEW repos array and a fresh focus
+  // callback. The timer must ride through them, or a poll cadence shorter than
+  // the cycle (the production default: 10 s frames, 30 s cycle) means it
+  // never fires — the inherited useKioskCycle bug.
+  it('keeps its timer across frames that carry the same repos', () => {
+    const focus = vi.fn()
+    const { rerender } = renderHook(
+      ({ repos, focus }) => useRepoCycle(true, 30, repos, 'o/a', focus),
+      { initialProps: { repos: [...repos], focus } },
+    )
+    vi.advanceTimersByTime(20_000)
+    rerender({ repos: [...repos], focus: vi.fn((r: string) => focus(r)) })
+    vi.advanceTimersByTime(10_000)
+    expect(focus).toHaveBeenCalledWith('o/b')
+  })
+
+  it('follows the latest focus without restarting the timer', () => {
+    const focus = vi.fn()
+    const { rerender } = renderHook(
+      ({ focused }) => useRepoCycle(true, 30, repos, focused, focus),
+      { initialProps: { focused: 'o/a' as string | null } },
+    )
+    vi.advanceTimersByTime(25_000)
+    rerender({ focused: 'o/b' })
+    vi.advanceTimersByTime(5_000)
+    expect(focus).toHaveBeenCalledWith('o/c')
+  })
+
   it('pauses while the tab is hidden (document.hidden)', () => {
     const focus = vi.fn()
     const spy = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)

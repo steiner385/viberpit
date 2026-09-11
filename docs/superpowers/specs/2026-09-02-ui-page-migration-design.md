@@ -95,7 +95,10 @@ Sessions (PR 4) already conforms; its page test is added in PR 5's `pageContract
 ## 7. Risks
 
 - **Pipeline CSS rewrite** is the largest single page (1,216 lines). Mitigation: charts stay as CSS
-  in the allowlisted folder; only chrome/board rules convert.
+  in the allowlisted folder; only chrome/board rules convert. *Outcome (PR 10, finish-line row 5,
+  2026-09-11): ~550 of the lines were dead and deleted outright; the chart rules (metro, gantt,
+  waterfall, queue train) moved to `features/pipeline/charts/plotroom.css` on `--t-*` tokens; the
+  rest became utilities on `StatusStrip`, `HealthHeader`, `PipelineView`, `PrRow`, `LegendPanel`.*
 - **Settings sub-routes on phone** change navigation depth; Back must return to `/settings`, tested.
 - The **sweep PR** touches many files mechanically; the lint rule at repo scope is the acceptance,
   reviewed by CI rather than by eye.
