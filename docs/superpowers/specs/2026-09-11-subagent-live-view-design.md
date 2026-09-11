@@ -9,8 +9,8 @@ ViberPit sessions, the interactive path this spec deliberately does not attempt.
 
 ## 1. Problem
 
-Clicking a sub-agent row opens `SubSessionView`, a read-only transcript with a
-"Read-only sub-agent" badge. It shows the sub-agent's turns only if the parent was open
+Clicking a sub-agent row opens the sub-agent Reader page (`features/sessions/SubAgentPage.tsx`), a
+transcript with no composer and a "Read-only sub-agent" badge. It shows the sub-agent's turns only if the parent was open
 while it streamed, knows nothing about the sub-agent's progress or usage, cannot stop it,
 and does not show the permission cards the sub-agent itself is blocked on (those land in
 the parent's transcript, unattributed). Tony's ask: "click into sub-agent sessions and
@@ -237,7 +237,7 @@ strip, the rows and the view all read (Principle VI).
 `stopSubAgent(sessionId, toolUseId)` → `POST /api/sessions/{id}/agents/{toolUseId}/stop`;
 `useStopSubAgent()` mutation with the shared error toast.
 
-### 5.5 `SubSessionView.tsx`
+### 5.5 The sub-agent Reader page (landed as `features/sessions/SubAgentPage.tsx`)
 
 Header, in the order Claude Code's view uses:
 
@@ -289,7 +289,7 @@ Server (`server/tests/`):
 
 Web (`web/`): reducer cases for the three events, idempotent Ended, card duplication into
 the sub-thread and removal from both on resolve, double-buffer carry; selector merge;
-`SubSessionView` header, Stop button states, answerable permission card; `SubAgentRows`
+the sub-agent Reader page's header, Stop button states, answerable permission card; `SubAgentRows`
 stopped state. Full `npm run test`, `typecheck`, `lint`, `build`.
 
 ## 8. Rollout

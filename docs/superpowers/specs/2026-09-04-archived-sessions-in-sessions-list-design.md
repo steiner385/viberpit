@@ -69,7 +69,7 @@ server, keyboard-cursor integration between the prompt bar and archived rows.
   `/sessions/archived/:id`), carrying the search string so `?kiosk=1` survives, the same
   shape as the existing `/review/:sessionId` redirect. `ARCHIVED_PATH` and
   `archivedSessionPath()` keep their names and change value, so the ~6 call sites
-  (`useArchiveAdvance`, `AutomationsTab` via `routes.tsx`, `ReviewView` back) need no edit.
+  (`useArchiveAdvance`, `AutomationsTab` via `routes.tsx`, the archived reader's Back link) need no edit.
 - **D8 Fix `archivedAt` while we are here.** `list_archived` serves `archivedAt` from
   `updated_at`, which is bumped by every incidental row write. Serve `archived_at` and fall
   back to `updated_at` only when the column is NULL (rows archived before it existed). The
@@ -84,7 +84,7 @@ server, keyboard-cursor integration between the prompt bar and archived rows.
 /sessions/:id                     live session (unchanged)
 /sessions/:id/agents/:agentId     sub-agent (unchanged)
 /sessions/archived                archived list (phone: list; desktop: list + ArchivedWelcome)
-/sessions/archived/:archivedId    reader (ReviewView), list beside it on desktop
+/sessions/archived/:archivedId    reader (ArchivedReviewPage), list beside it on desktop
 /archived            → redirect   /sessions/archived            (keeps ?search)
 /archived/:id        → redirect   /sessions/archived/:id
 /review/:sessionId   → redirect   (unchanged, now chains to the above)
@@ -213,7 +213,7 @@ route pathname ──listScopeForPath──▶ SessionListColumn
                                                       (row disappears here, appears in Active)
 ```
 
-Unarchive from the reader (`ReviewView` header) keeps its existing behaviour; on success it
+Unarchive from the reader (its `PageHeader` action) keeps its existing behaviour; on success it
 navigates to `sessionPath(id)`, which flips the scope to live because the route did.
 
 ## 6. Error handling

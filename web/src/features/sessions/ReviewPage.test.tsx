@@ -2,7 +2,7 @@
  * ArchivedReviewPage — the archived transcript as a Reader page (finish-line
  * row 6): one h1 named after the session, a Back link, Unarchive as the header
  * action, no composer, busy/empty states from the page primitives, and the
- * scroll-up paging that `ReviewView` had.
+ * scroll-up paging that the old read-only view had.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
@@ -116,7 +116,7 @@ describe('ArchivedReviewPage', () => {
     // Mounting the virtualizer routes its first row measurement through
     // TranscriptView's programmatic-scroll guard, which flags the mount frame;
     // a simulated user scroll has to land in a later frame, as a real one would
-    // (ported from the old ReviewView.test.tsx's scroll-trigger mechanics).
+    // (ported from the old read-only view's test's scroll-trigger mechanics).
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
     fireEvent.scroll(scroller)
     await waitFor(() => expect(fetchOlderTurns).toHaveBeenCalledWith('arc-99', 10))

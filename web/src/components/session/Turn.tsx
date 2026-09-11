@@ -29,7 +29,7 @@ interface Props {
   /** The session's current model — threaded down to badge subagents on a different model. */
   sessionModel?: string | null
   /** Mirrors TranscriptView's variant — a noticeCard only renders its rich card in the
-   *  assistant drawer; other variants (e.g. read-only ReviewView) fall back to a plain line. */
+   *  assistant drawer; other variants (e.g. the read-only archived reader) fall back to a plain line. */
   variant?: 'session' | 'assistant'
   /** Wired to a noticeCard's "Ask about it" button. Absent in read-only views, where the
    *  button hides (NoticeCard has nothing to hand the prefilled text to). */

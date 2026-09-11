@@ -5,8 +5,9 @@
  * @tanstack/react-virtual list can't be asserted in unit tests (the row-
  * composition logic is unit-tested separately in transcriptRows.test.ts). These
  * Playwright tests exercise the real virtualizer against real layout via the
- * read-only ReviewView route, whose transcript is fetched over HTTP and can be
- * fully mocked — no backend or WebSocket required.
+ * archived Reader page (`features/sessions/ReviewPage.tsx`), whose transcript
+ * is fetched over HTTP and can be fully mocked — no backend or WebSocket
+ * required.
  *
  * Prerequisites:
  *   - `npm run build && npm run preview` running at http://127.0.0.1:4173
@@ -34,7 +35,7 @@ const SWITCH_AT = 2
 // short rows the browser's own clamp hides the bug.
 const LONG_REPLY_PARAGRAPHS = 30
 
-/** Synthesize a long transcript as the wire events ReviewView folds into turns. */
+/** Synthesize a long transcript as the wire events the reader folds into turns. */
 function buildTranscriptEvents() {
   const events: Array<Record<string, unknown>> = []
   for (let i = 0; i < EXCHANGES; i++) {
@@ -55,13 +56,14 @@ function buildTranscriptEvents() {
 }
 
 async function mockTranscript(page: Page) {
-  // ReviewView only fetches the transcript; stub the rest defensively so nothing
-  // hangs the app shell if a route pulls sessions/accounts. The real endpoint
-  // (server/api/sessions.py get_session_transcript) always returns earliestTurn/
-  // totalTurns as top-level metadata alongside events — replayComplete is a
-  // WS-only wire event and is never embedded in the REST transcript payload;
-  // ReviewView itself synthesizes that dispatch from the top-level fields
-  // (ReviewView.tsx:38). Query-string variants (`?limit=…`) must still match.
+  // The reader page only fetches the transcript; stub the rest defensively so
+  // nothing hangs the app shell if a route pulls sessions/accounts. The real
+  // endpoint (server/api/sessions.py get_session_transcript) always returns
+  // earliestTurn/totalTurns as top-level metadata alongside events —
+  // replayComplete is a WS-only wire event and is never embedded in the REST
+  // transcript payload; the page itself synthesizes that dispatch from the
+  // top-level fields (`ReviewPage.tsx`, the replayComplete effect). Query-string
+  // variants (`?limit=…`) must still match.
   await page.route('**/api/sessions/*/transcript*', (route) =>
     route.fulfill({ json: { events: buildTranscriptEvents(), earliestTurn: 0, totalTurns: EXCHANGES * 2 } }),
   )

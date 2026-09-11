@@ -9,7 +9,7 @@ export interface NoticeCardData {
 
 interface Props {
   notice: NoticeCardData
-  /** Absent for a read-only transcript (e.g. ReviewView) — the button hides. */
+  /** Absent for a read-only transcript (e.g. the archived reader) — the button hides. */
   onAsk?: (text: string) => void
   /** Injected for deterministic relative-time rendering in tests; defaults to the real clock. */
   now?: number

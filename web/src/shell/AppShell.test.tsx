@@ -620,7 +620,7 @@ describe('AppShell — accessibility', () => {
    * included.
    *
    * Task 16 had to turn `region` off: `app.main` was a `<div>`, because
-   * `ReviewView`, `SubSessionView` and `App.tsx` each declared their own
+   * the archived review, the sub-agent view and `App.tsx` each declared their own
    * `<main>` and promoting the region would have nested two. Task 17 deleted
    * `App.tsx`'s shell fork and demoted the other two, so `PageHost` is now the
    * single `main` landmark and the rule holds. It is asserted rather than

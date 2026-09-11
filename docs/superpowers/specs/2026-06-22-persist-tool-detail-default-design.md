@@ -38,7 +38,8 @@ model of a persistent config default rather than scattered header buttons.
   persisted default is the only global control. (Per-group expand/collapse via
   clicking a `ToolGroup` header is unchanged and remains the in-session
   granular affordance.)
-- `ReviewView` keeps its literal `toolDetailMode="auto"` (read-only diff view).
+- The archived reader (`features/sessions/ReviewPage.tsx`) keeps its literal
+  `toolDetailMode="auto"` (read-only diff view).
 
 ## Behavior
 

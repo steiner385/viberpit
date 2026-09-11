@@ -52,8 +52,8 @@ export const SESSIONS_PATH = NAV_BY_ID.sessions.path
  * scope now, so its paths hang off `SESSIONS_PATH`: `navDefForPath` resolves
  * them to `sessions`, which is what keeps the list column beside the
  * read-only transcript on desktop. The constant keeps its name — every caller
- * (`useArchiveAdvance`, the automations page, `ReviewView`'s back button) was
- * already routing through it and needs no edit.
+ * (`useArchiveAdvance`, the automations page, the archived reader's Back link)
+ * was already routing through it and needs no edit.
  */
 export const ARCHIVED_PATH = `${SESSIONS_PATH}/archived`
 
