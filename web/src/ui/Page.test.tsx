@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { PageHeader } from './PageHeader'
 import { PageContent } from './PageContent'
 import { EmptyState } from './EmptyState'
@@ -27,6 +28,24 @@ describe('page primitives', () => {
     render(<PageHeader title="Automations" meta="3 active" actions={<button>New</button>} />)
     expect(screen.getByText('3 active')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'New' })).toBeInTheDocument()
+  })
+
+  it('PageHeader renders the back link before the title', () => {
+    render(
+      <MemoryRouter>
+        <PageHeader title="Old work" back={{ to: '/sessions/archived', label: 'Back to archived sessions' }} />
+      </MemoryRouter>,
+    )
+    const back = screen.getByRole('link', { name: 'Back to archived sessions' })
+    expect(back).toHaveAttribute('href', '/sessions/archived')
+    // Reading order: Back, then the h1 — a screen reader lands on the way out first.
+    const h1 = screen.getByRole('heading', { level: 1 })
+    expect(back.compareDocumentPosition(h1) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('PageHeader renders no link without back', () => {
+    render(<PageHeader title="Plain" />)
+    expect(screen.queryByRole('link')).toBeNull()
   })
 
   it('PageHeader updates document.title when the title prop changes', () => {

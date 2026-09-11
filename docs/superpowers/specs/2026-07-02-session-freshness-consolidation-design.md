@@ -186,8 +186,8 @@ Transcript: driver._emit(seq) ─> batch{sessionId,firstSeq,lastSeq} ─> client
 - The `statusTier`/`triageTier` presentation mapping (legitimate, not a duplicate).
 - The 16 ms WS batch-coalescing window (benign).
 - JSONL write/flush timing in the SDK (owned by claude-agent-sdk, per constitution Principle I).
-- ReviewView's `useSessionTranscript` (`staleTime: Infinity`) — historical view, not a live-freshness
-  concern; leave unless PR 1 testing surfaces an issue.
+- The archived reader's (`features/sessions/ReviewPage.tsx`) `useSessionTranscript` (`staleTime: Infinity`) —
+  historical view, not a live-freshness concern; leave unless PR 1 testing surfaces an issue.
 
 ## Risks & mitigations
 

@@ -70,8 +70,8 @@ import { WelcomePane } from '@/features/sessions/WelcomePane'
 import { ArchivedWelcome } from '@/features/sessions/ArchivedWelcome'
 import { BackgroundWelcome } from '@/features/sessions/BackgroundWelcome'
 import { useArchiveAdvance } from '@/features/sessions/useArchiveAdvance'
-import { SubSessionView } from '@/components/session/SubSessionView'
-import { ReviewView } from '@/components/ReviewView'
+import { SubAgentReaderPage } from '@/features/sessions/SubAgentPage'
+import { ArchivedReviewPage } from '@/features/sessions/ReviewPage'
 import { PipelinePage } from '@/features/pipeline/PipelinePage'
 import { RoadmapPage } from '@/features/roadmap/RoadmapPage'
 import { InitiativePage } from '@/features/roadmap/InitiativePage'
@@ -131,18 +131,14 @@ function SessionsPage() {
   )
 }
 
+/** `/sessions/:id/agents/:agentId` (and the background twin) — one sub-agent
+ *  of an open session, as a Reader page. Keeps `:id` so the parent's live
+ *  runtime mounts under it; the page derives its own Back target from the
+ *  list scope in the URL. */
 function SubAgentPage() {
   const { id, agentId } = useParams()
-  const navigate = useNavigate()
-  const scope = listScopeForPath(useLocation().pathname)
   if (!id || !agentId) return <Navigate to={SESSIONS_PATH} replace />
-  return (
-    <SubSessionView
-      sessionId={id}
-      agentId={agentId}
-      onBack={() => navigate(sessionPath(id, scope))}
-    />
-  )
+  return <SubAgentReaderPage sessionId={id} agentId={agentId} />
 }
 
 /** `/sessions/archived` — the archived scope's page slot. The archived LIST is
@@ -156,13 +152,14 @@ function ArchivedPage() {
   )
 }
 
-/** `/sessions/archived/:archivedId` — read-only transcript (DEC-6). Never gets
- *  a live runtime: the param is not `id`, so `useOpenSessionId` finds nothing. */
+/** `/sessions/archived/:archivedId` — the archived transcript as a Reader page
+ *  (DEC-6). Never gets a live runtime: the param is not `id`, so
+ *  `useOpenSessionId` finds nothing. The page owns its Back link and the
+ *  post-unarchive navigation. */
 function ReviewPage() {
   const { archivedId } = useParams()
-  const navigate = useNavigate()
   if (!archivedId) return <Navigate to={ARCHIVED_PATH} replace />
-  return <ReviewView sessionId={archivedId} onBack={() => navigate(ARCHIVED_PATH)} />
+  return <ArchivedReviewPage sessionId={archivedId} />
 }
 
 // ── redirects ────────────────────────────────────────────────────────────────

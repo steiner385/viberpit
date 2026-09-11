@@ -1,7 +1,14 @@
-# cc-account-switcher (`ccswitch`)
+<p align="center">
+  <img src="web/public/brand/viberpit-logo-horizontal.png" alt="ViberPit" width="520">
+</p>
+<p align="center"><em>Code it. Vibe it. Ship it.</em></p>
 
-Automatic Claude Max account rotation to stay within session/weekly usage limits
-without manual intervention. See `docs/` for the design spec.
+# ViberPit (formerly cc-account-switcher / `ccswitch`)
+
+The open source cockpit for builders who'd rather create than click around: run and switch
+between live AI coding-agent sessions across several accounts, with automatic usage-aware
+account rotation. The CLI is still installed as `ccswitch` until the package rename lands.
+See `docs/` for the design spec and `docs/product/features/viberpit-rebrand.md` for the brand.
 
 ## Usage
 

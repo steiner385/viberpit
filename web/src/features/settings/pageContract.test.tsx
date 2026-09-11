@@ -90,6 +90,17 @@ vi.mock('@/api/client', async (importOriginal) => {
             createdAt: null, updatedAt: null, featureCount: 0, workItemCount: 0,
           }
         }
+        // The two Reader-variant pages' data: the archived list names the
+        // ArchivedReviewPage title, and its transcript is empty (only the
+        // contract's four claims are asserted here, not transcript content).
+        // The sub-agent route's own reads (/sessions, /accounts, /settings)
+        // fall through to the defaults below.
+        if (path === '/sessions/archived') return [{
+          id: 'arc-1', name: 'Old work', account: 'alice', cwd: '/tmp/x', repo: null, engine: 'claude',
+          engineSessionId: 'c-1', permissionMode: 'default',
+          createdAt: '2026-06-01T10:00:00Z', archivedAt: '2026-06-02T10:00:00Z',
+        }]
+        if (path.startsWith('/sessions/arc-1/transcript')) return { events: [], earliestTurn: 0, totalTurns: 0 }
         return []
       }),
       post: vi.fn(async () => ({})),
@@ -144,6 +155,13 @@ const PAGES: readonly PageContractRow[] = [
   // gets a kiosk cell. No SSE frame ever arrives here (`EventSource` is stubbed
   // below), so what the row asserts is the loading state of the contract.
   { nav: 'pipeline', path: '/pipeline',                            variant: 'workspace', title: 'Pipeline' },
+  // The two Reader-variant pages (finish-line row 6). Sessions is not kiosk-safe,
+  // so neither has a kiosk cell. The archived title is the session's NAME from
+  // the archived list; the sub-agent title is `type › description` from the
+  // parent's live task state, which this harness never has — so it reads the
+  // fallback (`sub-agent`), and that is what the row asserts.
+  { nav: 'sessions', path: '/sessions/archived/arc-1',        variant: 'reader',    title: 'Old work' },
+  { nav: 'sessions', path: '/sessions/s-1/agents/toolu_1',    variant: 'reader',    title: 'sub-agent' },
 ]
 
 // jsdom has no EventSource; the Pipeline page opens one on mount.
@@ -158,6 +176,11 @@ describe('page contract', () => {
     localStorage.clear()
     resetDocumentTitle()
     vi.stubGlobal('EventSource', StubEventSource as unknown as typeof EventSource)
+    // The Pipeline row's kiosk cell puts `?kiosk=1` on the real `window.location`
+    // (`readKioskConfig()` reads that, not the router's — see `renderApp`). It
+    // outlives the test, so clear it here or every row after Pipeline in
+    // iteration order silently renders the kiosk redirect instead of itself.
+    window.history.replaceState(null, '', '/')
   })
 
   afterEach(() => {

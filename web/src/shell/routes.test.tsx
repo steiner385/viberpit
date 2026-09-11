@@ -51,13 +51,13 @@ vi.mock('@/features/sessions/MainPaneSession', () => ({
     <div data-testid="page-session-detail">{sessionId}</div>
   ),
 }))
-vi.mock('@/components/session/SubSessionView', () => ({
-  SubSessionView: ({ sessionId, agentId }: { sessionId: string; agentId: string }) => (
+vi.mock('@/features/sessions/SubAgentPage', () => ({
+  SubAgentReaderPage: ({ sessionId, agentId }: { sessionId: string; agentId: string }) => (
     <div data-testid="page-subagent">{`${sessionId}/${agentId}`}</div>
   ),
 }))
-vi.mock('@/components/ReviewView', () => ({
-  ReviewView: ({ sessionId }: { sessionId: string }) => (
+vi.mock('@/features/sessions/ReviewPage', () => ({
+  ArchivedReviewPage: ({ sessionId }: { sessionId: string }) => (
     <div data-testid="page-review">{sessionId}</div>
   ),
 }))
