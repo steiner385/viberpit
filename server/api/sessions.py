@@ -1477,6 +1477,27 @@ async def interrupt_session(
     return await session_actions.interrupt(orch, db, session_id=session_id, identity=identity, via=via)
 
 
+@router.post("/{session_id}/agents/{tool_use_id}/stop")
+async def stop_session_subagent(
+    session_id: str,
+    tool_use_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+):
+    """Stop one running Task sub-agent (the SDK ``stop_task`` control request).
+    404 ``SUBAGENT_NOT_RUNNING`` when the sub-agent already finished or the session
+    is not live."""
+    orch = _get_orchestrator(request)
+    via = getattr(request.state, "via", None)
+    try:
+        return await session_actions.stop_subagent(
+            orch, db, session_id=session_id, tool_use_id=tool_use_id,
+            identity=identity, via=via)
+    except ActionError as exc:
+        return _action_error_response(exc)
+
+
 @router.post("/{session_id}/permissions/{perm_id}")
 async def resolve_session_permission(
     session_id: str,

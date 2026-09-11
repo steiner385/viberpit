@@ -12634,6 +12634,18 @@ class SessionOrchestrator:
         if d:
             await d.interrupt()
 
+    async def stop_subagent(self, session_id, tool_use_id: str) -> str | None:
+        """Stop ONE running Task sub-agent of a live session (spec §4.4). Returns the
+        CLI task id stopped, or None when the session has no live driver or the
+        sub-agent is not running — the action layer turns None into a 404."""
+        d = self._drivers.get(session_id)
+        if d is None:
+            return None
+        stop = getattr(d, "stop_subagent", None)
+        if stop is None:           # an engine without Task sub-agents (Codex)
+            return None
+        return await stop(tool_use_id)
+
     async def latest_suggestions(self, session_id: str) -> list[str]:
         """Latest cached next-prompt suggestions for a session.
 

@@ -49,6 +49,23 @@ async def interrupt(orch, db, *, session_id: str, identity: str, via: str | None
     return {"ok": True}
 
 
+async def stop_subagent(orch, db, *, session_id: str, tool_use_id: str, identity: str,
+                        via: str | None = None) -> dict:
+    """Stop one running Task sub-agent (spec 2026-09-11 §4.4). 404 when it is not
+    running: the button only renders while the thread reports running, so this is a
+    race with the sub-agent finishing, not a path a user can take on purpose."""
+    task_id = await orch.stop_subagent(session_id, tool_use_id)
+    if task_id is None:
+        raise ActionError(
+            "SUBAGENT_NOT_RUNNING",
+            "That sub-agent is not running — it may have already finished.",
+            404,
+        )
+    await _audit(db, "session.subagent_stop", identity,
+                 {"sessionId": session_id, "toolUseId": tool_use_id, "taskId": task_id}, via)
+    return {"ok": True, "taskId": task_id}
+
+
 async def resolve_permission(
     orch, db, *, session_id: str, perm_id: str, decision: str, identity: str,
     via: str | None = None,
