@@ -35,7 +35,7 @@ import { ModelSwitchDialog } from './ModelSwitchDialog'
 const can = canUseEngine
 
 export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSlot?: ReactNode }) {
-  const runningSubAgents = selectRunningSubAgentCount(rt.state.turns)
+  const runningSubAgents = selectRunningSubAgentCount(rt.state.turns, rt.state.subAgents)
   const { data: models = [] } = useModels()
   const { data: accounts = [] } = useAccounts()
   const { data: sessions = [] } = useSessions()

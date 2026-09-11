@@ -12,6 +12,9 @@ Built from replayed events (``replay.replay_events``). Because replay skips
 deep nesting is reflected live in the in-session ``state.subAgents`` map. Each
 summary entry's ``agentId`` is the Task tool-use id — the same key the frontend
 reducer uses for ``state.subAgents[toolId].turns`` — so the drill-down lines up.
+``parentAgentId`` is the thread the Task call was issued in — the
+``parent_tool_use_id`` of its ``ToolCall`` event — so a sub-agent spawned by a
+sub-agent nests under it; None for a main-thread Task.
 """
 from __future__ import annotations
 from . import events as ev
@@ -23,8 +26,9 @@ def summarize_transcript(events: list) -> list[dict]:
     """Reduce replayed events to a per-sub-agent summary list.
 
     Returns ``[{agentId, parentAgentId, agentType, description, status}]`` in
-    first-seen order. ``parentAgentId`` is None (top-level) for everything replay
-    surfaces.
+    first-seen order. ``parentAgentId`` is the thread the Task call was issued
+    in — the ``parent_tool_use_id`` of its ``ToolCall`` event — so a sub-agent
+    spawned by a sub-agent nests under it; None for a main-thread Task.
     """
     order: list[str] = []
     by_id: dict[str, dict] = {}
@@ -38,7 +42,7 @@ def summarize_transcript(events: list) -> list[dict]:
                 order.append(e.tool_id)
             by_id[e.tool_id] = {
                 "agentId": e.tool_id,
-                "parentAgentId": None,
+                "parentAgentId": e.parent_tool_use_id,
                 "agentType": atype if isinstance(atype, str) else "agent",
                 "description": desc if isinstance(desc, str) else "",
                 "status": "running",

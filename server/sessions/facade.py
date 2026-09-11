@@ -138,6 +138,7 @@ class InProcessOrchestratorAdapter:
     # falls back to it when transcript_path() is None; see the orchestrator method.
     async def engine_replay_window(self, *a, **k): return await _maybe_await(self._orch.engine_replay_window(*a, **k))
     async def interrupt(self, *a, **k): return await _maybe_await(self._orch.interrupt(*a, **k))
+    async def stop_subagent(self, *a, **k): return await _maybe_await(self._orch.stop_subagent(*a, **k))
     # "Open a browser" — the in-process route (server/app.py) calls this the same way
     # the daemon RPC calls orchestrator.open_browser directly; the native-vs-virtual
     # branch lives once on SessionOrchestrator (Task 6). Deliberately NOT added to

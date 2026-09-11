@@ -774,6 +774,10 @@ class RemoteOrchestrator:
     async def interrupt(self, session_id):
         return await self._client.call("interrupt", session_id=session_id)
 
+    async def stop_subagent(self, session_id, tool_use_id: str):
+        return await self._client.call("stop_subagent", session_id=session_id,
+                                       tool_use_id=tool_use_id)
+
     async def set_permission_mode(self, session_id, mode):
         return await self._client.call("set_permission_mode", session_id=session_id, mode=mode)
 

@@ -256,6 +256,11 @@ class ClaudeAgentDriver:
         # its header and its transcript chip when it finally starts — rendering
         # happens at DEQUEUE time in _start_turn, never here.
         self._queue: list[tuple[str, list[dict], PromptContext | None]] = []
+        # Live Task sub-agents: spawning tool-use id -> CLI task id, from the translator's
+        # SubAgentStarted/Ended events. Powers stop_subagent (stop_task needs the task id)
+        # and permission attribution (a sub-agent's can_use_tool ctx.agent_id IS its task
+        # id — verified against claude 2.1.268, spec §2).
+        self._subagent_tasks: dict[str, str] = {}
         self._turn_active: bool = False
         # Epoch seconds of the in-progress turn's start; None whenever no turn is
         # active. Consumed by the WS attach path (→ replay_window.turn_started_at)
@@ -539,7 +544,8 @@ class ClaudeAgentDriver:
             return f"- {q_text} → (in their own words) {answer_str}"
         return f"- {q_text} → {answer_str}"
 
-    async def _handle_ask_user_question(self, tool_input: dict, turn_id: str) -> PermissionResultDeny:
+    async def _handle_ask_user_question(self, tool_input: dict, turn_id: str,
+                                        parent_tool_use_id: str | None = None) -> PermissionResultDeny:
         """Block the SDK callback, emit ev.Question events, await user answers.
 
         The SDK offers no channel to return an answer via PermissionResultAllow; the
@@ -571,6 +577,7 @@ class ClaudeAgentDriver:
                 question=question_text,
                 options=options,
                 multi_select=multi_select,
+                parent_tool_use_id=parent_tool_use_id,
             ))
             # Emit QuestionResolved the moment THIS future settles (answered or
             # dismissed) — per-question, not after the whole gather, so a reattach
@@ -716,8 +723,13 @@ class ClaudeAgentDriver:
 
     async def _can_use_tool(self, tool_name, tool_input, ctx=None):
         turn_id = self._turn()
+        # A sub-agent's request names its task id as ctx.agent_id (== task_started.task_id,
+        # verified 2026-09-11); map it to the spawning Task call so the card can render
+        # inside that sub-agent's thread. Best-effort: unmapped → unattributed, as before.
+        agent_id = getattr(ctx, "agent_id", None) if ctx is not None else None
+        pid = self.subagent_tool_use_id(agent_id) if agent_id else None
         if tool_name == "AskUserQuestion":
-            return await self._handle_ask_user_question(tool_input, turn_id)
+            return await self._handle_ask_user_question(tool_input, turn_id, parent_tool_use_id=pid)
         if is_assistant_kind(self.kind) and not is_mcp_tool(tool_name):
             # An assistant-kind session's model is scoped to our own MCP
             # server only (spec §4.4) — anything else (Bash, a third-party MCP
@@ -746,7 +758,7 @@ class ClaudeAgentDriver:
             self._emit(ev.PermissionRequest(
                 perm_id, turn_id, tool_name, ev.tool_kind(tool_name),
                 tool_input, plan=(tool_name == "ExitPlanMode"), always_allowed=always_allowed,
-                items=items))
+                items=items, parent_tool_use_id=pid))
             # A prompt is now pending for the user → waiting_input / ready_review.
             await self._emit_status()
         allowed = await fut
@@ -1096,6 +1108,10 @@ class ClaudeAgentDriver:
                     self._emit(ev.Recovering(
                         turn_id=e.turn_id, message=_RECOVERING_MSG))
                     continue
+            if isinstance(e, ev.SubAgentStarted):
+                self._subagent_tasks[e.parent_tool_use_id] = e.task_id
+            elif isinstance(e, ev.SubAgentEnded):
+                self._subagent_tasks.pop(e.parent_tool_use_id, None)
             if isinstance(e, (ev.TextDelta, ev.ToolCall, ev.ToolResult)):
                 self._turn_produced_output = True
             self._note_progress(e)
@@ -1489,6 +1505,33 @@ class ClaudeAgentDriver:
             self._emit(ev.Condensing(active=False))
         self._emit(ev.QueueUpdate(self.queue_wire()))
         await self._emit_status()
+
+    def subagent_task_id(self, tool_use_id: str) -> str | None:
+        """CLI task id of a live Task sub-agent, or None once it ended / never started."""
+        return self._subagent_tasks.get(tool_use_id)
+
+    def subagent_tool_use_id(self, task_id: str) -> str | None:
+        """Reverse lookup: the spawning Task tool-use id for a live task id."""
+        for tuid, tid in self._subagent_tasks.items():
+            if tid == task_id:
+                return tuid
+        return None
+
+    async def stop_subagent(self, tool_use_id: str) -> str | None:
+        """Stop ONE running Task sub-agent via the SDK's stop_task control request.
+        Returns the task id it stopped, or None when the sub-agent is not running
+        (unknown id, already ended, or no live client). The map entry is NOT dropped
+        here: it is dropped by `_handle_msg` on ANY SubAgentEnded — in the kill
+        sequence that is the earlier task_updated(killed), not the notification — so
+        a stop that the CLI rejected leaves the sub-agent visibly running rather than
+        silently gone."""
+        task_id = self.subagent_task_id(tool_use_id)
+        if task_id is None or self._client is None:
+            return None
+        log.info("driver.stop_subagent session=%s tool_use_id=%s task_id=%s",
+                 self.session_id, tool_use_id, task_id)
+        await self._client.stop_task(task_id)
+        return task_id
 
     async def set_permission_mode(self, mode: str):
         # Plan mode is a temporary overlay. The web plan toggle turns it OFF by

@@ -416,6 +416,15 @@ export function useRenameSession() {
   })
 }
 
+/** Stop ONE running Task sub-agent (POST /sessions/{id}/agents/{toolUseId}/stop). The
+ *  CLI answers on the event stream (subAgentEnded), so nothing is invalidated here. */
+export function useStopSubAgent() {
+  return useMutation<{ ok: boolean; taskId: string }, ApiRequestError, { id: string; toolUseId: string }>({
+    mutationFn: ({ id, toolUseId }) =>
+      api.post<{ ok: boolean; taskId: string }>(`/sessions/${id}/agents/${encodeURIComponent(toolUseId)}/stop`, {}),
+  })
+}
+
 export function useSendPrompt() {
   const qc = useQueryClient()
   return useMutation<Session, ApiRequestError, { id: string; text: string }>({

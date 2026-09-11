@@ -1,7 +1,7 @@
 /**
  * Derived views over transcript state for the session status strip.
  */
-import type { Turn, SubThread, TranscriptState } from './reducer'
+import type { Turn, SubThread, SubThreadTaskStatus, TranscriptState } from './reducer'
 
 // ── Visible transcript (double-buffer during replay) ──────────────────────────
 //
@@ -31,28 +31,41 @@ export function selectVisibleSubAgents(state: VisibleSlice): Record<string, SubT
   return servingStale(state) ? state.staleSubAgents : state.subAgents
 }
 
-export type SubAgentStatus = 'running' | 'done' | 'failed'
+export type SubAgentStatus = 'running' | 'done' | 'failed' | 'stopped'
 
 export interface SubAgent {
-  toolId: string
+  toolId: string       // the spawning Task tool-use id (= key into state.subAgents)
   type: string         // subagent_type, e.g. "Explore" (falls back to "agent")
-  description: string  // the Task description (falls back to "")
+  description: string
   status: SubAgentStatus
   startedAt?: number   // ms epoch the Task tool call was issued (the block's create-time ts)
   endedAt?: number     // ms epoch its result arrived; only set once the agent finishes
+  // Live task state (subAgentStarted/Progress/Ended); absent on a replayed session.
+  taskId?: string
+  activity?: string | null
+  lastTool?: string | null
+  totalTokens?: number | null
+  toolUses?: number | null
+  summary?: string | null
+  backgrounded?: boolean
 }
 
 const SUBAGENT_TOOL_NAMES = new Set(['Task', 'Agent'])
 
+const TASK_STATUS: Record<SubThreadTaskStatus, SubAgentStatus> = {
+  running: 'running', completed: 'done', failed: 'failed', stopped: 'stopped',
+}
+
 /**
  * Extract the list of sub-agents from the transcript.
  *
- * Sub-agents surface to the parent session as `Task` or `Agent` tool calls;
- * the parent never sees their internal steps, only the spawn and (eventually)
- * the result. Status is derived from the paired tool result: present+ok →
- * done, present+!ok → failed, absent → still running.
+ * Sub-agents surface to the parent session as `Task` or `Agent` tool calls. Status
+ * comes from the thread's live task state when the CLI's task notices supplied one
+ * (`threads[toolId].task`), else from the paired tool result: present+ok → done,
+ * present+!ok → failed, absent → still running. The live state also carries the
+ * progress line and usage the sub-agent view and rows show.
  */
-export function selectSubAgents(turns: Turn[]): SubAgent[] {
+export function selectSubAgents(turns: Turn[], threads: Record<string, SubThread> = {}): SubAgent[] {
   const out: SubAgent[] = []
   for (const turn of turns) {
     for (const b of turn.blocks) {
@@ -60,9 +73,20 @@ export function selectSubAgents(turns: Turn[]): SubAgent[] {
       const input = b.input as { subagent_type?: unknown; description?: unknown }
       const type = typeof input.subagent_type === 'string' ? input.subagent_type : 'agent'
       const description = typeof input.description === 'string' ? input.description : ''
-      const status: SubAgentStatus =
-        b.result == null ? 'running' : b.result.ok ? 'done' : 'failed'
-      out.push({ toolId: b.toolId, type, description, status, startedAt: b.ts, endedAt: b.result?.ts })
+      const task = threads[b.toolId]?.task
+      const status: SubAgentStatus = task
+        ? TASK_STATUS[task.status]
+        : b.result == null ? 'running' : b.result.ok ? 'done' : 'failed'
+      out.push({
+        toolId: b.toolId, type, description, status,
+        startedAt: b.ts ?? task?.startedAt,
+        endedAt: task?.endedAt ?? b.result?.ts,
+        ...(task && {
+          taskId: task.taskId, activity: task.activity ?? null, lastTool: task.lastTool ?? null,
+          totalTokens: task.totalTokens ?? null, toolUses: task.toolUses ?? null,
+          summary: task.summary ?? null, backgrounded: task.backgrounded,
+        }),
+      })
     }
   }
   return out
@@ -70,18 +94,17 @@ export function selectSubAgents(turns: Turn[]): SubAgent[] {
 
 /**
  * Count sub-agents (Task or Agent tool calls) that are still running (no
- * result yet). Used by the busy indicator to show a more specific label.
+ * result yet, or live task state that hasn't reached a terminal status). Used
+ * by the busy indicator to show a more specific label.
  *
- * Intentionally derived from the parent thread's `turns` (the Task tool block +
- * its result), NOT from the reducer's `state.subAgents` map. The two are
- * complementary, not redundant: `state.subAgents` holds each sub-agent's nested
- * thread *content* and is only created once the sub-agent emits its first child
- * event, whereas the spawning Task block appears in `turns` immediately. Reading
- * `turns` therefore reflects a just-spawned sub-agent as "running" before any
- * child event arrives — the more responsive signal for a live busy indicator.
+ * Delegates to `selectSubAgents`, the one place `turns` and the reducer's
+ * `state.subAgents` thread map are merged into a status per sub-agent — see
+ * that function's docstring for how the two combine. Accepting the optional
+ * `threads` here keeps this the single "how many sub-agents are running"
+ * derivation (Principle VI) rather than a second one that only reads `turns`.
  */
-export function selectRunningSubAgentCount(turns: Turn[]): number {
-  return selectSubAgents(turns).filter((a) => a.status === 'running').length
+export function selectRunningSubAgentCount(turns: Turn[], threads?: Record<string, SubThread>): number {
+  return selectSubAgents(turns, threads).filter((a) => a.status === 'running').length
 }
 
 // ── Sub-agent tree (for the dashboard session-list drill-down) ────────────────

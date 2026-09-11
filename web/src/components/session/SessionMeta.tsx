@@ -89,6 +89,7 @@ const DASH = '—'
 function summaryDot(subAgents: SubAgent[]): SubAgentStatus {
   if (subAgents.some((a) => a.status === 'failed')) return 'failed'
   if (subAgents.some((a) => a.status === 'running')) return 'running'
+  if (subAgents.some((a) => a.status === 'stopped')) return 'stopped'
   return 'done'
 }
 
@@ -96,6 +97,7 @@ const DOT_CLASS: Record<SubAgentStatus, string> = {
   running: 'bg-blue-500 animate-pulse',
   done: 'bg-emerald-500',
   failed: 'bg-red-500',
+  stopped: 'bg-gray-400',
 }
 
 export function SessionMeta({ account, engine = null, host = null, displayMode = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, mode, pendingMode = null, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {

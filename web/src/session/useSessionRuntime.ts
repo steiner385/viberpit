@@ -510,7 +510,7 @@ export function useSessionRuntime(
   const contextPct = remainingFromContextUsage(state.contextUsage)
     ?? remainingContextPct(state.usage, state.model)
   // Sub-agent chips derive from the visible turns so they hold steady through a heal.
-  const subAgents = selectSubAgents(viewState.turns)
+  const subAgents = selectSubAgents(viewState.turns, viewState.subAgents)
 
   // Re-send attach to recover from a stuck load (the SessionPlaceholder Retry).
   const reattach = useCallback(() => attach(sessionId), [attach, sessionId])
