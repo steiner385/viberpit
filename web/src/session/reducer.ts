@@ -64,8 +64,20 @@ export type Block =
 // turn really begins, and the reducer re-anchors it there (the flag is cleared).
 export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean; context?: PromptContext; pending?: PromptStage; fabricated?: boolean }
 
+export type SubThreadTaskStatus = 'running' | 'completed' | 'failed' | 'stopped'
+/** Live task state of a Task sub-agent, from subAgentStarted/Progress/Ended. Absent on
+ *  a replayed session (the CLI journals no task notices), where the Task tool result
+ *  is the only status source — see selectSubAgents. */
+export interface SubThreadTask {
+  taskId: string; description: string; agentType: string; backgrounded: boolean; depth: number
+  status: SubThreadTaskStatus
+  startedAt?: number; endedAt?: number
+  activity?: string | null; lastTool?: string | null
+  totalTokens?: number | null; toolUses?: number | null; durationMs?: number | null
+  summary?: string | null
+}
 /** A self-contained conversation thread (the main transcript, or one sub-agent). */
-export interface SubThread { turns: Turn[]; openBlockId: string | null; model?: string | null }
+export interface SubThread { turns: Turn[]; openBlockId: string | null; model?: string | null; task?: SubThreadTask }
 
 // ── Rotation marker ────────────────────────────────────────────────────────────
 
@@ -363,23 +375,67 @@ function replaceTurn(turns: Turn[], idx: number, fn: (t: Turn) => Turn): Turn[] 
   return next
 }
 
+const EMPTY_THREAD: SubThread = { turns: [], openBlockId: null }
+
+/** The sub-thread for `pid`, created empty when absent. */
+function threadOf(state: TranscriptState, pid: string): SubThread {
+  return state.subAgents[pid] ?? EMPTY_THREAD
+}
+
+/**
+ * Append `block` to the LAST assistant turn of a sub-thread (creating one — id
+ * `card:<block.id>` — when the thread has no assistant turn yet). Used to mirror a
+ * sub-agent's permission/question card into its own thread while the main transcript
+ * keeps its copy; both are keyed by permId/questionId so resolution clears both.
+ */
+function appendCardToThread(thread: SubThread, block: Block): SubThread {
+  const idx = [...thread.turns].reverse().findIndex((t) => t.role === 'assistant')
+  if (idx === -1) {
+    return { ...thread, turns: [...thread.turns, { id: `card:${block.id}`, role: 'assistant', blocks: [block], fabricated: true }] }
+  }
+  const at = thread.turns.length - 1 - idx
+  const turn = thread.turns[at]
+  const dupe = turn.blocks.some((b) => b.id === block.id)
+  if (dupe) return thread
+  return { ...thread, turns: replaceTurn(thread.turns, at, (t) => ({ ...t, blocks: [...t.blocks, block] })) }
+}
+
+/** Map every sub-thread's turns through `fn`; returns the same object when nothing changed. */
+function mapSubThreadTurns(subAgents: Record<string, SubThread>, fn: (turns: Turn[]) => Turn[]): Record<string, SubThread> {
+  let changed = false
+  const next: Record<string, SubThread> = {}
+  for (const [pid, thread] of Object.entries(subAgents)) {
+    const turns = fn(thread.turns)
+    if (turns !== thread.turns) changed = true
+    next[pid] = turns === thread.turns ? thread : { ...thread, turns }
+  }
+  return changed ? next : subAgents
+}
+
 /**
  * Remove a decided permission's block. Shared by the optimistic local
  * `_resolvePermission` (confirmed decision send) and the server's
  * `permissionResolved` frame (authoritative; clears the block a mid-turn
- * reattach's ring resupply recreates). Returns the same state reference when no
- * matching block exists.
+ * reattach's ring resupply recreates). Also walks every sub-thread, since a
+ * sub-agent's permission card is mirrored into its own thread (see
+ * `appendCardToThread`) and both copies share the permId. Returns the same
+ * state reference when no matching block exists anywhere.
  */
 function removePermissionBlock(state: TranscriptState, permId: string): TranscriptState {
-  let changed = false
-  const nextTurns = state.turns.map((turn) => {
-    const hasIt = turn.blocks.some((b) => b.kind === 'permission' && b.permId === permId)
-    if (!hasIt) return turn
-    changed = true
-    return { ...turn, blocks: turn.blocks.filter((b) => !(b.kind === 'permission' && b.permId === permId)) }
-  })
-  if (!changed) return state
-  return { ...state, turns: nextTurns }
+  const strip = (turns: Turn[]): Turn[] => {
+    let changed = false
+    const next = turns.map((turn) => {
+      const hasIt = turn.blocks.some((b) => b.kind === 'permission' && b.permId === permId)
+      if (!hasIt) return turn
+      changed = true
+      return { ...turn, blocks: turn.blocks.filter((b) => !(b.kind === 'permission' && b.permId === permId)) }
+    })
+    return changed ? next : turns
+  }
+  const turns = strip(state.turns)
+  const subAgents = mapSubThreadTurns(state.subAgents, strip)
+  if (turns === state.turns && subAgents === state.subAgents) return state
+  return { ...state, turns, subAgents }
 }
 
 /**
@@ -398,22 +454,24 @@ function removePermissionBlock(state: TranscriptState, permId: string): Transcri
  * matching block exists.
  */
 function resolveQuestionInPlace(state: TranscriptState, questionId: string, answered: string[]): TranscriptState {
-  let changed = false
-  const nextTurns = state.turns.map((turn) => {
-    const hasIt = turn.blocks.some((b) => b.kind === 'question' && b.questionId === questionId)
-    if (!hasIt) return turn
-    changed = true
-    return {
-      ...turn,
-      blocks: turn.blocks.map((b) =>
-        b.kind === 'question' && b.questionId === questionId
-          ? { ...b, live: false, answered }
-          : b,
-      ),
-    }
-  })
-  if (!changed) return state
-  return { ...state, turns: nextTurns }
+  const resolve = (turns: Turn[]): Turn[] => {
+    let changed = false
+    const next = turns.map((turn) => {
+      const hasIt = turn.blocks.some((b) => b.kind === 'question' && b.questionId === questionId)
+      if (!hasIt) return turn
+      changed = true
+      return {
+        ...turn,
+        blocks: turn.blocks.map((b) =>
+          b.kind === 'question' && b.questionId === questionId ? { ...b, live: false, answered } : b),
+      }
+    })
+    return changed ? next : turns
+  }
+  const turns = resolve(state.turns)
+  const subAgents = mapSubThreadTurns(state.subAgents, resolve)
+  if (turns === state.turns && subAgents === state.subAgents) return state
+  return { ...state, turns, subAgents }
 }
 
 /**
@@ -867,7 +925,15 @@ export function transcriptReducer(
         ...t,
         blocks: [...t.blocks, newBlock],
       }))
-      return { ...state, turns: nextTurns }
+      // A sub-agent's permission (spec §5.2) is ALSO mirrored into its own sub-thread —
+      // the main-turn copy above is what the top-level composer resolves against; the
+      // mirrored copy is what the sub-thread view renders inline. Both share `permId`,
+      // so removePermissionBlock clears both on resolution.
+      const pid = ev.parentToolUseId
+      const subAgents = pid
+        ? { ...state.subAgents, [pid]: appendCardToThread(threadOf(state, pid), newBlock) }
+        : state.subAgents
+      return { ...state, turns: nextTurns, subAgents }
     }
 
     // ── permissionResolved ────────────────────────────────────────────────────
@@ -914,7 +980,12 @@ export function transcriptReducer(
         ...t,
         blocks: [...t.blocks, newBlock],
       }))
-      return { ...state, turns: nextTurns }
+      // Mirror into the sub-thread — see the identical note on permissionRequest.
+      const pid = ev.parentToolUseId
+      const subAgents = pid
+        ? { ...state.subAgents, [pid]: appendCardToThread(threadOf(state, pid), newBlock) }
+        : state.subAgents
+      return { ...state, turns: nextTurns, subAgents }
     }
 
     // ── questionResolved ─────────────────────────────────────────────────────
@@ -1198,6 +1269,54 @@ export function transcriptReducer(
     // ── suggestions ───────────────────────────────────────────────────────────
     case 'suggestions':
       return { ...state, latestSuggestions: ev.items }
+
+    // ── Task sub-agent lifecycle ──────────────────────────────────────────────
+    // Sourced from the CLI's task notices (spec 2026-09-11 §5.2). Each creates the
+    // thread when needed; `subAgentEnded` is idempotent and never regresses a
+    // terminal status — the kill sequence delivers it twice (killed, then stopped
+    // with the summary), and a stray progress frame can trail the end.
+    case 'subAgentStarted': {
+      const cur = threadOf(state, ev.parentToolUseId)
+      const task: SubThreadTask = {
+        ...cur.task,
+        taskId: ev.taskId, description: ev.description, agentType: ev.agentType,
+        backgrounded: ev.backgrounded, depth: ev.depth,
+        status: cur.task?.status ?? 'running',
+        startedAt: cur.task?.startedAt ?? ev.ts,
+      }
+      return { ...state, subAgents: { ...state.subAgents, [ev.parentToolUseId]: { ...cur, task } } }
+    }
+    case 'subAgentProgress': {
+      const cur = threadOf(state, ev.parentToolUseId)
+      const base: SubThreadTask = cur.task ?? {
+        taskId: ev.taskId, description: '', agentType: 'agent', backgrounded: false, depth: 1,
+        status: 'running', startedAt: ev.ts,
+      }
+      const task: SubThreadTask = {
+        ...base, activity: ev.activity, lastTool: ev.lastTool ?? base.lastTool ?? null,
+        totalTokens: ev.totalTokens ?? base.totalTokens ?? null,
+        toolUses: ev.toolUses ?? base.toolUses ?? null,
+        durationMs: ev.durationMs ?? base.durationMs ?? null,
+      }
+      return { ...state, subAgents: { ...state.subAgents, [ev.parentToolUseId]: { ...cur, task } } }
+    }
+    case 'subAgentEnded': {
+      const cur = threadOf(state, ev.parentToolUseId)
+      const base: SubThreadTask = cur.task ?? {
+        taskId: ev.taskId, description: '', agentType: 'agent', backgrounded: false, depth: 1,
+        status: 'running',
+      }
+      const task: SubThreadTask = {
+        ...base, status: ev.status, endedAt: base.endedAt ?? ev.ts,
+        // `??`, not `||`: an empty-string summary (the kill-sequence's first,
+        // pre-drain `ended` frame) is a real value and must not be dropped to null.
+        summary: ev.summary ?? base.summary ?? null,
+        totalTokens: ev.totalTokens ?? base.totalTokens ?? null,
+        toolUses: ev.toolUses ?? base.toolUses ?? null,
+        durationMs: ev.durationMs ?? base.durationMs ?? null,
+      }
+      return { ...state, subAgents: { ...state.subAgents, [ev.parentToolUseId]: { ...cur, task } } }
+    }
 
     // ── Local synthetic actions ────────────────────────────────────────────────
 

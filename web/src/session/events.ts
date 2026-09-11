@@ -25,12 +25,12 @@ export interface EvToolResult    { type: 'toolResult';    toolId: string; ok: bo
 // `items` is set only for a BATCH ccswitch tool (archive_sessions, delete_sessions…):
 // the titles of every session it would act on (spec v2 B4) — mirrors
 // PermissionRequest.items.
-export interface EvPermissionRequest { type: 'permissionRequest'; permId: string; turnId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; items?: string[] | null; ts?: number }
+export interface EvPermissionRequest { type: 'permissionRequest'; permId: string; turnId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; items?: string[] | null; parentToolUseId?: string | null; ts?: number }
 // A permission's future settled server-side (allowed or denied). Rides the same stream
 // as the request frame so a mid-turn reattach (ring resupply re-delivers the request)
 // clears the recreated card instead of resurrecting an already-decided permission.
 export interface EvPermissionResolved { type: 'permissionResolved'; permId: string; turnId: string; allowed: boolean; ts?: number }
-export interface EvQuestion      { type: 'question';      questionId: string; turnId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; orphaned?: boolean; ts?: number }
+export interface EvQuestion      { type: 'question';      questionId: string; turnId: string; header: string; question: string; options: Array<Record<string, unknown>>; multiSelect: boolean; orphaned?: boolean; parentToolUseId?: string | null; ts?: number }
 // A question's future settled server-side — answered (selected carries the labels) or
 // dismissed (selected null). Rides the same stream as the question frame so a mid-turn
 // reattach (ring resupply re-delivers the question) re-resolves the recreated block.
@@ -56,11 +56,19 @@ export interface EvRecovering    { type: 'recovering';    turnId: string; messag
 // "automation"), not a UI variant.
 export interface EvNotice        { type: 'notice';        kind: string; title: string; body: string; url?: string | null; watchId?: string | null; ts?: number | null }
 
+// Task sub-agent lifecycle, sourced from the CLI's system/task_* notices (never the
+// transcript). `parentToolUseId` is the spawning Task call — the key of the sub-thread.
+// Mirrors SubAgentStarted / SubAgentProgress / SubAgentEnded (server/sessions/events.py).
+export interface EvSubAgentStarted  { type: 'subAgentStarted';  parentToolUseId: string; taskId: string; description: string; agentType: string; backgrounded: boolean; depth: number; ts?: number }
+export interface EvSubAgentProgress { type: 'subAgentProgress'; parentToolUseId: string; taskId: string; activity: string; totalTokens?: number | null; toolUses?: number | null; durationMs?: number | null; lastTool?: string | null; ts?: number }
+export interface EvSubAgentEnded    { type: 'subAgentEnded';    parentToolUseId: string; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary?: string; totalTokens?: number | null; toolUses?: number | null; durationMs?: number | null; ts?: number }
+
 export type SessionEvent =
   | EvUser | EvTurnStart | EvTurnEnd | EvTextDelta | EvThinkingDelta
   | EvToolCall | EvToolResult | EvPermissionRequest | EvPermissionResolved | EvQuestion | EvQuestionResolved
   | EvSessionMeta | EvTurnModel | EvTitle | EvStatus | EvReplayReset | EvReplayComplete | EvError | EvQueueUpdate
   | EvSuggestions | EvCondensing | EvContextUsage | EvRecovering | EvNotice
+  | EvSubAgentStarted | EvSubAgentProgress | EvSubAgentEnded
 
 export interface Command {
   name: string
