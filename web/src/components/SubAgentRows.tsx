@@ -8,6 +8,7 @@ const DOT: Record<string, string> = {
   running: 'bg-blue-500 animate-pulse',
   done: 'bg-emerald-500',
   failed: 'bg-red-500',
+  stopped: 'bg-gray-400',
 }
 
 function Row({ sessionId, node, depth }: { sessionId: string; node: SubAgentNode; depth: number }) {

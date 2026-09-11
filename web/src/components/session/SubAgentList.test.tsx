@@ -48,4 +48,14 @@ describe('SubAgentList', () => {
     act(() => { vi.advanceTimersByTime(0) })
     expect(screen.getByText('30s')).toBeInTheDocument()
   })
+
+  it('shows the live activity instead of the description while running', () => {
+    render(<SubAgentList subAgents={[{ ...base, type: 'Explore', description: 'scan', status: 'running', activity: 'Running Bash' }]} />)
+    expect(screen.getByText('Running Bash')).toBeInTheDocument()
+  })
+
+  it('renders the stopped status label', () => {
+    render(<SubAgentList subAgents={[{ ...base, status: 'stopped' }]} />)
+    expect(screen.getByText('stopped')).toBeInTheDocument()
+  })
 })

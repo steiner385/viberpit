@@ -7,12 +7,14 @@ const STATUS_DOT: Record<SubAgentStatus, string> = {
   running: 'bg-blue-500 animate-pulse',
   done: 'bg-emerald-500',
   failed: 'bg-red-500',
+  stopped: 'bg-gray-400',
 }
 
 const STATUS_LABEL: Record<SubAgentStatus, string> = {
   running: 'running',
   done: 'done',
   failed: 'failed',
+  stopped: 'stopped',
 }
 
 interface Props {
@@ -48,8 +50,10 @@ export function SubAgentList({ subAgents }: Props) {
                   </span>
                 )}
               </span>
-              {a.description && (
-                <span className="text-gray-500 line-clamp-2 dark:text-gray-400">{a.description}</span>
+              {(a.activity || a.description) && (
+                <span className="text-gray-500 line-clamp-2 dark:text-gray-400">
+                  {a.status === 'running' && a.activity ? a.activity : a.description}
+                </span>
               )}
             </span>
           </li>
