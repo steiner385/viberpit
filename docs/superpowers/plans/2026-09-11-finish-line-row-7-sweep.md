@@ -283,7 +283,7 @@ PR 7a body cites target-state §8 row 11 and says which directories are now unde
 
 ## PR 7d — `components/` root, `card/`, `list/`, `settings/`, `library/`
 
-Each task: `git mv` the files (with their `__tests__/` siblings, renamed to `<Name>.test.tsx` beside the file — the `features/` convention), fix imports repo-wide (`grep -rln "@/components/<Name>"` → sed), run `npm run lint:fix-tokens -- <destination dirs>`, hand-map residuals per §Mapping, run the covering tests, then the gate. One commit per task.
+Each task: `git mv` the files (with their `__tests__/` siblings, renamed to `<Name>.test.tsx` beside the file — the `features/` convention), fix imports repo-wide (`grep -rln "@/components/<Name>"` → sed), run `npm run lint:fix-tokens -- <destination dirs>`, hand-map residuals per §Mapping, tidy the empty-string arguments the fixer leaves behind when a `dark:`-only sibling argument is fully dropped (`cn('bg-accent', '')` → `cn('bg-accent')`), run the covering tests, then the gate. One commit per task; the PR body lists every `z-` rewrite (R4).
 
 ### Task 1: shell chrome — the eight banners, `DeployOverlay`, `DeployPanel`, `BrandMark`, `ErrorBoundary` → `web/src/shell/`
 ### Task 2: accounts — `AccountsManager`, `AddAccountDialog`, `DeviceCodePanel`, `ReauthBrowserPanel`, `UsageBadge` → `web/src/features/accounts/` (new dir; `AccountsManager` is 971 lines — do not split it in this PR, note it in the report)

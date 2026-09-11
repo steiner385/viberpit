@@ -112,6 +112,17 @@ function partnerKey(variants, base) {
   return chain + '|' + base.split('-')[0]
 }
 
+/**
+ * Only COLOUR tokens take part in light/dark partnering. The size/layer
+ * entries in MAPPING (`text-[11px]`, `min-h-[44px]`, `z-50`) share a utility
+ * prefix with colour tokens, and without this guard a mapped `text-[11px]`
+ * would publish the `|text` key and silently delete an unrelated
+ * `dark:text-gray-400` whose light side never mapped.
+ */
+function isColorBase(base) {
+  return PALETTE.test(base) || base === 'bg-white' || base === 'text-white'
+}
+
 /** The partner keys of the light tokens in `text` that MAPPING would rewrite. */
 function lightKeysOf(text) {
   const keys = new Set()
@@ -119,7 +130,7 @@ function lightKeysOf(text) {
     const [variants, rawBase] = splitVariants(raw)
     if (variants.split(':').includes('dark')) continue
     const [, base] = splitImportant(rawBase)
-    if (MAPPING[base]) keys.add(partnerKey(variants, base))
+    if (MAPPING[base] && isColorBase(base)) keys.add(partnerKey(variants, base))
   }
   return keys
 }
@@ -157,15 +168,16 @@ export function rewriteClassString(text, externalLightKeys, { emptyAsSeparator =
     if (variants.split(':').includes('dark')) { darkAt.push(out.length); out.push(raw); continue }
     const [lead, base, trail] = splitImportant(rawBase)
     const to = MAPPING[base]
-    if (to) { out.push(variants + lead + to + trail); mappedLightKeys.add(partnerKey(variants, base)); changed = true }
+    if (to) { out.push(variants + lead + to + trail); if (isColorBase(base)) mappedLightKeys.add(partnerKey(variants, base)); changed = true }
     else out.push(raw)
   }
-  // pass 2: a dark: token is dropped iff its light partner mapped; otherwise it
-  // stays exactly as written (a residual for the hand-mapping pass).
+  // pass 2: a dark: COLOUR token is dropped iff its light partner mapped;
+  // otherwise it stays exactly as written (a residual for the hand-mapping
+  // pass). Non-colour dark: tokens are never dropped.
   for (const i of darkAt) {
     const [variants, rawBase] = splitVariants(out[i])
     const [, base] = splitImportant(rawBase)
-    if (mappedLightKeys.has(partnerKey(variants, base))) { out[i] = null; changed = true }
+    if (isColorBase(base) && mappedLightKeys.has(partnerKey(variants, base))) { out[i] = null; changed = true }
   }
   // dedupe while keeping order
   const seen = new Set()
@@ -290,7 +302,7 @@ function check(context, node, text, sourceCode) {
     }
     // Which ink token applies depends on the fill, so this one is never
     // auto-fixed — the plan's residual rules make it a per-site hand map.
-    if (base === 'text-white' && inkFill) { context.report({ node, messageId: 'whiteOnFill', data: { cls: raw } }); continue }
+    if (/^text-white(\/\d+)?$/.test(base) && inkFill) { context.report({ node, messageId: 'whiteOnFill', data: { cls: raw } }); continue }
     if (PALETTE.test(base)) context.report({ node, messageId: 'palette', data: { cls: raw }, fix: takeFix() })
     else if (Z_LITERAL.test(base)) context.report({ node, messageId: 'zLiteral', data: { cls: raw }, fix: takeFix() })
     else if (PX_LITERAL.test(base)) context.report({ node, messageId: 'pxLiteral', data: { cls: raw }, fix: takeFix() })

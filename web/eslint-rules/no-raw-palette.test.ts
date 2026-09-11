@@ -125,6 +125,24 @@ tester.run('no-raw-palette', rule, {
       output: `<div className="!text-ink-muted text-ink-muted!" />`,
       errors: [{ messageId: 'palette' }, { messageId: 'palette' }],
     },
+    // Only COLOUR tokens partner: a mapped size literal sharing the `text`/`min`
+    // prefix must not delete an unrelated dark: colour (or dark: size) token.
+    {
+      code: `<div className="text-[11px] dark:text-gray-400" />`,
+      output: `<div className="text-2xs dark:text-gray-400" />`,
+      errors: [{ messageId: 'pxLiteral' }, { messageId: 'dark' }],
+    },
+    {
+      code: `<div className="min-h-[44px] dark:min-w-[44px]" />`,
+      output: `<div className="min-h-target dark:min-w-[44px]" />`,
+      errors: [{ messageId: 'pxLiteral' }, { messageId: 'dark' }],
+    },
+    // whiteOnFill also catches an opacity-suffixed text-white.
+    {
+      code: `<div className="bg-accent text-white/80" />`,
+      output: null,
+      errors: [{ messageId: 'whiteOnFill' }],
+    },
   ],
 })
 
