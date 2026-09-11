@@ -55,7 +55,7 @@ export function AutomationsScopeBody({
         />
       }
     >
-      {isError && <Banner tone="danger" title="Could not load automations." />}
+      {isError && <Banner tone="danger" title={DELIVERY.automationsError} />}
       {isLoading && automations.length === 0 && (
         <div role="status" aria-label={`Loading ${DELIVERY.automations.toLowerCase()}`} className="space-y-2">
           {Array.from({ length: 3 }, (_, i) => (
@@ -64,7 +64,7 @@ export function AutomationsScopeBody({
         </div>
       )}
       {!isLoading && sorted.length === 0 && (
-        <EmptyState title={q ? 'No matches' : 'No automations registered'} />
+        <EmptyState title={q ? 'No matches' : DELIVERY.emptyAutomations} />
       )}
       {sorted.length > 0 && (
         <div role="list" aria-label={DELIVERY.automations} className="flex flex-col gap-1">

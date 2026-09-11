@@ -2,21 +2,33 @@
 // are tested with their own components (`automation/AutomationDetail.test.tsx`,
 // `ci/CiRepoDetail.test.tsx`); this file is only about which one the page picks,
 // what its header says, and that an address the list does not contain says so.
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { AUTOMATIONS } from './__fixtures__/automations'
 import { DeliveryPage } from './DeliveryPage'
 import { AUTOMATION_ROUTE, CI_REPO_ROUTE, DELIVERY_PATH } from './deliveryNavState'
 
 const patch = vi.fn()
 
+// Mutable per-test error flags. Plain `let`s work here because the mock
+// factory below is only evaluated once (when `@/api/hooks` is first
+// imported), but the arrow functions it returns are re-invoked on every
+// render, so a test can flip these before `mount()` and the component sees it.
+const hookState = { automationsIsError: false, reposIsError: false }
+
 // The page's own hooks plus everything the two detail bodies reach for — the
 // same set `AutomationDetail.test.tsx` mocks, so the real panes render.
 vi.mock('@/api/hooks', () => ({
-  useAutomations: () => ({ data: AUTOMATIONS, isLoading: false, isError: false }),
+  useAutomations: () => ({
+    data: hookState.automationsIsError ? undefined : AUTOMATIONS,
+    isLoading: false,
+    isError: hookState.automationsIsError,
+  }),
   useStageModels: () => ({
-    data: { 'o/r': { repo: 'o/r', nodes: [] } }, isLoading: false, isError: false,
+    data: hookState.reposIsError ? undefined : { 'o/r': { repo: 'o/r', nodes: [] } },
+    isLoading: false,
+    isError: hookState.reposIsError,
   }),
   useCheckInsights: () => ({
     data: {
@@ -36,7 +48,12 @@ vi.mock('@/api/hooks', () => ({
 }))
 vi.mock('@/components/ConsolidatePanel', () => ({ ConsolidatePanel: () => <div data-testid="consolidate" /> }))
 vi.mock('@/components/BacklogGroupsPanel', () => ({ BacklogGroupsPanel: () => <div data-testid="groups" /> }))
-vi.mock('@/components/ManualDispatchDialog', () => ({ ManualDispatchDialog: () => null }))
+// Renders the `open` prop rather than nothing, so a test can tell whether
+// `AutomationDetail`'s local `customDispatch` flag survived a swap to a
+// different automation and back (regression #1468).
+vi.mock('@/components/ManualDispatchDialog', () => ({
+  ManualDispatchDialog: ({ open }: { open: boolean }) => <div data-testid="dispatch-dialog" data-open={String(open)} />,
+}))
 
 /** The address after the window select rewrites it. */
 function Location() {
@@ -56,6 +73,38 @@ function mount(path: string) {
     </MemoryRouter>,
   )
 }
+
+/** Two in-page links driving `useNavigate` directly, for tests that need to
+ *  move between two detail routes without a real list column (the list lives
+ *  outside `DeliveryPage`, in the shell). */
+function NavButtons() {
+  const navigate = useNavigate()
+  return (
+    <>
+      <button onClick={() => navigate('/delivery/automations/backlog-runner')}>go to backlog runner</button>
+      <button onClick={() => navigate('/delivery/automations/pr-doctor?tab=config')}>go to pr doctor config</button>
+    </>
+  )
+}
+
+function mountWithNav(path: string) {
+  render(
+    <MemoryRouter initialEntries={[path]}>
+      <NavButtons />
+      <Routes>
+        {[DELIVERY_PATH, AUTOMATION_ROUTE, CI_REPO_ROUTE].map((p) => (
+          <Route key={p} path={p} element={<DeliveryPage />} />
+        ))}
+      </Routes>
+      <Location />
+    </MemoryRouter>,
+  )
+}
+
+afterEach(() => {
+  hookState.automationsIsError = false
+  hookState.reposIsError = false
+})
 
 const h1 = () => screen.getByRole('heading', { level: 1 })
 
@@ -107,5 +156,41 @@ describe('DeliveryPage', () => {
     mount('/delivery/ci/o/r?window=30d')
     fireEvent.change(screen.getByRole('combobox', { name: 'Window' }), { target: { value: '7d' } })
     expect(screen.getByTestId('location')).toHaveTextContent('/delivery/ci/o/r?window=7d')
+  })
+
+  // Regression (#1468): the router reuses the same `AutomationDetail` instance
+  // across a param-only route change (no `key`) — the `<Outlet/>` in
+  // `shell/regions/PageHost.tsx` is un-keyed, and React reuses whatever
+  // element sits at the same JSX position. `customDispatch` is a `useState`
+  // local to `AutomationDetail` itself (not a child), so it is the cleanest
+  // witness: opening Backlog runner's dispatch dialog, navigating away to a
+  // DIFFERENT automation, then back to Backlog runner should find the dialog
+  // closed again. Un-keyed, the flag survives the round trip and the dialog
+  // reopens itself on return — the same reuse that lets `ConfigPanel` and
+  // `ScheduleEditor`'s local state leak across automations.
+  it('switching to a different automation and back does not leak backlog runner’s dispatch-dialog flag onto the return trip', () => {
+    mountWithNav('/delivery/automations/backlog-runner')
+    fireEvent.click(screen.getByRole('button', { name: 'Custom dispatch…' }))
+    expect(screen.getByTestId('dispatch-dialog')).toHaveAttribute('data-open', 'true')
+
+    fireEvent.click(screen.getByText('go to pr doctor config'))
+    expect(h1()).toHaveTextContent('PR doctor')
+
+    fireEvent.click(screen.getByText('go to backlog runner'))
+    expect(h1()).toHaveTextContent('Backlog runner')
+    expect(screen.getByTestId('dispatch-dialog')).toHaveAttribute('data-open', 'false')
+  })
+
+  it('an open automation shows an error banner when the list fails to load, rather than an empty pane', () => {
+    hookState.automationsIsError = true
+    mount('/delivery/automations/pr-doctor')
+    expect(screen.getByRole('alert')).toHaveTextContent('Could not load automations.')
+  })
+
+  it('the welcome pane says the list will fill back in rather than claiming zero when the fetch failed', () => {
+    hookState.automationsIsError = true
+    mount('/delivery')
+    expect(screen.getByText(/No automations to show/)).toBeInTheDocument()
+    expect(screen.queryByText('No automations registered')).not.toBeInTheDocument()
   })
 })

@@ -27,10 +27,10 @@ describe('deliveryNavState', () => {
     expect(deliveryScope('/delivery', '?scope=ci')).toBe('ci')
   })
   it('resolves the open item by PARAM NAME only', () => {
-    expect(deliveryOpenItem({ automationId: 'pr-doctor' }, new URLSearchParams())).toEqual({ kind: 'automation', automationId: 'pr-doctor' })
-    expect(deliveryOpenItem({ owner: 'o', repo: 'r' }, new URLSearchParams())).toEqual({ kind: 'ciRepo', repo: 'o/r' })
-    expect(deliveryOpenItem({ id: 'x' }, new URLSearchParams())).toBeNull()
-    expect(deliveryOpenItem({}, new URLSearchParams('?scope=ci'))).toBeNull()
+    expect(deliveryOpenItem({ automationId: 'pr-doctor' })).toEqual({ kind: 'automation', automationId: 'pr-doctor' })
+    expect(deliveryOpenItem({ owner: 'o', repo: 'r' })).toEqual({ kind: 'ciRepo', repo: 'o/r' })
+    expect(deliveryOpenItem({ id: 'x' })).toBeNull()
+    expect(deliveryOpenItem({})).toBeNull()
   })
   it('keys rows the way the open item is keyed', () => {
     expect(keyForDeliveryItem({ kind: 'automation', automationId: 'a' })).toBe(automationKey('a'))

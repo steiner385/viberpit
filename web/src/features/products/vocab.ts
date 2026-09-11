@@ -135,6 +135,13 @@ export const DELIVERY = {
   automations: 'Automations',
   ci: 'CI health',
   help: 'Is delivery healthy? Every automation that runs against your repos and sessions — what it is doing, what it needs from you, its schedule and configuration — and the CI health of each tracked repository: slow, flaky and regressing checks.',
+  // Said in more than one place (the list column's empty state and the detail
+  // pane's welcome pane; the error strings also in a header-level banner), so
+  // they live here rather than as copies that can drift.
+  emptyAutomations: 'No automations registered',
+  emptyRepos: 'No repositories with pipeline history yet',
+  automationsError: 'Could not load automations.',
+  ciError: 'Could not load CI health.',
 } as const
 
 /** The automation detail's tabs, in order (finish-line spec §4.4). */

@@ -48,7 +48,7 @@ export function useDeliveryWorkspace(active: boolean): { list: DeliveryListColum
       repos: repoList,
       reposLoading: repos.isLoading,
       reposError: repos.isError,
-      selectedKey: keyForDeliveryItem(deliveryOpenItem(params, new URLSearchParams(search))),
+      selectedKey: keyForDeliveryItem(deliveryOpenItem(params)),
       onOpenAutomation,
       onOpenRepo,
     },

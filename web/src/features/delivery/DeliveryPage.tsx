@@ -11,6 +11,7 @@ import { TierDot } from '@/features/roadmap/rows/TierDot'
 import { useSearchParamState } from '@/lib/useSearchParamState'
 import { sessionPath } from '@/session/sessionNavState'
 import { Badge } from '@/ui/Badge'
+import { Banner } from '@/ui/Banner'
 import { Breadcrumb, type BreadcrumbItem } from '@/ui/Breadcrumb'
 import { EmptyState } from '@/ui/EmptyState'
 import { PageContent } from '@/ui/PageContent'
@@ -27,7 +28,7 @@ import { DeliveryWelcome } from './DeliveryWelcome'
 export function DeliveryPage() {
   const { pathname, search } = useLocation()
   const navigate = useNavigate()
-  const item = deliveryOpenItem(useParams(), new URLSearchParams(search))
+  const item = deliveryOpenItem(useParams())
   const scope = deliveryScope(pathname, search)
 
   // `poll: false` on the repo set: the shell's list column observes that exact
@@ -122,8 +123,21 @@ export function DeliveryPage() {
             ? repos.isLoading && !repos.data
             : automations.isLoading && !automations.data}
       >
+        {/* The list column's banner is not on screen while a detail route is
+            open (and is hidden entirely on phone/tablet), so a fetch failure
+            needs its own surface here — the CI equivalent already lives
+            inside `CiRepoDetail`. */}
+        {automations.isError && item?.kind === 'automation' && (
+          <Banner tone="danger" title={DELIVERY.automationsError} />
+        )}
         {automation && (
+          // Keyed by automation id: without this, the router reuses the same
+          // `AutomationDetail` instance across a param-only route change (the
+          // `<Outlet/>` this page renders under is un-keyed), so a config or
+          // schedule edit made just before switching automations could patch
+          // the WRONG one (#1468).
           <AutomationDetail
+            key={automation.id}
             automation={automation}
             onOpenSession={(id) => navigate(sessionPath(id))}
           />
@@ -147,6 +161,7 @@ export function DeliveryPage() {
             count={scope === 'ci'
               ? Object.keys(repos.data ?? {}).length
               : automations.data?.length ?? 0}
+            isError={scope === 'ci' ? repos.isError : automations.isError}
           />
         )}
       </PageContent>

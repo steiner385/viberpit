@@ -20,7 +20,7 @@ links:
     - web/src/initiatives/IncidentQueue.tsx
     - .claude/REVIEW.md
     - evals/README.md
-    - web/src/automations/AutomationsTab.tsx
+    - web/src/features/roadmap/InitiativePage.tsx
   prs: [808, 810, 812, 813, 814, 819, 824, 818, 809]
 ---
 
@@ -98,9 +98,10 @@ for CI tests; static eval checks run in CI, agent evals run out-of-band.
   agent-config paths. NOTE: the plan text references a `server/sdlc/`-internal harness; the
   runnable harness on disk is `scripts/run_evals.py` over the `evals/` corpus.
 - The Initiative board / list artifact-chain UI (#818) is served by `/api/sdlc`
-  (`server/api/sdlc.py`) and rendered under the Automations surface
-  (`web/src/automations/AutomationsTab.tsx`); the human gate tap is `POST
-  /initiatives/{slug}/advance`.
+  (`server/api/sdlc.py`) and rendered by `InitiativePage` under the Roadmap section
+  (`web/src/features/roadmap/InitiativePage.tsx`, `/roadmap`) — the old standalone
+  Automations tab this doc originally pointed at was retired by the finish-line
+  migration; the human gate tap is `POST /initiatives/{slug}/advance`.
 
 **Evidence** —
 - Engine / prompts / governance / review / evals:

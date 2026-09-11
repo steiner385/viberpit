@@ -8,6 +8,7 @@
  */
 import { useCheckInsights } from '@/api/hooks'
 import type { CheckDurationStat, CheckFlakeStat, CheckRegressionStat, RunnerWaitStat } from '@/api/types'
+import { DELIVERY } from '@/features/products/vocab'
 import { Banner } from '@/ui/Banner'
 import { Skeleton } from '@/ui/Skeleton'
 import { CheckTable, type Column } from './CheckTable'
@@ -23,7 +24,7 @@ export function CiRepoDetail({ repo, window }: { repo: string; window: CiWindow 
   const { data, isLoading, isError } = useCheckInsights(repo, window)
 
   if (isError) {
-    return <Banner tone="danger" title="Could not load CI health." />
+    return <Banner tone="danger" title={DELIVERY.ciError} />
   }
 
   if (isLoading && !data) {

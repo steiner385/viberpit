@@ -40,13 +40,14 @@ export type DeliveryOpenItem =
   | { kind: 'automation'; automationId: string }
   | { kind: 'ciRepo'; repo: string }
 
+// Takes only `params`, unlike `roadmapOpenItem`: Delivery has no search-only
+// open item today (unlike Roadmap's inbox scope), so there is nothing for a
+// second `search` parameter to read. A one-arg function still satisfies the
+// two-arg `OpenItemResolver` type it is assigned to in `shell/openItems.ts` —
+// JS ignores a caller's extra argument, and TS's function-type compatibility
+// allows fewer parameters than the target type declares.
 export function deliveryOpenItem(
   params: Readonly<Record<string, string | undefined>>,
-  // Kept for signature symmetry with `roadmapOpenItem` (a caller passes the same
-  // pair everywhere); unlike Roadmap's inbox scope, Delivery has no search-only
-  // open item today, so this side is unused — not a case dropped from the switch.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _search: URLSearchParams,
 ): DeliveryOpenItem | null {
   const { automationId, owner, repo } = params
   if (automationId) return { kind: 'automation', automationId }

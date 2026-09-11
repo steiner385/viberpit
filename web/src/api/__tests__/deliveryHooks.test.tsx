@@ -6,11 +6,14 @@ import type { ReactNode } from 'react'
 vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>()
   return { ...actual, api: { ...actual.api, get: vi.fn(async (path: string): Promise<unknown> => {
-    // Guarded rather than a bare `path.endsWith`: `useQueries`' observers can
-    // fire one extra call during React Testing Library's automatic unmount
-    // cleanup after a test's own assertions already ran — harmless, but an
-    // un-guarded `.endsWith` on that call's `undefined` path would throw and
-    // fail whichever test is mid-teardown at that moment.
+    // Guarded rather than a bare `path.endsWith`: confirmed by removing this
+    // line and rerunning — `api.get` is still called with an empty-string
+    // path, every time, but only from inside React Testing Library's
+    // automatic unmount cleanup (the stack lands in `callCleanupHooks`, after
+    // a test's own assertions have already run), not from any query this
+    // file awaits. Which hook fires it was not identified. Harmless in
+    // itself, but an un-guarded `.endsWith` on that call's path throws and
+    // fails whichever test is mid-teardown at that moment.
     if (!path) return { repo: 'o/r', window: '7d', slowest: [], flakiest: [], regressions: [], runner_wait_health: [] }
     if (path.endsWith('/actionable')) return path.includes('pr-doctor') ? [{ id: 'o/r#1', title: 't', actions: [] }] : []
     if (path === '/pipeline/repos') return { 'o/r': { repo: 'o/r', nodes: [] } }

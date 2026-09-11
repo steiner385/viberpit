@@ -4,8 +4,8 @@ title: Session & CI Insights
 state: live
 links:
   code:
-    - web/src/components/InsightsView.tsx
-    - web/src/components/CheckTable.tsx
+    - web/src/features/delivery/ci/CiRepoDetail.tsx
+    - web/src/features/delivery/ci/CheckTable.tsx
     - server/api/pipeline.py
     - server/automations/cicd/stats.py
     - server/automations/consolidation_engine.py
@@ -43,16 +43,16 @@ plus transcript callouts, not ad-hoc analytics.
 #386), then duration regressions + runner-wait health (slice B, #389); the tabs were added
 to the wide-screen `DesktopShell` (#394). The check-insights data is computed server-side
 (`orch.check_insights(repo, window)` in `server/api/pipeline.py`, stats in
-`server/automations/cicd/stats.py`) and rendered by `InsightsView` via the `useCheckInsights`
-hook. Transcript "★ Insight" callouts are a separate, older signal: styled callouts in the
+`server/automations/cicd/stats.py`) and rendered by `CiRepoDetail` (the Delivery section's
+CI-repo detail pane, `/delivery/ci/:owner/:repo`) via the `useCheckInsights` hook. Transcript "★ Insight" callouts are a separate, older signal: styled callouts in the
 transcript (#38) with delimiter-detection refinements for backtick/em-dash/inline-title
 openers (#77, #89). PR consolidation is a pure engine (`consolidation_engine.py`) surfaced
 in the PR Doctor card as cluster chips + multi-select (`ConsolidatePanel`, #470), flagging
 PRs already being consolidated and linking the session (#555).
 
 **Evidence** —
-- Insights view: `web/src/components/InsightsView.tsx`, `web/src/components/CheckTable.tsx`,
-  hook `useCheckInsights` in `web/src/api/hooks.ts`.
+- Insights view: `web/src/features/delivery/ci/CiRepoDetail.tsx`,
+  `web/src/features/delivery/ci/CheckTable.tsx`, hook `useCheckInsights` in `web/src/api/hooks.ts`.
 - Server: `server/api/pipeline.py` (`check_insights` endpoint),
   `server/automations/cicd/stats.py`.
 - Consolidation: `server/automations/consolidation_engine.py` (pure clustering),

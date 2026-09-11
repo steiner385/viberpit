@@ -40,7 +40,7 @@ export function CiScopeBody({ repos, isLoading, isError, selectedKey, onOpen }: 
         />
       }
     >
-      {isError && <Banner tone="danger" title="Could not load CI health." />}
+      {isError && <Banner tone="danger" title={DELIVERY.ciError} />}
       {isLoading && repos.length === 0 && (
         <div role="status" aria-label={`Loading ${DELIVERY.ci.toLowerCase()}`} className="space-y-2">
           {Array.from({ length: 3 }, (_, i) => (
@@ -49,7 +49,7 @@ export function CiScopeBody({ repos, isLoading, isError, selectedKey, onOpen }: 
         </div>
       )}
       {!isLoading && sorted.length === 0 && (
-        <EmptyState title={q ? 'No matches' : 'No repositories with pipeline history yet'} />
+        <EmptyState title={q ? 'No matches' : DELIVERY.emptyRepos} />
       )}
       {sorted.length > 0 && (
         <div role="list" aria-label={DELIVERY.ci} className="flex flex-col gap-1">

@@ -83,4 +83,15 @@ describe('DELIVERY vocabulary (finish-line D9)', () => {
     expect(DELIVERY.help.length).toBeGreaterThan(40)
     expect(Object.keys(MODE_DESCRIPTION)).toEqual(['off', 'propose', 'auto'])
   })
+
+  // Each said in more than one component (list empty state, welcome pane,
+  // error banner); pinned here so a future edit cannot fix the copy in one
+  // place and leave the other stale (finding #3, final review).
+  it('says each duplicated empty/error sentence once', async () => {
+    const { DELIVERY } = await import('./vocab')
+    expect(DELIVERY.emptyAutomations).toBe('No automations registered')
+    expect(DELIVERY.emptyRepos).toBe('No repositories with pipeline history yet')
+    expect(DELIVERY.automationsError).toBe('Could not load automations.')
+    expect(DELIVERY.ciError).toBe('Could not load CI health.')
+  })
 })
