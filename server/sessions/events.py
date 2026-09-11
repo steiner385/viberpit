@@ -139,6 +139,44 @@ class ToolResult:
                                "payload": self.payload, "srcUuid": self.src_uuid,
                                "parentToolUseId": self.parent_tool_use_id, "ts": self.ts}
 
+# ── Task sub-agent lifecycle (spec: 2026-09-11-subagent-live-view-design.md §4.1) ──
+# All three carry the spawning Task's tool-use id as `parentToolUseId`, the key the web
+# reducer already routes sub-agent threads by. Sourced from the CLI's system/task_*
+# notices (translator.py), never from the transcript.
+
+@dataclass
+class SubAgentStarted:
+    parent_tool_use_id: str; task_id: str; description: str; agent_type: str
+    backgrounded: bool = False; depth: int = 1
+    ts: float | None = field(default_factory=_now_ms)
+    def to_wire(self): return {"type": "subAgentStarted", "parentToolUseId": self.parent_tool_use_id,
+                               "taskId": self.task_id, "description": self.description,
+                               "agentType": self.agent_type, "backgrounded": self.backgrounded,
+                               "depth": self.depth, "ts": self.ts}
+
+@dataclass
+class SubAgentProgress:
+    parent_tool_use_id: str; task_id: str; activity: str
+    total_tokens: int | None = None; tool_uses: int | None = None; duration_ms: int | None = None
+    last_tool: str | None = None
+    ts: float | None = field(default_factory=_now_ms)
+    def to_wire(self): return {"type": "subAgentProgress", "parentToolUseId": self.parent_tool_use_id,
+                               "taskId": self.task_id, "activity": self.activity,
+                               "totalTokens": self.total_tokens, "toolUses": self.tool_uses,
+                               "durationMs": self.duration_ms, "lastTool": self.last_tool,
+                               "ts": self.ts}
+
+@dataclass
+class SubAgentEnded:
+    parent_tool_use_id: str; task_id: str; status: str   # "completed" | "failed" | "stopped"
+    summary: str = ""
+    total_tokens: int | None = None; tool_uses: int | None = None; duration_ms: int | None = None
+    ts: float | None = field(default_factory=_now_ms)
+    def to_wire(self): return {"type": "subAgentEnded", "parentToolUseId": self.parent_tool_use_id,
+                               "taskId": self.task_id, "status": self.status, "summary": self.summary,
+                               "totalTokens": self.total_tokens, "toolUses": self.tool_uses,
+                               "durationMs": self.duration_ms, "ts": self.ts}
+
 @dataclass
 class PermissionRequest:
     perm_id: str; turn_id: str; tool: str; kind: ToolKind; input: dict; plan: bool = False
@@ -150,10 +188,14 @@ class PermissionRequest:
     # would act on — the card must enumerate them, not just say "3 sessions" (spec v2
     # B4). None for every other tool. Populated by `assistant_tools.batch_items`.
     items: list[str] | None = None
+    # The spawning Task's tool-use id when the request came from a sub-agent (its
+    # can_use_tool ctx.agent_id, mapped by the driver). None for the main thread.
+    parent_tool_use_id: str | None = None
     ts: float | None = field(default_factory=_now_ms)
     def to_wire(self): return {"type": "permissionRequest", "permId": self.perm_id, "turnId": self.turn_id,
                                "tool": self.tool, "toolKind": self.kind.value, "input": self.input, "plan": self.plan,
-                               "alwaysAllowed": self.always_allowed, "items": self.items, "ts": self.ts}
+                               "alwaysAllowed": self.always_allowed, "items": self.items,
+                               "parentToolUseId": self.parent_tool_use_id, "ts": self.ts}
 
 @dataclass
 class PermissionResolved:
@@ -174,10 +216,13 @@ class Question:
     # server/sessions/orphaned_asks.py). The card is re-offered as answerable, but
     # answering sends a NEW prompt — there is no future left to resolve.
     orphaned: bool = False
+    # The spawning Task's tool-use id when the question came from a sub-agent (its
+    # can_use_tool ctx.agent_id, mapped by the driver). None for the main thread.
+    parent_tool_use_id: str | None = None
     def to_wire(self): return {"type": "question", "questionId": self.question_id, "turnId": self.turn_id,
                                "header": self.header, "question": self.question, "options": self.options,
                                "multiSelect": self.multi_select, "ts": self.ts,
-                               "orphaned": self.orphaned}
+                               "orphaned": self.orphaned, "parentToolUseId": self.parent_tool_use_id}
 
 @dataclass
 class QuestionResolved:

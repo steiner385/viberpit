@@ -18,6 +18,7 @@ from server.sessions.orchestrator import ModelBlockedError
 class FakeOrch:
     def __init__(self) -> None:
         self.interrupt = AsyncMock()
+        self.stop_subagent = AsyncMock(return_value="abb42ada82e1382fe")
         self.resolve_permission = AsyncMock(return_value=True)
         self.note_user_interaction = AsyncMock()
         self.answer_question = AsyncMock(return_value=True)
@@ -284,3 +285,31 @@ async def test_set_model_accepts_a_sync_get_session_orchestrator():
                                     identity="u@example.com")
     assert result == {"ok": True, "restarted": False}
     orch.set_model_for_session.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# stop_subagent
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stop_subagent_calls_orchestrator_and_records_audit(orch):
+    with _patched_audit() as audit:
+        result = await sa.stop_subagent(orch, db=object(), session_id="s1",
+                                        tool_use_id="toolu_A", identity="u@example.com")
+    orch.stop_subagent.assert_awaited_once_with("s1", "toolu_A")
+    args, kwargs = audit.call_args
+    assert args[1] == "session.subagent_stop"
+    assert args[3] == {"sessionId": "s1", "toolUseId": "toolu_A", "taskId": "abb42ada82e1382fe"}
+    assert kwargs["via"] is None
+    assert result == {"ok": True, "taskId": "abb42ada82e1382fe"}
+
+
+@pytest.mark.asyncio
+async def test_stop_subagent_not_running_is_404_and_not_audited(orch):
+    orch.stop_subagent = AsyncMock(return_value=None)
+    with _patched_audit() as audit, pytest.raises(sa.ActionError) as exc:
+        await sa.stop_subagent(orch, db=object(), session_id="s1",
+                               tool_use_id="toolu_A", identity="u@example.com")
+    assert exc.value.code == "SUBAGENT_NOT_RUNNING" and exc.value.http == 404
+    audit.assert_not_awaited()

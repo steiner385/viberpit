@@ -2,8 +2,10 @@
 Lets the translator/driver be tested without spawning `claude` or spending quota."""
 from __future__ import annotations
 import asyncio
+from typing import Any
 from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, UserMessage,
                               ResultMessage, ToolUseBlock, ToolResultBlock, HookEventMessage)
+from claude_agent_sdk.types import TaskNotificationStatus, TaskUpdatedStatus, TaskUsage
 
 from server.sessions.sdk_contract import is_turn_message
 
@@ -75,6 +77,67 @@ def result(session_id: str = "sess-1", usage: dict | None = None, uuid: str = "u
                          total_cost_usd=cost, result=result, errors=errors,
                          api_error_status=api_error_status)
 
+def task_started(task_id: str, tool_use_id: str | None, description: str = "sleep probe",
+                 subagent_type: str = "general-purpose", backgrounded: bool = False,
+                 depth: int = 1, task_type: str = "local_agent", sid: str = "sess-1",
+                 uuid: str = "ts1"):
+    """system/task_started as claude 2.1.268 emits it when a Task sub-agent spawns."""
+    from claude_agent_sdk import TaskStartedMessage
+    data: dict[str, Any] = {"type": "system", "subtype": "task_started", "task_id": task_id,
+            "description": description, "subagent_type": subagent_type,
+            "is_backgrounded": backgrounded, "spawn_depth": depth, "task_type": task_type,
+            "uuid": uuid, "session_id": sid}
+    if tool_use_id is not None:
+        data["tool_use_id"] = tool_use_id
+    return TaskStartedMessage(subtype="task_started", data=data, task_id=task_id,
+                              description=description, uuid=uuid, session_id=sid,
+                              tool_use_id=tool_use_id, task_type=task_type)
+
+def task_progress(task_id: str, tool_use_id: str | None, activity: str = "Running Bash",
+                  total_tokens: int = 19591, tool_uses: int = 1, duration_ms: int = 4098,
+                  last_tool: str | None = "Bash", sid: str = "sess-1", uuid: str = "tp1"):
+    from claude_agent_sdk import TaskProgressMessage
+    usage: TaskUsage = {"total_tokens": total_tokens, "tool_uses": tool_uses,
+                        "duration_ms": duration_ms}
+    data: dict[str, Any] = {"type": "system", "subtype": "task_progress", "task_id": task_id,
+            "description": activity, "usage": usage, "last_tool_name": last_tool,
+            "uuid": uuid, "session_id": sid}
+    if tool_use_id is not None:
+        data["tool_use_id"] = tool_use_id
+    return TaskProgressMessage(subtype="task_progress", data=data, task_id=task_id,
+                               description=activity, usage=usage, uuid=uuid, session_id=sid,
+                               tool_use_id=tool_use_id, last_tool_name=last_tool)
+
+def task_updated(task_id: str, status: TaskUpdatedStatus = "killed", sid: str = "sess-1",
+                 uuid: str = "tu1"):
+    from claude_agent_sdk import TaskUpdatedMessage
+    patch: dict[str, Any] = {"status": status, "end_time": 1789150650196}
+    data: dict[str, Any] = {"type": "system", "subtype": "task_updated", "task_id": task_id,
+            "patch": patch, "uuid": uuid, "session_id": sid}
+    return TaskUpdatedMessage(subtype="task_updated", data=data, task_id=task_id, patch=patch,
+                              status=status, session_id=sid, uuid=uuid)
+
+def task_notification(task_id: str, tool_use_id: str | None,
+                      status: TaskNotificationStatus = "completed",
+                      summary: str = "sleep probe", usage: TaskUsage | None = None,
+                      sid: str = "sess-1", uuid: str = "tn1",
+                      task_type: str | None = None):
+    from claude_agent_sdk import TaskNotificationMessage
+    data: dict[str, Any] = {"type": "system", "subtype": "task_notification", "task_id": task_id,
+            "status": status, "output_file": f"/tmp/tasks/{task_id}.output",
+            "summary": summary, "uuid": uuid, "session_id": sid}
+    if tool_use_id is not None:
+        data["tool_use_id"] = tool_use_id
+    if usage is not None:
+        data["usage"] = usage
+    if task_type is not None:
+        data["task_type"] = task_type
+    return TaskNotificationMessage(subtype="task_notification", data=data, task_id=task_id,
+                                   status=status, output_file=data["output_file"],
+                                   summary=summary, uuid=uuid, session_id=sid,
+                                   tool_use_id=tool_use_id, usage=usage)
+
+
 async def drain_turn(stream) -> list:
     """Pull ONE turn — up to and including its ResultMessage — from a persistent
     ``receive_messages()`` stream: the segmentation the driver does. Pass the SAME
@@ -115,6 +178,7 @@ class FakeSDKClient:
                                 else list(startup_frames))
         self.on_can_use_tool = on_can_use_tool
         self.interrupted = False
+        self.stopped_tasks: list[str] = []
         self.permission_mode = "default"
         self.model = None
         self.sent: list[str] = []
@@ -171,6 +235,10 @@ class FakeSDKClient:
             self._turn_open = False
         if any(m is _EOF for m in rest):
             q.put_nowait(_EOF)
+    async def stop_task(self, task_id: str) -> None:
+        """Record the stop. The real CLI answers on the stream (killed/stopped notices);
+        a test that needs them injects ``task_updated`` / ``task_notification`` itself."""
+        self.stopped_tasks.append(task_id)
     async def set_permission_mode(self, mode: str): self.permission_mode = mode
     async def set_model(self, model=None): self.model = model
     async def get_server_info(self): return self._server_info

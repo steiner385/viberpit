@@ -3,7 +3,9 @@ import dataclasses as _dc
 import logging
 from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, UserMessage,
                               ResultMessage, ToolUseBlock, ToolResultBlock, TextBlock,
-                              RateLimitEvent)
+                              RateLimitEvent, TaskStartedMessage, TaskProgressMessage,
+                              TaskUpdatedMessage, TaskNotificationMessage,
+                              TERMINAL_TASK_STATUSES)
 from ccswitch import brand
 from . import events as ev
 from .completion import (has_completion_marker, parse_hand_back, parse_hand_back_marker,
@@ -12,6 +14,11 @@ from .model_request import parse_model_request, parse_request_model
 from .tools.registry import SIGNAL_TOOL_NAMES
 
 log = logging.getLogger(__name__)
+
+# Wire vocabulary for a finished sub-agent (spec §4.1). The SDK's `killed` (a stop_task
+# outcome reported by task_updated) is the same end state the notification calls `stopped`.
+_ENDED_STATUS = {"completed": "completed", "failed": "failed", "stopped": "stopped",
+                 "killed": "stopped"}
 
 
 def _usage_dict(u):
@@ -40,6 +47,10 @@ class Translator:
         # mark_complete and then writes a closing paragraph, and a per-message reset
         # would throw the signal away. Cleared only by `_reset()`, at turn end.
         self._turn_signals: dict[str, dict] = {}
+        # Task sub-agents: CLI task id -> the spawning Task tool-use id. Lives for the
+        # translator's lifetime, NOT the turn: a background sub-agent's notices arrive
+        # after the turn that spawned it ended (through the driver's idle listener).
+        self._task_tool: dict[str, str] = {}
 
     def _ensure_turn(self, uuid, pid=None) -> list:
         if pid in self._open:
@@ -62,6 +73,61 @@ class Translator:
         self._turn_text = ""
         self._turn_model = {}
         self._turn_signals = {}
+
+    def _sub_agent_notice(self, msg) -> list:
+        """system/task_* notices for a Task sub-agent → SubAgent* events (spec §4.2).
+        Returns [] for a task with no Task tool-use id to attach to (a Bash/Monitor
+        task, or a task this translator never saw start)."""
+        if isinstance(msg, TaskStartedMessage):
+            tuid = msg.tool_use_id
+            if not tuid or (msg.task_type not in (None, "local_agent")):
+                return []
+            self._task_tool[msg.task_id] = tuid
+            d = msg.data or {}
+            atype = d.get("subagent_type")
+            return [ev.SubAgentStarted(
+                tuid, msg.task_id, msg.description or "",
+                atype if isinstance(atype, str) and atype else "agent",
+                backgrounded=bool(d.get("is_backgrounded", False)),
+                depth=int(d.get("spawn_depth") or 1))]
+        if isinstance(msg, TaskProgressMessage):
+            if msg.tool_use_id and (msg.data or {}).get("task_type") not in (None, "local_agent"):
+                return []
+            tuid = msg.tool_use_id or self._task_tool.get(msg.task_id)
+            if not tuid:
+                return []
+            u: dict = dict(msg.usage) if msg.usage else {}
+            return [ev.SubAgentProgress(
+                tuid, msg.task_id, msg.description or "",
+                total_tokens=u.get("total_tokens"), tool_uses=u.get("tool_uses"),
+                duration_ms=u.get("duration_ms"), last_tool=msg.last_tool_name)]
+        if isinstance(msg, TaskUpdatedMessage):
+            if msg.status not in TERMINAL_TASK_STATUSES:
+                return []
+            tuid = self._task_tool.get(msg.task_id)
+            if not tuid:
+                return []
+            # The SDK's TaskUpdatedMessage docstring says the terminal state can arrive
+            # with no notification following — evict on ANY terminal signal, not just
+            # the notification (spec §4.2).
+            self._task_tool.pop(msg.task_id, None)
+            return [ev.SubAgentEnded(tuid, msg.task_id, _ENDED_STATUS.get(msg.status, "failed"))]
+        if isinstance(msg, TaskNotificationMessage):
+            if msg.tool_use_id and (msg.data or {}).get("task_type") not in (None, "local_agent"):
+                return []
+            tuid = msg.tool_use_id or self._task_tool.pop(msg.task_id, None)
+            # The pop above only fires when tool_use_id is absent (the map-resolved
+            # path) — this one always evicts, so a notification with its own
+            # tool_use_id still clears any stale map entry for this task.
+            self._task_tool.pop(msg.task_id, None)
+            if not tuid:
+                return []
+            u = dict(msg.usage) if msg.usage else {}
+            return [ev.SubAgentEnded(
+                tuid, msg.task_id, _ENDED_STATUS.get(msg.status, "failed"),
+                summary=msg.summary or "", total_tokens=u.get("total_tokens"),
+                tool_uses=u.get("tool_uses"), duration_ms=u.get("duration_ms"))]
+        return []
 
     def _record_signal(self, stem: str, args) -> None:
         """Store one signalling tool call for the turn.
@@ -91,6 +157,9 @@ class Translator:
 
     def feed(self, msg) -> list:
         if isinstance(msg, SystemMessage):
+            if isinstance(msg, (TaskStartedMessage, TaskProgressMessage,
+                                TaskUpdatedMessage, TaskNotificationMessage)):
+                return self._sub_agent_notice(msg)
             if msg.subtype == "init":
                 data = msg.data or {}
                 self.session_id = data.get("session_id") or self.session_id

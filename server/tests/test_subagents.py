@@ -32,3 +32,15 @@ def test_agent_tool_name_also_counted_and_order_preserved():
 def test_ignores_non_subagent_tools():
     evs = [ev.ToolCall("turn", "t1", "Read", ev.tool_kind("Read"), {}, "u")]
     assert summarize_transcript(evs) == []
+
+
+def test_nested_task_call_names_its_parent_thread():
+    """A Task issued INSIDE a sub-agent's thread carries that thread's key as its
+    parent_tool_use_id (replay tags sidecar tool calls with the spawning Task id), so
+    the summary nests it instead of flattening every agent to top level."""
+    evs = [_task_call("toolu_A"),
+           ev.ToolCall("turn-sub", "toolu_B", "Task", ev.tool_kind("Task"),
+                       {"subagent_type": "Explore", "description": "deeper"}, "u",
+                       parent_tool_use_id="toolu_A")]
+    by = {s["agentId"]: s["parentAgentId"] for s in summarize_transcript(evs)}
+    assert by == {"toolu_A": None, "toolu_B": "toolu_A"}
