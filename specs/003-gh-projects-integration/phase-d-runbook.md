@@ -229,4 +229,4 @@ needs me", and after Phase D that is a plain human signal with no machine behavi
 The sweep is a data migration, not a mode: there is no switch to flip back. Undoing an individual
 action means deleting the runner row (`DELETE FROM automation_target_state WHERE automation_id =
 'backlog-runner' AND target = '<ref>'`) or setting the board item's Status back by hand, and
-re-adding the label with `gh issue edit N --add-label …`. Which is why step 2 is a real review.
+re-adding the label with `gh issue edit N --add-label …`. Which is why step 5 is a real review.
