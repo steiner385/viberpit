@@ -59,6 +59,7 @@ from server.audit import record_audit
 from server.db import db_session
 from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, INACTIVE_SESSION_STATUSES, Session as DbSession
 from server.sessions import adopt as _adopt
+from server.sessions.helper_call import helper_cwd
 from server.sessions.account_auth import oauth_env_for
 from server.sessions.scratch_config import helper_config_dir
 from server.sessions import deploy_snapshot as _deploy_snapshot
@@ -3780,7 +3781,7 @@ class SessionOrchestrator:
             driver = cast("CodexAgentDriver", self._engine_registry.create(AgentEngine.CODEX, AgentDriverConfig(
                 session_id=session_id,
                 account=account,
-                cwd=os.getcwd(),
+                cwd=helper_cwd(),
                 config_dir="",
                 mode="plan",
                 identity=SYSTEM_IDENTITY,
@@ -3839,7 +3840,7 @@ class SessionOrchestrator:
             driver = cast("CodexAgentDriver", self._engine_registry.create(AgentEngine.CODEX, AgentDriverConfig(
                 session_id=session_id,
                 account=account,
-                cwd=os.getcwd(),
+                cwd=helper_cwd(),
                 config_dir="",
                 mode="plan",
                 identity=SYSTEM_IDENTITY,
@@ -4269,8 +4270,7 @@ class SessionOrchestrator:
                 # this is strictly the completion gate's judgement, which this path was
                 # missing while _completion_open_question had it all along.
                 prose = strip_markers(self._last_assistant_prose(session_id))
-                awaits = await completion_awaits_user(
-                    prose, cwd=getattr(rec, "cwd", None))
+                awaits = await completion_awaits_user(prose)
                 status = "waiting_question" if awaits else "waiting_external"
         # Advance the "active … ago" clock ONLY when the assistant hands output back —
         # a finished or user-paused turn (ACTIVITY_STATUSES). Bumping it on every status
@@ -4689,8 +4689,7 @@ class SessionOrchestrator:
         text = strip_markers(self._last_assistant_prose(session_id))
         if not text:
             return None
-        rec = self._records.get(session_id)
-        if await completion_awaits_user(text, cwd=getattr(rec, "cwd", None)):
+        if await completion_awaits_user(text):
             return "waiting_question"
         return None
 
@@ -8247,6 +8246,14 @@ class SessionOrchestrator:
                 stuck = {"kind": "question", "question_id": q["question_id"],
                          "question": q.get("question", ""), "options": q.get("options", []),
                          "multi_select": q.get("multi_select", False)}
+            elif rec.status == "waiting_question":
+                # "Answer needed" with no card: the session handed itself back
+                # (`hand_back`, or a closing question for the user — status.py). The
+                # reason rides along for the guardrail's feed line; it is gone after a
+                # restart (no driver), and the status alone still means the same thing.
+                driver = getattr(self, "_drivers", {}).get(session_id)
+                stuck["hand_back_reason"] = (
+                    getattr(driver, "last_hand_back_reason", None) or "")
         from datetime import datetime as _dtmod
         _last = getattr(rec, "last_user_interaction_at", None)
         _secs_since_human = (_dtmod.utcnow() - _last).total_seconds() if _last is not None else None
@@ -8438,7 +8445,13 @@ class SessionOrchestrator:
         if verdict.met or verdict.confidence != "low":
             return None
         from server.automations.pr_intent import classify_pr_intent
-        intent = await classify_pr_intent(transcript_tail, goal_text)
+        # The same engine-safe helper identity the decider and composer run as
+        # (#1262). Without it the classifier inherited the daemon's empty
+        # CLAUDE_CONFIG_DIR and every call answered "Not logged in" (44/44 over the
+        # 14 days to 2026-09-11), so this salvage never once ran.
+        intent = await classify_pr_intent(
+            transcript_tail, goal_text,
+            _config_dir=self._autopilot_helper_config_dir(rec.account))
         if not (intent.resolved and intent.confidence == "high"):
             return None
         rec.pr_resolution = intent.reason
@@ -8465,6 +8478,7 @@ class SessionOrchestrator:
         it just decides with less)."""
         import json as _json
         from server.sessions.events import TextDelta, ToolCall, UserMessage
+        from server.sessions.excerpt import elide_middle
         try:
             window = await self.transcript_window(session_id, limit=turns)
         except Exception:
@@ -8475,20 +8489,26 @@ class SessionOrchestrator:
         tail: list[dict] = []
         for e in window.events:
             if isinstance(e, UserMessage) and (e.text or "").strip():
-                tail.append({"role": "user", "text": e.text[:max_chars]})
+                tail.append({"role": "user", "text": elide_middle(e.text, max_chars)})
             elif isinstance(e, TextDelta) and (e.text or "").strip():
                 # Replay emits one delta per content block — merge consecutive
-                # assistant text so one reply reads as one entry.
+                # assistant text so one reply reads as one entry. The budget is
+                # applied to the MERGED reply below, never per delta: a head slice
+                # here dropped the reply's ending (its hand-off) without a trace, and
+                # the composer read that as the session cutting off mid-sentence.
                 if tail and tail[-1]["role"] == "assistant":
-                    tail[-1]["text"] = (tail[-1]["text"] + e.text)[:max_chars]
+                    tail[-1]["text"] += e.text
                 else:
-                    tail.append({"role": "assistant", "text": e.text[:max_chars]})
+                    tail.append({"role": "assistant", "text": e.text})
             elif isinstance(e, ToolCall):
                 try:
-                    arg_head = _json.dumps(e.input, default=str)[:tool_chars]
+                    args = _json.dumps(e.input, default=str)
                 except Exception:
-                    arg_head = str(e.input)[:tool_chars]
-                tail.append({"role": "tool", "text": f"{e.name} {arg_head}"})
+                    args = str(e.input)
+                tail.append({"role": "tool", "text": elide_middle(f"{e.name} {args}", tool_chars)})
+        for entry in tail:
+            if entry["role"] == "assistant":
+                entry["text"] = elide_middle(entry["text"], max_chars)
         return tail[-max_entries:]
 
     async def _autopilot_apply(self, session_id: str, decision, ctx=None) -> bool:
@@ -8622,7 +8642,7 @@ class SessionOrchestrator:
         gate's intent hint + bar verdict + prior-nudge history. None -> escalate."""
         from server.automations import nudge_composer
         rich_tail = await self._autopilot_transcript_tail(
-            ctx.session_id, turns=20, max_entries=40, max_chars=1500, tool_chars=400)
+            ctx.session_id, turns=20, max_entries=40, max_chars=2500, tool_chars=400)
         cfg_dir = self._autopilot_helper_config_dir(ctx.account)
         recent = [str(e.get("text", "")) for e in (ctx.ledger or {}).get("recent_nudges", [])]
         return await nudge_composer.compose_nudge(
@@ -9800,7 +9820,7 @@ class SessionOrchestrator:
             driver = cast("CodexAgentDriver", self._engine_registry.create(AgentEngine.CODEX, AgentDriverConfig(
                 session_id=session_id,
                 account=account,
-                cwd=os.getcwd(),
+                cwd=helper_cwd(),
                 config_dir="",
                 mode="plan",
                 identity=SYSTEM_IDENTITY,

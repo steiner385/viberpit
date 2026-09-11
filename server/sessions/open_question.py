@@ -46,7 +46,7 @@ import os
 
 from .account_auth import helper_env
 from .claude_bin import cli_path_kwargs
-from .helper_call import pick_helper_config_dir, run_helper_call
+from .helper_call import helper_cwd, pick_helper_config_dir, run_helper_call
 
 log = logging.getLogger(__name__)
 
@@ -101,7 +101,6 @@ def _build_prompt(text: str) -> str:
 
 async def completion_awaits_user(
     text: str, *, query_fn=None, config_dir: str | None = None,
-    cwd: str | None = None,
 ) -> bool:
     """True when *text* (a marker-stripped final assistant message) still awaits
     the user. The shared prose heuristic gates the call (see module docstring);
@@ -129,7 +128,7 @@ async def completion_awaits_user(
             from claude_agent_sdk import ClaudeAgentOptions, query
             query_fn = query
             options = ClaudeAgentOptions(
-                model="haiku", system_prompt=_SYSTEM, cwd=cwd or os.getcwd(),
+                model="haiku", system_prompt=_SYSTEM, cwd=helper_cwd(),
                 env=helper_env(config_dir),
                 allowed_tools=[], setting_sources=[], **cli_path_kwargs())
     except Exception as exc:

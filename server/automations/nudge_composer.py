@@ -10,6 +10,7 @@ from pathlib import Path
 
 from server.sessions.account_auth import helper_env
 from server.sessions.claude_bin import cli_path_kwargs
+from server.sessions.helper_call import helper_cwd
 
 log = logging.getLogger(__name__)
 
@@ -69,17 +70,23 @@ def _extract_obj(raw: str) -> dict | None:
 async def compose_nudge(ctx, *, intent_hint, verdict_reason, verdict_remedy,
                         recent_nudges, rich_tail, facts_verified,
                         _query_fn=None, _config_dir=None, _cwd=None) -> str | None:
-    query_fn = _query_fn or _default_sdk_query_fn()
     config_dir = _config_dir if _config_dir is not None else os.environ.get("CLAUDE_CONFIG_DIR", "")
-    cwd = _cwd or os.getcwd()
     try:
         options = None
         if _query_fn is None:
+            if not config_dir:
+                # Same contract as autopilot_decider.decide: an empty config dir can
+                # only answer "Not logged in" — decline (the loop escalates) rather
+                # than spawn a CLI that is certain to fail.
+                log.warning("nudge_composer skipped: no helper account (sid=%s)",
+                            getattr(ctx, "session_id", "?"))
+                return None
             from claude_agent_sdk import ClaudeAgentOptions
             options = ClaudeAgentOptions(
-                model="sonnet", system_prompt=_GUIDANCE, cwd=cwd,
+                model="sonnet", system_prompt=_GUIDANCE, cwd=_cwd or helper_cwd(),
                 env=helper_env(config_dir),
                 allowed_tools=[], setting_sources=[], **cli_path_kwargs())
+        query_fn = _query_fn or _default_sdk_query_fn()
         parts: list[str] = []
         prompt = _build_prompt(ctx, intent_hint=intent_hint, verdict_reason=verdict_reason,
                                verdict_remedy=verdict_remedy, recent_nudges=recent_nudges,

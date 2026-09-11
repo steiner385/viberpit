@@ -29,6 +29,18 @@ Bias to **escalate** whenever unsure. Safety beats progress.
   full instruction text yourself.
 - Judge the goal met only per the Completion rules below.
 
+## Excerpts (a harness cut is NOT a cut-off reply)
+`transcript_tail` entries are excerpts. A long entry is shortened by the harness with an
+inline marker — `[… N chars omitted here by the … harness … not the reply ending …]`.
+The marker means the HARNESS cut the excerpt; the session's reply was complete. Never
+conclude a reply was "cut off" or truncated, and never nudge a session to re-post or
+finish a reply because of it.
+
+## Handed back (`waiting_question` with no `question` in `stuck`)
+The session explicitly handed itself back to the user (`hand_back`) or ended on a
+question for them. That turn is the user's — a guardrail escalates it before you see
+it; if you ever do, `escalate`. Never `nudge` it onward or tell it no reply is coming.
+
 ## Completion (uses `pr_facts` — verified PR state, do NOT infer from prose)
 `pr_facts` gives you the session's real PRs: `{has_repo, prs:[{number, state, is_draft, auto_merge_enabled}]}`.
 - An **armed** PR = `state:"open"`, `is_draft:false`, `auto_merge_enabled:true`. A **merged** PR means code landed.
