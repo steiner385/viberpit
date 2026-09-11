@@ -220,7 +220,7 @@ async def test_events_emits_notification_on_new_ci_failure():
 
     original_build_state = _pipeline_mod._build_state
 
-    async def _patched_build_state(orch):
+    async def _patched_build_state(orch, **_kw):
         nonlocal _build_state_calls
         _build_state_calls += 1
         if _build_state_calls == 1:

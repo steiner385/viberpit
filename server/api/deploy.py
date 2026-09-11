@@ -14,13 +14,20 @@ from server import hostpaths
 router = APIRouter(prefix="/api/deploy", tags=["deploy"])
 
 
-def get_deploy_client(request: Request) -> DeployControllerClient:
-    client = getattr(request.app.state, "deploy_client", None)
+def deploy_client_for(app) -> DeployControllerClient:
+    """The app's one deploy-controller client, created on first use. Shared by the
+    /api/deploy routes and the pipeline poller's main-lane read, so a test that
+    stubs ``app.state.deploy_client`` steers both."""
+    client = getattr(app.state, "deploy_client", None)
     if client is None:
         sock = os.environ.get("CCSWITCH_DEPLOY_SOCKET", hostpaths.DEPLOY_SOCKET)
         client = DeployControllerClient(sock)
-        request.app.state.deploy_client = client
+        app.state.deploy_client = client
     return client
+
+
+def get_deploy_client(request: Request) -> DeployControllerClient:
+    return deploy_client_for(request.app)
 
 
 async def _reconcile_restore_failed(request: Request, status: dict) -> None:

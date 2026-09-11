@@ -1,6 +1,7 @@
 // web/src/lib/deployState.ts
 import { usePendingDeploy, useDeployStatus } from '@/api/hooks'
 import type { PendingDeploy, DeployProgress } from '@/api/types'
+import { ciLabel } from '@/lib/ciVerdict'
 
 /**
  * Everything "is there a deploy to worry about, and can it run?" — derived ONCE.
@@ -15,13 +16,6 @@ import type { PendingDeploy, DeployProgress } from '@/api/types'
  * without rendering and callable from `useNavBadges` (which needs `hasFailure`
  * only) without pulling in a component.
  */
-
-// A CI verdict rendered for a human. Only "unrun" needs translating: it means the
-// commit's CI run was cancelled before any job started, so no check will ever arrive.
-// Showing that as "pending" tells the operator to wait for something that is not
-// coming — the one verdict on this banner that never resolves on its own.
-const CI_VERDICT_LABELS: Record<string, string> = { unrun: 'never ran' }
-export const ciLabel = (verdict: string): string => CI_VERDICT_LABELS[verdict] ?? verdict
 
 export interface DeployState {
   behind: boolean

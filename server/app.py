@@ -409,7 +409,8 @@ async def _lifespan(app: FastAPI):
     from server.api import pipeline as _pipeline_api
     from server.pipeline.state_poller import PipelineStatePoller
     app.state.pipeline_state = PipelineStatePoller(
-        lambda: _pipeline_api._build_state(app.state.sessions)
+        lambda: _pipeline_api._build_state(
+            app.state.sessions, deploy_status_fn=_pipeline_api.deploy_status_fn_for(app))
     )
     await app.state.pipeline_state.start()
 

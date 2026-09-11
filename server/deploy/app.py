@@ -10,8 +10,10 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from server.deploy import git as _git
 from server.deploy.controller import DeployController
 from server.deploy.detect import DetectLoop, compute_pending, edge_live_sha
+from server.deploy.steps import err_reason
 from server.deploy.types import DeployStatus
 
 log = logging.getLogger("server.deploy.app")
@@ -43,7 +45,20 @@ def build_controller_app(*, repo: str, health_url: str, venv_python: str, daemon
                          detect_loop: DetectLoop | None = None,
                          controller: _ControllerLike | None = None,
                          status_path: str | None = None,
-                         init_db_url: str | None = None):
+                         init_db_url: str | None = None,
+                         repo_slug: str | None = None):
+    # The edge's Pipeline attributes this controller's tip verdict to a repository by
+    # this slug (server/pipeline/lane_health.py). Derived once from the checkout's
+    # origin remote; a checkout without one is not fatal — the main lane simply
+    # stays blind for it, which is honest, so log and carry on rather than refuse
+    # to serve deploys.
+    if repo_slug is None:
+        try:
+            repo_slug = _git.origin_slug(repo)
+        except Exception as e:
+            log.warning("origin slug for %s unknown (%s) — the Pipeline main lane "
+                        "cannot attribute this controller's verdict", repo, err_reason(e))
+            repo_slug = ""
     # liveSha comes from the RUNNING edge (/healthz), not the checkout's HEAD — a
     # checkout fast-forwarded without a unit restart must show as behind, not
     # deployed (#859). edge_live_sha falls back to checkout HEAD when unreachable.
@@ -82,7 +97,7 @@ def build_controller_app(*, repo: str, health_url: str, venv_python: str, daemon
 
     @app.get("/status")
     async def status() -> dict:
-        return {"pending": loop.state.to_dict(), "deploy": _deploy_dict()}
+        return {"repo": repo_slug, "pending": loop.state.to_dict(), "deploy": _deploy_dict()}
 
     @app.post("/start")
     async def start(body: StartBody | None = None) -> JSONResponse:

@@ -42,6 +42,17 @@ def test_status_exposes_pending_and_deploy(client):
     assert body["pending"]["behind"] is True
     assert body["pending"]["commits"][0]["sha"] == "1"
     assert "running" in body["deploy"]
+    # The edge's Pipeline keys the main-lane verdict by this slug; "/r" is no git
+    # checkout, so the best-effort derivation yields "" rather than failing the route.
+    assert body["repo"] == ""
+
+
+def test_status_carries_the_repo_slug_when_given():
+    loop = DetectLoop("/r", compute=lambda r: PendingState())
+    app, _, _ = deploy_app.build_controller_app(
+        repo="/r", health_url="http://h", venv_python="/v", daemon_enabled=False,
+        detect_loop=loop, controller=FakeController(), repo_slug="o/r")
+    assert TestClient(app).get("/status").json()["repo"] == "o/r"
 
 
 def test_start_triggers_deploy(client):

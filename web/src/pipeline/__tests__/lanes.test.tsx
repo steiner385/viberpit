@@ -39,6 +39,21 @@ describe('mainLane', () => {
     const repos = [{ repo: 'a', laneHealth: { main: 'green' } }, { repo: 'b', laneHealth: { main: 'red' } }];
     expect(mainLane(repos as unknown as DashboardState['repos']).status).toBe('red');
   });
+  it('names the tip and its CI verdict when the worst repo carries them — the same words as the deploy banner', () => {
+    const pending = [{ repo: 'a', laneHealth: { main: 'amber', tipSha: '5c8056c0dcf341ef', tipCi: 'pending' } }];
+    expect(mainLane(pending as unknown as DashboardState['repos'])).toEqual({ status: 'amber', summary: 'watch · 5c8056c CI pending' });
+    const unrun = [{ repo: 'a', laneHealth: { main: 'amber', tipSha: '5c8056c0dcf341ef', tipCi: 'unrun' } }];
+    expect(mainLane(unrun as unknown as DashboardState['repos']).summary).toBe('watch · 5c8056c CI never ran');
+    // Green carries no detail: a healthy lane stays a single word.
+    const green = [{ repo: 'a', laneHealth: { main: 'green', tipSha: '5c8056c0', tipCi: 'green' } }];
+    expect(mainLane(green as unknown as DashboardState['repos']).summary).toBe('green');
+    // The detail belongs to the repo that set the worst status, not the first repo.
+    const mixed = [
+      { repo: 'a', laneHealth: { main: 'amber', tipSha: 'aaaaaaaa', tipCi: 'pending' } },
+      { repo: 'b', laneHealth: { main: 'red', tipSha: 'bbbbbbbb', tipCi: 'red' } },
+    ];
+    expect(mainLane(mixed as unknown as DashboardState['repos']).summary).toBe('red · bbbbbbb CI red');
+  });
 });
 
 describe('deployLane', () => {

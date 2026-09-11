@@ -28,6 +28,8 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+
+from server.github.remote_url import slug_from_remote_url
 import time
 
 from server.version import repo_root, running_git_sha
@@ -97,11 +99,10 @@ def _origin_repo() -> str:
     url = (getattr(proc, "stdout", "") or "").strip()
     if getattr(proc, "returncode", 1) != 0 or not url:
         raise RuntimeError("no origin remote url")
-    tail = url.rsplit(":", 1)[-1] if url.startswith("git@") else url.rstrip("/").split("/", 3)[-1]
-    tail = tail.removesuffix(".git").strip("/")
-    if tail.count("/") != 1:
-        raise RuntimeError(f"unrecognised origin url: {url!r}")
-    return tail
+    try:
+        return slug_from_remote_url(url)
+    except ValueError as e:
+        raise RuntimeError(f"unrecognised origin url: {url!r}") from e
 
 
 def _compare(local: str, remote: str) -> dict:
