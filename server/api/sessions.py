@@ -234,6 +234,9 @@ def _record_to_dict(
         "origin": getattr(record, "origin", None),
         "originRef": getattr(record, "origin_ref", None),
         "assistedBy": getattr(record, "assisted_by", None),
+        # Lineage: the session whose dispatch_session call created this one (child-session
+        # spec §4.6). null for a root. Same two-serializer rule as `origin`.
+        "parentSessionId": getattr(record, "parent_session_id", None),
         # Derived at the edge from the automation registry, so the browser
         # never keeps its own id→name map or its own list of which origins
         # are housekeeping. "development" for a human session or an id the

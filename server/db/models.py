@@ -232,6 +232,14 @@ class Session(Base):
     # session (e.g. "autopilot" after its first successful nudge/approval). Distinct
     # from `origin` (spawned-by). NULL = never assisted. Nullable for init_db backfill.
     assisted_by: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # Lineage (child-session spec §4.1): the session whose `dispatch_session` tool call
+    # created this one. NULL = a root session (every human-created one, every row that
+    # predates the feature). Nullable so init_db's reconcile adds it on both dialects.
+    parent_session_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    # The child status most recently reported to the parent as a
+    # <child-session-notification> — the idempotency guard for that notice across
+    # repeated status persists and daemon restarts. NULL = never reported.
+    parent_notified_status: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     # Generic row-write time: bumped on EVERY update (status, sub-agents, branch, name,
     # model, pin…). Used as the archived-sessions list's "archived at" only as a legacy

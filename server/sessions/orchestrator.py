@@ -9975,6 +9975,8 @@ class SessionOrchestrator:
             origin=getattr(row, "origin", None),
             origin_ref=getattr(row, "origin_ref", None),
             assisted_by=getattr(row, "assisted_by", None),
+            parent_session_id=getattr(row, "parent_session_id", None),
+            parent_notified_status=getattr(row, "parent_notified_status", None),
             # Initial value only: a record just rebuilt from its row has no driver.
             # From here on the flag is DERIVED on every read (_sync_detached), never
             # hand-maintained — see that method for the drift this used to cause.
