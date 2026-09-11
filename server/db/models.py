@@ -1478,6 +1478,8 @@ WORK_ITEM_KINDS: tuple[str, ...] = ("issue", "pr")
 WORK_ITEM_TRIAGE_STATES: tuple[str, ...] = (
     "unclassified", "proposed", "classified", "needs_human")
 
+# Also the lifecycle of a MaterializationProposal (spec 003 §7b) — one proposal
+# vocabulary, not one per proposal kind (constitution VI).
 TRIAGE_PROPOSAL_STATUSES: tuple[str, ...] = ("pending", "accepted", "rejected")
 
 
@@ -1726,6 +1728,30 @@ class TriageProposal(Base):
     undo_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class MaterializationProposal(Base):
+    """One proposed decomposition of a merged plan, awaiting the human gate
+    (spec 003 §7b). ``payload`` is the parsed `materialize.Decomposition`
+    (epic_title / epic_body / tasks[title, body, depends_on]); accepting it
+    creates the epic, its sub-issues and the blocked-by chain through the
+    journal, and this row remains as audit. Same pending→accepted/rejected
+    lifecycle as TriageProposal — see TRIAGE_PROPOSAL_STATUSES."""
+
+    __tablename__ = "materialization_proposals"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    initiative_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("initiatives.id"), nullable=True, index=True)
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="pending", index=True)  # TRIAGE_PROPOSAL_STATUSES
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    rationale: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
 
 
 class InitiativeFeature(Base):

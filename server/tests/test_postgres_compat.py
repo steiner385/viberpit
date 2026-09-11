@@ -257,6 +257,10 @@ _FK_LINKS: dict[str, dict[str, str]] = {
     "work_items": {"feature_id": "features"},
     "triage_proposals": {"work_item_id": "work_items", "proposed_feature_id": "features"},
     "initiative_features": {"initiative_id": "initiatives", "feature_id": "features"},
+    # spec 003 §7b plan materialization: created_at/resolved_at put this table in
+    # the datetime sweep; status is its only other NOT NULL column and carries a
+    # Python default ("pending"), so just the FK needs a live parent row.
+    "materialization_proposals": {"initiative_id": "initiatives"},
     # spec 003 Phase A mirror tables: point FK columns at live parent rows so the
     # datetime sweep can insert them in FK order (sorted_tables already handles ordering).
     "gh_projects": {"project_id": "projects"},

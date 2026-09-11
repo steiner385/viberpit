@@ -15,6 +15,7 @@ from server.db.models import (
     FeatureLink,
     Initiative,
     InitiativeFeature,
+    MaterializationProposal,
     Project,
     ProjectEdge,
     ProjectRepo,
@@ -94,6 +95,29 @@ async def test_work_item_overlay_and_proposal(db_session):
     await db_session.flush()
     assert t.status == "pending"
     assert t.status in TRIAGE_PROPOSAL_STATUSES
+
+
+@pytest.mark.asyncio
+async def test_materialization_proposal_defaults(db_session):
+    """A materialization proposal (spec 003 §7b, #992) has the same
+    pending→accepted/rejected lifecycle as a triage proposal."""
+    i = Initiative(slug="003-materialize", title="Materialize plans")
+    db_session.add(i)
+    await db_session.flush()
+    m = MaterializationProposal(
+        initiative_id=i.id,
+        payload={"epic_title": "Ship it", "tasks": [{"title": "T1"}]},
+        session_id="sess-1",
+        rationale="decomposed the merged plan",
+    )
+    db_session.add(m)
+    await db_session.flush()
+    assert m.id
+    assert m.status == "pending"
+    assert m.status in TRIAGE_PROPOSAL_STATUSES
+    assert m.created_at is not None
+    assert m.resolved_at is None
+    assert m.payload["tasks"][0]["title"] == "T1"
 
 
 @pytest.mark.asyncio
