@@ -75,6 +75,12 @@ vi.mock('@/api/hooks', () => ({
     isError: h.state.advanceIsError,
     error: null,
   }),
+  // The Track tab's materialization gate. Nothing to decide here — the card
+  // has its own file (`InitiativePage.materialization.test.tsx`); these three
+  // only have to exist, because the page mounts them unconditionally.
+  useMaterialization: () => ({ data: null }),
+  useAcceptMaterialization: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
+  useRejectMaterialization: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
 }))
 
 function mount(initial = '/initiatives/views') {

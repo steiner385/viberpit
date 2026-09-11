@@ -4,7 +4,7 @@
  * Mirrors the `api/automations.ts` shape: plain fetchers here, React Query hooks
  * in `api/hooks.ts`. Field names are the server's camelCase JSON verbatim.
  */
-import { api } from './client'
+import { api, ApiRequestError } from './client'
 
 /** Lifecycle stages, in order — mirrors server INITIATIVE_STAGES. Single source
  *  of truth on the web side; the board renders the track from this. */
@@ -70,7 +70,7 @@ export interface InitiativeCapabilityRef {
 
 /** What the stage engine says should happen next (detail endpoint only). */
 export interface InitiativeNextAction {
-  type: 'propose' | 'await_approval' | 'handoff_to_build' | 'done' | 'needs_human' | 'unknown' | string
+  type: 'propose' | 'await_approval' | 'materialize' | 'handoff_to_build' | 'done' | 'needs_human' | 'unknown' | string
   kind?: string
   issue?: string
   reason?: string
@@ -123,6 +123,85 @@ export function createInitiative(input: CreateInitiativeInput): Promise<Initiati
 /** The human-gate tap: walk the initiative's stage forward one step. */
 export function advanceInitiative(slug: string): Promise<Initiative> {
   return api.post<Initiative>(`/sdlc/initiatives/${encodeURIComponent(slug)}/advance`)
+}
+
+// ── Plan materialization: the decomposition gate (spec 003 §7b, #992) ────────
+
+/** One task of a proposed decomposition.
+ *
+ *  `dependsOn` holds INDEXES into the same `tasks` array (the server's
+ *  `depends_on`), not issue numbers: nothing exists on GitHub until the proposal
+ *  is accepted, so there is nothing else a task could point at. */
+export interface MaterializationTask {
+  title: string | null
+  body: string | null
+  dependsOn: number[]
+}
+
+/** Proposal lifecycle — the same three the triage inbox uses (server
+ *  `TRIAGE_PROPOSAL_STATUSES`). */
+export type MaterializationStatus = 'pending' | 'accepted' | 'rejected'
+
+export interface MaterializationProposal {
+  id: string
+  initiativeId: string
+  status: MaterializationStatus | string
+  sessionId: string | null
+  rationale: string | null
+  epicTitle: string | null
+  epicBody: string | null
+  tasks: MaterializationTask[]
+  /** What a partially applied accept already created on GitHub, so a re-tap
+   *  reads as a resume rather than a second attempt. */
+  created: Record<string, unknown> | null
+  createdAt: string | null
+  resolvedAt: string | null
+}
+
+/** What the accept answers with once the epic, its sub-issues and the blocked-by
+ *  chain exist (`server/pm/materialize_apply.py:apply`). */
+export interface MaterializationApplied {
+  ok: boolean
+  epic: { node_id?: string; number?: number; url?: string } | null
+  tasks: number
+  edges: number
+  /** Chain edges the apply could not create — a chain with a dropped edge looks
+   *  identical on the board otherwise. */
+  parkedEdges: number
+  syncRequested?: boolean
+}
+
+/**
+ * The initiative's latest proposal, whatever its status, or `null` when it has
+ * never been decomposed.
+ *
+ * The 404 is NOT a failure: most initiatives have no proposal, and the endpoint
+ * says exactly that (`{"error": "no_proposal"}`). Only that one status is
+ * swallowed — anything else stays an error, so a real outage is never rendered
+ * as "nothing to decide".
+ */
+export function fetchMaterialization(slug: string): Promise<MaterializationProposal | null> {
+  return api
+    .get<MaterializationProposal>(`/sdlc/initiatives/${encodeURIComponent(slug)}/materialization`)
+    .catch((e: unknown) => {
+      if (e instanceof ApiRequestError && e.status === 404) return null
+      throw e
+    })
+}
+
+/** The human gate: create the epic, its task sub-issues and the chain. A 502
+ *  leaves the proposal `pending` and the apply resumable — the caller keeps the
+ *  card up rather than clearing it. */
+export function acceptMaterialization(slug: string): Promise<MaterializationApplied> {
+  return api.post<MaterializationApplied>(
+    `/sdlc/initiatives/${encodeURIComponent(slug)}/materialization/accept`)
+}
+
+/** Turn the decomposition down. The initiative stays where it is; the rejection
+ *  only frees the synthesizer to decompose the plan again on a later tick. */
+export function rejectMaterialization(slug: string): Promise<MaterializationProposal> {
+  return api.post<MaterializationProposal>(
+    `/sdlc/initiatives/${encodeURIComponent(slug)}/materialization/reject`)
 }
 
 // ── Control-band incidents: the SDLC Maintain-loop triage queue (#804) ───────

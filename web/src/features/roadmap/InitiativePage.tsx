@@ -6,7 +6,10 @@
 // mis-tap never moves the stage.
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useAdvanceInitiative, useInitiative, useRoadmapMap } from '@/api/hooks'
+import {
+  useAcceptMaterialization, useAdvanceInitiative, useInitiative,
+  useMaterialization, useRejectMaterialization, useRoadmapMap,
+} from '@/api/hooks'
 import { ApiRequestError } from '@/api/client'
 import type { Initiative, InitiativeArtifact } from '@/api/sdlc'
 import { extractMutationErrorMessage } from '@/api/queryClient'
@@ -70,35 +73,112 @@ function ArtifactLink({ repo, artifact }: { repo: string | null; artifact: Initi
   return <span className="text-ink-muted" title="not committed yet">{kind} (pending)</span>
 }
 
+/**
+ * The decomposition gate (spec 003 §7b, #992): what the merged plan would become
+ * on GitHub — one epic and its chained task sub-issues — shown while none of it
+ * exists yet. It is the last point at which "no" is cheap, so the card shows the
+ * whole proposal rather than a count.
+ *
+ * A DECIDED proposal renders nothing: accept and reject both end the decision,
+ * and a card that lingers invites a second tap on a question already answered.
+ * A FAILED accept is not a decision — the apply is resumable from its journal
+ * and the proposal is still `pending` — so the card stays put with the server's
+ * reason on it, and tapping Accept again continues rather than creating a second
+ * epic.
+ */
+function MaterializationCard({ slug }: { slug: string }) {
+  const { data: proposal } = useMaterialization(slug)
+  const accept = useAcceptMaterialization()
+  const reject = useRejectMaterialization()
+  if (!proposal || proposal.status !== 'pending') return null
+  return (
+    <section
+      aria-label="Materialize plan"
+      className="flex flex-col gap-3 rounded-md border border-edge bg-surface p-3"
+    >
+      <div className="flex flex-col gap-1">
+        <h2 className="text-sm font-semibold text-ink">Materialize plan</h2>
+        <p className="text-sm text-ink">{proposal.epicTitle ?? `Untitled ${EPIC.singular.toLowerCase()}`}</p>
+      </div>
+      {/* The session's stated reason — the one piece of evidence a human has
+          before an accept that writes to GitHub, so it reads before the list. */}
+      {proposal.rationale && <p className="text-sm text-ink-muted">{proposal.rationale}</p>}
+      <ul className="flex flex-col gap-1" aria-label="Proposed tasks">
+        {proposal.tasks.map((t, i) => (
+          // The INDEX is the identity here: `dependsOn` addresses tasks by their
+          // position in this array, and no issue number exists to key on yet.
+          <li key={i} className="flex items-center gap-2 rounded-md border border-edge p-2 text-sm">
+            <span className="shrink-0 tabular-nums text-xs text-ink-muted">#{i}</span>
+            <span className="truncate text-ink">{t.title ?? '(untitled)'}</span>
+            {t.dependsOn.length > 0 && (
+              <span className="ml-auto shrink-0 text-xs text-ink-muted">
+                after {t.dependsOn.map((d) => `#${d}`).join(', ')}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+      {accept.isError && (
+        <Banner
+          tone="danger"
+          title={extractMutationErrorMessage(accept.error, 'Could not materialize this plan')}
+        />
+      )}
+      {reject.isError && (
+        <Banner
+          tone="danger"
+          title={extractMutationErrorMessage(reject.error, 'Could not reject this proposal')}
+        />
+      )}
+      {/* The inbox's decision idiom (`inbox/ProposalDetail`): ghost Reject, then
+          the primary, both `lg` — the only size carrying a 44px touch target. */}
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button type="button" variant="ghost" size="lg" onClick={() => reject.mutate(slug)} disabled={reject.isPending}>
+          Reject
+        </Button>
+        <Button type="button" size="lg" onClick={() => accept.mutate(slug)} disabled={accept.isPending}>
+          Accept
+        </Button>
+      </div>
+    </section>
+  )
+}
+
 function TrackTab({ initiative }: { initiative: Initiative }) {
   const next = initiative.nextAction
   // The server sends artifacts in ASCENDING order (intent, spec, plan), so the
   // LAST committed one is the latest — `find` would link the intent commit.
   const newestCommitted = initiative.artifacts.findLast((a) => a.commitSha)
   return (
-    // `prdash-root` scopes plotroom.css for the track; it goes when finish-line
-    // row 5 moves the track onto tokens (same note as ProductDetail).
-    <div className="prdash-root flex flex-col gap-3">
-      <InitiativeTrack stage={initiative.stage} status={initiative.status} epic={initiative.epic} />
-      {next && (
-        <p className="text-sm text-ink-muted">
-          {nextActionLabel(next.type)}{next.reason ? ` — ${next.reason}` : ''}
-        </p>
-      )}
-      <div className="flex flex-wrap items-center gap-3 text-sm">
-        {initiative.artifacts.length === 0
-          ? <span className="text-ink-muted">No artifacts committed yet.</span>
-          : initiative.artifacts.map((a) => <ArtifactLink key={a.id} repo={initiative.repo} artifact={a} />)}
-        {initiative.repo && newestCommitted && (
-          <a
-            className="text-accent hover:underline"
-            target="_blank"
-            rel="noreferrer"
-            href={commitUrl(initiative.repo, newestCommitted.commitSha!)}
-          >
-            latest commit ↗
-          </a>
+    // The gate sits OUTSIDE `prdash-root`: plotroom.css restyles bare elements
+    // (`header`, buttons) inside that scope, and this card is token-styled.
+    <div className="flex flex-col gap-3">
+      <MaterializationCard slug={initiative.slug} />
+      {/* `prdash-root` scopes plotroom.css for the track; it goes when
+          finish-line row 5 moves the track onto tokens (same note as
+          ProductDetail). */}
+      <div className="prdash-root flex flex-col gap-3">
+        <InitiativeTrack stage={initiative.stage} status={initiative.status} epic={initiative.epic} />
+        {next && (
+          <p className="text-sm text-ink-muted">
+            {nextActionLabel(next.type)}{next.reason ? ` — ${next.reason}` : ''}
+          </p>
         )}
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          {initiative.artifacts.length === 0
+            ? <span className="text-ink-muted">No artifacts committed yet.</span>
+            : initiative.artifacts.map((a) => <ArtifactLink key={a.id} repo={initiative.repo} artifact={a} />)}
+          {initiative.repo && newestCommitted && (
+            <a
+              className="text-accent hover:underline"
+              target="_blank"
+              rel="noreferrer"
+              href={commitUrl(initiative.repo, newestCommitted.commitSha!)}
+            >
+              latest commit ↗
+            </a>
+          )}
+        </div>
       </div>
     </div>
   )
