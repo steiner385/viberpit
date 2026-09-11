@@ -89,4 +89,18 @@ describe('sub-agent cards in the sub-thread', () => {
     expect(r.turns[0].blocks.find((b) => b.kind === 'question')).toMatchObject({ answered: ['A'], live: false })
     expect(r.subAgents[TID].turns[0].blocks.find((b) => b.kind === 'question')).toMatchObject({ answered: ['A'], live: false })
   })
+
+  it('a mid-turn reattach re-emit upgrades live:false to live:true in both copies', () => {
+    const q: SessionEvent = { type: 'question', questionId: 'q2', turnId: 't1', header: 'Pick', question: 'Which?', options: [], multiSelect: false, parentToolUseId: TID }
+    // No replayComplete yet — both the main-thread and mirrored copies are created live:false.
+    const s1 = reduce([{ type: 'turnStart', turnId: 't1' }, started, q])
+    expect(s1.turns[0].blocks.find((b) => b.kind === 'question')).toMatchObject({ live: false })
+    expect(s1.subAgents[TID].turns[0].blocks.find((b) => b.kind === 'question')).toMatchObject({ live: false })
+    // replayComplete settles the session, then the server re-emits the still-pending
+    // question (a mid-turn reattach's ring resupply) — this must upgrade BOTH copies.
+    const s2 = transcriptReducer(s1, { type: 'replayComplete' })
+    const s3 = transcriptReducer(s2, q)
+    expect(s3.turns[0].blocks.find((b) => b.kind === 'question')).toMatchObject({ live: true })
+    expect(s3.subAgents[TID].turns[0].blocks.find((b) => b.kind === 'question')).toMatchObject({ live: true })
+  })
 })

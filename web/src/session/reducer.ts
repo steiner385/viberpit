@@ -962,15 +962,24 @@ export function transcriptReducer(
       const existing = turn.blocks.find((b) => b.kind === 'question' && b.questionId === questionId)
       if (existing) {
         if (existing.kind === 'question' && !existing.live && existing.answered === undefined && !state.replaying) {
-          const nextTurns = replaceTurn(turns, idx, (t) => ({
-            ...t,
-            blocks: t.blocks.map((b) =>
-              b.kind === 'question' && b.questionId === questionId
-                ? { ...b, live: true, orphaned: !!orphaned }
-                : b,
-            ),
-          }))
-          return { ...state, turns: nextTurns }
+          const upgrade = (b: Block): Block =>
+            b.kind === 'question' && b.questionId === questionId ? { ...b, live: true, orphaned: !!orphaned } : b
+          const nextTurns = replaceTurn(turns, idx, (t) => ({ ...t, blocks: t.blocks.map(upgrade) }))
+          // The sub-agent's mirrored copy (see the newBlock branch below) needs the
+          // SAME live-upgrade — otherwise a mid-turn reattach re-emit reopens the
+          // main-thread card but leaves the sub-thread's copy stuck read-only forever.
+          const flipInThread = (ts: Turn[]): Turn[] => {
+            let changed = false
+            const next = ts.map((t) => {
+              const hasIt = t.blocks.some((b) => b.kind === 'question' && b.questionId === questionId && !b.live && b.answered === undefined)
+              if (!hasIt) return t
+              changed = true
+              return { ...t, blocks: t.blocks.map(upgrade) }
+            })
+            return changed ? next : ts
+          }
+          const subAgents = mapSubThreadTurns(state.subAgents, flipInThread)
+          return { ...state, turns: nextTurns, subAgents }
         }
         return { ...state, turns }
       }
