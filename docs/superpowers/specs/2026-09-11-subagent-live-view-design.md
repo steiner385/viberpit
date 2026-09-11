@@ -124,10 +124,17 @@ In the `SystemMessage` branch, before the generic `return []`:
 - `TaskUpdatedMessage` with a terminal `status` (`TERMINAL_TASK_STATUSES` from the SDK):
   resolve via the map; emit `SubAgentEnded` with `killed → "stopped"`, other terminal
   values passed through if in the wire vocabulary else `"failed"`. Unknown task → `[]`.
+  The map entry is dropped here too (see below) — the SDK's own docs allow the terminal
+  state to arrive with no notification following it.
 - `TaskNotificationMessage`: emit `SubAgentEnded` with its status, summary and usage.
   **Ended is idempotent on the client** (see §5.2), so the killed/stopped pair the spike
   showed simply arrives twice; the second carries the summary and wins. The map entry is
-  dropped on the notification (the last of the pair), not on the update.
+  dropped on ANY terminal signal — the update as well as the notification — not only on
+  the notification: a `TaskUpdatedMessage`'s terminal state can be the last one to arrive.
+- The `local_agent` task-type filter (a `TaskStartedMessage` with no matching type is
+  ignored) applies to every notice that carries its own `tool_use_id` — `TaskProgressMessage`
+  and `TaskNotificationMessage` included, not only `task_started` — so a `local_bash`/monitor
+  notice that happens to carry a `tool_use_id` is never mistaken for a Task sub-agent.
 - The map is NOT cleared by `_reset()` (the per-turn reset on `ResultMessage`); it lives for the translator's lifetime. It is keyed per driver lifetime, not per turn: background sub-agents outlive the turn that spawned them and their notices arrive while the driver is idle, through `_idle_listen`, which already feeds every message to the translator.
 
 ### 4.3 Driver (`server/sessions/claude_driver.py`)
@@ -140,9 +147,10 @@ In the `SystemMessage` branch, before the generic `return []`:
   reverse-map it to a tool-use id; pass `parent_tool_use_id` into the emitted
   `PermissionRequest`, and into `_handle_ask_user_question` → `Question`. Attribution
   is best-effort: an `agent_id` with no live map entry emits an unattributed card, as today.
-- `async def stop_subagent(self, tool_use_id: str) -> str`: look up the task id (raise
-  `KeyError` when unknown or already ended), `await self._client.stop_task(task_id)`,
-  log `driver.stop_subagent session=… tool_use_id=… task_id=…`, return the task id.
+- `async def stop_subagent(self, tool_use_id: str) -> str | None`: look up the task id;
+  returns `None` when unknown, already ended, or there is no live client — never raises.
+  Otherwise `await self._client.stop_task(task_id)`, log
+  `driver.stop_subagent session=… tool_use_id=… task_id=…`, return the task id.
   `stop_task` is added to `SDKClientProtocol` (`sdk_contract.py`) and to `FakeSDKClient`,
   whose fake records the call and, when a scripted thread is open for that task, injects
   the killed/stopped pair the real CLI emits.
@@ -152,10 +160,12 @@ In the `SystemMessage` branch, before the generic `return []`:
 - `SessionOrchestrator.stop_subagent(session_id, tool_use_id)` → driver; raises the
   existing "No session with id" for an unknown session. Added to `_PER_SESSION` in
   `fleet_orchestrator.py`, to `_SIMPLE` in `server/ipc/orchestrator_rpc.py`, and as a
-  pass-through on `server/sessions/remote.py` — the same three places `interrupt` lives.
-  The completeness tests that pin those lists gain the entry.
+  pass-through on `RemoteOrchestrator` and on `InProcessOrchestratorAdapter` in
+  `server/sessions/facade.py` (the in-process facade; `test_orchestrator_facade.py`
+  pins this) — the same FOUR places `interrupt` lives. The completeness tests that pin
+  those lists gain the entry.
 - `session_actions.stop_subagent(orch, db, *, session_id, tool_use_id, identity, via)`:
-  calls the orchestrator; a `KeyError` becomes `ActionError("SUBAGENT_NOT_RUNNING",
+  calls the orchestrator; a `None` return becomes `ActionError("SUBAGENT_NOT_RUNNING",
   "That sub-agent is not running — it may have already finished.", 404)`; audits
   `session.subagent_stop` with `{sessionId, toolUseId, taskId}`.
 - `POST /api/sessions/{session_id}/agents/{tool_use_id}/stop` in `server/api/sessions.py`,
@@ -245,15 +255,20 @@ Header, in the order Claude Code's view uses:
   `onAnswer` is wired to the runtime's question-answer callback and permission blocks get
   the same `PermissionCard` the main transcript uses, so they are answerable here.
 
-`SubAgentRows` (session card) and `SubAgentList` (strip popover) show the new
-`stopped` state and, when present, the activity line in place of the static description.
+`SubAgentList` (strip popover) and the view show the new `stopped` state and, when
+present, the activity line in place of the static description — both read LIVE task
+state. `SubAgentRows` (the persisted summary, §4.5) shows `running|done|failed` only;
+`stopped` is a LIVE-only state and never appears there, since `summarize_transcript`
+never emits it (§4.5 maps `stopped → failed` at that layer).
 
 ## 6. Error handling
 
 - Stop on an unknown or finished sub-agent → 404 `SUBAGENT_NOT_RUNNING`, shown as a toast;
   the button hides when the thread's status is terminal so this is a race, not a path.
 - Stop when the SDK client is gone (session detached) → the orchestrator's existing
-  "not live" error; the button is only rendered when the runtime is attached.
+  "not live" error; the button is only rendered while the thread has live task state
+  (`taskId` set) — a replayed/detached session's `running` status with no paired
+  result never renders it, so this case is a narrow race rather than a routine path.
 - A notice for a task the translator never saw start (daemon restart mid-run) is dropped;
   the sub-agent falls back to tool-result-derived status. No synthetic Started is minted.
 - A permission whose `agent_id` is unmapped renders unattributed in the parent, as today.

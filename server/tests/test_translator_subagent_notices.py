@@ -37,6 +37,13 @@ def test_task_started_without_tool_use_id_is_ignored():
     assert out == []
 
 
+def test_task_started_non_agent_type_is_ignored_even_with_tool_use_id():
+    """Isolates the task_type filter from the tool_use_id one: a tool_use_id alone
+    is not enough, a local_bash/monitor task is ignored even when it carries one."""
+    _, out = _run([f.task_started(TASK, TID, task_type="local_bash")])
+    assert out == []
+
+
 def test_progress_resolves_tool_use_id_from_the_map():
     _, out = _run([f.task_started(TASK, TID), f.task_progress(TASK, None, activity="Reading files",
                                                                 total_tokens=7, tool_uses=2,
@@ -57,9 +64,16 @@ def test_progress_for_unknown_task_is_dropped():
 def test_updated_killed_maps_to_stopped_and_notification_repeats_ended_with_summary():
     """The real kill sequence: task_updated(killed) then task_notification(stopped).
     Both emit Ended (the client merges idempotently); the second carries the summary."""
-    _, out = _run([f.task_started(TASK, TID), f.task_updated(TASK, "killed"),
-                   f.task_notification(TASK, TID, status="stopped", summary="sleep probe",
-                                       usage={"total_tokens": 5, "tool_uses": 1, "duration_ms": 3})])
+    tr = Translator()
+    out = tr.feed(f.task_started(TASK, TID))
+    out += tr.feed(f.task_updated(TASK, "killed"))
+    # S2: the map is evicted on the terminal task_updated, not only on the notification
+    # that follows — the SDK docs allow that notification to never arrive at all.
+    assert TASK not in tr._task_tool
+    # The later notification still emits Ended: it carries its own tool_use_id, so it
+    # does not need the (already-evicted) map entry to resolve.
+    out += tr.feed(f.task_notification(TASK, TID, status="stopped", summary="sleep probe",
+                                       usage={"total_tokens": 5, "tool_uses": 1, "duration_ms": 3}))
     ends = [e for e in out if isinstance(e, ev.SubAgentEnded)]
     assert [e.status for e in ends] == ["stopped", "stopped"]
     assert ends[0].parent_tool_use_id == TID and ends[0].summary == ""
@@ -87,9 +101,17 @@ def test_notification_with_tool_use_id_needs_no_prior_start():
     assert out[0].parent_tool_use_id == TID and out[0].status == "failed"
 
 
-def test_map_survives_turn_end_but_not_reset():
+def test_notification_non_agent_type_with_tool_use_id_is_ignored():
+    """A local_bash/monitor notification that happens to carry a tool_use_id (and has
+    no prior start) must not be mistaken for a Task sub-agent ending."""
+    _, out = _run([f.task_notification(TASK, TID, status="completed",
+                                       task_type="local_bash")])
+    assert out == []
+
+
+def test_map_survives_turn_end():
     """Background sub-agents outlive the turn that spawned them: their notices arrive
-    while the driver is idle. The map is per translator lifetime, cleared by _reset()
-    only when the whole translator resets."""
+    while the driver is idle. `_reset()` (the per-turn reset on ResultMessage) never
+    clears the map — it lives for the translator's lifetime, not the turn."""
     tr, _ = _run([f.task_started(TASK, TID), f.stream_start(uuid="t1"), f.result(uuid="t1")])
     assert tr._task_tool == {TASK: TID}

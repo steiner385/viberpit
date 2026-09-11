@@ -107,9 +107,18 @@ class Translator:
             tuid = self._task_tool.get(msg.task_id)
             if not tuid:
                 return []
+            # The SDK's TaskUpdatedMessage docstring says the terminal state can arrive
+            # with no notification following — evict on ANY terminal signal, not just
+            # the notification (spec §4.2).
+            self._task_tool.pop(msg.task_id, None)
             return [ev.SubAgentEnded(tuid, msg.task_id, _ENDED_STATUS.get(msg.status, "failed"))]
         if isinstance(msg, TaskNotificationMessage):
+            if msg.tool_use_id and (msg.data or {}).get("task_type") not in (None, "local_agent"):
+                return []
             tuid = msg.tool_use_id or self._task_tool.pop(msg.task_id, None)
+            # The pop above only fires when tool_use_id is absent (the map-resolved
+            # path) — this one always evicts, so a notification with its own
+            # tool_use_id still clears any stale map entry for this task.
             self._task_tool.pop(msg.task_id, None)
             if not tuid:
                 return []

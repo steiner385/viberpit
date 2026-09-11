@@ -1521,9 +1521,11 @@ class ClaudeAgentDriver:
         """Stop ONE running Task sub-agent via the SDK's stop_task control request.
         Returns the task id it stopped, or None when the sub-agent is not running
         (unknown id, already ended, or no live client). The map entry is NOT dropped
-        here: the CLI's own task_notification(stopped) does that, so a stop that the
-        CLI rejected leaves the sub-agent visibly running rather than silently gone."""
-        task_id = self._subagent_tasks.get(tool_use_id)
+        here: it is dropped by `_handle_msg` on ANY SubAgentEnded — in the kill
+        sequence that is the earlier task_updated(killed), not the notification — so
+        a stop that the CLI rejected leaves the sub-agent visibly running rather than
+        silently gone."""
+        task_id = self.subagent_task_id(tool_use_id)
         if task_id is None or self._client is None:
             return None
         log.info("driver.stop_subagent session=%s tool_use_id=%s task_id=%s",

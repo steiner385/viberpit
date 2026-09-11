@@ -120,7 +120,8 @@ def task_updated(task_id: str, status: TaskUpdatedStatus = "killed", sid: str = 
 def task_notification(task_id: str, tool_use_id: str | None,
                       status: TaskNotificationStatus = "completed",
                       summary: str = "sleep probe", usage: TaskUsage | None = None,
-                      sid: str = "sess-1", uuid: str = "tn1"):
+                      sid: str = "sess-1", uuid: str = "tn1",
+                      task_type: str | None = None):
     from claude_agent_sdk import TaskNotificationMessage
     data: dict[str, Any] = {"type": "system", "subtype": "task_notification", "task_id": task_id,
             "status": status, "output_file": f"/tmp/tasks/{task_id}.output",
@@ -129,6 +130,8 @@ def task_notification(task_id: str, tool_use_id: str | None,
         data["tool_use_id"] = tool_use_id
     if usage is not None:
         data["usage"] = usage
+    if task_type is not None:
+        data["task_type"] = task_type
     return TaskNotificationMessage(subtype="task_notification", data=data, task_id=task_id,
                                    status=status, output_file=data["output_file"],
                                    summary=summary, uuid=uuid, session_id=sid,
