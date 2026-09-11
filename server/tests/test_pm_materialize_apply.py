@@ -86,9 +86,15 @@ class FakeGh:
     per-alias verdicts rather than trusting a raised exception."""
 
     def __init__(self, *, fail_titles: tuple[str, ...] = (),
-                 fail_edges: tuple[str, ...] = (), repo_id: str | None = "R_repo"):
+                 fail_edges: tuple[str, ...] = (),
+                 fail_pairs: tuple[tuple[str, str], ...] = (),
+                 repo_id: str | None = "R_repo"):
         self.fail_titles = fail_titles
+        #: Aliases to fail, for a single-shot batch. ``fail_pairs`` names the edge
+        #: by its (issue, blocker) node ids instead — the alias of a given edge
+        #: shifts between runs once applied edges are suppressed.
         self.fail_edges = fail_edges
+        self.fail_pairs = set(fail_pairs)
         self.repo_id = repo_id
         self.docs: list[str] = []
         self.owners: list[str] = []
@@ -113,11 +119,14 @@ class FakeGh:
                 "id": f"I_{self._n}", "number": n,
                 "url": f"https://github.com/o/r/issues/{n}"}}}}
         if "addBlockedBy" in doc:
-            aliases = re.findall(r"(m\d+): addBlockedBy", doc)
-            errors = [{"path": [a], "message": "already blocked"}
-                      for a in aliases if a in self.fail_edges]
-            return {"data": {a: (None if a in self.fail_edges
-                                 else {"clientMutationId": None}) for a in aliases},
+            entries = re.findall(
+                r'(m\d+): addBlockedBy\(input: \{issueId: "([^"]+)", '
+                r'blockingIssueId: "([^"]+)"\}', doc)
+            bad = {a for a, issue, blocker in entries
+                   if a in self.fail_edges or (issue, blocker) in self.fail_pairs}
+            errors = [{"path": [a], "message": "already blocked"} for a in bad]
+            return {"data": {a: (None if a in bad else {"clientMutationId": None})
+                             for a, _i, _b in entries},
                     "errors": errors}
         raise AssertionError(f"unexpected document: {doc}")
 
@@ -388,3 +397,81 @@ async def test_a_mirrored_work_item_is_overlaid_not_duplicated(db_env):
     assert [w.number for w in items] == [102, 103, 104]
     assert items[0].triage_state == "classified"
     assert items[0].gh_node_id == "I_2"
+
+
+@pytest.mark.asyncio
+async def test_an_unresolved_create_row_stops_the_resume(db_env):
+    """The crash window: a `createIssue` that succeeded but whose journal row was
+    never marked leaves a pending row and no recorded id. `createIssue` is not
+    idempotent, so the resume must NOT re-issue it — it stops and asks a human."""
+    from server.pm.journal import state_of
+    _, prop_id = await _seed(db_env)
+    gh1 = FakeGh(fail_titles=("Toggle",))
+    assert (await _apply(prop_id, gh1))["ok"] is False
+    # Simulate the crash: the row for Toggle exists but carries no verdict.
+    async with db_session() as db:
+        row = next(r for r in (await db.execute(select(GhWriteJournal))).scalars().all()
+                   if (r.new_value or {}).get("value") == "Toggle")
+        row.error = None
+        await db.commit()
+
+    gh2 = FakeGh()
+    gh2._n = 2
+    out = await _apply(prop_id, gh2)
+    assert out["ok"] is False
+    assert out["step"] == "resume_ambiguous"
+    assert "Toggle" in out["error"]
+    assert gh2.creates == []  # nothing re-issued, and Docs is never reached
+    rows = await _journal()
+    assert [state_of(r) for r in rows] == ["applied", "applied", "pending"]
+    async with db_session() as db:
+        ini = (await db.execute(select(Initiative))).scalar_one()
+        assert ini.status == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_an_edge_failing_twice_is_parked_and_stops_blocking(db_env):
+    """One relation GitHub keeps refusing must not strand the epic, its tasks and
+    every other edge forever: park it on the second own-merits failure (the
+    reconciler's rule) and let the overlay land."""
+    from server.pm.journal import state_of
+    ini_id, prop_id = await _seed(db_env)
+    bad = (("I_4", "I_3"),)  # Docs blocked by Toggle
+    assert (await _apply(prop_id, FakeGh(fail_pairs=bad)))["ok"] is False
+
+    gh2 = FakeGh(fail_pairs=bad)
+    gh2._n = 4
+    out = await _apply(prop_id, gh2)
+    assert out["ok"] is True
+    assert out["parkedEdges"] == 1
+    assert gh2.edge_docs[0].count("addBlockedBy") == 1  # only the disputed edge
+
+    edges = [r for r in await _journal() if r.field == "add_blocked_by"]
+    assert sorted(state_of(r) for r in edges) == ["applied", "failed", "parked"]
+    async with db_session() as db:
+        ini = (await db.execute(select(Initiative).where(
+            Initiative.id == ini_id))).scalar_one()
+        assert ini.status == "active"
+        assert ini.epic_number == 101
+        prop = (await db.execute(select(MaterializationProposal))).scalar_one()
+        assert prop.status == "accepted"
+        assert len((await db.execute(select(WorkItem))).scalars().all()) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_parked_edge_is_not_re_sent(db_env):
+    """A parked edge is a decided outcome — a later accept must not re-issue it."""
+    _, prop_id = await _seed(db_env)
+    bad = (("I_4", "I_3"),)
+    assert (await _apply(prop_id, FakeGh(fail_pairs=bad)))["ok"] is False
+    gh2 = FakeGh(fail_pairs=bad)
+    gh2._n = 4
+    assert (await _apply(prop_id, gh2))["ok"] is True
+    # A third apply (the proposal is accepted, but the seam is re-entrant) sends
+    # nothing at all: every edge is either applied or parked.
+    gh3 = FakeGh(fail_pairs=bad)
+    gh3._n = 4
+    out = await _apply(prop_id, gh3)
+    assert out["ok"] is True
+    assert gh3.edge_docs == []
+    assert out["parkedEdges"] == 1

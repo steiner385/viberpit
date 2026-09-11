@@ -125,11 +125,13 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
         proposal.payload = {**(proposal.payload or {}), "created": deepcopy(created)}
         await db.commit()
 
-    async def create_issue(target_node_id: str, title: str, body: str, *,
+    def create_mutation(target_node_id: str, title: str) -> Mutation:
+        return Mutation("create_issue", target_node_id, None, None, title, initiated_by)
+
+    async def create_issue(mutation: Mutation, body: str, *,
                            parent: str | None) -> tuple[dict | None, str]:
         """Journal row → ``createIssue`` → mark. ``(issue, "")`` or ``(None, error)``."""
-        mutation = Mutation("create_issue", target_node_id, None, None, title,
-                            initiated_by)
+        title = str(mutation.new_value)
         row_id = (await db.run_sync(lambda s: journal.record_pending(
             s, [mutation], batch_id=batch_id, now=now, dry_run=False)))[0]
         await db.commit()  # write-ahead: the row must outlive a crash mid-call
@@ -166,12 +168,28 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
         created["repository_id"] = repository_id
         await remember()
 
+    # Keys whose outcome a previous run never learned (it crashed between the call
+    # and the commit that would have recorded the id). `createIssue` is not
+    # idempotent, so re-issuing one of these would create a SECOND issue — the one
+    # thing the journal exists to prevent. Stop and ask for a human instead.
+    unresolved = await db.run_sync(lambda s: journal.unresolved_keys(s, batch_id))
+
+    def ambiguous(mutation: Mutation, what: str) -> str:
+        if mutation.key() not in unresolved:
+            return ""
+        return (f"a previous attempt to create {what} never reported back (its "
+                f"journal row is still pending); it may exist on {repo} already — "
+                f"reconcile the journal with the repo by hand, then retry")
+
     # --- the epic ----------------------------------------------------------- #
     epic: dict = dict(created.get("epic") or {})
     if not epic.get("node_id"):
-        issue, error = await create_issue(
-            repository_id, decomposition.epic_title, decomposition.epic_body,
-            parent=None)
+        mutation = create_mutation(repository_id, decomposition.epic_title)
+        doubt = ambiguous(mutation, "the epic")
+        if doubt:
+            return await fail("resume_ambiguous", doubt)
+        issue, error = await create_issue(mutation, decomposition.epic_body,
+                                          parent=None)
         if issue is None:
             return await fail("epic", error)
         created["epic"] = epic = issue
@@ -184,7 +202,11 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
     for idx, task in enumerate(decomposition.tasks):
         if (task_nodes.get(str(idx)) or {}).get("node_id"):
             continue  # already created by an earlier run — never re-issue it
-        issue, error = await create_issue(str(epic["node_id"]), task.title, task.body,
+        mutation = create_mutation(str(epic["node_id"]), task.title)
+        doubt = ambiguous(mutation, f"task {idx} ({task.title!r})")
+        if doubt:
+            return await fail("resume_ambiguous", doubt)
+        issue, error = await create_issue(mutation, task.body,
                                           parent=str(epic["node_id"]))
         if issue is None:
             return await fail(f"task:{idx}", error)
@@ -201,7 +223,13 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
                                      initiated_by=initiated_by)
                  for blocked, blocker in edges]
     already = await db.run_sync(journal.applied_keys)
-    pending = [m for m in mutations if m.key() not in already]
+    # An edge parked by an earlier accept is a decided outcome, not a pending one:
+    # re-sending it every retry would strand the whole materialization on one bad
+    # relation forever. Same rule, same helpers as the reconciler.
+    parked = await db.run_sync(
+        lambda s: {m.key() for m in mutations if journal.is_parked(s, m.key())})
+    pending = [m for m in mutations
+               if m.key() not in already and m.key() not in parked]
     failures: list[str] = []
     for group in chunk(pending):  # build_batch caps a document at 20 aliases
         row_ids = await db.run_sync(lambda s: journal.record_pending(
@@ -220,13 +248,23 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
             await db.commit()
             break
         result = parse_batch(payload, alias_map)
-        for alias, rid in zip(alias_map, row_ids):
+        for (alias, mutation), rid in zip(alias_map.items(), row_ids, strict=True):
             error = result.errors.get(alias) or ""
-            if error:
+            if not error:
+                await db.run_sync(lambda s: journal.mark_applied(s, [rid], now))
+                continue
+            # Park on the SECOND failure on its own merits, exactly as the
+            # reconciler does: one bad relation (a cycle GitHub refuses, a deleted
+            # issue) must not hold the epic, its tasks and every other edge
+            # hostage forever. The first failure still blocks, so a transient
+            # refusal gets its retry.
+            if await db.run_sync(lambda s: journal.failure_count(s, mutation.key())) >= 1:
+                await db.run_sync(
+                    lambda s: journal.park(s, rid, f"failed twice: {error}", now))
+                parked.add(mutation.key())
+            else:
                 failures.append(f"{alias}: {error}")
                 await db.run_sync(lambda s: journal.mark_failed(s, rid, error, now))
-            else:
-                await db.run_sync(lambda s: journal.mark_applied(s, [rid], now))
         await db.commit()
     if failures:
         return await fail("edges", "; ".join(failures)[:500])
@@ -263,10 +301,12 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
     proposal.resolved_at = now
     sync_requested = await _request_sync(db, ini, repo, now)
     await db.commit()
-    log.info("materialize.apply slug=%s epic=%s tasks=%d edges=%d",
-             slug, epic.get("number"), len(decomposition.tasks), len(edges))
+    log.info("materialize.apply slug=%s epic=%s tasks=%d edges=%d parked=%d",
+             slug, epic.get("number"), len(decomposition.tasks), len(edges),
+             len(parked))
     return {"ok": True, "epic": epic, "tasks": len(decomposition.tasks),
-            "edges": len(edges), "syncRequested": sync_requested}
+            "edges": len(edges), "parkedEdges": len(parked),
+            "syncRequested": sync_requested}
 
 
 async def _request_sync(db: AsyncSession, ini: Initiative, repo: str,

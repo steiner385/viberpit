@@ -111,6 +111,22 @@ def applied_keys(db: Session) -> set[str]:
         GhWriteJournal.applied.is_(True))).all() if k}
 
 
+def unresolved_keys(db: Session, batch_id: str) -> set[str]:
+    """Mutation keys in *batch_id* whose outcome we never learned.
+
+    A row still ``pending`` (we crashed between the call and the commit that would
+    have marked it) or stamped ``INTERRUPTED`` says the mutation MAY already have
+    taken effect on GitHub. For an idempotent field write that is harmless, but a
+    caller whose mutation is NOT idempotent — ``createIssue`` makes a second issue
+    every time — must refuse to re-issue it and ask a human to reconcile instead.
+    Deliberately batch-scoped: it answers "did THIS unit of work finish", which is
+    what a resume needs, not "has this key ever been in doubt"."""
+    rows = db.scalars(select(GhWriteJournal).where(
+        GhWriteJournal.batch_id == batch_id)).all()
+    return {r.mutation_id for r in rows if r.mutation_id
+            and (state_of(r) == "pending" or r.error == INTERRUPTED)}
+
+
 def recent_own_writes(db: Session, since: datetime) -> set[tuple[str, str, str]]:
     rows = db.scalars(select(GhWriteJournal).where(
         GhWriteJournal.applied.is_(True), GhWriteJournal.updated_at >= since)).all()

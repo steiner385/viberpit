@@ -864,8 +864,9 @@ async def test_spawn_materialize_seeds_the_plan_and_chains_the_ingest(db_env):
         rec = await orch._sdlc_spawn_materialize(_MAT_INI)
     assert rec is not None
     call = orch._sdlc_synth_ctx.calls[0]
-    assert call["origin_ref"] == "dark-mode:materialize"
-    assert call["dedupe_key"] == "dark-mode:materialize"
+    # Attempt 0 — the key carries the attempt number (C4-R15).
+    assert call["origin_ref"] == "dark-mode:materialize:0"
+    assert call["dedupe_key"] == "dark-mode:materialize:0"
     assert call["cwd"] == "/tmp/clone"
     assert "docs/sdlc/dark-mode/plan.md" in call["initial_prompt"]
     assert "pull request" in call["initial_prompt"]
@@ -874,15 +875,27 @@ async def test_spawn_materialize_seeds_the_plan_and_chains_the_ingest(db_env):
     assert orch.chained == [("sess-1", "dark-mode")]
 
 
-async def _seed_materialize_session(status: str) -> None:
+async def _seed_materialize_session(status: str, *, attempt: int = 0) -> str:
     """A decompose session for dark-mode in *status*, as the spawn gate sees it."""
     from server.db.models import Session as DbSession
+    sid = f"sess-{status}-{attempt}"
     async with db_session() as db:
-        db.add(DbSession(id=f"sess-{status}", name="sdlc materialize dark-mode",
+        db.add(DbSession(id=sid, name="sdlc materialize dark-mode",
                          account_name="acct1", cwd="/tmp/clone", status=status,
                          origin="sdlc-synthesizer",
-                         origin_ref="dark-mode:materialize"))
+                         origin_ref=f"dark-mode:materialize:{attempt}"))
         await db.commit()
+    return sid
+
+
+async def _seed_materialization_proposal(ini_id: str, status: str) -> str:
+    from server.db.models import MaterializationProposal
+    async with db_session() as db:
+        prop = MaterializationProposal(initiative_id=ini_id, status=status,
+                                       session_id="sess-old", payload={"tasks": []})
+        db.add(prop)
+        await db.flush()
+        return prop.id
 
 
 @pytest.mark.asyncio
@@ -902,18 +915,48 @@ async def test_spawn_materialize_skips_a_live_decompose_session(db_env):
 
 
 @pytest.mark.asyncio
-async def test_spawn_materialize_ignores_a_finished_decompose_session(db_env):
-    """C4-R14: "already handled" is a session that still HOLDS the work — the
-    live set, not ``_existing_session``'s not-ended rule. A rejected proposal's
-    ``complete`` session must not block the next decompose forever."""
-    await _seed_initiative(db_env)
-    await _seed_materialize_session("complete")
-    orch = _spawn_materialize_orch()
+async def test_spawn_materialize_after_a_reject_starts_a_new_attempt(db_env):
+    """C4-R14 + C4-R15, the case that made the reject button a lie.
+
+    The rejected attempt's ``complete`` session is not live (so the gate lets the
+    tick through) AND its dedupe key is the previous attempt's, so
+    ``spawn_session`` cannot hand it back — without the attempt number it did,
+    and the chained ingest re-harvested its transcript into an identical pending
+    proposal."""
+    ini_id = await _seed_initiative(db_env)
+    await _seed_materialization_proposal(ini_id, "rejected")
+    old = await _seed_materialize_session("complete", attempt=0)
+    ctx = FakeAutomationContext(existing=SimpleNamespace(
+        id=old, origin_ref="dark-mode:materialize:0", status="complete"))
+    orch = _spawn_materialize_orch(ctx)
+    ini = dict(_MAT_INI, id=ini_id)
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
-        rec = await orch._sdlc_spawn_materialize(_MAT_INI)
-    assert rec is not None
-    for coro in orch.scheduled:
-        coro.close()
+        rec = await orch._sdlc_spawn_materialize(ini)
+    assert rec is not None and rec.id != old
+    assert ctx.calls[0]["dedupe_key"] == "dark-mode:materialize:1"
+    assert len(orch.scheduled) == 1
+    await orch.scheduled[0]
+    assert orch.chained == [(rec.id, "dark-mode")]  # never the rejected session
+
+
+@pytest.mark.asyncio
+async def test_spawn_materialize_never_chains_a_deduped_session(db_env):
+    """If ``spawn_session`` hands back a session this call did not create, the
+    chain must not attach: its transcript is somebody else's answer."""
+    ini_id = await _seed_initiative(db_env)
+    old = await _seed_materialize_session("complete", attempt=0)
+    ctx = FakeAutomationContext(existing=SimpleNamespace(
+        id=old, origin_ref="dark-mode:materialize:0", status="complete"))
+    orch = _spawn_materialize_orch(ctx)
+    ini = dict(_MAT_INI, id=ini_id)  # no proposals yet → still attempt 0
+    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+        assert await orch._sdlc_spawn_materialize(ini) is None
+        assert await orch._sdlc_spawn_materialize(ini) is None
+    assert orch.scheduled == []
+    warns = [e for e in ctx.events
+             if e[2].get("kind") == "materialization_spawn_deduped"]
+    # Latched: the condition holds until the attempt moves, so it is said once.
+    assert len(warns) == 1 and warns[0][0] == "warn"
 
 
 @pytest.mark.asyncio

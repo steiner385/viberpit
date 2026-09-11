@@ -545,7 +545,13 @@ async def reject_materialization(
 ) -> dict:
     """Turn the decomposition down. The initiative's status is deliberately left
     alone — it stays parked, and the rejection only frees the synthesizer to
-    decompose the plan again on a later tick (C4-R14)."""
+    decompose the plan again on a later tick (C4-R14/R15).
+
+    Rejecting after a PARTIALLY APPLIED accept does not undo anything: the epic
+    and any tasks the journal already recorded still exist on GitHub, and the
+    initiative stays ``blocked`` where the failed apply left it. Nothing here
+    closes those issues — that is a human's call, and the proposal's ``created``
+    map (returned by the GET) is the list of what exists."""
     _ini, prop = await _latest_materialization(db, slug)
     _require_pending(prop)
     prop.status = "rejected"

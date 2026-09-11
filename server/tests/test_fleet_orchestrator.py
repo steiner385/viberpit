@@ -550,6 +550,10 @@ def test_every_remote_method_is_classified():
         "maybe_start_queued",
         "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_classify_run",
         "pm_advance_map_merged", "pm_advance_live",
+        # Materialization apply (#992): initiative-scoped, not session-scoped, and
+        # its truth is the shared DB plus the daemon's gh credential ladder. A
+        # fan-out would run the SAME journaled GitHub writes once per host.
+        "sdlc_materialize_apply",
     }
     public = {n for n, _ in inspect.getmembers(RemoteOrchestrator, callable)
               if not n.startswith("_")}
@@ -726,6 +730,9 @@ def test_api_orchestrator_reads_are_all_classified():
         "process_quota_refresh",
         "pm_onboarding_counts", "pm_onboard_spawn_map", "pm_classify_run",
         "pm_advance_map_merged", "pm_advance_live",
+        # Initiative-scoped human-gate apply (#992) — see the GLOBAL-set comment
+        # in the sibling test: fanning it out would repeat every GitHub write.
+        "sdlc_materialize_apply",
         # Account-scoped and identical on every host: the primary answers, and one
         # app-server is started rather than one per host.
         "codex_models", "codex_validate_model",

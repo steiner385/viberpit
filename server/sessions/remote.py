@@ -1159,11 +1159,24 @@ class RemoteOrchestrator:
 
         The daemon owns the gh credential ladder and the write journal, so the
         edge never makes these calls itself. A dead RPC is reported as a failed
-        apply rather than raised: the proposal stays pending and resumable, which
-        is exactly what the caller does with any other failure."""
-        result = await self._client.call("sdlc_materialize_apply",
-                                         proposal_id=proposal_id,
-                                         timeout=SPAWN_RPC_TIMEOUT)
+        apply rather than raised: the route then answers 502 and still writes its
+        audit row, and the proposal stays pending and resumable — exactly what it
+        does for any other failure. ``outcome_unknown`` is surfaced verbatim
+        because it changes what a human should do next: a timeout may mean the
+        apply is still running on the daemon, so the journal (not this message) is
+        the authority before retrying."""
+        try:
+            result = await self._client.call("sdlc_materialize_apply",
+                                             proposal_id=proposal_id,
+                                             timeout=SPAWN_RPC_TIMEOUT)
+        except DaemonUnavailable as exc:
+            unknown = getattr(exc, "outcome_unknown", False)
+            log.warning("sdlc_materialize_apply RPC unavailable (outcome_unknown=%s)",
+                        unknown)
+            return {"ok": False, "step": "rpc",
+                    "error": f"session daemon unavailable: {exc}" + (
+                        " — the apply may still be running there; check the "
+                        "journal before retrying" if unknown else "")}
         if not isinstance(result, dict):
             return {"ok": False, "step": "rpc",
                     "error": "session daemon did not answer"}

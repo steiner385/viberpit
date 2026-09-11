@@ -64,8 +64,19 @@ class FakeAutomationContext:
         return self._engine, self._config
 
     async def spawn_session(self, **kw: Any) -> Any:
+        """Find-or-create, modelled: an *existing* record whose ``origin_ref``
+        matches this call's dedupe key is handed BACK instead of spawning.
+
+        That is what the real context does, and a fake that skipped it hid the
+        C4-R15 resurrection bug — a finished session returned by the dedupe, then
+        re-ingested into a byte-identical proposal."""
         self.calls.append(kw)
-        return SimpleNamespace(id=f"sess-{len(self.calls)}", model=None)
+        key = kw.get("dedupe_key") or kw.get("origin_ref")
+        if (self._existing is not None
+                and getattr(self._existing, "origin_ref", key) == key):
+            return self._existing
+        return SimpleNamespace(id=f"sess-{len(self.calls)}", model=None,
+                               origin_ref=kw.get("origin_ref"), status="idle")
 
     async def emit(self, level: str, summary: str, **kw: Any) -> None:
         self.events.append((level, summary, kw))

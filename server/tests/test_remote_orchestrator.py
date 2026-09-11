@@ -438,3 +438,33 @@ async def test_ensure_driver_preserves_effective_mode_snapshot(mode):
     remote = RemoteOrchestrator(_RecordingClient(reply))
     driver = await remote.ensure_driver("s1")
     assert driver.mode == mode
+
+
+@pytest.mark.asyncio
+async def test_sdlc_materialize_apply_forwards_and_survives_a_dead_daemon():
+    """The human-gate apply runs on the daemon (it owns the gh ladder and the
+    journal). A dead RPC must come back as a failed apply, not an exception: the
+    route turns that into a 502 and still writes its audit row, and the proposal
+    stays pending and resumable."""
+    client = _RecordingClient({"ok": True, "tasks": 3, "edges": 2})
+    remote = RemoteOrchestrator(client)
+    assert (await remote.sdlc_materialize_apply("prop-1"))["tasks"] == 3
+    assert client.last_call == ("sdlc_materialize_apply", {"proposal_id": "prop-1"})
+
+    class _Dead:
+        async def call(self, method, *, timeout=None, **kwargs):
+            raise DaemonUnavailable("connect failed", outcome_unknown=False)
+
+    out = await RemoteOrchestrator(_Dead()).sdlc_materialize_apply("prop-1")
+    assert out["ok"] is False and out["step"] == "rpc"
+    assert "daemon unavailable" in out["error"]
+    assert "may still be running" not in out["error"]
+
+    class _Timeout:
+        async def call(self, method, *, timeout=None, **kwargs):
+            raise DaemonUnavailable("read timeout", outcome_unknown=True)
+
+    unknown = await RemoteOrchestrator(_Timeout()).sdlc_materialize_apply("prop-1")
+    assert unknown["ok"] is False
+    # An unknown outcome must say so — the journal, not this message, decides.
+    assert "may still be running" in unknown["error"]

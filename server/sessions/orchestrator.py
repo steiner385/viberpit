@@ -1133,9 +1133,13 @@ class SessionOrchestrator:
             clock=time.monotonic,
         )
         self._sdlc_synth_task: asyncio.Task | None = None
-        #: Slugs already warned about an unreadable plan artifact, so the
-        #: materialize seam's warn fires once rather than on every tick.
+        #: Slugs already warned about an unreadable plan artifact, and decompose
+        #: keys already warned about a deduped spawn, so the materialize seam's
+        #: warns fire once rather than on every tick. Both are also created
+        #: lazily at their use site — the seam tests build the orchestrator with
+        #: ``__new__``, which never runs this constructor.
         self._materialize_unreadable_slugs: set[str] = set()
+        self._materialize_deduped_keys: set[str] = set()
         # Control-Band Monitor control loop (#804): the BACK of the SDLC loop.
         # Deterministic Western-Electric detection over ccswitch's own delivery
         # metrics against the committed `server/sdlc/bands.yaml` policy; a breach
@@ -7357,7 +7361,15 @@ class SessionOrchestrator:
         Returns None — spawning nothing — when a decompose session for this plan
         is already live. ``spawn_session`` would hand back that SAME session on
         the dedupe key, and the caller would then chain a SECOND ingest onto it
-        and re-emit; asking first makes a tick during the decompose a no-op."""
+        and re-emit; asking first makes a tick during the decompose a no-op.
+
+        The key is per ATTEMPT (``<slug>:materialize:<n>``, n = proposals so far,
+        any status) — C4-R15. With one key per initiative, a REJECTED proposal's
+        finished session still matched ``spawn_session``'s dedupe, which handed it
+        straight back; the chained ingest then re-harvested its stale transcript
+        into a byte-identical pending proposal, so the rejection never stuck. A
+        new attempt gets a new key, while a still-running attempt dedupes exactly
+        as before because the live check and the spawn use the SAME key."""
         from server.automations.model_pick import resolve_model
         from server.pm.materialize import build_materialize_prompt
         from server.sdlc.prompts import artifact_path
@@ -7365,9 +7377,17 @@ class SessionOrchestrator:
         slug = str(ini.get("slug") or "")
         if not repo or not slug:
             return None
-        origin_ref = f"{slug}:materialize"
-        if await self._sdlc_live_session(origin_ref):
+        async with db_session() as db:
+            attempt = await self._sdlc_materialization_attempts(
+                db, str(ini.get("id") or ""))
+        origin_ref = f"{slug}:materialize:{attempt}"
+        prior_id = await self._sdlc_session_id_for(origin_ref, live_only=True)
+        if prior_id is not None:
             return None
+        # Any session already on this key (settled but not ended — e.g. `complete`)
+        # would be handed back by spawn_session's dedupe; remember it so the chain
+        # is never attached to a transcript this call did not produce.
+        prior_id = await self._sdlc_session_id_for(origin_ref, live_only=False)
         plan = await self._sdlc_synth_ctx.launch_plan_or_refuse(origin_ref)
         if plan is None:
             return None
@@ -7391,6 +7411,9 @@ class SessionOrchestrator:
             # human would be asked to accept fiction. Skip loudly instead — but
             # warn ONCE per slug (as the loop's `materialization_unwired` warn
             # does): the condition persists, so every tick would re-emit it.
+            # Lazily created as well as set in __init__: the seam tests build the
+            # orchestrator with __new__ (no __init__ runs), so reading the
+            # attribute directly would AttributeError there.
             warned: set[str] | None = getattr(
                 self, "_materialize_unreadable_slugs", None)
             if warned is None:
@@ -7442,6 +7465,27 @@ class SessionOrchestrator:
         )
         if rec is None:
             return None
+        # Only chain onto a session THIS call created. Identity, not status, is the
+        # test: a fresh record's status is "idle", which is itself in
+        # ``_CHAINED_SESSION_SETTLED``, so a status check would refuse every real
+        # spawn. Re-ingesting a session we did not create is the C4-R15 bug —
+        # a stale transcript becomes a byte-identical "new" proposal.
+        if prior_id is not None and getattr(rec, "id", None) == prior_id:
+            # Latched per key, like the unreadable-plan warn: the condition holds
+            # until the attempt number moves, so an unlatched emit would repeat on
+            # every tick forever (e.g. a decompose whose ingest failed, leaving a
+            # finished session and no proposal to bump the attempt).
+            seen: set[str] | None = getattr(self, "_materialize_deduped_keys", None)
+            if seen is None:
+                seen = self._materialize_deduped_keys = set()
+            if origin_ref not in seen:
+                seen.add(origin_ref)
+                await self._sdlc_emit(
+                    "warn", f"{slug}: decompose spawn was deduped onto the existing "
+                            f"session {prior_id} — not re-ingesting it",
+                    kind="materialization_spawn_deduped", target=slug,
+                    session_id=prior_id)
+            return None
         # Harvest wiring: without the chain the session finishes and its JSON is
         # never read (the bug the classify chain was added for).
         self._spawn(self._sdlc_materialize_chain_ingest(rec.id, slug),
@@ -7471,26 +7515,36 @@ class SessionOrchestrator:
                                   session_id=session_id)
             return 0
 
-    async def _sdlc_live_session(self, origin_ref: str) -> bool:
-        """Is a session that still HOLDS *origin_ref*'s work running? (C4-R14)
+    async def _sdlc_session_id_for(self, origin_ref: str, *,
+                                   live_only: bool) -> str | None:
+        """Id of this automation's session on *origin_ref*, or None.
 
-        Deliberately NOT ``AutomationContext._existing_session``'s "not ended"
-        rule: a decompose session that reached ``complete`` — including one whose
+        ``live_only`` is the C4-R14 gate: a session that still HOLDS the work,
+        deliberately NOT ``AutomationContext._existing_session``'s "not ended"
+        rule. A decompose session that reached ``complete`` — including one whose
         proposal a human then rejected — no longer holds the plan, and gating on
         it would mean a rejected proposal could never be decomposed again. The
         live set is the app's ONE definition of "a session holds this"
         (``pm/desired_state.py``, the same sets that drive In progress / Needs
-        human on the board)."""
+        human on the board).
+
+        ``live_only=False`` answers the other question the spawn site has: is
+        there ANY session on this key that ``spawn_session``'s find-or-create
+        could hand back instead of spawning (C4-R15)?"""
         from sqlalchemy import select
-        from server.db.models import Session as DbSession
+        from server.db.models import INACTIVE_SESSION_STATUSES, Session as DbSession
         from server.pm.desired_state import (
             ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES)
-        live = ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES
+        stmt = select(DbSession.id).where(
+            DbSession.origin == self._sdlc_synth_ctx.automation_id,
+            DbSession.origin_ref == origin_ref)
+        if live_only:
+            stmt = stmt.where(DbSession.status.in_(
+                ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES))
+        else:  # exactly what spawn_session's dedupe would find
+            stmt = stmt.where(DbSession.status.not_in(INACTIVE_SESSION_STATUSES))
         async with db_session() as db:
-            return (await db.execute(select(DbSession.id).where(
-                DbSession.origin == self._sdlc_synth_ctx.automation_id,
-                DbSession.origin_ref == origin_ref,
-                DbSession.status.in_(live)))).scalars().first() is not None
+            return (await db.execute(stmt)).scalars().first()
 
     async def _sdlc_materialize_apply(self, proposal_id: str) -> dict:
         """Apply an accepted MaterializationProposal (spec 003 §7b, human gate).
@@ -7528,6 +7582,19 @@ class SessionOrchestrator:
                 kind="materialization_failed", target=slug,
                 detail={"step": result.get("step"), "error": result.get("error")})
         return result
+
+    @staticmethod
+    async def _sdlc_materialization_attempts(db, initiative_id: str) -> int:
+        """How many decomposition proposals this initiative has, ANY status.
+
+        The attempt number in the decompose session's dedupe key (C4-R15). Counting
+        every status is the point: a rejected attempt must still bump the key, or
+        its finished session is handed back by the dedupe and re-ingested."""
+        from sqlalchemy import func, select
+        from server.db.models import MaterializationProposal
+        return int((await db.execute(
+            select(func.count()).select_from(MaterializationProposal).where(
+                MaterializationProposal.initiative_id == initiative_id))).scalar() or 0)
 
     @staticmethod
     async def _sdlc_pending_materialization_id(db, initiative_id: str) -> str | None:
