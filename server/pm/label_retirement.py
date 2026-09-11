@@ -86,10 +86,10 @@ def _latest_labeled(timeline: Iterable[Mapping], label: str) -> tuple[str | None
         if ((ev.get("label") or {}).get("name")) != label:
             continue
         raw = ev.get("created_at")
-        # Normalise GitHub's ``Z`` before the shared row-timestamp parser, and
-        # re-emit through it so the string a ``gave_up`` row carries is written
-        # in exactly the form ``parse_iso_utc`` reads back.
-        when = parse_iso_utc(str(raw).replace("Z", "+00:00") if raw else None)
+        # Round-tripped through the shared parser (which reads GitHub's trailing
+        # ``Z``) so the string a ``gave_up`` row carries is written in exactly the
+        # offset form ``parse_iso_utc`` reads back.
+        when = parse_iso_utc(str(raw) if raw else None)
         actor = (ev.get("actor") or {}).get("login")
         at = when.isoformat() if when else None
         if best is None or (when is not None and (best[0] is None or when >= best[0])):

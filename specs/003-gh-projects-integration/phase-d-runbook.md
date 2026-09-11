@@ -92,11 +92,21 @@ not abandon the rest of the sweep; the exit status is non-zero if anything faile
 the failures — the successful actions are already invisible to the next plan.
 
 ## 4. Verification
-- `GET /api/pm/queue` — every migrated bot handoff whose cooldown has not expired appears under
-  `skipped.needs_human_cooldown`. (Migrated handoffs older than `needs_human_retry_days` will NOT:
-  they are expired on arrival, as above.)
-- Boards show Status `Needs human` on the human-migrated items, after the reconciler's next apply
-  tick (≤ 2 min). `GET /api/pm/reconcile/journal?state=applied` shows those `set_field` rows.
+- `GET /api/pm/queue` — `skipped` is a reason→count map, not a list of refs, so compare counts:
+  `skipped.needs_human_cooldown` should have risen by the number of bot-migrated rows still inside
+  the cooldown window, and none of those refs should appear in `entries`. (Bot handoffs whose label
+  event is older than `needs_human_retry_days` are expired on arrival, as above — they count
+  towards neither.)
+- **Human-migrated items are on the board already.** The script performs those Status edits itself,
+  the moment `--apply` prints `DONE`, and deliberately does NOT journal them — an unjournaled field
+  change is exactly what the reconciler reads as a human edit and will not overwrite. So they never
+  appear in `GET /api/pm/reconcile/journal`; verify them on the board (or expect a `gh_human_edit`
+  event from the next pm-sync pass that ingests them).
+- **Bot-migrated rows reach the board on the reconciler's next apply tick** (≤ 2 min): the row is
+  the decision, the reconciler derives Status `Needs human` from it, and
+  `GET /api/pm/reconcile/journal?state=applied` shows those `set_field` rows. If they do not
+  appear, check that the reconciler is in `apply` and that pm-sync has refreshed the mirror (its
+  freshness gate refuses to write against a mirror older than the decision).
 - No open issue wears a claim label in any product repo:
 
   ```bash
