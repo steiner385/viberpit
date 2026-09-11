@@ -39,12 +39,9 @@ def test_release_comment_names_the_product(monkeypatch):
 
 
 def test_label_descriptions_name_the_product(monkeypatch):
-    monkeypatch.setattr(backlog_github.gitrepos, "app_token_for_repo", lambda repo: None)
-    calls, run = _capture()
-    backlog_github.ensure_claim_labels(["o/r"], gh_run=run)
-    descs = [args[args.index("--description") + 1] for args in calls]
-    assert descs and all(d == f"{brand.SLUG} backlog-runner" for d in descs)
-
+    # The Backlog Runner self-provisioned its own claim labels until Phase D
+    # (#994) retired them; the CI/CD Doctor and the write endpoints are the
+    # remaining label creators.
     calls2, run2 = _capture()
     ci_issues._ensure_label("o/r", ci_issues.LABEL, run2)
     assert any(f"description=Filed by the {brand.NAME} CI/CD Doctor" in a

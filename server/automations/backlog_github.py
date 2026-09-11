@@ -132,8 +132,8 @@ def verify_ready_live(refs: list[str], *, gh_run: GhRun = gitrepos._run_gh) -> b
     ``blockedBy`` list longer than the page requested (the blockers past the page
     are unknown, and unknown is never clear). Spec 003 §10:
     the check FAILS CLOSED — the caller treats ``None`` exactly like ``False``.
-    Deliberately not built on :func:`_graphql_per_owner`, which skips a failed
-    owner and would turn "unknown" into "no failing issue found".
+    A failing owner must therefore abort the whole check rather than being
+    skipped, which would turn "unknown" into "no failing issue found".
     """
     by_repo: dict[str, list[str]] = {}
     for ref in refs:
