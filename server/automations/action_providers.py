@@ -138,7 +138,6 @@ def _consolidate_result(status: str) -> TriggerResult:
 _BACKLOG_STATUS_MAP = {
     "spawned": ("ok", "Spawned implementation session"),
     "exists": ("warn", "Already running"),
-    "claim_failed": ("error", "Could not claim the issue — see the feed"),
     "no_account": ("warn", "All accounts at/above usage ceiling — try later"),
     "unknown": ("warn", "No longer a current candidate"),
     # The launch was declined before a session existed — an engine the origin is

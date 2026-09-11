@@ -30,7 +30,7 @@ def dispatch_orch(tmp_path):
              "max_concurrent": 1, "max_spawns_per_day": 10,
              "max_issues_per_pr": 3, "default_model": None},
         ))
-        orch._backlog_claim = AsyncMock(return_value=True)
+        orch._backlog_announce = AsyncMock(return_value=None)
         orch._backlog_healthy_account = AsyncMock(return_value="acct-1")
         rec = MagicMock()
         rec.id = "sess-42"
@@ -64,7 +64,7 @@ async def test_dispatch_single_ref_spawns(dispatch_orch):
     assert r["status"] == "spawned"
     assert r["session_id"] == "sess-42"
     assert r["session_name"] == "backlog o/r#7"
-    dispatch_orch._backlog_claim.assert_awaited_once()
+    dispatch_orch._backlog_announce.assert_awaited_once()
     dispatch_orch._backlog_spawn.assert_awaited_once()
 
 
@@ -80,11 +80,17 @@ async def test_dispatch_multi_ref_bundles_all(dispatch_orch):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_claim_failed(dispatch_orch):
-    dispatch_orch._backlog_claim = AsyncMock(return_value=False)
-    r = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
-    assert r["status"] == "claim_failed"
-    dispatch_orch._backlog_spawn.assert_not_awaited()
+async def test_dispatch_announce_failure_does_not_block_the_spawn(dispatch_orch):
+    """Phase D: the claim is the durable row, the announce is a best-effort
+    comment — a ``gh`` failure inside it must never cost the dispatch its spawn.
+    Drives the REAL ``_backlog_announce`` so the guard under test is the one
+    production runs."""
+    del dispatch_orch._backlog_announce          # restore the real seam
+    with patch("server.automations.backlog_github.announce_claim",
+               side_effect=RuntimeError("gh down")):
+        r = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
+    assert r["status"] == "spawned"
+    dispatch_orch._backlog_spawn.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -157,7 +163,7 @@ def test_dispatch_api_happy_path():
             "max_concurrent": 1, "max_spawns_per_day": 10,
             "max_issues_per_pr": 3, "default_model": None,
         }))
-        orch._backlog_claim = AsyncMock(return_value=True)
+        orch._backlog_announce = AsyncMock(return_value=None)
         orch._backlog_healthy_account = AsyncMock(return_value="acct-1")
         orch._backlog_spawn = AsyncMock(return_value=rec)
         orch._backlog_query_queue = AsyncMock(return_value=_CANDIDATES)
