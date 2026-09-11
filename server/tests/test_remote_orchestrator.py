@@ -450,6 +450,11 @@ async def test_sdlc_materialize_apply_forwards_and_survives_a_dead_daemon():
     remote = RemoteOrchestrator(client)
     assert (await remote.sdlc_materialize_apply("prop-1"))["tasks"] == 3
     assert client.last_call == ("sdlc_materialize_apply", {"proposal_id": "prop-1"})
+    # Its OWN budget, not the spawn one: the call runs N sequential gh mutations
+    # inline (one per issue in the decomposition), and timing out mid-apply 502s a
+    # run that is still creating issues.
+    from server.sessions.remote import MATERIALIZE_RPC_TIMEOUT, SPAWN_RPC_TIMEOUT
+    assert client.last_timeout == MATERIALIZE_RPC_TIMEOUT > SPAWN_RPC_TIMEOUT
 
     class _Dead:
         async def call(self, method, *, timeout=None, **kwargs):

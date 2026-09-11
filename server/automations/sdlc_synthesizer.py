@@ -24,6 +24,15 @@ from .engine_policy import EnginePolicy
 
 log = logging.getLogger(__name__)
 
+#: How many decompositions one initiative may spend before the loop stops trying
+#: (C4-R19c). A decompose session that keeps producing unreadable output now ends
+#: as a rejected proposal rather than a blocked initiative, which is what lets the
+#: next tick try again — so something has to say when "again" stops. Three attempts
+#: is the same shape as the reconciler's park-on-the-second-failure rule: enough to
+#: ride out a bad turn, few enough that a plan the model cannot decompose costs
+#: three sessions, not a session every tick forever.
+MATERIALIZE_MAX_ATTEMPTS = 3
+
 ListInitiatives = Callable[[], Awaitable[list[dict]]]
 ListArtifacts = Callable[[str], Awaitable[list[dict]]]
 RecordArtifact = Callable[..., Awaitable[None]]
@@ -31,6 +40,7 @@ SetStatus = Callable[[str, str], Awaitable[None]]
 Spawn = Callable[[dict, str], Awaitable[Any]]
 SpawnMaterialize = Callable[[dict], Awaitable[Any]]
 HasPendingMaterialization = Callable[[str], Awaitable[bool]]
+MaterializationAttempts = Callable[[str], Awaitable[int]]
 PrLookup = Callable[[dict], Awaitable["dict | None"]]
 UpdateArtifact = Callable[..., Awaitable[None]]
 ReadConfig = Callable[[], Awaitable["tuple[str, dict]"]]
@@ -111,6 +121,7 @@ class SdlcSynthesizerLoop:
         clock: Callable[[], float],
         spawn_materialize: SpawnMaterialize | None = None,
         has_pending_materialization: HasPendingMaterialization | None = None,
+        materialization_attempts: MaterializationAttempts | None = None,
     ) -> None:
         self._ctx = ctx
         self._list_initiatives = list_initiatives
@@ -120,9 +131,15 @@ class SdlcSynthesizerLoop:
         self._spawn = spawn
         self._spawn_materialize = spawn_materialize
         self._has_pending_materialization = has_pending_materialization
+        self._materialization_attempts = materialization_attempts
         #: slugs already warned about a missing materialize seam — once per
         #: initiative, or an unwired deployment would warn on every tick forever.
         self._materialize_unwired: set[str] = set()
+        #: slugs already warned about spending their decomposition attempts. The
+        #: `blocked` write below normally stops the second tick from ever asking,
+        #: but a human who un-blocks without fixing anything must not get the warn
+        #: on every tick from then on.
+        self._materialize_exhausted: set[str] = set()
         self._pr_lookup = pr_lookup
         self._update_artifact = update_artifact
         self._read_config = read_config
@@ -186,6 +203,26 @@ class SdlcSynthesizerLoop:
         if (self._has_pending_materialization is not None
                 and await self._has_pending_materialization(ini["id"])):
             return
+        # Attempts are counted only once nothing is pending: a proposal waiting on
+        # the human gate is not a spent attempt, it is the outcome this loop wanted.
+        if self._materialization_attempts is not None:
+            attempts = await self._materialization_attempts(ini["id"])
+            if attempts >= MATERIALIZE_MAX_ATTEMPTS:
+                if slug not in self._materialize_exhausted:
+                    self._materialize_exhausted.add(slug)
+                    await self._emit(
+                        "warn", f"{slug}: {attempts} decomposition attempts have "
+                                "produced nothing to review — decompose the plan by "
+                                "hand, or clear the rejected proposals to retry",
+                        kind="materialization_attempts_exhausted", target=slug,
+                        detail={"attempts": attempts,
+                                "max": MATERIALIZE_MAX_ATTEMPTS})
+                # Blocked is the right end state HERE (unlike a single parse
+                # failure): the loop has exhausted what it can do by itself, so it
+                # hands the initiative to a human instead of spending a session a
+                # tick on a plan it cannot decompose.
+                await self._set_status(ini["id"], "blocked")
+                return
         rec = await self._spawn_materialize(ini)
         if rec is None:  # no headroom / refused launch — retry next tick
             return

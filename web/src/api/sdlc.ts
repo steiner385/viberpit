@@ -142,6 +142,33 @@ export interface MaterializationTask {
  *  `TRIAGE_PROPOSAL_STATUSES`). */
 export type MaterializationStatus = 'pending' | 'accepted' | 'rejected'
 
+/** One issue a partial apply already created, as the server records it on the
+ *  proposal (`materialize_apply.create_issue`) — snake_case because it is the
+ *  resume state, not a view model. */
+export interface MaterializationCreatedIssue {
+  node_id?: string
+  number?: number | null
+  url?: string | null
+}
+
+/** The apply's resume key: what already exists on GitHub for this proposal. The
+ *  task map is keyed by the task's INDEX in `tasks` (as a string), and
+ *  `repository_id` is a remembered constant, not an issue — counting it as one
+ *  would tell a human an issue exists that does not. */
+export interface MaterializationCreated {
+  repository_id?: string
+  epic?: MaterializationCreatedIssue | null
+  tasks?: Record<string, MaterializationCreatedIssue> | null
+}
+
+/** How many issues a partial apply left behind — what a re-tap will NOT create
+ *  again. Zero when nothing was created (or the apply never got past the
+ *  repository lookup). */
+export function createdIssueCount(created: MaterializationCreated | null | undefined): number {
+  if (!created) return 0
+  return (created.epic?.node_id ? 1 : 0) + Object.keys(created.tasks ?? {}).length
+}
+
 export interface MaterializationProposal {
   id: string
   initiativeId: string
@@ -153,7 +180,7 @@ export interface MaterializationProposal {
   tasks: MaterializationTask[]
   /** What a partially applied accept already created on GitHub, so a re-tap
    *  reads as a resume rather than a second attempt. */
-  created: Record<string, unknown> | null
+  created: MaterializationCreated | null
   createdAt: string | null
   resolvedAt: string | null
 }
@@ -168,6 +195,11 @@ export interface MaterializationApplied {
   /** Chain edges the apply could not create — a chain with a dropped edge looks
    *  identical on the board otherwise. */
   parkedEdges: number
+  /** The stage the apply left the initiative in — `build`, because Materialize is
+   *  the plan stage's terminal action and the confirmed accept IS its human gate
+   *  (spec §7b). The detail query refetches after the mutation, so nothing here
+   *  reads it; it is part of the response the audit trail is written from. */
+  stage?: string
   syncRequested?: boolean
 }
 

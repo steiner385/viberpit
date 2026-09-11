@@ -31,6 +31,7 @@ class Recorder:
         self.spawn_result = SimpleNamespace(id="sess-2")
         self.materialize_result = SimpleNamespace(id="sess-9")
         self.pending_materialization: set[str] = set()
+        self.attempts: dict[str, int] = {}
 
     async def list_initiatives(self):
         return self.initiatives
@@ -55,6 +56,9 @@ class Recorder:
     async def has_pending_materialization(self, initiative_id):
         return initiative_id in self.pending_materialization
 
+    async def materialization_attempts(self, initiative_id):
+        return self.attempts.get(initiative_id, 0)
+
     async def pr_lookup(self, art):
         return self.pr_infos.get(art["id"])
 
@@ -73,6 +77,7 @@ def _loop(rec, ctx=None, *, materialize=True):
         spawn=rec.spawn,
         spawn_materialize=rec.spawn_materialize if materialize else None,
         has_pending_materialization=rec.has_pending_materialization,
+        materialization_attempts=rec.materialization_attempts,
         pr_lookup=rec.pr_lookup, update_artifact=rec.update_artifact,
         read_config=rec.read_config, clock=lambda: 0.0)
 
@@ -240,6 +245,56 @@ async def test_refused_materialize_spawn_leaves_the_status_alone():
     await _loop(rec).tick()
     assert rec.materialized == ["dark-mode"]
     assert rec.statuses == []
+
+
+@pytest.mark.asyncio
+async def test_spent_decomposition_attempts_block_instead_of_respawning():
+    """C4-R19c: a parse failure now leaves a REJECTED proposal rather than a
+    blocked initiative, which is what lets the next tick try again — so the cap is
+    what stops "again" from being every tick forever."""
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+
+    rec = _merged_plan(Recorder([_ini("plan", status="awaiting_human")]))
+    rec.attempts["i1"] = MATERIALIZE_MAX_ATTEMPTS
+    ctx = Ctx()
+    loop = _loop(rec, ctx)
+    await loop.tick()
+    await loop.tick()
+    assert rec.materialized == []
+    assert rec.statuses == [("i1", "blocked"), ("i1", "blocked")]
+    # Warned ONCE: the condition persists, so an unlatched emit would repeat on
+    # every tick a human un-blocks into.
+    warns = [e for e in ctx.events
+             if e[2].get("kind") == "materialization_attempts_exhausted"]
+    assert len(warns) == 1
+    assert warns[0][0] == "warn"
+    assert warns[0][2]["detail"] == {"attempts": MATERIALIZE_MAX_ATTEMPTS,
+                                     "max": MATERIALIZE_MAX_ATTEMPTS}
+
+
+@pytest.mark.asyncio
+async def test_attempts_under_the_cap_still_decompose():
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+
+    rec = _merged_plan(Recorder([_ini("plan", status="awaiting_human")]))
+    rec.attempts["i1"] = MATERIALIZE_MAX_ATTEMPTS - 1
+    await _loop(rec).tick()
+    assert rec.materialized == ["dark-mode"]
+
+
+@pytest.mark.asyncio
+async def test_a_pending_proposal_is_not_a_spent_attempt():
+    """The count only decides anything once nothing is pending: a proposal waiting
+    on the human gate is the outcome the loop wanted, not a failed attempt."""
+    rec = _merged_plan(Recorder([_ini("plan", status="awaiting_human")]))
+    rec.attempts["i1"] = 9
+    rec.pending_materialization.add("i1")
+    ctx = Ctx()
+    await _loop(rec, ctx).tick()
+    assert rec.materialized == []
+    assert rec.statuses == []  # never blocked
+    assert [e for e in ctx.events
+            if e[2].get("kind") == "materialization_attempts_exhausted"] == []
 
 
 def test_to_views_carries_the_epic_pointer():

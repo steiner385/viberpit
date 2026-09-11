@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db.models import Initiative, MaterializationProposal, WorkItem
+from server.sdlc.engine import advance_stage
 
 from . import journal
 from .gh_mutations import _q, build_batch, chunk, parse_batch
@@ -291,8 +292,15 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
 
     # --- ccswitch-side overlay ---------------------------------------------- #
     ini.epic_repo, ini.epic_number = repo, epic.get("number")
-    # Back to active: with an epic present the plan stage's approval gate applies
-    # again (server/sdlc/engine.next_action), which is what the human advances.
+    # Materialize is the plan stage's TERMINAL action (spec §7b), so the confirmed
+    # accept IS the human gate for it: the stage moves here rather than parking the
+    # initiative at ``plan`` behind a second Advance tap that asks the same question
+    # a human just answered — with the epic and its issues already on GitHub, there
+    # is nothing left for the plan stage to decide. The successor comes from the
+    # engine's own sequence (one definition of "what follows plan"), and a proposal
+    # applied from any other stage leaves the stage alone rather than skipping one.
+    if ini.stage == "plan":
+        ini.stage = advance_stage(ini.stage)
     ini.status = "active"
     # Written as an upsert on (repo, number, kind), the table's own identity: a
     # resumed run — or a pm-sync pass that mirrored the new issues between the
@@ -324,9 +332,11 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
     log.info("materialize.apply slug=%s epic=%s tasks=%d edges=%d parked=%d",
              slug, epic.get("number"), len(decomposition.tasks), len(edges),
              len(parked))
+    # ``stage`` travels in the result so the route can audit the advance it just
+    # caused without re-reading a row another session committed.
     return {"ok": True, "epic": epic, "tasks": len(decomposition.tasks),
             "edges": len(edges), "parkedEdges": len(parked),
-            "syncRequested": sync_requested}
+            "stage": ini.stage, "syncRequested": sync_requested}
 
 
 async def _request_sync(db: AsyncSession, ini: Initiative, repo: str,

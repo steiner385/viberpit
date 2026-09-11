@@ -51,6 +51,15 @@ USAGE_RPC_TIMEOUT = 3.0
 # case (the origin-only fetch and the assess_model timeout already cap it).
 SPAWN_RPC_TIMEOUT = 90.0
 
+# Materialization apply (#992): its own budget because it is not spawn-shaped at all.
+# The call runs N SEQUENTIAL gh mutations inline in the daemon — one repository read,
+# one createIssue per issue (an epic plus every task in the plan), then the batched
+# blocked-by chain — so its worst case grows with the decomposition, not with a fixed
+# pipeline. Timing out mid-apply is the expensive outcome: the edge would 502 a run
+# that is still creating issues, and the journal, not this deadline, is then the only
+# way to tell what exists.
+MATERIALIZE_RPC_TIMEOUT = 600.0
+
 
 class _WireEvent:
     """Wraps an already-serialized event dict so ws.py's e.to_wire() works.
@@ -1168,7 +1177,7 @@ class RemoteOrchestrator:
         try:
             result = await self._client.call("sdlc_materialize_apply",
                                              proposal_id=proposal_id,
-                                             timeout=SPAWN_RPC_TIMEOUT)
+                                             timeout=MATERIALIZE_RPC_TIMEOUT)
         except DaemonUnavailable as exc:
             unknown = getattr(exc, "outcome_unknown", False)
             log.warning("sdlc_materialize_apply RPC unavailable (outcome_unknown=%s)",

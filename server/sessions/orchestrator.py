@@ -404,6 +404,14 @@ _MIRROR_RECONCILE_INTERVAL_S: float = 10.0
 # drift the moment the wording is reworded.
 _SDLC_UNREADABLE_PREFIX = "(could not inline"
 
+# Settle budget for a decompose session's chained ingest (C4-R20): 240 polls at the
+# shared 30 s interval = 2 h. The classify chain's 60 (30 min) is sized for a read-only
+# scan; a decomposition reads a whole plan and writes a task breakdown, and a session
+# that queued behind an account's headroom can idle for an hour before it even starts.
+# Giving up early is the expensive outcome — the session finishes, its JSON is never
+# read, and the initiative sits parked with nothing to review.
+_MATERIALIZE_SETTLE_ATTEMPTS = 240
+
 # Periodic re-check of the archived-session cap, so a limit LOWERED via settings takes
 # effect even with no new archive event (the on-archive path covers the fresh-archive case).
 _ARCHIVE_LIMIT_SWEEP_INTERVAL: float = 300.0
@@ -1127,6 +1135,7 @@ class SessionOrchestrator:
             spawn=self._sdlc_spawn_synth,
             spawn_materialize=self._sdlc_spawn_materialize,
             has_pending_materialization=self._sdlc_has_pending_materialization,
+            materialization_attempts=self._sdlc_materialization_attempts_for,
             pr_lookup=self._sdlc_pr_lookup,
             update_artifact=self._sdlc_update_artifact,
             read_config=self._sdlc_synth_read_config,
@@ -1140,6 +1149,10 @@ class SessionOrchestrator:
         #: ``__new__``, which never runs this constructor.
         self._materialize_unreadable_slugs: set[str] = set()
         self._materialize_deduped_keys: set[str] = set()
+        #: One lock per proposal id being applied, so two accepts of the same
+        #: proposal cannot both read "nothing created yet" and create two epics
+        #: (C4-R17). Lazily created at its use site for the same reason.
+        self._materialize_apply_locks: dict[str, asyncio.Lock] = {}
         # Control-Band Monitor control loop (#804): the BACK of the SDLC loop.
         # Deterministic Western-Electric detection over ccswitch's own delivery
         # metrics against the committed `server/sdlc/bands.yaml` policy; a breach
@@ -7494,9 +7507,10 @@ class SessionOrchestrator:
                     name=f"sdlc-materialize-ingest-{slug}")
         return rec
 
-    async def _sdlc_materialize_chain_ingest(self, session_id: str, slug: str, *,
-                                             attempts: int = 60,
-                                             delay: float = 30.0) -> int:
+    async def _sdlc_materialize_chain_ingest(
+            self, session_id: str, slug: str, *,
+            attempts: int = _MATERIALIZE_SETTLE_ATTEMPTS,
+            delay: float = 30.0) -> int:
         """Wait (bounded) for a decompose session to settle, then ingest its JSON.
 
         Fire-and-forget: nothing awaits this task, so every failure is absorbed
@@ -7505,6 +7519,16 @@ class SessionOrchestrator:
         try:
             if not await self._await_session_settled(session_id, attempts=attempts,
                                                      interval_s=delay):
+                # Say so and stop. NOT `blocked`: the session may still be alive
+                # and about to answer, and blocking would take the initiative out
+                # of the engine's hands over a budget this chain owns, not a
+                # decision anyone made (C4-R20).
+                await self._sdlc_emit(
+                    "warn", f"the decompose session for {slug} has not finished "
+                            "within the ingest budget — its decomposition will not "
+                            "be read; re-run it once it settles",
+                    kind="materialization_ingest_timeout", target=slug,
+                    session_id=session_id, detail={"attempts": attempts})
                 return 0
             return await self._sdlc_materialize_ingest(session_id, slug)
         except asyncio.CancelledError:
@@ -7546,7 +7570,40 @@ class SessionOrchestrator:
         owns the GitHub transport (``_pm_reconcile_mutate``, the App/PAT ladder
         every other 003 write uses) and the activity feed. Returns the apply
         result dict unchanged — a failure is data, not an exception, because the
-        proposal stays pending and resumable."""
+        proposal stays pending and resumable.
+
+        SERIALISED PER PROPOSAL (C4-R17). The apply's resume key is the ``created``
+        map it commits between calls, so two concurrent runs both read "nothing
+        created yet" and both create the epic: a duplicate the journal cannot undo.
+        A second caller is REFUSED rather than queued — waiting would apply the
+        same proposal twice in a row, and the honest answer to "is this running?"
+        is more use to the human than a reply ten GitHub calls later.
+
+        The lock dict is created lazily as well as in ``__init__``: the seam tests
+        build the orchestrator with ``__new__`` (no constructor runs), exactly as
+        ``_materialize_unreadable_slugs`` is handled."""
+        locks: dict[str, asyncio.Lock] | None = getattr(
+            self, "_materialize_apply_locks", None)
+        if locks is None:
+            locks = self._materialize_apply_locks = {}
+        lock = locks.setdefault(proposal_id, asyncio.Lock())
+        if lock.locked():
+            # No DB work at all on this path: the answer does not depend on any
+            # row, and a read here would only widen the window it is closing.
+            return {"ok": False, "step": "in_flight",
+                    "error": "an apply for this proposal is already running"}
+        try:
+            async with lock:
+                return await self._sdlc_materialize_apply_locked(proposal_id)
+        finally:
+            # Nobody ever waits on this lock (a second caller is refused above),
+            # so it is free the moment the run ends — drop it rather than keep one
+            # per proposal ever applied for the daemon's whole life.
+            if not lock.locked():
+                locks.pop(proposal_id, None)
+
+    async def _sdlc_materialize_apply_locked(self, proposal_id: str) -> dict:
+        """The apply itself; the caller holds this proposal's lock (C4-R17)."""
         from sqlalchemy import select
         from server.db.models import Initiative, MaterializationProposal
         from server.pm.materialize_apply import apply
@@ -7616,13 +7673,30 @@ class SessionOrchestrator:
             return (await self._sdlc_pending_materialization_id(
                 db, initiative_id)) is not None
 
+    async def _sdlc_materialization_attempts_for(self, initiative_id: str) -> int:
+        """Loop seam: how many decompositions this initiative has already spent.
+
+        The loop's neighbour of ``_sdlc_has_pending_materialization`` and the same
+        count the spawn key uses (``_sdlc_materialization_attempts``, one query for
+        both) — a decompose that keeps failing to parse must stop after
+        ``MATERIALIZE_MAX_ATTEMPTS`` rather than burning a session every tick."""
+        async with db_session() as db:
+            return await self._sdlc_materialization_attempts(db, initiative_id)
+
     async def _sdlc_materialize_ingest(self, session_id: str, slug: str) -> int:
         """Turn a decompose session's output into ONE pending MaterializationProposal.
 
         Idempotent on the pending proposal, not on the session: a re-ingest (or a
         second decompose session for the same plan) must never leave a human two
-        proposals to choose between. A parse failure blocks the initiative —
-        silence would park it at ``awaiting_human`` with nothing to review."""
+        proposals to choose between.
+
+        A parse failure records a REJECTED proposal instead of blocking the
+        initiative (C4-R19b). Blocking was a dead end: ``next_action`` answers
+        ``NeedsHuman`` for a blocked initiative, so one unreadable final message
+        took the plan out of the loop until a human noticed and un-blocked it by
+        hand. The rejected row is both the record of the failed attempt and what
+        moves the attempt key, so the next tick decomposes again — bounded by
+        ``MATERIALIZE_MAX_ATTEMPTS`` in the loop."""
         from sqlalchemy import select
         from server.db.models import Initiative, MaterializationProposal
         from server.pm.materialize import (
@@ -7637,7 +7711,15 @@ class SessionOrchestrator:
         try:
             decomposition = parse_materialization_output(text)
         except MaterializationParseError as e:
-            await self._sdlc_set_status(initiative_id, "blocked")
+            async with db_session() as db:
+                db.add(MaterializationProposal(
+                    initiative_id=initiative_id,
+                    status="rejected",
+                    session_id=session_id,
+                    payload={"source_session": session_id, "parse_error": str(e)},
+                    rationale=f"parse failed: {e}"[:500],
+                    resolved_at=self._pm_sync_now_utc()))
+                await db.commit()
             await self._sdlc_emit("warn", f"could not read a decomposition for {slug}",
                                   kind="materialization_parse_failed", target=slug,
                                   session_id=session_id, detail={"error": str(e)})

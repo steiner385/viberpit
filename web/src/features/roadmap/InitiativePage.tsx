@@ -12,7 +12,7 @@ import {
 } from '@/api/hooks'
 import { ApiRequestError } from '@/api/client'
 import { BRAND_NAME } from '@/brand'
-import type { Initiative, InitiativeArtifact } from '@/api/sdlc'
+import { createdIssueCount, type Initiative, type InitiativeArtifact } from '@/api/sdlc'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { PageHeader } from '@/ui/PageHeader'
 import { PageContent } from '@/ui/PageContent'
@@ -88,15 +88,17 @@ function ArtifactLink({ repo, artifact }: { repo: string | null; artifact: Initi
  * epic.
  *
  * Accept is a TWO-STEP, the same `Dialog` confirm the page's Advance gate uses
- * and for a stronger reason: Advance moves a row between stages, this creates
- * issues on GitHub that nothing here can take back. Reject stays one tap —
- * it decides nothing that cannot be decomposed again on a later tick.
+ * and for a stronger reason: it creates issues on GitHub that nothing here can
+ * take back, AND it is the plan stage's gate — Materialize is that stage's
+ * terminal action, so the server advances the initiative in the same apply and
+ * no Advance tap follows. The confirm says so. Reject stays one tap — it decides
+ * nothing that cannot be decomposed again on a later tick.
  *
  * Tasks are numbered 1-based FOR THE READER while `dependsOn` stays 0-based on
  * the wire: "Task 1" is what a human counts, and the "after task k" references
  * are mapped through the same +1 so the two always agree on screen.
  */
-function MaterializationCard({ slug }: { slug: string }) {
+function MaterializationCard({ slug, stage }: { slug: string; stage: string | null }) {
   const { data: proposal } = useMaterialization(slug)
   const accept = useAcceptMaterialization()
   const reject = useRejectMaterialization()
@@ -106,6 +108,14 @@ function MaterializationCard({ slug }: { slug: string }) {
   // is graceful, but a second irreversible write must not be reachable at all.
   const busy = accept.isPending || reject.isPending
   const tasks = proposal.tasks.length
+  // A pending proposal with issues behind it is a FAILED apply waiting to resume,
+  // and the difference matters before an irreversible tap: Accept continues from
+  // those issues, it does not create a second set of them.
+  const alreadyCreated = createdIssueCount(proposal.created)
+  // The stage the accept itself moves the initiative to: Materialize is the plan
+  // stage's terminal action, so the server advances it in the same overlay (spec
+  // §7b) rather than waiting for a second Advance tap.
+  const advancesTo = nextStage(stage) ?? 'build'
   return (
     <>
       <section
@@ -119,6 +129,11 @@ function MaterializationCard({ slug }: { slug: string }) {
         {/* The session's stated reason — the one piece of evidence a human has
             before an accept that writes to GitHub, so it reads before the list. */}
         {proposal.rationale && <p className="text-sm text-ink-muted">{proposal.rationale}</p>}
+        {alreadyCreated > 0 && (
+          <p className="text-sm text-ink-muted">
+            {`${alreadyCreated} issue${alreadyCreated === 1 ? '' : 's'} already created — Accept resumes.`}
+          </p>
+        )}
         <ul className="flex flex-col gap-1" aria-label="Proposed tasks">
           {proposal.tasks.map((t, i) => (
             // The INDEX is the identity here: `dependsOn` addresses tasks by
@@ -168,7 +183,10 @@ function MaterializationCard({ slug }: { slug: string }) {
         size="sm"
         description={
           `This creates the ${EPIC.singular.toLowerCase()} and ${tasks} sub-issue${tasks === 1 ? '' : 's'} `
-          + `on GitHub. It cannot be undone from ${BRAND_NAME}.`
+          + `on GitHub. It cannot be undone from ${BRAND_NAME}. `
+          // Said out loud because this confirm is also the stage gate: there is no
+          // second Advance tap after it.
+          + `It also moves this ${INITIATIVE.singular.toLowerCase()} to ${stageLabel(advancesTo)}.`
         }
       >
         <div className="flex justify-end gap-2">
@@ -198,7 +216,7 @@ function TrackTab({ initiative }: { initiative: Initiative }) {
     // The gate sits OUTSIDE `prdash-root`: plotroom.css restyles bare elements
     // (`header`, buttons) inside that scope, and this card is token-styled.
     <div className="flex flex-col gap-3">
-      <MaterializationCard slug={initiative.slug} />
+      <MaterializationCard slug={initiative.slug} stage={initiative.stage} />
       {/* `prdash-root` scopes plotroom.css for the track; it goes when
           finish-line row 5 moves the track onto tokens (same note as
           ProductDetail). */}

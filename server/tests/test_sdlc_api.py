@@ -615,11 +615,15 @@ _MAT_PAYLOAD = {
 
 
 @contextmanager
-def _materialization_client(*, proposals=(("pending", None),)):
+def _materialization_client(*, proposals=(("pending", None),),
+                            status: str = "awaiting_human",
+                            applied: dict | None = None):
     """Client + orchestrator for an initiative carrying *proposals*.
 
     Each entry is ``(status, created_at)``; the orchestrator is yielded so a test
     can stub the apply seam — the router must never build a GitHub call itself.
+    ``applied`` is the ``created`` map a partial apply would have left on the
+    NEWEST proposal, and *status* the status that apply would have left behind.
     """
     from datetime import datetime, timedelta, timezone
     from server.db import db_session, init_db
@@ -629,14 +633,17 @@ def _materialization_client(*, proposals=(("pending", None),)):
         await init_db(db_url)
         async with db_session() as db:
             ini = Initiative(slug="dark-mode", repo="o/r", title="Dark mode",
-                             stage="plan", status="awaiting_human")
+                             stage="plan", status=status)
             db.add(ini)
             await db.flush()
             base = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
             for n, (st, created) in enumerate(proposals):
+                payload: dict = dict(_MAT_PAYLOAD)
+                if applied is not None and n == len(proposals) - 1:
+                    payload["created"] = applied
                 db.add(MaterializationProposal(
                     initiative_id=ini.id, status=st, session_id=f"sess-{n}",
-                    rationale=f"because {n}", payload=dict(_MAT_PAYLOAD),
+                    rationale=f"because {n}", payload=payload,
                     created_at=created or (base + timedelta(minutes=n))))
             await db.commit()
 
@@ -661,7 +668,7 @@ def _accept_seam(orch, *, ok: bool = True):
     """Stand-in for ``_sdlc_materialize_apply`` that records its calls and moves
     the proposal the way the real seam's apply does."""
     from server.db import db_session
-    from server.db.models import MaterializationProposal
+    from server.db.models import Initiative, MaterializationProposal
     from sqlalchemy import select
 
     calls: list[str] = []
@@ -674,8 +681,14 @@ def _accept_seam(orch, *, ok: bool = True):
             prop = (await db.execute(select(MaterializationProposal).where(
                 MaterializationProposal.id == proposal_id))).scalar_one()
             prop.status = "accepted"
+            # The real apply advances the stage in the same overlay (spec §7b) and
+            # reports it back for the route's audit row.
+            ini = (await db.execute(select(Initiative).where(
+                Initiative.id == prop.initiative_id))).scalar_one()
+            ini.stage, ini.status = "build", "active"
             await db.commit()
-        return {"ok": True, "epic": {"number": 101}, "tasks": 2, "edges": 1}
+        return {"ok": True, "epic": {"number": 101}, "tasks": 2, "edges": 1,
+                "stage": "build"}
 
     orch._sdlc_materialize_apply = fake
     return calls
@@ -755,6 +768,97 @@ def test_materialization_reject_resolves_it_and_leaves_the_initiative_parked():
         again = c.post("/api/sdlc/initiatives/dark-mode/materialization/reject",
                        headers=IDENTITY_HEADERS)
         assert again.status_code == 409, again.text
+
+
+def _audits(c, type_: str) -> list[dict]:
+    """Every audit row of *type_*, oldest first. No GET /api/audit route exists, so
+    this reads the DB through the client's own loop — the idiom in
+    ``test_pm_api.test_triage_undo_writes_audit_row``."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import AuditEvent
+
+    async def _read():
+        async with db_session() as db:
+            return [dict(r.detail or {}) for r in (await db.execute(
+                select(AuditEvent).where(AuditEvent.type == type_)
+                .order_by(AuditEvent.at))).scalars().all()]
+
+    return c.portal.call(_read)
+
+
+def test_materialization_accept_advances_the_initiative_to_build():
+    """Materialize is the plan stage's TERMINAL action (spec §7b): the confirmed
+    accept IS that gate, so the stage moves and the trail carries the SAME
+    ``sdlc.initiative.advance`` row the Advance route writes."""
+    with _materialization_client() as (c, orch):
+        _accept_seam(orch)
+        r = c.post("/api/sdlc/initiatives/dark-mode/materialization/accept",
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["stage"] == "build"
+
+        detail = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS)
+        assert detail.json()["stage"] == "build"
+        assert detail.json()["status"] == "active"
+
+        assert _audits(c, "sdlc.initiative.advance") == [
+            {"slug": "dark-mode", "stage": "build", "reason": "materialize"}]
+
+
+def test_a_failed_accept_writes_no_advance():
+    with _materialization_client() as (c, orch):
+        _accept_seam(orch, ok=False)
+        assert c.post("/api/sdlc/initiatives/dark-mode/materialization/accept",
+                      headers=IDENTITY_HEADERS).status_code == 502
+        assert _audits(c, "sdlc.initiative.advance") == []
+        # …but the attempt itself is still on the trail.
+        assert [a["ok"] for a in _audits(c, "sdlc.materialization.accept")] == [False]
+
+
+def test_materialization_accept_409s_while_an_apply_is_in_flight():
+    """C4-R17: the seam serialises per proposal, and an apply already running is a
+    CONFLICT — the same write is in flight, so the answer is 'wait', not 'retry'."""
+    with _materialization_client() as (c, orch):
+        async def busy(proposal_id: str) -> dict:
+            return {"ok": False, "step": "in_flight",
+                    "error": "an apply for this proposal is already running"}
+
+        orch._sdlc_materialize_apply = busy
+        r = c.post("/api/sdlc/initiatives/dark-mode/materialization/accept",
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"]["error"] == "apply_in_flight"
+        assert "already running" in r.json()["detail"]["message"]
+
+        # Still pending and still resumable — nothing about the proposal changed.
+        after = c.get("/api/sdlc/initiatives/dark-mode/materialization",
+                      headers=IDENTITY_HEADERS)
+        assert after.json()["status"] == "pending"
+
+
+def test_rejecting_a_decomposition_that_created_nothing_unblocks_the_retry():
+    """C4-R19a: `blocked` is a dead end — ``next_action`` answers NeedsHuman for
+    it, so the rejection meant to invite another decomposition would prevent one."""
+    with _materialization_client(status="blocked") as (c, _orch):
+        r = c.post("/api/sdlc/initiatives/dark-mode/materialization/reject",
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        detail = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS)
+        assert detail.json()["status"] == "awaiting_human"
+
+
+def test_rejecting_after_a_partial_apply_keeps_the_initiative_blocked():
+    """Issues already exist on GitHub: re-decomposing would create a SECOND epic,
+    so this one stays where the failed apply left it until a human sorts it out."""
+    applied = {"repository_id": "R_1", "epic": {"node_id": "I_1", "number": 101},
+               "tasks": {"0": {"node_id": "I_2", "number": 102}}}
+    with _materialization_client(status="blocked", applied=applied) as (c, _orch):
+        assert c.post("/api/sdlc/initiatives/dark-mode/materialization/reject",
+                      headers=IDENTITY_HEADERS).status_code == 200
+        detail = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS)
+        assert detail.json()["status"] == "blocked"
 
 
 def test_materialization_routes_404_for_an_unknown_initiative():

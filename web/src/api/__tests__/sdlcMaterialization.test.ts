@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { api, ApiRequestError } from '../client'
-import { fetchMaterialization } from '../sdlc'
+import { createdIssueCount, fetchMaterialization } from '../sdlc'
 
 // Only `api` is replaced: `ApiRequestError` has to stay the REAL class, because
 // what is under test is an `instanceof` check against it.
@@ -52,5 +52,37 @@ describe('fetchMaterialization', () => {
     const err = new ApiRequestError(503, { detail: { error: 'no_proposal' } })
     get.mockRejectedValueOnce(err)
     await expect(fetchMaterialization('views')).rejects.toBe(err)
+  })
+})
+
+/**
+ * `createdIssueCount` reads the apply's resume state, so the card can say what a
+ * re-tap will NOT create again. It counts ISSUES only: `repository_id` is a
+ * remembered constant, and counting it would claim an issue that does not exist.
+ */
+describe('createdIssueCount', () => {
+  it('is zero for a proposal nothing has been applied for', () => {
+    expect(createdIssueCount(null)).toBe(0)
+    expect(createdIssueCount(undefined)).toBe(0)
+    expect(createdIssueCount({})).toBe(0)
+  })
+
+  it('does not count the remembered repository id', () => {
+    expect(createdIssueCount({ repository_id: 'R_1' })).toBe(0)
+  })
+
+  it('counts the epic and every task the journal recorded', () => {
+    expect(createdIssueCount({
+      repository_id: 'R_1',
+      epic: { node_id: 'I_1', number: 101 },
+      tasks: { '0': { node_id: 'I_2', number: 102 }, '1': { node_id: 'I_3', number: 103 } },
+    })).toBe(3)
+  })
+
+  it('counts the tasks of an apply that failed on the epic-less path', () => {
+    // Defensive: the apply always creates the epic first, so this shape should
+    // not occur — but a count that silently dropped the tasks would understate
+    // what exists on GitHub, which is the one thing this number must not do.
+    expect(createdIssueCount({ tasks: { '0': { node_id: 'I_2' } } })).toBe(1)
   })
 })

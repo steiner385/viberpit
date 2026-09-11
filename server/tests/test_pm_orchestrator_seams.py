@@ -798,17 +798,17 @@ async def test_materialize_ingest_is_idempotent_while_pending(db_env):
 
 
 @pytest.mark.asyncio
-async def test_materialize_ingest_parse_failure_blocks_the_initiative(db_env):
-    from server.db.models import Initiative, MaterializationProposal
+async def test_materialize_ingest_parse_failure_warns_with_no_pending_proposal(db_env):
+    """The emit is the human-visible half; the rejected row it also writes is
+    pinned by ``…_records_a_rejected_proposal`` below."""
+    from server.db.models import MaterializationProposal
     await _seed_initiative(db_env)
     orch = _materialize_orch("I could not do it, sorry.")
     assert await orch._sdlc_materialize_ingest("sess-9", "dark-mode") == 0
     async with db_session() as db:
         from sqlalchemy import select
-        assert (await db.execute(select(MaterializationProposal))).scalars().all() == []
-        ini = (await db.execute(select(Initiative).where(
-            Initiative.slug == "dark-mode"))).scalar_one()
-        assert ini.status == "blocked"
+        rows = (await db.execute(select(MaterializationProposal))).scalars().all()
+        assert [r.status for r in rows] == ["rejected"]  # nothing to review
     ev = next(e for e in orch._sdlc_synth_ctx.events
               if e[2].get("kind") == "materialization_parse_failed")
     assert ev[0] == "warn"
@@ -1122,3 +1122,120 @@ async def test_materialize_apply_seam_404s_on_an_unknown_proposal(db_env):
     orch = _apply_orch([])
     out = await orch._sdlc_materialize_apply("nope")
     assert out == {"ok": False, "step": "load", "error": "no such proposal: nope"}
+
+
+@pytest.mark.asyncio
+async def test_materialize_apply_advances_the_initiative_to_build(db_env):
+    """Materialize is the plan stage's TERMINAL action (spec §7b): the accept a
+    human just confirmed IS that stage's gate, so the initiative moves on rather
+    than waiting at ``plan`` for a second tap asking the same question."""
+    from server.db.models import Initiative
+    ini_id, prop_id = await _seed_proposal(db_env)
+    orch = _apply_orch([
+        {"data": {"repository": {"id": "R_1"}}}, _issue(1), _issue(2), _issue(3),
+        {"data": {"m0": {"clientMutationId": None}}},
+    ])
+    out = await orch._sdlc_materialize_apply(prop_id)
+    assert out["stage"] == "build"
+    async with db_session() as db:
+        from sqlalchemy import select
+        ini = (await db.execute(select(Initiative).where(
+            Initiative.id == ini_id))).scalar_one()
+        assert (ini.stage, ini.status) == ("build", "active")
+
+
+@pytest.mark.asyncio
+async def test_a_second_apply_of_the_same_proposal_is_refused_while_one_runs(db_env):
+    """C4-R17: the resume key is the ``created`` map the apply commits between
+    calls, so two concurrent runs would both read 'nothing created yet' and both
+    create the epic. The second caller is refused, not queued."""
+    import asyncio
+    _, prop_id = await _seed_proposal(db_env)
+    orch = _apply_orch([
+        {"data": {"repository": {"id": "R_1"}}}, _issue(1), _issue(2), _issue(3),
+        {"data": {"m0": {"clientMutationId": None}}},
+    ])
+    started, release = asyncio.Event(), asyncio.Event()
+    inner = orch._pm_reconcile_mutate
+
+    async def gated(owner, doc):
+        if "repository(" in doc:  # the first call of the apply — hold it open
+            started.set()
+            await release.wait()
+        return await inner(owner, doc)
+
+    orch._pm_reconcile_mutate = gated
+    first = asyncio.create_task(orch._sdlc_materialize_apply(prop_id))
+    await started.wait()
+    second = await orch._sdlc_materialize_apply(prop_id)
+    release.set()
+    out = await first
+
+    assert second == {"ok": False, "step": "in_flight",
+                      "error": "an apply for this proposal is already running"}
+    assert out["ok"] is True
+    # ONE epic and its two tasks — the refused call reached no GitHub document.
+    assert len([d for _o, d in orch.mutated if "createIssue" in d]) == 3
+    # The lock is dropped once the run ends: a daemon must not keep one per
+    # proposal it has ever applied.
+    assert orch._materialize_apply_locks == {}
+
+
+@pytest.mark.asyncio
+async def test_materialize_ingest_parse_failure_records_a_rejected_proposal(db_env):
+    """C4-R19b: a rejected row, NOT a blocked initiative. Blocking was a dead end
+    (``next_action`` answers NeedsHuman for it), and the row is also what moves the
+    attempt key so the next tick spawns a fresh decompose session."""
+    from server.db.models import Initiative, MaterializationProposal
+    ini_id = await _seed_initiative(db_env)
+    orch = _materialize_orch("I could not do it, sorry.")
+    assert await orch._sdlc_materialize_ingest("sess-9", "dark-mode") == 0
+    async with db_session() as db:
+        from sqlalchemy import select
+        prop = (await db.execute(select(MaterializationProposal))).scalar_one()
+        assert prop.status == "rejected"
+        assert prop.session_id == "sess-9"
+        assert prop.resolved_at is not None
+        assert prop.rationale.startswith("parse failed: ")
+        assert prop.payload["source_session"] == "sess-9"
+        assert prop.payload["parse_error"]
+        ini = (await db.execute(select(Initiative).where(
+            Initiative.slug == "dark-mode"))).scalar_one()
+        assert ini.status == "awaiting_human"  # still the loop's to retry
+    # A failed attempt still counts, so the next decompose gets its own key.
+    assert await orch._sdlc_materialization_attempts_for(ini_id) == 1
+    # …and it is not a proposal anyone can be asked to review.
+    assert await orch._sdlc_has_pending_materialization(ini_id) is False
+
+
+@pytest.mark.asyncio
+async def test_materialize_chain_ingest_spends_the_settle_budget(db_env, monkeypatch):
+    """C4-R20: the decompose chain waits on the 2 h budget, not the classify
+    chain's 30 min, and a give-up says so instead of blocking the initiative."""
+    from server.sessions.orchestrator import _MATERIALIZE_SETTLE_ATTEMPTS
+    await _seed_initiative(db_env)
+    orch = _bare_orch()
+    orch._sdlc_synth_ctx = FakeAutomationContext()
+    polls = 0
+
+    def _never_settles(sid):
+        nonlocal polls
+        polls += 1
+        return SimpleNamespace(id=sid, status="running")
+
+    orch.get_session = _never_settles
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    assert await orch._sdlc_materialize_chain_ingest("s1", "dark-mode",
+                                                     delay=0.0) == 0
+    assert polls == _MATERIALIZE_SETTLE_ATTEMPTS == 240
+    ev = next(e for e in orch._sdlc_synth_ctx.events
+              if e[2].get("kind") == "materialization_ingest_timeout")
+    assert ev[0] == "warn"
+    assert ev[2]["detail"]["attempts"] == _MATERIALIZE_SETTLE_ATTEMPTS
+    async with db_session() as db:
+        from sqlalchemy import select
+        from server.db.models import Initiative
+        ini = (await db.execute(select(Initiative).where(
+            Initiative.slug == "dark-mode"))).scalar_one()
+        assert ini.status == "awaiting_human"  # NOT blocked

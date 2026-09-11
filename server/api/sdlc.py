@@ -515,7 +515,13 @@ async def accept_materialization(
     that a human said yes. A failure is a 502 with the step that failed and the
     proposal still ``pending``, because the apply is resumable: tapping accept
     again continues from the issues the journal already recorded rather than
-    creating a second set."""
+    creating a second set.
+
+    Materialize is the plan stage's terminal action (spec §7b), so a confirmed
+    accept IS the stage's human gate: the apply advances the initiative and this
+    writes the SAME ``sdlc.initiative.advance`` audit row the Advance route
+    writes, marked with the reason, so the stage history reads the same either
+    way."""
     _ini, prop = await _latest_materialization(db, slug)
     _require_pending(prop)
     result = await request.app.state.sessions.sdlc_materialize_apply(prop.id)
@@ -531,9 +537,23 @@ async def accept_materialization(
         # on an exception, and a failed materialization is exactly the attempt
         # the trail must keep.
         await db.commit()
+        # An apply already running for this proposal is a CONFLICT, not a gateway
+        # failure: nothing went wrong, the same write is in flight, and the answer
+        # a second tap needs is "wait", not "retry" (C4-R17).
+        if result.get("step") == "in_flight":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+                "error": "apply_in_flight",
+                "message": str(result.get("error")
+                               or "an apply for this proposal is already running")})
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={
             "error": "materialize_failed", "step": result.get("step"),
             "message": str(result.get("error") or "materialization failed")})
+    await record_audit(
+        db=db,
+        type="sdlc.initiative.advance",
+        identity=identity,
+        detail={"slug": slug, "stage": result.get("stage"), "reason": "materialize"},
+    )
     return result
 
 
@@ -543,19 +563,30 @@ async def reject_materialization(
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
-    """Turn the decomposition down. The initiative's status is deliberately left
-    alone — it stays parked, and the rejection only frees the synthesizer to
-    decompose the plan again on a later tick (C4-R14/R15).
+    """Turn the decomposition down, and leave the initiative somewhere the loop
+    can still act on: the rejection frees the synthesizer to decompose the plan
+    again on a later tick (C4-R14/R15), and the rejected row is what moves the
+    attempt key so the next tick spawns a NEW session instead of re-reading the
+    one just turned down.
 
-    Rejecting after a PARTIALLY APPLIED accept does not undo anything: the epic
-    and any tasks the journal already recorded still exist on GitHub, and the
-    initiative stays ``blocked`` where the failed apply left it. Nothing here
-    closes those issues — that is a human's call, and the proposal's ``created``
-    map (returned by the GET) is the list of what exists."""
+    A proposal rejected after a FAILED PARTIAL apply is the exception (C4-R19a).
+    Nothing here undoes anything: the epic and any tasks the journal recorded
+    still exist on GitHub, so the initiative stays ``blocked`` where the failed
+    apply left it — re-decomposing a plan whose epic already exists would create
+    a second one. Closing those issues is a human's call, and the proposal's
+    ``created`` map (returned by the GET) is the list of what exists.
+
+    With nothing created, ``blocked`` would be a dead end: ``next_action`` answers
+    ``NeedsHuman`` for a blocked initiative, so the very rejection meant to invite
+    another attempt would prevent one. Back to ``awaiting_human`` — the parked
+    state the plan stage already uses — and the next tick decomposes again."""
     _ini, prop = await _latest_materialization(db, slug)
     _require_pending(prop)
     prop.status = "rejected"
     prop.resolved_at = datetime.now(timezone.utc)
+    created = (prop.payload or {}).get("created") or {}
+    if not (created.get("epic") or created.get("tasks")):
+        _ini.status = "awaiting_human"
     await db.flush()
     await record_audit(db=db, type="sdlc.materialization.reject", identity=identity,
                        detail={"slug": slug, "proposalId": prop.id})

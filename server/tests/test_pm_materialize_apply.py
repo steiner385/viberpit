@@ -220,6 +220,10 @@ async def test_apply_overlays_the_initiative_and_the_work_items(db_env):
             Initiative.id == ini_id))).scalar_one()
         assert (ini.epic_repo, ini.epic_number) == ("o/r", 101)
         assert ini.status == "active"
+        # Materialize is the plan stage's TERMINAL action (spec §7b): the accept a
+        # human confirmed IS that stage's gate, so the initiative moves to build
+        # instead of waiting at `plan` for a second tap asking the same question.
+        assert ini.stage == "build"
         items = list((await db.execute(select(WorkItem).order_by(
             WorkItem.number))).scalars().all())
         assert [w.number for w in items] == [102, 103, 104]
@@ -237,6 +241,36 @@ async def test_apply_overlays_the_initiative_and_the_work_items(db_env):
         assert prop.payload["created"]["tasks"]["2"]["number"] == 104
         repo_row = (await db.execute(select(ProjectRepo))).scalar_one()
         assert repo_row.sync_requested_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_apply_leaves_the_stage_where_it_was(db_env):
+    """The advance belongs to the SUCCESSFUL overlay. A failed apply is resumable
+    from `plan`; advancing a half-created epic would hand Build a handoff that has
+    no issues behind it."""
+    ini_id, prop_id = await _seed(db_env)
+    out = await _apply(prop_id, FakeGh(fail_titles=("Toggle",)))
+    assert out["ok"] is False
+    assert "stage" not in out
+    async with db_session() as db:
+        ini = (await db.execute(select(Initiative).where(
+            Initiative.id == ini_id))).scalar_one()
+        assert (ini.stage, ini.status) == ("plan", "blocked")
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_apply_advances_a_stage_left_behind(db_env):
+    """The overlay runs on the run that finishes, whichever one that is."""
+    ini_id, prop_id = await _seed(db_env)
+    assert (await _apply(prop_id, FakeGh(fail_titles=("Toggle",))))["ok"] is False
+    gh2 = FakeGh()
+    gh2._n = 2  # Dark mode + Tokens already exist
+    out = await _apply(prop_id, gh2)
+    assert out["ok"] is True and out["stage"] == "build"
+    async with db_session() as db:
+        ini = (await db.execute(select(Initiative).where(
+            Initiative.id == ini_id))).scalar_one()
+        assert (ini.stage, ini.status) == ("build", "active")
 
 
 @pytest.mark.asyncio
@@ -481,6 +515,47 @@ async def test_a_parked_edge_is_not_re_sent(db_env):
     assert out["ok"] is True
     assert gh3.edge_docs == []
     assert out["parkedEdges"] == 1
+
+
+@pytest.mark.asyncio
+async def test_an_edge_batch_that_raises_is_transient_too(db_env):
+    """The OTHER way a batch fails without judging any edge: `mutate` raises (a
+    timeout, a dead credential ladder) and no payload comes back at all. Same rule
+    as a document-level error — every row marked transient, nothing parked, and the
+    same accept re-sends exactly these edges."""
+    from server.pm.journal import TRANSIENT_PREFIX, state_of
+
+    class Raising(FakeGh):
+        async def __call__(self, owner: str, doc: str) -> dict:
+            if "addBlockedBy" in doc:
+                self.docs.append(doc)
+                raise RuntimeError("gh: connection reset")
+            return await super().__call__(owner, doc)
+
+    _, prop_id = await _seed(db_env)
+    for _ in range(2):  # twice: a transient failure must never accumulate a park
+        out = await _apply(prop_id, Raising(repo_id="R_repo"))
+        assert out["ok"] is False
+        assert out["step"] == "edges_transient"
+        assert "connection reset" in out["error"]
+
+    edges = [r for r in await _journal() if r.field == "add_blocked_by"]
+    assert len(edges) == 4
+    assert {state_of(r) for r in edges} == {"failed"}
+    assert all((r.error or "").startswith(TRANSIENT_PREFIX) for r in edges)
+    async with db_session() as db:
+        ini = (await db.execute(select(Initiative))).scalar_one()
+        assert ini.status == "blocked"
+
+    gh = FakeGh()
+    gh._n = 4  # the four issues the first attempts created
+    out = await _apply(prop_id, gh)
+    assert out["ok"] is True
+    assert out["parkedEdges"] == 0
+    assert gh.creates == []  # only the edges were ever in doubt
+    applied = [r for r in await _journal()
+               if r.field == "add_blocked_by" and state_of(r) == "applied"]
+    assert len(applied) == 2
 
 
 @pytest.mark.asyncio
