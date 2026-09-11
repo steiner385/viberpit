@@ -3,6 +3,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { createRef } from 'react';
 import { LegendPanel } from '../LegendPanel';
+import { TILE_DEFINITIONS, TILE_TONE } from '../StatusStrip';
+import { TONE_FILL } from '@/ui/Badge';
 
 describe('LegendPanel', () => {
   it('does not render when closed', () => {
@@ -140,11 +142,13 @@ describe('LegendPanel', () => {
 
   it('status tiles section shows a swatch and definition per bucket', () => {
     render(<LegendPanel open={true} onClose={() => {}} />);
-    for (const cls of ['tile-running', 'tile-queued', 'tile-deploy', 'tile-failed', 'tile-ready', 'tile-merged']) {
-      expect(document.querySelector(`.legend-swatch.${cls}`)).not.toBeNull();
-    }
-    const dtLabels = [...document.querySelectorAll('.legend-swatch')]
-      .map((s) => s.parentElement!.textContent!.trim());
+    const swatches = [...document.querySelectorAll('.legend-swatch')];
+    // Each swatch is tinted by the bucket's TILE_TONE — the same map the board's
+    // tiles read, so the legend can never describe a colour the board dropped.
+    expect(swatches.map((s) => s.className)).toEqual(
+      TILE_DEFINITIONS.map(({ bucket }) => `legend-swatch ${TONE_FILL[TILE_TONE[bucket]]}`),
+    );
+    const dtLabels = swatches.map((s) => s.parentElement!.textContent!.trim());
     expect(dtLabels).toEqual(['CI running', 'In queue', 'Deploying', 'Failed', 'Ready', 'Merged / other']);
   });
 });

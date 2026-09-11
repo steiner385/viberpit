@@ -34,6 +34,13 @@ describe('PipelineView (the PR pipeline view, ported into the workspace)', () =>
     expect(headers[0]).toContain('acme/beta');
   });
 
+  // Workspace variant (row 5): the page's PageContent is scroll={false}, so the
+  // pipeline pane owns its own scroll.
+  it('owns its scroll — the root pane scrolls, not the page', () => {
+    const { container } = render(<PipelineView state={state()} focusedRepo={null} />);
+    expect(container.firstElementChild).toHaveClass('overflow-y-auto');
+  });
+
   it('has a section heading matching its rail label (#184)', () => {
     render(<PipelineView state={state()} focusedRepo={null} />);
     expect(screen.getByRole('heading', { level: 2, name: 'Pipeline' })).toBeInTheDocument();

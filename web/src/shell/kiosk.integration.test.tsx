@@ -443,7 +443,9 @@ describe('kiosk end to end', () => {
     expect(within(strip).queryAllByRole('button')).toHaveLength(0)
     // The lower bound: all six tiles are still on screen — the strip is a
     // glanceable read-only display, not an empty box.
-    expect(strip.querySelectorAll('.status-tile')).toHaveLength(6)
+    const tiles = [...strip.children]
+    expect(tiles).toHaveLength(6)
+    expect(tiles.every((t) => t.tagName === 'DIV')).toBe(true)
     expect(within(strip).getByText('CI running')).toBeVisible()
     app.unmount()
 

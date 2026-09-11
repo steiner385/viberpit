@@ -8,6 +8,8 @@ import {
   SETTINGS_DEFINITIONS, DESIGNER_DEFINITIONS, METRIC_SECTION_GROUPS,
 } from './definitions';
 import { Sheet } from '@/ui/Sheet';
+import { TONE_FILL } from '@/ui/Badge';
+import { cn } from '@/lib/utils';
 
 interface LegendPanelProps {
   open: boolean;
@@ -231,10 +233,12 @@ export function LegendPanel({ open, onClose, returnFocusRef }: LegendPanelProps)
           <section className="settings-section">
             <h3>Status tiles</h3>
             <dl className="legend-dl">
-              {TILE_DEFINITIONS.map(({ bucket, label, cssClass, title }) => (
+              {TILE_DEFINITIONS.map(({ bucket, label, tone, title }) => (
                 <div className="legend-dl-row" key={bucket}>
                   <dt>
-                    <span className={`legend-swatch ${cssClass}`} aria-hidden="true" /> {label}
+                    {/* The swatch reads the SAME TILE_TONE the board's tiles do, so
+                        the legend cannot describe a colour the board no longer uses. */}
+                    <span className={cn('legend-swatch', TONE_FILL[tone])} aria-hidden="true" /> {label}
                   </dt>
                   <dd>{title}</dd>
                 </div>

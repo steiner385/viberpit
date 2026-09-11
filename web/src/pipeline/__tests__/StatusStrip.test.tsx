@@ -2,7 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { InteractionProvider } from '@/shell/InteractionContext';
-import { StatusStrip, bucketPr, isFailedPr, isActivePr } from '../StatusStrip';
+import { StatusStrip, bucketPr, isFailedPr, isActivePr, TILE_DEFINITIONS, TILE_TONE } from '../StatusStrip';
 import type { PrView } from '../types';
 
 const pr = (stage: string, substate: string | null = null): PrView => ({
@@ -172,6 +172,25 @@ describe('StatusStrip', () => {
     // Clicking it calls onFilter(null) to clear
     fireEvent.click(runningBtn);
     expect(onFilter).toHaveBeenCalledWith(null);
+  });
+
+  // ---- tokens, not a bespoke palette ----
+
+  describe('tile tones (TILE_TONE is the one bucket → tone map)', () => {
+    it('every tile definition carries the tone its bucket maps to', () => {
+      expect(TILE_DEFINITIONS.map((t) => [t.bucket, t.tone])).toEqual(
+        TILE_DEFINITIONS.map((t) => [t.bucket, TILE_TONE[t.bucket]]),
+      );
+      expect(TILE_DEFINITIONS.every((t) => Boolean(t.tone))).toBe(true);
+    });
+
+    it('the active tile is ringed with the accent token', () => {
+      render(<StatusStrip prs={prs} activeFilter="running" onFilter={() => {}} />);
+      const active = screen.getByText('CI running').closest('button')!;
+      expect(active).toHaveClass('ring-accent');
+      const inactive = screen.getByText('In queue').closest('button')!;
+      expect(inactive).not.toHaveClass('ring-accent');
+    });
   });
 
   // ---- in-place tooltips (legend feature) ----
