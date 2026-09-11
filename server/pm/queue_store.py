@@ -12,13 +12,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session
 
 from server.db.models import (AutomationTargetState, GhProjectItem, Session as DbSession,
                               WorkItem, WorkItemDep)
+from server.time_iso import parse_iso_utc
 
 from .desired_state import ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES
 from .mirror_store import deps_in_repos, list_product_views
@@ -35,18 +36,14 @@ _NO_TIMES: Mapping[str, datetime] = {}
 RUNNER_AUTOMATION_ID = "backlog-runner"
 
 
-def parse_iso_utc(value: str | None) -> datetime | None:
-    """ISO-8601 → aware UTC datetime; None/garbage → None (a row we cannot read is
-    no cooldown). The ONE parser for the runner's durable row timestamps — both
-    the orchestrator's queue read and the runner's own expiry sweep call it, so
-    the two can never disagree about what a stamp means."""
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+# ``parse_iso_utc`` is THE parser for the runner's durable row timestamps — the
+# orchestrator's queue read, the runner's expiry sweep and the reconciler all call
+# it, so they can never disagree about what a stamp means. It is re-exported from
+# ``server.time_iso`` (the app's ISO boundary, constitution VI) rather than
+# reimplemented here: the two had already drifted, since only that one tolerates
+# GitHub's trailing ``Z``. Importers keep this name; direct importers of
+# ``server.time_iso`` (e.g. the pure ``label_retirement`` planner, which must not
+# drag the ORM in) get the identical function.
 
 
 def runner_row_maps(db: Session) -> tuple[frozenset[str], dict[str, datetime]]:

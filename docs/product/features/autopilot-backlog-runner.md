@@ -92,9 +92,17 @@ PR linkage, never on labels alone.
   not a label, says what is workable.
   Grouping is a background Sonnet optimizer (#610) persisted in `backlog_groups`; selection
   ordering supports balanced / priority / weighted / concurrency-cap strategies (#773) for
-  per-repo fairness (#771). Claims are atomic `in-progress` labels with rollback on partial
-  failure; reconciliation heals dangling claims (label, no session) and orphan sweep heals
-  GitHub-truth orphans. Backoff + disk-exhaustion circuit breaker in #626/#683.
+  per-repo fairness (#771). A **claim is the runner's durable target-state row** (#994): writing
+  the row is what takes the issue out of the pool, the session it spawns is what the reconciler
+  renders as board Status `In progress`, and the issue comment that follows is the claim's
+  human-visible trace only — a failed comment cannot lose a claim. Reconciliation heals dangling
+  claims (row, no session) and orphan sweep heals GitHub-truth orphans.
+  A **give-up is the same row marked `gave_up` and stamped
+  `needs_human_at`**, which replaces the claim (a target waiting on a human holds no slot): the
+  reconciler turns it into board Status `Needs human` and the queue into a cooldown that expires
+  after `needs_human_retry_days`, at which point the sweep deletes the row and the issue is
+  retried — or never, when that setting is 0. Backoff + disk-exhaustion circuit breaker in
+  #626/#683.
 - The runner had to learn to see its own PRs (#546 sweep-time resolution) and to fail-closed
   on PR↔issue linkage before closing (#643), and not to auto-close action-required /
   docs-only issues (#784/#786).
@@ -111,6 +119,8 @@ PR linkage, never on labels alone.
 - Backlog work selection / claim / spawn: `server/automations/backlog_runner.py`,
   `server/automations/backlog_selection.py`, `server/automations/backlog_grouping.py`,
   `server/automations/backlog_github.py`.
+- Claim-label retirement (#994): `server/pm/label_retirement.py`,
+  `scripts/retire_claim_labels.py`, `specs/003-gh-projects-integration/phase-d-runbook.md`.
 - Action surface / consolidation / API / web: `server/automations/action_providers.py`,
   `server/automations/consolidation_engine.py`, `server/api/automations.py`,
   `web/src/automations/AutomationsTab.tsx`.
