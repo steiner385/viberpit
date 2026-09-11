@@ -205,7 +205,10 @@ describe('route table — redirects', () => {
     ['/automations', '/delivery'],
     ['/insights', '/delivery?scope=ci'],
     ['/accounts', '/settings/accounts'],
-    ['/automation', '/settings/automation'],
+    // Task 6: the Automations Settings section is retired (R1) — both legacy
+    // spellings land on the Delivery detail that replaced its controls.
+    ['/automation', '/delivery'],
+    ['/settings/automation', '/delivery'],
     // `/settings` and `/settings?section=X` are NOT redirects any more: they are
     // `SettingsIndexPage`, whose element depends on the layout mode, so they
     // cannot be asserted under `TestLayout` (no ViewportProvider). Every row
@@ -492,7 +495,7 @@ const REDIRECT_ROUTE_PATTERNS = new Set([
   '/', '/settings',
   '/session/:sessionId', '/session/:sessionId/subagent/:agentId', '/review/:sessionId',
   '/archived', '/archived/:sessionId',
-  '/accounts', '/automation', '/library',
+  '/accounts', '/automation', '/settings/automation', '/library',
   '/projects', '/projects/:slug', '/initiatives', '/triage',
   '/automations', '/insights',
   '*',

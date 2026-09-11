@@ -163,21 +163,20 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('navigation', { name: 'Settings sections' })).toBeInTheDocument()
   })
 
-  it('unknown section → general; /settings/automation is a real section; /automation → it', async () => {
+  it('unknown section → general; /settings/automation and /automation → Delivery', async () => {
     const a = renderApp({ path: '/settings/nope', mode: 'desktop' })
     await waitFor(() => expect(a.path()).toBe('/settings/general'))
     a.unmount()
 
-    // R10 reversed DEC-10: `/automations` MONITORS automations and has no
-    // enable switch, mode select, config form or schedule editor — those exist
-    // only in this section, so the URL must keep resolving to it (until PR 6).
+    // Task 6 retired the Automations section (R1): its controls (enable
+    // switch, mode select, config form, schedule editor) now live on the
+    // Delivery detail, so both legacy spellings redirect there.
     const b = renderApp({ path: '/settings/automation', mode: 'desktop' })
-    expect(await screen.findByRole('region', { name: 'Automations' })).toBeInTheDocument()
-    expect(b.path()).toBe('/settings/automation')
+    await waitFor(() => expect(b.path()).toBe('/delivery'))
     b.unmount()
 
     const c = renderApp({ path: '/automation', mode: 'desktop' })
-    await waitFor(() => expect(c.path()).toBe('/settings/automation'))
+    await waitFor(() => expect(c.path()).toBe('/delivery'))
   })
 
   it('keeps legacy links: /settings?section=…, /accounts, /library?section=skills, ?dialog=settings', async () => {

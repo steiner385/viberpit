@@ -312,6 +312,10 @@ const PAGES: RouteObject[] = [
   // Initiative detail keeps its own `/initiatives` prefix; `navDefForPath`'s
   // section alias is what puts it in the Roadmap section anyway.
   { path: INITIATIVE_ROUTE, element: <InitiativePage /> },
+  // Finish-line row 4, task 6: the Automations Settings section is retired
+  // (R1) — its controls moved to the Delivery detail, so the settings-scoped
+  // legacy spelling redirects there too, above the dynamic `:section` route.
+  { path: '/settings/automation', element: <Navigate to={deliveryPath()} replace /> },
   { path: `${SETTINGS_PATH}/:section`, element: <SettingsPage /> },
   // Bare `/settings` is a PAGE, not a redirect: on phone and tablet-portrait it
   // is the grouped section list (the list half of list-then-detail). It still
@@ -326,7 +330,9 @@ const PAGES: RouteObject[] = [
   { path: LEGACY_ARCHIVED_PATH, element: <RedirectLegacyArchived /> },
   { path: LEGACY_ARCHIVED_SESSION_ROUTE, element: <RedirectLegacyArchivedSession /> },
   { path: '/accounts', element: <Navigate to={settingsSectionPath('accounts')} replace /> },
-  { path: '/automation', element: <Navigate to={settingsSectionPath('automation')} replace /> },
+  // Task 6: the Automations Settings section is retired (R1); its controls
+  // moved to the Delivery detail, so this legacy spelling lands there too.
+  { path: '/automation', element: <Navigate to={deliveryPath()} replace /> },
   { path: '/library', element: <LibraryRedirect /> },
   // Roadmap Phase 3 folded the Products and Initiatives sections into `/roadmap`.
   // The Initiatives tab becomes the list column's Initiatives SCOPE, so its
