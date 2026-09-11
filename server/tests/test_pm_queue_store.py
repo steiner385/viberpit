@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from server.db.models import (Automation, AutomationTargetState, Base, GhProject,
                               GhProjectItem, Project, ProjectRepo,
                               Session as DbSession, WorkItem, WorkItemDep)
+from server.pm import queue_store
 from server.pm.queue_store import load_queue_rows, parse_iso_utc, runner_row_maps
 
 NOW = datetime(2026, 9, 4, tzinfo=timezone.utc)
@@ -105,6 +106,14 @@ def test_parse_iso_utc_is_the_one_row_timestamp_parser():
     assert parse_iso_utc(None) is None
     assert parse_iso_utc("") is None
     assert parse_iso_utc("not-a-date") is None
+
+
+def test_runner_automation_id_matches_the_registered_automation():
+    """``queue_store`` holds the id as a literal (importing ``BacklogRunner`` there
+    would be a cycle), so pin the two together — a renamed automation that silently
+    matched no rows would empty the claim and give-up maps with no test failing."""
+    from server.automations.backlog_runner import BacklogRunner
+    assert queue_store.RUNNER_AUTOMATION_ID == BacklogRunner.id
 
 
 def test_runner_row_maps_derives_claims_and_give_ups_from_the_runner_rows():

@@ -12,7 +12,6 @@ from server.db.models import (GhProject, GhProjectItem, GhWriteJournal, Initiati
 
 from .desired_state import ItemFacts
 from .mirror_store import ProductSyncView, deps_in_repos
-from .queue import NEEDS_HUMAN_LABEL
 from .reconcile_diff import DepView, MirrorItem
 
 
@@ -57,6 +56,11 @@ def _max(*ts: datetime | None) -> datetime | None:
 
 
 def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) -> ProductFacts:
+    # Deferred: queue_store imports this module for `_aware`, so importing it at module
+    # scope would be a cycle. The reconciler reads `Needs human` from the SAME derivation
+    # the queue and GET /api/pm/queue use, so the board cannot disagree with the runner.
+    from .queue_store import runner_row_maps
+
     repos = set(product.repos)
     gh = db.get(GhProject, product.gh_project_db_id) if product.gh_project_db_id else None
     issues = db.scalars(select(WorkItem).where(WorkItem.repo.in_(repos), WorkItem.kind == "issue")).all()
@@ -85,6 +89,7 @@ def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) 
         if dst is not None and (dst.state or "open") == "open":
             blockers.setdefault(d.src_ref, []).append(d.dst_ref)
             blockers_at[d.src_ref] = _max(blockers_at.get(d.src_ref), _aware(d.updated_at))
+    needs_human_at = runner_row_maps(db)[1]
     initiatives = {f"{i.epic_repo}#{i.epic_number}": i for i in db.scalars(
         select(Initiative).where(Initiative.epic_repo.in_(repos))).all()}
     mirror: dict[str, MirrorItem] = {}
@@ -108,7 +113,7 @@ def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) 
             session_at=_aware(sess.updated_at) if sess else None,
             merged_pr_at=merged_at.get(ref),
             open_blocker_refs=tuple(sorted(blockers.get(ref, []))), blockers_at=blockers_at.get(ref),
-            needs_human_label=NEEDS_HUMAN_LABEL in (w.labels or []),
+            needs_human_at=needs_human_at.get(ref),
             initiative_stage=ini.stage if ini else None,
             initiative_stage_at=_aware(ini.updated_at) if ini else None))
     last_applied = _aware(db.scalar(select(GhWriteJournal.updated_at).where(
