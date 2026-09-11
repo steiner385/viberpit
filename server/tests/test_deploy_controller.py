@@ -234,6 +234,30 @@ async def test_unexpected_exception_in_preflight_changes_nothing():
 
 
 @pytest.mark.asyncio
+async def test_git_failure_in_preflight_reports_the_git_reason():
+    """`git.fetch` runs with capture_output, so the diagnostic lives on
+    CalledProcessError.stderr and str(e) is only "returned non-zero exit status 128".
+    The dialog showed exactly that on 2026-09-11 06:36 EDT and hid the real cause
+    (gh's keyring credential helper timing out). Surface git's own last line."""
+    import subprocess
+    g = FakeGit("a", "b", [])
+    s, calls = make_steps()
+    def no_username(repo, ref="master", run=None):
+        raise subprocess.CalledProcessError(
+            128, ["git", "fetch"],
+            stderr="fatal: could not read Username for 'https://github.com': "
+                   "No such device or address\n")
+    g.fetch = no_username
+    c = make_controller(g, s)
+    st = await c.deploy_once()
+    assert st.phases["preflight"] == PhaseState.FAILED.value
+    assert st.error and st.error.startswith("preflight:")
+    assert "could not read Username" in st.error, st.error
+    assert st.running is False
+    assert calls.rolled_back is False
+
+
+@pytest.mark.asyncio
 async def test_edge_only_restarts_only_the_edge_and_publishes():
     g = FakeGit("a", "b", [])
     s, calls = make_steps(healthy=True)
