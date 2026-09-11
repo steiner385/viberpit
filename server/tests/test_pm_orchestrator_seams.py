@@ -318,7 +318,7 @@ async def test_classify_chain_ingest_waits_for_settled_then_ingests_once(db_env,
     def fake_get_session(sid):
         return SimpleNamespace(id=sid, status=statuses.pop(0) if statuses else "complete")
     orch.get_session = fake_get_session
-    orch._pm_classify_output_text = _mk_async('```json\n[{"number": 1}]\n```')
+    orch._chained_session_output_text = _mk_async('```json\n[{"number": 1}]\n```')
     ingested = []
     async def fake_ingest(session_id, project_slug, output_text):
         ingested.append((session_id, project_slug, output_text)); return 1
@@ -706,3 +706,176 @@ async def test_mirror_read_seam_stays_strict_on_graphql_errors():
             await orch._pm_sync_fetch_projects("steiner385", "query { … }")
     with pytest.raises(RuntimeError):
         await orch._pm_sync_fetch("query { … }")
+
+
+# --------------------------------------------------------------------------- #
+# Plan materialization (spec 003 §7b, #992)                                    #
+# --------------------------------------------------------------------------- #
+
+_DECOMP = """Here is how I would split it.
+
+```json
+{"epic_title": "Dark mode", "epic_body": "Ship dark mode.",
+ "tasks": [{"title": "Tokens", "body": "b1", "depends_on": []},
+           {"title": "Toggle", "body": "b2", "depends_on": [0]},
+           {"title": "Docs", "body": "b3"}]}
+```
+"""
+
+
+async def _seed_initiative(db_url: str, *, status: str = "awaiting_human") -> str:
+    from server.db.models import Initiative
+    await init_db(db_url)
+    async with db_session() as db:
+        ini = Initiative(slug="dark-mode", repo="o/r", title="Dark mode",
+                         stage="plan", status=status)
+        db.add(ini)
+        await db.flush()
+        return ini.id
+
+
+def _materialize_orch(text: str = _DECOMP):
+    orch = _bare_orch()
+    orch._sdlc_synth_ctx = FakeAutomationContext()
+    orch._sdlc_synth_ctx.events = []
+
+    async def emit(level, summary, **kw):
+        orch._sdlc_synth_ctx.events.append((level, summary, kw))
+
+    orch._sdlc_synth_ctx.emit = emit
+    orch._chained_session_output_text = _mk_async(text)
+    return orch
+
+
+@pytest.mark.asyncio
+async def test_await_session_settled_returns_true_once_settled(monkeypatch):
+    orch = _bare_orch()
+    statuses = ["running", "running", "complete"]
+    orch.get_session = lambda sid: SimpleNamespace(
+        id=sid, status=statuses.pop(0) if statuses else "complete")
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    assert await orch._await_session_settled("s1", attempts=10, interval_s=0.0) is True
+
+
+@pytest.mark.asyncio
+async def test_await_session_settled_gives_up_after_attempts(monkeypatch):
+    orch = _bare_orch()
+    orch.get_session = lambda sid: SimpleNamespace(id=sid, status="running")
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    assert await orch._await_session_settled("s1", attempts=3, interval_s=0.0) is False
+
+
+@pytest.mark.asyncio
+async def test_materialize_ingest_writes_one_pending_proposal(db_env):
+    from server.db.models import MaterializationProposal
+    ini_id = await _seed_initiative(db_env)
+    orch = _materialize_orch()
+    assert await orch._sdlc_materialize_ingest("sess-9", "dark-mode") == 1
+    async with db_session() as db:
+        from sqlalchemy import select
+        rows = (await db.execute(select(MaterializationProposal))).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.initiative_id == ini_id
+    assert row.status == "pending"
+    assert row.session_id == "sess-9"
+    assert len(row.payload["tasks"]) == 3
+    assert row.payload["epic_title"] == "Dark mode"
+    assert row.payload["tasks"][1]["depends_on"] == [0]
+    assert row.payload["source_session"] == "sess-9"
+    assert row.rationale and row.rationale.startswith("Here is how")
+
+
+@pytest.mark.asyncio
+async def test_materialize_ingest_is_idempotent_while_pending(db_env):
+    from server.db.models import MaterializationProposal
+    await _seed_initiative(db_env)
+    orch = _materialize_orch()
+    assert await orch._sdlc_materialize_ingest("sess-9", "dark-mode") == 1
+    assert await orch._sdlc_materialize_ingest("sess-10", "dark-mode") == 0
+    async with db_session() as db:
+        from sqlalchemy import select
+        rows = (await db.execute(select(MaterializationProposal))).scalars().all()
+    assert len(rows) == 1
+    kinds = [e[2].get("kind") for e in orch._sdlc_synth_ctx.events]
+    assert "materialization_duplicate_ignored" in kinds
+
+
+@pytest.mark.asyncio
+async def test_materialize_ingest_parse_failure_blocks_the_initiative(db_env):
+    from server.db.models import Initiative, MaterializationProposal
+    await _seed_initiative(db_env)
+    orch = _materialize_orch("I could not do it, sorry.")
+    assert await orch._sdlc_materialize_ingest("sess-9", "dark-mode") == 0
+    async with db_session() as db:
+        from sqlalchemy import select
+        assert (await db.execute(select(MaterializationProposal))).scalars().all() == []
+        ini = (await db.execute(select(Initiative).where(
+            Initiative.slug == "dark-mode"))).scalar_one()
+        assert ini.status == "blocked"
+    ev = next(e for e in orch._sdlc_synth_ctx.events
+              if e[2].get("kind") == "materialization_parse_failed")
+    assert ev[0] == "warn"
+    assert ev[2]["detail"]["error"]
+
+
+@pytest.mark.asyncio
+async def test_materialize_chain_ingest_swallows_ingest_failures(db_env, monkeypatch):
+    """An exception inside the chained task must never escape — the task is
+    fire-and-forget, so an escape is an unretrievable 'never retrieved' log."""
+    orch = _bare_orch()
+    orch.get_session = lambda sid: SimpleNamespace(id=sid, status="complete")
+    orch._sdlc_synth_ctx = FakeAutomationContext()
+
+    async def boom(*a, **k):
+        raise RuntimeError("db is gone")
+
+    orch._sdlc_materialize_ingest = boom
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    assert await orch._sdlc_materialize_chain_ingest("s1", "dark-mode",
+                                                     attempts=2, delay=0.0) == 0
+
+
+@pytest.mark.asyncio
+async def test_spawn_materialize_dedupes_and_chains_the_ingest(db_env):
+    await _seed_initiative(db_env)
+    orch = _bare_orch()
+    orch._sdlc_synth_ctx = FakeAutomationContext()
+    orch._automation_account_for = _mk_async("acct1")
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    orch._sdlc_default_branch = _mk_async("master")
+    orch._sdlc_show_committed_file = lambda cwd, ref, path: f"# plan at {ref}:{path}"
+    chained = []
+
+    async def fake_chain(session_id, slug, **kw):
+        chained.append((session_id, slug))
+        return 0
+
+    orch._sdlc_materialize_chain_ingest = fake_chain
+    scheduled = []
+    orch._spawn = lambda coro, name=None: scheduled.append(coro)
+    ini = {"id": "i1", "slug": "dark-mode", "repo": "o/r", "title": "Dark mode"}
+    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+        rec = await orch._sdlc_spawn_materialize(ini)
+    assert rec is not None
+    call = orch._sdlc_synth_ctx.calls[0]
+    assert call["origin_ref"] == "dark-mode:materialize"
+    assert call["dedupe_key"] == "dark-mode:materialize"
+    assert call["cwd"] == "/tmp/clone"
+    assert "docs/sdlc/dark-mode/plan.md" in call["initial_prompt"]
+    assert "pull request" in call["initial_prompt"]
+    assert len(scheduled) == 1
+    await scheduled[0]
+    assert chained == [("sess-1", "dark-mode")]
+
+
+@pytest.mark.asyncio
+async def test_spawn_materialize_refused_launch_spends_nothing(db_env):
+    orch = _bare_orch()
+    orch._sdlc_synth_ctx = FakeAutomationContext(refuse=True)
+    ini = {"id": "i1", "slug": "dark-mode", "repo": "o/r"}
+    assert await orch._sdlc_spawn_materialize(ini) is None
+    assert orch._sdlc_synth_ctx.calls == []

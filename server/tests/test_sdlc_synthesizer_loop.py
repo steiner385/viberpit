@@ -7,6 +7,16 @@ from server.automations.context import AutomationContext
 from server.automations.sdlc_synthesizer import SdlcSynthesizer, SdlcSynthesizerLoop
 
 
+class Ctx:
+    """Records the activity events the loop emits (the feed is a seam too)."""
+
+    def __init__(self):
+        self.events: list[tuple[str, str, dict]] = []
+
+    async def emit(self, level, summary, **kw):
+        self.events.append((level, summary, kw))
+
+
 class Recorder:
     def __init__(self, initiatives, mode="propose"):
         self.initiatives = initiatives
@@ -15,9 +25,11 @@ class Recorder:
         self.recorded: list[dict] = []
         self.statuses: list[tuple[str, str]] = []
         self.spawned: list[tuple[str, str]] = []
+        self.materialized: list[str] = []
         self.updates: list[tuple[str, dict]] = []
         self.pr_infos: dict[str, dict | None] = {}
         self.spawn_result = SimpleNamespace(id="sess-2")
+        self.materialize_result = SimpleNamespace(id="sess-9")
 
     async def list_initiatives(self):
         return self.initiatives
@@ -35,6 +47,10 @@ class Recorder:
         self.spawned.append((ini["slug"], kind))
         return self.spawn_result
 
+    async def spawn_materialize(self, ini):
+        self.materialized.append(ini["slug"])
+        return self.materialize_result
+
     async def pr_lookup(self, art):
         return self.pr_infos.get(art["id"])
 
@@ -45,12 +61,14 @@ class Recorder:
         return self.mode, {}
 
 
-def _loop(rec):
-    ctx = AutomationContext("sdlc-synthesizer")
+def _loop(rec, ctx=None, *, materialize=True):
     return SdlcSynthesizerLoop(
-        ctx, list_initiatives=rec.list_initiatives, list_artifacts=rec.list_artifacts,
+        ctx or AutomationContext("sdlc-synthesizer"),
+        list_initiatives=rec.list_initiatives, list_artifacts=rec.list_artifacts,
         record_artifact=rec.record_artifact, set_status=rec.set_status,
-        spawn=rec.spawn, pr_lookup=rec.pr_lookup, update_artifact=rec.update_artifact,
+        spawn=rec.spawn,
+        spawn_materialize=rec.spawn_materialize if materialize else None,
+        pr_lookup=rec.pr_lookup, update_artifact=rec.update_artifact,
         read_config=rec.read_config, clock=lambda: 0.0)
 
 
@@ -125,6 +143,68 @@ async def test_enriched_artifact_is_left_alone():
                             "session_id": "s1"}]
     await _loop(rec).tick()
     assert rec.updates == []
+
+
+def _merged_plan(rec):
+    """A plan-stage initiative whose plan artifact is merged and has no epic —
+    the exact state the engine answers ``Materialize`` for (spec 003 §7b)."""
+    rec.artifacts["i1"] = [
+        {"id": "a1", "kind": "intent", "pr_number": 1, "pr_url": "u",
+         "commit_sha": "c1", "session_id": "s0"},
+        {"id": "a2", "kind": "spec", "pr_number": 2, "pr_url": "u",
+         "commit_sha": "c2", "session_id": "s1"},
+        {"id": "a3", "kind": "plan", "pr_number": 3, "pr_url": "u",
+         "commit_sha": "c3", "session_id": "s2"},
+    ]
+    return rec
+
+
+@pytest.mark.asyncio
+async def test_merged_plan_spawns_a_decompose_session():
+    rec = _merged_plan(Recorder([_ini("plan")]))
+    ctx = Ctx()
+    await _loop(rec, ctx).tick()
+    assert rec.materialized == ["dark-mode"]
+    assert rec.spawned == []  # the plan artifact exists — nothing to propose
+    assert rec.statuses == [("i1", "awaiting_human")]
+    kinds = [e[2].get("kind") for e in ctx.events]
+    assert "materialization_proposed" in kinds
+    ev = next(e for e in ctx.events if e[2].get("kind") == "materialization_proposed")
+    assert "dark-mode" in ev[1] and ev[2].get("session_id") == "sess-9"
+
+
+@pytest.mark.asyncio
+async def test_pending_materialization_is_not_respawned():
+    """The spawn parks the initiative at ``awaiting_human``; the next tick sees
+    that and must not open a second decompose session for the same plan."""
+    rec = _merged_plan(Recorder([_ini("plan", status="awaiting_human")]))
+    await _loop(rec).tick()
+    assert rec.materialized == []
+    assert rec.statuses == []
+
+
+@pytest.mark.asyncio
+async def test_materialize_without_the_seam_warns_once():
+    rec = _merged_plan(Recorder([_ini("plan")]))
+    ctx = Ctx()
+    loop = _loop(rec, ctx, materialize=False)
+    await loop.tick()
+    await loop.tick()
+    assert rec.materialized == []
+    assert rec.statuses == []
+    warns = [e for e in ctx.events if e[0] == "warn"]
+    assert len(warns) == 1
+
+
+@pytest.mark.asyncio
+async def test_refused_materialize_spawn_leaves_the_status_alone():
+    """No session → no proposal is coming, so the initiative must stay pickable
+    on the next tick rather than parking at ``awaiting_human`` forever."""
+    rec = _merged_plan(Recorder([_ini("plan")]))
+    rec.materialize_result = None
+    await _loop(rec).tick()
+    assert rec.materialized == ["dark-mode"]
+    assert rec.statuses == []
 
 
 def test_to_views_carries_the_epic_pointer():

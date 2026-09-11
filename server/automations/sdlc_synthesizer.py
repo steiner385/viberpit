@@ -14,7 +14,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from server.sdlc.engine import ArtifactView, InitiativeView, Propose, next_action
+from server.sdlc.engine import (
+    ArtifactView, InitiativeView, Materialize, Propose, next_action)
 from server.sdlc.prompts import artifact_path
 
 from .base import AutomationStatus, ConfigField
@@ -28,6 +29,7 @@ ListArtifacts = Callable[[str], Awaitable[list[dict]]]
 RecordArtifact = Callable[..., Awaitable[None]]
 SetStatus = Callable[[str, str], Awaitable[None]]
 Spawn = Callable[[dict, str], Awaitable[Any]]
+SpawnMaterialize = Callable[[dict], Awaitable[Any]]
 PrLookup = Callable[[dict], Awaitable["dict | None"]]
 UpdateArtifact = Callable[..., Awaitable[None]]
 ReadConfig = Callable[[], Awaitable["tuple[str, dict]"]]
@@ -105,6 +107,7 @@ class SdlcSynthesizerLoop:
         update_artifact: UpdateArtifact,
         read_config: ReadConfig,
         clock: Callable[[], float],
+        spawn_materialize: SpawnMaterialize | None = None,
     ) -> None:
         self._ctx = ctx
         self._list_initiatives = list_initiatives
@@ -112,6 +115,10 @@ class SdlcSynthesizerLoop:
         self._record_artifact = record_artifact
         self._set_status = set_status
         self._spawn = spawn
+        self._spawn_materialize = spawn_materialize
+        #: slugs already warned about a missing materialize seam — once per
+        #: initiative, or an unwired deployment would warn on every tick forever.
+        self._materialize_unwired: set[str] = set()
         self._pr_lookup = pr_lookup
         self._update_artifact = update_artifact
         self._read_config = read_config
@@ -145,7 +152,36 @@ class SdlcSynthesizerLoop:
                         model=getattr(rec, "model", None))
                     await self._set_status(ini["id"], "awaiting_human")
                     await self._emit_proposed(slug, action.kind, rec)
+            elif isinstance(action, Materialize):
+                await self._materialize(ini)
             await self._enrich(artifacts)
+
+    async def _materialize(self, ini: dict) -> None:
+        """Spawn the decompose session for a merged plan (spec 003 §7b).
+
+        The initiative parks at ``awaiting_human`` exactly as a proposed artifact
+        does — and that parked status IS the dedupe: the proposal stays pending
+        until a human accepts or rejects it, so a later tick must not open a
+        second decompose session for the same plan. (A live session is also
+        deduped downstream on ``<slug>:materialize``; this keeps the tick from
+        paying for the spawn attempt at all.)"""
+        slug = str(ini.get("slug") or "")
+        if self._spawn_materialize is None:
+            if slug not in self._materialize_unwired:
+                self._materialize_unwired.add(slug)
+                await self._emit("warn", f"{slug}: plan is merged but plan "
+                                 "materialization is not wired — decompose it by hand",
+                                 kind="materialization_unwired", target=slug)
+            return
+        if str(ini.get("status") or "") == "awaiting_human":
+            return
+        rec = await self._spawn_materialize(ini)
+        if rec is None:  # no headroom / refused launch — retry next tick
+            return
+        await self._set_status(ini["id"], "awaiting_human")
+        sid = getattr(rec, "id", None)
+        await self._emit("info", f"decomposing the merged plan for {slug} (session {sid})",
+                         kind="materialization_proposed", target=slug, session_id=sid)
 
     async def _enrich(self, artifacts: list[dict]) -> None:
         """Fill pr_number/pr_url once the artifact session's PR exists, and
@@ -164,9 +200,11 @@ class SdlcSynthesizerLoop:
                 await self._update_artifact(art["id"], commit_sha=info["sha"])
 
     async def _emit_proposed(self, slug: str, kind: str, rec: Any) -> None:
+        await self._emit("info", f"proposed {kind} for {slug}", kind="proposed",
+                         target=slug, session_id=getattr(rec, "id", None))
+
+    async def _emit(self, level: str, summary: str, **kw: Any) -> None:
         try:
-            await self._ctx.emit("info", f"proposed {kind} for {slug}",
-                                 kind="proposed", target=slug,
-                                 session_id=getattr(rec, "id", None))
+            await self._ctx.emit(level, summary, **kw)
         except Exception:  # best-effort — the feed must not break the loop
             log.debug("sdlc_synthesizer.emit_failed", exc_info=True)
