@@ -30,6 +30,7 @@ class Recorder:
         self.pr_infos: dict[str, dict | None] = {}
         self.spawn_result = SimpleNamespace(id="sess-2")
         self.materialize_result = SimpleNamespace(id="sess-9")
+        self.pending_materialization: set[str] = set()
 
     async def list_initiatives(self):
         return self.initiatives
@@ -51,6 +52,9 @@ class Recorder:
         self.materialized.append(ini["slug"])
         return self.materialize_result
 
+    async def has_pending_materialization(self, initiative_id):
+        return initiative_id in self.pending_materialization
+
     async def pr_lookup(self, art):
         return self.pr_infos.get(art["id"])
 
@@ -68,6 +72,7 @@ def _loop(rec, ctx=None, *, materialize=True):
         record_artifact=rec.record_artifact, set_status=rec.set_status,
         spawn=rec.spawn,
         spawn_materialize=rec.spawn_materialize if materialize else None,
+        has_pending_materialization=rec.has_pending_materialization,
         pr_lookup=rec.pr_lookup, update_artifact=rec.update_artifact,
         read_config=rec.read_config, clock=lambda: 0.0)
 
@@ -174,13 +179,43 @@ async def test_merged_plan_spawns_a_decompose_session():
 
 
 @pytest.mark.asyncio
-async def test_pending_materialization_is_not_respawned():
-    """The spawn parks the initiative at ``awaiting_human``; the next tick sees
-    that and must not open a second decompose session for the same plan."""
+async def test_a_parked_plan_still_materializes():
+    """C4-R13a: the plan Propose already parked the initiative at
+    ``awaiting_human`` and only the human Advance tap unparks it (skipping past
+    ``plan``), so gating the decompose spawn on the STATUS would mean no plan is
+    ever materialized. The park signal is the pending proposal, not the status."""
     rec = _merged_plan(Recorder([_ini("plan", status="awaiting_human")]))
     await _loop(rec).tick()
+    assert rec.materialized == ["dark-mode"]
+
+
+@pytest.mark.asyncio
+async def test_pending_proposal_blocks_a_second_decompose():
+    """A proposal awaiting the human gate IS the park: no second session, no
+    second proposal to choose between."""
+    rec = _merged_plan(Recorder([_ini("plan", status="awaiting_human")]))
+    rec.pending_materialization.add("i1")
+    ctx = Ctx()
+    await _loop(rec, ctx).tick()
     assert rec.materialized == []
     assert rec.statuses == []
+    assert [e for e in ctx.events if e[2].get("kind") == "materialization_proposed"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_live_decompose_session_is_not_rechained():
+    """While the decompose session is still running the seam answers None (it
+    checks its own dedupe key first) — so the tick must not re-park, re-emit or
+    schedule a second ingest chain."""
+    rec = _merged_plan(Recorder([_ini("plan")]))
+    ctx = Ctx()
+    loop = _loop(rec, ctx)
+    await loop.tick()
+    rec.materialize_result = None  # the seam sees its own live session
+    await loop.tick()
+    assert rec.statuses == [("i1", "awaiting_human")]
+    proposed = [e for e in ctx.events if e[2].get("kind") == "materialization_proposed"]
+    assert len(proposed) == 1
 
 
 @pytest.mark.asyncio

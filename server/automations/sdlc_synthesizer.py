@@ -30,6 +30,7 @@ RecordArtifact = Callable[..., Awaitable[None]]
 SetStatus = Callable[[str, str], Awaitable[None]]
 Spawn = Callable[[dict, str], Awaitable[Any]]
 SpawnMaterialize = Callable[[dict], Awaitable[Any]]
+HasPendingMaterialization = Callable[[str], Awaitable[bool]]
 PrLookup = Callable[[dict], Awaitable["dict | None"]]
 UpdateArtifact = Callable[..., Awaitable[None]]
 ReadConfig = Callable[[], Awaitable["tuple[str, dict]"]]
@@ -77,7 +78,8 @@ class SdlcSynthesizer:
     config_schema = [
         ConfigField(key="default_model", label="Model", type="enum",
                     default="default", choices=list(AUTOMATION_MODEL_CHOICES),
-                    help="Model for spawned spec/plan sessions ('auto' assesses per task)."),
+                    help="Model for spawned spec/plan/decompose sessions "
+                         "('auto' assesses per task)."),
     ]
 
     def status(self, ctx: Any) -> AutomationStatus:
@@ -108,6 +110,7 @@ class SdlcSynthesizerLoop:
         read_config: ReadConfig,
         clock: Callable[[], float],
         spawn_materialize: SpawnMaterialize | None = None,
+        has_pending_materialization: HasPendingMaterialization | None = None,
     ) -> None:
         self._ctx = ctx
         self._list_initiatives = list_initiatives
@@ -116,6 +119,7 @@ class SdlcSynthesizerLoop:
         self._set_status = set_status
         self._spawn = spawn
         self._spawn_materialize = spawn_materialize
+        self._has_pending_materialization = has_pending_materialization
         #: slugs already warned about a missing materialize seam — once per
         #: initiative, or an unwired deployment would warn on every tick forever.
         self._materialize_unwired: set[str] = set()
@@ -159,12 +163,18 @@ class SdlcSynthesizerLoop:
     async def _materialize(self, ini: dict) -> None:
         """Spawn the decompose session for a merged plan (spec 003 §7b).
 
-        The initiative parks at ``awaiting_human`` exactly as a proposed artifact
-        does — and that parked status IS the dedupe: the proposal stays pending
-        until a human accepts or rejects it, so a later tick must not open a
-        second decompose session for the same plan. (A live session is also
-        deduped downstream on ``<slug>:materialize``; this keeps the tick from
-        paying for the spawn attempt at all.)"""
+        The park signal here is NOT ``Initiative.status``: the plan Propose
+        already parked the initiative at ``awaiting_human`` and only the human
+        Advance tap unparks it — past the plan stage — so a status gate would
+        mean no plan is ever materialized. What "already handled" actually means
+        is a pending ``MaterializationProposal`` (waiting on the human gate) or a
+        live decompose session; the first is asked here, the second inside the
+        spawn seam, which answers None when its own session is still running so a
+        tick during the decompose neither re-parks, re-emits nor re-chains.
+
+        The status write after a real spawn is kept (idempotent — it is normally
+        already parked) so a materialization reached from any other status still
+        reads as awaiting the human."""
         slug = str(ini.get("slug") or "")
         if self._spawn_materialize is None:
             if slug not in self._materialize_unwired:
@@ -173,7 +183,8 @@ class SdlcSynthesizerLoop:
                                  "materialization is not wired — decompose it by hand",
                                  kind="materialization_unwired", target=slug)
             return
-        if str(ini.get("status") or "") == "awaiting_human":
+        if (self._has_pending_materialization is not None
+                and await self._has_pending_materialization(ini["id"])):
             return
         rec = await self._spawn_materialize(ini)
         if rec is None:  # no headroom / refused launch — retry next tick

@@ -398,6 +398,12 @@ _MIRROR_EVICT_STRIKES: int = 2
 # task and its own (faster) cadence, independent of how slow any automation tick is.
 _MIRROR_RECONCILE_INTERVAL_S: float = 10.0
 
+# Opening of the text `_sdlc_show_committed_file` seeds when it cannot read the artifact
+# out of the clone. One constant because a caller that must NOT seed the fallback (the
+# decompose session — it would invent a plan) tests for it; a literal on both sides would
+# drift the moment the wording is reworded.
+_SDLC_UNREADABLE_PREFIX = "(could not inline"
+
 # Periodic re-check of the archived-session cap, so a limit LOWERED via settings takes
 # effect even with no new archive event (the on-archive path covers the fresh-archive case).
 _ARCHIVE_LIMIT_SWEEP_INTERVAL: float = 300.0
@@ -1120,6 +1126,7 @@ class SessionOrchestrator:
             set_status=self._sdlc_set_status,
             spawn=self._sdlc_spawn_synth,
             spawn_materialize=self._sdlc_spawn_materialize,
+            has_pending_materialization=self._sdlc_has_pending_materialization,
             pr_lookup=self._sdlc_pr_lookup,
             update_artifact=self._sdlc_update_artifact,
             read_config=self._sdlc_synth_read_config,
@@ -7342,7 +7349,13 @@ class SessionOrchestrator:
         artifact read off ``origin/<default>`` — but the deliverable is a JSON
         decomposition in the final message, not a PR: nothing is created on
         GitHub until a human accepts the ``MaterializationProposal``. Chains the
-        ingest that turns that message into the proposal row."""
+        ingest that turns that message into the proposal row.
+
+        Returns None — spawning nothing — when a decompose session for this plan
+        is already live. ``spawn_session`` would hand back that SAME session on
+        the dedupe key, and the caller would then chain a SECOND ingest onto it
+        and re-emit; asking first makes a tick during the decompose a no-op."""
+        from server.automations.model_pick import resolve_model
         from server.pm.materialize import build_materialize_prompt
         from server.sdlc.prompts import artifact_path
         repo = str(ini.get("repo") or "")
@@ -7350,6 +7363,8 @@ class SessionOrchestrator:
         if not repo or not slug:
             return None
         origin_ref = f"{slug}:materialize"
+        if await self._sdlc_synth_ctx._existing_session(origin_ref) is not None:
+            return None
         plan = await self._sdlc_synth_ctx.launch_plan_or_refuse(origin_ref)
         if plan is None:
             return None
@@ -7358,6 +7373,7 @@ class SessionOrchestrator:
             self._sdlc_synth_ctx, origin_ref, engine=engine)
         if account is None:
             return None
+        _mode, config = await self._sdlc_synth_read_config()
         url = f"https://github.com/{repo}.git"
         cwd = await asyncio.to_thread(
             gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
@@ -7365,6 +7381,17 @@ class SessionOrchestrator:
         path = artifact_path(slug, "plan")
         plan_markdown = await asyncio.to_thread(
             self._sdlc_show_committed_file, cwd, f"origin/{default_branch}", path)
+        if plan_markdown.startswith(_SDLC_UNREADABLE_PREFIX):
+            # Seeding the "read that file yourself" fallback is how the spec/plan
+            # stages survive a stale clone, but a decompose session cannot: with
+            # no plan text it would invent a decomposition from the slug, and a
+            # human would be asked to accept fiction. Skip loudly instead.
+            await self._sdlc_emit(
+                "warn", f"cannot decompose {slug}: {path} is unreadable on "
+                        f"origin/{default_branch}",
+                kind="materialization_plan_unreadable", target=slug,
+                detail={"path": path, "ref": f"origin/{default_branch}"})
+            return None
         # The decomposition contract lives in the prompt builder (one source of
         # truth); only the operational shape of THIS session is added here.
         prompt = build_materialize_prompt(slug, repo, plan_markdown) + (
@@ -7373,6 +7400,22 @@ class SessionOrchestrator:
             "session's only deliverable is the fenced JSON, which must be the last "
             "thing in your final message."
         )
+        detail: dict = {"initiative": slug, "kind": "materialize",
+                        "engine": engine.value}
+        model = model_source = reasoning_effort = None
+        summary = f"{ini.get('title') or slug}  (decompose)"
+        # Same model policy as the spec/plan sessions — one `default_model`
+        # setting covers every session this automation spawns.
+        if engine is AgentEngine.CLAUDE_CODE:
+            model, model_source = await resolve_model(config, summary)
+            if model is not None:
+                detail.update(model=model, model_source=model_source)
+        elif engine is AgentEngine.CODEX:
+            reasoning_effort, model_source = await self._resolve_codex_auto_effort(
+                account, config, summary)
+            if reasoning_effort is not None:
+                detail.update(reasoning_effort=reasoning_effort,
+                              model_source=model_source)
         rec = await self._sdlc_synth_ctx.spawn_session(
             origin_ref=origin_ref,
             dedupe_key=origin_ref,
@@ -7382,7 +7425,9 @@ class SessionOrchestrator:
             engine=engine,
             name=f"sdlc materialize {slug}",
             initial_prompt=prompt,
-            detail={"initiative": slug, "kind": "materialize", "engine": engine.value},
+            model=model,
+            reasoning_effort=reasoning_effort,
+            detail=detail,
         )
         if rec is None:
             return None
@@ -7415,6 +7460,30 @@ class SessionOrchestrator:
                                   session_id=session_id)
             return 0
 
+    @staticmethod
+    async def _sdlc_pending_materialization_id(db, initiative_id: str) -> str | None:
+        """Id of the MaterializationProposal awaiting the human gate, or None.
+
+        ONE query behind both users of "is this plan already decomposed and
+        waiting?" — the loop's spawn gate and the ingest's duplicate guard. Two
+        copies would drift, and the two directions of that drift are a second
+        decompose session and a second proposal row for one initiative."""
+        from sqlalchemy import select
+        from server.db.models import MaterializationProposal
+        return (await db.execute(select(MaterializationProposal.id).where(
+            MaterializationProposal.initiative_id == initiative_id,
+            MaterializationProposal.status == "pending"))).scalars().first()
+
+    async def _sdlc_has_pending_materialization(self, initiative_id: str) -> bool:
+        """Loop seam: does this initiative already have a proposal to review?
+
+        This — not ``Initiative.status`` — is the materialize park signal: the
+        plan Propose parks every initiative at ``awaiting_human`` long before the
+        decomposition exists (C4-R13a)."""
+        async with db_session() as db:
+            return (await self._sdlc_pending_materialization_id(
+                db, initiative_id)) is not None
+
     async def _sdlc_materialize_ingest(self, session_id: str, slug: str) -> int:
         """Turn a decompose session's output into ONE pending MaterializationProposal.
 
@@ -7442,9 +7511,7 @@ class SessionOrchestrator:
                                   session_id=session_id, detail={"error": str(e)})
             return 0
         async with db_session() as db:
-            dup = (await db.execute(select(MaterializationProposal.id).where(
-                MaterializationProposal.initiative_id == initiative_id,
-                MaterializationProposal.status == "pending"))).scalars().first()
+            dup = await self._sdlc_pending_materialization_id(db, initiative_id)
             if dup is not None:
                 await self._sdlc_emit(
                     "info", f"{slug} already has a materialization proposal awaiting review",
@@ -7496,8 +7563,8 @@ class SessionOrchestrator:
                 return out.stdout
         except Exception:
             log.debug("sdlc.show_artifact_failed", exc_info=True)
-        return (f"(could not inline `{path}` from `{ref}` — read that file from "
-                "the repository before starting)")
+        return (f"{_SDLC_UNREADABLE_PREFIX} `{path}` from `{ref}` — read that file "
+                "from the repository before starting)")
 
     async def _sdlc_pr_lookup(self, art: dict) -> dict | None:
         """The artifact session's PR as the enrichment dict shape, or None.

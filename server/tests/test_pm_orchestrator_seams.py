@@ -737,12 +737,6 @@ async def _seed_initiative(db_url: str, *, status: str = "awaiting_human") -> st
 def _materialize_orch(text: str = _DECOMP):
     orch = _bare_orch()
     orch._sdlc_synth_ctx = FakeAutomationContext()
-    orch._sdlc_synth_ctx.events = []
-
-    async def emit(level, summary, **kw):
-        orch._sdlc_synth_ctx.events.append((level, summary, kw))
-
-    orch._sdlc_synth_ctx.emit = emit
     orch._chained_session_output_text = _mk_async(text)
     return orch
 
@@ -839,27 +833,35 @@ async def test_materialize_chain_ingest_swallows_ingest_failures(db_env, monkeyp
                                                      attempts=2, delay=0.0) == 0
 
 
-@pytest.mark.asyncio
-async def test_spawn_materialize_dedupes_and_chains_the_ingest(db_env):
-    await _seed_initiative(db_env)
+_MAT_INI = {"id": "i1", "slug": "dark-mode", "repo": "o/r", "title": "Dark mode"}
+
+
+def _spawn_materialize_orch(ctx=None, *, plan_body="# the plan", config=None):
     orch = _bare_orch()
-    orch._sdlc_synth_ctx = FakeAutomationContext()
+    orch._sdlc_synth_ctx = ctx or FakeAutomationContext()
     orch._automation_account_for = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
     orch._sdlc_default_branch = _mk_async("master")
-    orch._sdlc_show_committed_file = lambda cwd, ref, path: f"# plan at {ref}:{path}"
-    chained = []
+    orch._sdlc_synth_read_config = _mk_async(("propose", config or {}))
+    orch._sdlc_show_committed_file = lambda cwd, ref, path: f"{plan_body} at {ref}:{path}"
+    orch.chained: list = []
 
     async def fake_chain(session_id, slug, **kw):
-        chained.append((session_id, slug))
+        orch.chained.append((session_id, slug))
         return 0
 
     orch._sdlc_materialize_chain_ingest = fake_chain
-    scheduled = []
-    orch._spawn = lambda coro, name=None: scheduled.append(coro)
-    ini = {"id": "i1", "slug": "dark-mode", "repo": "o/r", "title": "Dark mode"}
+    orch.scheduled: list = []
+    orch._spawn = lambda coro, name=None: orch.scheduled.append(coro)
+    return orch
+
+
+@pytest.mark.asyncio
+async def test_spawn_materialize_seeds_the_plan_and_chains_the_ingest(db_env):
+    await _seed_initiative(db_env)
+    orch = _spawn_materialize_orch()
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
-        rec = await orch._sdlc_spawn_materialize(ini)
+        rec = await orch._sdlc_spawn_materialize(_MAT_INI)
     assert rec is not None
     call = orch._sdlc_synth_ctx.calls[0]
     assert call["origin_ref"] == "dark-mode:materialize"
@@ -867,15 +869,67 @@ async def test_spawn_materialize_dedupes_and_chains_the_ingest(db_env):
     assert call["cwd"] == "/tmp/clone"
     assert "docs/sdlc/dark-mode/plan.md" in call["initial_prompt"]
     assert "pull request" in call["initial_prompt"]
-    assert len(scheduled) == 1
-    await scheduled[0]
-    assert chained == [("sess-1", "dark-mode")]
+    assert len(orch.scheduled) == 1
+    await orch.scheduled[0]
+    assert orch.chained == [("sess-1", "dark-mode")]
+
+
+@pytest.mark.asyncio
+async def test_spawn_materialize_skips_a_live_decompose_session(db_env):
+    """The dedupe key would return the SAME session from spawn_session, and the
+    caller would then chain a second ingest onto it and re-emit. Asking first
+    makes a tick during the decompose session a no-op (C4-R13a)."""
+    ctx = FakeAutomationContext(existing=SimpleNamespace(id="sess-live"))
+    orch = _spawn_materialize_orch(ctx)
+    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+        assert await orch._sdlc_spawn_materialize(_MAT_INI) is None
+    assert ctx.calls == []
+    assert ctx.plans == []  # not even the launch plan was paid for
+    assert orch.scheduled == []
+
+
+@pytest.mark.asyncio
+async def test_spawn_materialize_skips_an_unreadable_plan(db_env):
+    """Seeding the fallback text would have the session invent a decomposition
+    out of the slug — worse than no proposal."""
+    ctx = FakeAutomationContext()
+    orch = _spawn_materialize_orch(ctx, plan_body="(could not inline")
+    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+        assert await orch._sdlc_spawn_materialize(_MAT_INI) is None
+    assert ctx.calls == []
+    assert orch.scheduled == []
+    ev = next(e for e in ctx.events if e[2].get("kind") == "materialization_plan_unreadable")
+    assert ev[0] == "warn"
+
+
+@pytest.mark.asyncio
+async def test_spawn_materialize_honours_the_pinned_model(db_env):
+    """Same model policy as the spec/plan sessions — an operator pinning a model
+    for the synthesizer must reach the decompose session too."""
+    orch = _spawn_materialize_orch(config={"default_model": "opus"})
+    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+        await orch._sdlc_spawn_materialize(_MAT_INI)
+    for coro in orch.scheduled:  # the chain is asserted elsewhere; don't leak it
+        coro.close()
+    call = orch._sdlc_synth_ctx.calls[0]
+    assert call["model"] == "opus"
+    assert call["detail"]["model_source"] == "pinned"
 
 
 @pytest.mark.asyncio
 async def test_spawn_materialize_refused_launch_spends_nothing(db_env):
     orch = _bare_orch()
     orch._sdlc_synth_ctx = FakeAutomationContext(refuse=True)
-    ini = {"id": "i1", "slug": "dark-mode", "repo": "o/r"}
-    assert await orch._sdlc_spawn_materialize(ini) is None
+    assert await orch._sdlc_spawn_materialize(_MAT_INI) is None
     assert orch._sdlc_synth_ctx.calls == []
+
+
+@pytest.mark.asyncio
+async def test_has_pending_materialization_tracks_the_proposal(db_env):
+    """The loop's spawn gate and the ingest's duplicate guard must answer off the
+    same query — this is the loop half of it."""
+    ini_id = await _seed_initiative(db_env)
+    orch = _materialize_orch()
+    assert await orch._sdlc_has_pending_materialization(ini_id) is False
+    assert await orch._sdlc_materialize_ingest("sess-9", "dark-mode") == 1
+    assert await orch._sdlc_has_pending_materialization(ini_id) is True
