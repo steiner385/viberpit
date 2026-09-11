@@ -13,9 +13,6 @@ from datetime import datetime, timedelta
 
 from .desired_state import STATUS_BACKLOG, STATUS_BLOCKED, STATUS_OPTIONS, STATUS_READY
 
-IN_PROGRESS_LABEL = "in-progress"
-NEEDS_HUMAN_LABEL = "needs-human"
-
 # How long an escalated issue waits for a human before the runner reconsiders it.
 # Escalation stamps ``needs_human_at`` on the runner's row; the runner deletes the
 # row once the window passes, so a permanently failing issue is retried at most

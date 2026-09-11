@@ -1,5 +1,10 @@
-"""GitHub I/O for the Backlog Runner — pre-dispatch verification, atomic
-claim/unclaim/reconcile, and the per-owner auth routing they share.
+"""GitHub I/O for the Backlog Runner — pre-dispatch verification, the claim /
+needs-human announcements and the merged-PR close-out.
+
+Phase D (#994) retired the ``in-progress``/``needs-human`` labels: a claim is the
+runner's durable target-state row and a handoff is its ``gave_up`` row, so what
+is left here is announcements (comments) plus the close-out. No test in this file
+may expect a label write.
 
 Every gh call is routed through the injected ``gh_run`` seam, so these tests use
 ``FakeGh`` and never touch the network.
@@ -13,13 +18,8 @@ from typing import Callable
 
 from ccswitch import gitrepos
 from server.automations.backlog_github import (
-    claim_batch,
-    ensure_claim_labels,
-    label_needs_human,
-    query_claimed_refs,
-    heal_orphan_claims,
-    reconcile_dangling,
-    unclaim_batch,
+    announce_claim,
+    announce_needs_human,
     verify_ready_live,
 )
 from server.automations.backlog_selection import Batch
@@ -46,96 +46,6 @@ def _app_tokens(mapping: dict[str, str] | None = None):
         yield
     finally:
         gitrepos.set_token_provider(None)
-
-
-# --------------------------------------------------------------------------- #
-# _graphql_per_owner — one call per owner, per-owner failure isolation          #
-# --------------------------------------------------------------------------- #
-
-class OwnerRoutedGh:
-    """Routes graphql calls by which owner's repo the query targets, returning a
-    distinct node set per owner and recording (args, token) per call — used to
-    verify multi-owner grouping issues exactly one call per owner with that
-    owner's token, and merges every owner's results."""
-
-    def __init__(self, nodes_by_owner: dict[str, list[dict]], *, data_key: str = "claimed"):
-        self.calls: list[list[str]] = []
-        self.tokens: list[str | None] = []
-        self._nodes_by_owner = nodes_by_owner
-        self._data_key = data_key
-
-    def __call__(self, args, token=None):
-        self.calls.append(list(args))
-        self.tokens.append(token)
-        query = next(a for a in args if a.startswith("query="))
-        for owner, nodes in self._nodes_by_owner.items():
-            if f"repo:{owner}/" in query:
-                return _proc(stdout=json.dumps({"data": {self._data_key: {"nodes": nodes}}}))
-        raise AssertionError(f"query did not target a known owner: {query}")
-
-
-def test_per_owner_grouping_issues_one_call_per_owner_and_merges_results():
-    """Repos spanning two owners must never send one owner's token against
-    another owner's repo (it would 404) — group by owner, one call per owner,
-    each with that owner's own token, merged into one result."""
-    gh = OwnerRoutedGh({
-        "acme": [{"number": 1, "repository": {"nameWithOwner": "acme/r1"}}],
-        "other": [{"number": 2, "repository": {"nameWithOwner": "other/r2"}}],
-    })
-    with _app_tokens():
-        out = query_claimed_refs(["acme/r1", "other/r2"], gh_run=gh)
-
-    assert len(gh.calls) == 2, "one call per owner, not one call spanning both"
-    assert set(gh.tokens) == {"tok-acme", "tok-other"}
-    for call_args, token in zip(gh.calls, gh.tokens):
-        query = next(a for a in call_args if a.startswith("query="))
-        if "repo:acme/r1" in query:
-            assert token == "tok-acme"
-            assert "repo:other/r2" not in query
-        else:
-            assert "repo:other/r2" in query
-            assert token == "tok-other"
-            assert "repo:acme/r1" not in query
-    assert set(out) == {"acme/r1#1", "other/r2#2"}
-
-
-class OwnerFailureGh:
-    """Routes graphql calls by owner; the named ``failing_owner`` gets a
-    non-zero-returncode failure, every other owner gets its scripted nodes —
-    used to verify ``_graphql_per_owner``'s per-owner failure isolation (one
-    bad owner must skip-and-continue, never blank out the rest)."""
-
-    def __init__(self, nodes_by_owner: dict[str, list[dict]], *, failing_owner: str,
-                 data_key: str = "claimed"):
-        self.calls: list[list[str]] = []
-        self._nodes_by_owner = nodes_by_owner
-        self._failing_owner = failing_owner
-        self._data_key = data_key
-
-    def __call__(self, args, token=None):
-        self.calls.append(list(args))
-        query = next(a for a in args if a.startswith("query="))
-        if f"repo:{self._failing_owner}/" in query:
-            return _proc(returncode=1, stderr="boom")
-        for owner, nodes in self._nodes_by_owner.items():
-            if f"repo:{owner}/" in query:
-                return _proc(stdout=json.dumps({"data": {self._data_key: {"nodes": nodes}}}))
-        raise AssertionError(f"query did not target a known owner: {query}")
-
-
-def test_one_owner_gh_failure_does_not_blank_the_other_owners():
-    """``_graphql_per_owner`` must tolerate ONE owner's gh call failing while
-    other owners succeed: a failing owner is logged and skipped (``continue``),
-    not treated as a reason to give up on the whole call (``return []``) —
-    which would silently drop every healthy owner's results too. Here that
-    would strand every other owner's claims as untracked orphans."""
-    gh = OwnerFailureGh({
-        "other": [{"number": 2, "repository": {"nameWithOwner": "other/r2"}}],
-    }, failing_owner="acme")
-    with _app_tokens():
-        out = query_claimed_refs(["acme/r1", "other/r2"], gh_run=gh)
-
-    assert set(out) == {"other/r2#2"}
 
 
 # --------------------------------------------------------------------------- #
@@ -259,219 +169,6 @@ def test_verify_ready_live_consults_every_owner_with_its_own_token():
         assert set(gh.tokens) == {"tok-acme", "tok-other"}
         gh = ByOwner(ready_other=False)
         assert verify_ready_live(["acme/r1#1", "other/r2#2"], gh_run=gh) is False
-
-
-# --------------------------------------------------------------------------- #
-# claim_batch                                                                  #
-# --------------------------------------------------------------------------- #
-
-def test_claim_batch_labels_every_issue_returns_true():
-    fake = FakeGh()
-    batch = Batch(primary="o/r#1", issues=["o/r#1", "o/r#2", "o/r#3"], repo="o/r")
-
-    ok = claim_batch(batch, gh_run=fake)
-
-    assert ok is True
-    edits = [c for c in fake.calls if c[:2] == ["issue", "edit"]]
-    labeled = {(c[2], c[c.index("--repo") + 1]) for c in edits}
-    assert labeled == {("1", "o/r"), ("2", "o/r"), ("3", "o/r")}
-    for c in edits:
-        assert "--add-label" in c
-        assert c[c.index("--add-label") + 1] == "in-progress"
-
-
-def test_claim_batch_provisions_claim_labels_before_adding():
-    """The runner self-provisions ``in-progress``/``needs-human`` (idempotent,
-    ``--force``) BEFORE the add-label edits — otherwise a repo that never had the
-    label rejects ``--add-label`` and no issue can ever be claimed (the silent
-    "runs but never spawns" failure). Deduped per repo."""
-    fake = FakeGh()
-    batch = Batch(primary="o/r#1", issues=["o/r#1", "o/r#2"], repo="o/r")
-
-    ok = claim_batch(batch, gh_run=fake)
-
-    assert ok is True
-    creates = [c for c in fake.calls if c[:2] == ["label", "create"]]
-    made = {(c[2], c[c.index("--repo") + 1]) for c in creates}
-    assert made == {("in-progress", "o/r"), ("needs-human", "o/r")}  # deduped per repo
-    for c in creates:
-        assert "--force" in c  # idempotent: create-or-update
-    # All provisioning precedes the first add-label edit.
-    first_edit = next(i for i, c in enumerate(fake.calls) if c[:2] == ["issue", "edit"])
-    last_create = max(i for i, c in enumerate(fake.calls) if c[:2] == ["label", "create"])
-    assert last_create < first_edit
-
-
-def test_claim_batch_with_comment_posts_comment_per_issue():
-    fake = FakeGh()
-    batch = Batch(primary="o/r#1", issues=["o/r#1", "o/r#2"], repo="o/r")
-
-    ok = claim_batch(batch, gh_run=fake, comment="working on it")
-
-    assert ok is True
-    comments = [c for c in fake.calls if c[:2] == ["issue", "comment"]]
-    numbers = {c[2] for c in comments}
-    assert numbers == {"1", "2"}
-    for c in comments:
-        assert "--body" in c
-        assert c[c.index("--body") + 1] == "working on it"
-
-
-def test_claim_batch_rolls_back_on_partial_failure():
-    # Fail on issue #2's edit; #1 already labeled must be rolled back.
-    def gh_run(args, token=None):
-        gh_run.calls.append(list(args))
-        if args[:2] == ["issue", "edit"] and args[2] == "2" and "--add-label" in args:
-            return _proc(returncode=1, stderr="rate limited")
-        return _proc()
-    gh_run.calls = []
-
-    batch = Batch(primary="o/r#1", issues=["o/r#1", "o/r#2", "o/r#3"], repo="o/r")
-    ok = claim_batch(batch, gh_run=gh_run)
-
-    assert ok is False
-    # Issue 1 was added then rolled back (remove-label in-progress).
-    removes = [
-        c for c in gh_run.calls
-        if c[:2] == ["issue", "edit"] and "--remove-label" in c
-        and c[c.index("--remove-label") + 1] == "in-progress"
-    ]
-    rolled_back = {c[2] for c in removes}
-    assert "1" in rolled_back
-    # Issue 3 was never claimed (failure aborted before it), so nothing to undo for it.
-    assert "3" not in rolled_back
-
-
-def test_claim_batch_passes_repo_app_token_to_every_call():
-    """Every gh call claim_batch makes (label provisioning, add-label edits, the
-    linking comment) is for issues in repo ``o/r`` — every one must carry o's
-    installation token, never ambient auth, when an App is configured."""
-    fake = FakeGh()
-    batch = Batch(primary="o/r#1", issues=["o/r#1", "o/r#2"], repo="o/r")
-
-    with _app_tokens():
-        ok = claim_batch(batch, gh_run=fake, comment="claiming")
-
-    assert ok is True
-    assert fake.calls, "expected gh calls"
-    assert all(tok == "tok-o" for tok in fake.tokens)
-
-
-def test_ensure_claim_labels_passes_each_repos_own_owner_token():
-    """Repos spanning different owners must each get their OWNER's token — never
-    one owner's token sent for another owner's repo (it would 404)."""
-    fake = FakeGh()
-    with _app_tokens():
-        ensure_claim_labels(["acme/r1", "other/r2"], gh_run=fake)
-
-    assert fake.calls
-    for call_args, token in zip(fake.calls, fake.tokens):
-        repo = call_args[call_args.index("--repo") + 1]
-        assert token == f"tok-{repo.split('/')[0]}"
-
-
-# --------------------------------------------------------------------------- #
-# unclaim_batch / label_needs_human                                           #
-# --------------------------------------------------------------------------- #
-
-def test_unclaim_batch_removes_label_every_issue():
-    fake = FakeGh()
-    batch = Batch(primary="o/r#5", issues=["o/r#5", "o/r#6"], repo="o/r")
-
-    unclaim_batch(batch, gh_run=fake)
-
-    removes = [c for c in fake.calls if c[:2] == ["issue", "edit"] and "--remove-label" in c]
-    numbers = {c[2] for c in removes}
-    assert numbers == {"5", "6"}
-    for c in removes:
-        assert c[c.index("--remove-label") + 1] == "in-progress"
-
-
-def test_unclaim_batch_continues_on_individual_failure():
-    def gh_run(args, token=None):
-        gh_run.calls.append(list(args))
-        if args[2] == "5":
-            return _proc(returncode=1, stderr="nope")
-        return _proc()
-    gh_run.calls = []
-
-    batch = Batch(primary="o/r#5", issues=["o/r#5", "o/r#6"], repo="o/r")
-    unclaim_batch(batch, gh_run=gh_run)
-
-    # Both issues were attempted despite #5 failing.
-    numbers = {c[2] for c in gh_run.calls}
-    assert numbers == {"5", "6"}
-
-
-def test_unclaim_batch_passes_repo_app_token():
-    fake = FakeGh()
-    batch = Batch(primary="o/r#5", issues=["o/r#5", "o/r#6"], repo="o/r")
-    with _app_tokens():
-        unclaim_batch(batch, gh_run=fake)
-    assert fake.calls
-    assert all(tok == "tok-o" for tok in fake.tokens)
-
-
-def test_label_needs_human_adds_needs_human_removes_in_progress():
-    fake = FakeGh()
-    batch = Batch(primary="o/r#8", issues=["o/r#8", "o/r#9"], repo="o/r")
-
-    label_needs_human(batch, gh_run=fake)
-
-    edits = [c for c in fake.calls if c[:2] == ["issue", "edit"]]
-    by_issue: dict[str, list[str]] = {}
-    for c in edits:
-        by_issue.setdefault(c[2], []).extend(c)
-    assert set(by_issue) == {"8", "9"}
-    for _num, flat in by_issue.items():
-        assert "needs-human" in flat
-        assert "--add-label" in flat
-        assert "--remove-label" in flat
-        assert "in-progress" in flat
-
-
-def test_label_needs_human_passes_repo_app_token():
-    fake = FakeGh()
-    batch = Batch(primary="o/r#8", issues=["o/r#8", "o/r#9"], repo="o/r")
-    with _app_tokens():
-        label_needs_human(batch, gh_run=fake)
-    assert fake.calls
-    assert all(tok == "tok-o" for tok in fake.tokens)
-
-
-# --------------------------------------------------------------------------- #
-# reconcile_dangling                                                          #
-# --------------------------------------------------------------------------- #
-
-def test_reconcile_dangling_removes_label_for_claim_with_no_live_session():
-    fake = FakeGh()
-    open_claim_refs = ["o/r#1", "o/r#2"]
-    # #1 has a live origin_ref; #2 does not.
-    live_origin_refs = {"o/r#1"}
-
-    reconcile_dangling(open_claim_refs, live_origin_refs, gh_run=fake)
-
-    removes = [
-        c for c in fake.calls
-        if c[:2] == ["issue", "edit"] and "--remove-label" in c
-        and c[c.index("--remove-label") + 1] == "in-progress"
-    ]
-    numbers = {c[2] for c in removes}
-    assert numbers == {"2"}, "only the dangling claim (#2) should be released"
-
-
-def test_reconcile_dangling_no_op_when_all_live():
-    fake = FakeGh()
-    reconcile_dangling(["o/r#1"], {"o/r#1"}, gh_run=fake)
-    assert fake.calls == []
-
-
-def test_reconcile_dangling_passes_repo_app_token():
-    fake = FakeGh()
-    with _app_tokens():
-        reconcile_dangling(["o/r#1", "o/r#2"], {"o/r#1"}, gh_run=fake)
-    assert fake.calls
-    assert all(tok == "tok-o" for tok in fake.tokens)
 
 
 # --------------------------------------------------------------------------- #
@@ -686,9 +383,10 @@ def test_close_batch_issues_unlinked_pr_closes_nothing():
     assert not [c for c in gh.calls if c[:2] == ["issue", "comment"]]
 
 
-def test_close_batch_issues_partial_linkage_closes_linked_and_unclaims_rest():
+def test_close_batch_issues_partial_linkage_closes_linked_and_returns_rest():
     """PR references one batch issue but not the other: close the linked one,
-    return the verified-unlinked one to the pool OPEN (unclaim + comment)."""
+    leave the verified-unlinked one OPEN with a comment saying so (the runner's
+    row is what returns it to the pool — Phase D has no claim label to strip)."""
     from server.automations.backlog_github import close_batch_issues
     gh = RoutedGh(_proc(stdout=_linkage_stdout(closing=[8])),
                   timeline_procs={9: _proc(stdout=_crossref_stdout([]))})
@@ -698,11 +396,9 @@ def test_close_batch_issues_partial_linkage_closes_linked_and_unclaims_rest():
     assert outcome == "closed"
     closes = [c for c in gh.calls if c[:2] == ["issue", "close"]]
     assert [c[2] for c in closes] == ["8"]
-    unclaims = [c for c in gh.calls
-                if c[:2] == ["issue", "edit"] and "--remove-label" in c]
-    assert [c[2] for c in unclaims] == ["9"]
     comments = [c for c in gh.calls if c[:2] == ["issue", "comment"]]
     assert [c[2] for c in comments] == ["9"]
+    assert not [c for c in gh.calls if c[:2] == ["issue", "edit"]]
 
 
 def test_close_batch_issues_unverifiable_reports_retry_and_closes_nothing():
@@ -788,10 +484,12 @@ def _batch8() -> Batch:
     return Batch(primary="o/r#8", issues=["o/r#8"], repo="o/r")
 
 
-def test_close_batch_issues_action_required_issue_is_escalated_not_closed():
+def test_close_batch_issues_reports_escalated_and_edits_no_labels():
     """A verifiably-linked PR must NOT auto-close an action/ops issue (a manual
-    console step). The #784 incident: the issue is escalated to needs-human and
-    left OPEN — a PR can never perform the real-world action."""
+    console step). The #784 incident: the issue is handed to a human and left
+    OPEN — a PR can never perform the real-world action. Phase D reports that as
+    the ``"escalated"`` outcome (the sweep turns it into a ``gave_up`` row); the
+    only GitHub write is the explaining comment."""
     from server.automations.backlog_github import close_batch_issues
     gh = GateGh(
         pr=_proc(stdout=_linkage_stdout(closing=[8])),
@@ -801,12 +499,9 @@ def test_close_batch_issues_action_required_issue_is_escalated_not_closed():
 
     outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
 
-    assert outcome == "closed"  # batch handled — some closed, some escalated
+    assert outcome == "escalated"
     assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
-    esc = next(c for c in gh.calls
-               if c[:2] == ["issue", "edit"] and "--add-label" in c)
-    assert esc[esc.index("--add-label") + 1] == "needs-human"
-    assert "--remove-label" in esc and esc[esc.index("--remove-label") + 1] == "in-progress"
+    assert not any("--add-label" in c or "--remove-label" in c for c in gh.calls)
     assert [c for c in gh.calls if c[:2] == ["issue", "comment"]]
 
 
@@ -814,8 +509,8 @@ def test_close_batch_issues_tracking_issue_with_open_sub_issues_is_released_not_
     """A merged PR that references a tracking epic must not close it while any
     sub-issue is still open — the #997 incident: PR #1004 said ``Refs #997``, a
     bare mention counted as linkage, and ten open children were orphaned under
-    a closed parent. The epic is unclaimed and left open; it is NOT escalated to
-    needs-human either, because nothing about it needs a human — its open
+    a closed parent. The epic is left open with an explaining comment; it is NOT
+    escalated either, because nothing about it needs a human — its open
     sub-issues are the remaining work."""
     from server.automations.backlog_github import close_batch_issues
     gh = GateGh(
@@ -828,10 +523,7 @@ def test_close_batch_issues_tracking_issue_with_open_sub_issues_is_released_not_
 
     assert outcome == "closed"  # the PR IS the batch's; the epic is just not closeable
     assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
-    edits = [c for c in gh.calls if c[:2] == ["issue", "edit"]]
-    assert edits and all("--add-label" not in c for c in edits)
-    assert any("--remove-label" in c and c[c.index("--remove-label") + 1] == "in-progress"
-               for c in edits)
+    assert not any("--add-label" in c or "--remove-label" in c for c in gh.calls)
     comment = next(c for c in gh.calls if c[:2] == ["issue", "comment"])
     assert "2 open sub-issue" in comment[comment.index("--body") + 1]
 
@@ -863,11 +555,10 @@ def test_close_batch_issues_docs_only_pr_does_not_satisfy_non_doc_issue():
 
     outcome = close_batch_issues(_batch8(), _merged_info(), gh_run=gh)
 
-    assert outcome == "closed"
+    assert outcome == "escalated"
     assert not [c for c in gh.calls if c[:2] == ["issue", "close"]]
-    assert [c for c in gh.calls
-            if c[:2] == ["issue", "edit"] and "--add-label" in c
-            and c[c.index("--add-label") + 1] == "needs-human"]
+    body = next(c for c in gh.calls if c[:2] == ["issue", "comment"])
+    assert "only documentation" in body[body.index("--body") + 1]
 
 
 def test_close_batch_issues_docs_only_pr_closes_a_documentation_issue():
@@ -901,8 +592,7 @@ def test_close_batch_issues_code_pr_normal_issue_still_closes():
     assert outcome == "closed"
     closes = [c for c in gh.calls if c[:2] == ["issue", "close"]]
     assert [c[2] for c in closes] == ["8"]
-    assert not [c for c in gh.calls
-                if c[:2] == ["issue", "edit"] and "--add-label" in c]
+    assert not any("--add-label" in c or "--remove-label" in c for c in gh.calls)
 
 
 def test_close_batch_issues_action_signal_lookup_failure_falls_back_to_close():
@@ -947,173 +637,43 @@ def test_is_docs_only_classifies_paths():
 
 
 # --------------------------------------------------------------------------- #
-# query_claimed_refs / heal_orphan_claims (orphaned-claim healing)            #
+# Shared timeline fixture                                                      #
 # --------------------------------------------------------------------------- #
-
-def _claimed_stdout(refs: list[tuple[str, int]]) -> str:
-    nodes = [{"number": n, "title": f"t{n}", "url": f"https://github.com/{r}/issues/{n}",
-              "repository": {"nameWithOwner": r}} for r, n in refs]
-    return json.dumps({"data": {"claimed": {"nodes": nodes}}})
-
-
-def test_query_claimed_refs_builds_label_query_and_parses():
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_claimed_stdout([("o/r", 5), ("o/k", 9)]))})
-    out = query_claimed_refs(["o/r", "o/k"], gh_run=fake)
-    assert out == ["o/r#5", "o/k#9"]
-    query = next(a for a in fake.calls[0] if a.startswith("query="))
-    assert "label:in-progress" in query
-    assert "repo:o/r" in query and "repo:o/k" in query
-    assert "is:open" in query
-
-
-def test_query_claimed_refs_empty_repos_and_gh_failure_return_empty():
-    assert query_claimed_refs([], gh_run=FakeGh()) == []
-    fake = FakeGh({("api", "graphql"): _proc(returncode=1, stderr="boom")})
-    assert query_claimed_refs(["o/r"], gh_run=fake) == []
-
-
-def test_query_claimed_refs_passes_owner_app_token_single_owner():
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_claimed_stdout([("acme/r", 5)]))})
-    with _app_tokens():
-        query_claimed_refs(["acme/r"], gh_run=fake)
-    assert fake.tokens == ["tok-acme"]
-
-
-def test_query_claimed_refs_groups_by_owner_and_merges_results():
-    """Repos spanning two owners must never share one search — group by owner,
-    one call per owner with that owner's token, merged into one ref list."""
-    gh = OwnerRoutedGh({
-        "acme": [{"number": 5, "repository": {"nameWithOwner": "acme/r1"}}],
-        "other": [{"number": 9, "repository": {"nameWithOwner": "other/r2"}}],
-    }, data_key="claimed")
-    with _app_tokens():
-        out = query_claimed_refs(["acme/r1", "other/r2"], gh_run=gh)
-
-    assert len(gh.calls) == 2, "one call per owner, not one call spanning both"
-    assert set(gh.tokens) == {"tok-acme", "tok-other"}
-    assert set(out) == {"acme/r1#5", "other/r2#9"}
-
 
 def _crossref_stdout(prs: list[dict]) -> str:
     nodes = [{"source": {**pr, "repository": {"nameWithOwner": "o/r"}}} for pr in prs]
     return json.dumps({"data": {"repository": {"issue": {"timelineItems": {"nodes": nodes}}}}})
 
 
-def test_heal_orphan_merged_pr_closes_issue_and_strips_label():
-    """An orphan whose referencing PR merged → close the issue + remove the claim."""
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_crossref_stdout(
-        [{"number": 40, "url": "https://github.com/o/r/pull/40", "title": "fix",
-          "state": "MERGED", "isDraft": False, "headRefName": "b",
-          "autoMergeRequest": None}]))})
-    healed = heal_orphan_claims(["o/r#5"], set(), gh_run=fake)
-    assert healed == [("o/r#5", "closed")]
-    close = next(c for c in fake.calls if c[:2] == ["issue", "close"])
-    assert "--comment" in close and "o/r" in close
-    edit = next(c for c in fake.calls if c[:2] == ["issue", "edit"])
-    assert "--remove-label" in edit and "in-progress" in edit
+# --------------------------------------------------------------------------- #
+# announce_claim / announce_needs_human (Phase D: comments, never labels)      #
+# --------------------------------------------------------------------------- #
+
+def test_announce_claim_comments_every_issue_and_never_raises():
+    """The claim itself is the durable row; this is only its human-visible
+    trace, so a failing comment on one issue must neither raise nor stop the
+    rest — and nothing here may touch a label."""
+    gh = FakeGh({("issue", "comment", "9"): _proc(returncode=1, stderr="boom")})
+    announce_claim(Batch(primary="o/r#7", issues=["o/r#7", "o/r#9"], repo="o/r"),
+                   "Claimed by X", gh_run=gh)
+    cmds = [c for c in gh.calls if c[:2] == ["issue", "comment"]]
+    assert [c[2] for c in cmds] == ["7", "9"] and all("--body" in c for c in cmds)
+    assert not any("--add-label" in c or "--remove-label" in c for c in gh.calls)
 
 
-def test_heal_orphan_claims_passes_repo_app_token():
-    """Every lookup and mutation heal_orphan_claims makes for issue o/r#5 (the
-    cross-ref timeline lookup, the close, the label edit) must carry o's App
-    installation token."""
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_crossref_stdout(
-        [{"number": 40, "url": "https://github.com/o/r/pull/40", "title": "fix",
-          "state": "MERGED", "isDraft": False, "headRefName": "b",
-          "autoMergeRequest": None}]))})
+def test_announce_claim_passes_repo_app_token():
+    gh = FakeGh()
     with _app_tokens():
-        healed = heal_orphan_claims(["o/r#5"], set(), gh_run=fake)
-    assert healed == [("o/r#5", "closed")]
-    assert fake.calls
-    assert all(tok == "tok-o" for tok in fake.tokens)
+        announce_claim(Batch(primary="o/r#7", issues=["o/r#7"], repo="o/r"),
+                       "Claimed by X", gh_run=gh)
+    assert gh.calls
+    assert all(tok == "tok-o" for tok in gh.tokens)
 
 
-def test_heal_orphan_merged_pr_escalates_action_issue_instead_of_closing():
-    """The orphan-heal path shares the #784 human gate: a merged PR that landed
-    for an action/ops issue is escalated to needs-human, never auto-closed."""
-    pr = {"number": 40, "url": "https://github.com/o/r/pull/40", "title": "docs",
-          "state": "MERGED", "isDraft": False, "headRefName": "b",
-          "autoMergeRequest": None}
-
-    def router(args, token=None):
-        router.calls.append(list(args))
-        if args[:2] != ["api", "graphql"]:
-            return _proc()
-        q = args[-1]
-        if "timelineItems" in q:
-            return _proc(stdout=_crossref_stdout([pr]))
-        if "pullRequest(" in q and "files(" in q:
-            return _proc(stdout=_files_stdout(["docs/runbook.md"]))
-        if "issue(number" in q:
-            return _proc(stdout=_signals_stdout(
-                title="Submit to Google for verification"))
-        return _proc()
-    router.calls = []
-
-    healed = heal_orphan_claims(["o/r#5"], set(), gh_run=router)
-
-    assert healed == [("o/r#5", "escalated")]
-    assert not [c for c in router.calls if c[:2] == ["issue", "close"]]
-    esc = next(c for c in router.calls
-               if c[:2] == ["issue", "edit"] and "--add-label" in c)
-    assert esc[esc.index("--add-label") + 1] == "needs-human"
-
-
-def test_heal_orphan_merged_pr_releases_tracking_issue_instead_of_closing():
-    """The orphan-heal path shares the open-sub-issues gate: a merged PR that
-    mentioned a tracking epic releases the claim and leaves the epic open,
-    without a needs-human label."""
-    pr = {"number": 40, "url": "https://github.com/o/r/pull/40", "title": "part 1",
-          "state": "MERGED", "isDraft": False, "headRefName": "b",
-          "autoMergeRequest": None}
-
-    def router(args, token=None):
-        router.calls.append(list(args))
-        if args[:2] != ["api", "graphql"]:
-            return _proc()
-        q = args[-1]
-        if "timelineItems" in q:
-            return _proc(stdout=_crossref_stdout([pr]))
-        if "pullRequest(" in q and "files(" in q:
-            return _proc(stdout=_files_stdout(["src/x.py"]))
-        if "issue(number" in q:
-            return _proc(stdout=_signals_stdout(
-                title="Epic: rollout", sub_issue_states=["OPEN"]))
-        return _proc()
-    router.calls = []
-
-    healed = heal_orphan_claims(["o/r#5"], set(), gh_run=router)
-
-    assert healed == [("o/r#5", "released")]
-    assert not [c for c in router.calls if c[:2] == ["issue", "close"]]
-    edits = [c for c in router.calls if c[:2] == ["issue", "edit"]]
-    assert edits and all("--add-label" not in c for c in edits)
-
-
-def test_heal_orphan_open_pr_left_untouched():
-    """An orphan with a live OPEN PR is real work — never unclaim or close it."""
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_crossref_stdout(
-        [{"number": 41, "url": "u", "title": "wip", "state": "OPEN",
-          "isDraft": False, "headRefName": "b", "autoMergeRequest": None}]))})
-    healed = heal_orphan_claims(["o/r#5"], set(), gh_run=fake)
-    assert healed == []
-    assert not [c for c in fake.calls if c[:2] in (["issue", "edit"], ["issue", "close"])]
-
-
-def test_heal_orphan_no_pr_reclaims_label():
-    """No referencing PR (or closed-unmerged only) → stale lock; return to pool."""
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_crossref_stdout([]))})
-    healed = heal_orphan_claims(["o/r#5"], set(), gh_run=fake)
-    assert healed == [("o/r#5", "reclaimed")]
-    edit = next(c for c in fake.calls if c[:2] == ["issue", "edit"])
-    assert "--remove-label" in edit and "in-progress" in edit
-    assert not [c for c in fake.calls if c[:2] == ["issue", "close"]]
-
-
-def test_heal_orphan_skips_tracked_refs_and_honors_limit():
-    fake = FakeGh({("api", "graphql"): _proc(stdout=_crossref_stdout([]))})
-    healed = heal_orphan_claims(["o/r#1", "o/r#2", "o/r#3"], {"o/r#1"},
-                                gh_run=fake, limit=1)
-    # #1 is tracked (skipped without a lookup); the cap allows exactly one heal.
-    assert healed == [("o/r#2", "reclaimed")]
-    assert len([c for c in fake.calls if c[:2] == ["api", "graphql"]]) == 1
+def test_announce_needs_human_comments_with_reason():
+    gh = FakeGh()
+    announce_needs_human(Batch(primary="o/r#7", issues=["o/r#7"], repo="o/r"),
+                         "max attempts", gh_run=gh)
+    body = next(c for c in gh.calls if c[:2] == ["issue", "comment"])
+    assert "max attempts" in body[body.index("--body") + 1]
+    assert not any("label" in a for c in gh.calls for a in c)
