@@ -28,18 +28,25 @@ export function BrandMark({ size = 22 }: { size?: number }) {
  *
  * The full name is present once as visually-hidden text and the coloured
  * halves are `aria-hidden`, so a screen reader announces "ViberPit" as one
- * word and `getByText(BRAND_NAME)` finds one node. The green half is a
- * logotype — WCAG 1.4.3 exempts it from the contrast minimum — which is the
- * only reason `text-brand` is acceptable on text here and nowhere else.
+ * word. The halves are SIBLINGS of the hidden name, not wrapped together: a
+ * wrapper's text would also read "ViberPit", and Playwright's `getByText`
+ * (which does not skip `aria-hidden`) would then resolve two elements and
+ * fail strict mode in `e2e/dashboard.spec.ts`. As siblings, the only element
+ * whose exact text is the brand name is the hidden one — for testing-library
+ * and Playwright alike.
+ *
+ * The green half is a logotype — WCAG 1.4.3 exempts it from the contrast
+ * minimum — which is the only reason `text-brand` is acceptable on text here
+ * and nowhere else.
  */
 export function Wordmark({ className }: { className?: string }) {
   const [head, tail] = BRAND_NAME_PARTS
   return (
     <span className={className}>
       <span className="sr-only">{BRAND_NAME}</span>
-      <span aria-hidden="true">
-        {head}
-        <span className="text-brand">{tail}</span>
+      <span aria-hidden="true">{head}</span>
+      <span aria-hidden="true" className="text-brand">
+        {tail}
       </span>
     </span>
   )
