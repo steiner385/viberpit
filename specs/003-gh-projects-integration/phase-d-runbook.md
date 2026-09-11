@@ -126,6 +126,14 @@ on this issue)` or `FAIL  (<reason>)`. A failure does not abandon the rest of th
 status is non-zero if anything failed. Re-run to retry the failures — the successful actions are
 already invisible to the next plan.
 
+
+> **Expect immediate expiry of stale give-ups.** A bot-migrated row is stamped with the label's
+> event time. On the runner's first tick after `--apply`, every such row older than
+> `needs_human_retry_days` is deleted by `_expire_give_ups` (`needs_human_expired` events) and the
+> issue returns to the pool at once — its cooldown had already been served under the label. On
+> 2026-09-11 that was 21 of 34 rows; the `needs_human_cooldown` count only reflects the rows still
+> inside the window. This is intended, not a failed apply.
+
 ## 7. Wait for pm-sync to ingest the human edits
 
 The script's board Status edits are deliberately UNJOURNALED, which is what makes the reconciler
