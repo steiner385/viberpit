@@ -1,7 +1,7 @@
 # Sub-agent live view: status, stop, and in-place permissions for Task sub-agents
 
 **Date:** 2026-09-11
-**Status:** Approved (brainstorming, Tony 2026-09-11) — pending implementation plan
+**Status:** Approved (brainstorming, Tony 2026-09-11) — landed as #1553 (2026-09-11); the view moved onto the page contract in finish-line row 6 (#1470)
 **Builds on:** `docs/superpowers/specs/2026-06-21-subagent-thread-rendering-design.md`
 (the `parentToolUseId` routing that gives each Task sub-agent its own thread)
 **Follow-up (piece 2, separate spec):** child-session dispatch — sub-agents as linked
@@ -9,11 +9,12 @@ ViberPit sessions, the interactive path this spec deliberately does not attempt.
 
 ## 1. Problem
 
-Clicking a sub-agent row opens `SubSessionView`, a read-only transcript with a
-"Read-only sub-agent" badge. It shows the sub-agent's turns only if the parent was open
-while it streamed, knows nothing about the sub-agent's progress or usage, cannot stop it,
-and does not show the permission cards the sub-agent itself is blocked on (those land in
-the parent's transcript, unattributed). Tony's ask: "click into sub-agent sessions and
+Before this spec, clicking a sub-agent row opened a read-only transcript with a "Read-only
+sub-agent" badge. It showed the sub-agent's turns only if the parent was open while it
+streamed, knew nothing about the sub-agent's progress or usage, could not stop it, and did
+not show the permission cards the sub-agent itself was blocked on (those landed in the
+parent's transcript, unattributed). (Since finish-line row 6 that view is the Reader page
+`features/sessions/SubAgentPage.tsx`, which implements §5.5 below.) Tony's ask: "click into sub-agent sessions and
 interact with them just like in Claude Code."
 
 What Claude Code itself offers for a Task sub-agent (verified against the bundled CLI
@@ -237,7 +238,7 @@ strip, the rows and the view all read (Principle VI).
 `stopSubAgent(sessionId, toolUseId)` → `POST /api/sessions/{id}/agents/{toolUseId}/stop`;
 `useStopSubAgent()` mutation with the shared error toast.
 
-### 5.5 `SubSessionView.tsx`
+### 5.5 The sub-agent Reader page (landed as `features/sessions/SubAgentPage.tsx`)
 
 Header, in the order Claude Code's view uses:
 
@@ -289,7 +290,7 @@ Server (`server/tests/`):
 
 Web (`web/`): reducer cases for the three events, idempotent Ended, card duplication into
 the sub-thread and removal from both on resolve, double-buffer carry; selector merge;
-`SubSessionView` header, Stop button states, answerable permission card; `SubAgentRows`
+the sub-agent Reader page's header, Stop button states, answerable permission card; `SubAgentRows`
 stopped state. Full `npm run test`, `typecheck`, `lint`, `build`.
 
 ## 8. Rollout

@@ -101,6 +101,10 @@ export interface PromptDockProps {
  * `Composer`), which is a behaviour change to a component both old layouts still
  * ship; it is tracked as follow-up rather than smuggled into this migration.
  * `PromptDock.test.tsx` pins the current behaviour so the decision is visible.
+ * Since finish-line row 6 the dock is also hidden behind a Reader page, so
+ * drilling into a sub-agent (`/sessions/:id/agents/:agentId`) unmounts the
+ * parent's composer and drops its draft the same way — one more case for that
+ * follow-up.
  */
 export function PromptDock(props: PromptDockProps) {
   const openSessionId = useOpenSessionId()

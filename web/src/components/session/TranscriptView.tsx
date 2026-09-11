@@ -20,7 +20,7 @@ interface Props {
   /** Id of the live-streaming block (null when idle/replaying). */
   streamingBlockId?: string | null
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void
-  /** Nested sub-agent threads keyed by spawning Task toolId. Absent in read-only views (e.g. ReviewView). */
+  /** Nested sub-agent threads keyed by spawning Task toolId. Absent in read-only views (e.g. the archived reader). */
   subAgents?: Record<string, SubThread>
   /** The earliest turn index known to the server (0 = at the very start). Absent in read-only views. */
   earliestTurn?: number

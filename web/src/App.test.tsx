@@ -149,7 +149,7 @@ describe('App routing', () => {
   it('deep-links to the archived review view at the legacy /review/:id', async () => {
     const app = renderApp({ path: '/review/sess-1' })
     await waitFor(() => expect(app.path()).toBe('/sessions/archived/sess-1'))
-    expect(await screen.findByRole('button', { name: /back to dashboard/i })).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: /back to archived sessions/i })).toBeInTheDocument()
   })
 
   it('redirects /sessions/:id to /sessions/archived/:id for an archived session', async () => {
@@ -174,7 +174,7 @@ describe('App routing', () => {
     // …and lands on the read-only view, not on the Archived list:
     // /sessions/archived/:id has to out-rank the /sessions/archived list route,
     // or the redirect silently drops the user on a list with no transcript.
-    expect(await screen.findByRole('button', { name: /back to dashboard/i })).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: /back to archived sessions/i })).toBeInTheDocument()
   })
 
   it('opens a session from the list and updates the URL', async () => {
