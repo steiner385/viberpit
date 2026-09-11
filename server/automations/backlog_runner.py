@@ -274,7 +274,10 @@ VerifyReady = Callable[["Batch"], Awaitable["bool | None"]]
 # orchestrator owns the cache — this never re-queries). ``None`` seam = no
 # ``picked`` event and ``status()`` renders exactly as before.
 QueueTail = Callable[[], "list[dict]"]
-Claim = Callable[["Batch"], Awaitable[bool]]
+# Human-visible trace of a claim: one comment per issue (the claim ITSELF is the
+# durable target-state row this loop writes first). Best-effort by contract —
+# ``_refill`` swallows a failure rather than losing the spawn it already earned.
+Announce = Callable[["Batch"], Awaitable[None]]
 Spawn = Callable[["Batch", str], Awaitable[Any]]
 CountInFlight = Callable[[], Awaitable[int]]
 # (eligible, blocked, untriaged): the true count of eligible, unclaimed OPEN
@@ -288,9 +291,6 @@ HealthyAccount = Callable[[], Awaitable["str | None"]]
 PrStatusFor = Callable[[str], Awaitable["PullRequestInfo | None"]]
 PrDoctorActive = Callable[[str], Awaitable[bool]]
 ReadConfig = Callable[[], Awaitable["tuple[str, dict]"]]
-# RELEASE-only path: remove ``in-progress``, return the batch to the pool (no
-# ``needs-human``). Used on a transient spawn failure and by reconciliation.
-Release = Callable[[str], Awaitable[None]]
 # GIVE-UP path: announce the handoff (the reason is what a human needs in order
 # to pick the target up). Used only when a target has exhausted ``max_attempts``
 # or PR Doctor gave up on it. The SIGNAL itself is the durable ``gave_up`` row
@@ -298,11 +298,12 @@ Release = Callable[[str], Awaitable[None]]
 NeedsHuman = Callable[[str, str], Awaitable[None]]
 # MERGED path: the work landed but the PR may not have carried a closing
 # keyword — comment + close every issue in the batch so it can't stay open
-# (and label-excluded) forever. Returns the close-out outcome: "closed" (≥1
-# issue verifiably linked to the PR — proceed), "unlinked" (the PR references
-# NO batch issue: a shared-clone misattribution, #642 — ignore + denylist it),
-# or "retry" (linkage unverifiable — try again next sweep). ``None`` (legacy
-# stubs) reads as "closed".
+# forever. Returns the close-out outcome: "closed" (≥1 issue verifiably linked to
+# the PR and closed — proceed), "escalated" (the human gate fired and nothing was
+# closed: a human must finish it, #784), "unlinked" (the PR references NO batch
+# issue: a shared-clone misattribution, #642 — ignore + denylist it), or "retry"
+# (linkage unverifiable — try again next sweep). ``None`` (legacy stubs) reads as
+# "closed".
 CloseOut = Callable[[str, "PullRequestInfo"], Awaitable["str | None"]]
 SessionEnded = Callable[[str], Awaitable[bool]]
 # Did the session ever run a turn? True once it recorded a ``engine_session_id``
@@ -310,14 +311,6 @@ SessionEnded = Callable[[str], Awaitable[bool]]
 # actually attempted. Gates the give-up path: a session that never ran must not
 # escalate its issue to ``needs-human`` (#1100).
 SessionRan = Callable[[str], Awaitable[bool]]
-# Reconciliation seam: given the durably-claimed refs and the live origin_refs
-# (non-terminal runner sessions), release any dangling claim to the pool.
-Reconcile = Callable[[list[str], "set[str]"], Awaitable[None]]
-# GitHub-truth orphan healing: (config, tracked_refs) -> [(ref, action), ...]
-# where action is "closed" (merged PR found → issue closed), "escalated" (merged
-# PR found, but the human gate blocked auto-close → handed to needs-human, #784),
-# or "reclaimed" (stale lock released back to the pool).
-HealOrphans = Callable[[dict, "set[str]"], Awaitable["list[tuple[str, str]]"]]
 # Grouping-optimizer seam: recompute + persist the group plan from the live
 # backlog; returns the number of groups stored. MUST raise on a model/plan
 # failure (rather than storing an empty plan over a real backlog) so the loop
@@ -328,10 +321,6 @@ RefreshGroups = Callable[[dict], Awaitable[int]]
 # The loop uses it to notify the dashboard; selection pauses those repos
 # separately via ``select_batch(paused_repos=...)``.
 CredentialAlerts = Callable[[], "list[dict]"]
-
-# The heal pass costs a gh search plus up to `limit` cross-ref lookups, so it
-# runs at most once per interval — orphans are a slow leak, not a hot path.
-_ORPHAN_SWEEP_INTERVAL = 3600.0
 
 
 def format_pick(pick: dict) -> str:
@@ -359,16 +348,6 @@ async def _stub_select_batch(_config: dict) -> Batch | None:
     return None
 
 
-async def _stub_claim(_batch: Batch) -> bool:
-    # TODO(Plan B): atomic label-based claim + reconciliation. No claim → no spawn.
-    return False
-
-
-async def _stub_release(_target: str) -> None:
-    # RELEASE-only fallback: remove the claim, no needs-human.
-    return None
-
-
 async def _stub_needs_human(_target: str, _reason: str) -> None:
     # GIVE-UP fallback: announce nothing; the durable row still carries the handoff.
     return None
@@ -378,7 +357,7 @@ class BacklogRunnerLoop:
     """A restart-safe, non-reentrant control loop that keeps up to
     ``max_concurrent`` implementation sessions in flight.
 
-    Every I/O dependency is INJECTED (selection/claim/spawn/counts/accounts/PR
+    Every I/O dependency is INJECTED (selection/announce/spawn/counts/accounts/PR
     status/config/clock/session-probe) so the whole refill+sweep body is testable
     with no network and no real sessions. ``tick()`` runs the entire body under a
     single ``asyncio.Lock`` — an interval tick and an end-of-session nudge must
@@ -395,7 +374,6 @@ class BacklogRunnerLoop:
         ctx: AutomationContext,
         *,
         select_batch: SelectBatch,
-        claim: Claim,
         spawn: Spawn,
         count_in_flight: CountInFlight,
         healthy_account: HealthyAccount,
@@ -403,14 +381,12 @@ class BacklogRunnerLoop:
         pr_doctor_active: PrDoctorActive,
         read_config: ReadConfig,
         clock: Callable[[], float],
-        release: Release | None = None,
+        announce: Announce | None = None,
         needs_human: NeedsHuman | None = None,
         session_ended: SessionEnded | None = None,
         session_ran: SessionRan | None = None,
-        reconcile: Reconcile | None = None,
         count_candidates: CountCandidates | None = None,
         close_out: CloseOut | None = None,
-        heal_orphans: HealOrphans | None = None,
         refresh_groups: RefreshGroups | None = None,
         credential_alerts: CredentialAlerts | None = None,
         verify_ready: VerifyReady | None = None,
@@ -421,7 +397,7 @@ class BacklogRunnerLoop:
         self._select_batch = select_batch          # Plan B: -> Batch | None
         self._verify_ready = verify_ready           # (batch) -> bool | None; None seam = no check
         self._queue_tail = queue_tail               # sync: () -> cached ranked pool copy; None = no picked event
-        self._claim = claim                         # Plan B: (batch) -> bool
+        self._announce = announce                   # (batch) -> None; None seam = no announce
         self._spawn = spawn                         # (batch, account) -> SessionRecord
         self._count_in_flight = count_in_flight     # DB: origin==id, status!=ended
         self._healthy_account = healthy_account     # -> account name | None
@@ -433,18 +409,14 @@ class BacklogRunnerLoop:
         # its expiry window are absolute times that must survive a restart, so
         # they cannot ride the monotonic clock the backoffs use.
         self._wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
-        self._release = release or _stub_release    # remove in-progress, back to pool
         self._needs_human = needs_human or _stub_needs_human  # announce the handoff
         self._session_ended = session_ended         # (session_id) -> bool | None
         self._session_ran = session_ran             # (session_id) -> bool | None
-        self._reconcile = reconcile                 # (claimed_refs, live_refs) -> None
         self._count_candidates = count_candidates    # -> int (true eligible backlog size)
         self._close_out = close_out                 # (target, info) -> close merged batch issues
-        self._heal_orphans = heal_orphans               # GitHub-truth orphan healing
         self._refresh_groups = refresh_groups           # grouping optimizer (plan writer)
         self._credential_alerts = credential_alerts     # -> [{repo,since,error,settingsUrl}]
         self._cred_alerted: set[str] = set()            # repos with a live credential alert
-        self._last_orphan_sweep: float | None = None    # monotonic; throttles the heal pass
         self._last_group_refresh: float | None = None   # monotonic; throttles the optimizer
         self._group_nudge = False                       # refill starved → refresh next tick
         self._group_refresh_retry_at: float | None = None  # failed → gate nudges until this clock time
@@ -489,14 +461,6 @@ class BacklogRunnerLoop:
         await self._sweep(config)
         # Return orphaned claims to the pool (crash-between-claim-and-spawn leak).
         await self._reconcile_dangling()
-        # GitHub-truth healing: claim labels NO state row tracks (crash, DB
-        # loss, or pre-handed_off handoffs) are invisible to the row-derived
-        # reconciliation above and lock issues out of the pools forever.
-        # Propose mode is now included: propose-mode claims write a state row
-        # (proposed=True) before the gh label write, so the heal sees them as
-        # tracked (not orphans) and leaves their labels alone.
-        if mode != "off":
-            await self._orphan_sweep(config)
         # Stash live counts on the ctx so ``BacklogRunner.status(ctx)`` renders
         # "N implementing, M eligible, K needs-human" instead of always "idle".
         await self._stash_counts(config)
@@ -582,93 +546,31 @@ class BacklogRunnerLoop:
         setattr(self._ctx, "backlog_last_pick", self._last_pick)
 
     async def _reconcile_dangling(self) -> None:
-        """Release claims that leaked (label written, session never came up).
+        """Delete claim rows that leaked (row written, session never came up).
 
-        Derives the durably-claimed refs from the target-state ``claimed`` sets
-        and the live origin_refs from non-terminal runner sessions, then hands
-        both to the injected ``reconcile`` seam. Deriving danglers from the
-        durable ``claimed`` state (rather than a fresh gh ``in-progress`` query)
-        keeps this cheap and network-light for v1: a claimed row that never
-        recorded a ``session_id`` (the crash-between-claim-and-spawn leak) is a
-        dangler; a row whose spawn succeeded (has a ``session_id``) is owned by
-        the sweep's give-up / handoff bookkeeping and is carried as "live" so the
-        seam leaves its labels intact and never races the attempt counting.
-        A ``handed_off`` row is likewise sweep-owned — its session is gone by design
-        (PR Doctor carries the PR), so it must never read as a dangler."""
-        if self._reconcile is None:
-            return
+        The claim IS the row (Phase D): deleting it is what returns the issue to
+        the pool, because the priority queue excludes every ref a claim row
+        holds. A claimed row that never recorded a ``session_id`` (the
+        crash-between-claim-and-spawn leak) is a dangler; a row whose spawn
+        succeeded (has a ``session_id``) is owned by the sweep's give-up /
+        handoff bookkeeping and must be left alone so reconciliation never races
+        the attempt counting. A ``handed_off`` row is likewise sweep-owned — its
+        session is gone by design (PR Doctor carries the PR), so it must never
+        read as a dangler; nor may a propose-mode ``proposed`` row, which is an
+        intentional pending-tap claim."""
         try:
             states = await self._ctx.list_target_states()
         except Exception:  # pragma: no cover — a state read must not stall the tick
             return
-        claimed_refs: list[str] = []
-        live_refs: set[str] = set()
-        danglers: list[str] = []
         for target, st in states.items():
             if not st.get("claimed"):
                 continue
-            issues = st.get("issues") or [target]
-            claimed_refs.extend(issues)
-            # A row that ever recorded a session (spawn succeeded) is owned by the
-            # sweep, not reconciliation — treat it as live. Handed-off rows (PR
-            # Doctor has taken over) are also live. A proposed-mode row (claimed,
-            # waiting for the user tap) is intentional: its ``proposed`` flag
-            # distinguishes it from the crash-between-claim-and-spawn leak (no
-            # session_id, no proposed flag, no handed_off), which IS a dangler.
-            if st.get("session_id") is not None or st.get("handed_off") or st.get("proposed"):
-                live_refs.update(issues)
-            else:
-                danglers.append(target)
-        if claimed_refs:
-            try:
-                await self._reconcile(claimed_refs, live_refs)
-            except Exception:  # pragma: no cover — best-effort reconciliation
-                log.warning("backlog_runner.reconcile_failed", exc_info=True)
-                return
-            # The labels are released — drop the leaked rows too, or they hold
-            # a concurrency slot forever (count_in_flight counts active rows).
-            for target in danglers:
-                await self._ctx.delete_target_state(target)
-
-    async def _orphan_sweep(self, config: dict) -> None:
-        """Heal orphaned claim labels from GitHub truth, at most once per
-        ``_ORPHAN_SWEEP_INTERVAL``.
-
-        Tracked refs are the union of every state row's ``issues`` — anything
-        else wearing ``in-progress`` in the enabled repos is an orphan the
-        injected seam heals (close if its PR merged, release if nothing carries
-        it). The window stamp is taken up front so a failing pass also waits a
-        full interval instead of hammering gh every tick."""
-        if self._heal_orphans is None:
-            return
-        now = self._clock()
-        if (self._last_orphan_sweep is not None
-                and now - self._last_orphan_sweep < _ORPHAN_SWEEP_INTERVAL):
-            return
-        self._last_orphan_sweep = now
-        try:
-            states = await self._ctx.list_target_states()
-            tracked: set[str] = set()
-            for target, st in states.items():
-                tracked.update(st.get("issues") or [target])
-            healed = await self._heal_orphans(config, tracked)
-        except Exception:  # pragma: no cover — healing must never break a tick
-            log.warning("backlog_runner.orphan_sweep_failed", exc_info=True)
-            return
-        for ref, action in healed or []:
-            if action == "closed":
-                await self._ctx.emit(
-                    "info", f"{ref}: orphaned claim — merged PR found, issue closed",
-                    kind="orphan_closed", target=ref)
-            elif action == "escalated":
-                await self._ctx.emit(
-                    "info", f"{ref}: orphaned claim — merged PR found, but auto-close "
-                    "blocked (action/ops or docs-only); escalated to a human",
-                    kind="orphan_escalated", target=ref)
-            else:
-                await self._ctx.emit(
-                    "info", f"{ref}: orphaned claim released back to the pool",
-                    kind="orphan_reclaimed", target=ref)
+            if (st.get("session_id") is not None or st.get("handed_off")
+                    or st.get("proposed")):
+                continue
+            # A leaked row holds a concurrency slot forever (count_in_flight
+            # counts active rows), so dropping it is the whole release.
+            await self._ctx.delete_target_state(target)
 
     async def _maybe_refresh_groups(self, config: dict) -> None:
         """Run the grouping optimizer when due: on the first enabled tick, every
@@ -780,6 +682,22 @@ class BacklogRunnerLoop:
             log.warning("backlog_runner.pick_provenance_failed target=%s", batch.primary,
                         exc_info=True)
 
+    async def _announce_claim(self, batch: "Batch") -> None:
+        """Post the claim's human-visible trace, swallowing any failure.
+
+        The claim is already durable (the row was written just above) and the
+        spawn is about to happen; a ``gh`` comment that will not post is worth a
+        log line, never a lost spawn. Without this guard an announce raising here
+        would abort ``_refill`` mid-claim, leaving a claimed row with no session —
+        exactly the dangling shape ``_reconcile_dangling`` has to clean up."""
+        if self._announce is None:
+            return
+        try:
+            await self._announce(batch)
+        except Exception:
+            log.warning("backlog_runner.claim_announce_failed target=%s", batch.primary,
+                        exc_info=True)
+
     async def _refill(self, mode: str, config: dict) -> None:
         if self._spawn_circuit_until is not None:
             if self._clock() < self._spawn_circuit_until:
@@ -826,12 +744,13 @@ class BacklogRunnerLoop:
                 # tick instead; the group returns at the next grouping refresh.
                 break
             if mode == "propose":
-                # RECORDS-BEFORE-LABELS: write the durable claim BEFORE the gh
-                # label write so a crash after the label lands still leaves a
-                # recoverable row. The ``proposed`` flag marks this as an
+                # The row IS the claim (Phase D): writing it is what takes the
+                # issue out of the pool, and the announce that follows is only its
+                # human-visible trace — it cannot fail the claim, so there is no
+                # race to lose here. The ``proposed`` flag marks this as an
                 # intentional pending-tap claim, distinguishing it from the
                 # crash-between-claim-and-spawn leak (no session_id, no proposed)
-                # which reconciliation treats as a dangler and releases.
+                # which reconciliation treats as a dangler and deletes.
                 await self._ctx.set_target_state(batch.primary, {
                     "repo": batch.repo,
                     "attempts": st.get("attempts", 0),
@@ -839,10 +758,7 @@ class BacklogRunnerLoop:
                     "claimed": True,
                     "proposed": True,
                 })
-                if not await self._claim(batch):
-                    # Never actually held the claim → drop the speculative row.
-                    await self._ctx.delete_target_state(batch.primary)
-                    continue  # lost the race / already claimed
+                await self._announce_claim(batch)
                 await self._ctx.emit("info", f"claimed {batch.primary}",
                                      kind="claimed", target=batch.primary,
                                      detail={"issues": batch.issues})
@@ -851,31 +767,28 @@ class BacklogRunnerLoop:
                                      detail={"issues": batch.issues})
                 continue  # spawn happens on a user tap (Plan B endpoint)
 
-            # RECORDS-BEFORE-LABELS: write the durable claim (issues + a
-            # ``claimed`` marker) BEFORE the gh label write, so a crash after the
-            # label lands still leaves a recoverable state row (reconciliation
-            # sees a claimed ref with a state row and leaves it; a claim with no
-            # row and no live session is the dangling case it clears).
+            # RECORDS-BEFORE-ANYTHING: the durable row (issues + a ``claimed``
+            # marker) IS the claim, so it is written before the announce and
+            # before the spawn — a crash anywhere after this leaves a recoverable
+            # row, and a row with no live session is the dangling case
+            # reconciliation clears.
             await self._ctx.set_target_state(batch.primary, {
                 "repo": batch.repo,
                 "attempts": st.get("attempts", 0),
                 "issues": batch.issues,
                 "claimed": True,
             })
-            if not await self._claim(batch):
-                # Never actually held the claim → drop the speculative state row.
-                await self._ctx.delete_target_state(batch.primary)
-                continue  # lost the race / already claimed
+            await self._announce_claim(batch)
             await self._ctx.emit("info", f"claimed {batch.primary}",
                                  kind="claimed", target=batch.primary,
                                  detail={"issues": batch.issues})
             try:
                 rec = await self._spawn(batch, account)
             except Exception as exc:
-                # Spawn/clone failed → RELEASE the claim (remove in-progress only,
-                # NO needs-human) and do NOT consume an attempt or a daily-cap slot
-                # (the batch re-enters the pool for a later tick). A claimed batch
-                # must never leak on failure — but it must also not be retried
+                # Spawn/clone failed → RELEASE the claim (delete the row — that IS
+                # the release; NO give-up row) and do NOT consume an attempt or a
+                # daily-cap slot (the batch re-enters the pool for a later tick).
+                # A claimed batch must never leak on failure — but it must also not be retried
                 # every tick: back off per target, and open the global breaker on
                 # disk exhaustion (retrying ENOSPC is guaranteed-futile churn) or
                 # repeated consecutive failures.
@@ -896,7 +809,6 @@ class BacklogRunnerLoop:
                         f"spawn circuit open ({reason}) — pausing spawns "
                         f"{int(SPAWN_CIRCUIT_COOLDOWN_S // 60)}m: {msg.splitlines()[0][:200]}",
                         kind="spawn_circuit_open")
-                await self._release(batch.primary)
                 await self._ctx.emit(
                     "info",
                     f"released {batch.primary} (spawn failed; retry in {int(delay)}s)",
@@ -911,10 +823,9 @@ class BacklogRunnerLoop:
                 # could never push a branch — see
                 # ``engine_policy.unattended_launch_blocker``). The context has
                 # already recorded why, so the only thing owed here is to undo the
-                # claim — otherwise the label stays on the issue, the state row
-                # holds a concurrency slot forever, and a later sweep escalates the
-                # target to ``needs-human`` on the evidence of a session that never
-                # existed.
+                # claim — otherwise the state row holds a concurrency slot forever
+                # and a later sweep escalates the target to ``needs-human`` on the
+                # evidence of a session that never existed.
                 #
                 # A refusal is a configuration answer, not a fault: it consumes no
                 # attempt and no daily-cap slot, and it does NOT count toward the
@@ -925,7 +836,6 @@ class BacklogRunnerLoop:
                 fails = max(1, self._spawn_backoff.get(batch.primary, (0, 0.0))[0])
                 self._spawn_backoff[batch.primary] = (
                     fails, self._clock() + _spawn_backoff_delay(fails))
-                await self._release(batch.primary)
                 await self._ctx.emit(
                     "info", f"released {batch.primary} (launch refused)",
                     kind="unclaimed", target=batch.primary)
@@ -1029,15 +939,25 @@ class BacklogRunnerLoop:
             info = None
 
         # PR merged → the work landed; close out the batch's issues (the PR may
-        # not have carried a `Fixes #N`, leaving them open and label-excluded
-        # forever), then free the slot and drop the guard row. The close-out
-        # verifies PR↔issue linkage and FAILS CLOSED (#642).
+        # not have carried a `Fixes #N`, leaving them open forever), then free the
+        # slot and drop the guard row. The close-out verifies PR↔issue linkage and
+        # FAILS CLOSED (#642).
         if info is not None and info.state == "merged":
             outcome = "closed"
             if self._close_out is not None:
                 outcome = await self._close_out(target, info) or "closed"
             if outcome == "retry":
                 return  # linkage unverifiable this sweep — try again next tick
+            if outcome == "escalated":
+                # The human gate fired for every issue (#784): the PR merged but a
+                # human has to finish and close the work. That is a handoff, not a
+                # completion — keep a stamped ``gave_up`` row instead of deleting
+                # the row as if the batch were done.
+                reason = "human gate: merged PR needs a human close-out"
+                await self._ctx.emit("warn", f"{target}: {reason} — needs human",
+                                     kind="gave_up", target=target)
+                await self._give_up(target, st, reason)
+                return
             if outcome == "unlinked":
                 # Verified misattribution: purge the poisoned branch snapshot
                 # and denylist the PR number, or the stale association would
@@ -1071,11 +991,10 @@ class BacklogRunnerLoop:
 
         # PR reached the handoff point (PR Doctor carries it to auto-merge).
         # Mark the row handed_off instead of deleting it: the merged close-out
-        # above must still run when the PR lands. Deleting here orphaned the
-        # batch's ``in-progress`` labels whenever the merged PR lacked a
-        # closing keyword — the labels never came off and the issues were
-        # excluded from the candidate pools forever. The slot still frees now:
-        # the orchestrator's in-flight count skips handed_off rows.
+        # above must still run when the PR lands. Deleting here left the batch's
+        # issues open whenever the merged PR lacked a closing keyword — nothing
+        # was left to close them. The slot still frees now: the orchestrator's
+        # in-flight count skips handed_off rows.
         if info is not None:
             active = await self._pr_doctor_active(repo)
             if should_free_slot(info, active):
@@ -1101,9 +1020,8 @@ class BacklogRunnerLoop:
                     # before turn one (#1100). Escalating that to ``needs-human``
                     # parks a perfectly good issue for ``needs_human_retry_days`` on
                     # evidence of nothing: no diff was attempted, no failure was
-                    # observed. RELEASE the claim instead so the issue returns to the
-                    # fresh pool and gets a real attempt.
-                    await self._release(target)
+                    # observed. RELEASE the claim instead — deleting the row is what
+                    # returns the issue to the fresh pool for a real attempt.
                     await self._ctx.emit(
                         "info",
                         f"released {target} (session never ran a turn — not escalating)",

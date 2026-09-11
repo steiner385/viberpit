@@ -370,7 +370,7 @@ def test_queue_cancel_persists_ended_before_removing_the_queue_entry(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _runner(*, ran: bool | None, calls: dict):
-    """A BacklogRunnerLoop wired with stub seams, tracking release/needs-human."""
+    """A BacklogRunnerLoop wired with stub seams, tracking the give-up path."""
     from server.automations.backlog_runner import BacklogRunnerLoop
 
     class _Ctx:
@@ -382,9 +382,6 @@ def _runner(*, ran: bool | None, calls: dict):
 
         async def set_target_state(self, target, st):
             calls["state"] = st
-
-    async def _release(target):
-        calls["released"] = target
 
     async def _needs_human(target, reason):
         calls["needs_human"] = target
@@ -410,10 +407,10 @@ def _runner(*, ran: bool | None, calls: dict):
 
     return BacklogRunnerLoop(
         _Ctx(),  # type: ignore[arg-type]  # only ctx.emit / *_target_state are reached
-        select_batch=_unused, claim=_unused, spawn=_unused,
+        select_batch=_unused, announce=_unused, spawn=_unused,
         count_in_flight=_unused, healthy_account=_unused,
         pr_status_for=_pr_status_for, pr_doctor_active=_pr_doctor_active,
-        read_config=_unused, clock=lambda: 0.0, release=_release,
+        read_config=_unused, clock=lambda: 0.0,
         needs_human=_needs_human, session_ended=_session_ended, **kwargs)
 
 
@@ -428,7 +425,8 @@ def test_give_up_releases_instead_of_escalating_when_the_session_never_ran():
         assert "needs_human" not in calls, (
             "escalated an issue whose session never ran a single turn — it is now "
             "parked for needs_human_retry_days for no reason")
-        assert calls.get("released") == "acme/repo#1"
+        # Deleting the row IS the release (Phase D): it returns the issue to the
+        # pool without parking it behind a needs-human cooldown.
         assert calls.get("deleted") == "acme/repo#1"
 
     asyncio.run(run())
@@ -443,7 +441,7 @@ def test_give_up_still_escalates_when_the_session_actually_ran():
                               {"max_attempts": 3}, set())
 
         assert calls.get("needs_human") == "acme/repo#2"
-        assert "released" not in calls
+        assert "deleted" not in calls, "a give-up keeps its row — it IS the handoff"
 
     asyncio.run(run())
 

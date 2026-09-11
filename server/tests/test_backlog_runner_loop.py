@@ -51,16 +51,15 @@ async def _seed_row(automation_id: str = "backlog-runner") -> None:
 
 def build_loop(*, mode="auto", config=None, clock=None,
                candidates=None, healthy="a", in_flight_counter=None,
-               pr_status=None, pr_doctor_active=True, claim_result=True,
+               pr_status=None, pr_doctor_active=True, announce=None,
                candidate_count=None, blocked_count=0, untriaged_count=0,
-               heal_orphans_result=None,
                refresh_groups=None, spawn=None, close_out_result=None,
                credential_alerts=None, verify_ready=None, queue_tail=None,
                wall_clock=None, needs_human_raises=False):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
-    Returns (loop, recorders) where recorders exposes .spawns / .claims /
-    .unclaims and lets tests mutate the candidate queue + in-flight count.
+    Returns (loop, recorders) where recorders exposes .spawns / .announced and
+    lets tests mutate the candidate queue + in-flight count.
     """
     from server.automations.backlog_runner import BacklogRunnerLoop
 
@@ -71,12 +70,9 @@ def build_loop(*, mode="auto", config=None, clock=None,
     class Recorders:
         def __init__(self):
             self.spawns: list = []
-            self.claims: list = []
-            self.releases: list = []
+            self.announced: list = []
             self.needs_humans: list = []
-            self.reconciles: list = []
             self.close_outs: list = []
-            self.heals: list = []
             # candidate queue: pop from the front on each select_batch
             self.candidates: list = list(candidates or [])
             self.in_flight = 0
@@ -91,10 +87,10 @@ def build_loop(*, mode="auto", config=None, clock=None,
             return None
         return rec.candidates.pop(0)
 
-    async def claim(batch):
-        if claim_result:
-            rec.claims.append(batch)
-        return claim_result
+    async def _default_announce(batch):
+        rec.announced.append(batch)
+
+    announce_fn = announce or _default_announce
 
     async def _default_spawn(batch, account):
         rec.spawns.append((batch, account))
@@ -117,16 +113,10 @@ def build_loop(*, mode="auto", config=None, clock=None,
     async def pr_doctor_active_fn(_repo):
         return pr_doctor_active
 
-    async def release(target):
-        rec.releases.append(target)
-
     async def needs_human(target, reason):
         rec.needs_humans.append((target, reason))
         if needs_human_raises:
             raise RuntimeError("gh comment failed (injected)")
-
-    async def reconcile(claimed_refs, live_refs):
-        rec.reconciles.append((list(claimed_refs), set(live_refs)))
 
     async def close_out(target, info):
         rec.close_outs.append((target, info))
@@ -138,14 +128,10 @@ def build_loop(*, mode="auto", config=None, clock=None,
         return (candidate_count if candidate_count is not None else 0,
                 blocked_count, untriaged_count)
 
-    async def heal_orphans(config, tracked):
-        rec.heals.append((config, set(tracked)))
-        return list(heal_orphans_result or [])
-
     loop = BacklogRunnerLoop(
         ctx,
         select_batch=select_batch,
-        claim=claim,
+        announce=announce_fn,
         spawn=spawn,
         count_in_flight=count_in_flight,
         healthy_account=healthy_account,
@@ -153,12 +139,9 @@ def build_loop(*, mode="auto", config=None, clock=None,
         pr_doctor_active=pr_doctor_active_fn,
         read_config=read_config,
         clock=clk,
-        release=release,
         needs_human=needs_human,
-        reconcile=reconcile,
         close_out=close_out,
         count_candidates=count_candidates if candidate_count is not None else None,
-        heal_orphans=heal_orphans if heal_orphans_result is not None else None,
         refresh_groups=refresh_groups,
         credential_alerts=credential_alerts,
         verify_ready=verify_ready,
@@ -283,9 +266,6 @@ def test_non_reentrant_no_double_spawn(tmp_path):
         async def select_batch(_c):
             return cand.pop(0) if cand else None
 
-        async def claim(_b):
-            return True
-
         async def spawn(b, account):
             await gate.wait()  # slow spawn: hold the lock
             spawns.append(b)
@@ -305,7 +285,7 @@ def test_non_reentrant_no_double_spawn(tmp_path):
             return True
 
         loop = BacklogRunnerLoop(
-            ctx, select_batch=select_batch, claim=claim, spawn=spawn,
+            ctx, select_batch=select_batch, spawn=spawn,
             count_in_flight=count_in_flight, healthy_account=healthy_account,
             pr_status_for=pr_status_for, pr_doctor_active=pr_doctor_active,
             read_config=read_config, clock=FakeClock(),
@@ -441,7 +421,6 @@ def test_terminal_watch_gave_up_unclaims_and_needs_human(tmp_path):
         # Next sweep sees the pr-doctor gave_up for r#1 → runner gives up too.
         await loop.tick()
         assert [t for t, _ in rec.needs_humans] == ["r#1"]  # GIVE-UP seam called
-        assert "r#1" not in rec.releases  # give-up is NOT a plain release
         gave = await ctx.list_events(kind="gave_up")
         assert len(gave) >= 1
         st = await ctx.get_target_state("r#1")
@@ -713,10 +692,64 @@ def test_close_out_retry_keeps_row_for_next_sweep(tmp_path):
     asyncio.run(run())
 
 
+def test_close_out_escalated_leaves_a_gave_up_row(tmp_path):
+    """The human gate fired for every issue (#784): the PR merged but a human has
+    to finish and close the work. That is a handoff, not a completion — the row
+    must survive as a stamped ``gave_up`` row (Phase D's needs-human signal),
+    never be deleted as if the batch were done."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'esc.db'}"
+
+    async def run():
+        from server.github.pr_status import PullRequestInfo
+        await init_db(db_url=db_url)
+        await _seed_row()
+        at = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+        merged = PullRequestInfo(number=42, url="", state="merged",
+                                 checks="none", title="", merged=True)
+        loop, rec, ctx = build_loop(pr_status={"r#1": merged},
+                                    close_out_result="escalated",
+                                    wall_clock=lambda: at)
+        await ctx.set_target_state("r#1", {"session_id": "s1", "repo": "r",
+                                           "issues": ["r#1"], "claimed": True})
+
+        await loop.tick()
+
+        st = await ctx.get_target_state("r#1")
+        assert st["gave_up"] is True and st["needs_human_at"] == at.isoformat()
+        assert "human gate" in st["reason"]
+        assert not st.get("claimed")
+        assert [t for t, _ in rec.needs_humans] == ["r#1"]
+
+    asyncio.run(run())
+
+
+def test_announce_failure_never_blocks_the_spawn(tmp_path):
+    """The claim is the durable row; the announce is a best-effort ``gh``
+    comment. A comment that cannot be posted must never cost a spawn."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'ann.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+
+        async def raising_announce(_batch):
+            raise RuntimeError("gh comment failed (injected)")
+
+        loop, rec, ctx = build_loop(candidates=[batch("o/r#7")],
+                                    announce=raising_announce)
+        await loop.tick()
+
+        assert len(rec.spawns) == 1
+        assert await ctx.list_events(kind="unclaimed") == []
+
+    asyncio.run(run())
+
+
 def test_reconcile_deletes_dangling_claim_rows(tmp_path):
     """A claimed row that never recorded a session_id (crash between claim and
-    spawn) must be deleted after reconciliation releases its label — otherwise
-    it holds a concurrency slot forever (KinDash#9957 sat for 6 days)."""
+    spawn) must be deleted by reconciliation — deleting the row IS the release
+    now (Phase D), and a row left behind holds a concurrency slot forever
+    (KinDash#9957 sat for 6 days)."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'h.db'}"
 
     async def run():
@@ -728,7 +761,6 @@ def test_reconcile_deletes_dangling_claim_rows(tmp_path):
 
         await loop.tick()
 
-        assert rec.reconciles, "reconcile seam should run"
         states = await ctx.list_target_states()
         assert "r#1" not in states, "dangling claim row must be deleted"
         assert "r#2" in states, "a row with a spawned session must survive"
@@ -786,7 +818,7 @@ def test_propose_mode_writes_state_row_before_claim(tmp_path):
         )
         await loop.tick()
 
-        assert rec.claims, "claim should have been called"
+        assert rec.announced, "the claim announce should have been called"
         st = await ctx.get_target_state("r#1")
         assert st.get("claimed") is True
         assert st.get("proposed") is True
@@ -828,73 +860,10 @@ def test_handed_off_row_never_charges_attempts(tmp_path):
     asyncio.run(run())
 
 
-def test_propose_mode_deletes_state_row_on_claim_failure(tmp_path):
-    """If the claim call fails (lost the race), the speculative state row must be
-    deleted — a row with no label is worse than nothing (it holds a slot forever)."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'p2.db'}"
-
-    async def run():
-        await init_db(db_url=db_url)
-        await _seed_row()
-        loop, rec, ctx = build_loop(
-            mode="propose",
-            candidates=[batch("r#1")],
-            claim_result=False,
-        )
-        await loop.tick()
-
-        assert rec.claims == []
-        st = await ctx.get_target_state("r#1")
-        assert st == {}, "speculative row must be deleted on claim failure"
-
-    asyncio.run(run())
-
-
-def test_orphan_sweep_throttled_to_interval(tmp_path):
-    """The heal pass runs at most once per _ORPHAN_SWEEP_INTERVAL — every tick
-    would burn a gh search + up to `limit` cross-ref lookups."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'os1.db'}"
-
-    async def run():
-        from server.automations.backlog_runner import _ORPHAN_SWEEP_INTERVAL
-        await init_db(db_url=db_url)
-        await _seed_row()
-        clk = FakeClock()
-        loop, rec, ctx = build_loop(clock=clk, heal_orphans_result=[])
-        await loop.tick()
-        await loop.tick()
-        assert len(rec.heals) == 1  # second tick inside the window → skipped
-        clk.advance(_ORPHAN_SWEEP_INTERVAL + 1)
-        await loop.tick()
-        assert len(rec.heals) == 2
-
-    asyncio.run(run())
-
-
-def test_orphan_sweep_passes_tracked_refs_and_emits_events(tmp_path):
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'os2.db'}"
-
-    async def run():
-        await init_db(db_url=db_url)
-        await _seed_row()
-        loop, rec, ctx = build_loop(
-            heal_orphans_result=[("o/r#7", "closed"), ("o/r#9", "reclaimed")])
-        # A live batch row tracking two issues — both must be reported tracked.
-        await ctx.set_target_state("o/r#1", {
-            "claimed": True, "issues": ["o/r#1", "o/r#2"], "session_id": "s1"})
-        await loop.tick()
-        _config, tracked = rec.heals[0]
-        assert {"o/r#1", "o/r#2"} <= tracked
-        assert len(await ctx.list_events(kind="orphan_closed")) == 1
-        assert len(await ctx.list_events(kind="orphan_reclaimed")) == 1
-
-    asyncio.run(run())
-
-
 def test_propose_mode_row_not_treated_as_dangler(tmp_path):
     """A proposed-mode pending-tap row (claimed=True, proposed=True, no session_id)
-    must NOT be treated as a crash-between-claim-and-spawn dangler — reconciliation
-    should leave its label intact until the user taps or the runner reconciles."""
+    must NOT be treated as a crash-between-claim-and-spawn dangler — its row must
+    survive until the user taps or the sweep finishes with it."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'p3.db'}"
 
     async def run():
@@ -909,46 +878,9 @@ def test_propose_mode_row_not_treated_as_dangler(tmp_path):
 
         await loop.tick()
 
-        assert rec.reconciles, "reconcile seam should run"
-        # r#1 (proposed) must be in live_refs — not released
-        claimed_refs, live_refs = rec.reconciles[-1]
-        assert "r#1" in live_refs, "proposed row must be treated as live"
-        assert "r#2" not in live_refs, "dangler must not be in live_refs"
-
         states = await ctx.list_target_states()
         assert "r#1" in states, "proposed row must survive reconciliation"
         assert "r#2" not in states, "dangling row must be deleted"
-
-    asyncio.run(run())
-
-
-def test_orphan_sweep_skipped_when_mode_off(tmp_path):
-    """Mode off = the automation must take NO autonomous GitHub action —
-    including healing (label writes are mutations)."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'os3.db'}"
-
-    async def run():
-        await init_db(db_url=db_url)
-        await _seed_row()
-        loop, rec, ctx = build_loop(mode="off", heal_orphans_result=[])
-        await loop.tick()
-        assert rec.heals == []
-
-    asyncio.run(run())
-
-
-def test_orphan_sweep_runs_when_mode_propose(tmp_path):
-    """Propose mode now writes state rows (proposed=True) before the gh label
-    write, so the heal sees propose-mode claims as tracked refs (not orphans)
-    and can safely widen its gate to mode != 'off'."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'os4.db'}"
-
-    async def run():
-        await init_db(db_url=db_url)
-        await _seed_row()
-        loop, rec, ctx = build_loop(mode="propose", heal_orphans_result=[])
-        await loop.tick()
-        assert len(rec.heals) == 1
 
     asyncio.run(run())
 
@@ -996,8 +928,7 @@ def test_closed_unmerged_after_handoff_escalates_to_needs_human(tmp_path):
 
 def test_handed_off_row_with_no_session_id_is_not_reconciled_away(tmp_path):
     """A handed_off state row with no session_id (seeded directly, no spawn path)
-    must survive reconciliation — handed_off rows are sweep-owned, not danglers.
-    The reconcile seam must see r#1 in live_refs, not released."""
+    must survive reconciliation — handed_off rows are sweep-owned, not danglers."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ho4.db'}"
 
     async def run():
@@ -1019,11 +950,6 @@ def test_handed_off_row_with_no_session_id_is_not_reconciled_away(tmp_path):
         # The row must survive: handed_off rows are sweep-owned, never danglers.
         st = await ctx.get_target_state("r#1")
         assert st.get("handed_off") is True
-
-        # Reconcile must have been called and r#1 must appear in live_refs.
-        assert rec.reconciles, "reconcile seam should have been called"
-        _claimed, live = rec.reconciles[-1]
-        assert "r#1" in live, "handed_off row must be carried as live, not dangled"
 
     asyncio.run(run())
 
@@ -1072,7 +998,7 @@ def test_live_check_failure_skips_backs_off_and_retries_after_cooldown(tmp_path)
             clock=clk, verify_ready=verify,
             candidates=[batch("o/r#7"), batch("o/r#7"), batch("o/r#7")])
         await loop.tick()
-        assert rec.claims == [] and rec.spawns == []
+        assert rec.announced == [] and rec.spawns == []
         assert await _live_check_results() == ["check_failed"]
         assert "o/r#7" in loop._spawn_backoff
         # Cooling down: the same top pick is handed back, gated before any
@@ -1083,7 +1009,7 @@ def test_live_check_failure_skips_backs_off_and_retries_after_cooldown(tmp_path)
         clk.advance(3600)
         await loop.tick()
         assert len(verify.asked) == 2
-        assert [b.primary for b in rec.claims] == ["o/r#7"]
+        assert [b.primary for b in rec.announced] == ["o/r#7"]
         assert len(rec.spawns) == 1
         assert "o/r#7" not in loop._spawn_backoff
 
@@ -1099,7 +1025,7 @@ def test_live_check_not_ready_skips_with_not_ready_result(tmp_path):
         loop, rec, ctx = build_loop(verify_ready=_scripted_verify([False]),
                                     candidates=[batch("o/r#7")])
         await loop.tick()
-        assert rec.claims == [] and rec.spawns == []
+        assert rec.announced == [] and rec.spawns == []
         assert await _live_check_results() == ["not_ready"]
         assert "o/r#7" in loop._spawn_backoff
 
@@ -1118,7 +1044,7 @@ def test_live_check_gates_propose_mode_claims_too(tmp_path):
                                     verify_ready=_scripted_verify([False]),
                                     candidates=[batch("o/r#7")])
         await loop.tick()
-        assert rec.claims == []
+        assert rec.announced == []
         assert await ctx.get_target_state("o/r#7") == {}
         assert len(await ctx.list_events(kind="skipped_live_check")) == 1
 
@@ -1138,7 +1064,7 @@ def test_live_check_seam_raising_is_treated_as_check_failed(tmp_path):
         loop, rec, ctx = build_loop(verify_ready=verify_ready,
                                     candidates=[batch("o/r#7")])
         await loop.tick()
-        assert rec.claims == [] and rec.spawns == []
+        assert rec.announced == [] and rec.spawns == []
         assert await _live_check_results() == ["check_failed"]
 
     asyncio.run(run())
@@ -1154,7 +1080,7 @@ def test_live_check_true_proceeds_to_claim_and_spawn(tmp_path):
         loop, rec, ctx = build_loop(verify_ready=verify, candidates=[batch("o/r#7")])
         await loop.tick()
         assert [b.primary for b in verify.asked] == ["o/r#7"]
-        assert [b.primary for b in rec.claims] == ["o/r#7"]
+        assert [b.primary for b in rec.announced] == ["o/r#7"]
         assert len(rec.spawns) == 1
         assert await ctx.list_events(kind="skipped_live_check") == []
 
@@ -1169,7 +1095,7 @@ def test_live_check_absent_seam_keeps_legacy_behaviour(tmp_path):
         await _seed_row()
         loop, rec, ctx = build_loop(candidates=[batch("o/r#7")])
         await loop.tick()
-        assert [b.primary for b in rec.claims] == ["o/r#7"]
+        assert [b.primary for b in rec.announced] == ["o/r#7"]
         assert len(rec.spawns) == 1
         assert await ctx.list_events(kind="skipped_live_check") == []
 
