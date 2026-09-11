@@ -2,8 +2,10 @@
 Lets the translator/driver be tested without spawning `claude` or spending quota."""
 from __future__ import annotations
 import asyncio
+from typing import Any
 from claude_agent_sdk import (SystemMessage, StreamEvent, AssistantMessage, UserMessage,
                               ResultMessage, ToolUseBlock, ToolResultBlock, HookEventMessage)
+from claude_agent_sdk.types import TaskNotificationStatus, TaskUpdatedStatus, TaskUsage
 
 from server.sessions.sdk_contract import is_turn_message
 
@@ -81,7 +83,7 @@ def task_started(task_id: str, tool_use_id: str | None, description: str = "slee
                  uuid: str = "ts1"):
     """system/task_started as claude 2.1.268 emits it when a Task sub-agent spawns."""
     from claude_agent_sdk import TaskStartedMessage
-    data = {"type": "system", "subtype": "task_started", "task_id": task_id,
+    data: dict[str, Any] = {"type": "system", "subtype": "task_started", "task_id": task_id,
             "description": description, "subagent_type": subagent_type,
             "is_backgrounded": backgrounded, "spawn_depth": depth, "task_type": task_type,
             "uuid": uuid, "session_id": sid}
@@ -95,8 +97,9 @@ def task_progress(task_id: str, tool_use_id: str | None, activity: str = "Runnin
                   total_tokens: int = 19591, tool_uses: int = 1, duration_ms: int = 4098,
                   last_tool: str | None = "Bash", sid: str = "sess-1", uuid: str = "tp1"):
     from claude_agent_sdk import TaskProgressMessage
-    usage = {"total_tokens": total_tokens, "tool_uses": tool_uses, "duration_ms": duration_ms}
-    data = {"type": "system", "subtype": "task_progress", "task_id": task_id,
+    usage: TaskUsage = {"total_tokens": total_tokens, "tool_uses": tool_uses,
+                        "duration_ms": duration_ms}
+    data: dict[str, Any] = {"type": "system", "subtype": "task_progress", "task_id": task_id,
             "description": activity, "usage": usage, "last_tool_name": last_tool,
             "uuid": uuid, "session_id": sid}
     if tool_use_id is not None:
@@ -105,19 +108,21 @@ def task_progress(task_id: str, tool_use_id: str | None, activity: str = "Runnin
                                description=activity, usage=usage, uuid=uuid, session_id=sid,
                                tool_use_id=tool_use_id, last_tool_name=last_tool)
 
-def task_updated(task_id: str, status: str = "killed", sid: str = "sess-1", uuid: str = "tu1"):
+def task_updated(task_id: str, status: TaskUpdatedStatus = "killed", sid: str = "sess-1",
+                 uuid: str = "tu1"):
     from claude_agent_sdk import TaskUpdatedMessage
-    patch = {"status": status, "end_time": 1789150650196}
-    data = {"type": "system", "subtype": "task_updated", "task_id": task_id, "patch": patch,
-            "uuid": uuid, "session_id": sid}
+    patch: dict[str, Any] = {"status": status, "end_time": 1789150650196}
+    data: dict[str, Any] = {"type": "system", "subtype": "task_updated", "task_id": task_id,
+            "patch": patch, "uuid": uuid, "session_id": sid}
     return TaskUpdatedMessage(subtype="task_updated", data=data, task_id=task_id, patch=patch,
                               status=status, session_id=sid, uuid=uuid)
 
-def task_notification(task_id: str, tool_use_id: str | None, status: str = "completed",
-                      summary: str = "sleep probe", usage: dict | None = None,
+def task_notification(task_id: str, tool_use_id: str | None,
+                      status: TaskNotificationStatus = "completed",
+                      summary: str = "sleep probe", usage: TaskUsage | None = None,
                       sid: str = "sess-1", uuid: str = "tn1"):
     from claude_agent_sdk import TaskNotificationMessage
-    data = {"type": "system", "subtype": "task_notification", "task_id": task_id,
+    data: dict[str, Any] = {"type": "system", "subtype": "task_notification", "task_id": task_id,
             "status": status, "output_file": f"/tmp/tasks/{task_id}.output",
             "summary": summary, "uuid": uuid, "session_id": sid}
     if tool_use_id is not None:
