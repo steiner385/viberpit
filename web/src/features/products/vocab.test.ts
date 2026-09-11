@@ -73,3 +73,14 @@ it('names the stage the gate would move to, and nothing past the end', () => {
   expect(nextStage('bogus')).toBeNull()
   expect(nextStage(null)).toBeNull()
 })
+
+describe('DELIVERY vocabulary (finish-line D9)', () => {
+  it('names the section, both scopes and the five automation tabs', async () => {
+    const { DELIVERY, AUTOMATION_TAB, MODE_DESCRIPTION } = await import('./vocab')
+    expect(DELIVERY.label).toBe('Delivery')
+    expect([DELIVERY.automations, DELIVERY.ci]).toEqual(['Automations', 'CI health'])
+    expect(Object.values(AUTOMATION_TAB)).toEqual(['Status', 'Schedule', 'Events', 'Sessions', 'Config'])
+    expect(DELIVERY.help.length).toBeGreaterThan(40)
+    expect(Object.keys(MODE_DESCRIPTION)).toEqual(['off', 'propose', 'auto'])
+  })
+})

@@ -128,3 +128,25 @@ export const NEXT_ACTION_LABEL: Record<string, string> = {
 }
 
 export const nextActionLabel = (type: string | null | undefined) => lookup(NEXT_ACTION_LABEL, type)
+
+/** The Delivery section and its list scopes (finish-line spec §4.1, §4.4). */
+export const DELIVERY = {
+  label: 'Delivery',
+  automations: 'Automations',
+  ci: 'CI health',
+  help: 'Is delivery healthy? Every automation that runs against your repos and sessions — what it is doing, what it needs from you, its schedule and configuration — and the CI health of each tracked repository: slow, flaky and regressing checks.',
+} as const
+
+/** The automation detail's tabs, in order (finish-line spec §4.4). */
+export const AUTOMATION_TAB = {
+  status: 'Status', schedule: 'Schedule', events: 'Events', sessions: 'Sessions', config: 'Config',
+} as const
+export type AutomationTab = keyof typeof AUTOMATION_TAB
+export const AUTOMATION_TABS = Object.keys(AUTOMATION_TAB) as readonly AutomationTab[]
+
+/** What each automation mode means, beside the mode select. */
+export const MODE_DESCRIPTION: Record<string, string> = {
+  off: 'Not monitoring.',
+  propose: 'Suggests actions — you approve before anything runs.',
+  auto: 'Acts automatically without confirmation.',
+}
