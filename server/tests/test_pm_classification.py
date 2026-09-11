@@ -16,6 +16,7 @@ from server.pm.classification import (
     map_branch_name,
     parse_classification_output,
 )
+from server.pm.fenced_json import FencedJsonError, extract_fenced_json
 
 
 def _item(n: int) -> WorkItemBrief:
@@ -266,3 +267,56 @@ def test_initial_and_critic_prompts_still_withhold_auto_merge():
         slug="acme", repo="acme/app", default_branch="main",
         open_count=10, closed_count=20)
     assert "do not arm auto-merge" in initial.lower()
+
+
+# --------------------------------------------------------------------------- #
+# Shared fenced-JSON extractor (C4-R4): ONE implementation, used by both the   #
+# classification (array) and materialization (object) parsers.                 #
+# --------------------------------------------------------------------------- #
+
+def test_extract_fenced_json_prefers_the_fenced_block():
+    text = 'prose [1, 2] more\n```json\n[{"a": 1}]\n```\ntrailer [3]'
+    assert extract_fenced_json(text, shape="array") == [{"a": 1}]
+
+
+def test_extract_fenced_json_prefers_the_LAST_fence():
+    """A session that shows a decoy/example block does it BEFORE its answer.
+
+    The fence the answer lives in is the final one, so a leading block — the
+    restated schema, a quoted snippet, a first draft — must never win."""
+    text = '''```text
+["decoy"]
+```
+```json
+[{"number": 1}]
+```'''
+    assert extract_fenced_json(text, shape="array") == [{"number": 1}]
+
+
+def test_parse_classification_output_ignores_a_decoy_fence():
+    text = '''```text
+[{"number": 99, "kind": "issue", "feature_slug": "wrong", "rationale": "decoy"}]
+```
+```json
+[{"number": 1, "kind": "issue", "feature_slug": "sessions", "rationale": "real"}]
+```'''
+    (c,) = parse_classification_output(text)
+    assert (c.number, c.feature_slug) == (1, "sessions")
+
+
+def test_extract_fenced_json_falls_back_to_bare_brackets():
+    assert extract_fenced_json('chatter [1, 2] tail', shape="array") == [1, 2]
+    assert extract_fenced_json('chatter {"a": 1} tail', shape="object") == {"a": 1}
+
+
+def test_extract_fenced_json_object_shape_ignores_an_array():
+    """The object parser must not be fooled by a JSON array in the prose."""
+    with pytest.raises(FencedJsonError):
+        extract_fenced_json("here is a list: [1, 2, 3]", shape="object")
+
+
+def test_extract_fenced_json_raises_on_absent_and_on_invalid_json():
+    with pytest.raises(FencedJsonError):
+        extract_fenced_json("no json at all", shape="array")
+    with pytest.raises(FencedJsonError):
+        extract_fenced_json("[not, valid, json]", shape="array")

@@ -236,3 +236,7 @@ class InProcessOrchestratorAdapter:
     async def pm_classify_run(self, *a, **k): return await _maybe_await(self._orch.pm_classify_run(*a, **k))
     async def pm_advance_map_merged(self, *a, **k): return await _maybe_await(self._orch.pm_advance_map_merged(*a, **k))
     async def pm_advance_live(self, *a, **k): return await _maybe_await(self._orch.pm_advance_live(*a, **k))
+    # --- plan materialization human gate (spec 003 §7b, #992) ---
+    # The GitHub writes belong to the orchestrator (its gh credential ladder and
+    # its journal), so the API reaches them only through here.
+    async def sdlc_materialize_apply(self, *a, **k): return await _maybe_await(self._orch._sdlc_materialize_apply(*a, **k))

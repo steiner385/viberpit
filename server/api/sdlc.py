@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -18,6 +18,7 @@ from server.db.models import (
     Initiative,
     InitiativeArtifact,
     InitiativeFeature,
+    MaterializationProposal,
     Project,
     Session as DbSession,
     TriageItem,
@@ -31,6 +32,7 @@ from server.sdlc.engine import (
     Done,
     HandoffToBuild,
     InitiativeView,
+    Materialize,
     NeedsHuman,
     Propose,
     advance_stage,
@@ -207,6 +209,8 @@ def _action_to_dict(action: object) -> dict:
         return {"type": "propose", "kind": action.kind}
     if isinstance(action, AwaitApproval):
         return {"type": "await_approval", "kind": action.kind}
+    if isinstance(action, Materialize):
+        return {"type": "materialize", "kind": action.kind}
     if isinstance(action, HandoffToBuild):
         return {"type": "handoff_to_build", "issue": action.issue}
     if isinstance(action, Done):
@@ -358,6 +362,10 @@ async def get_initiative(
         status=ini.status,
         repo=ini.repo or "",
         issue=ini.origin_ref,
+        # Same fold as the synthesizer's projection: an epic pointer means the
+        # plan has already been materialized (spec 003 §7b). NOT the wire `epic`
+        # key below, which is the epic *progress* object.
+        epic=f"{ini.epic_repo}#{ini.epic_number}" if ini.epic_number else None,
     )
     artifact_views = [
         ArtifactView(
@@ -424,6 +432,165 @@ async def advance_initiative(
     d = _initiative_to_dict(ini)
     await _decorate(db, [ini], [d])
     return d
+
+
+# --------------------------------------------------------------------------- #
+# Plan materialization — the human gate (spec 003 §7b, #992)                    #
+# --------------------------------------------------------------------------- #
+
+
+def _materialization_to_dict(p: MaterializationProposal) -> dict:
+    payload = p.payload or {}
+    return {
+        "id": p.id,
+        "initiativeId": p.initiative_id,
+        "status": p.status,
+        "sessionId": p.session_id,
+        "rationale": p.rationale,
+        "epicTitle": payload.get("epic_title"),
+        "epicBody": payload.get("epic_body"),
+        "tasks": [{"title": t.get("title"), "body": t.get("body"),
+                   "dependsOn": list(t.get("depends_on") or [])}
+                  for t in (payload.get("tasks") or []) if isinstance(t, dict)],
+        # What a partial apply already created, so a human looking at a blocked
+        # initiative sees which issues exist before tapping accept again.
+        "created": payload.get("created"),
+        "createdAt": p.created_at.isoformat() if p.created_at else None,
+        "resolvedAt": p.resolved_at.isoformat() if p.resolved_at else None,
+    }
+
+
+async def _latest_materialization(
+    db, slug: str,
+) -> tuple[Initiative, MaterializationProposal]:
+    """The initiative and its newest proposal, whatever its status.
+
+    Newest-of-any-status rather than the pending one: a rejected proposal is
+    still what the human last saw, and hiding it would make the page go blank
+    between a rejection and the next decompose session's ingest."""
+    ini = (await db.execute(select(Initiative).where(
+        Initiative.slug == slug))).scalar_one_or_none()
+    if ini is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found"})
+    prop = (await db.execute(
+        select(MaterializationProposal)
+        .where(MaterializationProposal.initiative_id == ini.id)
+        .order_by(MaterializationProposal.created_at.desc())
+    )).scalars().first()
+    if prop is None:
+        raise HTTPException(status_code=404, detail={
+            "error": "no_proposal",
+            "message": f"initiative '{slug}' has no materialization proposal"})
+    return ini, prop
+
+
+def _require_pending(prop: MaterializationProposal) -> None:
+    if prop.status != "pending":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "not_pending",
+            "message": f"proposal is '{prop.status}', not pending"})
+
+
+@router.get("/initiatives/{slug}/materialization")
+async def get_materialization(
+    slug: str,
+    _identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """The initiative's latest decomposition proposal (spec 003 §7b)."""
+    _ini, prop = await _latest_materialization(db, slug)
+    return _materialization_to_dict(prop)
+
+
+@router.post("/initiatives/{slug}/materialization/accept")
+async def accept_materialization(
+    slug: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """The human gate: create the epic, its task sub-issues and the chain.
+
+    Every GitHub call belongs to the orchestrator seam — the router only decides
+    that a human said yes. A failure is a 502 with the step that failed and the
+    proposal still ``pending``, because the apply is resumable: tapping accept
+    again continues from the issues the journal already recorded rather than
+    creating a second set.
+
+    Materialize is the plan stage's terminal action (spec §7b), so a confirmed
+    accept IS the stage's human gate: the apply advances the initiative and this
+    writes the SAME ``sdlc.initiative.advance`` audit row the Advance route
+    writes, marked with the reason, so the stage history reads the same either
+    way."""
+    _ini, prop = await _latest_materialization(db, slug)
+    _require_pending(prop)
+    result = await request.app.state.sessions.sdlc_materialize_apply(prop.id)
+    await record_audit(
+        db=db,
+        type="sdlc.materialization.accept",
+        identity=identity,
+        detail={"slug": slug, "proposalId": prop.id, "ok": bool(result.get("ok")),
+                "step": result.get("step"), "tasks": result.get("tasks")},
+    )
+    if not result.get("ok"):
+        # Commit the audit BEFORE raising: the dependency rolls the session back
+        # on an exception, and a failed materialization is exactly the attempt
+        # the trail must keep.
+        await db.commit()
+        # An apply already running for this proposal is a CONFLICT, not a gateway
+        # failure: nothing went wrong, the same write is in flight, and the answer
+        # a second tap needs is "wait", not "retry" (C4-R17).
+        if result.get("step") == "in_flight":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+                "error": "apply_in_flight",
+                "message": str(result.get("error")
+                               or "an apply for this proposal is already running")})
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={
+            "error": "materialize_failed", "step": result.get("step"),
+            "message": str(result.get("error") or "materialization failed")})
+    await record_audit(
+        db=db,
+        type="sdlc.initiative.advance",
+        identity=identity,
+        detail={"slug": slug, "stage": result.get("stage"), "reason": "materialize"},
+    )
+    return result
+
+
+@router.post("/initiatives/{slug}/materialization/reject")
+async def reject_materialization(
+    slug: str,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Turn the decomposition down, and leave the initiative somewhere the loop
+    can still act on: the rejection frees the synthesizer to decompose the plan
+    again on a later tick (C4-R14/R15), and the rejected row is what moves the
+    attempt key so the next tick spawns a NEW session instead of re-reading the
+    one just turned down.
+
+    A proposal rejected after a FAILED PARTIAL apply is the exception (C4-R19a).
+    Nothing here undoes anything: the epic and any tasks the journal recorded
+    still exist on GitHub, so the initiative stays ``blocked`` where the failed
+    apply left it — re-decomposing a plan whose epic already exists would create
+    a second one. Closing those issues is a human's call, and the proposal's
+    ``created`` map (returned by the GET) is the list of what exists.
+
+    With nothing created, ``blocked`` would be a dead end: ``next_action`` answers
+    ``NeedsHuman`` for a blocked initiative, so the very rejection meant to invite
+    another attempt would prevent one. Back to ``awaiting_human`` — the parked
+    state the plan stage already uses — and the next tick decomposes again."""
+    _ini, prop = await _latest_materialization(db, slug)
+    _require_pending(prop)
+    prop.status = "rejected"
+    prop.resolved_at = datetime.now(timezone.utc)
+    created = (prop.payload or {}).get("created") or {}
+    if not (created.get("epic") or created.get("tasks")):
+        _ini.status = "awaiting_human"
+    await db.flush()
+    await record_audit(db=db, type="sdlc.materialization.reject", identity=identity,
+                       detail={"slug": slug, "proposalId": prop.id})
+    return _materialization_to_dict(prop)
 
 
 # --------------------------------------------------------------------------- #

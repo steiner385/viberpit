@@ -398,6 +398,20 @@ _MIRROR_EVICT_STRIKES: int = 2
 # task and its own (faster) cadence, independent of how slow any automation tick is.
 _MIRROR_RECONCILE_INTERVAL_S: float = 10.0
 
+# Opening of the text `_sdlc_show_committed_file` seeds when it cannot read the artifact
+# out of the clone. One constant because a caller that must NOT seed the fallback (the
+# decompose session — it would invent a plan) tests for it; a literal on both sides would
+# drift the moment the wording is reworded.
+_SDLC_UNREADABLE_PREFIX = "(could not inline"
+
+# Settle budget for a decompose session's chained ingest (C4-R20): 240 polls at the
+# shared 30 s interval = 2 h. The classify chain's 60 (30 min) is sized for a read-only
+# scan; a decomposition reads a whole plan and writes a task breakdown, and a session
+# that queued behind an account's headroom can idle for an hour before it even starts.
+# Giving up early is the expensive outcome — the session finishes, its JSON is never
+# read, and the initiative sits parked with nothing to review.
+_MATERIALIZE_SETTLE_ATTEMPTS = 240
+
 # Periodic re-check of the archived-session cap, so a limit LOWERED via settings takes
 # effect even with no new archive event (the on-archive path covers the fresh-archive case).
 _ARCHIVE_LIMIT_SWEEP_INTERVAL: float = 300.0
@@ -1119,12 +1133,26 @@ class SessionOrchestrator:
             record_artifact=self._sdlc_record_artifact,
             set_status=self._sdlc_set_status,
             spawn=self._sdlc_spawn_synth,
+            spawn_materialize=self._sdlc_spawn_materialize,
+            has_pending_materialization=self._sdlc_has_pending_materialization,
+            materialization_attempts=self._sdlc_materialization_attempts_for,
             pr_lookup=self._sdlc_pr_lookup,
             update_artifact=self._sdlc_update_artifact,
             read_config=self._sdlc_synth_read_config,
             clock=time.monotonic,
         )
         self._sdlc_synth_task: asyncio.Task | None = None
+        #: Slugs already warned about an unreadable plan artifact, and decompose
+        #: keys already warned about a deduped spawn, so the materialize seam's
+        #: warns fire once rather than on every tick. Both are also created
+        #: lazily at their use site — the seam tests build the orchestrator with
+        #: ``__new__``, which never runs this constructor.
+        self._materialize_unreadable_slugs: set[str] = set()
+        self._materialize_deduped_keys: set[str] = set()
+        #: One lock per proposal id being applied, so two accepts of the same
+        #: proposal cannot both read "nothing created yet" and create two epics
+        #: (C4-R17). Lazily created at its use site for the same reason.
+        self._materialize_apply_locks: dict[str, asyncio.Lock] = {}
         # Control-Band Monitor control loop (#804): the BACK of the SDLC loop.
         # Deterministic Western-Electric detection over ccswitch's own delivery
         # metrics against the committed `server/sdlc/bands.yaml` policy; a breach
@@ -6984,23 +7012,42 @@ class SessionOrchestrator:
                     name=f"pm-classify-ingest-{slug}")
         return len(chunk)
 
-    # Statuses meaning "the classify turn has finished and its final message
-    # exists" — includes settled-but-live states (idle/done), not just terminal
-    # ones, because a one-shot classify session's first finished turn IS the
-    # deliverable.
-    _PM_CLASSIFY_SETTLED = ("complete", "done", "idle", "ended", "archived")
+    # Statuses meaning "the turn has finished and its final message exists" —
+    # includes settled-but-live states (idle/done), not just terminal ones,
+    # because a one-shot session's first finished turn IS the deliverable.
+    _CHAINED_SESSION_SETTLED = ("complete", "done", "idle", "ended", "archived")
 
-    async def _pm_classify_output_text(self, session_id: str) -> str:
+    async def _await_session_settled(self, session_id: str, *, attempts: int = 60,
+                                     interval_s: float = 30.0) -> bool:
+        """Poll until *session_id* has finished a turn; False if it never does.
+
+        The one settle-poll for every chained ingest (classify, materialize) —
+        two copies would drift on the status tuple, and a chain that waits on the
+        wrong set either harvests an empty transcript or never harvests at all.
+        A vanished session is a definitive False: nothing will ever settle."""
+        for _ in range(attempts):
+            rec = self.get_session(session_id)
+            if rec is None:
+                log.warning("chain_ingest: session %s vanished — giving up", session_id)
+                return False
+            if getattr(rec, "status", None) in self._CHAINED_SESSION_SETTLED:
+                return True
+            await asyncio.sleep(interval_s)
+        log.warning("chain_ingest: session %s never settled after %d attempts",
+                    session_id, attempts)
+        return False
+
+    async def _chained_session_output_text(self, session_id: str) -> str:
         """Full text of the session's final assistant turn(s), UNTRUNCATED.
 
-        The classify deliverable is a ```json fenced array that can be many KB —
-        the autopilot tail helper truncates per-entry, so this is a separate,
+        A chained ingest's deliverable is a ```json fenced block that can be many
+        KB — the autopilot tail helper truncates per-entry, so this is a separate,
         lossless extractor. Best-effort: any failure returns ""."""
         from server.sessions.events import TextDelta
         try:
             window = await self.transcript_window(session_id, limit=2)
         except Exception:
-            log.warning("pm_classify.output_text failed sid=%s", session_id,
+            log.warning("chain_ingest.output_text failed sid=%s", session_id,
                         exc_info=True)
             return ""
         if window is None:
@@ -7017,22 +7064,14 @@ class SessionOrchestrator:
         Internal-only (chained by ``pm_classify_run``; never request-reachable, so
         no facade/RPC forward). A vanished session or timeout just gives up — the
         classify can be re-dispatched, and ingest is idempotent on re-runs."""
-        for _ in range(attempts):
-            rec = self.get_session(session_id)
-            if rec is None:
-                log.warning("pm_classify.chain_ingest: session %s vanished — "
-                            "giving up", session_id)
-                return 0
-            if getattr(rec, "status", None) in self._PM_CLASSIFY_SETTLED:
-                text = await self._pm_classify_output_text(session_id)
-                written = await self._pm_classify_ingest(session_id, slug, text)
-                log.info("pm_classify.chain_ingest: session=%s slug=%s wrote=%d",
-                         session_id, slug, written)
-                return written
-            await asyncio.sleep(delay)
-        log.warning("pm_classify.chain_ingest: session %s never settled after "
-                    "%d attempts — output not ingested", session_id, attempts)
-        return 0
+        if not await self._await_session_settled(session_id, attempts=attempts,
+                                                 interval_s=delay):
+            return 0
+        text = await self._chained_session_output_text(session_id)
+        written = await self._pm_classify_ingest(session_id, slug, text)
+        log.info("pm_classify.chain_ingest: session=%s slug=%s wrote=%d",
+                 session_id, slug, written)
+        return written
 
     async def _pm_classify_ingest(
             self, session_id: str, project_slug: str, output_text: str) -> int:
@@ -7184,7 +7223,10 @@ class SessionOrchestrator:
                 Initiative.status != "done", Initiative.stage != "done"))).scalars().all()
         return [{"id": r.id, "slug": r.slug, "repo": r.repo, "title": r.title,
                  "stage": r.stage, "status": r.status, "origin": r.origin,
-                 "origin_ref": r.origin_ref} for r in rows]
+                 "origin_ref": r.origin_ref,
+                 # The engine decides plan-stage materialization off this pointer
+                 # (spec 003 §7b) — without it every merged plan looks un-decomposed.
+                 "epic_repo": r.epic_repo, "epic_number": r.epic_number} for r in rows]
 
     async def _sdlc_list_artifacts(self, initiative_id: str) -> list[dict]:
         """Every InitiativeArtifact index row for *initiative_id* as a plain dict."""
@@ -7319,6 +7361,407 @@ class SessionOrchestrator:
             detail=detail,
         )
 
+    async def _sdlc_spawn_materialize(self, ini: dict):
+        """Spawn a de-duped decompose session for a merged plan (spec 003 §7b).
+
+        Same shape as ``_sdlc_spawn_synth`` — engine plan first (a refusal must
+        cost no account probe and no clone), then account, clone and the merged
+        artifact read off ``origin/<default>`` — but the deliverable is a JSON
+        decomposition in the final message, not a PR: nothing is created on
+        GitHub until a human accepts the ``MaterializationProposal``. Chains the
+        ingest that turns that message into the proposal row.
+
+        Returns None — spawning nothing — when a decompose session for this plan
+        is already live. ``spawn_session`` would hand back that SAME session on
+        the dedupe key, and the caller would then chain a SECOND ingest onto it
+        and re-emit; asking first makes a tick during the decompose a no-op.
+
+        The key is per ATTEMPT (``<slug>:materialize:<n>``, n = proposals so far,
+        any status) — C4-R15. With one key per initiative, a REJECTED proposal's
+        finished session still matched ``spawn_session``'s dedupe, which handed it
+        straight back; the chained ingest then re-harvested its stale transcript
+        into a byte-identical pending proposal, so the rejection never stuck. A
+        new attempt gets a new key, while a still-running attempt dedupes exactly
+        as before because the live check and the spawn use the SAME key."""
+        from server.automations.model_pick import resolve_model
+        from server.pm.materialize import build_materialize_prompt
+        from server.sdlc.prompts import artifact_path
+        repo = str(ini.get("repo") or "")
+        slug = str(ini.get("slug") or "")
+        if not repo or not slug:
+            return None
+        async with db_session() as db:
+            attempt = await self._sdlc_materialization_attempts(
+                db, str(ini.get("id") or ""))
+        origin_ref = f"{slug}:materialize:{attempt}"
+        # Both no-op cases up front, before the account probe and the clone: a
+        # refusal must cost nothing, and BOTH conditions persist across ticks.
+        prior = await self._sdlc_dedupe_session_for(origin_ref)
+        if prior is not None:
+            prior_id, prior_status = prior
+            from server.pm.desired_state import (
+                ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES)
+            if prior_status in (ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES):
+                return None  # still decomposing (C4-R14) — a silent no-op
+            # Finished, but still what spawn_session's dedupe would hand back, and
+            # the attempt number has not moved (its ingest never wrote a proposal).
+            # Chaining onto it would re-harvest a transcript this tick did not
+            # produce (C4-R15). Latched: the condition holds until the attempt
+            # moves, so an unlatched emit would repeat on every tick forever.
+            seen: set[str] | None = getattr(self, "_materialize_deduped_keys", None)
+            if seen is None:
+                seen = self._materialize_deduped_keys = set()
+            if origin_ref not in seen:
+                seen.add(origin_ref)
+                await self._sdlc_emit(
+                    "warn", f"{slug}: the decompose session {prior_id} for this "
+                            "attempt has finished without a proposal — not "
+                            "re-running it; review that session",
+                    kind="materialization_spawn_deduped", target=slug,
+                    session_id=prior_id)
+            return None
+        plan = await self._sdlc_synth_ctx.launch_plan_or_refuse(origin_ref)
+        if plan is None:
+            return None
+        engine, _launch_config = plan
+        account = await self._automation_account_for(
+            self._sdlc_synth_ctx, origin_ref, engine=engine)
+        if account is None:
+            return None
+        _mode, config = await self._sdlc_synth_read_config()
+        url = f"https://github.com/{repo}.git"
+        cwd = await asyncio.to_thread(
+            gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
+        default_branch = await self._sdlc_default_branch(repo)
+        path = artifact_path(slug, "plan")
+        plan_markdown = await asyncio.to_thread(
+            self._sdlc_show_committed_file, cwd, f"origin/{default_branch}", path)
+        if plan_markdown.startswith(_SDLC_UNREADABLE_PREFIX):
+            # Seeding the "read that file yourself" fallback is how the spec/plan
+            # stages survive a stale clone, but a decompose session cannot: with
+            # no plan text it would invent a decomposition from the slug, and a
+            # human would be asked to accept fiction. Skip loudly instead — but
+            # warn ONCE per slug (as the loop's `materialization_unwired` warn
+            # does): the condition persists, so every tick would re-emit it.
+            # Lazily created as well as set in __init__: the seam tests build the
+            # orchestrator with __new__ (no __init__ runs), so reading the
+            # attribute directly would AttributeError there.
+            warned: set[str] | None = getattr(
+                self, "_materialize_unreadable_slugs", None)
+            if warned is None:
+                warned = self._materialize_unreadable_slugs = set()
+            if slug not in warned:
+                warned.add(slug)
+                await self._sdlc_emit(
+                    "warn", f"cannot decompose {slug}: {path} is unreadable on "
+                            f"origin/{default_branch}",
+                    kind="materialization_plan_unreadable", target=slug,
+                    detail={"path": path, "ref": f"origin/{default_branch}"})
+            return None
+        # The decomposition contract lives in the prompt builder (one source of
+        # truth); only the operational shape of THIS session is added here.
+        prompt = build_materialize_prompt(slug, repo, plan_markdown) + (
+            f"\n\nThe plan above is `{path}` on `origin/{default_branch}`. Do not "
+            "change any file, do not commit, and do not open a pull request: this "
+            "session's only deliverable is the fenced JSON, which must be the last "
+            "thing in your final message."
+        )
+        detail: dict = {"initiative": slug, "kind": "materialize",
+                        "engine": engine.value}
+        model = model_source = reasoning_effort = None
+        summary = f"{ini.get('title') or slug}  (decompose)"
+        # Same model policy as the spec/plan sessions — one `default_model`
+        # setting covers every session this automation spawns.
+        if engine is AgentEngine.CLAUDE_CODE:
+            model, model_source = await resolve_model(config, summary)
+            if model is not None:
+                detail.update(model=model, model_source=model_source)
+        elif engine is AgentEngine.CODEX:
+            reasoning_effort, model_source = await self._resolve_codex_auto_effort(
+                account, config, summary)
+            if reasoning_effort is not None:
+                detail.update(reasoning_effort=reasoning_effort,
+                              model_source=model_source)
+        rec = await self._sdlc_synth_ctx.spawn_session(
+            origin_ref=origin_ref,
+            dedupe_key=origin_ref,
+            repo=repo,
+            cwd=cwd,
+            account=account,
+            engine=engine,
+            name=f"sdlc materialize {slug}",
+            initial_prompt=prompt,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            detail=detail,
+        )
+        if rec is None:
+            return None
+        # No post-spawn identity guard: ``_sdlc_dedupe_session_for`` above runs the
+        # SAME query ``spawn_session``'s find-or-create does (origin + key + not
+        # ended), so reaching this line means the dedupe found nothing and ``rec``
+        # is this call's own session. A second check here would be dead code.
+        # Harvest wiring: without the chain the session finishes and its JSON is
+        # never read (the bug the classify chain was added for).
+        self._spawn(self._sdlc_materialize_chain_ingest(rec.id, slug),
+                    name=f"sdlc-materialize-ingest-{slug}")
+        return rec
+
+    async def _sdlc_materialize_chain_ingest(
+            self, session_id: str, slug: str, *,
+            attempts: int = _MATERIALIZE_SETTLE_ATTEMPTS,
+            delay: float = 30.0) -> int:
+        """Wait (bounded) for a decompose session to settle, then ingest its JSON.
+
+        Fire-and-forget: nothing awaits this task, so every failure is absorbed
+        here — an escaping exception would surface only as a 'never retrieved'
+        log and the initiative would sit parked with no explanation."""
+        try:
+            if not await self._await_session_settled(session_id, attempts=attempts,
+                                                     interval_s=delay):
+                # Say so and stop. NOT `blocked`: the session may still be alive
+                # and about to answer, and blocking would take the initiative out
+                # of the engine's hands over a budget this chain owns, not a
+                # decision anyone made (C4-R20).
+                await self._sdlc_emit(
+                    "warn", f"the decompose session for {slug} has not finished "
+                            "within the ingest budget — its decomposition will not "
+                            "be read; re-run it once it settles",
+                    kind="materialization_ingest_timeout", target=slug,
+                    session_id=session_id, detail={"attempts": attempts})
+                return 0
+            return await self._sdlc_materialize_ingest(session_id, slug)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.warning("sdlc_materialize.chain_ingest_failed session=%s slug=%s",
+                        session_id, slug, exc_info=True)
+            await self._sdlc_emit("warn", f"could not ingest the decomposition for {slug}",
+                                  kind="materialization_ingest_failed", target=slug,
+                                  session_id=session_id)
+            return 0
+
+    async def _sdlc_dedupe_session_for(self, origin_ref: str) -> tuple[str, str] | None:
+        """``(id, status)`` of the session ``spawn_session`` would hand back for
+        *origin_ref*, or None — deliberately the SAME query its find-or-create
+        runs (this automation's origin, the key, and not ended).
+
+        The caller splits it two ways. A status in the live set (``desired_state``,
+        the app's one definition of "a session holds this") means the decompose is
+        still running and the tick is a silent no-op — C4-R14, deliberately NOT
+        ``_existing_session``'s "not ended" rule, which would let a REJECTED
+        proposal's ``complete`` session block every future decompose. Any other
+        status means the dedupe WOULD return a finished session for an attempt
+        that never produced a proposal, which must not be re-chained (C4-R15)."""
+        from sqlalchemy import select
+        from server.db.models import INACTIVE_SESSION_STATUSES, Session as DbSession
+        async with db_session() as db:
+            row = (await db.execute(
+                select(DbSession.id, DbSession.status).where(
+                    DbSession.origin == self._sdlc_synth_ctx.automation_id,
+                    DbSession.origin_ref == origin_ref,
+                    DbSession.status.not_in(INACTIVE_SESSION_STATUSES)))).first()
+        return (str(row[0]), str(row[1] or "")) if row is not None else None
+
+    async def _sdlc_materialize_apply(self, proposal_id: str) -> dict:
+        """Apply an accepted MaterializationProposal (spec 003 §7b, human gate).
+
+        THE seam the API calls: the router decides that a human said yes, this
+        owns the GitHub transport (``_pm_reconcile_mutate``, the App/PAT ladder
+        every other 003 write uses) and the activity feed. Returns the apply
+        result dict unchanged — a failure is data, not an exception, because the
+        proposal stays pending and resumable.
+
+        SERIALISED PER PROPOSAL (C4-R17). The apply's resume key is the ``created``
+        map it commits between calls, so two concurrent runs both read "nothing
+        created yet" and both create the epic: a duplicate the journal cannot undo.
+        A second caller is REFUSED rather than queued — waiting would apply the
+        same proposal twice in a row, and the honest answer to "is this running?"
+        is more use to the human than a reply ten GitHub calls later.
+
+        The lock dict is created lazily as well as in ``__init__``: the seam tests
+        build the orchestrator with ``__new__`` (no constructor runs), exactly as
+        ``_materialize_unreadable_slugs`` is handled."""
+        locks: dict[str, asyncio.Lock] | None = getattr(
+            self, "_materialize_apply_locks", None)
+        if locks is None:
+            locks = self._materialize_apply_locks = {}
+        lock = locks.setdefault(proposal_id, asyncio.Lock())
+        if lock.locked():
+            # No DB work at all on this path: the answer does not depend on any
+            # row, and a read here would only widen the window it is closing.
+            return {"ok": False, "step": "in_flight",
+                    "error": "an apply for this proposal is already running"}
+        try:
+            async with lock:
+                return await self._sdlc_materialize_apply_locked(proposal_id)
+        finally:
+            # Nobody ever waits on this lock (a second caller is refused above),
+            # so it is free the moment the run ends — drop it rather than keep one
+            # per proposal ever applied for the daemon's whole life.
+            if not lock.locked():
+                locks.pop(proposal_id, None)
+
+    async def _sdlc_materialize_apply_locked(self, proposal_id: str) -> dict:
+        """The apply itself; the caller holds this proposal's lock (C4-R17)."""
+        from sqlalchemy import select
+        from server.db.models import Initiative, MaterializationProposal
+        from server.pm.materialize_apply import apply
+        now = self._pm_sync_now_utc()
+        async with db_session() as db:
+            proposal = (await db.execute(select(MaterializationProposal).where(
+                MaterializationProposal.id == proposal_id))).scalar_one_or_none()
+            if proposal is None:
+                return {"ok": False, "step": "load",
+                        "error": f"no such proposal: {proposal_id}"}
+            slug = str((await db.execute(select(Initiative.slug).where(
+                Initiative.id == proposal.initiative_id))).scalars().first() or "")
+            result = await apply(db, proposal, mutate=self._pm_reconcile_mutate,
+                                 now=now)
+        if result.get("ok"):
+            epic = (result.get("epic") or {}).get("number")
+            await self._sdlc_emit(
+                "info", f"materialized {slug}: epic #{epic} with "
+                        f"{result.get('tasks')} tasks",
+                kind="materialized", target=slug,
+                # parkedEdges is part of the outcome, not a detail: a chain with a
+                # dropped edge looks identical on the board otherwise.
+                detail={"epic": epic, "tasks": result.get("tasks"),
+                        "edges": result.get("edges"),
+                        "parkedEdges": result.get("parkedEdges")})
+        else:
+            await self._sdlc_emit(
+                "warn", f"could not materialize {slug}: {result.get('error')}",
+                kind="materialization_failed", target=slug,
+                detail={"step": result.get("step"), "error": result.get("error")})
+        return result
+
+    @staticmethod
+    async def _sdlc_materialization_attempts(db, initiative_id: str) -> int:
+        """How many decomposition proposals this initiative has, ANY status.
+
+        The attempt number in the decompose session's dedupe key (C4-R15). Counting
+        every status is the point: a rejected attempt must still bump the key, or
+        its finished session is handed back by the dedupe and re-ingested."""
+        from sqlalchemy import func, select
+        from server.db.models import MaterializationProposal
+        return int((await db.execute(
+            select(func.count()).select_from(MaterializationProposal).where(
+                MaterializationProposal.initiative_id == initiative_id))).scalar() or 0)
+
+    @staticmethod
+    async def _sdlc_pending_materialization_id(db, initiative_id: str) -> str | None:
+        """Id of the MaterializationProposal awaiting the human gate, or None.
+
+        ONE query behind both users of "is this plan already decomposed and
+        waiting?" — the loop's spawn gate and the ingest's duplicate guard. Two
+        copies would drift, and the two directions of that drift are a second
+        decompose session and a second proposal row for one initiative."""
+        from sqlalchemy import select
+        from server.db.models import MaterializationProposal
+        return (await db.execute(select(MaterializationProposal.id).where(
+            MaterializationProposal.initiative_id == initiative_id,
+            MaterializationProposal.status == "pending"))).scalars().first()
+
+    async def _sdlc_has_pending_materialization(self, initiative_id: str) -> bool:
+        """Loop seam: does this initiative already have a proposal to review?
+
+        This — not ``Initiative.status`` — is the materialize park signal: the
+        plan Propose parks every initiative at ``awaiting_human`` long before the
+        decomposition exists (C4-R13a)."""
+        async with db_session() as db:
+            return (await self._sdlc_pending_materialization_id(
+                db, initiative_id)) is not None
+
+    async def _sdlc_materialization_attempts_for(self, initiative_id: str) -> int:
+        """Loop seam: how many decompositions this initiative has already spent.
+
+        The loop's neighbour of ``_sdlc_has_pending_materialization`` and the same
+        count the spawn key uses (``_sdlc_materialization_attempts``, one query for
+        both) — a decompose that keeps failing to parse must stop after
+        ``MATERIALIZE_MAX_ATTEMPTS`` rather than burning a session every tick."""
+        async with db_session() as db:
+            return await self._sdlc_materialization_attempts(db, initiative_id)
+
+    async def _sdlc_materialize_ingest(self, session_id: str, slug: str) -> int:
+        """Turn a decompose session's output into ONE pending MaterializationProposal.
+
+        Idempotent on the pending proposal, not on the session: a re-ingest (or a
+        second decompose session for the same plan) must never leave a human two
+        proposals to choose between.
+
+        A parse failure records a REJECTED proposal instead of blocking the
+        initiative (C4-R19b). Blocking was a dead end: ``next_action`` answers
+        ``NeedsHuman`` for a blocked initiative, so one unreadable final message
+        took the plan out of the loop until a human noticed and un-blocked it by
+        hand. The rejected row is both the record of the failed attempt and what
+        moves the attempt key, so the next tick decomposes again — bounded by
+        ``MATERIALIZE_MAX_ATTEMPTS`` in the loop."""
+        from sqlalchemy import select
+        from server.db.models import Initiative, MaterializationProposal
+        from server.pm.materialize import (
+            MaterializationParseError, parse_materialization_output)
+        text = await self._chained_session_output_text(session_id)
+        async with db_session() as db:
+            initiative_id = (await db.execute(select(Initiative.id).where(
+                Initiative.slug == slug))).scalars().first()
+        if initiative_id is None:
+            log.warning("sdlc_materialize.ingest: no initiative %s", slug)
+            return 0
+        try:
+            decomposition = parse_materialization_output(text)
+        except MaterializationParseError as e:
+            async with db_session() as db:
+                db.add(MaterializationProposal(
+                    initiative_id=initiative_id,
+                    status="rejected",
+                    session_id=session_id,
+                    payload={"source_session": session_id, "parse_error": str(e)},
+                    rationale=f"parse failed: {e}"[:500],
+                    resolved_at=self._pm_sync_now_utc()))
+                await db.commit()
+            await self._sdlc_emit("warn", f"could not read a decomposition for {slug}",
+                                  kind="materialization_parse_failed", target=slug,
+                                  session_id=session_id, detail={"error": str(e)})
+            return 0
+        async with db_session() as db:
+            dup = await self._sdlc_pending_materialization_id(db, initiative_id)
+            if dup is not None:
+                await self._sdlc_emit(
+                    "info", f"{slug} already has a materialization proposal awaiting review",
+                    kind="materialization_duplicate_ignored", target=slug,
+                    session_id=session_id)
+                return 0
+            db.add(MaterializationProposal(
+                initiative_id=initiative_id,
+                status="pending",
+                session_id=session_id,
+                payload={
+                    "epic_title": decomposition.epic_title,
+                    "epic_body": decomposition.epic_body,
+                    "tasks": [{"title": t.title, "body": t.body,
+                               "depends_on": list(t.depends_on)}
+                              for t in decomposition.tasks],
+                    "source_session": session_id,
+                },
+                # The prose the session wrote before the fence — the only place
+                # its reasoning survives, and what the human reads next to the
+                # task list.
+                rationale=(text.split("```", 1)[0].strip()[:500] or None),
+            ))
+            await db.commit()
+        log.info("sdlc_materialize.ingest: slug=%s tasks=%d session=%s",
+                 slug, len(decomposition.tasks), session_id)
+        return 1
+
+    async def _sdlc_emit(self, level: str, summary: str, **kw) -> None:
+        """Best-effort activity event on the synthesizer's feed (the ingest runs
+        outside the loop's own try/except, so it swallows its own emit errors)."""
+        try:
+            await self._sdlc_synth_ctx.emit(level, summary, **kw)
+        except Exception:
+            log.debug("sdlc_materialize.emit_failed", exc_info=True)
+
     @staticmethod
     def _sdlc_show_committed_file(cwd: str, ref: str, path: str) -> str:
         """Contents of *path* at *ref* in the clone at *cwd* (sync — call off-loop).
@@ -7334,8 +7777,8 @@ class SessionOrchestrator:
                 return out.stdout
         except Exception:
             log.debug("sdlc.show_artifact_failed", exc_info=True)
-        return (f"(could not inline `{path}` from `{ref}` — read that file from "
-                "the repository before starting)")
+        return (f"{_SDLC_UNREADABLE_PREFIX} `{path}` from `{ref}` — read that file "
+                "from the repository before starting)")
 
     async def _sdlc_pr_lookup(self, art: dict) -> dict | None:
         """The artifact session's PR as the enrichment dict shape, or None.

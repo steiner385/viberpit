@@ -120,6 +120,7 @@ export function nextStage(stage: string | null | undefined): InitiativeStage | n
 export const NEXT_ACTION_LABEL: Record<string, string> = {
   propose: 'The synthesizer will propose the next artifact.',
   await_approval: 'An artifact PR is waiting for your review.',
+  materialize: 'The plan is ready to decompose into an epic.',
   handoff_to_build: 'Ready to hand off to build.',
   done: 'Nothing left to do.',
   needs_human: 'Needs a human decision.',

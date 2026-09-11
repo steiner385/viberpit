@@ -176,8 +176,9 @@ class SdlcIntakeLoop:
                 await self._propose_intent(trigger)
             elif isinstance(action, engine.AwaitApproval):
                 awaiting += 1
-            # Any other action (Done / HandoffToBuild / NeedsHuman) is not the
-            # intake stage's concern — leave it for the human / later stages.
+            # Any other action (Done / HandoffToBuild / Materialize / NeedsHuman)
+            # is not the intake stage's concern — leave it for the human / later
+            # stages (Materialize belongs to the synthesizer's plan stage, #992).
 
         self._stash_counts(len(triggers), awaiting)
 

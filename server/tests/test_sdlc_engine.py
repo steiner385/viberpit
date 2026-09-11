@@ -13,6 +13,7 @@ from server.sdlc.engine import (
     Done,
     HandoffToBuild,
     InitiativeView,
+    Materialize,
     NeedsHuman,
     Propose,
     STAGE_ARTIFACT,
@@ -84,14 +85,32 @@ def test_proposed_pr_awaits_approval(stage, kind):
 @pytest.mark.parametrize("stage,kind", [
     ("intake", "intent"),
     ("design", "spec"),
-    ("plan", "plan"),
 ])
 def test_merged_artifact_still_awaits_human_advance(stage, kind):
     # Merged (commit_sha set) but stage not yet advanced: the engine NEVER
     # advances the stage itself in propose-only — the human tap does. So it keeps
     # returning AwaitApproval until the orchestrator bumps the stage.
+    # The plan stage is the one exception (materialization); it is covered by
+    # test_plan_merged_{with,without}_epic below.
     arts = [_art(kind, sha="deadbeef", pr=7)]
     assert next_action(_init(stage=stage), arts, "propose", {}) == AwaitApproval(kind)
+
+
+# --------------------------------------------------------------------------- #
+# Plan materialization (spec 003 §7b): a merged plan with no epic yet          #
+# --------------------------------------------------------------------------- #
+
+def test_plan_merged_without_epic_materializes():
+    assert next_action(_init(stage="plan"), [_art("plan", sha="abc")], "propose", {}) == Materialize()
+
+
+def test_plan_merged_with_epic_awaits_advance_as_before():
+    assert next_action(_init(stage="plan", epic="o/r#42"), [_art("plan", sha="abc")],
+                       "propose", {}) == AwaitApproval("plan")
+
+
+def test_plan_still_open_awaits_before_materializing():
+    assert next_action(_init(stage="plan"), [_art("plan", pr=7)], "propose", {}) == AwaitApproval("plan")
 
 
 def test_only_current_stage_kind_drives_action():
@@ -154,10 +173,22 @@ def test_auto_advance_design_to_plan_when_gate_disabled():
 
 
 def test_auto_advance_plan_to_build_when_gate_disabled():
+    # An epic already exists (adopted, or a previous materialization), so the
+    # plan stage behaves exactly as it did before materialization landed.
+    arts = [_art("plan", sha="cafe", pr=3)]
+    cfg = {"propose_only": False}
+    act = next_action(_init(stage="plan", issue="owner/repo#9", epic="owner/repo#9"),
+                      arts, "auto", cfg)
+    assert act == HandoffToBuild("owner/repo#9")
+
+
+def test_auto_mode_materializes_before_handing_off_without_an_epic():
+    # Materialization precedes the auto-advance seam: with no epic there is
+    # nothing decomposed for Build to pick up.
     arts = [_art("plan", sha="cafe", pr=3)]
     cfg = {"propose_only": False}
     act = next_action(_init(stage="plan", issue="owner/repo#9"), arts, "auto", cfg)
-    assert act == HandoffToBuild("owner/repo#9")
+    assert act == Materialize()
 
 
 def test_auto_advance_only_applies_in_auto_mode():

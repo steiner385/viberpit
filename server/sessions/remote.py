@@ -51,6 +51,15 @@ USAGE_RPC_TIMEOUT = 3.0
 # case (the origin-only fetch and the assess_model timeout already cap it).
 SPAWN_RPC_TIMEOUT = 90.0
 
+# Materialization apply (#992): its own budget because it is not spawn-shaped at all.
+# The call runs N SEQUENTIAL gh mutations inline in the daemon — one repository read,
+# one createIssue per issue (an epic plus every task in the plan), then the batched
+# blocked-by chain — so its worst case grows with the decomposition, not with a fixed
+# pipeline. Timing out mid-apply is the expensive outcome: the edge would 502 a run
+# that is still creating issues, and the journal, not this deadline, is then the only
+# way to tell what exists.
+MATERIALIZE_RPC_TIMEOUT = 600.0
+
 
 class _WireEvent:
     """Wraps an already-serialized event dict so ws.py's e.to_wire() works.
@@ -1153,6 +1162,34 @@ class RemoteOrchestrator:
     async def pm_advance_live(self, slug: str) -> None:
         """Advance map_merged/classifying → live, via the daemon."""
         await self._client.call("pm_advance_live", slug=slug)
+
+    async def sdlc_materialize_apply(self, proposal_id: str) -> dict:
+        """Apply an accepted materialization proposal, via the daemon (#992).
+
+        The daemon owns the gh credential ladder and the write journal, so the
+        edge never makes these calls itself. A dead RPC is reported as a failed
+        apply rather than raised: the route then answers 502 and still writes its
+        audit row, and the proposal stays pending and resumable — exactly what it
+        does for any other failure. ``outcome_unknown`` is surfaced verbatim
+        because it changes what a human should do next: a timeout may mean the
+        apply is still running on the daemon, so the journal (not this message) is
+        the authority before retrying."""
+        try:
+            result = await self._client.call("sdlc_materialize_apply",
+                                             proposal_id=proposal_id,
+                                             timeout=MATERIALIZE_RPC_TIMEOUT)
+        except DaemonUnavailable as exc:
+            unknown = getattr(exc, "outcome_unknown", False)
+            log.warning("sdlc_materialize_apply RPC unavailable (outcome_unknown=%s)",
+                        unknown)
+            return {"ok": False, "step": "rpc",
+                    "error": f"session daemon unavailable: {exc}" + (
+                        " — the apply may still be running there; check the "
+                        "journal before retrying" if unknown else "")}
+        if not isinstance(result, dict):
+            return {"ok": False, "step": "rpc",
+                    "error": "session daemon did not answer"}
+        return result
 
     async def aclose(self) -> None:
         if self._global_pump is not None and not self._global_pump.done():

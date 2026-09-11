@@ -135,6 +135,9 @@ ASSISTANT_ROUTE_ALLOW: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("GET", r"/api/sdlc/initiatives"),
         ("GET", r"/api/sdlc/initiatives/[a-z0-9-]+"),
         ("POST", r"/api/sdlc/initiatives/[a-z0-9-]+/advance"),
+        # READ only: accepting a materialization creates issues on GitHub, so the
+        # accept/reject taps stay a human's (C4-R11) and have no row here.
+        ("GET", r"/api/sdlc/initiatives/[a-z0-9-]+/materialization"),
         # PM product layer. The bare-slug row is anchored (every row gets a trailing `$`),
         # so it admits only `GET /api/pm/projects/{slug}` itself — the sibling sub-routes
         # the assistant must NOT reach (`POST …/edges`, `…/propose-map`, `…/advance-map`,

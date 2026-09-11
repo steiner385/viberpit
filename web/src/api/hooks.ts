@@ -22,8 +22,10 @@ import type {
 import { fetchDeployStatus, startDeploy } from './deploy'
 import {
   fetchInitiative, advanceInitiative, createInitiative,
+  fetchMaterialization, acceptMaterialization, rejectMaterialization,
   fetchIncidents, actOnIncident,
   type Initiative, type CreateInitiativeInput,
+  type MaterializationProposal, type MaterializationApplied,
   type Incident, type IncidentActionInput,
 } from './sdlc'
 import {
@@ -88,6 +90,10 @@ export const QK = {
   libraryContent: (kind: string, id: string, plugin?: string) =>
     ['library', 'content', kind, id, plugin ?? null] as const,
   initiative: (slug: string) => ['sdlc', 'initiative', slug] as const,
+  // Deliberately EXTENDS `initiative`: the proposal and the detail are read
+  // together on the Track tab and change together, so react-query's prefix
+  // matching lets one `QK.initiative(slug)` invalidation refresh both.
+  materialization: (slug: string) => ['sdlc', 'initiative', slug, 'materialization'] as const,
   // Control-band INCIDENTS (#804) — deliberately not `triage` below, which is the
   // PM classification inbox. Same word, unrelated data.
   incidents: ['sdlc', 'incidents'] as const,
@@ -1474,6 +1480,51 @@ export function useAdvanceInitiative() {
       void qc.invalidateQueries({ queryKey: QK.initiative(updated.slug) })
       void qc.invalidateQueries({ queryKey: QK.roadmapMap })
     },
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** The initiative's latest decomposition proposal, or `null` when it has never
+ *  been decomposed (#992). Polled on the detail's own cadence: the proposal
+ *  appears when a decompose session's ingest lands, which is not a tap this page
+ *  made, so the card has to arrive without a reload. */
+export function useMaterialization(slug: string | null) {
+  return useQuery<MaterializationProposal | null>({
+    queryKey: QK.materialization(slug ?? ''),
+    queryFn: () => fetchMaterialization(slug as string),
+    enabled: slug !== null && slug !== '',
+    staleTime: 5_000,
+    refetchInterval: 15_000,
+  })
+}
+
+/** The human gate on a decomposition: create the epic, its sub-issues and the
+ *  chain. A failure is NOT a rollback — the proposal stays pending and the apply
+ *  resumes from its journal — so the card renders `error` in place and keeps
+ *  offering the same tap (`PM_MUTATION_META` suppresses the global toast).
+ *
+ *  One invalidation covers the proposal AND the detail: `QK.materialization`
+ *  extends `QK.initiative`, and the map is refreshed too because the initiative
+ *  just gained the epic its roadmap row reports on. */
+export function useAcceptMaterialization() {
+  const qc = useQueryClient()
+  return useMutation<MaterializationApplied, ApiRequestError, string>({
+    mutationFn: (slug) => acceptMaterialization(slug),
+    onSuccess: (_result, slug) => {
+      void qc.invalidateQueries({ queryKey: QK.initiative(slug) })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** Turn a decomposition down. No map invalidation: a rejection changes nothing
+ *  the roadmap shows — the initiative stays parked exactly where it was. */
+export function useRejectMaterialization() {
+  const qc = useQueryClient()
+  return useMutation<MaterializationProposal, ApiRequestError, string>({
+    mutationFn: (slug) => rejectMaterialization(slug),
+    onSuccess: (_result, slug) => void qc.invalidateQueries({ queryKey: QK.initiative(slug) }),
     meta: PM_MUTATION_META,
   })
 }

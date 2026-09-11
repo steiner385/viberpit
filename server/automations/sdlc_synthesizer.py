@@ -14,7 +14,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from server.sdlc.engine import ArtifactView, InitiativeView, Propose, next_action
+from server.sdlc.engine import (
+    ArtifactView, InitiativeView, Materialize, Propose, next_action)
 from server.sdlc.prompts import artifact_path
 
 from .base import AutomationStatus, ConfigField
@@ -23,11 +24,23 @@ from .engine_policy import EnginePolicy
 
 log = logging.getLogger(__name__)
 
+#: How many decompositions one initiative may spend before the loop stops trying
+#: (C4-R19c). A decompose session that keeps producing unreadable output now ends
+#: as a rejected proposal rather than a blocked initiative, which is what lets the
+#: next tick try again — so something has to say when "again" stops. Three attempts
+#: is the same shape as the reconciler's park-on-the-second-failure rule: enough to
+#: ride out a bad turn, few enough that a plan the model cannot decompose costs
+#: three sessions, not a session every tick forever.
+MATERIALIZE_MAX_ATTEMPTS = 3
+
 ListInitiatives = Callable[[], Awaitable[list[dict]]]
 ListArtifacts = Callable[[str], Awaitable[list[dict]]]
 RecordArtifact = Callable[..., Awaitable[None]]
 SetStatus = Callable[[str, str], Awaitable[None]]
 Spawn = Callable[[dict, str], Awaitable[Any]]
+SpawnMaterialize = Callable[[dict], Awaitable[Any]]
+HasPendingMaterialization = Callable[[str], Awaitable[bool]]
+MaterializationAttempts = Callable[[str], Awaitable[int]]
 PrLookup = Callable[[dict], Awaitable["dict | None"]]
 UpdateArtifact = Callable[..., Awaitable[None]]
 ReadConfig = Callable[[], Awaitable["tuple[str, dict]"]]
@@ -35,13 +48,17 @@ ReadConfig = Callable[[], Awaitable["tuple[str, dict]"]]
 
 def _to_views(ini: dict, artifacts: list[dict]) -> tuple[InitiativeView, list[ArtifactView]]:
     """Adapt the injected dict rows into the engine's frozen views. ``issue`` is
-    the origin_ref — the GitHub issue the Build stage hands to backlog_runner."""
+    the origin_ref — the GitHub issue the Build stage hands to backlog_runner;
+    ``epic`` folds the epic pointer into the ``owner/repo#N`` ref the engine
+    tests for when deciding whether a merged plan still needs materializing."""
     return (
         InitiativeView(slug=str(ini.get("slug") or ""),
                        stage=str(ini.get("stage") or ""),
                        status=str(ini.get("status") or ""),
                        repo=str(ini.get("repo") or ""),
-                       issue=ini.get("origin_ref")),
+                       issue=ini.get("origin_ref"),
+                       epic=(f"{ini['epic_repo']}#{ini['epic_number']}"
+                             if ini.get("epic_number") else None)),
         [ArtifactView(kind=str(a.get("kind") or ""),
                       commit_sha=a.get("commit_sha"),
                       pr_number=a.get("pr_number"),
@@ -71,7 +88,8 @@ class SdlcSynthesizer:
     config_schema = [
         ConfigField(key="default_model", label="Model", type="enum",
                     default="default", choices=list(AUTOMATION_MODEL_CHOICES),
-                    help="Model for spawned spec/plan sessions ('auto' assesses per task)."),
+                    help="Model for spawned spec/plan/decompose sessions "
+                         "('auto' assesses per task)."),
     ]
 
     def status(self, ctx: Any) -> AutomationStatus:
@@ -101,6 +119,9 @@ class SdlcSynthesizerLoop:
         update_artifact: UpdateArtifact,
         read_config: ReadConfig,
         clock: Callable[[], float],
+        spawn_materialize: SpawnMaterialize | None = None,
+        has_pending_materialization: HasPendingMaterialization | None = None,
+        materialization_attempts: MaterializationAttempts | None = None,
     ) -> None:
         self._ctx = ctx
         self._list_initiatives = list_initiatives
@@ -108,6 +129,17 @@ class SdlcSynthesizerLoop:
         self._record_artifact = record_artifact
         self._set_status = set_status
         self._spawn = spawn
+        self._spawn_materialize = spawn_materialize
+        self._has_pending_materialization = has_pending_materialization
+        self._materialization_attempts = materialization_attempts
+        #: slugs already warned about a missing materialize seam — once per
+        #: initiative, or an unwired deployment would warn on every tick forever.
+        self._materialize_unwired: set[str] = set()
+        #: slugs already warned about spending their decomposition attempts. The
+        #: `blocked` write below normally stops the second tick from ever asking,
+        #: but a human who un-blocks without fixing anything must not get the warn
+        #: on every tick from then on.
+        self._materialize_exhausted: set[str] = set()
         self._pr_lookup = pr_lookup
         self._update_artifact = update_artifact
         self._read_config = read_config
@@ -141,7 +173,63 @@ class SdlcSynthesizerLoop:
                         model=getattr(rec, "model", None))
                     await self._set_status(ini["id"], "awaiting_human")
                     await self._emit_proposed(slug, action.kind, rec)
+            elif isinstance(action, Materialize):
+                await self._materialize(ini)
             await self._enrich(artifacts)
+
+    async def _materialize(self, ini: dict) -> None:
+        """Spawn the decompose session for a merged plan (spec 003 §7b).
+
+        The park signal here is NOT ``Initiative.status``: the plan Propose
+        already parked the initiative at ``awaiting_human`` and only the human
+        Advance tap unparks it — past the plan stage — so a status gate would
+        mean no plan is ever materialized. What "already handled" actually means
+        is a pending ``MaterializationProposal`` (waiting on the human gate) or a
+        live decompose session; the first is asked here, the second inside the
+        spawn seam, which answers None when its own session is still running so a
+        tick during the decompose neither re-parks, re-emits nor re-chains.
+
+        The status write after a real spawn is kept (idempotent — it is normally
+        already parked) so a materialization reached from any other status still
+        reads as awaiting the human."""
+        slug = str(ini.get("slug") or "")
+        if self._spawn_materialize is None:
+            if slug not in self._materialize_unwired:
+                self._materialize_unwired.add(slug)
+                await self._emit("warn", f"{slug}: plan is merged but plan "
+                                 "materialization is not wired — decompose it by hand",
+                                 kind="materialization_unwired", target=slug)
+            return
+        if (self._has_pending_materialization is not None
+                and await self._has_pending_materialization(ini["id"])):
+            return
+        # Attempts are counted only once nothing is pending: a proposal waiting on
+        # the human gate is not a spent attempt, it is the outcome this loop wanted.
+        if self._materialization_attempts is not None:
+            attempts = await self._materialization_attempts(ini["id"])
+            if attempts >= MATERIALIZE_MAX_ATTEMPTS:
+                if slug not in self._materialize_exhausted:
+                    self._materialize_exhausted.add(slug)
+                    await self._emit(
+                        "warn", f"{slug}: {attempts} decomposition attempts have "
+                                "produced nothing to review — decompose the plan by "
+                                "hand, or clear the rejected proposals to retry",
+                        kind="materialization_attempts_exhausted", target=slug,
+                        detail={"attempts": attempts,
+                                "max": MATERIALIZE_MAX_ATTEMPTS})
+                # Blocked is the right end state HERE (unlike a single parse
+                # failure): the loop has exhausted what it can do by itself, so it
+                # hands the initiative to a human instead of spending a session a
+                # tick on a plan it cannot decompose.
+                await self._set_status(ini["id"], "blocked")
+                return
+        rec = await self._spawn_materialize(ini)
+        if rec is None:  # no headroom / refused launch — retry next tick
+            return
+        await self._set_status(ini["id"], "awaiting_human")
+        sid = getattr(rec, "id", None)
+        await self._emit("info", f"decomposing the merged plan for {slug} (session {sid})",
+                         kind="materialization_proposed", target=slug, session_id=sid)
 
     async def _enrich(self, artifacts: list[dict]) -> None:
         """Fill pr_number/pr_url once the artifact session's PR exists, and
@@ -160,9 +248,11 @@ class SdlcSynthesizerLoop:
                 await self._update_artifact(art["id"], commit_sha=info["sha"])
 
     async def _emit_proposed(self, slug: str, kind: str, rec: Any) -> None:
+        await self._emit("info", f"proposed {kind} for {slug}", kind="proposed",
+                         target=slug, session_id=getattr(rec, "id", None))
+
+    async def _emit(self, level: str, summary: str, **kw: Any) -> None:
         try:
-            await self._ctx.emit("info", f"proposed {kind} for {slug}",
-                                 kind="proposed", target=slug,
-                                 session_id=getattr(rec, "id", None))
+            await self._ctx.emit(level, summary, **kw)
         except Exception:  # best-effort — the feed must not break the loop
             log.debug("sdlc_synthesizer.emit_failed", exc_info=True)

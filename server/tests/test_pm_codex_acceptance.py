@@ -379,7 +379,7 @@ async def test_the_classify_harvest_reads_normalized_text_and_ignores_reasoning(
     orch = _bare_orch()
     orch.transcript_window = _mk_async(window)
 
-    text = await orch._pm_classify_output_text("sess-1")
+    text = await orch._chained_session_output_text("sess-1")
     assert text == fenced
     parsed = parse_classification_output(text)
     assert [p.number for p in parsed] == [100]

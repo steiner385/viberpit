@@ -8,14 +8,14 @@ one classification implementation (constitution VI).
 """
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass
 
 from ccswitch.engines import AgentEngine
 
 from server.db.models import FEATURE_LIFECYCLE_STATES, FEATURE_LINK_KINDS, WORK_ITEM_KINDS
 from server.sessions.completion import commit_trailer
+
+from .fenced_json import FencedJsonError, extract_fenced_json
 
 # One place defining the feature-doc directory + path (single source of truth,
 # mirrors sdlc.prompts.SDLC_DOCS_DIR / artifact_path). The map-synthesis session
@@ -405,25 +405,15 @@ def _row_to_classification(row: object) -> ProposedClassification | None:
 def parse_classification_output(text: str) -> list[ProposedClassification]:
     """Extract the JSON array of classifications from a session's output.
 
-    Tolerant: strips an optional ```json fence, finds the first top-level array,
+    Tolerant: strips an optional ```json fence, finds the top-level array,
     skips rows that lack a ``number``. Raises ``ClassificationParseError`` only
-    when no JSON array can be parsed at all."""
-    candidate = text
-    fence = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", text, re.DOTALL)
-    if fence:
-        candidate = fence.group(1)
-    else:
-        start = candidate.find("[")
-        end = candidate.rfind("]")
-        if start == -1 or end == -1 or end <= start:
-            raise ClassificationParseError("no JSON array found in output")
-        candidate = candidate[start:end + 1]
+    when no JSON array can be parsed at all. Extraction is the shared
+    ``fenced_json`` helper — the materialization parser reads object payloads
+    with the same tolerance (constitution VI)."""
     try:
-        data = json.loads(candidate)
-    except json.JSONDecodeError as e:
-        raise ClassificationParseError(f"invalid JSON array: {e}") from e
-    if not isinstance(data, list):
-        raise ClassificationParseError("parsed JSON is not an array")
+        data = extract_fenced_json(text, shape="array")
+    except FencedJsonError as e:
+        raise ClassificationParseError(str(e)) from e
     out: list[ProposedClassification] = []
     for row in data:
         parsed = _row_to_classification(row)

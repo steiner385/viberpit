@@ -7,8 +7,10 @@ import-time regressions in the orchestrator and confirms the seams are bound.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -66,7 +68,32 @@ def test_sdlc_list_initiatives_empty_on_fresh_db():
         app = create_app(orchestrator=orch)
         client = TestClient(app, raise_server_exceptions=False)
         with client:  # lifespan runs init_db → the initiative table exists
-            import asyncio
-
             result = asyncio.run(orch._sdlc_list_initiatives())
     assert result == []
+
+
+def test_sdlc_list_initiatives_projects_the_epic_pointer():
+    """The projection the synthesizer feeds to the engine carries epic_repo /
+    epic_number (#992). Without them ``_to_views`` cannot tell a materialized
+    initiative from one still awaiting decomposition."""
+    from server.app import create_app
+    from server.db import db_session
+    from server.db.models import Initiative
+
+    async def _seed_and_list(orch):
+        async with db_session() as db:
+            db.add(Initiative(slug="dark-mode", repo="o/r", title="Dark mode",
+                              stage="plan", status="active",
+                              epic_repo="o/r", epic_number=42))
+        return await orch._sdlc_list_initiatives()
+
+    with tempfile.TemporaryDirectory() as tmp, temp_env(), patch.dict(
+        os.environ, {"CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{tmp}/wiring.db"}
+    ):
+        orch = _make_orch()
+        app = create_app(orchestrator=orch)
+        client = TestClient(app, raise_server_exceptions=False)
+        with client:  # lifespan runs init_db
+            rows = asyncio.run(_seed_and_list(orch))
+    assert [(r["slug"], r["epic_repo"], r["epic_number"]) for r in rows] == \
+        [("dark-mode", "o/r", 42)]

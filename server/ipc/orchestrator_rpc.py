@@ -380,6 +380,15 @@ def register_orchestrator_rpc(app, orch) -> None:
     register_rpc(app, "pm_onboarding_counts", pm_onboarding_counts)
     register_rpc(app, "pm_onboard_spawn_map", pm_onboard_spawn_map)
 
+    async def sdlc_materialize_apply(params: dict) -> dict:
+        # Not in _SIMPLE: the orchestrator method is private (it is a seam, not
+        # part of the public session API), and getattr-by-name there would have to
+        # carry the underscore into the wire protocol. The result is a plain dict
+        # of JSON scalars.
+        return await _maybe_await(orch._sdlc_materialize_apply(**params))
+
+    register_rpc(app, "sdlc_materialize_apply", sdlc_materialize_apply)
+
     async def permanent_delete(params: dict):
         result = await orch.permanent_delete(params["session_id"])
         app.state.evict(params["session_id"])
