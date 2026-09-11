@@ -210,10 +210,12 @@ resets it because `busy` is not in the set — the plan tests this exact sequenc
 `_notify_parent(parent_id, child_rec, status)`:
 - Parent record missing or archived/ended → log and return (the child stays a normal
   session for the user).
-- `text = build_child_notice(child_rec, status, last_message)` where `last_message =
-  background_tasks.last_assistant_text(transcript_path)` truncated to 800 chars, and the
-  record's `hand_back_reason` / `pr_resolution` when set. Pure function in
-  `child_sessions.py`, unit-tested:
+- `text = build_child_notice(child_rec, status, last_message, hand_back_reason)` where
+  `last_message = background_tasks.last_assistant_text(transcript_path)` truncated to
+  800 chars, `hand_back_reason` is read from the child's DRIVER at persist time
+  (`driver.last_hand_back_reason` — the record does not persist it; `_persist_status`
+  already reads it there for the audit row), and `pr_resolution` from the record when
+  set. Pure function in `child_sessions.py`, unit-tested:
 
   ```
   <child-session-notification>
@@ -226,9 +228,11 @@ resets it because `busy` is not in the set — the plan tests this exact sequenc
   <url>/sessions/{id}</url>
   </child-session-notification>
   ```
-- `await self.ensure_driver(parent_id, identity)` then `await self.send_prompt(parent_id,
-  text)`. A parent mid-turn receives it at the end of its turn (FIFO queue, the CLI's own
-  task-notification semantics); an idle or detached parent is woken. Failures are logged,
+- `await self.ensure_driver(parent_id, identity)` FIRST (a bare `send_prompt` returns
+  `"no_driver"` and drops the text for a detached parent), then `await
+  self.send_prompt(parent_id, text)`. A parent mid-turn receives it at the end of its turn
+  (FIFO queue, the CLI's own task-notification semantics); an idle or detached parent is
+  woken. Failures are logged,
   never raised (this runs inside the child's status callback).
 - The notice is a plain prompt on purpose: nothing new on the wire, it shows in the
   parent's transcript as a user turn the way task notifications do, and the parent's model
@@ -294,8 +298,8 @@ both columns are nullable; reconcile picks them up); instruction paragraph names
 only when mounted. Web: `ChildSessionRows`, the "child of" pill, `SessionCard` children
 section; full `npm run test`.
 
-An eval case under `docs/superpowers/evals/` for the tool description (the session-tools
-doc requires one per tool).
+An eval case in `docs/superpowers/evals/session-tools/cases.jsonl` naming `dispatch_session`
+in `expect_tools` — `test_every_session_tool_has_a_spec_and_an_eval_case` fails otherwise.
 
 ## 8. Rollout
 
