@@ -95,7 +95,7 @@ export function Waterfall({ timeline }: { timeline: PrTimeline }) {
   const svgAriaLabel = 'Lead-time waterfall: '
     + segs.map((s) => `${s.label} ${formatDur((s.endMs - s.startMs) / 1000)}`).join(', ');
   return (
-    <div className="waterfall" data-testid="waterfall">
+    <div className="pipeline-chart waterfall" data-testid="waterfall">
       <svg className="pipeline-chart chart-svg" width="100%" viewBox={`0 0 ${VB_W} ${height}`}
         role="img" aria-label={svgAriaLabel}>
         <defs>

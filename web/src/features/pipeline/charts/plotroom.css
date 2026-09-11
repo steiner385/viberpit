@@ -6,7 +6,8 @@
    override — the tokens flip at `:root`.
 
    Scope: each chart root carries `pipeline-chart` plus its own class
-   (`track` / `checks` / `gantt-inline-legend` / `chart-svg` / `queue-section`),
+   (`track` / `checks` / `gantt-inline-legend` / `waterfall` / `chart-svg` /
+   `queue-section`),
    which the `&.` rules below select; everything else is a descendant, exactly
    as it was. LegendPanel's static swatches render the same class names inside a
    bare `.pipeline-chart` wrapper, so they inherit the live look for free. */
@@ -24,14 +25,18 @@
   flex-shrink: 0; }
 .node .c { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center;
   justify-content: center; font-size: 11px; background: var(--t-edge); color: var(--t-ink-muted); }
-/* Glyph colour on a filled node is the CANVAS token, not a literal white: the
-   `-strong` fills are theme-invariant (index.css), so canvas lands near-white on
-   light and near-black on dark — both ~4.3:1 against the fill. */
-.node.done .c { background: var(--t-success-strong); color: var(--t-canvas); }
+/* Filled-node glyph ink, no literal white — and the token depends on whether the
+   fill flips with the theme. The `-strong` fills do NOT (index.css holds them
+   theme-invariant precisely so their white ink stays AA), so `--t-on-strong`
+   rides along invariant: done 5.02:1, parked 5.33:1 in both themes. Canvas
+   against a theme-VARIANT fill flips with it and stays AA on both sides:
+   active 4.97:1 light / 6.49:1 dark, fail 5.06:1 light / 5.64:1 dark. Using
+   canvas on the `-strong` pair instead would sink to 3.58:1 / 3.37:1 in dark. */
+.node.done .c { background: var(--t-success-strong); color: var(--t-on-strong); }
 .node.active .c { background: var(--t-accent); color: var(--t-canvas);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--t-accent) 22%, transparent); }
 .node.fail .c { background: var(--t-danger); color: var(--t-canvas); }
-.node.parked .c { background: var(--t-warning-strong); color: var(--t-canvas); font-weight: 700; }
+.node.parked .c { background: var(--t-warning-strong); color: var(--t-on-strong); font-weight: 700; }
 .node-label { font-size: 9px; color: var(--t-ink-muted); margin-top: 3px; }
 .node.active .node-label { color: var(--t-accent); font-weight: 700; }
 .node.fail .node-label { color: var(--t-danger); font-weight: 700; }
@@ -130,6 +135,9 @@
 .g-workflow { font-weight: 600; padding-top: 8px; opacity: 0.85; }
 
 /* --- Lead-time waterfall (issue #50) --- */
+/* Two scope roots, because the component is a padded box around a full-bleed
+   svg: the wrapper owns the panel inset, the svg owns the sizing. */
+&.waterfall { padding: 4px 14px 8px; }
 &.chart-svg { width: 100%; height: auto; display: block; }
 
 /* --- Queue ops strip (issue #39) --- */

@@ -51,6 +51,10 @@
      normal text — pills and banner copy are 12px) by
      src/__tests__/contrast.test.ts. Retune a hex here and that test tells you
      which pair you broke; do not add a parallel `-on-wash` token family. */
+  /* Ink for glyphs/labels sitting ON a `-strong` fill. Theme-invariant with NO
+     dark override, because the `-strong` fills it pairs with never flip either:
+     letting it follow the theme would drop white-on-green to 3.58:1 in dark. */
+  --t-on-strong: #ffffff;
   --t-success: #147c3b; --t-success-wash: #e6f4ea; --t-success-strong: #15803d;
   --t-warning: #9a5d00; --t-warning-wash: #fbf0dc; --t-warning-strong: #9a5d00;
   --t-danger:  #c23636; --t-danger-wash:  #fbe9e7; --t-danger-strong:  #b42318;
@@ -137,6 +141,7 @@
   --color-accent: var(--t-accent);
   --color-accent-ink: var(--t-accent-ink);
   --color-accent-wash: var(--t-accent-wash);
+  --color-on-strong: var(--t-on-strong);
   --color-success: var(--t-success);  --color-success-wash: var(--t-success-wash);  --color-success-strong: var(--t-success-strong);
   --color-warning: var(--t-warning);  --color-warning-wash: var(--t-warning-wash);  --color-warning-strong: var(--t-warning-strong);
   --color-danger:  var(--t-danger);   --color-danger-wash:  var(--t-danger-wash);   --color-danger-strong:  var(--t-danger-strong);
