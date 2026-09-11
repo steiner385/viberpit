@@ -110,6 +110,64 @@ def test_query_queue_records_the_last_ranked_result(tmp_path):
     asyncio.run(run())
 
 
+def test_gave_up_row_is_a_cooldown_not_a_claim(tmp_path):
+    """Phase D: a give-up leaves a durable row instead of the ``needs-human``
+    label. The row is NOT a claim (that skip reason would be a lie about a live
+    session) — it is the needs-human cooldown, and it expires with
+    ``needs_human_retry_days`` so the issue comes back."""
+    async def run():
+        await _init(tmp_path, "gaveup.db")
+        await _seed_product("ccswitch", "o/r")
+        await _seed_item("o/r", 5, status="Backlog", score=5.0)
+        orch = _orch_with_ctx()
+        await orch._backlog_ctx.set_target_state("o/r#5", {
+            "repo": "o/r", "issues": ["o/r#5"], "gave_up": True,
+            "needs_human_at": "2026-09-09T00:00:00+00:00", "reason": "max attempts"})
+
+        skipped: dict = {}
+        cands = await orch._backlog_query_queue(
+            _config(queue_min_status="Backlog"), skipped_out=skipped)
+        assert cands == [] and skipped == {"needs_human_cooldown": 1}
+
+        # 0 = permanent handoff: still cooling down, never retried.
+        skipped = {}
+        cands = await orch._backlog_query_queue(
+            _config(queue_min_status="Backlog", needs_human_retry_days=0),
+            skipped_out=skipped)
+        assert cands == [] and skipped == {"needs_human_cooldown": 1}
+
+        # Once the window has passed the issue is a candidate again.
+        await orch._backlog_ctx.set_target_state("o/r#5", {
+            "repo": "o/r", "issues": ["o/r#5"], "gave_up": True,
+            "needs_human_at": "2020-01-01T00:00:00+00:00", "reason": "max attempts"})
+        skipped = {}
+        cands = await orch._backlog_query_queue(
+            _config(queue_min_status="Backlog"), skipped_out=skipped)
+        assert [c["ref"] for c in cands] == ["o/r#5"] and skipped == {}
+
+    asyncio.run(run())
+
+
+def test_gave_up_row_is_never_a_claim_and_an_undated_one_is_no_cooldown(tmp_path):
+    """Two rules at once: a ``gave_up`` row is not a claim (its session is long
+    gone), and an unreadable/missing ``needs_human_at`` is no cooldown — a row we
+    cannot date must not park an issue forever."""
+    async def run():
+        await _init(tmp_path, "gaveupnostamp.db")
+        await _seed_product("ccswitch", "o/r")
+        await _seed_item("o/r", 6, status="Backlog", score=5.0)
+        orch = _orch_with_ctx()
+        await orch._backlog_ctx.set_target_state(
+            "o/r#6", {"repo": "o/r", "issues": ["o/r#6"], "gave_up": True,
+                      "claimed": True, "needs_human_at": "not-a-date"})
+
+        cands = await orch._backlog_query_queue(_config(queue_min_status="Backlog"))
+
+        assert [c["ref"] for c in cands] == ["o/r#6"]
+
+    asyncio.run(run())
+
+
 # --------------------------------------------------------------------------- #
 # Counts: (eligible, blocked, untriaged) all come from the queue               #
 # --------------------------------------------------------------------------- #

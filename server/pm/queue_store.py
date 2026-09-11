@@ -4,8 +4,9 @@ shape ``queue.rank`` ranks against. No ranking here; that stays in the pure core
 Task 2). Nothing calls this yet (Task 4 wires it into the API)."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session
@@ -19,6 +20,23 @@ from .reconcile_inputs import _aware
 
 _LIVE_SESSION_STATUSES = ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES
 
+# Immutable empty default for the ``needs_human_at`` map (no mutable default arg).
+_NO_TIMES: Mapping[str, datetime] = {}
+
+
+def parse_iso_utc(value: str | None) -> datetime | None:
+    """ISO-8601 → aware UTC datetime; None/garbage → None (a row we cannot read is
+    no cooldown). The ONE parser for the runner's durable row timestamps — both
+    the orchestrator's queue read and the runner's own expiry sweep call it, so
+    the two can never disagree about what a stamp means."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
 
 def _split_ref(ref: str) -> tuple[str, int] | None:
     repo, _, number = ref.rpartition("#")
@@ -28,7 +46,8 @@ def _split_ref(ref: str) -> tuple[str, int] | None:
 
 
 def load_queue_rows(db: Session, *, now: datetime,
-                    claimed_refs: AbstractSet[str] = frozenset()) -> list[QueueRow]:
+                    claimed_refs: AbstractSet[str] = frozenset(),
+                    needs_human_at: Mapping[str, datetime] = _NO_TIMES) -> list[QueueRow]:
     """One ``QueueRow`` per open, board-linked issue across every onboarded product.
 
     A product without a linked board (``gh_project_db_id`` is ``None``) contributes
@@ -37,6 +56,10 @@ def load_queue_rows(db: Session, *, now: datetime,
     mirrored destination counts only while it is itself open. ``now`` is accepted
     (not read here) to match every other mirror_store-style loader's signature —
     ``rank()`` is what actually needs it, for the needs-human cooldown window.
+
+    ``needs_human_at`` maps a ref to the moment the backlog runner gave up on it
+    (its durable ``gave_up`` row, Phase D); the loader only threads it onto the
+    rows — the cooldown rule itself lives in ``queue.skip_reason``.
     """
     rows: list[QueueRow] = []
     # Only origin_ref is read here, so select that column directly rather than
@@ -106,5 +129,6 @@ def load_queue_rows(db: Session, *, now: datetime,
                 open_children=int(open_children.get(w.id, 0)),
                 open_blockers=tuple(sorted(blockers.get(ref, ()))),
                 live_session=ref in live_refs, claimed=ref in claimed_refs,
+                needs_human_at=needs_human_at.get(ref),
             ))
     return rows

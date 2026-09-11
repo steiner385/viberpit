@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, cast
 
 from ccswitch.worktrees import DISK_EXHAUSTION_MARKERS
 from server.github.pr_status import PullRequestInfo
 from server.pm.desired_state import STATUS_READY
 from server.pm.queue import MIN_STATUS_OPTIONS, NEEDS_HUMAN_RETRY_DAYS_DEFAULT
+from server.pm.queue_store import parse_iso_utc
 
 from .backlog_grouping import load_plan, mark_consumed, plan_to_batch
 from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
@@ -194,9 +196,9 @@ class BacklogRunner:
                          "needs work and no plan group is live."),
         ConfigField(key="needs_human_retry_days", label="Retry needs-human after (days)",
                     type="int", default=NEEDS_HUMAN_RETRY_DAYS_DEFAULT,
-                    help="Reconsider escalated (needs-human) issues once they sit "
-                         "untouched this many days. 0 = never retry (permanent "
-                         "handoff). Any activity on the issue restarts the clock."),
+                    help="Reconsider escalated (needs-human) issues this many days "
+                         "after the runner gave up on them. 0 = never retry "
+                         "(permanent handoff)."),
         ConfigField(key="default_model", label="Session model", type="enum",
                     default="auto", choices=AUTOMATION_MODEL_CHOICES,
                     help="Model for spawned sessions. 'auto' assesses each job's "
@@ -289,9 +291,11 @@ ReadConfig = Callable[[], Awaitable["tuple[str, dict]"]]
 # RELEASE-only path: remove ``in-progress``, return the batch to the pool (no
 # ``needs-human``). Used on a transient spawn failure and by reconciliation.
 Release = Callable[[str], Awaitable[None]]
-# GIVE-UP path: add ``needs-human`` + remove ``in-progress``. Used only when a
-# target has exhausted ``max_attempts`` or PR Doctor gave up on it.
-NeedsHuman = Callable[[str], Awaitable[None]]
+# GIVE-UP path: announce the handoff (the reason is what a human needs in order
+# to pick the target up). Used only when a target has exhausted ``max_attempts``
+# or PR Doctor gave up on it. The SIGNAL itself is the durable ``gave_up`` row
+# ``_give_up`` writes — this seam only tells the outside world about it.
+NeedsHuman = Callable[[str, str], Awaitable[None]]
 # MERGED path: the work landed but the PR may not have carried a closing
 # keyword — comment + close every issue in the batch so it can't stay open
 # (and label-excluded) forever. Returns the close-out outcome: "closed" (≥1
@@ -365,8 +369,8 @@ async def _stub_release(_target: str) -> None:
     return None
 
 
-async def _stub_needs_human(_target: str) -> None:
-    # GIVE-UP fallback: needs-human handoff.
+async def _stub_needs_human(_target: str, _reason: str) -> None:
+    # GIVE-UP fallback: announce nothing; the durable row still carries the handoff.
     return None
 
 
@@ -411,6 +415,7 @@ class BacklogRunnerLoop:
         credential_alerts: CredentialAlerts | None = None,
         verify_ready: VerifyReady | None = None,
         queue_tail: QueueTail | None = None,
+        wall_clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._ctx = ctx
         self._select_batch = select_batch          # Plan B: -> Batch | None
@@ -424,8 +429,12 @@ class BacklogRunnerLoop:
         self._pr_doctor_active = pr_doctor_active   # (repo) -> bool
         self._read_config = read_config             # -> (mode, config)
         self._clock = clock                         # injected; no wall-clock in tests
+        # WALL clock (aware UTC), distinct from ``_clock``: the give-up stamp and
+        # its expiry window are absolute times that must survive a restart, so
+        # they cannot ride the monotonic clock the backoffs use.
+        self._wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
         self._release = release or _stub_release    # remove in-progress, back to pool
-        self._needs_human = needs_human or _stub_needs_human  # add needs-human + remove
+        self._needs_human = needs_human or _stub_needs_human  # announce the handoff
         self._session_ended = session_ended         # (session_id) -> bool | None
         self._session_ran = session_ran             # (session_id) -> bool | None
         self._reconcile = reconcile                 # (claimed_refs, live_refs) -> None
@@ -952,12 +961,44 @@ class BacklogRunnerLoop:
         gave_up_targets = await self._pr_doctor_gave_up_targets()
         for target, st in states.items():
             if st.get("gave_up"):
-                continue  # terminal — leave the guard row until re-armed
+                # Terminal — the row IS the needs-human handoff (Phase D), so it
+                # stays put until the retry window passes. Deleting it is what
+                # returns the issue to the pool: the queue's cooldown reads
+                # ``needs_human_at`` off this row, and nothing else does. 0 (or an
+                # unreadable stamp) = permanent handoff, never expired.
+                retry_days = int(config.get("needs_human_retry_days",
+                                            NEEDS_HUMAN_RETRY_DAYS_DEFAULT))
+                at = parse_iso_utc(st.get("needs_human_at"))
+                if (retry_days > 0 and at is not None
+                        and self._wall_clock() - at >= timedelta(days=retry_days)):
+                    await self._ctx.delete_target_state(target)
+                    await self._ctx.emit(
+                        "info", f"{target}: needs-human window passed — back in the pool",
+                        kind="needs_human_expired", target=target)
+                continue
             try:
                 await self._sweep_one(target, st, config, gave_up_targets)
             except Exception:  # pragma: no cover — one target must not stall the rest
                 log.warning("backlog_runner.sweep_target_failed target=%s", target,
                             exc_info=True)
+
+    async def _give_up(self, target: str, st: dict, reason: str) -> None:
+        """Hand the target to a human: announce it (comment, best-effort) and keep a
+        durable ``gave_up`` row stamped ``needs_human_at``. The row is the ONLY carrier
+        of the signal now (Phase D): the reconciler turns it into board Status
+        ``Needs human`` and the queue into a cooldown; ``_sweep`` deletes it once
+        ``needs_human_retry_days`` has passed so the issue is retried (never, when 0).
+
+        The row REPLACES the claim row — a target waiting on a human holds no claim
+        and no concurrency slot."""
+        await self._needs_human(target, reason)
+        await self._ctx.set_target_state(target, {
+            "repo": st.get("repo"),
+            "issues": st.get("issues") or [target],
+            "gave_up": True,
+            "needs_human_at": self._wall_clock().isoformat(),
+            "reason": reason,
+        })
 
     async def _sweep_one(self, target: str, st: dict, config: dict,
                          gave_up_targets: set[str]) -> None:
@@ -1009,8 +1050,7 @@ class BacklogRunnerLoop:
             reason = "pr-doctor gave up" if target in gave_up_targets else "PR closed unmerged"
             await self._ctx.emit("warn", f"{target}: {reason} — needs human",
                                  kind="gave_up", target=target)
-            await self._needs_human(target)
-            await self._ctx.delete_target_state(target)
+            await self._give_up(target, st, reason)
             return
 
         # PR reached the handoff point (PR Doctor carries it to auto-merge).
@@ -1054,10 +1094,10 @@ class BacklogRunnerLoop:
                         kind="unclaimed", target=target)
                     await self._ctx.delete_target_state(target)
                     return
-                await self._ctx.emit("warn", f"{target}: {attempts} attempts, no PR — giving up",
+                reason = f"max attempts ({attempts}) reached with no mergeable PR"
+                await self._ctx.emit("warn", f"{target}: {reason} — giving up",
                                      kind="gave_up", target=target)
-                await self._needs_human(target)
-                await self._ctx.delete_target_state(target)
+                await self._give_up(target, st, reason)
             else:
                 # Charge the attempt and mark this session consumed so we don't
                 # re-count the SAME ended session on every subsequent sweep; a

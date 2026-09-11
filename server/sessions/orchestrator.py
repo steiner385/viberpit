@@ -5016,7 +5016,9 @@ class SessionOrchestrator:
         counts, and is the same one ``GET /api/pm/queue`` renders, so what the
         operator sees is what agents will do next. Refs this runner has already
         claimed are excluded up front (a claim is durable state, not a label
-        read), so a claimed-but-not-yet-spawned issue can never be picked twice.
+        read), so a claimed-but-not-yet-spawned issue can never be picked twice,
+        and refs the runner GAVE UP on carry their give-up time into the queue's
+        needs-human cooldown (Phase D: the row is the signal, not a label).
 
         ``skipped_out``, when given, receives ``rank``'s per-reason skip counts
         (``blocked`` is the card's "why isn't the backlog draining" note).
@@ -5025,17 +5027,30 @@ class SessionOrchestrator:
 
         from server.pm.desired_state import STATUS_READY
         from server.pm.queue import NEEDS_HUMAN_RETRY_DAYS_DEFAULT, rank, to_candidate
-        from server.pm.queue_store import load_queue_rows
+        from server.pm.queue_store import load_queue_rows, parse_iso_utc
 
         states = await self._backlog_ctx.list_target_states()
-        # A bundle rides on the primary's row; a row written before bundling (or
-        # by the dispatch path) carries no ``issues``, and IS its own claim.
-        claimed = {ref for target, st in states.items() if st.get("claimed")
-                   for ref in (st.get("issues") or [target])}
+        # Two maps out of ONE read of the runner's durable rows. A bundle rides on
+        # the primary's row; a row written before bundling (or by the dispatch
+        # path) carries no ``issues``, and IS its own claim.
+        claimed: set[str] = set()
+        # A ``gave_up`` row is NOT a claim (its session is long gone) — it is the
+        # needs-human handoff itself (Phase D), which the queue reads as a
+        # cooldown. An undated or unreadable stamp is no cooldown at all: a row we
+        # cannot date must not park an issue forever.
+        needs_human_at: dict[str, datetime] = {}
+        for target, st in states.items():
+            refs = st.get("issues") or [target]
+            if st.get("gave_up"):
+                at = parse_iso_utc(st.get("needs_human_at"))
+                if at is not None:
+                    needs_human_at.update({ref: at for ref in refs})
+            elif st.get("claimed"):
+                claimed.update(refs)
         now = datetime.now(timezone.utc)
         async with db_session() as db:
-            rows = await db.run_sync(
-                lambda s: load_queue_rows(s, now=now, claimed_refs=claimed))
+            rows = await db.run_sync(lambda s: load_queue_rows(
+                s, now=now, claimed_refs=claimed, needs_human_at=needs_human_at))
         # The queue spans every onboarded product; ``enabled_repos`` is still the
         # operator's scope switch (empty = all of them). Scoping happens BEFORE
         # ranking, not after: skip reasons are per-row, so an unscoped product's
@@ -5194,10 +5209,15 @@ class SessionOrchestrator:
         await asyncio.to_thread(
             backlog_github.unclaim_batch, batch, gh_run=self._gh_run)
 
-    async def _backlog_needs_human(self, target: str) -> None:
+    async def _backlog_needs_human(self, target: str, reason: str) -> None:
         """GIVE-UP path: add ``needs-human`` and remove ``in-progress`` so a human
         picks the target up. Used only after ``max_attempts`` or a PR-Doctor
-        give-up. Best-effort, off the event loop."""
+        give-up. Best-effort, off the event loop.
+
+        ``reason`` is unread here: the handoff signal is now the runner's durable
+        ``gave_up`` row (Phase D), and the label is the last vestige of the old
+        one — Phase D Task 3 replaces this body with an issue comment carrying the
+        reason and drops the label write."""
         from server.automations import backlog_github
         batch = await self._backlog_batch_for(target)
         await asyncio.to_thread(

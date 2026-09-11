@@ -217,7 +217,7 @@ def _loop(ctx, *, spawn, **overrides):
     async def _release(target):
         released.append(target)
 
-    async def _needs_human(target):
+    async def _needs_human(target, _reason):
         escalated.append(target)
 
     seams = dict(

@@ -7,6 +7,7 @@ emitted activity feed + the spawn/claim recorders.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 from server.automations.backlog_selection import Batch
 from server.automations.context import AutomationContext
@@ -54,7 +55,8 @@ def build_loop(*, mode="auto", config=None, clock=None,
                candidate_count=None, blocked_count=0, untriaged_count=0,
                heal_orphans_result=None,
                refresh_groups=None, spawn=None, close_out_result=None,
-               credential_alerts=None, verify_ready=None, queue_tail=None):
+               credential_alerts=None, verify_ready=None, queue_tail=None,
+               wall_clock=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .claims /
@@ -118,8 +120,8 @@ def build_loop(*, mode="auto", config=None, clock=None,
     async def release(target):
         rec.releases.append(target)
 
-    async def needs_human(target):
-        rec.needs_humans.append(target)
+    async def needs_human(target, reason):
+        rec.needs_humans.append((target, reason))
 
     async def reconcile(claimed_refs, live_refs):
         rec.reconciles.append((list(claimed_refs), set(live_refs)))
@@ -159,6 +161,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
         credential_alerts=credential_alerts,
         verify_ready=verify_ready,
         queue_tail=queue_tail,
+        wall_clock=wall_clock,   # None → the loop's real UTC clock
     )
     return loop, rec, ctx
 
@@ -435,12 +438,107 @@ def test_terminal_watch_gave_up_unclaims_and_needs_human(tmp_path):
         assert len(rec.spawns) == 1
         # Next sweep sees the pr-doctor gave_up for r#1 → runner gives up too.
         await loop.tick()
-        assert "r#1" in rec.needs_humans  # GIVE-UP (needs-human) seam called
+        assert [t for t, _ in rec.needs_humans] == ["r#1"]  # GIVE-UP seam called
         assert "r#1" not in rec.releases  # give-up is NOT a plain release
         gave = await ctx.list_events(kind="gave_up")
         assert len(gave) >= 1
         st = await ctx.get_target_state("r#1")
-        assert st == {}  # state deleted
+        # Phase D: the row SURVIVES, stamped — it is the needs-human signal.
+        assert st["gave_up"] is True and st["needs_human_at"]
+        assert "pr-doctor gave up" in st["reason"]
+
+    asyncio.run(run())
+
+
+def test_give_up_keeps_a_row_with_needs_human_at(tmp_path):
+    """Phase D: exhausting ``max_attempts`` no longer deletes the row and writes a
+    label — it keeps the row, stamped with the wall-clock time of the give-up and
+    the reason. That row IS the needs-human signal (queue cooldown, board Status)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gu1.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        at = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
+        loop, rec, ctx = build_loop(candidates=[], pr_status={},
+                                    wall_clock=lambda: at,
+                                    config=make_config(max_attempts=2))
+        # A spawned target whose session ended with no PR, one attempt short of max.
+        await ctx.set_target_state("o/r#7", {
+            "session_id": "s1", "repo": "o/r", "issues": ["o/r#7", "o/r#8"],
+            "claimed": True, "attempts": 1, "_ended": True})
+
+        await loop.tick()          # attempts → 2 == max → give up
+
+        st = await ctx.get_target_state("o/r#7")
+        assert st["gave_up"] is True and st["needs_human_at"] == at.isoformat()
+        assert st["issues"] == ["o/r#7", "o/r#8"] and st["repo"] == "o/r"
+        assert "max attempts" in st["reason"]
+        assert rec.needs_humans == [("o/r#7", st["reason"])]
+        # A give-up row is terminal, not a claim: it must not read as in flight.
+        assert not st.get("claimed")
+
+    asyncio.run(run())
+
+
+def test_sweep_expires_gave_up_rows_after_retry_days(tmp_path):
+    """The runner owns the cooldown's end: once ``needs_human_retry_days`` has
+    passed it deletes the row, which is what returns the issue to the pool."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'e.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        loop, _rec, ctx = build_loop(candidates=[],
+                                     wall_clock=lambda: at + timedelta(days=8),
+                                     config=make_config(needs_human_retry_days=7))
+        await ctx.set_target_state("o/r#7", {"repo": "o/r", "issues": ["o/r#7"],
+                                             "gave_up": True,
+                                             "needs_human_at": at.isoformat(),
+                                             "reason": "x"})
+
+        await loop.tick()
+
+        assert await ctx.get_target_state("o/r#7") == {}
+        events = await ctx.list_events(kind="needs_human_expired")
+        assert len(events) == 1
+
+        # retry_days = 0 → permanent handoff: never expired.
+        await ctx.set_target_state("o/r#8", {"repo": "o/r", "issues": ["o/r#8"],
+                                             "gave_up": True,
+                                             "needs_human_at": at.isoformat(),
+                                             "reason": "x"})
+        loop2, _, ctx2 = build_loop(candidates=[],
+                                    wall_clock=lambda: at + timedelta(days=800),
+                                    config=make_config(needs_human_retry_days=0))
+        await loop2.tick()
+        assert (await ctx2.get_target_state("o/r#8"))["gave_up"] is True
+
+    asyncio.run(run())
+
+
+def test_gave_up_row_inside_the_window_is_left_alone(tmp_path):
+    """Still cooling down: no delete, no expiry event, and the sweep must not
+    fall through to the give-up bookkeeping for a row that already gave up."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'e2.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        loop, rec, ctx = build_loop(candidates=[], pr_status={},
+                                    wall_clock=lambda: at + timedelta(days=3),
+                                    config=make_config(needs_human_retry_days=7))
+        row = {"repo": "o/r", "issues": ["o/r#7"], "gave_up": True,
+               "needs_human_at": at.isoformat(), "reason": "x"}
+        await ctx.set_target_state("o/r#7", row)
+
+        await loop.tick()
+
+        assert await ctx.get_target_state("o/r#7") == row
+        assert await ctx.list_events(kind="needs_human_expired") == []
+        assert rec.needs_humans == []
 
     asyncio.run(run())
 
@@ -809,8 +907,8 @@ def test_orphan_sweep_runs_when_mode_propose(tmp_path):
 
 def test_closed_unmerged_after_handoff_escalates_to_needs_human(tmp_path):
     """A PR that was handed off to PR Doctor but then closed unmerged must
-    escalate to needs-human and delete the state row — the runner doesn't
-    re-spawn indefinitely."""
+    escalate to needs-human and leave a stamped ``gave_up`` row — the runner
+    doesn't re-spawn indefinitely."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ho3.db'}"
 
     async def run():
@@ -841,8 +939,9 @@ def test_closed_unmerged_after_handoff_escalates_to_needs_human(tmp_path):
             number=1, url="", state="closed", checks="none", title="", merged=False)
         await loop.tick()
 
-        assert "r#1" in rec.needs_humans
-        assert await ctx.get_target_state("r#1") == {}
+        assert [t for t, _ in rec.needs_humans] == ["r#1"]
+        st = await ctx.get_target_state("r#1")
+        assert st["gave_up"] is True and "PR closed unmerged" in st["reason"]
 
     asyncio.run(run())
 

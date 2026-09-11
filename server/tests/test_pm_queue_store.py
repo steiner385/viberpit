@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from server.db.models import (Base, GhProject, GhProjectItem, Project, ProjectRepo,
                               Session as DbSession, WorkItem, WorkItemDep)
-from server.pm.queue_store import load_queue_rows
+from server.pm.queue_store import load_queue_rows, parse_iso_utc
 
 NOW = datetime(2026, 9, 4, tzinfo=timezone.utc)
 
@@ -92,6 +92,37 @@ def test_open_blocker_resolves_dst_across_products_and_closed_releases_it():
 
     assert rows["steiner385/ccswitch#10"].open_blockers == ()  # closed dst releases the blocker
     assert rows["steiner385/ccswitch#11"].open_blockers == ("cairnea/KinDash#21",)  # open dst still blocks
+
+
+def test_parse_iso_utc_is_the_one_row_timestamp_parser():
+    """The single ISO parser both the orchestrator and the runner read row stamps
+    with. A stamp we cannot read is None — never a crash, never a cooldown."""
+    at = datetime(2026, 9, 1, 12, 30, tzinfo=timezone.utc)
+    assert parse_iso_utc(at.isoformat()) == at
+    # A naive stamp (written before the runner stamped tz) is read as UTC.
+    assert parse_iso_utc("2026-09-01T12:30:00") == at
+    assert parse_iso_utc(None) is None
+    assert parse_iso_utc("") is None
+    assert parse_iso_utc("not-a-date") is None
+
+
+def test_load_queue_rows_threads_needs_human_at():
+    """Phase D: the runner's durable give-up stamps ride onto the rows the pure
+    core cools down from — the loader only threads the map, it never reads a label."""
+    db = _db()
+    _seed_product(db, "ccswitch", "steiner385/ccswitch", board=True)
+    _item(db, "steiner385/ccswitch", 5, status="Ready")
+    _item(db, "steiner385/ccswitch", 6, status="Ready")
+    db.commit()
+    at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+
+    rows = load_queue_rows(db, now=NOW,
+                           needs_human_at={"steiner385/ccswitch#5": at})
+
+    by_ref = {r.ref: r for r in rows}
+    assert by_ref["steiner385/ccswitch#5"].needs_human_at == at
+    assert all(r.needs_human_at is None for ref, r in by_ref.items()
+               if ref != "steiner385/ccswitch#5")
 
 
 def test_load_queue_rows_skips_products_without_a_board_and_closed_items():

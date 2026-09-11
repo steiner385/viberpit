@@ -15,7 +15,7 @@ def _row(**over):
     base = dict(ref="o/r#1", repo="o/r", number=1, product="ccswitch", title="t", body="", url="u",
                 status="Ready", score=10.0, gh_created_at=NOW - timedelta(days=1), gh_updated_at=NOW,
                 assignees=(), author="tony", labels=(), open_children=0, open_blockers=(),
-                live_session=False, claimed=False)
+                live_session=False, claimed=False, needs_human_at=None)
     base.update(over)
     return QueueRow(**base)
 
@@ -49,13 +49,28 @@ def test_live_session_claim_assignee_epic_and_bot_are_excluded():
     assert skip_reason(_row(title="Dependency Dashboard"), **kw) == "bot"
 
 
-def test_needs_human_label_cools_down_by_gh_updated_at():
-    kw = dict(min_status="Ready", respect_dependencies=True, now=NOW)
-    fresh = _row(labels=("needs-human",), gh_updated_at=NOW - timedelta(days=1))
-    cooled = _row(labels=("needs-human",), gh_updated_at=NOW - timedelta(days=8))
+def test_needs_human_at_cools_down_then_reopens():
+    kw = dict(min_status="Backlog", respect_dependencies=True, now=NOW)
+    fresh = _row(needs_human_at=NOW - timedelta(days=2))
     assert skip_reason(fresh, needs_human_retry_days=7, **kw) == "needs_human_cooldown"
-    assert skip_reason(cooled, needs_human_retry_days=7, **kw) is None
     assert skip_reason(fresh, needs_human_retry_days=0, **kw) == "needs_human_cooldown"  # 0 = never retry
+    old = _row(needs_human_at=NOW - timedelta(days=8))
+    assert skip_reason(old, needs_human_retry_days=7, **kw) is None
+
+
+def test_needs_human_label_alone_no_longer_cools_down():
+    """Phase D: the label is not a signal; only the runner's durable row is."""
+    kw = dict(min_status="Backlog", respect_dependencies=True, needs_human_retry_days=7, now=NOW)
+    assert skip_reason(_row(labels=("needs-human",), gh_updated_at=NOW), **kw) is None
+
+
+def test_needs_human_cooldown_outranks_the_board_status_it_causes():
+    """The reconciler stamps ``Needs human`` on exactly these rows (Task 2), so a
+    status-first check would report them as plain "status" skips and the card
+    would lose its needs-human gauge."""
+    kw = dict(min_status="Backlog", respect_dependencies=True, needs_human_retry_days=7, now=NOW)
+    row = _row(status="Needs human", needs_human_at=NOW - timedelta(days=1))
+    assert skip_reason(row, **kw) == "needs_human_cooldown"
 
 
 def test_rank_orders_score_desc_nulls_last_then_age_and_counts_skips():
@@ -114,7 +129,7 @@ def test_every_skip_reason_is_in_the_vocabulary():
         "assigned": _row(assignees=("steiner385",)),
         "epic_open": _row(open_children=1),
         "bot": _row(author="renovate[bot]"),
-        "needs_human_cooldown": _row(labels=("needs-human",), gh_updated_at=NOW - timedelta(days=1)),
+        "needs_human_cooldown": _row(needs_human_at=NOW - timedelta(days=1)),
     }
     seen = set()
     for expected, row in cases.items():

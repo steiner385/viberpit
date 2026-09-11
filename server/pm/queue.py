@@ -16,11 +16,11 @@ from .desired_state import STATUS_BACKLOG, STATUS_BLOCKED, STATUS_OPTIONS, STATU
 IN_PROGRESS_LABEL = "in-progress"
 NEEDS_HUMAN_LABEL = "needs-human"
 
-# How long an escalated (``needs-human``) issue must sit untouched before the
-# runner reconsiders it. Escalation itself bumps the issue's ``updatedAt``, so
-# every give-up re-arms the cooldown — a permanently-failing issue is retried at
-# most once per window, never in a tight loop. 0 disables retry entirely
-# (needs-human becomes a permanent handoff again).
+# How long an escalated issue waits for a human before the runner reconsiders it.
+# Escalation stamps ``needs_human_at`` on the runner's row; the runner deletes the
+# row once the window passes, so a permanently failing issue is retried at most
+# once per window, never in a tight loop. 0 disables retry entirely (needs-human
+# becomes a permanent handoff again).
 NEEDS_HUMAN_RETRY_DAYS_DEFAULT = 7
 
 # Issues the runner must never treat as implementable work (#637). A backlog
@@ -71,6 +71,10 @@ class QueueRow:
     open_blockers: tuple[str, ...]
     live_session: bool
     claimed: bool
+    # The runner's durable give-up mark (Phase D): set while the issue waits for
+    # a human. Defaulted so every caller that has no runner state (the API's
+    # queue view) keeps constructing rows positionally.
+    needs_human_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,13 @@ def skip_reason(
     real Backlog row: eligible in Backlog mode, skipped as "status" in Ready mode.
     """
     min_rank = _min_status_rank(min_status)
+    # Checked BEFORE the status gate: the reconciler stamps board Status "Needs
+    # human" from exactly this mark, so a status-first check would report these
+    # rows as plain "status" skips and the card would lose its needs-human gauge.
+    if row.needs_human_at is not None and (
+            needs_human_retry_days <= 0
+            or now - row.needs_human_at < timedelta(days=needs_human_retry_days)):
+        return "needs_human_cooldown"
     status = row.status if row.status in STATUS_OPTIONS else STATUS_BACKLOG
     if status not in (STATUS_BACKLOG, STATUS_READY, STATUS_BLOCKED):
         return "status"  # Done / In progress / Needs human
@@ -134,13 +145,6 @@ def skip_reason(
         return "epic_open"
     if _is_bot(row):
         return "bot"
-    if NEEDS_HUMAN_LABEL in row.labels:
-        if (
-            needs_human_retry_days <= 0
-            or row.gh_updated_at is None
-            or now - row.gh_updated_at < timedelta(days=needs_human_retry_days)
-        ):
-            return "needs_human_cooldown"
     return None
 
 

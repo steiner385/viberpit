@@ -386,8 +386,9 @@ def _runner(*, ran: bool | None, calls: dict):
     async def _release(target):
         calls["released"] = target
 
-    async def _needs_human(target):
+    async def _needs_human(target, reason):
         calls["needs_human"] = target
+        calls["needs_human_reason"] = reason
 
     async def _pr_status_for(_target):
         return None

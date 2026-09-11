@@ -35,6 +35,7 @@ from server.db.models import Session as DbSession
 from server.github.pr_status import PullRequestInfo
 from server.pm.desired_state import STATUS_READY
 from server.pm.queue import QueueRow, rank, to_candidate
+from server.pm.queue_store import parse_iso_utc
 from server.tests.fakes.fake_backlog import FakeGh
 
 NOW = datetime(2026, 9, 10, tzinfo=timezone.utc)
@@ -139,6 +140,7 @@ class Harness:
         )
         self.released: list[str] = []
         self.needs_humaned: list[str] = []
+        self.needs_human_reasons: list[str] = []
 
     async def _read_config(self):
         return "auto", self.config
@@ -185,9 +187,10 @@ class Harness:
         batch = await self._batch_for(target)
         await asyncio.to_thread(backlog_github.unclaim_batch, batch, gh_run=self.gh)
 
-    async def _needs_human(self, target: str) -> None:
+    async def _needs_human(self, target: str, reason: str) -> None:
         """GIVE-UP: add needs-human + remove in-progress."""
         self.needs_humaned.append(target)
+        self.needs_human_reasons.append(reason)
         batch = await self._batch_for(target)
         await asyncio.to_thread(backlog_github.label_needs_human, batch, gh_run=self.gh)
 
@@ -347,8 +350,11 @@ def test_ended_without_pr_increments_then_gives_up(tmp_path):
         assert st.get("_ended") is True
         await h.loop.tick()                  # sweep again: attempts -> 2 == max → give up
         st2 = await h.ctx.get_target_state("o/r#1")
-        assert st2 == {}                     # state deleted on give-up
+        # Phase D: the row survives the give-up, stamped — it IS the handoff.
+        assert st2["gave_up"] is True and st2["issues"] == ["o/r#1"]
+        assert parse_iso_utc(st2["needs_human_at"]) is not None
         assert "o/r#1" in h.needs_humaned    # GIVE-UP path escalated
+        assert "max attempts" in h.needs_human_reasons[0]
         # needs-human label was applied via label_needs_human.
         nh = [c for c in h.gh.calls if "--add-label" in c and "needs-human" in c]
         assert nh, "expected needs-human escalation"
@@ -382,7 +388,7 @@ def test_pr_doctor_gave_up_target_needs_human(tmp_path):
         nh = [c for c in h.gh.calls if "--add-label" in c and "needs-human" in c]
         assert nh
         st = await h.ctx.get_target_state("o/r#1")
-        assert st == {}
+        assert st["gave_up"] is True and st["reason"] == "pr-doctor gave up"
 
     run(go())
 
