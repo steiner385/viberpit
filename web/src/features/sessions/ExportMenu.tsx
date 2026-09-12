@@ -28,7 +28,7 @@ export function ExportMenu({ sessionId }: Props) {
         onClick={() => setOpen((v) => !v)}
         className={cn(
           'inline-flex items-center px-2 py-0.5 rounded-md min-h-7 text-xs',
-          'hover:bg-edge active:bg-edge',
+          'hover:bg-edge active:bg-edge-strong',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
           'text-ink-muted',
         )}

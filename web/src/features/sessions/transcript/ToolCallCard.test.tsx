@@ -171,6 +171,7 @@ describe('ToolCallCard', () => {
       render(<ToolCallCard block={bashBlockWithError} density="card" />)
       const resultToggle = screen.getByRole('button', { name: /result/i })
       expect(within(resultToggle).getByTestId('tool-result-failed')).toBeInTheDocument()
+      expect(resultToggle).toHaveAccessibleName(/failed/i)
     })
 
     it('shows line-count size hint for bash result', () => {
@@ -260,6 +261,7 @@ describe('ToolCallCard', () => {
       render(<ToolCallCard block={bashBlockWithError} density="line" />)
       const toggle = screen.getByRole('button', { name: /tool details/i })
       expect(within(toggle).getByTestId('tool-result-failed')).toBeInTheDocument()
+      expect(toggle).toHaveAccessibleName(/failed/i)
     })
 
     it('defaultResultOpen opens the detail panel', () => {
@@ -284,7 +286,8 @@ describe('ToolCallCard', () => {
       expect(screen.getByText('Bash').className).toMatch(/text-ink-muted/)
       rerender(<ToolCallCard block={bashBlock} density="line" />)
       // Running (no result) → prominent name color
-      expect(screen.getByText('Bash').className).toMatch(/\btext-ink\b/)
+      expect(screen.getByText('Bash')).toHaveClass('text-ink')
+      expect(screen.getByText('Bash')).not.toHaveClass('text-ink-muted')
     })
   })
 

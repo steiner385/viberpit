@@ -228,7 +228,7 @@ export function QuestionCard({ block, onAnswer, onChat, armedForChat = false, re
                   <span className="block">{label}</span>
                   {optionDescription(opt) && (
                     <span className={cn('block text-xs mt-0.5',
-                      isPicked ? 'text-ink-muted' : 'text-ink-muted')}>
+                      isPicked ? 'text-ink-muted' : 'text-ink-faint')}>
                       {optionDescription(opt)}
                     </span>
                   )}

@@ -8,6 +8,7 @@ describe('InsightCallout', () => {
   it('renders the Insight header with a star icon', () => {
     render(<InsightCallout text="a point" />)
     expect(screen.getByText('Insight')).toBeInTheDocument()
+    expect(screen.getByTestId('insight-star')).toBeInTheDocument()
   })
 
   it('renders the body as markdown', async () => {

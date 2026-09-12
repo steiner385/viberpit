@@ -19,6 +19,9 @@ describe('TodoList', () => {
     expect(screen.getByTestId('todo-status-completed')).toBeInTheDocument()
     expect(screen.getByTestId('todo-status-in_progress')).toBeInTheDocument()
     expect(screen.getByTestId('todo-status-pending')).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'completed' })).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'in progress' })).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'pending' })).toBeInTheDocument()
   })
 
   it('falls back to JSON pre when todos is not an array', () => {

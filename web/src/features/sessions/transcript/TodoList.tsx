@@ -6,12 +6,12 @@ interface Props { payload: Record<string, unknown> }
 
 function StatusMarker({ status }: { status: string }) {
   if (status === 'completed') {
-    return <CheckCircle2 size={14} aria-hidden="true" data-testid="todo-status-completed" />
+    return <CheckCircle2 size={14} role="img" aria-label="completed" data-testid="todo-status-completed" />
   }
   if (status === 'in_progress') {
-    return <CircleDot size={14} aria-hidden="true" data-testid="todo-status-in_progress" />
+    return <CircleDot size={14} role="img" aria-label="in progress" data-testid="todo-status-in_progress" />
   }
-  return <Circle size={14} aria-hidden="true" data-testid="todo-status-pending" />
+  return <Circle size={14} role="img" aria-label="pending" data-testid="todo-status-pending" />
 }
 
 export function TodoList({ payload }: Props) {

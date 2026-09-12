@@ -62,7 +62,7 @@ export function YourTurnPanel({ statusState, suggestions, onPrompt }: Props) {
           ))}
         </div>
       ) : (
-        <p className="mt-1 pl-6 text-xs text-accent/80">
+        <p className="mt-1 pl-6 text-xs text-accent">
           Review the last message above, then reply below.
         </p>
       )}

@@ -96,7 +96,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
       <div className="text-sm">
         <button
           type="button"
-          aria-label="Toggle tool details"
+          aria-label={`Toggle tool details — ${ok ? 'succeeded' : 'failed'}`}
           aria-expanded={resultOpen}
           aria-controls={detailRegionId}
           onClick={() => setResultOpen((v) => !v)}
@@ -106,7 +106,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
             'hover:bg-surface-raised rounded',
           )}
         >
-          <span className={cn('shrink-0', complete ? 'text-ink-muted' : 'text-ink-muted')}>{kindIcon(block.toolKind)}</span>
+          <span className={cn('shrink-0', complete ? 'text-ink-faint' : 'text-ink-muted')}>{kindIcon(block.toolKind)}</span>
           <span className={cn('shrink-0 font-medium', complete ? 'text-ink-muted' : 'text-ink')}>{displayName}</span>
           {summary && (
             <span className="truncate text-xs text-ink-muted">{summary}</span>
@@ -246,7 +246,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
             <div className="border-t border-edge">
               <button
                 type="button"
-                aria-label={`Toggle result`}
+                aria-label={`Toggle result — ${ok ? 'succeeded' : 'failed'}`}
                 aria-expanded={resultOpen}
                 aria-controls={resultRegionId}
                 onClick={() => setResultOpen((v) => !v)}

@@ -142,7 +142,7 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
               title="Pinned — auto-rotation off. Click to unpin."
               className="text-warning rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             >
-              <Pin size={14} role="img" aria-label="pinned" />
+              <Pin size={14} aria-hidden="true" />
             </button>
           )}
         </span>
@@ -297,7 +297,7 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
                 aria-label={`${agentCount} sub-agents`}
                 className={cn(
                   'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md min-h-7',
-                  'hover:bg-edge active:bg-edge',
+                  'hover:bg-edge active:bg-edge-strong',
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
                 )}
               >
