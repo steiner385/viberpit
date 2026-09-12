@@ -575,6 +575,17 @@ def test_a_project_slug_that_is_not_branch_safe_is_422_before_any_github_call():
         assert gh.calls == []
 
 
+def test_delete_on_a_project_slug_that_is_not_branch_safe_is_422_not_500():
+    # `_adopt_stranded` derives the branch through `map_changes_branch_name`, so
+    # the DELETE route must map MapOpError like the edit route does.
+    gh = FakeGh([])
+    with _seeded(gh) as c:
+        r = c.delete(f"/api/pm/projects/{UNSAFE_SLUG}/map-changes", headers=IDENTITY_HEADERS)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "bad_slug"
+        assert gh.calls == []
+
+
 def test_create_of_an_existing_branch_doc_is_slug_taken_and_names_the_branch():
     gh = FakeGh([
         *_first_create_answers(),
