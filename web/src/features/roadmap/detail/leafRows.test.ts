@@ -21,3 +21,15 @@ describe('leafRows', () => {
     expect(leafRows([])).toEqual([])
   })
 })
+
+it('brings actionable open issues into view before ordinary work, preserving order within each group', () => {
+  const rows = leafRows([
+    leaf('1', 'open'),
+    { ...leaf('2', 'open'), tier: 'blocked' },
+    { ...leaf('3', 'open'), tier: 'needs-you' },
+    { ...leaf('4', 'open'), tier: 'needs-you' },
+    { ...leaf('5', 'closed'), tier: 'needs-you' },
+    { ...leaf('6', 'open'), tier: 'in-flight' },
+  ])
+  expect(rows.map((r) => r.key)).toEqual(['h:open', '3', '4', '2', '1', '6', 'h:closed', '5'])
+})
