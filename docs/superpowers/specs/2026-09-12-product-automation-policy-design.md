@@ -1,6 +1,6 @@
 # Product automation policy — design
 
-**Status:** draft for review (2026-09-12). Written after the 2026-09-08 finish line closed, as the brainstorm Tony asked for on 2026-09-11: "a per-product automation policy (levers 2 + 3) as the opt-in replacement for the Backlog Runner". Every decision marked **[assumed]** was taken without an answer from Tony and is the first thing to challenge.
+**Status:** approved 2026-09-12 (Tony: opt-in = dispatch + triage auto-accept; policy as a JSON blob on `Project`; auto-accept under triage's existing `propose` mode; the remaining defaults as drafted). Written after the 2026-09-08 finish line closed, as the brainstorm Tony asked for on 2026-09-11: "a per-product automation policy (levers 2 + 3) as the opt-in replacement for the Backlog Runner". Decisions marked **[decided]** were confirmed by Tony; those marked **[default]** were drafted by the author and accepted without objection.
 
 **Tracks:** #1521 (dispatch outcome feedback loop), lever 3 (confidence-tiered triage auto-accept) from the 2026-09-10 roadmap/triage/dispatch assessment. Supersedes nothing; extends `specs/003-gh-projects-integration/spec.md` §7a (the runner reads the board queue) and the roadmap drill-down spec's attention tier (§11).
 
@@ -15,7 +15,7 @@ Five products are onboarded today (viberpit `classifying`, kindash and ghostdriv
 | # | Decision | Rationale |
 |---|---|---|
 | D1 | **A product opts in; the automations execute.** Each `Project` carries an `automation_policy`; the Backlog Runner and PM Triage loops read it per product and act only for products whose policy says so. The global automation rows keep only fleet-wide limits (concurrency, spawns per day, grouping cadence). | The runner's "which products" question is a product question. Fleet limits protect shared capacity and stay global. |
-| D2 | **[assumed] Opt-in governs dispatch AND triage auto-accept** (option b of the hand-back). The outcome loop (#1521) is built as the data layer under both, with its consumers phased. | Auto-accept is what lets Backlog→Ready flow without a human per product; outcomes need dispatch data that only exists once a product dispatches. The "whole loop incl. materialization" option is a follow-on (§11). |
+| D2 | **[decided] Opt-in governs dispatch AND triage auto-accept** (option b of the hand-back). The outcome loop (#1521) is built as the data layer under both, with its consumers phased. | Auto-accept is what lets Backlog→Ready flow without a human per product; outcomes need dispatch data that only exists once a product dispatches. The "whole loop incl. materialization" option is a follow-on (§11). |
 | D3 | **The policy is a `ConfigField` schema, stored as JSON on `Project`.** `PRODUCT_POLICY_SCHEMA` reuses `ConfigField`/`validate_config` (`server/automations/base.py`) and the web's generic `ConfigInput` renderer. NULL = never opted in (today's behaviour for that product). | One config machinery, one editor. Constitution VI: no second schema/validator/renderer. |
 | D4 | **Precedence: product policy over global config, for the knobs it names; fleet limits are global only.** `enabled_repos`, `repo_weights`, `repo_caps`, `queue_min_status`, `max_attempts`, `needs_human_retry_days`, `default_model`, `respect_dependencies` retire from the runner's global schema (retired keys stay readable for one release, then drop). | Two places for one knob is the bug shape this repo names first. |
 | D5 | **A per-dispatch outcome is one appended row** (`dispatch_outcomes`), written at spawn and finalised by the runner's sweep — the one state machine that already observes session end, PR status and give-up. | Today's attempt counters are overwritten in place inside `AutomationTargetState`; the activity feed is not queryable by schema. History needs its own rows. |
@@ -51,17 +51,17 @@ Five products are onboarded today (viberpit `classifying`, kindash and ghostdriv
 
 Storage: `Project.automation_policy` (JSON, nullable) + `Project.automation_policy_updated_at`. Nullable, so `_reconcile_columns` adds them on both dialects; migration `0041_product_automation_policy` recorded anyway.
 
-**[assumed]** `selection_strategy` stays global (`balanced | weighted | priority | concurrency-cap`) and reads `weight`/`max_in_flight` from the policies instead of the two dicts; `priority` order becomes the products' `updated_at`-independent order of `Project.created_at` unless a `priority` int is added later (YAGNI now).
+**[default]** `selection_strategy` stays global (`balanced | weighted | priority | concurrency-cap`) and reads `weight`/`max_in_flight` from the policies instead of the two dicts; `priority` order becomes the products' `updated_at`-independent order of `Project.created_at` unless a `priority` int is added later (YAGNI now).
 
 ## 5. The runner
 
 - **Scope:** `_backlog_query_queue` keeps loading the board mirror for every onboarded product, then keeps only products whose policy `dispatch != off` (replacing the `enabled_repos` filter at `orchestrator.py:5107-5113`). A product without a policy is `off`.
-- **Ranking:** `rank()` is called per product with that product's `queue_min_status`, `respect_dependencies`, `needs_human_retry_days` (kept global for now — **[assumed]**; it only governs the legacy needs-human cooldown, which D8 supersedes for repeated failures) and, new, the `needs_spec` skip (§7).
+- **Ranking:** `rank()` is called per product with that product's `queue_min_status`, `respect_dependencies`, `needs_human_retry_days` (kept global for now — **[default]**; it only governs the legacy needs-human cooldown, which D8 supersedes for repeated failures) and, new, the `needs_spec` skip (§7).
 - **Batch:** `select_batch` / `order_live_groups` read `weight` and `max_in_flight` from the policies (`backlog_selection.py:85-95` shape unchanged: a mapping keyed by product slug instead of repo).
 - **Propose vs auto:** the global runner mode becomes `off | on`; per product, `propose` announces the batch (the existing announce path) and records an `AutomationEvent` `proposed`, `auto` spawns. A `propose` product never claims.
 - **Spawn:** `_backlog_spawn` resolves the model from the product's policy with the history floor (§8); records the outcome row `running` (§6).
 - **Status card:** per-product lines ("kwgt-cairn: auto · 1/1 in flight · 12 eligible · 2 bounced"), replacing the single repo count line.
-- **Retired keys:** `enabled_repos`, `repo_weights`, `repo_caps`, `queue_min_status`, `max_attempts`, `needs_human_retry_days`(**[assumed]** stays), `default_model`, `respect_dependencies` join `retired_config_keys`; `PATCH /api/automations/backlog-runner` rejects them with the existing retired-key message.
+- **Retired keys:** `enabled_repos`, `repo_weights`, `repo_caps`, `queue_min_status`, `max_attempts`, `needs_human_retry_days` (**[default]** stays), `default_model`, `respect_dependencies` join `retired_config_keys`; `PATCH /api/automations/backlog-runner` rejects them with the existing retired-key message.
 
 ## 6. Dispatch outcomes (#1521 data layer)
 
@@ -98,8 +98,8 @@ Table `dispatch_outcomes` (migration `0041`, all columns nullable or defaulted; 
 ## 8. Triage auto-accept (lever 3)
 
 - `server/pm/triage_accept.py`: `apply_accept(db, proposal, *, decided_by: str, edits=None)` — `_apply_accept` moved out of `server/api/pm.py` verbatim, `classified_by = decided_by` (`"human"` from the routes, `"auto"` from the loop). The router imports it; nothing else changes for humans.
-- `PmTriageLoop._run` gains one step after `ClassifyBatch` (and on every tick, so a policy change catches up): for each `pending` proposal whose product policy has `triage_auto_accept != off`, with `proposed_feature_id` set and `confidence_level` at or above the tier, call `apply_accept(decided_by="auto")`, record audit `pm.triage.auto_accept` `{proposalId, workItemId, featureId, confidence}` and `AutomationEvent` kind `auto_accepted`. Undo keeps working: the proposal's `undo_snapshot` is written the same way, and `POST /triage/{id}/undo` inside the window returns it to pending exactly as for a human accept. **[assumed]** An undone proposal is marked `auto_undone = true` and is never auto-accepted again — a human undid the machine once; the machine does not get a second vote.
-- PM Triage's mode stays `off | propose`; auto-accept is a product policy, not a triage mode — `propose` means "the loop runs", and whether a product's proposals self-accept is the product's setting. **[assumed]**
+- `PmTriageLoop._run` gains one step after `ClassifyBatch` (and on every tick, so a policy change catches up): for each `pending` proposal whose product policy has `triage_auto_accept != off`, with `proposed_feature_id` set and `confidence_level` at or above the tier, call `apply_accept(decided_by="auto")`, record audit `pm.triage.auto_accept` `{proposalId, workItemId, featureId, confidence}` and `AutomationEvent` kind `auto_accepted`. Undo keeps working: the proposal's `undo_snapshot` is written the same way, and `POST /triage/{id}/undo` inside the window returns it to pending exactly as for a human accept. **[default]** An undone proposal is marked `auto_undone = true` and is never auto-accepted again — a human undid the machine once; the machine does not get a second vote.
+- PM Triage's mode stays `off | propose`; auto-accept is a product policy, not a triage mode — `propose` means "the loop runs", and whether a product's proposals self-accept is the product's setting. **[decided]**
 - Inbox: an accepted-by-auto proposal shows for the undo window with chip "auto-accepted" and the undo button; after the window it leaves the inbox like a human accept.
 - Safety: per product, at most `max_auto_accepts_per_tick = 25` (a constant, not a knob); never no-fit; never a proposal whose target capability is `proposed` (unmerged doc).
 
@@ -113,7 +113,7 @@ Table `dispatch_outcomes` (migration `0041`, all columns nullable or defaulted; 
 
 - `Project.automation_policy` JSON, `Project.automation_policy_updated_at` (nullable). `GET /api/pm/projects` and `/{slug}` include `automationPolicy` (or `null`). `PATCH /api/pm/projects/{slug}/policy` `{policy}` → validated, whole-object replace.
 - `dispatch_outcomes` (§6). `GET /api/pm/work-items/{id}/outcomes` (the leaf's history; used by the chip's tooltip and the assistant).
-- `TriageProposal.auto_undone` (bool, nullable) **[assumed]**.
+- `TriageProposal.auto_undone` (bool, nullable) **[default]**.
 - Backlog Runner status payload gains `products: [{slug, dispatch, inFlight, cap, eligible, bounced}]`.
 - Retired runner keys per D4; `PRODUCT_POLICY_SCHEMA` exported by `GET /api/automations` beside the runner's schema so the web renders it with the same component.
 
@@ -142,11 +142,6 @@ Not in this spec (follow-ons): materialization under the policy (option c), `rev
 - Auto-accept when the classifier's confidence vocabulary drifts (a value outside low/medium/high): treated as `low`, never accepted.
 - Seed at the flip finds a repo in `enabled_repos` with no product: ignored with a warn event (it was already dropped by C-1).
 
-## 14. Open questions for Tony (the [assumed] list)
+## 14. Decisions of record (2026-09-12)
 
-1. Opt-in scope = dispatch + triage auto-accept (D2) — or dispatch only / the whole loop?
-2. Policy on `Project` as JSON via the `ConfigField` machinery (D3) — or typed columns / a separate table?
-3. `needs_human_retry_days` stays a global runner knob (§5) — or per product too?
-4. Auto-accept is a product setting under triage's `propose` mode (§8) — or a third triage mode `auto`?
-5. `auto_undone` blocks re-acceptance forever (§8) — or until the proposal's confidence changes?
-6. The `weight`/`max_in_flight` knobs replace `repo_weights`/`repo_caps` one-for-one per product (§4) — is per-repo granularity within a product needed anywhere?
+Answered by Tony on 2026-09-12: (1) opt-in = dispatch + triage auto-accept (D2); (2) the policy is a JSON blob on `Project` through the `ConfigField` machinery (D3); (3) auto-accept is a product setting under triage's existing `propose` mode (§8). Accepted as drafted: `needs_human_retry_days` stays a global runner knob (§5); an undone auto-accept is never retried by the machine (§8); `weight`/`max_in_flight` are per product, not per repo (§4). Storage as a JSON blob is "fine for now" — typed columns remain an option if the policy grows.
