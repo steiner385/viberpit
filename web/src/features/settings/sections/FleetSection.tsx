@@ -50,21 +50,21 @@ function capacityLabel(h: FleetHost): string {
 function CodexCell({ host }: { host: FleetHost }) {
   const state = hostEngine(host, 'codex')
   if (state === null || state.reason === 'engine_not_advertised') {
-    return <span className="text-gray-500 dark:text-gray-400">not advertised</span>
+    return <span className="text-ink-muted">not advertised</span>
   }
   if (state.dispatchable) {
     return (
-      <span className="text-green-600 dark:text-green-400" title={state.cliVersion ?? undefined}>
+      <span className="text-success" title={state.cliVersion ?? undefined}>
         dispatchable
       </span>
     )
   }
   return (
     <div className="flex flex-col">
-      <span className="text-amber-600 dark:text-amber-400">
+      <span className="text-warning">
         {state.available ? 'runner ready, edge refuses' : 'unavailable'}
       </span>
-      <span className="text-xs text-gray-500 dark:text-gray-400">
+      <span className="text-xs text-ink-muted">
         {engineReasonLabel(state.dispatchReason ?? state.reason)}
       </span>
     </div>
@@ -142,7 +142,7 @@ export function FleetSection() {
   }
 
   if (isError) {
-    return <p className="text-sm text-red-600 dark:text-red-400">Could not load the fleet.</p>
+    return <p className="text-sm text-danger">Could not load the fleet.</p>
   }
 
   const hosts = data?.hosts ?? []
@@ -151,23 +151,23 @@ export function FleetSection() {
     <section className="space-y-3">
       <header>
         <h3 className="text-sm font-semibold">Fleet</h3>
-        <p className="text-xs text-gray-500 dark:text-gray-400">
+        <p className="text-xs text-ink-muted">
           Hosts that can run sessions. Weight multiplies a host&apos;s score when
           ranking; disabling a host removes it from dispatch without deleting it.
         </p>
       </header>
 
-      {isLoading && <p className="text-sm text-gray-500">Loading…</p>}
+      {isLoading && <p className="text-sm text-ink-muted">Loading…</p>}
 
       {!isLoading && hosts.length === 0 && (
-        <p className="text-sm text-gray-500">No hosts registered.</p>
+        <p className="text-sm text-ink-muted">No hosts registered.</p>
       )}
 
       {hosts.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-xs text-gray-500 dark:text-gray-400">
+              <tr className="text-left text-xs text-ink-muted">
                 <th className="py-1 pr-2">Host</th>
                 <th className="pr-2">Status</th>
                 <th className="pr-2">Codex</th>
@@ -182,14 +182,14 @@ export function FleetSection() {
             </thead>
             <tbody>
               {hosts.map((h) => (
-                <tr key={h.name} className="border-t border-gray-200 dark:border-gray-700 align-top">
+                <tr key={h.name} className="border-t border-edge align-top">
                   <td className="py-1 pr-2">
                     <div className="font-medium">{h.name}</div>
-                    <div className="text-xs text-gray-500 dark:text-gray-400 break-all">
+                    <div className="text-xs text-ink-muted break-all">
                       {h.endpoint}
                     </div>
                     {h.lastError && (
-                      <div className="text-xs text-red-600 dark:text-red-400 break-all">
+                      <div className="text-xs text-danger break-all">
                         {h.lastError}
                       </div>
                     )}
@@ -220,23 +220,23 @@ export function FleetSection() {
                           )
                             upgrade.mutate(h.name)
                         }}
-                        className="ml-2 rounded border border-blue-600 px-1.5 py-0.5 font-sans text-xs text-blue-600 hover:bg-blue-600 hover:text-white disabled:opacity-40 dark:border-blue-400 dark:text-blue-400"
+                        className="ml-2 rounded border border-accent px-1.5 py-0.5 font-sans text-xs text-accent hover:bg-accent hover:text-accent-ink disabled:opacity-40"
                       >
                         Update
                       </button>
                     )}
                     {h.upgrade?.state === 'running' && (
-                      <div className="font-sans text-xs text-blue-600 dark:text-blue-400">
+                      <div className="font-sans text-xs text-accent">
                         updating… {h.upgrade.step ?? ''}
                       </div>
                     )}
                     {h.upgrade?.state === 'failed' && (
-                      <div className="font-sans text-xs text-red-600 dark:text-red-400 break-all">
+                      <div className="font-sans text-xs text-danger break-all">
                         update failed: {h.upgrade.error}
                       </div>
                     )}
                     {h.upgrade?.state === 'done' && (
-                      <div className="font-sans text-xs text-green-600 dark:text-green-400">
+                      <div className="font-sans text-xs text-success">
                         updated
                       </div>
                     )}
@@ -248,7 +248,7 @@ export function FleetSection() {
                       max={1000}
                       defaultValue={h.weight}
                       aria-label={`weight for ${h.name}`}
-                      className="w-16 rounded border border-gray-300 dark:border-gray-600 bg-transparent px-1"
+                      className="w-16 rounded border border-edge-strong bg-transparent px-1"
                       onBlur={(e) => {
                         const weight = Number(e.target.value)
                         if (weight !== h.weight) patch.mutate({ name: h.name, body: { weight } })
@@ -272,7 +272,7 @@ export function FleetSection() {
                       title="Remove host"
                       disabled={remove.isPending}
                       onClick={() => remove.mutate(h.name)}
-                      className="text-xs text-gray-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40"
+                      className="text-xs text-ink-muted hover:text-danger disabled:opacity-40"
                     >
                       ✕
                     </button>
@@ -293,7 +293,7 @@ export function FleetSection() {
         }}
       >
         <div className="flex flex-col gap-0.5">
-          <label className="text-xs text-gray-500 dark:text-gray-400" htmlFor="fleet-add-name">
+          <label className="text-xs text-ink-muted" htmlFor="fleet-add-name">
             Name
           </label>
           <input
@@ -301,11 +301,11 @@ export function FleetSection() {
             value={draft.name}
             onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
             placeholder="rocky"
-            className="w-28 rounded border border-gray-300 dark:border-gray-600 bg-transparent px-2 py-1 text-sm"
+            className="w-28 rounded border border-edge-strong bg-transparent px-2 py-1 text-sm"
           />
         </div>
         <div className="flex flex-col gap-0.5">
-          <label className="text-xs text-gray-500 dark:text-gray-400" htmlFor="fleet-add-endpoint">
+          <label className="text-xs text-ink-muted" htmlFor="fleet-add-endpoint">
             Endpoint
           </label>
           <input
@@ -313,18 +313,18 @@ export function FleetSection() {
             value={draft.endpoint}
             onChange={(e) => setDraft((d) => ({ ...d, endpoint: e.target.value }))}
             placeholder="https://rocky:9443"
-            className="w-56 rounded border border-gray-300 dark:border-gray-600 bg-transparent px-2 py-1 text-sm"
+            className="w-56 rounded border border-edge-strong bg-transparent px-2 py-1 text-sm"
           />
         </div>
         <button
           type="submit"
           disabled={add.isPending || !draft.name.trim() || !draft.endpoint.trim()}
-          className="rounded bg-blue-600 px-3 py-1 text-sm text-white hover:bg-blue-700 disabled:opacity-40"
+          className="rounded bg-accent px-3 py-1 text-sm text-accent-ink hover:bg-accent/90 disabled:opacity-40"
         >
           {add.isPending ? 'Adding…' : 'Add host'}
         </button>
         {addError && (
-          <p className="w-full text-xs text-red-600 dark:text-red-400">{addError}</p>
+          <p className="w-full text-xs text-danger">{addError}</p>
         )}
       </form>
     </section>

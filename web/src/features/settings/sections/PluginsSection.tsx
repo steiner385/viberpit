@@ -66,7 +66,7 @@ function PluginRow({ plugin }: { plugin: LibraryPlugin }) {
             <span className="text-xs opacity-50">≈{plugin.tokenCost.alwaysOn} tok always-on</span>
           )}
         </button>
-        <label className="flex items-center gap-2 shrink-0 cursor-pointer min-h-[44px]">
+        <label className="flex items-center gap-2 shrink-0 cursor-pointer min-h-target">
           <span className="text-xs opacity-60">{plugin.enabled ? 'On' : 'Off'}</span>
           <input
             type="checkbox"

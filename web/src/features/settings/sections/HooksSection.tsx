@@ -47,11 +47,11 @@ const HOOK_EVENTS = [
 ] as const
 
 const inputClass = cn(
-  'w-full rounded-md border border-gray-300 dark:border-gray-600',
-  'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
-  'px-3 py-2 text-sm min-h-[44px]',
-  'focus:outline-none focus:ring-2 focus:ring-blue-500',
-  'placeholder:text-gray-400 dark:placeholder:text-gray-500',
+  'w-full rounded-md border border-edge-strong',
+  'bg-surface text-ink',
+  'px-3 py-2 text-sm min-h-target',
+  'focus:outline-none focus:ring-2 focus:ring-accent',
+  'placeholder:text-ink-muted',
 )
 
 function errorMessage(err: unknown): string {
@@ -148,9 +148,9 @@ export function HooksSection() {
       <div
         role="alert"
         className={cn(
-          'rounded-md border border-amber-300 dark:border-amber-700/60',
-          'bg-amber-50 dark:bg-amber-900/30 px-4 py-3',
-          'text-sm text-amber-800 dark:text-amber-200',
+          'rounded-md border border-warning',
+          'bg-warning-wash px-4 py-3',
+          'text-sm text-warning',
         )}
       >
         <span className="font-semibold">⚠ Hooks run arbitrary shell commands on this host.</span>{' '}
@@ -160,23 +160,23 @@ export function HooksSection() {
 
       {/* Save error not tied to the add form (toggle/delete failures) */}
       {saveMutation.isError && !addError && (
-        <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+        <p role="alert" className="text-sm text-danger">
           {errorMessage(saveMutation.error)}
         </p>
       )}
 
       {/* Existing hooks */}
       {isLoading ? (
-        <p className="text-sm text-gray-500 dark:text-gray-400">Loading hooks…</p>
+        <p className="text-sm text-ink-muted">Loading hooks…</p>
       ) : rows.length === 0 ? (
-        <p className="text-sm text-gray-500 dark:text-gray-400">
+        <p className="text-sm text-ink-muted">
           No hooks configured yet. Add one below.
         </p>
       ) : (
         <div className="space-y-4">
           {grouped.map((group) => (
             <div key={group.event} className="space-y-2">
-              <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              <h3 className="text-sm font-semibold text-ink">
                 {group.event}
               </h3>
               <ul className="space-y-2">
@@ -184,8 +184,8 @@ export function HooksSection() {
                   <li
                     key={index}
                     className={cn(
-                      'rounded-md border border-gray-200 dark:border-gray-700',
-                      'bg-white dark:bg-gray-800 px-3 py-2 space-y-2',
+                      'rounded-md border border-edge',
+                      'bg-surface px-3 py-2 space-y-2',
                     )}
                   >
                     <div className="flex items-start gap-3">
@@ -196,15 +196,15 @@ export function HooksSection() {
                         disabled={saveMutation.isPending}
                         aria-label={`Enable ${row.event} hook`}
                         className={cn(
-                          'mt-1 h-4 w-4 shrink-0 rounded border-gray-300 dark:border-gray-600',
-                          'text-blue-600 focus:ring-2 focus:ring-blue-500',
+                          'mt-1 h-4 w-4 shrink-0 rounded border-edge-strong',
+                          'text-accent focus:ring-2 focus:ring-accent',
                         )}
                       />
                       <div className="min-w-0 flex-1 space-y-1">
-                        <div className="text-xs text-gray-500 dark:text-gray-400">
+                        <div className="text-xs text-ink-muted">
                           Matcher: <span className="font-mono">{row.matcher ?? '(all)'}</span>
                         </div>
-                        <code className="block break-all font-mono text-sm text-gray-900 dark:text-gray-100">
+                        <code className="block break-all font-mono text-sm text-ink">
                           {row.command}
                         </code>
                       </div>
@@ -242,13 +242,13 @@ export function HooksSection() {
       )}
 
       {/* Add hook form */}
-      <div className="space-y-3 border-t border-gray-200 dark:border-gray-700 pt-4">
-        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Add hook</h3>
+      <div className="space-y-3 border-t border-edge pt-4">
+        <h3 className="text-sm font-semibold text-ink">Add hook</h3>
 
         <div className="space-y-1">
           <label
             htmlFor="hooks-new-event"
-            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+            className="block text-sm font-medium text-ink"
           >
             Event
           </label>
@@ -267,9 +267,9 @@ export function HooksSection() {
         <div className="space-y-1">
           <label
             htmlFor="hooks-new-matcher"
-            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+            className="block text-sm font-medium text-ink"
           >
-            Matcher <span className="text-gray-400">(optional)</span>
+            Matcher <span className="text-ink-muted">(optional)</span>
           </label>
           <input
             id="hooks-new-matcher"
@@ -284,7 +284,7 @@ export function HooksSection() {
         <div className="space-y-1">
           <label
             htmlFor="hooks-new-command"
-            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+            className="block text-sm font-medium text-ink"
           >
             Command
           </label>
@@ -299,7 +299,7 @@ export function HooksSection() {
         </div>
 
         {addError && (
-          <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+          <p role="alert" className="text-sm text-danger">
             {addError}
           </p>
         )}
@@ -309,7 +309,7 @@ export function HooksSection() {
             type="button"
             onClick={handleAdd}
             disabled={saveMutation.isPending}
-            className="min-h-[44px]"
+            className="min-h-target"
           >
             {saveMutation.isPending ? 'Adding…' : 'Add'}
           </Button>
@@ -329,33 +329,33 @@ function DryRunPanel({
   error: unknown
 }) {
   return (
-    <div className="rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/60 p-3 text-xs">
+    <div className="rounded-md border border-edge bg-canvas p-3 text-xs">
       {isPending ? (
-        <p className="text-gray-500 dark:text-gray-400">Running…</p>
+        <p className="text-ink-muted">Running…</p>
       ) : error ? (
-        <p role="alert" className="text-red-600 dark:text-red-400">{errorMessage(error)}</p>
+        <p role="alert" className="text-danger">{errorMessage(error)}</p>
       ) : result ? (
         <div className="space-y-2">
           <div className="flex items-center gap-3">
-            <span className="font-semibold text-gray-700 dark:text-gray-300">
+            <span className="font-semibold text-ink">
               Exit code: <span className="font-mono">{result.exitCode}</span>
             </span>
             {result.timedOut && (
-              <span className="text-amber-600 dark:text-amber-400">timed out</span>
+              <span className="text-warning">timed out</span>
             )}
           </div>
           {result.stdout && (
             <div>
-              <div className="text-gray-500 dark:text-gray-400">stdout</div>
-              <pre className="whitespace-pre-wrap break-all font-mono text-gray-900 dark:text-gray-100">
+              <div className="text-ink-muted">stdout</div>
+              <pre className="whitespace-pre-wrap break-all font-mono text-ink">
                 {result.stdout}
               </pre>
             </div>
           )}
           {result.stderr && (
             <div>
-              <div className="text-gray-500 dark:text-gray-400">stderr</div>
-              <pre className="whitespace-pre-wrap break-all font-mono text-red-600 dark:text-red-400">
+              <div className="text-ink-muted">stderr</div>
+              <pre className="whitespace-pre-wrap break-all font-mono text-danger">
                 {result.stderr}
               </pre>
             </div>

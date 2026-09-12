@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { NotificationsToggle } from '../NotificationsToggle'
+import { NotificationsToggle } from './NotificationsToggle'
 import { BRAND_NAME } from '@/brand'
 
 vi.mock('@/api/client', () => ({

@@ -24,11 +24,11 @@ export function CommandsSection() {
     <div>
       {/* User commands */}
       <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Your commands</h3>
+        <h3 className="text-sm font-semibold text-ink">Your commands</h3>
         <button
           type="button"
           onClick={() => setDialog({ id: null })}
-          className="text-xs px-2 py-1 rounded border border-edge hover:bg-gray-50 dark:hover:bg-gray-700"
+          className="text-xs px-2 py-1 rounded border border-edge hover:bg-canvas"
         >
           New command
         </button>
@@ -45,7 +45,7 @@ export function CommandsSection() {
       {/* Plugin commands */}
       {pluginCommands.length > 0 && (
         <>
-          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">From plugins</h3>
+          <h3 className="text-sm font-semibold text-ink mb-2">From plugins</h3>
           <ul className="space-y-2">
             {pluginIds.map((pluginId) =>
               pluginCommands
@@ -104,7 +104,7 @@ function CommandRow({
             </span>
           )}
           {command.parseError && (
-            <span className="text-xs px-1.5 py-0.5 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 shrink-0">
+            <span className="text-xs px-1.5 py-0.5 rounded-full bg-danger-wash text-danger shrink-0">
               parse error
             </span>
           )}

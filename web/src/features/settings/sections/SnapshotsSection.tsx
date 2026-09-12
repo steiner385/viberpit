@@ -112,11 +112,11 @@ export function SnapshotsSection() {
   })
 
   const inputClass = cn(
-    'rounded-md border border-gray-300 dark:border-gray-600',
-    'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
-    'px-3 py-2 text-sm min-h-[44px]',
-    'focus:outline-none focus:ring-2 focus:ring-blue-500',
-    'placeholder:text-gray-400 dark:placeholder:text-gray-500',
+    'rounded-md border border-edge-strong',
+    'bg-surface text-ink',
+    'px-3 py-2 text-sm min-h-target',
+    'focus:outline-none focus:ring-2 focus:ring-accent',
+    'placeholder:text-ink-muted',
   )
 
   return (
@@ -127,9 +127,9 @@ export function SnapshotsSection() {
           <div className="flex-1 min-w-[12rem] space-y-1">
             <label
               htmlFor="snapshot-label"
-              className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+              className="block text-sm font-medium text-ink"
             >
-              Snapshot label <span className="text-gray-400">(optional)</span>
+              Snapshot label <span className="text-ink-muted">(optional)</span>
             </label>
             <input
               id="snapshot-label"
@@ -144,7 +144,7 @@ export function SnapshotsSection() {
             type="button"
             onClick={() => createSnapshot.mutate(label.trim() ? { label: label.trim() } : {})}
             disabled={createSnapshot.isPending}
-            className="min-h-[44px]"
+            className="min-h-target"
           >
             {createSnapshot.isPending ? 'Saving…' : 'Snapshot now'}
           </Button>
@@ -152,7 +152,7 @@ export function SnapshotsSection() {
             href="/api/snapshots/export"
             download
             className={cn(
-              'inline-flex items-center justify-center rounded-md text-sm font-medium min-h-[44px] px-4',
+              'inline-flex items-center justify-center rounded-md text-sm font-medium min-h-target px-4',
               'border border-edge bg-canvas hover:bg-accent-wash hover:text-ink',
             )}
           >
@@ -160,11 +160,11 @@ export function SnapshotsSection() {
           </a>
         </div>
         {createSnapshot.isError && (
-          <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+          <p role="alert" className="text-sm text-danger">
             {errMessage(createSnapshot.error)}
           </p>
         )}
-        <p className="text-xs text-gray-500 dark:text-gray-400">
+        <p className="text-xs text-ink-muted">
           Snapshots and exports capture your shared Claude config only. Credentials
           are never included.
         </p>
@@ -172,7 +172,7 @@ export function SnapshotsSection() {
 
       {/* Snapshot list */}
       <div className="space-y-2">
-        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Snapshots</h3>
+        <h3 className="text-sm font-semibold text-ink">Snapshots</h3>
         {isLoading ? (
           <div className="text-sm opacity-70 p-2">Loading…</div>
         ) : !snapshots || snapshots.length === 0 ? (
@@ -218,16 +218,16 @@ function SnapshotRow({ snapshot }: { snapshot: Snapshot }) {
   }
 
   return (
-    <li className="rounded-md border border-gray-200 dark:border-gray-700 p-3 space-y-2">
+    <li className="rounded-md border border-edge p-3 space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+        <span className="text-sm font-medium text-ink">
           {snapshot.label ?? '(unlabeled)'}
         </span>
-        <span className="text-xs rounded px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+        <span className="text-xs rounded px-1.5 py-0.5 bg-surface-raised text-ink-muted">
           {KIND_LABELS[snapshot.kind]}
         </span>
-        <span className="text-xs text-gray-500 dark:text-gray-400">{formatDate(snapshot.createdAt)}</span>
-        <span className="text-xs text-gray-500 dark:text-gray-400">
+        <span className="text-xs text-ink-muted">{formatDate(snapshot.createdAt)}</span>
+        <span className="text-xs text-ink-muted">
           {snapshot.fileCount} file{snapshot.fileCount === 1 ? '' : 's'} · {humanSize(snapshot.sizeBytes)}
         </span>
         <div className="ml-auto flex gap-2">
@@ -253,40 +253,40 @@ function SnapshotRow({ snapshot }: { snapshot: Snapshot }) {
       </div>
 
       {restore.isError && (
-        <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+        <p role="alert" className="text-sm text-danger">
           {errMessage(restore.error)}
         </p>
       )}
       {restore.isSuccess && restore.data && (
-        <p className="text-sm text-green-700 dark:text-green-400">
+        <p className="text-sm text-success">
           Restored {restore.data.restored} file{restore.data.restored === 1 ? '' : 's'} (backup {restore.data.backupId}).
         </p>
       )}
 
       {loadDiff.isError && (
-        <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+        <p role="alert" className="text-sm text-danger">
           {errMessage(loadDiff.error)}
         </p>
       )}
       {diff && (
-        <div className="text-xs space-y-2 border-t border-gray-100 dark:border-gray-700 pt-2">
+        <div className="text-xs space-y-2 border-t border-edge pt-2">
           <div className="flex flex-wrap gap-3">
-            <span className="text-green-700 dark:text-green-400">+{diff.added.length} added</span>
-            <span className="text-red-600 dark:text-red-400">−{diff.removed.length} removed</span>
-            <span className="text-amber-700 dark:text-amber-400">~{diff.modified.length} modified</span>
+            <span className="text-success">+{diff.added.length} added</span>
+            <span className="text-danger">−{diff.removed.length} removed</span>
+            <span className="text-warning">~{diff.modified.length} modified</span>
             <button
               type="button"
               onClick={() => setShowFiles((v) => !v)}
-              className="text-blue-600 dark:text-blue-400 underline"
+              className="text-accent underline"
             >
               {showFiles ? 'Hide files' : 'Show files'}
             </button>
           </div>
           {showFiles && (
             <div className="space-y-1 font-mono">
-              <FileList label="Added" files={diff.added} className="text-green-700 dark:text-green-400" />
-              <FileList label="Removed" files={diff.removed} className="text-red-600 dark:text-red-400" />
-              <FileList label="Modified" files={diff.modified} className="text-amber-700 dark:text-amber-400" />
+              <FileList label="Added" files={diff.added} className="text-success" />
+              <FileList label="Removed" files={diff.removed} className="text-danger" />
+              <FileList label="Modified" files={diff.modified} className="text-warning" />
             </div>
           )}
         </div>
@@ -302,7 +302,7 @@ function FileList({ label, files, className }: { label: string; files: string[];
       <div className={cn('font-semibold not-italic', className)}>{label}</div>
       <ul className="pl-3">
         {files.map((f) => (
-          <li key={f} className="text-gray-600 dark:text-gray-300 break-all">
+          <li key={f} className="text-ink-muted break-all">
             {f}
           </li>
         ))}
@@ -344,12 +344,12 @@ function ImportPanel() {
   }
 
   return (
-    <div className="space-y-3 border-t border-gray-200 dark:border-gray-700 pt-4">
-      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Import bundle</h3>
+    <div className="space-y-3 border-t border-edge pt-4">
+      <h3 className="text-sm font-semibold text-ink">Import bundle</h3>
       <div className="space-y-1">
         <label
           htmlFor="snapshot-import-file"
-          className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+          className="block text-sm font-medium text-ink"
         >
           Select an exported bundle
         </label>
@@ -358,37 +358,37 @@ function ImportPanel() {
           type="file"
           accept=".gz,.tar,.tgz"
           onChange={handleFile}
-          className="block text-sm text-gray-700 dark:text-gray-300"
+          className="block text-sm text-ink"
         />
       </div>
 
       {preview.isPending && <p className="text-sm opacity-70">Reading bundle…</p>}
       {preview.isError && (
-        <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+        <p role="alert" className="text-sm text-danger">
           {errMessage(preview.error)}
         </p>
       )}
 
       {preview.data && (
         <div className="space-y-3">
-          <div className="text-xs space-y-2 rounded-md border border-gray-200 dark:border-gray-700 p-3">
+          <div className="text-xs space-y-2 rounded-md border border-edge p-3">
             <div className="flex flex-wrap gap-3">
-              <span className="text-green-700 dark:text-green-400">
+              <span className="text-success">
                 +{preview.data.creates.length} new
               </span>
-              <span className="text-amber-700 dark:text-amber-400">
+              <span className="text-warning">
                 ~{preview.data.overwrites.length} overwritten
               </span>
-              <span className="text-gray-500 dark:text-gray-400">
+              <span className="text-ink-muted">
                 {preview.data.unchanged.length} unchanged
               </span>
             </div>
             <div className="space-y-1 font-mono">
-              <FileList label="New" files={preview.data.creates} className="text-green-700 dark:text-green-400" />
+              <FileList label="New" files={preview.data.creates} className="text-success" />
               <FileList
                 label="Overwritten"
                 files={preview.data.overwrites}
-                className="text-amber-700 dark:text-amber-400"
+                className="text-warning"
               />
             </div>
           </div>
@@ -397,7 +397,7 @@ function ImportPanel() {
             variant="danger"
             onClick={handleApply}
             disabled={apply.isPending}
-            className="min-h-[44px]"
+            className="min-h-target"
           >
             {apply.isPending ? 'Applying…' : 'Apply import'}
           </Button>
@@ -405,12 +405,12 @@ function ImportPanel() {
       )}
 
       {apply.isError && (
-        <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+        <p role="alert" className="text-sm text-danger">
           {errMessage(apply.error)}
         </p>
       )}
       {apply.isSuccess && apply.data && (
-        <p className="text-sm text-green-700 dark:text-green-400">
+        <p className="text-sm text-success">
           Imported: {apply.data.created} created, {apply.data.overwritten} overwritten (backup {apply.data.backupId}).
         </p>
       )}

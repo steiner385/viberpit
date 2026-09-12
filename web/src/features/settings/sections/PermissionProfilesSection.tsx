@@ -137,7 +137,7 @@ export function PermissionProfilesSection() {
                   onClick={() => startEdit(p)}
                 >Edit</button>
                 <button
-                  className="text-xs px-2 py-0.5 rounded border border-edge text-red-500 hover:bg-red-50 dark:hover:bg-red-950"
+                  className="text-xs px-2 py-0.5 rounded border border-edge text-danger hover:bg-danger-wash"
                   onClick={() => deleteProfile.mutate(p.id)}
                 >Delete</button>
               </div>

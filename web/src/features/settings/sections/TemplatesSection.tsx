@@ -125,7 +125,7 @@ export function TemplatesSection() {
                   onClick={() => startEdit(t)}
                 >Edit</button>
                 <button
-                  className="text-xs px-2 py-0.5 rounded border border-edge text-red-500 hover:bg-red-50 dark:hover:bg-red-950"
+                  className="text-xs px-2 py-0.5 rounded border border-edge text-danger hover:bg-danger-wash"
                   onClick={() => deleteTemplate.mutate(t.id)}
                 >Delete</button>
               </div>

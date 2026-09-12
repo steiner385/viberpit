@@ -46,19 +46,19 @@ export function SkillsSection() {
     <div>
       {/* User skills */}
       <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Your skills</h3>
+        <h3 className="text-sm font-semibold text-ink">Your skills</h3>
         <div className="flex gap-1">
           <button
             type="button"
             onClick={() => { setAiOpen(true); setAiError(null) }}
-            className="text-xs px-2 py-1 rounded border border-edge hover:bg-gray-50 dark:hover:bg-gray-700"
+            className="text-xs px-2 py-1 rounded border border-edge hover:bg-canvas"
           >
             Create with AI
           </button>
           <button
             type="button"
             onClick={() => setDialog({ id: null })}
-            className="text-xs px-2 py-1 rounded border border-edge hover:bg-gray-50 dark:hover:bg-gray-700"
+            className="text-xs px-2 py-1 rounded border border-edge hover:bg-canvas"
           >
             New skill
           </button>
@@ -79,7 +79,7 @@ export function SkillsSection() {
               autoFocus
             />
           </label>
-          {aiError && <p className="text-xs text-red-500">{aiError}</p>}
+          {aiError && <p className="text-xs text-danger">{aiError}</p>}
           <div className="flex gap-2">
             <button
               type="button"
@@ -111,7 +111,7 @@ export function SkillsSection() {
       {/* Plugin skills */}
       {pluginSkills.length > 0 && (
         <>
-          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">From plugins</h3>
+          <h3 className="text-sm font-semibold text-ink mb-2">From plugins</h3>
           <ul className="space-y-2">
             {pluginIds.map((pluginId) =>
               pluginSkills
@@ -164,7 +164,7 @@ function SkillRow({
             </span>
           )}
           {skill.parseError && (
-            <span className="text-xs px-1.5 py-0.5 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 shrink-0">
+            <span className="text-xs px-1.5 py-0.5 rounded-full bg-danger-wash text-danger shrink-0">
               parse error
             </span>
           )}

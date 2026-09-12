@@ -68,11 +68,11 @@ const ACTIONS: { value: string; label: string }[] = [
 const eventLabel = (v: string) => EVENT_CLASSES.find((e) => e.value === v)?.label ?? v
 
 const inputClass = cn(
-  'w-full rounded-md border border-gray-300 dark:border-gray-600',
-  'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
-  'px-3 py-2 text-sm min-h-[44px]',
-  'focus:outline-none focus:ring-2 focus:ring-blue-500',
-  'placeholder:text-gray-400 dark:placeholder:text-gray-500',
+  'w-full rounded-md border border-edge-strong',
+  'bg-surface text-ink',
+  'px-3 py-2 text-sm min-h-target',
+  'focus:outline-none focus:ring-2 focus:ring-accent',
+  'placeholder:text-ink-muted',
 )
 
 function errMessage(e: unknown): string {
@@ -95,7 +95,7 @@ export function NotificationsSection() {
   return (
     <div className="space-y-8 max-w-2xl">
       <section className="space-y-3">
-        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Phone notifications</h3>
+        <h3 className="text-sm font-semibold text-ink">Phone notifications</h3>
         <NotificationsToggle />
       </section>
 
@@ -116,10 +116,10 @@ function QuietHoursSection() {
   })
 
   return (
-    <section className="space-y-3 border-t border-gray-200 dark:border-gray-700 pt-6">
-      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Quiet hours</h3>
+    <section className="space-y-3 border-t border-edge pt-6">
+      <h3 className="text-sm font-semibold text-ink">Quiet hours</h3>
       {isLoading ? (
-        <p className="text-sm text-gray-500">Loading…</p>
+        <p className="text-sm text-ink-muted">Loading…</p>
       ) : (
         <QuietHoursForm key={`${data?.start}-${data?.end}`} initial={data} qc={qc} />
       )}
@@ -149,7 +149,7 @@ function QuietHoursForm({ initial, qc }: { initial: QuietHours | undefined; qc: 
     <div className="space-y-3">
       <div className="flex flex-wrap items-end gap-3">
         <div className="space-y-1">
-          <label htmlFor="quiet-start" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Start</label>
+          <label htmlFor="quiet-start" className="block text-sm font-medium text-ink">Start</label>
           <input
             id="quiet-start"
             type="time"
@@ -159,7 +159,7 @@ function QuietHoursForm({ initial, qc }: { initial: QuietHours | undefined; qc: 
           />
         </div>
         <div className="space-y-1">
-          <label htmlFor="quiet-end" className="block text-sm font-medium text-gray-700 dark:text-gray-300">End</label>
+          <label htmlFor="quiet-end" className="block text-sm font-medium text-ink">End</label>
           <input
             id="quiet-end"
             type="time"
@@ -168,14 +168,14 @@ function QuietHoursForm({ initial, qc }: { initial: QuietHours | undefined; qc: 
             className={cn(inputClass, 'w-auto')}
           />
         </div>
-        <Button type="button" onClick={handleSave} disabled={save.isPending} className="min-h-[44px]">
+        <Button type="button" onClick={handleSave} disabled={save.isPending} className="min-h-target">
           {save.isPending ? 'Saving…' : 'Save'}
         </Button>
-        <Button type="button" variant="secondary" onClick={handleClear} disabled={save.isPending} className="min-h-[44px]">
+        <Button type="button" variant="secondary" onClick={handleClear} disabled={save.isPending} className="min-h-target">
           Clear
         </Button>
       </div>
-      <p className="text-xs text-gray-500 dark:text-gray-400">Rules marked &lsquo;critical&rsquo; bypass quiet hours.</p>
+      <p className="text-xs text-ink-muted">Rules marked &lsquo;critical&rsquo; bypass quiet hours.</p>
       {save.isError && (
         <p role="alert" className="text-sm text-danger">{errMessage(save.error)}</p>
       )}
@@ -206,28 +206,28 @@ function ChannelsSection() {
   })
 
   return (
-    <section className="space-y-3 border-t border-gray-200 dark:border-gray-700 pt-6">
-      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Channels</h3>
+    <section className="space-y-3 border-t border-edge pt-6">
+      <h3 className="text-sm font-semibold text-ink">Channels</h3>
       {isLoading ? (
-        <p className="text-sm text-gray-500">Loading…</p>
+        <p className="text-sm text-ink-muted">Loading…</p>
       ) : channels && channels.length ? (
         <ul className="space-y-2">
           {channels.map((c) => (
             <li
               key={c.id}
-              className="flex items-center gap-3 rounded-md border border-gray-200 dark:border-gray-700 px-3 py-2"
+              className="flex items-center gap-3 rounded-md border border-edge px-3 py-2"
             >
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{c.name}</div>
-                <div className="text-xs text-gray-500 dark:text-gray-400 truncate">{c.url}</div>
+                <div className="text-sm font-medium text-ink truncate">{c.name}</div>
+                <div className="text-xs text-ink-muted truncate">{c.url}</div>
               </div>
-              <label className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-300">
+              <label className="flex items-center gap-1 text-xs text-ink-muted">
                 <input
                   type="checkbox"
                   checked={c.enabled}
                   onChange={(e) => toggle.mutate({ id: c.id, enabled: e.target.checked })}
                   aria-label={`Enable ${c.name}`}
-                  className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-2 focus:ring-blue-500"
+                  className="h-4 w-4 rounded border-edge-strong text-accent focus:ring-2 focus:ring-accent"
                 />
                 Enabled
               </label>
@@ -243,7 +243,7 @@ function ChannelsSection() {
           ))}
         </ul>
       ) : (
-        <p className="text-sm text-gray-500 dark:text-gray-400">No channels yet.</p>
+        <p className="text-sm text-ink-muted">No channels yet.</p>
       )}
       <AddChannelForm qc={qc} />
     </section>
@@ -290,14 +290,14 @@ function AddChannelForm({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-2 rounded-md border border-dashed border-gray-300 dark:border-gray-600 p-3">
-      <div className="text-sm font-medium text-gray-700 dark:text-gray-300">Add channel</div>
+    <form onSubmit={handleSubmit} className="space-y-2 rounded-md border border-dashed border-edge-strong p-3">
+      <div className="text-sm font-medium text-ink">Add channel</div>
       <div className="space-y-1">
-        <label htmlFor="channel-name" className="block text-xs text-gray-600 dark:text-gray-400">Name</label>
+        <label htmlFor="channel-name" className="block text-xs text-ink-muted">Name</label>
         <input id="channel-name" type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputClass} />
       </div>
       <div className="space-y-1">
-        <label htmlFor="channel-url" className="block text-xs text-gray-600 dark:text-gray-400">URL</label>
+        <label htmlFor="channel-url" className="block text-xs text-ink-muted">URL</label>
         <input
           id="channel-url"
           type="text"
@@ -308,8 +308,8 @@ function AddChannelForm({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
         />
       </div>
       <div className="space-y-1">
-        <label htmlFor="channel-headers" className="block text-xs text-gray-600 dark:text-gray-400">
-          Headers <span className="text-gray-400">(optional JSON)</span>
+        <label htmlFor="channel-headers" className="block text-xs text-ink-muted">
+          Headers <span className="text-ink-muted">(optional JSON)</span>
         </label>
         <textarea
           id="channel-headers"
@@ -317,13 +317,13 @@ function AddChannelForm({ qc }: { qc: ReturnType<typeof useQueryClient> }) {
           onChange={(e) => setHeaders(e.target.value)}
           rows={3}
           placeholder='{"Authorization": "Bearer …"}'
-          className={cn(inputClass, 'font-mono min-h-[72px]')}
+          className={cn(inputClass, 'font-mono min-h-18')}
         />
       </div>
       {parseError && <p role="alert" className="text-sm text-danger">{parseError}</p>}
       {add.isError && <p role="alert" className="text-sm text-danger">{errMessage(add.error)}</p>}
       <div className="flex justify-end">
-        <Button type="submit" disabled={add.isPending || !name.trim() || !url.trim()} className="min-h-[44px]">
+        <Button type="submit" disabled={add.isPending || !name.trim() || !url.trim()} className="min-h-target">
           {add.isPending ? 'Adding…' : 'Add channel'}
         </Button>
       </div>
@@ -365,42 +365,42 @@ function RulesSection() {
   })
 
   return (
-    <section className="space-y-3 border-t border-gray-200 dark:border-gray-700 pt-6">
-      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Rules</h3>
+    <section className="space-y-3 border-t border-edge pt-6">
+      <h3 className="text-sm font-semibold text-ink">Rules</h3>
       {isLoading ? (
-        <p className="text-sm text-gray-500">Loading…</p>
+        <p className="text-sm text-ink-muted">Loading…</p>
       ) : rules && rules.length ? (
         <ul className="space-y-2">
           {rules.map((r) => (
             <li
               key={r.id}
-              className="flex items-center gap-3 rounded-md border border-gray-200 dark:border-gray-700 px-3 py-2"
+              className="flex items-center gap-3 rounded-md border border-edge px-3 py-2"
             >
               <div className="min-w-0 flex-1 space-y-0.5">
-                <div className="flex flex-wrap items-center gap-2 text-sm text-gray-900 dark:text-gray-100">
+                <div className="flex flex-wrap items-center gap-2 text-sm text-ink">
                   <span className="font-medium">{eventLabel(r.eventClass)}</span>
-                  <span className="text-gray-400">→</span>
+                  <span className="text-ink-muted">→</span>
                   <span>
                     {r.action}
-                    {r.action === 'channel' && <span className="text-gray-500"> ({channelName(r.channelId)})</span>}
+                    {r.action === 'channel' && <span className="text-ink-muted"> ({channelName(r.channelId)})</span>}
                   </span>
                   {r.critical && (
-                    <span className="rounded bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 text-xs font-medium text-amber-800 dark:text-amber-300">
+                    <span className="rounded bg-warning-wash px-1.5 py-0.5 text-xs font-medium text-warning">
                       critical
                     </span>
                   )}
                 </div>
-                <div className="text-xs text-gray-500 dark:text-gray-400">
+                <div className="text-xs text-ink-muted">
                   {scopeSummary(r)} · priority {r.priority}
                 </div>
               </div>
-              <label className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-300">
+              <label className="flex items-center gap-1 text-xs text-ink-muted">
                 <input
                   type="checkbox"
                   checked={r.enabled}
                   onChange={(e) => toggle.mutate({ id: r.id, enabled: e.target.checked })}
                   aria-label={`Enable rule ${r.id}`}
-                  className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-2 focus:ring-blue-500"
+                  className="h-4 w-4 rounded border-edge-strong text-accent focus:ring-2 focus:ring-accent"
                 />
                 Enabled
               </label>
@@ -416,7 +416,7 @@ function RulesSection() {
           ))}
         </ul>
       ) : (
-        <p className="text-sm text-gray-500 dark:text-gray-400">No rules yet.</p>
+        <p className="text-sm text-ink-muted">No rules yet.</p>
       )}
       <AddRuleForm qc={qc} channels={channels} channelName={channelName} />
     </section>
@@ -491,18 +491,18 @@ function AddRuleForm({
   }
 
   return (
-    <form onSubmit={handleAdd} className="space-y-3 rounded-md border border-dashed border-gray-300 dark:border-gray-600 p-3">
-      <div className="text-sm font-medium text-gray-700 dark:text-gray-300">Add rule</div>
+    <form onSubmit={handleAdd} className="space-y-3 rounded-md border border-dashed border-edge-strong p-3">
+      <div className="text-sm font-medium text-ink">Add rule</div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div className="space-y-1">
-          <label htmlFor="rule-event" className="block text-xs text-gray-600 dark:text-gray-400">Event</label>
+          <label htmlFor="rule-event" className="block text-xs text-ink-muted">Event</label>
           <select id="rule-event" value={eventClass} onChange={(e) => setEventClass(e.target.value)} className={inputClass}>
             {EVENT_CLASSES.map((e) => <option key={e.value} value={e.value}>{e.label}</option>)}
           </select>
         </div>
         <div className="space-y-1">
-          <label htmlFor="rule-action" className="block text-xs text-gray-600 dark:text-gray-400">Action</label>
+          <label htmlFor="rule-action" className="block text-xs text-ink-muted">Action</label>
           <select id="rule-action" value={action} onChange={(e) => setAction(e.target.value)} className={inputClass}>
             {ACTIONS.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
           </select>
@@ -511,7 +511,7 @@ function AddRuleForm({
 
       {action === 'channel' && (
         <div className="space-y-1">
-          <label htmlFor="rule-channel" className="block text-xs text-gray-600 dark:text-gray-400">Channel</label>
+          <label htmlFor="rule-channel" className="block text-xs text-ink-muted">Channel</label>
           <select id="rule-channel" value={channelId} onChange={(e) => setChannelId(e.target.value)} className={inputClass}>
             <option value="">Select a channel…</option>
             {(channels ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -521,31 +521,31 @@ function AddRuleForm({
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="space-y-1">
-          <label htmlFor="rule-repo" className="block text-xs text-gray-600 dark:text-gray-400">Repo <span className="text-gray-400">(opt)</span></label>
+          <label htmlFor="rule-repo" className="block text-xs text-ink-muted">Repo <span className="text-ink-muted">(opt)</span></label>
           <input id="rule-repo" type="text" value={scopeRepo} onChange={(e) => setScopeRepo(e.target.value)} className={inputClass} />
         </div>
         <div className="space-y-1">
-          <label htmlFor="rule-account" className="block text-xs text-gray-600 dark:text-gray-400">Account <span className="text-gray-400">(opt)</span></label>
+          <label htmlFor="rule-account" className="block text-xs text-ink-muted">Account <span className="text-ink-muted">(opt)</span></label>
           <input id="rule-account" type="text" value={scopeAccount} onChange={(e) => setScopeAccount(e.target.value)} className={inputClass} />
         </div>
         <div className="space-y-1">
-          <label htmlFor="rule-automation" className="block text-xs text-gray-600 dark:text-gray-400">Automation <span className="text-gray-400">(opt)</span></label>
+          <label htmlFor="rule-automation" className="block text-xs text-ink-muted">Automation <span className="text-ink-muted">(opt)</span></label>
           <input id="rule-automation" type="text" value={scopeAutomation} onChange={(e) => setScopeAutomation(e.target.value)} className={inputClass} />
         </div>
       </div>
 
       <div className="flex flex-wrap items-end gap-4">
-        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+        <label className="flex items-center gap-2 text-sm text-ink">
           <input
             type="checkbox"
             checked={critical}
             onChange={(e) => setCritical(e.target.checked)}
-            className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-2 focus:ring-blue-500"
+            className="h-4 w-4 rounded border-edge-strong text-accent focus:ring-2 focus:ring-accent"
           />
           Critical (bypasses quiet hours)
         </label>
         <div className="space-y-1">
-          <label htmlFor="rule-priority" className="block text-xs text-gray-600 dark:text-gray-400">Priority</label>
+          <label htmlFor="rule-priority" className="block text-xs text-ink-muted">Priority</label>
           <input
             id="rule-priority"
             type="number"
@@ -559,10 +559,10 @@ function AddRuleForm({
       {add.isError && <p role="alert" className="text-sm text-danger">{errMessage(add.error)}</p>}
 
       <div className="flex flex-wrap justify-end gap-2">
-        <Button type="button" variant="secondary" onClick={handleTest} disabled={test.isPending} className="min-h-[44px]">
+        <Button type="button" variant="secondary" onClick={handleTest} disabled={test.isPending} className="min-h-target">
           {test.isPending ? 'Testing…' : 'Test routing'}
         </Button>
-        <Button type="submit" disabled={add.isPending || (action === 'channel' && !channelId)} className="min-h-[44px]">
+        <Button type="submit" disabled={add.isPending || (action === 'channel' && !channelId)} className="min-h-target">
           {add.isPending ? 'Adding…' : 'Add rule'}
         </Button>
       </div>
@@ -570,11 +570,11 @@ function AddRuleForm({
       {decision && (
         <div
           data-testid="test-decision"
-          className="rounded-md bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 space-y-0.5"
+          className="rounded-md bg-canvas border border-edge px-3 py-2 text-sm text-ink space-y-0.5"
         >
           <div>Action: <span className="font-medium">{decision.action}</span>
             {decision.action === 'channel' && decision.channelId && (
-              <span className="text-gray-500"> ({channelName(decision.channelId)})</span>
+              <span className="text-ink-muted"> ({channelName(decision.channelId)})</span>
             )}
           </div>
           <div>Deliver: <span className="font-medium">{decision.deliver ? 'yes' : 'no'}</span></div>

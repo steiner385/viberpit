@@ -12,7 +12,7 @@ vi.mock('@/api/hooks', () => ({
   useCancelMcpAuth: vi.fn(),
 }))
 
-import { McpAuthFlow } from '../McpAuthFlow'
+import { McpAuthFlow } from './McpAuthFlow'
 import {
   useStartMcpAuth,
   useMcpAuthStatus,

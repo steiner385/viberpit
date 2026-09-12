@@ -5,7 +5,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import type { FleetHost, HostUpgrade } from '@/api/fleet'
 import { fleetHost } from '@/test/factories'
 
-import { FleetSection } from '../FleetSection'
+import { FleetSection } from './FleetSection'
 
 const idle: HostUpgrade = { state: 'idle', step: null, error: null, startedAt: null, target: null }
 
