@@ -111,8 +111,9 @@ branch merely inherited unchanged is left alone.
 
 The roadmap UI for all of this is row 8c: a capability's Overview gets **Edit** (title, summary,
 parent, sent as up to three ops) and **+ Sub-capability**; a product's Overview gets **+
-Capability**; both Overviews get the links chip editor (`CapabilityLinksEditor`, one `links` op per
-change). The product Overview carries `MapChangesCard` — the open PR's number/link and age, Rebase
+Capability**. A capability's Overview also gets the links chip editor (`CapabilityLinksEditor`, one
+`links` op per change); links belong to a capability, so the product's Overview has **+ Capability**
+and the PR card only. That card is `MapChangesCard` — the open PR's number/link and age, Rebase
 when `behind`, a danger banner when `conflicting`, and Abandon behind a typed-slug confirm — above
 the onboarding wizard. A capability row in the Map scope's tree badges its own `prNumber` (`PR #N`,
 `TreeRowCard`), and its Overview carries the one-line "proposed in PR #N" note until the PR merges.

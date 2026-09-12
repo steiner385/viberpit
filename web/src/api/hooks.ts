@@ -1853,7 +1853,13 @@ export function mapChangesErrorMessage(e: unknown, fallback: string): string {
 
 /** One capability edit (R8c-1/R8c-2's dialogs send one op per request, in
  *  sequence). Invalidates both the map (tree, PR badges) and the product (the
- *  Overview's PR card and capability list). */
+ *  Overview's PR card and capability list).
+ *
+ *  No toast on failure: all three callers (the two dialogs and the links editor)
+ *  render the mapped message inline in a `role="alert"` right next to the form
+ *  that failed, which is what `PM_MUTATION_META` ("the caller renders it") is
+ *  for — a toast on top of that says the same thing twice. Abandon and Rebase
+ *  DO toast: they are fired from a banner with nowhere to put the message. */
 export function useEditMapChanges(slug: string) {
   const qc = useQueryClient()
   return useMutation<MapChangeResult, ApiRequestError, MapChangeInput>({
@@ -1862,7 +1868,6 @@ export function useEditMapChanges(slug: string) {
       void qc.invalidateQueries({ queryKey: QK.roadmapMap })
       void qc.invalidateQueries({ queryKey: QK.project(slug) })
     },
-    onError: (e) => toast.error(mapChangesErrorMessage(e, 'Could not save the change')),
     meta: PM_MUTATION_META,
   })
 }

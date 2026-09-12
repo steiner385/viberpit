@@ -146,7 +146,11 @@ export function TreeRowCard({ row, selected, focusable, onOpen, onToggle, onOpen
                 </>
               )}
               {/* Changes to this capability are proposed but not yet merged —
-                  R8c-3's one-line note, mirrored here so the tree itself says so. */}
+                  R8c-3's one-line note, mirrored here so the tree itself says so.
+                  Deliberately NOT `openMapChanges(product)`: the badge is the
+                  capability's OWN fact — the sync clears `prNumber` when the PR
+                  merges — and the row does not always have its product's pointer
+                  to read anyway. */}
               {!isProduct && row.capability.prNumber != null && (
                 <>
                   <span className="sr-only">{`proposed in pull request ${row.capability.prNumber}`}</span>

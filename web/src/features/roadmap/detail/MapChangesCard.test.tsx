@@ -69,6 +69,7 @@ describe('MapChangesCard', () => {
     expect(link).toHaveAttribute('href', 'https://github.com/steiner385/ccswitch/pull/12')
     expect(link).toHaveAttribute('target', '_blank')
     expect(link).toHaveAttribute('rel', 'noreferrer')
+    expect(screen.getByRole('status')).toHaveTextContent('Capability map changes are open')
     expect(screen.getByRole('status')).toHaveTextContent('opened')
     expect(screen.getByRole('status')).toHaveTextContent('ago')
     expect(screen.queryByRole('button', { name: 'Rebase' })).toBeNull()
@@ -87,6 +88,36 @@ describe('MapChangesCard', () => {
     expect(status).toHaveTextContent('Capability map changes conflict with the default branch')
     expect(status).toHaveTextContent('Resolve the conflict on GitHub; the roadmap will not force-push.')
     expect(screen.queryByRole('button', { name: 'Rebase' })).toBeNull()
+  })
+
+  // Spec §9 asks ONE card for "the open PR, its age, and Rebase when behind" —
+  // so the PR line is the same on every variant. Before this, the two variants a
+  // user most needs the PR from (behind, conflicting) were the two that hid it.
+  it.each([
+    ['behind', { behind: true }],
+    ['conflicting', { conflicting: true }],
+  ] as const)('%s still carries the PR link and its age', (_name, over) => {
+    render(<MapChangesCard product={product(pointer(over))} />)
+    expect(screen.getByRole('link', { name: 'PR #12' }))
+      .toHaveAttribute('href', 'https://github.com/steiner385/ccswitch/pull/12')
+    expect(screen.getByRole('status')).toHaveTextContent('opened')
+    expect(screen.getByRole('status')).toHaveTextContent('ago')
+  })
+
+  // A pointer is written when the branch is created; the number arrives with the
+  // PR. "PR #null" is the one thing the card must never say.
+  it('says it without a number rather than "PR #null", and offers no link', () => {
+    render(<MapChangesCard product={product(pointer({ prNumber: null }))} />)
+    const status = screen.getByRole('status')
+    expect(status).toHaveTextContent('the map changes PR')
+    expect(status).not.toHaveTextContent('PR #null')
+    // A URL without a number is not a link worth offering.
+    expect(screen.queryByRole('link')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Abandon' }))
+    const dialog = within(screen.getByRole('dialog'))
+    expect(dialog.getByText(/Closes the map changes PR/)).toBeInTheDocument()
+    expect(screen.queryByText(/PR #null/)).toBeNull()
   })
 
   it('every variant carries an Abandon action', () => {

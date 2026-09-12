@@ -13,7 +13,7 @@ import { fileUrl } from '@/lib/githubUrl'
 import { CAPABILITY, INITIATIVE, ISSUE, PRODUCT, TIER_LABEL, capabilityStateLabel } from '@/features/products/vocab'
 import { useTabParam } from '../useTabParam'
 import { capabilityPath } from '../roadmapNavState'
-import { findCapability } from '../lookup'
+import { findCapability, openMapChanges } from '../lookup'
 import { TIER_TONE, tierLabel } from '../roadmapTier'
 import { StatTiles } from './StatTiles'
 import { NeedsYouList } from './NeedsYouList'
@@ -82,9 +82,9 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
   // Every edit below commits to the product's map-changes branch, so while that
   // PR is open and this capability is on it, what the page shows is what the PR
   // proposes — not what master says (R8c-3).
-  const pending = product.mapChanges?.status === 'open' && capability.prNumber != null
-    ? product.mapChanges
-    : null
+  // The same "is there a live PR?" reading the product's card uses, so the note
+  // and the card can never disagree about whether the pointer is still open.
+  const pending = capability.prNumber != null ? openMapChanges(product) : null
 
   return (
     <div className="flex flex-col gap-4">

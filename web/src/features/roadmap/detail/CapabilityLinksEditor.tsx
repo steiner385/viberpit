@@ -32,6 +32,12 @@ const toApi = (l: CapabilityLink): MapChangeLink => ({
   kind: l.kind as MapChangeLink['kind'], project: l.projectSlug, feature: l.featureSlug,
 })
 const keyOf = (l: CapabilityLink) => `${l.kind}:${l.projectSlug}/${l.featureSlug}`
+/** Two link lists holding the same set — order is the doc's, not a difference. */
+const sameLinks = (a: CapabilityLink[], b: CapabilityLink[]) => {
+  if (a.length !== b.length) return false
+  const have = new Set(a.map(keyOf))
+  return b.every((l) => have.has(keyOf(l)))
+}
 
 export function CapabilityLinksEditor({ product, capability }: {
   product: ProductNode
@@ -45,8 +51,32 @@ export function CapabilityLinksEditor({ product, capability }: {
   const [targetProduct, setTargetProduct] = useState('')
   const [targetCapability, setTargetCapability] = useState('')
   const [failure, setFailure] = useState<string | null>(null)
+  // The list the LAST successful send put in the doc. `capability.links` comes
+  // from the indexed map, which only catches up on the next pm-sync pass — so
+  // between the commit and that pass the chips are stale, and a second edge
+  // computed from them would re-send the state before the first one (remove X,
+  // then remove Y from stale chips, sends `[X, Z]` and X comes back). Every send
+  // and the chips themselves are based on this while it is set.
+  const [sent, setSent] = useState<CapabilityLink[] | null>(null)
+  // Render-phase reset (the `ProposalDetail` "seededFor" idiom, React's
+  // documented "resetting state when a prop changes"): the editor does not
+  // unmount when the page swaps capability, and one capability's sent list is
+  // not another's.
+  const [seededFor, setSeededFor] = useState(capability.id)
 
-  const links = capability.links
+  let base = sent
+  if (seededFor !== capability.id) {
+    setSeededFor(capability.id)
+    setSent(null)
+    base = null
+  } else if (sent && sameLinks(sent, capability.links)) {
+    // The map caught up — the prop is the truth again, and holding the copy
+    // would freeze out a change made from somewhere else.
+    setSent(null)
+    base = null
+  }
+
+  const links = base ?? capability.links
   const taken = new Set(links.map(keyOf))
   const products = map?.products ?? []
   const chosen = products.find((p) => p.slug === targetProduct)
@@ -67,6 +97,7 @@ export function CapabilityLinksEditor({ product, capability }: {
       setFailure(mapChangesErrorMessage(e, 'Could not save the links.'))
       return
     }
+    setSent(next)
     after?.()
   }
 

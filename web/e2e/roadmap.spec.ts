@@ -306,12 +306,15 @@ test.describe('Roadmap — desktop', () => {
 
     await page.goto('/roadmap')
     await expect(page.getByRole('button', { name: 'Open capability Billing' })).toBeVisible()
-    await expect(page.getByText('PR #31')).toBeVisible()
+    // Scoped to the row that owns the badge (`capabilityKey`), as the vitest
+    // case is: the PR number also appears on the product page's card, and an
+    // unscoped match would pass on either.
+    await expect(page.getByTestId('row-capability:kindash:billing').getByText('PR #31')).toBeVisible()
 
     await page.goto('/roadmap/kindash')
     // Scoped past `getByRole('status')`: the page also carries a "Loading
     // roadmap" status region and an sr-only global loading announcer.
-    await expect(page.getByRole('status').filter({ hasText: 'Capability map changes open in' })).toBeVisible()
+    await expect(page.getByRole('status').filter({ hasText: 'Capability map changes are open' })).toBeVisible()
     await expect(page.getByRole('link', { name: 'PR #31' })).toBeVisible()
   })
 

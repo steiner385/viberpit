@@ -70,7 +70,13 @@ describe('useEditMapChanges', () => {
     expect(toast.error).not.toHaveBeenCalled()
   })
 
-  it('toasts the R8c-5 sentence on a 409 conflict', async () => {
+  // All three callers (both dialogs and the links editor) render the mapped
+  // message inline in a `role="alert"` beside the form that failed — that is
+  // exactly what `PM_MUTATION_META` ("the caller renders it") is for, and a
+  // toast on top of it says the same thing twice. The copy itself is pinned on
+  // `mapChangesErrorMessage` below. Abandon and Rebase DO toast: they are fired
+  // from a banner with nowhere to put the message.
+  it('does not toast a failure — the caller renders it inline', async () => {
     const qc = makeClient()
     mocked.editMapChanges.mockRejectedValueOnce(
       new ApiRequestError(409, { detail: { error: 'conflict', step: 'commit', message: 'sha mismatch' } }),
@@ -82,22 +88,8 @@ describe('useEditMapChanges', () => {
     })
 
     await waitFor(() => expect(result.current.isError).toBe(true))
-    expect(toast.error).toHaveBeenCalledWith('The map changed under you — try again.')
-  })
-
-  it('names the failing step on a 502 github error', async () => {
-    const qc = makeClient()
-    mocked.editMapChanges.mockRejectedValueOnce(
-      new ApiRequestError(502, { detail: { error: 'github', step: 'create_pr', message: 'rate limited' } }),
-    )
-
-    const { result } = renderHook(() => useEditMapChanges('kindash'), { wrapper: makeWrapper(qc) })
-    await act(async () => {
-      result.current.mutate({ op: 'create', slug: 'new-cap', title: 'New' })
-    })
-
-    await waitFor(() => expect(result.current.isError).toBe(true))
-    expect(toast.error).toHaveBeenCalledWith('GitHub refused the create_pr step: rate limited')
+    expect(toast.error).not.toHaveBeenCalled()
+    expect(toast.success).not.toHaveBeenCalled()
   })
 })
 
@@ -169,6 +161,19 @@ describe('useRebaseMapChanges', () => {
 })
 
 describe('mapChangesErrorMessage', () => {
+  // R8c-5's two GitHub-flavored shapes. Pinned here rather than on the edit hook
+  // (which no longer toasts): this mapper is where the copy lives, and it is
+  // what all three callers render inline.
+  it('gives a 409 conflict its own sentence', () => {
+    const e = new ApiRequestError(409, { detail: { error: 'conflict', step: 'commit', message: 'sha mismatch' } })
+    expect(mapChangesErrorMessage(e, 'fallback')).toBe('The map changed under you — try again.')
+  })
+
+  it('names the failing step on a 502 github error', () => {
+    const e = new ApiRequestError(502, { detail: { error: 'github', step: 'create_pr', message: 'rate limited' } })
+    expect(mapChangesErrorMessage(e, 'fallback')).toBe('GitHub refused the create_pr step: rate limited')
+  })
+
   it('falls back for a non-ApiRequestError', () => {
     expect(mapChangesErrorMessage(new Error('boom'), 'fallback text')).toBe('fallback text')
   })

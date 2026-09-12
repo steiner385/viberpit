@@ -27,6 +27,21 @@ function selfAndDescendants(product: ProductNode, capability: CapabilityNode): S
   return new Set(walk(node))
 }
 
+/** The fields whose op the server has already accepted, at the value it accepted
+ *  — kept until the indexed map catches up with them. */
+interface Landed { title?: string; parent?: string; summary?: string }
+
+/** Drop every recorded field the prop now agrees with: at that point the map has
+ *  caught up and the prop is the seed again, so a change made from somewhere
+ *  else is not frozen out by a stale copy. */
+function dropConfirmed(landed: Landed, prop: Required<Landed>): Landed {
+  const next: Landed = {}
+  if (landed.title !== undefined && landed.title !== prop.title) next.title = landed.title
+  if (landed.parent !== undefined && landed.parent !== prop.parent) next.parent = landed.parent
+  if (landed.summary !== undefined && landed.summary !== prop.summary) next.summary = landed.summary
+  return next
+}
+
 export function EditCapabilityDialog({ product, capability, open, onClose }: {
   product: ProductNode
   capability: CapabilityNode
@@ -35,9 +50,25 @@ export function EditCapabilityDialog({ product, capability, open, onClose }: {
 }) {
   const edit = useEditMapChanges(product.slug)
   const titleRef = useRef<HTMLInputElement>(null)
-  const seedTitle = capability.title ?? ''
-  const seedParent = capability.parentSlug ?? ''
-  const seedSummary = capability.summary ?? ''
+  const propTitle = capability.title ?? ''
+  const propParent = capability.parentSlug ?? ''
+  const propSummary = capability.summary ?? ''
+
+  // Each op is its own commit, so a sequence can half-land: rename accepted,
+  // reparent refused. The commit is real even though the MAP only shows it on
+  // the next pm-sync pass — so a field the server took is seeded at the value it
+  // took, and a retry sends only what is still genuinely different. Without this
+  // the retry re-sent the rename, which the server answers with a second commit
+  // (or, for `create`, a 422).
+  const [landed, setLanded] = useState<Landed>({})
+  const pruned = dropConfirmed(landed, { title: propTitle, parent: propParent, summary: propSummary })
+  // Render-phase adjustment, not an effect: the map polls, and re-seeding after
+  // paint would show one frame of the pre-edit values.
+  if (Object.keys(pruned).length !== Object.keys(landed).length) setLanded(pruned)
+
+  const seedTitle = pruned.title ?? propTitle
+  const seedParent = pruned.parent ?? propParent
+  const seedSummary = pruned.summary ?? propSummary
 
   const [title, setTitle] = useState(seedTitle)
   const [parent, setParent] = useState(seedParent)
@@ -80,10 +111,14 @@ export function EditCapabilityDialog({ product, capability, open, onClose }: {
       } catch (e) {
         // Whatever landed before this stays landed — the branch is a sequence of
         // commits, not a transaction. The dialog stays open on the user's own
-        // values so a retry sends only what is still different.
+        // values, and `landed` above is what keeps a retry from re-sending the
+        // ops that already went in.
         setFailure(mapChangesErrorMessage(e, `Could not save the ${CAPABILITY.singular.toLowerCase()}.`))
         return
       }
+      if (op.op === 'rename') setLanded((l) => ({ ...l, title: trimmedTitle }))
+      if (op.op === 'reparent') setLanded((l) => ({ ...l, parent }))
+      if (op.op === 'summary') setLanded((l) => ({ ...l, summary: trimmedSummary }))
     }
     onClose()
   }

@@ -110,6 +110,33 @@ describe('EditCapabilityDialog', () => {
     expect(screen.getByLabelText(/Title/)).toHaveValue('Task management')
   })
 
+  // Each op is its own commit, so the refusal does not roll back what already
+  // landed — and the map, being an index, still shows the pre-edit title. A
+  // retry that re-sent the rename would write a second commit for a change that
+  // is already on the branch.
+  it('a retry after a partial failure sends only the op that did not land', async () => {
+    const refusal = new ApiRequestError(422, { detail: { error: 'parent_cycle', message: 'no' } })
+    h.mutateAsync = vi.fn()
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(refusal)
+    const onClose = mount(cap({ slug: 'task-views', title: 'Task views', parentSlug: 'tasks' }))
+    fireEvent.change(screen.getByLabelText(/Title/), { target: { value: 'Views' } })
+    fireEvent.change(screen.getByLabelText(/Parent capability/), { target: { value: 'billing' } })
+    save()
+    expect(await screen.findByRole('alert')).toHaveTextContent('mapped:')
+    expect(ops()).toEqual([
+      { op: 'rename', slug: 'task-views', title: 'Views' },
+      { op: 'reparent', slug: 'task-views', parentSlug: 'billing' },
+    ])
+
+    // The rename is now the dialog's seed even though the prop still says "Task
+    // views", so only the reparent is still a change.
+    h.mutateAsync.mockResolvedValue({})
+    save()
+    await waitFor(() => expect(onClose).toHaveBeenCalled())
+    expect(ops().slice(2)).toEqual([{ op: 'reparent', slug: 'task-views', parentSlug: 'billing' }])
+  })
+
   it('refuses to clear a summary the server would not accept as blank', () => {
     mount()
     fireEvent.change(screen.getByLabelText(/Summary/), { target: { value: '   ' } })

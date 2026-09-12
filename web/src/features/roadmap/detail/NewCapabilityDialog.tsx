@@ -4,7 +4,7 @@
 // map-changes branch and PR on the first edit and appends to it after that; the
 // new capability is proposed until that PR merges.
 import { useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { toast } from 'sonner'
 import type { ProductNode } from '@/api/roadmap'
 import type { MapChangeInput } from '@/api/pm'
 import { useEditMapChanges, mapChangesErrorMessage } from '@/api/hooks'
@@ -16,7 +16,6 @@ import { Textarea } from '@/ui/Textarea'
 import { Button } from '@/ui/Button'
 import { CAPABILITY } from '@/features/products/vocab'
 import { flattenCapabilities } from '../lookup'
-import { capabilityPath } from '../roadmapNavState'
 import { sanitize, slugify } from '../slug'
 
 export function NewCapabilityDialog({ product, open, onClose, parentSlug }: {
@@ -26,7 +25,6 @@ export function NewCapabilityDialog({ product, open, onClose, parentSlug }: {
   /** Preset parent — the capability level opens the same dialog for a child. */
   parentSlug?: string
 }) {
-  const navigate = useNavigate()
   const titleRef = useRef<HTMLInputElement>(null)
   const edit = useEditMapChanges(product.slug)
 
@@ -49,10 +47,11 @@ export function NewCapabilityDialog({ product, open, onClose, parentSlug }: {
     : undefined
 
   const create = async () => {
+    const trimmedTitle = title.trim()
     const input: MapChangeInput = {
       op: 'create',
       slug: effectiveSlug,
-      title: title.trim(),
+      title: trimmedTitle,
       // Explicitly null at the root: `parentSlug` is what decides where the
       // capability lands, and omitting it would read as "unchanged" elsewhere.
       parentSlug: parent || null,
@@ -61,16 +60,21 @@ export function NewCapabilityDialog({ product, open, onClose, parentSlug }: {
       ...(summary.trim() ? { summary: summary.trim() } : {}),
     }
     setFailure(null)
+    let result
     try {
-      await edit.mutateAsync(input)
+      result = await edit.mutateAsync(input)
     } catch (e) {
       setFailure(mapChangesErrorMessage(e, `Could not add the ${CAPABILITY.singular.toLowerCase()}.`))
       return
     }
     onClose()
-    // The row itself arrives with the map the mutation invalidated; the page is
-    // addressable by slug the moment the doc is committed.
-    navigate(capabilityPath(product.slug, effectiveSlug))
+    // R8c-10: it does NOT navigate to the new capability. The commit lands at
+    // once, but the MAP only learns about it on the next pm-sync pass, so its
+    // page would show "Not found — may have been renamed" for that whole window
+    // and a retry would 422 `slug_taken`. The toast says where it went instead.
+    toast.success(
+      `Added "${trimmedTitle}" — it appears on the map at the next sync, in PR #${result.pointer.prNumber ?? '…'}`,
+    )
   }
 
   return (
