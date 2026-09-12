@@ -52,7 +52,17 @@ describe('EditInitiativeDialog', () => {
     // the product and took the initiative off every node of the map.
     render(<EditInitiativeDialog initiative={initiative} products={products} open onClose={() => {}} />)
     expect(screen.queryByRole('option', { name: '— none —' })).toBeNull()
-    expect(screen.getAllByRole('option').every((o) => (o as HTMLOptionElement).value !== '')).toBe(true)
+    // The only empty-valued option is the disabled placeholder.
+    const empties = screen.getAllByRole('option').filter((o) => (o as HTMLOptionElement).value === '')
+    expect(empties.map((o) => (o as HTMLOptionElement).disabled)).toEqual([true])
+  })
+
+  it('an initiative with no home yet shows the placeholder, not a blank select', () => {
+    const homeless = { ...initiative, projectSlug: null, primaryCapability: null, capabilities: [] } as unknown as Initiative
+    render(<EditInitiativeDialog initiative={homeless} products={products} open onClose={() => {}} />)
+    const select = screen.getByLabelText('Primary capability', { exact: false }) as HTMLSelectElement
+    expect(select.value).toBe('')
+    expect(select.selectedOptions[0]).toHaveTextContent('— choose a capability —')
   })
 
   it('a same-product primary swap keeps the outgoing primary in the touched set', () => {

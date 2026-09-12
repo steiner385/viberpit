@@ -86,6 +86,10 @@ export function EditInitiativeDialog({ initiative, products, open, onClose }: {
               takes the initiative off every node of the map; unticking is how
               the touched set is emptied. */}
           <Select id="ei-primary" value={primary} onChange={(e) => choosePrimary(e.target.value)}>
+            {/* An initiative that has no home yet seeds `''`; without an option
+                for it the select renders blank. The placeholder is disabled, so
+                it can be the starting point but never the choice. */}
+            <option value="" disabled>{`— choose a ${CAPABILITY.singular.toLowerCase()} —`}</option>
             {products.map((p) => (
               <optgroup key={p.slug} label={p.name ?? p.slug}>
                 {flattenCapabilities(p.capabilities).map(({ node, depth }) => (
