@@ -117,6 +117,12 @@ export function nextStage(stage: string | null | undefined): InitiativeStage | n
   return i < 0 || i + 1 >= INITIATIVE_STAGES.length ? null : INITIATIVE_STAGES[i + 1]!
 }
 
+/** The stage the step-back tap would return an initiative to, or null at the first stage. */
+export function prevStage(stage: string | null | undefined): InitiativeStage | null {
+  const i = INITIATIVE_STAGES.indexOf(stage as InitiativeStage)
+  return i <= 0 ? null : INITIATIVE_STAGES[i - 1]!
+}
+
 /** What the stage engine says happens next on one initiative
  *  (`nextAction.type`, detail endpoint only), as a sentence a human can act on. */
 export const NEXT_ACTION_LABEL: Record<string, string> = {

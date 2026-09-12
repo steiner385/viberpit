@@ -2,13 +2,14 @@
 // the Roadmap section with its own prefix (roadmap spec §4). It answers the
 // four questions a human has about one initiative: where it is on the track,
 // what its epic is doing, which sessions built it, and which capabilities it
-// touches — and it carries the human gate (Advance), which is a two-step so a
-// mis-tap never moves the stage.
+// touches — and it carries the three gate controls (Advance, Step back and
+// Unblock), each a two-step so a mis-tap never moves the stage.
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   useAcceptMaterialization, useAdvanceInitiative, useInitiative,
   useMaterialization, useRejectMaterialization, useRoadmapMap,
+  useStepBackInitiative, useUnblockInitiative,
 } from '@/api/hooks'
 import { ApiRequestError } from '@/api/client'
 import { BRAND_NAME } from '@/brand'
@@ -28,12 +29,13 @@ import { commitUrl, fileUrl, prUrl } from '@/lib/githubUrl'
 import { sessionPath } from '@/session/sessionNavState'
 import {
   CAPABILITY, EPIC, INITIATIVE, ROADMAP,
-  initiativeStatusLabel, nextActionLabel, nextStage, reasonLabel, stageLabel,
+  initiativeStatusLabel, nextActionLabel, nextStage, prevStage, reasonLabel, stageLabel,
 } from '@/features/products/vocab'
 import { capabilityPath, productPath, roadmapPath } from './roadmapNavState'
 import { TIER_TONE } from './roadmapTier'
 import { useTabParam } from './useTabParam'
 import { StatTiles } from './detail/StatTiles'
+import { LeafList } from './detail/LeafList'
 
 const TABS = ['track', 'epic', 'sessions', 'capabilities'] as const
 type Tab = (typeof TABS)[number]
@@ -240,6 +242,9 @@ function TrackTab({ initiative }: { initiative: Initiative }) {
   )
 }
 
+// The sub-issues come from the leaves endpoint (tier, blockers, live session,
+// and the Remove disposition), not from the detail payload's `children`, which
+// stays for the assistant.
 function EpicTab({ initiative }: { initiative: Initiative }) {
   const epic = initiative.epic
   if (!epic) {
@@ -250,7 +255,6 @@ function EpicTab({ initiative }: { initiative: Initiative }) {
       />
     )
   }
-  const children = epic.children ?? []
   return (
     <div className="flex flex-col gap-3">
       <a href={epic.url} target="_blank" rel="noreferrer" className="text-sm text-accent hover:underline">
@@ -264,19 +268,7 @@ function EpicTab({ initiative }: { initiative: Initiative }) {
           { label: 'Needs human', value: epic.needsHuman, tone: 'warning' },
         ]}
       />
-      {children.length === 0
-        ? <p className="text-sm text-ink-muted">No sub-issues under it yet.</p>
-        : (
-          <ul className="flex flex-col gap-1" aria-label="Sub-issues">
-            {children.map((c) => (
-              <li key={c.ref} className="flex items-center gap-2 rounded-md border border-edge bg-surface p-2 text-sm">
-                <Badge tone={c.state === 'closed' ? 'success' : 'neutral'}>{c.status ?? c.state ?? '—'}</Badge>
-                <span className="truncate text-ink">{c.title ?? c.ref}</span>
-                <span className="ml-auto shrink-0 text-xs text-ink-muted">{c.ref}</span>
-              </li>
-            ))}
-          </ul>
-        )}
+      <LeafList scope={{ initiative: initiative.slug }} />
     </div>
   )
 }
@@ -331,8 +323,13 @@ export function InitiativePage() {
   // entry and owns the interval — two polling observers are two requests.
   const { data: map } = useRoadmapMap({ poll: false })
   const advance = useAdvanceInitiative()
+  const stepBack = useStepBackInitiative()
+  const unblock = useUnblockInitiative()
+  const { data: proposal } = useMaterialization(initiativeSlug || null)
   const [tab, setTab] = useTabParam(TABS, 'track')
   const [confirming, setConfirming] = useState(false)
+  const [confirmingBack, setConfirmingBack] = useState(false)
+  const [confirmingUnblock, setConfirmingUnblock] = useState(false)
 
   // The slug is the fallback title, so a deep link names something rather than
   // rendering a blank heading while the detail is in flight.
@@ -340,6 +337,9 @@ export function InitiativePage() {
   const node = map?.products.flatMap((p) => p.initiatives).find((i) => i.slug === initiativeSlug)
   const reason = reasonLabel(node?.reason)
   const next = nextStage(initiative?.stage)
+  const prev = prevStage(initiative?.stage)
+  const blocked = initiative?.status === 'blocked'
+  const proposalPending = proposal?.status === 'pending'
 
   // A renamed slug or a stale bookmark is an ADDRESS problem, not a connection
   // problem, and the two want opposite copy. The detail endpoint answers 404
@@ -385,17 +385,44 @@ export function InitiativePage() {
           </div>
         }
         actions={initiative && (
-          // Disabled rather than absent at the end of the lifecycle: the gate is
-          // the page's one action, and a header that loses its only button reads
-          // as a page that failed to load.
-          <Button
-            size="sm"
-            disabled={!next || advance.isPending}
-            onClick={() => setConfirming(true)}
-            title={next ? `Move the gate to ${stageLabel(next)}` : 'Already at the final stage'}
-          >
-            {next ? `Advance → ${stageLabel(next)}` : 'Complete'}
-          </Button>
+          <div className="flex items-center gap-2">
+            {/* The undo for a mis-tapped Advance. Disabled, not absent, at intake
+                for the same reason Advance is at done: the row of controls must
+                not change shape as the initiative moves. */}
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={!prev || blocked || stepBack.isPending}
+              onClick={() => setConfirmingBack(true)}
+              title={blocked ? 'Clear the block first' : prev ? `Move the gate back to ${stageLabel(prev)}` : 'Already at the first stage'}
+            >
+              Step back
+            </Button>
+            {/* Only a blocked row can be unblocked; a button that is usually
+                disabled would read as a control that never works. */}
+            {blocked && (
+              <Button
+                size="sm"
+                variant="danger"
+                disabled={proposalPending || unblock.isPending}
+                onClick={() => setConfirmingUnblock(true)}
+                title={proposalPending ? 'Accept or reject the pending materialization first' : 'Clear the block without moving the gate'}
+              >
+                Unblock
+              </Button>
+            )}
+            {/* Disabled rather than absent at the end of the lifecycle: the gate is
+                the page's one action, and a header that loses its only button reads
+                as a page that failed to load. */}
+            <Button
+              size="sm"
+              disabled={!next || blocked || advance.isPending}
+              onClick={() => setConfirming(true)}
+              title={blocked ? 'Clear the block first' : next ? `Move the gate to ${stageLabel(next)}` : 'Already at the final stage'}
+            >
+              {next ? `Advance → ${stageLabel(next)}` : 'Complete'}
+            </Button>
+          </div>
         )}
       />
       <PageContent busy={isLoading && !initiative}>
@@ -410,6 +437,12 @@ export function InitiativePage() {
             className="mb-4"
             title={extractMutationErrorMessage(advance.error, 'Could not advance initiative')}
           />
+        )}
+        {stepBack.isError && (
+          <Banner tone="danger" className="mb-4" title={extractMutationErrorMessage(stepBack.error, 'Could not step back')} />
+        )}
+        {unblock.isError && (
+          <Banner tone="danger" className="mb-4" title={extractMutationErrorMessage(unblock.error, 'Could not clear the block')} />
         )}
         {initiative && (
           <div className="flex flex-col gap-4">
@@ -477,6 +510,53 @@ export function InitiativePage() {
               onClick={() => advance.mutate(initiative.slug, { onSettled: () => setConfirming(false) })}
             >
               Advance
+            </Button>
+          </div>
+        </Dialog>
+      )}
+      {initiative && prev && (
+        <Dialog
+          open={confirmingBack}
+          onClose={() => setConfirmingBack(false)}
+          title={`Step back to ${stageLabel(prev)}?`}
+          size="sm"
+          description="This moves the human gate back one stage. The stage engine re-enters it on its next tick."
+        >
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setConfirmingBack(false)}>Cancel</Button>
+            <Button
+              size="lg"
+              aria-label="Confirm step back"
+              loading={stepBack.isPending}
+              onClick={() => stepBack.mutate(initiative.slug, { onSettled: () => setConfirmingBack(false) })}
+            >
+              Step back
+            </Button>
+          </div>
+        </Dialog>
+      )}
+      {initiative && blocked && (
+        <Dialog
+          open={confirmingUnblock}
+          onClose={() => setConfirmingUnblock(false)}
+          title="Clear the block?"
+          size="sm"
+          description={
+            'This returns the initiative to awaiting-human without moving the gate. '
+            + `If the failed materialize left an ${EPIC.singular.toLowerCase()} or sub-issues on GitHub, `
+            + 'close them first: the next decomposition creates a fresh set.'
+          }
+        >
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setConfirmingUnblock(false)}>Cancel</Button>
+            <Button
+              size="lg"
+              variant="danger"
+              aria-label="Confirm unblock"
+              loading={unblock.isPending}
+              onClick={() => unblock.mutate(initiative.slug, { onSettled: () => setConfirmingUnblock(false) })}
+            >
+              Unblock
             </Button>
           </div>
         </Dialog>

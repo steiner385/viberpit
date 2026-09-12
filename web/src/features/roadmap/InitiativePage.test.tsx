@@ -12,6 +12,8 @@ import { InitiativePage } from './InitiativePage'
 // resolve empty) mutates THIS rather than re-mocking per file.
 const h = vi.hoisted(() => {
   const advanceMutate = vi.fn()
+  const stepBackMutate = vi.fn()
+  const unblockMutate = vi.fn()
   const initiative = {
     slug: 'views', repo: 'cairnea/KinDash', title: 'Use-case-first task views',
     stage: 'build', status: 'active', origin: 'human', originRef: null,
@@ -57,8 +59,10 @@ const h = vi.hoisted(() => {
     error: null as unknown,
     map: map as unknown,
     advanceIsError: false,
+    leaves: [] as unknown[],
+    proposal: null as unknown,
   }
-  return { advanceMutate, initiative, map, state }
+  return { advanceMutate, stepBackMutate, unblockMutate, initiative, map, state }
 })
 
 vi.mock('@/api/hooks', () => ({
@@ -78,9 +82,13 @@ vi.mock('@/api/hooks', () => ({
   // The Track tab's materialization gate. Nothing to decide here — the card
   // has its own file (`InitiativePage.materialization.test.tsx`); these three
   // only have to exist, because the page mounts them unconditionally.
-  useMaterialization: () => ({ data: null }),
+  useMaterialization: () => ({ data: h.state.proposal }),
   useAcceptMaterialization: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useRejectMaterialization: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
+  useLeaves: () => ({ data: h.state.leaves, isLoading: false, isError: false }),
+  useRemoveDependency: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
+  useStepBackInitiative: () => ({ mutate: h.stepBackMutate, isPending: false, isError: false, error: null }),
+  useUnblockInitiative: () => ({ mutate: h.unblockMutate, isPending: false, isError: false, error: null }),
 }))
 
 function mount(initial = '/initiatives/views') {
@@ -94,12 +102,16 @@ function mount(initial = '/initiatives/views') {
 describe('InitiativePage', () => {
   beforeEach(() => {
     h.advanceMutate.mockClear()
+    h.stepBackMutate.mockClear()
+    h.unblockMutate.mockClear()
     h.state.data = h.initiative
     h.state.isLoading = false
     h.state.isError = false
     h.state.error = null
     h.state.map = h.map
     h.state.advanceIsError = false
+    h.state.leaves = []
+    h.state.proposal = null
   })
 
   it('shows the breadcrumb, the reason, the next action and the artifact link at its SHA', () => {
@@ -134,13 +146,60 @@ describe('InitiativePage', () => {
     expect(screen.getByRole('button', { name: 'Complete' })).toBeDisabled()
   })
 
-  it('Epic tab lists children; Sessions tab links to the session; Capabilities tab links to the capability', () => {
-    mount('/initiatives/views?tab=epic')
-    expect(screen.getByText('Child one')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('tab', { name: /Sessions/ }))
+  it('Sessions tab links to the session; Capabilities tab links to the capability', () => {
+    mount('/initiatives/views?tab=sessions')
     expect(screen.getByRole('link', { name: /ccswitch\/views/ })).toHaveAttribute('href', '/sessions/s1')
     fireEvent.click(screen.getByRole('tab', { name: /Capabilities/ }))
     expect(screen.getByRole('link', { name: /Task views/ })).toHaveAttribute('href', '/roadmap/kindash/capabilities/task-views')
+  })
+
+  it('Epic: renders the leaves under the epic, not the bare children list', () => {
+    h.state.leaves = [{
+      id: 'w1', ref: 'cairnea/KinDash#1', repo: 'cairnea/KinDash', number: 1, kind: 'issue',
+      title: 'Child one', url: 'https://x/1', state: 'open', triageState: 'classified', score: 3,
+      reach: null, impact: null, effort: null, confidence: null, tier: 'blocked',
+      blockedBy: ['cairnea/KinDash#9'], parentRef: 'cairnea/KinDash#15727', sessionStatus: null, ghCreatedAt: null,
+    }]
+    mount('/initiatives/views?tab=epic')
+    expect(screen.getByRole('link', { name: '#1 Child one' })).toBeInTheDocument()
+    expect(screen.getByRole('list', { name: 'Blocked by' })).toBeInTheDocument()
+  })
+
+  it('steps back only after confirming, and never past intake', () => {
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: /Step back/ }))
+    expect(h.stepBackMutate).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm step back' }))
+    expect(h.stepBackMutate).toHaveBeenCalledWith('views', expect.anything())
+  })
+
+  it('Step back is disabled at intake, the first stage', () => {
+    h.state.data = { ...h.initiative, stage: 'intake' }
+    mount()
+    expect(screen.getByRole('button', { name: /Step back/ })).toBeDisabled()
+  })
+
+  it('a blocked initiative offers Unblock, disables Advance, and confirms before clearing', () => {
+    h.state.data = { ...h.initiative, status: 'blocked' }
+    mount()
+    expect(screen.getByRole('button', { name: /Advance/ })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Unblock' }))
+    expect(h.unblockMutate).not.toHaveBeenCalled()
+    expect(screen.getByText(/close them first/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm unblock' }))
+    expect(h.unblockMutate).toHaveBeenCalledWith('views', expect.anything())
+  })
+
+  it('Unblock waits for a pending materialization to be decided', () => {
+    h.state.data = { ...h.initiative, status: 'blocked' }
+    h.state.proposal = { id: 'p1', status: 'pending', tasks: [], created: null }
+    mount()
+    expect(screen.getByRole('button', { name: 'Unblock' })).toBeDisabled()
+  })
+
+  it('an unblocked initiative has no Unblock button', () => {
+    mount()
+    expect(screen.queryByRole('button', { name: 'Unblock' })).not.toBeInTheDocument()
   })
 
   it('links the latest commit, not the first one committed', () => {
