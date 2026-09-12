@@ -4,7 +4,7 @@ The guard in ``conftest._redirect_state_off_production`` must recognise the
 PRODUCTION database so an inherited ``CCSWITCH_DB_URL`` can never point the
 suite at it. Its original detection (``str(_REAL_HOME) in db``) only matched
 the legacy SQLite store at ``~/.claude-accounts/ccswitch.db``; after production
-migrated to Postgres, a URL like ``postgresql://…/ccswitch`` was silently
+migrated to Postgres, a URL like ``postgresql://user@host/ccswitch`` was silently
 classified as non-production and the whole suite ran against live Postgres —
 fencing the primary lease and churning the live ``sessions`` table.
 """

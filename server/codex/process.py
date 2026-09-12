@@ -439,7 +439,7 @@ async def probe_contract_schema(
     spawn: Callable[..., Awaitable[Any]] = asyncio.create_subprocess_exec,
 ) -> str:
     """Generate and hash the live binary's curated schema in an isolated home."""
-    with tempfile.TemporaryDirectory(prefix="ccswitch-codex-probe-") as temp:
+    with tempfile.TemporaryDirectory(prefix="viberpit-codex-probe-") as temp:
         root = Path(temp)
         home = root / "home"
         output = root / "schema"

@@ -1,4 +1,4 @@
-// Ported from plotroom@5166b52 frontend/src/PrRow.tsx; edits: ApiBaseContext import ./embed/ApiBaseContext → ./ApiBaseContext; eslint-disable react-refresh/only-export-components (mixed export file — subLine/readyMergeGate/areEqual + PrRow, intentional port); ccswitch blend (spec §6) — react-router-dom Link import; onFixPr? prop on PrRowProps + areEqual; session label/Fix span in pr-head after the ETA chip
+// Ported from plotroom@5166b52 frontend/src/PrRow.tsx; edits: ApiBaseContext import ./embed/ApiBaseContext → ./ApiBaseContext; eslint-disable react-refresh/only-export-components (mixed export file — subLine/readyMergeGate/areEqual + PrRow, intentional port); ViberPit blend (spec §6) — react-router-dom Link import; onFixPr? prop on PrRowProps + areEqual; session label/Fix span in pr-head after the ETA chip
 /* eslint-disable react-refresh/only-export-components */
 import { useState, useMemo, memo, type MouseEvent, type KeyboardEvent } from 'react';
 import { Link } from 'react-router-dom'
@@ -112,7 +112,7 @@ type PrRowProps = {
   pr: PrView; hasDeploy: boolean;
   /** Repo-level RepoQueueView.unmergeableCulprit (queue-blocked sub line). */
   queueCulprit?: number | null;
-  /** ccswitch extension (spec §6): fire the "fix this PR" flow for the authoring
+  /** ViberPit extension (spec §6): fire the "fix this PR" flow for the authoring
    *  session. Only invoked when pr.session.fixable is true and a handler is given.
    *  MUST be a reference-stable callback (useCallback in the caller) — areEqual
    *  compares it by identity, so a fresh closure each render defeats memoization. */
@@ -134,7 +134,7 @@ type PrRowProps = {
  * change always propagates through a memoized component regardless of this
  * comparator, so it needs no entry here.)
  *
- * ccswitch blend: onFixPr is compared by identity (like the scalar props) so a
+ * ViberPit blend: onFixPr is compared by identity (like the scalar props) so a
  * changed handler forces a re-render; callers pass a stable ref (see PrRowProps).
  */
 export function areEqual(prev: PrRowProps, next: PrRowProps): boolean {
@@ -187,7 +187,7 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
   const s = pr.stage;
   const parked = s.stage === 'parked';
   const eta = formatEta(s.etaSeconds, s.etaRangeSeconds, s.overdue);
-  // ccswitch extension (spec §6): local const avoids repeated pr.session! non-null
+  // ViberPit extension (spec §6): local const avoids repeated pr.session! non-null
   // assertions in the JSX below — narrowing on `session` is enough.
   const session = pr.session;
   // multi-train merge ETA (issue #40): waiting queue entries show the p50/p90
@@ -253,7 +253,7 @@ function PrRowInner({ pr, hasDeploy, queueCulprit = null, onFixPr }: PrRowProps)
               </span>
             )
           )}
-          {/* ccswitch extension (spec §6): the authoring session label + optional
+          {/* ViberPit extension (spec §6): the authoring session label + optional
               Fix action. Kept OUT of the row's role="button" (nested-interactive
               a11y rule); stopPropagation guards the expand handler like .pr-title. */}
           {session && (

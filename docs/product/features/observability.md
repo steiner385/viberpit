@@ -16,7 +16,7 @@ links:
 
 # Daemon Observability
 
-**Problem** — ccswitch is a single-operator, self-hosted daemon that supervises long-lived `claude`
+**Problem** — ViberPit is a single-operator, self-hosted daemon that supervises long-lived `claude`
 sessions and their WebSocket fan-out. When it misbehaves — the event loop stalls on blocking work, a
 fire-and-forget task dies silently, a request 500s, a token leaks into a log — the operator has no
 one to page and no external APM. Failures used to be invisible: a 130s loop stall logged nothing

@@ -334,7 +334,7 @@ def test_constitution_workflow_reruns_on_body_edit():
 
 
 def test_constitution_script_bootstraps_src_before_install() -> None:
-    """The amendment gate runs before CI installs the ccswitch core package."""
+    """The amendment gate runs before CI installs the `ccswitch` package."""
     import subprocess
     import sys
 

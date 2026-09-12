@@ -11,6 +11,7 @@ safe_filename() — sanitise a string into a filesystem-safe filename stem.
 """
 from __future__ import annotations
 
+from ccswitch import brand
 import json
 from typing import Any
 
@@ -62,7 +63,7 @@ def normalized_ndjson(events: list[dict[str, Any]], *, session_id: str,
 
     The Claude ``/export.jsonl`` streams the CLI's own transcript byte-for-byte.
     Codex has no such file — its history lives inside the app-server — so this is
-    what it exports instead: ccswitch's normalized replay events, one JSON object
+    what it exports instead: ViberPit's normalized replay events, one JSON object
     per line, in the same wire shape the web client already consumes.
 
     The header record is the point. Serving normalized events under a `.jsonl`
@@ -86,7 +87,7 @@ def normalized_ndjson(events: list[dict[str, Any]], *, session_id: str,
         "format": NORMALIZED_EXPORT_FORMAT,
         "engine": engine,
         "sessionId": session_id,
-        "note": ("Normalized ccswitch replay events — NOT a native Claude Code "
+        "note": (f"Normalized {brand.NAME} replay events — NOT a native Claude Code "
                  "transcript. See server/sessions/events.py for the event schema."),
     }
     if model:

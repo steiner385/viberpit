@@ -72,7 +72,7 @@ def test_exiting_plan_restores_pre_plan_permission_mode():
         await d.set_permission_mode("default")   # toggle plan OFF (UI sentinel)
         return d
     d = asyncio.run(run())
-    # The ENFORCED ccswitch mode (what PermissionRegistry.request reads) is back to
+    # The ENFORCED ViberPit mode (what PermissionRegistry.request reads) is back to
     # full-auto, so tools auto-approve again — not 'default', which would prompt.
     assert d.mode == "full-auto"
 

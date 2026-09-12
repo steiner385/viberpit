@@ -1,6 +1,6 @@
-# ccswitch web
+# ViberPit web
 
-The browser UI for `ccswitch`: a dashboard of accounts and their usage, a live session list, an
+The browser UI for ViberPit: a dashboard of accounts and their usage, a live session list, an
 inline transcript/composer per session, delivery (CI + automations) and roadmap views, and settings
 — reachable from any device on the tailnet via `tailscale serve`, phone to desktop, behind one
 adaptive shell (`AppShell`) rather than a mobile/desktop fork. React 19 + Vite + TypeScript, styled
@@ -61,7 +61,7 @@ because it is a required check and a skipped required check never reports. `e2e`
 separate, advisory (not required) jobs on the same condition. Treat all four as required locally too
 — `npm run lint` alone can pass where `typecheck` or `build` would not.
 `npm run lint:fix-tokens` runs
-`eslint --fix --fix-type problem` — it auto-converts anything `ccswitch/no-raw-palette` has a mapping
+`eslint --fix --fix-type problem` — it auto-converts anything `viberpit/no-raw-palette` has a mapping
 for and leaves an error (no fix) on anything it doesn't, for you to hand-map.
 
 ## Conventions

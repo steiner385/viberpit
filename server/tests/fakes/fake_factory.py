@@ -19,7 +19,7 @@ def fake_sdk_factory(messages=None):
     # forwards extra_env=... whenever a session has X11/OAT env, so a fake that
     # omits it raises TypeError on those sessions ("accept and ignore it").
     # ``options_overlay`` arrives the same way for any session that carries an overlay
-    # (the assistant, or a coding session with the ccswitch MCP surface mounted).
+    # (the assistant, or a coding session with the `viberpit` MCP surface mounted).
     def make(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
              on_pre_compact=None, options_overlay=None):
         return FakeSDKClient(list(msgs), on_can_use_tool=can_use_tool)

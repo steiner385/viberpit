@@ -9,7 +9,7 @@ from server.github.deploy_envs import classify_env
 
 
 def test_exact_production_is_prod():
-    # steiner385/ccswitch names its env exactly "production" — must stay prod.
+    # steiner385/viberpit names its env exactly "production" — must stay prod.
     assert classify_env("production") == "prod"
 
 

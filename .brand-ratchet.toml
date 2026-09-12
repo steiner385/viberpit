@@ -1,0 +1,144 @@
+# Legacy-brand ratchet registry — read by scripts/brand_ratchet.py, enforced by
+# server/tests/test_brand_ratchet.py inside the lint-and-test gate.
+#
+# Every remaining `ccswitch` / `cc-account-switcher` spelling in the tree must be
+# CLAIMED by exactly one [[allow]] entry below. An unclaimed spelling fails the gate:
+# rename it, or — if it cannot be renamed by search-and-replace (a wire contract, a
+# persisted key, host state, the Python package) — file a GitHub issue and add an
+# entry pointing at it. Entries that keep the old spelling on purpose say why in
+# `permanent` and cite the design decision.
+#
+# Entries are tried IN ORDER; the first one whose `paths` glob (if any) matches the
+# file and whose `pattern` (if any) overlaps the spelling claims it. `ceiling` is the
+# count when the entry was last tightened: a category that grows past it fails, one
+# that shrinks passes and asks you to run `python scripts/brand_ratchet.py --update`.
+#
+# The rebrand plan: docs/superpowers/specs/2026-09-06-viberpit-rebrand-design.md
+# The feature doc:  docs/product/features/viberpit-rebrand.md
+
+[scan]
+needles = ["ccswitch", "cc-account-switcher", "cc_account_switcher"]
+# Historical records and recorded artifacts: rewriting them is churn, not progress
+# (design §1 "Deliberately not renamed", decision D5).
+exclude = [
+  "docs/superpowers/",
+  "docs/audits/",
+  "docs/2026-",
+  "specs/",
+  ".superpowers/",
+  "server/tests/fixtures/",
+  ".brand-ratchet.toml",
+]
+
+# ── Permanent: the spelling is the point ───────────────────────────────────────
+
+[[allow]]
+id = "brand-module"
+paths = ["src/ccswitch/brand.py", "web/src/brand.ts"]
+permanent = "The LEGACY_* constants are the one place the old spelling may be defined (design §1)."
+ceiling = 4
+
+[[allow]]
+id = "wire-dual-accept"
+pattern = '<!--\s*ccswitch:|</?ccswitch-context|mcp__ccswitch__|\bccswitch:(complete|no-pr|model|hand-back)\b'
+permanent = "Markers, context headers and MCP tool names live in stored transcripts that are re-parsed on replay; the accept side never comes out (design Phase 7 'keep forever')."
+ceiling = 56
+
+[[allow]]
+id = "rebrand-narrative"
+paths = ["docs/product/features/viberpit-rebrand.md", "README.md", ".brand-ratchet.toml", "scripts/brand_ratchet.py", "server/tests/test_brand_*.py", "tests/test_brand.py", "web/src/brand.test.ts"]
+permanent = "Text that names the old brand in order to explain the rename (the feature doc, README's 'formerly' line, the ratchet and its tests)."
+ceiling = 86
+
+[[allow]]
+id = "ratchet-rule"
+pattern = '`ccswitch` spelling not claimed'
+permanent = "The contributor rule in core.md / AGENTS.md has to say which spelling the ratchet hunts."
+ceiling = 2
+
+[[allow]]
+id = "not-renamed"
+pattern = '\bccswitch-auth\b|/var/lib/ccswitch-codex-auth|/opt/ccswitch-codex-auth|/state/ccswitch/codex|"ccswitch" / "codex"|CN=ccswitch|\bccswitch-ca\b|001-ccswitch-web|asyncpg://ccswitch:|@[^ `]*/ccswitch\b|PG_(ROLE|DB):-ccswitch|^\s*ccswitch:<password>@|>/ccswitch\b|`ccswitch`, and grants|\bhost\s+ccswitch\s+ccswitch\b|-U ccswitch\b|-d ccswitch\b|`ccswitch`( Postgres)? (role|database)|(role|db|database) `ccswitch`|ccswitch (role|database)\b|ccswitch-assistant(-user)?-v1'
+permanent = "Not the brand: the unix user and 0700 state dir holding OpenAI refresh tokens (rename at the next credential rotation), the mTLS CA CN (next rotation), the Postgres role/db name (D6), the spec directory `.specify/feature.json` points at, and the versioned HMAC salts of the assistant token, which sit beside the `ccas1:` wire prefix (design §1 table)."
+ceiling = 124
+
+# ── Tracked: each category has the issue that removes it ───────────────────────
+
+[[allow]]
+id = "agent-roles"
+pattern = 'ccswitch-(implementer|reviewer)'
+issue = 1376
+ceiling = 8
+
+[[allow]]
+id = "http-auth-compat"
+pattern = '\bccswitch_session\b|X-CCSwitch-|x-ccswitch-'
+issue = 1368
+ceiling = 9
+
+[[allow]]
+id = "browser-storage-keys"
+paths = ["web/*", "web/**/*"]
+pattern = "['\"`]ccswitch\\.[A-Za-z][A-Za-z.]*|ccswitch\\.\\$\\{|ccswitch:(draft|auto-reloaded)|STORAGE_NAMESPACE = 'ccswitch'|toBe\\('ccswitch'\\)|should be \"ccswitch\"|ccswitchExportMeta|ccswitch\\.normalized-events"
+issue = 1368
+ceiling = 59
+
+[[allow]]
+id = "export-format-id"
+pattern = 'ccswitch\.normalized-events|ccswitchExportMeta'
+issue = 1368
+ceiling = 7
+
+[[allow]]
+id = "persisted-keys"
+pattern = '\bccswitch:[a-z][a-z-]*|feature-map-ccswitch|ccswitch-pr-cycle-time'
+issue = 1369
+ceiling = 7
+
+[[allow]]
+id = "branch-prefix"
+pattern = '\bccswitch/'
+issue = 1369
+ceiling = 218
+
+[[allow]]
+id = "repo-namespace"
+pattern = '\.ccswitch(?![A-Za-z_])|\.ccswitch-codex-attachments'
+issue = 1373
+ceiling = 43
+
+[[allow]]
+id = "env-prefix"
+pattern = '\bCCSWITCH_[A-Z0-9_]*'
+issue = 1591
+ceiling = 2512
+
+[[allow]]
+id = "host-legacy-aliases"
+paths = ["deploy/ccswitch*", "deploy/bin-ccswitch-mounts.sh", "scripts/ccswitch-*", "scripts/viberpit-host-aliases.py", "scripts/viberpit-host-cutover.py", "tests/test_host_aliases.py", "tests/test_host_cutover.py", "docs/runbooks/viberpit-host-cutover.md"]
+issue = 1592
+ceiling = 173
+
+[[allow]]
+id = "host-legacy-names"
+pattern = 'ccswitch-(daemon|deploy|health|mounts|cert-renew|codex-auth|tailnet|controller|deploy-controller|health-check)[A-Za-z0-9.@-]*|\bccswitch\.service|/(etc|run|var/lib|var/log|srv)/ccswitch|\.(cache|local/lib)/ccswitch|"\.cache" / "ccswitch"|bin-ccswitch|ccswitch-archives|cc-account-switcher-deploy|\bccswitch\.env\b|\bccswitch\.(db|jsonl|local)\b|/home/tony/GitHub/ccswitch|"service", "ccswitch"|service ccswitch|ccswitch (master key|oauth token)'
+issue = 1592
+ceiling = 305
+
+[[allow]]
+id = "python-package"
+pattern = '\b(from|import)\s+ccswitch\b|\bccswitch\.[a-z_]+|src/ccswitch\b|src\.ccswitch|__editable__\.ccswitch|name = "ccswitch"|^ccswitch = "|\bccswitch-0\.1\.0|(\.venv/)?bin/ccswitch|version\("ccswitch"\)|ccswitch\[server\]|\bccswitch (accounts|clones|add|crypto|init|link|list|migrate|remove|show|status|use|mcp|ask)\b|\b_?ccswitch_[a-z_]+\b|`ccswitch`\s+(CLI|binary|command|console|entry|proper|package)|(CLI|binary|command|script|entry point|installed as|console script|package)\s+`ccswitch`|--prog ccswitch|prog="ccswitch"|"command": "ccswitch"|Entry points: the `ccswitch` command|logger="ccswitch"|getLogger\("ccswitch"\)'
+issue = 1374
+ceiling = 1460
+
+[[allow]]
+id = "constitution"
+paths = [".specify/memory/constitution.md"]
+issue = 1377
+ceiling = 2
+
+[[allow]]
+id = "governance-enforcement"
+paths = [".codex/config.toml", "scripts/check_constitution_amendment.py", "server/sdlc/governance.py"]
+issue = 1594
+ceiling = 5

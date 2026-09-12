@@ -446,7 +446,7 @@ export interface BatchResult {
   failed: { id: string; error: string }[]
 }
 
-/** A live `claude` session running outside ccswitch, discovered for adoption. */
+/** A live `claude` session running outside ViberPit, discovered for adoption. */
 export interface AdoptionCandidate {
   pid: number | null
   account: string | null
@@ -533,7 +533,7 @@ export interface StageModel {
 }
 
 export interface PipelinePr extends PullRequestInfo {
-  /** The ccswitch session that authored this PR's branch, or null. */
+  /** The ViberPit session that authored this PR's branch, or null. */
   session: { id: string; name: string } | null
   /** Per-node placement states for this PR's position on its repo's stage track. */
   node_states?: { id: string; state: NodeState }[]

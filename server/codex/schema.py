@@ -1,6 +1,6 @@
 """Pinned Codex app-server contract and typed DTOs for the supported method set.
 
-Scope. ccswitch speaks a deliberately tiny slice of the app-server protocol: the
+Scope. ViberPit speaks a deliberately tiny slice of the app-server protocol: the
 `codex app-server generate-json-schema --experimental` output declares 155 client
 requests, 11 server requests, and 81 server notifications, and this phase supports
 fifteen requests, one client notification, four server requests, and fourteen
@@ -12,7 +12,7 @@ and the DTOs.
 Tolerant inbound, strict outbound. Unknown *fields* are ignored on the way in and
 an unknown thread-item *type* degrades to :class:`UnknownThreadItem` rather than
 raising, because a Codex release that adds a twentieth item variant must not end
-a live session. Everything ccswitch *sends* is rebuilt from a typed DTO and
+a live session. Everything ViberPit *sends* is rebuilt from a typed DTO and
 re-validated, so a decision or a model name that is not in the pinned vocabulary
 never reaches the wire.
 
@@ -23,12 +23,12 @@ a curated subset of the generated schema, and refuses to guess when either moves
 
 What the hash covers. `PINNED_CONTRACT_SHA256` is taken over (a) the complete
 *canonicalized* JSON Schema documents for every request/response/notification
-ccswitch actually parses — parsed and re-serialized with sorted keys, so the hash
+ViberPit actually parses — parsed and re-serialized with sorted keys, so the hash
 is invariant to upstream whitespace but sensitive to every key, type, enum member,
 and `required` entry — and (b) the *method-name inventory* of all four envelopes.
 The envelope bodies themselves are intentionally excluded: `ClientRequest.json`
 alone is 276 KB describing 155 methods, so hashing it would break the pin on every
-upstream change to a method ccswitch never calls. Their SHA-256 values are recorded
+upstream change to a method ViberPit never calls. Their SHA-256 values are recorded
 in the fixture manifest as evidence. A renamed or removed method still trips the
 pin through the inventory.
 
@@ -118,13 +118,13 @@ CURATED_SCHEMA_FILES: Final[tuple[str, ...]] = (
     "ToolRequestUserInputParams.json",
     "ToolRequestUserInputResponse.json",
     # Task: the engine-neutral assistant overlay (#1321/#1290). `dynamicTools`
-    # on `thread/start` is how the in-app assistant mounts its ccswitch tool
+    # on `thread/start` is how the in-app assistant mounts its ViberPit tool
     # surface on Codex, and `item/tool/call` is the callback that executes it.
     "DynamicToolCallParams.json",
     "DynamicToolCallResponse.json",
     # Task: Codex background-work parity (#1284) — the vendor answer to "is this
     # session parked on work of its own?". `list` is pinned; the sibling
-    # `terminate`/`clean` methods are deliberately NOT, because ccswitch never
+    # `terminate`/`clean` methods are deliberately NOT, because ViberPit never
     # calls them: a background terminal is a grandchild of the app-server child,
     # so daemon shutdown (`CodexRunnerManager.stop_all`) and the boot sweep
     # (`sweep_orphans`, `terminate_process_tree`) already end every one. Pinning
@@ -212,7 +212,7 @@ METHOD_THREAD_BACKGROUND_TERMINALS_LIST: Final = "thread/backgroundTerminals/lis
 
 # Approvals (server -> client requests). `item/permissions/requestApproval` is
 # deliberately absent: its response hands the server a permissions *grant*, and
-# ccswitch has no vocabulary to describe one, so answering it at all would mean
+# ViberPit has no vocabulary to describe one, so answering it at all would mean
 # inventing a grant. It stays declared-but-unsupported and takes the -32601 path.
 METHOD_COMMAND_EXECUTION_APPROVAL: Final = "item/commandExecution/requestApproval"
 METHOD_FILE_CHANGE_APPROVAL: Final = "item/fileChange/requestApproval"
@@ -223,24 +223,24 @@ METHOD_FILE_CHANGE_APPROVAL: Final = "item/fileChange/requestApproval"
 # the same version pin, because the audit that named this gap (#1271) found it
 # is what `AskUserQuestion` parity actually requires. `mcpServer/elicitation/
 # request` is a DIFFERENT surface (third-party MCP tool servers prompting the
-# user) that no ccswitch Codex session can currently trigger — no MCP server is
+# user) that no ViberPit Codex session can currently trigger — no MCP server is
 # wired up for Codex threads — so it stays declared-but-unsupported until one is.
 METHOD_ITEM_TOOL_REQUEST_USER_INPUT: Final = "item/tool/requestUserInput"
 
 # Client-declared tool execution (server -> client request). The Codex half of
 # the in-app assistant's tool surface (#1321): a thread started with
-# `dynamicTools` calls back here for every one of them, and ccswitch — the host —
+# `dynamicTools` calls back here for every one of them, and ViberPit — the host —
 # is what actually runs the tool. That inversion is the whole security argument
 # for the Codex assistant overlay. `thread/start` has no `disallowed_tools`
 # equivalent, so the built-ins stay declared; what makes the drawer safe is that
-# the ccswitch tools cannot run without ccswitch answering this request, while
+# the ViberPit tools cannot run without ViberPit answering this request, while
 # the built-ins are held by `sandbox: read-only` + `approvalPolicy: untrusted` +
 # a default-deny approval handler (docs/superpowers/spikes/
 # 2026-09-06-assistant-codex-findings.md, verified against codex-cli 0.153.2).
 #
 # `mcpServer/toolCall` is a DIFFERENT surface (the app-server asking the client
 # to proxy a call into a configured MCP server) and stays declared-but-unsupported:
-# no ccswitch Codex thread configures one.
+# no ViberPit Codex thread configures one.
 METHOD_ITEM_TOOL_CALL: Final = "item/tool/call"
 
 # Thread / turn / item stream (server -> client notifications).
@@ -365,7 +365,7 @@ RATE_LIMIT_REACHED_TYPES: Final[frozenset[str]] = frozenset(
     }
 )
 
-#: `SandboxMode` — the string form ccswitch sets on `thread/start`/`thread/resume`.
+#: `SandboxMode` — the string form ViberPit sets on `thread/start`/`thread/resume`.
 SANDBOX_MODES: Final[frozenset[str]] = frozenset(
     {"read-only", "workspace-write", "danger-full-access"}
 )
@@ -374,7 +374,7 @@ SANDBOX_POLICY_TYPES: Final[frozenset[str]] = frozenset(
     {"dangerFullAccess", "readOnly", "externalSandbox", "workspaceWrite"}
 )
 #: `AskForApproval` — the plain string variants. The union also has an object
-#: `granular` variant that ccswitch never sends; inbound it reduces to the
+#: `granular` variant that ViberPit never sends; inbound it reduces to the
 #: discriminator so a response carrying one still parses.
 APPROVAL_POLICIES: Final[frozenset[str]] = frozenset({"untrusted", "on-request", "never"})
 GRANULAR_APPROVAL_POLICY: Final = "granular"
@@ -390,7 +390,7 @@ TURN_SETTINGS_UPDATE_STATUSES: Final[frozenset[str]] = frozenset(
     {"applied", "targetUnavailable"}
 )
 
-#: The command-approval decisions ccswitch can offer a human. The pinned union
+#: The command-approval decisions ViberPit can offer a human. The pinned union
 #: also carries two OBJECT-shaped variants — `acceptWithExecpolicyAmendment` and
 #: `applyNetworkPolicyAmendment` — which persist a policy change beyond the
 #: request being approved. Constitution IV (security-first) says a single click
@@ -1267,7 +1267,7 @@ def parse_model_list_response(payload: Any) -> ModelListResponse:
 # the untruthful one #1286 exists to remove: a skill offered in the palette must
 # be one this app-server actually knows, at a `path` it actually resolves.
 #
-# Only the fields ccswitch renders or dispatches with are modelled. The upstream
+# Only the fields ViberPit renders or dispatches with are modelled. The upstream
 # `SkillMetadata` also carries plugin ids, icon paths, tool dependencies and a
 # `SkillInterface` display block — none of which the command palette consumes, so
 # pulling them in would widen the pinned contract for nothing.
@@ -1313,8 +1313,8 @@ class SkillsListEntry:
 class SkillsListParams:
     """`skills/list`.
 
-    ``cwds`` is always sent explicitly by ccswitch. Upstream defaults an empty
-    list to "the current session working directory", but a ccswitch runner's
+    ``cwds`` is always sent explicitly by ViberPit. Upstream defaults an empty
+    list to "the current session working directory", but a ViberPit runner's
     app-server is shared by every session on one account — so "the current
     session" is not a thing it can resolve, and the session's own cwd must be
     named.
@@ -1420,7 +1420,7 @@ def parse_skills_list_response(payload: Any) -> SkillsListResponse:
 # * outbound params are rebuilt from typed dataclasses that validate their own
 #   enums, so a model name or an approval policy outside the pinned vocabulary
 #   cannot reach the wire even if a caller constructs one;
-# * inbound objects model only the fields ccswitch translates and tolerate the
+# * inbound objects model only the fields ViberPit translates and tolerate the
 #   rest, and an unrecognized thread-item `type` degrades to
 #   `UnknownThreadItem` instead of raising — an upstream item variant added
 #   after this pin must not end a session that is mid-turn.
@@ -1486,7 +1486,7 @@ class SkillUserInput:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class UnknownUserInput:
-    """An inbound user-input variant ccswitch does not model (audio, mention, …).
+    """An inbound user-input variant ViberPit does not model (audio, mention, …).
 
     Parse-only: it has no `to_wire`, so it can never be echoed back.
     """
@@ -1921,7 +1921,7 @@ class Turn:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class Thread:
-    """The fields of `Thread` ccswitch reads. Everything else is ignored."""
+    """The fields of `Thread` ViberPit reads. Everything else is ignored."""
 
     id: str
     cwd: str
@@ -2032,10 +2032,10 @@ def _parse_sandbox_policy(value: Any, what: str) -> str:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class FunctionDynamicToolSpec:
-    """One `FunctionDynamicToolSpec` — the only `DynamicToolSpec` variant ccswitch sends.
+    """One `FunctionDynamicToolSpec` — the only `DynamicToolSpec` variant ViberPit sends.
 
     The union also carries a `namespace` variant (a named group of tools). It is
-    deliberately not modelled: `ThreadStartParams` pins only the knobs ccswitch
+    deliberately not modelled: `ThreadStartParams` pins only the knobs ViberPit
     actually sets, and the assistant's surface is flat.
 
     `deferLoading` is likewise absent. It asks the app-server to withhold a
@@ -2081,7 +2081,7 @@ def _validate_optional_enum(
 
 @dataclass(frozen=True, slots=True, repr=False)
 class ThreadStartParams:
-    """`thread/start` — only the knobs ccswitch actually sets.
+    """`thread/start` — only the knobs ViberPit actually sets.
 
     `permissions` names a server-side profile and the pinned schema states it
     cannot be combined with `sandbox`; sending both would let the app-server pick
@@ -2090,17 +2090,17 @@ class ThreadStartParams:
     `base_instructions` REPLACES the app-server's own agent instructions, where
     `developer_instructions` appends to them — the same distinction as passing a
     plain string to the Claude SDK's `system_prompt` versus its preset+append
-    form. A coding session appends (it wants Codex to be Codex, plus ccswitch's
+    form. A coding session appends (it wants Codex to be Codex, plus ViberPit's
     marker contracts); the assistant drawer replaces (spec §4.1: the completion
     /PR/model-request markers are coding-session contracts and mean nothing
     there). Both are sendable, and both being set is refused, because which one
-    would win is the app-server's choice, not ccswitch's.
+    would win is the app-server's choice, not ViberPit's.
 
     `ephemeral` is deliberately absent, and its absence is load-bearing rather
     than an omission: an ephemeral thread cannot be replayed —
     `thread/read {includeTurns: true}` answers `-32600 ephemeral threads do not
     support includeTurns` and `thread/items/list` is `-32601` on 0.153.2 — so
-    every ccswitch thread, assistant threads included, is durable by never
+    every ViberPit thread, assistant threads included, is durable by never
     asking for the other thing.
     """
 
@@ -2156,14 +2156,14 @@ class ThreadStartParams:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class ThreadResumeParams:
-    """`thread/resume` — the knobs ccswitch sets when re-opening a thread.
+    """`thread/resume` — the knobs ViberPit sets when re-opening a thread.
 
     **`dynamicTools` is absent from this method's pinned params, and that is a
     vendor boundary, not an omission here** (`v2/ThreadResumeParams.json` on
     codex-cli 0.153.2 declares `baseInstructions` but no tool field). A resumed
     thread therefore cannot re-declare the host-executed tool surface a
     `thread/start` mounted, so an assistant thread must never be resumed: it
-    would come back with the built-ins still declared and the ccswitch tools
+    would come back with the built-ins still declared and the ViberPit tools
     gone — precisely inverting the drawer's security property. See
     ``server/assistant/options_codex.py`` and ``CodexAgentDriver.start``.
     """
@@ -2240,7 +2240,7 @@ class ThreadGoalGetParams(ThreadArchiveParams):
 class ThreadBackgroundTerminalsListParams:
     """`thread/backgroundTerminals/list` — one page of a thread's live terminals.
 
-    ``limit``/``cursor`` are the vendor's own pagination. ccswitch always sends an
+    ``limit``/``cursor`` are the vendor's own pagination. ViberPit always sends an
     explicit ``limit`` so one answer is bounded even for a thread that has spawned
     an unreasonable number of them; the caller
     (:func:`server.codex.background.open_background_terminals`) follows
@@ -2417,7 +2417,7 @@ class ThreadBackgroundTerminal:
     terminal always names the same identity the vendor uses.
 
     ``cpu_percent``/``rss_kb``/``os_pid`` are optional telemetry the app-server
-    fills in when it can. ccswitch keeps them off its own reporting path — they
+    fills in when it can. ViberPit keeps them off its own reporting path — they
     are point-in-time samples that would go stale the instant they were persisted
     — but they are parsed rather than dropped so the DTO stays a faithful reading
     of the pinned document.
@@ -2879,7 +2879,7 @@ def parse_chatgpt_auth_tokens_refresh_response(payload: Any) -> (
 # ---------------------------------------------------------------------------
 # Approvals (server → client requests)
 #
-# These are the only two server-initiated requests ccswitch will ever answer,
+# These are the only two server-initiated requests ViberPit will ever answer,
 # and it answers them only by relaying a decision a human made. Both directions
 # are deliberately narrow: the inbound params keep just enough to describe the
 # ask, and the outbound decision is restricted to the plain string variants, so
@@ -2944,7 +2944,7 @@ ApprovalResponse = CommandExecutionApprovalResponse | FileChangeApprovalResponse
 def _offerable_decisions(
     payload: Mapping[str, Any], allowed: frozenset[str], what: str
 ) -> tuple[str, ...]:
-    """Keep only the decisions ccswitch can present, preserving server order.
+    """Keep only the decisions ViberPit can present, preserving server order.
 
     Object-shaped members (the policy-amendment variants) are dropped rather
     than raising: the request itself is still answerable with accept/decline,
@@ -3047,10 +3047,10 @@ class ToolRequestUserInputQuestion:
     empty tuple (offered options, none of which happen to exist yet — the
     vendor schema keeps the two states apart, so parsing does too). ``is_other``
     signals the vendor UI would offer a typed answer alongside the listed
-    options; ccswitch's question card already offers one unconditionally (the
+    options; ViberPit's question card already offers one unconditionally (the
     "write your own answer" escape hatch), so it needs no special handling.
     ``is_secret`` marks an answer that should never render in cleartext — no
-    ccswitch surface masks input yet, so it is threaded through as metadata for
+    ViberPit surface masks input yet, so it is threaded through as metadata for
     a future card to consume rather than acted on here.
     """
 
@@ -3543,8 +3543,8 @@ def parse_client_response(method: str, payload: Any) -> ClientResponse:
 # The Codex counterpart of the Claude assistant's in-process SDK MCP server. A
 # thread declares its tools up front and the app-server calls back for each one;
 # there is no child process and no `~/.codex/config.toml` edit. The gate is the
-# callback itself — ccswitch executes every declared tool, so one cannot run
-# without ccswitch's participation (#1321, spike 2026-09-06).
+# callback itself — ViberPit executes every declared tool, so one cannot run
+# without ViberPit's participation (#1321, spike 2026-09-06).
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -3570,7 +3570,7 @@ class DynamicToolCallParams:
 class DynamicToolCallContentItem:
     """One `inputText` output item.
 
-    The union also has `inputImage` and `inputAudio` members. ccswitch answers
+    The union also has `inputImage` and `inputAudio` members. ViberPit answers
     with text only — every assistant tool returns a JSON envelope
     (`server/assistant/tools.wrap_untrusted`) — so the other two are refused on
     the way out rather than half-supported.

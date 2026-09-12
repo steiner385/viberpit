@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Mint the private CA + server/client certs for the ccswitch cross-host daemon channel.
+# Mint the private CA + server/client certs for the ViberPit cross-host daemon channel.
 #
-# The server cert's SAN MUST match how the EDGE reaches the daemon. ccswitch's own
+# The server cert's SAN MUST match how the EDGE reaches the daemon. ViberPit's own
 # quickstart flags hostname mismatch as the number-one footgun here: a mismatch fails
 # with "certificate does not match the server name" and reads like a TLS bug.
 #

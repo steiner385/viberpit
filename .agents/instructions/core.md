@@ -1,6 +1,6 @@
-# cc-account-switcher — Agent Context
+# ViberPit — Agent Context
 
-`ccswitch` is a multi-account AI coding-agent session manager: a CLI core plus a web-hosted,
+ViberPit is a multi-account AI coding-agent session manager: a CLI core plus a web-hosted,
 mobile-accessible interface for running and switching between live agent sessions across
 several accounts, with automatic usage-aware account rotation.
 
@@ -20,7 +20,7 @@ X display, `003-gh-projects-integration`); design notes and plans under `docs/`.
 
 ## Architecture map
 
-- `src/ccswitch/` — CLI core: accounts, `CLAUDE_CONFIG_DIR` isolation, creds, ledger, worktrees. Entry points `ccswitch`, `ccrun`, `ccmax`
+- `src/ccswitch/` — CLI core: accounts, `CLAUDE_CONFIG_DIR` isolation, creds, ledger, worktrees. Entry points: the `ccswitch` command, `ccrun`, `ccmax`
   (`pyproject.toml`). Tests in `tests/`.
 - `server/app.py` — the **edge**: FastAPI `create_app()`; `app = create_app()` runs at import, so importing the module already reads
   `CCSWITCH_*` env (see the test note below).
@@ -105,7 +105,7 @@ auto-merge-armed PR, disable auto-merge first and immediately re-read merged sta
   (#1164). Blocked by `server/tests/test_no_swallowed_outer_cancellation.py`.
 - A fresh git worktree has no built env (network blocks `uv sync` of the ~70MB claude-agent-sdk). Run against the main checkout's prebuilt
   env (`<main-checkout>/.venv/bin/python -m pytest …`) and symlink `web/node_modules` from the main checkout.
-- **The shared `.venv` imports `ccswitch.*` from the DEPLOY worktree, not your checkout.** `site-packages/__editable__.ccswitch-0.1.0.pth`
+- **The shared `.venv` imports the `ccswitch` package from the DEPLOY worktree, not your checkout.** `site-packages/__editable__.ccswitch-0.1.0.pth`
   points at `cc-account-switcher-deploy/src`, so edits under your own `src/ccswitch/` are silently ignored by tests — they pass or fail
   against *production* code. `server/*` is unaffected (pytest's rootdir wins). When touching `src/ccswitch/`, run with
   `PYTHONPATH=<your-checkout>/src` and confirm with `python -c "import ccswitch.ledger as m; print(m.__file__)"`. CI is unaffected: it
@@ -164,34 +164,38 @@ Skill: `eliminating-parallel-implementations`.
 The rule above has a multi-agent twin: several sessions work this repo at once, so the duplicate
 may not be *in* the codebase yet — it may be an open PR. Check **before writing code**; the global
 "list in-flight PRs" rule fires at `gh pr create`, too late to prevent the wasted cycle. Search by
-the **files you are about to touch** and by the issue number, never by branch name — on 2026-09-05
-#1142 and #1145 independently implemented #1131 nine minutes apart, same gate and same file.
+the **files you are about to touch** and by the issue number, never by branch name (#1142 and
+#1145 once implemented #1131 nine minutes apart, same file).
 
 ```bash
-gh api graphql -f query='{repository(owner:"steiner385",name:"ccswitch"){
+gh api graphql -f query='{repository(owner:"steiner385",name:"viberpit"){
   pullRequests(states:OPEN,first:40,orderBy:{field:UPDATED_AT,direction:DESC}){
     nodes{number title headRefName files(first:60){nodes{path}}}}}}' \
   --jq '.data.repository.pullRequests.nodes[] | select([.files.nodes[].path] | any(test("<path regex>"))) | "\(.number)\t\(.headRefName)\t\(.title)"'
 ```
 
 Found one? **Review and extend it** rather than starting over. If yours is better in parts, combine
-into one PR and close the other, crediting what you took and saying plainly which came first — the
-session that duplicated owns the mistake, not the one it landed on.
+into one PR, close the other, and credit what you took.
+
+### Legacy brand spellings need a ticket
+
+`python scripts/brand_ratchet.py` (run by `server/tests/test_brand_ratchet.py`) fails on any
+`ccswitch` spelling not claimed by `.brand-ratchet.toml`. Rename it; if you can't (wire contract,
+persisted key, host state, the package), file an issue and add an entry naming it. Counts only
+go down: `--update` after removing some.
 
 ### Purge replaced code in the same change — no half-dead code
 
-When you replace a file, route, model, or function, delete the old version in the **same PR**. A
-disconnected handler or orphaned module is a landmine: it gets imported by accident, drifts from the
-new path, or is mistaken for canonical by the next grep. The only exception is a migration too large
-for one PR — then mark the old path `# @deprecated — replaced by X, remove in #N` and track it in an
-issue; otherwise, delete it.
+When you replace a file, route, model, or function, delete the old version in the **same PR**: an
+orphaned module gets imported by accident, drifts, or is mistaken for canonical by the next grep.
+The only exception is a migration too large for one PR — then mark the old path
+`# @deprecated — replaced by X, remove in #N` and track it in an issue.
 
 ### Audit recurring fix patterns — don't just patch
 
 When you fix a bug whose *shape* could exist elsewhere (same anti-pattern, different file), capture
-the pattern and sweep for siblings instead of fixing the one instance. The trigger is "this could
-exist elsewhere," not "I'm sure it does" — false-positive audits are cheap; a missed second instance
-of a silent bug is not. Skill: `capturing-fix-patterns`.
+the pattern and sweep for siblings. The trigger is "this could exist elsewhere," not "I'm sure it
+does" — a false-positive audit is cheap; a missed silent sibling is not. Skill: `capturing-fix-patterns`.
 
 ### Git safety
 
@@ -204,10 +208,9 @@ Skill: `safe-git-operations`.
 
 ### GitHub API — prefer GraphQL over REST for reads
 
-`gh pr list` / `gh pr view` / `gh issue view` use REST under the hood and each costs a hit against
-the shared 5,000-req/hr rate limit; a single `gh api graphql` query batches many reads into one
-request. Use GraphQL for reads (`repo:steiner385/cc-account-switcher …`); reserve REST for mutations
-that have no GraphQL path in `gh` (`gh pr create`, `gh pr merge`, `gh issue create/close`).
+`gh pr list|view` / `gh issue view` are REST calls against the shared 5,000-req/hr limit; one
+`gh api graphql` query batches many reads. Use GraphQL for reads (`repo:steiner385/viberpit …`)
+and REST only for mutations with no GraphQL path (`gh pr create|merge`, `gh issue create`).
 Skill: `github-via-graphql`.
 
 ### Issue auto-close keyword
@@ -250,8 +253,8 @@ when the edge does not advertise `sttEnabled` in `GET /api/config`.
 ## AI assistant (drawer)
 
 A right-side drawer backed by a real session of `kind == "assistant"`. Its only tools are an
-in-process `ccswitch` MCP server (`server/assistant/tools.py`) where each handler calls exactly
-**one ccswitch HTTP API endpoint over loopback** — never add business logic to a handler, add it to
+in-process `viberpit` MCP server (`server/assistant/tools.py`) where each handler calls exactly
+**one ViberPit HTTP API endpoint over loopback** — never add business logic to a handler, add it to
 the endpoint. Its `ccas1:` bearer token (`server/assistant/token.py`) is identity-bound, never
 persisted, loopback-only. Kill switch `CCSWITCH_ASSISTANT_ENABLED`; evals under
 `docs/superpowers/evals/assistant/`. Details: `docs/product/features/ai-assistant.md`.

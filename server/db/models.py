@@ -1,4 +1,4 @@
-"""SQLAlchemy 2.x async declarative models for ccswitch-web (T026/T027).
+"""SQLAlchemy 2.x async declarative models for ViberPit web (T026/T027).
 
 App store: Session, AppSession, AuditEvent.
 Secrets and tokens are never stored here.
@@ -81,7 +81,7 @@ DEFAULT_MAX_ACTIVE_SESSIONS = 5
 
 
 class Session(Base):
-    """An active (or ended) native-agent session managed by ccswitch-web."""
+    """An active (or ended) native-agent session managed by ViberPit web."""
 
     __tablename__ = "sessions"
 
@@ -742,11 +742,11 @@ class CiTestResult(Base):
     # Backstop for the ingest-side dedupe above. NULLs compare as distinct in SQL, so
     # rows with a NULL suite/test_id are NOT covered — ingest-side dedupe is the
     # primary guard, this catches concurrent-tick races. Created on the live DB by
-    # scripts/ccswitch-db-compact.py (create_all does not add constraints to an
+    # scripts/viberpit-db-compact.py (create_all does not add constraints to an
     # existing table).
     #
     # Migration-order warning: when the Postgres migration (sub-project 1b) adds
-    # this same unique constraint, it MUST run AFTER scripts/ccswitch-db-compact.py
+    # this same unique constraint, it MUST run AFTER scripts/viberpit-db-compact.py
     # has deduped the table. Creating uq_ci_test_result_run_suite_test on the
     # un-compacted table fails outright — ~430k existing duplicate rows violate it.
     #
@@ -830,7 +830,7 @@ class CiFinding(Base):
 
 
 class SessionFeedback(Base):
-    """A report a coding session made about ccswitch itself via the `report_feedback`
+    """A report a coding session made about ViberPit itself via the `report_feedback`
     session tool (session tools spec §4–§5). Fingerprint-deduped; Phase 2's filer turns
     `pending` rows into `session-feedback` GitHub issues and links `issue_number`.
 
@@ -1263,7 +1263,7 @@ class InitiativeArtifact(Base):
 
     ``repo_path`` is where the artifact lives in the repo; ``commit_sha`` /
     ``pr_number`` / ``pr_url`` are stamped once it is committed and proposed;
-    ``session_id`` / ``model`` record which ccswitch session (and which model)
+    ``session_id`` / ``model`` record which ViberPit session (and which model)
     authored it. All are nullable — an intent may exist before any commit.
     """
 
@@ -1289,7 +1289,7 @@ class InitiativeArtifact(Base):
 #
 # One row per control-band incident: a deterministic breach detected by
 # server/sdlc/control_bands.py, filed by the control-band-monitor automation, and
-# dispositioned either by ccswitch (a 3σ breach queues itself for SDLC Intake) or
+# dispositioned either by ViberPit (a 3σ breach queues itself for SDLC Intake) or
 # by a human (triage now / schedule / dismiss-with-reason).
 #
 # Why a table and not AutomationTargetState: that store holds per-target
@@ -1329,7 +1329,7 @@ class TriageItem(Base):
     ``key`` is the breach's stable identity (``metric:rule:side``) and is unique,
     so a breach that persists across ticks updates its row instead of filing a
     duplicate every minute. The measurement columns are a snapshot of the
-    detection that filed it — the row is the audit record of what ccswitch saw,
+    detection that filed it — the row is the audit record of what ViberPit saw,
     so they are stored rather than recomputed on read.
     """
 
@@ -1544,7 +1544,7 @@ FEATURE_MAP_CHANGE_STATUSES: tuple[str, ...] = ("open", "merged", "abandoned")
 
 
 class FeatureMapChange(Base):
-    """The pointer to a product's ccswitch-owned map-changes branch/PR (roadmap
+    """The pointer to a product's ViberPit-owned map-changes branch/PR (roadmap
     spec §9): ``pm/map-changes-<slug>`` in the primary repo. Branch content is
     truth; this row only says where it is and what GitHub last said about it.
     At most one ``open`` row per project — enforced by the service's lookup, not
@@ -1577,9 +1577,9 @@ class FeatureMapChange(Base):
 
 
 class WorkItem(Base):
-    """Read-only mirror of one GitHub issue or PR, plus the ccswitch-owned
+    """Read-only mirror of one GitHub issue or PR, plus the ViberPit-owned
     overlay. Mirror columns are disposable (rebuildable by re-sync); overlay
-    columns (feature_id, scores, triage_state) are the approved truth ccswitch
+    columns (feature_id, scores, triage_state) are the approved truth ViberPit
     owns. Keyed by (repo, number, kind) so a dropped-and-resynced mirror keeps
     the same identity."""
 
@@ -1617,7 +1617,7 @@ class WorkItem(Base):
         DateTime(timezone=True), nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
-    # --- overlay (ccswitch truth) ---
+    # --- overlay (ViberPit truth) ---
     feature_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("features.id"), nullable=True, index=True)
     reach: Mapped[int | None] = mapped_column(Integer, nullable=True)

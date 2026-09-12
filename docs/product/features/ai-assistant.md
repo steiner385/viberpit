@@ -34,7 +34,7 @@ blocked, how much quota each account has left. Answering those questions today m
 several pages by hand, and *acting* on the answer (start a session, nudge a stuck one, approve a
 permission) means leaving whatever page raised the question.
 
-**Target users** — Anyone operating ccswitch day to day: a user triaging a fleet of sessions across
+**Target users** — Anyone operating ViberPit day to day: a user triaging a fleet of sessions across
 accounts and hosts, someone who wants to start or steer a session without hand-navigating to it
 first, and an operator diagnosing a stuck session or a blocked PR from wherever they currently are
 in the app.
@@ -55,7 +55,7 @@ error rate < 2%, mutation-card denial rate < 10%, prompts/active-day ≥ 5) are 
 `assistant_*` metrics (`server/obs/metrics.py`) added in the Phase 4 launch PR (#1186).
 
 **Non-goals** — Editing code or files, running shell commands, or browsing the web — the assistant
-is a meta-assistant for ccswitch itself, not a coding agent. Deploys, daemon restarts, and
+is a meta-assistant for ViberPit itself, not a coding agent. Deploys, daemon restarts, and
 account add/remove/re-auth/credential changes are excluded from the tool surface entirely (v1); the
 eval set asserts the model explains this limitation rather than attempting a workaround
 (`cant-deploy-to-prod`, `cant-change-account-credentials`). No multi-thread history browser, thread
@@ -65,8 +65,8 @@ sharing, voice, or proactive/unsolicited messages — the assistant only speaks 
 - **Kind, not a parallel chat stack** — the assistant is a session with `kind == "assistant"`
   (`server/sessions/types.py`), driven by the same `SessionDriver` as coding sessions. What makes it
   an assistant is its tool surface: every built-in tool is disabled, and its only tools are an
-  in-process `claude_agent_sdk` MCP server named `ccswitch` (`server/assistant/tools.py`) whose
-  handlers each call exactly **one ccswitch HTTP API endpoint** over loopback
+  in-process `claude_agent_sdk` MCP server named `viberpit` (`server/assistant/tools.py`) whose
+  handlers each call exactly **one ViberPit HTTP API endpoint** over loopback
   (`server/assistant/client.py`) — "tool = endpoint", no business logic in the tool layer. One
   thread exists per user identity, lives on the primary fleet host, is hidden from the session
   list, is capacity-exempt, and is torn down after `CCSWITCH_ASSISTANT_IDLE_S` (default 900s) of
@@ -81,9 +81,9 @@ sharing, voice, or proactive/unsolicited messages — the assistant only speaks 
   `assistant_overlay_for` (`server/assistant/options.py`), and the two overlays are deliberately
   siblings rather than one parameterised thing, because they reach the same property by opposite
   mechanisms. Claude **subtracts**: `tools=[]` plus a `disallowed_tools` denylist removes the
-  built-ins, and an in-process MCP server adds the ccswitch surface back. Codex cannot subtract —
-  `thread/start` has no `disallowed_tools` equivalent — so it **inverts** instead: the ccswitch
-  tools are client-declared `dynamicTools` that ccswitch itself executes (`item/tool/call`), and the
+  built-ins, and an in-process MCP server adds the ViberPit surface back. Codex cannot subtract —
+  `thread/start` has no `disallowed_tools` equivalent — so it **inverts** instead: the ViberPit
+  tools are client-declared `dynamicTools` that ViberPit itself executes (`item/tool/call`), and the
   built-ins are held by `sandbox: read-only` + `approvalPolicy: untrusted` + a handler that declines
   every approval. Both route tool calls through the same `PermissionRegistry` under the same
   `mcp__ccswitch__*` names, so the permission cards are identical. Two Codex-only consequences worth
@@ -109,7 +109,7 @@ sharing, voice, or proactive/unsolicited messages — the assistant only speaks 
   | S — session power | 13 | rename, queue-move, account pin, rotate, reload, suggest, adopt, and the five batch tools with an enumerating card |
   | C — session-start conveniences | 4 | presets, templates + render, permission profiles |
   | N — proactive notices | 10 | notification channels/rules, watches, quiet hours, test notification |
-  | G — GitHub | 3 | PR detail (checks with conclusions/urls, reviews, mergeability, owning session), plus the two writes that leave ccswitch: PR comment and issue creation, each signed with an authorship trailer |
+  | G — GitHub | 3 | PR detail (checks with conclusions/urls, reviews, mergeability, owning session), plus the two writes that leave ViberPit: PR comment and issue creation, each signed with an authorship trailer |
   | O — operator tier | 5 | deploy/host/account administration, flag-gated off by default |
 
   These counts are pinned by `test_feature_doc_tool_counts_match_the_registry` — a new tool fails
@@ -151,7 +151,7 @@ re-declaring one. The bridge runs wherever the client runs and talks to the edge
 ```json
 {
   "mcpServers": {
-    "ccswitch": {
+    "viberpit": {
       "command": "ccswitch",
       "args": ["mcp", "--url", "https://ccswitch.tailnet.ts.net"],
       "env": { "CCSWITCH_ASSISTANT_TOKEN": "ccas2:…" }

@@ -43,7 +43,7 @@ def _params(**over: Any) -> dict[str, Any]:
 
 def test_item_tool_call_is_a_supported_server_request():
     # It has always been in DECLARED_SERVER_REQUESTS (the binary's full surface);
-    # what changed is that ccswitch now ANSWERS it. Before this, protocol.py
+    # what changed is that ViberPit now ANSWERS it. Before this, protocol.py
     # replied "unsupported server request" and no dynamic tool could ever run.
     assert TOOL_CALL in schema.SUPPORTED_SERVER_REQUESTS
     assert TOOL_CALL in schema.DECLARED_SERVER_REQUESTS

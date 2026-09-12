@@ -13,9 +13,9 @@ from server.sessions.orchestrator import SessionOrchestrator as SO
 
 def test_project_dir_name_matches_claude_encoding():
     """Verified against 12/12 real transcripts: '/', '.' and '_' all become '-'."""
-    assert SO.project_dir_name("/home/tony/GitHub/ccswitch") == "-home-tony-GitHub-ccswitch"
-    assert (SO.project_dir_name("/mnt/ssk-ssd/tony/GitHub/.ccswitch/worktrees/KinDash/9f97")
-            == "-mnt-ssk-ssd-tony-GitHub--ccswitch-worktrees-KinDash-9f97")
+    assert SO.project_dir_name("/home/tony/GitHub/viberpit") == "-home-tony-GitHub-viberpit"
+    assert (SO.project_dir_name("/mnt/ssk-ssd/tony/GitHub/.viberpit/worktrees/KinDash/9f97")
+            == "-mnt-ssk-ssd-tony-GitHub--viberpit-worktrees-KinDash-9f97")
     assert SO.project_dir_name("/home/tony/my_repo") == "-home-tony-my-repo"
 
 

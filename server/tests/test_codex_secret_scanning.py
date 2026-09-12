@@ -324,9 +324,9 @@ async def test_a_crash_and_restart_cycle_emits_no_secret_into_the_journal(
         availability=CodexAvailability.ready(
             binary_path="/usr/bin/codex", cli_version="codex-cli 0.153.2"
         ),
-        codex_home_base="/tmp/ccswitch-codex-scan",
+        codex_home_base="/tmp/viberpit-codex-scan",
         credential_supplier=credentials,
-        home_factory=lambda base, account: Path("/tmp/ccswitch-codex-scan") / account,
+        home_factory=lambda base, account: Path("/tmp/viberpit-codex-scan") / account,
         process_factory=lambda **kw: _Process(),  # type: ignore[arg-type]
         external_auth_enabled=True,
         backoff_base_s=0.0,
@@ -381,9 +381,9 @@ async def test_the_start_error_surfaced_to_an_operator_is_clean() -> None:
         availability=CodexAvailability.ready(
             binary_path="/usr/bin/codex", cli_version="codex-cli 0.153.2"
         ),
-        codex_home_base="/tmp/ccswitch-codex-scan",
+        codex_home_base="/tmp/viberpit-codex-scan",
         credential_supplier=credentials,
-        home_factory=lambda base, account: Path("/tmp/ccswitch-codex-scan") / account,
+        home_factory=lambda base, account: Path("/tmp/viberpit-codex-scan") / account,
         process_factory=lambda **kw: _Process(),  # type: ignore[arg-type]
         external_auth_enabled=True,
     )

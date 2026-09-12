@@ -1,4 +1,4 @@
-"""Codex app-server notifications → the ONE normalized ccswitch event vocabulary.
+"""Codex app-server notifications → the ONE normalized ViberPit event vocabulary.
 
 Why this module is pure. Everything here is synchronous, side-effect free, and
 ignorant of the driver, the app-server client, and the WebSocket. That is what
@@ -188,7 +188,7 @@ class _StreamState:
 
 
 class CodexEventTranslator:
-    """Turn parsed Codex notification DTOs into normalized ccswitch events.
+    """Turn parsed Codex notification DTOs into normalized ViberPit events.
 
     One instance per live thread. `thread_id` and `model` are optional seeds for
     the resume path, where the thread was created by an earlier process and
@@ -465,7 +465,7 @@ class CodexEventTranslator:
 
         Not an error — the text still streams, because dropping what the user is
         reading would be a far worse failure than a mis-ordered notification.
-        It is the signal that the app-server's item lifecycle and ccswitch's
+        It is the signal that the app-server's item lifecycle and ViberPit's
         view of it have diverged.
         """
         state = self._state
@@ -644,7 +644,7 @@ def _tool_shape(item: schema.ThreadItem) -> _ToolShape:
         )
     if isinstance(item, schema.McpToolCallItem):
         name = f"mcp__{item.server}__{item.tool}"
-        # `tool_kind` owns the `mcp__` prefix rule (including the ccswitch
+        # `tool_kind` owns the `mcp__` prefix rule (including the ViberPit
         # app-action carve-out); re-deriving it here would fork that decision.
         return _ToolShape(name, ev.tool_kind(name), _arguments_dict(item.arguments))
     if isinstance(item, schema.WebSearchItem):
@@ -684,7 +684,7 @@ def _tool_shape(item: schema.ThreadItem) -> _ToolShape:
         )
     if isinstance(item, schema.DynamicToolCallItem):
         # A dynamic tool's name is chosen by the Codex side and only looks like
-        # a ccswitch tool name by coincidence, so it is never kind-mapped: an
+        # a ViberPit tool name by coincidence, so it is never kind-mapped: an
         # accidental `Edit` must not render an edit card over a foreign payload.
         return _ToolShape(
             item.tool, ev.ToolKind.UNKNOWN, _arguments_dict(item.arguments)

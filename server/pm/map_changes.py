@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import delete, or_, select, update
 
+from ccswitch import brand
 from ccswitch import gitrepos
 from server.audit import record_audit
 from server.db.models import (
@@ -61,7 +62,7 @@ log = logging.getLogger(__name__)
 
 
 def map_changes_branch_name(project_slug: str) -> str:
-    """The one ccswitch-owned map-changes branch for a product. Deterministic,
+    """The one ViberPit-owned map-changes branch for a product. Deterministic,
     like ``classification.map_branch_name`` (the archaeology map PR) — but a
     distinct branch: that one is a one-shot synthesis, this one is long-lived.
 
@@ -89,8 +90,8 @@ async def resolve_default_branch(repo: str) -> str:
         return "master"
 
 
-PR_BODY = """\
-Capability-map changes for this product, opened and maintained by ccswitch.
+PR_BODY = f"""\
+Capability-map changes for this product, opened and maintained by {brand.NAME}.
 
 Every inline capability edit in the roadmap UI appends one commit to this
 branch; the map shows those capabilities as **proposed** until this PR merges.
@@ -100,7 +101,7 @@ The first machine edit of a document rewrites its frontmatter into the
 canonical `slug` / `title` / `state` / `parent` / `links` form. The prose body
 is left alone.
 
-If the commits here are authored by a personal token rather than the ccswitch
+If the commits here are authored by a personal token rather than the {brand.NAME}
 GitHub App, granting the App `contents:write` and `pull_requests:write` on this
 repository makes them bot-authored.
 """

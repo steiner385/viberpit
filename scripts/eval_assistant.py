@@ -4,7 +4,7 @@
 Loads cases from ``docs/superpowers/evals/assistant/cases.jsonl``, runs each one as a real
 one-shot assistant turn — the actual ``claude_agent_sdk`` query loop against the real
 ``mcp__viberpit__*`` tools (``server.assistant.tools.build_tools``) — but backed by an
-in-memory fixture instead of a live ccswitch API, so the run needs no edge/daemon/DB. Each
+in-memory fixture instead of a live ViberPit API, so the run needs no edge/daemon/DB. Each
 tool call is recorded as it happens (the in-process equivalent of the `assistant.tool_call`
 audit trail a live turn writes) and graded against the case's ``expect_tools``/
 ``forbid_tools`` deterministically; the final answer is graded against the case's free-text
@@ -118,7 +118,7 @@ def grade_tool_sequence(case: EvalCase, observed_tools: Sequence[str]) -> ToolGr
 
 
 # ---------------------------------------------------------------------------
-# Fixture "ccswitch API" — an in-memory double for AssistantApi's transport, seeded with
+# Fixture "ViberPit API" — an in-memory double for AssistantApi's transport, seeded with
 # canned sessions/PRs/automations/accounts. Read routes serve fixture data; every
 # mutation route just succeeds (the point of the eval is which tool the MODEL chose to
 # call, not exercising the real endpoints — those already have their own tests).

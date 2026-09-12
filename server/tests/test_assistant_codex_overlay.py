@@ -5,7 +5,7 @@ These tests are about the *boundary*, not the plumbing. The spike
 Codex cannot remove its built-in tools, so the drawer's safety on Codex rests on
 four properties that are each one edit away from silently inverting:
 
-1. every ccswitch tool is host-executed (`dynamicTools` + `item/tool/call`),
+1. every ViberPit tool is host-executed (`dynamicTools` + `item/tool/call`),
 2. every built-in approval is DECLINED, with the v2 `decline` word, not the
    legacy `denied` one that reads like a deny and is an error,
 3. the thread starts in a directory Codex reads no instructions from, and
@@ -58,7 +58,7 @@ def overlay(tmp_path, monkeypatch) -> oc.CodexAssistantOverlay:
 # ---------------------------------------------------------------------------
 
 
-def test_every_declared_tool_is_a_real_ccswitch_tool(overlay):
+def test_every_declared_tool_is_a_real_viberpit_tool(overlay):
     declared = {spec.name for spec in overlay.dynamic_tools}
     assert declared, "the overlay declared no tools at all"
     assert declared <= set(TOOL_SPECS)
@@ -83,7 +83,7 @@ def test_a_declared_spec_carries_the_tools_own_description(overlay):
 async def test_every_declared_schema_matches_what_the_claude_server_publishes(overlay):
     """The anti-drift assertion for argument schemas.
 
-    Roughly half the ccswitch tools use the SDK's shorthand (`{"id": str}`), which
+    Roughly half the ViberPit tools use the SDK's shorthand (`{"id": str}`), which
     `create_sdk_mcp_server` expands at build time and Codex cannot. Comparing
     against the schemas the real MCP server publishes is what proves the Codex
     expansion is the SAME expansion, rather than a lookalike that would give the

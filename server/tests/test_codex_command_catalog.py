@@ -1,7 +1,7 @@
 """The Codex vendor command/skill catalog, end to end over the real transport.
 
 #1286: `CodexAgentDriver.server_info()` used to return None, so a Codex session's
-command palette held ccswitch's one hardcoded synthetic command and nothing else
+command palette held ViberPit's one hardcoded synthetic command and nothing else
 — no vendor half, and `/model` dispatchable while invisible. These tests pin the
 two properties that make the replacement *truthful* rather than merely populated:
 
@@ -136,7 +136,7 @@ async def test_a_failed_read_answers_none_not_an_empty_catalog(harness):
 @pytest.mark.asyncio
 async def test_the_catalog_offers_skills_alongside_the_app_owned_commands(harness):
     """The whole point: the palette shows what the ENGINE publishes and what
-    CCSWITCH implements, each labelled with who owns it."""
+    ViberPit implements, each labelled with who owns it."""
     driver = await harness.boot()
     harness.server.rule(
         schema.METHOD_SKILLS_LIST,

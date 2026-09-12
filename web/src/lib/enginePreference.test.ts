@@ -12,7 +12,7 @@ describe('enginePreference', () => {
     expect(getPreferredEngine()).toBeNull()
   })
 
-  it('round-trips an explicit choice under a ccswitch.* key', () => {
+  it('round-trips an explicit choice under a STORAGE_NAMESPACE-prefixed key', () => {
     setPreferredEngine('codex')
     expect(window.localStorage.getItem(ENGINE_PREFERENCE_KEY)).toBe('codex')
     expect(getPreferredEngine()).toBe('codex')

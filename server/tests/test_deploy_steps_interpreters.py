@@ -106,7 +106,7 @@ def test_interpreter_escaping_its_own_checkout_is_reported(tmp_path):
     short of following the symlink to see where it actually leads catches that.
     """
     checkout_a = tmp_path / "cc-account-switcher-deploy"
-    checkout_b = tmp_path / "ccswitch"
+    checkout_b = tmp_path / "viberpit-dev"
     real_exe = checkout_b / "actual-venv" / "bin" / "python"
     real_exe.parent.mkdir(parents=True)
     real_exe.write_text("#!/bin/sh\n")
@@ -127,7 +127,7 @@ def test_interpreter_escaping_its_own_checkout_is_reported(tmp_path):
 
 def test_interpreter_within_its_own_checkout_via_symlink_is_not_reported(tmp_path):
     """A symlink is fine as long as it stays inside the checkout ExecStart names."""
-    checkout = tmp_path / "ccswitch"
+    checkout = tmp_path / "viberpit"
     real_exe = checkout / "venv-actual" / "bin" / "python"
     real_exe.parent.mkdir(parents=True)
     real_exe.write_text("#!/bin/sh\n")
@@ -146,7 +146,7 @@ def test_standard_venv_system_interpreter_symlink_is_not_reported(tmp_path):
     virtualenvs leave the directory inside the checkout while symlinking the launcher
     to a system interpreter such as ``/usr/bin/python3.12``.
     """
-    checkout = tmp_path / "ccswitch"
+    checkout = tmp_path / "viberpit"
     bin_dir = checkout / ".venv" / "bin"
     bin_dir.mkdir(parents=True)
     system_python = tmp_path / "usr" / "bin" / "python3.12"
@@ -223,7 +223,7 @@ def test_checkout_rename_alias_keeps_its_own_venv(tmp_path):
     executable.parent.mkdir(parents=True)
     executable.write_text('#!/bin/sh\n')
     executable.chmod(0o755)
-    alias = tmp_path / 'ccswitch'
+    alias = tmp_path / 'viberpit-legacy-alias'
     alias.symlink_to(checkout, target_is_directory=True)
     run = _fake_run({'viberpit.service': _execstart(str(alias / '.venv/bin/python'))})
     assert steps.check_unit_interpreters(('viberpit.service',), run=run) == []

@@ -70,7 +70,7 @@ async def test_daemon_compatible_does_not_block_a_running_loop(monkeypatch):
 
     # Neutralize the import-time daemon auto-detect so importing `server.app` on a
     # host with a live (or wedged) daemon socket can't raise during collection.
-    monkeypatch.setenv("CCSWITCH_SESSIOND_SOCKET", "/tmp/ccswitch-test-no-daemon.sock")
+    monkeypatch.setenv("CCSWITCH_SESSIOND_SOCKET", "/tmp/viberpit-test-no-daemon.sock")
     from server import app as app_module
 
     monkeypatch.setattr(app_module, "_daemon_present", lambda _p: True)

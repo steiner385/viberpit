@@ -1,4 +1,4 @@
-"""Codex app-server notifications → the normalized ccswitch event vocabulary.
+"""Codex app-server notifications → the normalized ViberPit event vocabulary.
 
 `server/codex/translator.py` is pure and synchronous, so every rule it enforces
 is pinned here by feeding it real `schema.parse_server_notification` DTOs and

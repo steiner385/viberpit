@@ -1,4 +1,4 @@
-"""ccswitch: account store management (add / remove / list / link / use / crypto)
+"""ViberPit CLI: account store management (add / remove / list / link / use / crypto)
 plus clone maintenance (clones doctor / repair / remove) and the `mcp` bridge that
 serves the assistant's tools to another agent."""
 import argparse
@@ -354,7 +354,7 @@ def main(argv: list[str] | None = None) -> int:
         "import", help="register credential slots found on disk into accounts.json (idempotent)")
     accounts_sub.add_parser("show", help="print the manifest entries")
     p_clones = sub.add_parser(
-        "clones", help="inspect, repair, or safely remove ccswitch-owned repo clones")
+        "clones", help=f"inspect, repair, or safely remove {brand.NAME}-owned repo clones")
     clones_sub = p_clones.add_subparsers(dest="clones_cmd", required=True)
     p_doctor = clones_sub.add_parser(
         "doctor", help="report session worktrees whose shared clone is missing or unlinked")
@@ -373,17 +373,17 @@ def main(argv: list[str] | None = None) -> int:
     p_remove.add_argument("--force", action="store_true",
                           help="remove even though worktrees reference it (destructive)")
     p_mcp = sub.add_parser(
-        "mcp", help="serve the ccswitch assistant tools to another agent over stdio MCP")
+        "mcp", help=f"serve the {brand.NAME} assistant tools to another agent over stdio MCP")
     p_mcp.add_argument("--url", default=assistant_mcp.DEFAULT_URL,
                        help=f"{_P} edge base URL (default: {assistant_mcp.DEFAULT_URL})")
     p_mcp.add_argument("--token-env", default=assistant_mcp.DEFAULT_TOKEN_ENV,
                        help="env var holding the ccas2: assistant token "
                             f"(default: {assistant_mcp.DEFAULT_TOKEN_ENV})")
     p_mcp.add_argument("--allow-mutations", action="store_true",
-                       help="also serve mutating tools; they run with no ccswitch "
+                       help=f"also serve mutating tools; they run with no {brand.NAME} "
                             "confirmation, so the calling client is the only gate")
     p_ask = sub.add_parser(
-        "ask", help="one-shot prompt to the ccswitch assistant thread")
+        "ask", help=f"one-shot prompt to the {brand.NAME} assistant thread")
     p_ask.add_argument("prompt", help="the question to ask the assistant")
     p_ask.add_argument("--url", default=assistant_ask.DEFAULT_URL,
                        help=f"{_P} edge base URL (default: {assistant_ask.DEFAULT_URL})")

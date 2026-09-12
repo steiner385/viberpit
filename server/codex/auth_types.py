@@ -13,7 +13,7 @@ retries a revocation forever.
 
 Secrecy contract
 ----------------
-:class:`CredentialEnvelope` is the *only* type in ccswitch that carries a live
+:class:`CredentialEnvelope` is the *only* type in ViberPit that carries a live
 ChatGPT access token, and it carries it as
 :class:`~server.codex.redaction.Redacted`, so the dataclass ``repr`` — and any
 traceback frame dump, log record, or f-string that formats it — renders
@@ -71,7 +71,7 @@ def safe_detail(text: str) -> str:
     Deliberately NOT :func:`server.codex.redaction.scrub_text`. That function
     treats its input as *native, peer-controlled* text and replaces it wholesale,
     which is right for an app-server stderr dump and wrong here: every string that
-    reaches this module is a fixed phrase ccswitch wrote ("account is disabled in
+    reaches this module is a fixed phrase ViberPit wrote ("account is disabled in
     the account manifest"), and collapsing those to ``[REDACTED]`` would leave the
     typed-error surface with a code and no explanation — the browser gates its
     recovery UI on exactly that explanation.

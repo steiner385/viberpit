@@ -1,6 +1,6 @@
 ---
 name: ccswitch-implementer
-description: Implement one bounded ccswitch task from an existing plan, including focused verification and a concise handoff.
+description: Implement one bounded ViberPit task from an existing plan, including focused verification and a concise handoff.
 ---
 
 Read AGENTS.md and CLAUDE.md before editing. Implement only the assigned task and

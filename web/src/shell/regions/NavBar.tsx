@@ -63,7 +63,7 @@ export function NavBar() {
       // env() is 0 on desktop; on a phone it clears the home/gesture bar. An
       // inline style, not a class: this is the mechanism the rest of the mobile
       // chrome already uses (App.tsx, Composer, DispatchBar), and an arbitrary
-      // value class is banned in shell/** by ccswitch/no-raw-palette anyway.
+      // value class is banned in shell/** by viberpit/no-raw-palette anyway.
       style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 0.25rem)' }}
     >
       {primary.map((def) => (

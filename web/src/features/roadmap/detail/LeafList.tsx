@@ -65,7 +65,7 @@ function LeafRow({ leaf, capabilities }: { leaf: Leaf; capabilities: { node: Cap
       <div className="flex items-center gap-2">
         <TierDot tier={leaf.tier} />
         {/* GitHub owns the issue; the row links out rather than pretending to a
-            detail page ccswitch does not have. A mirrored row can be missing its
+            detail page ViberPit does not have. A mirrored row can be missing its
             URL, and a dead anchor is worse than plain text — it is focusable,
             announced as a link and goes nowhere. */}
         {leaf.url

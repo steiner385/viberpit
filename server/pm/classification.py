@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ccswitch import brand
 from ccswitch.engines import AgentEngine
 
 from server.db.models import FEATURE_LIFECYCLE_STATES, FEATURE_LINK_KINDS, WORK_ITEM_KINDS
@@ -136,7 +137,7 @@ def build_map_synthesis_prompt(
     ``item_numbers`` (the clustered no-fit items) and asks for a single new/edited
     feature doc plus PR — no full re-archaeology.
 
-    *branch* is the product's OPEN ccswitch-owned map-changes branch (R8b-9 /
+    *branch* is the product's OPEN ViberPit-owned map-changes branch (R8b-9 /
     spec §9): when one exists the drift session commits to it, so the map's
     inline edits and the AI's proposal ride one reviewable PR instead of two.
     Without it the diff session opens its own PR on the historical
@@ -150,7 +151,7 @@ def build_map_synthesis_prompt(
             # Abandon) and may carry the human's own in-progress capability
             # edits, so the session appends to it and never merges it.
             branch_step = (
-                f"1. The product has an OPEN pull request on the ccswitch-owned "
+                f"1. The product has an OPEN pull request on the {brand.NAME}-owned "
                 f"branch `{target}`. `git fetch` and check that branch out, and "
                 f"commit onto it.\n")
             pr_step = (

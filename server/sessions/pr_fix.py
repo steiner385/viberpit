@@ -26,7 +26,7 @@ def build_pr_fix_prompt(
     """A system-originated prompt instructing the owning session to restore a
     failing PR.
 
-    Branch-aware on purpose: ccswitch's completion workflow moves the worktree
+    Branch-aware on purpose: ViberPit's completion workflow moves the worktree
     onto a fresh feat/* branch after opening a PR, so by the time an older PR's
     CI fails the worktree HEAD is usually NOT on the PR's branch. The prompt
     therefore tells the agent to check the PR branch out FIRST rather than
@@ -55,7 +55,7 @@ def build_conflict_fix_prompt(
     """A system-originated prompt instructing the owning session to resolve a
     merge conflict on a PR.
 
-    Branch-aware, mirroring ``build_pr_fix_prompt``: ccswitch's completion
+    Branch-aware, mirroring ``build_pr_fix_prompt``: ViberPit's completion
     workflow moves the worktree onto a fresh feat/* branch after opening a PR, so
     the worktree HEAD is usually NOT on the PR's branch by the time a conflict is
     detected. The prompt therefore tells the agent to check the PR branch out

@@ -1,6 +1,6 @@
 from server.pm.drift import DepEdgeView, compute_drift
 
-R = "steiner385/cc-account-switcher"
+R = "steiner385/viberpit"
 
 
 def _edge(src, dst, source, active=True, dst_state="open"):

@@ -53,7 +53,7 @@ async def test_launch_browser_targets_native_display_with_throwaway_profile(tmp_
     assert argv[0] == "/usr/bin/chromium"
     assert kwargs["env"]["DISPLAY"] == ":0"
     assert "XAUTHORITY" not in kwargs["env"] or kwargs["env"]["XAUTHORITY"] == os.environ.get("XAUTHORITY")
-    assert any(a.startswith("--user-data-dir=") and "ccswitch-native-s1-" in a for a in argv)
+    assert any(a.startswith("--user-data-dir=") and "viberpit-native-s1-" in a for a in argv)
     assert argv[-1] == "https://example.com"
     assert nd.metrics()["browsers"] == 1
 

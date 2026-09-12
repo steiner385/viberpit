@@ -1,7 +1,7 @@
 from server.pm.dep_plan import DepRowView, ObservedDep, observed_deps, plan_dep_rows
 from server.pm.gh_projects import IssueRelView
 
-REPO = "steiner385/cc-account-switcher"
+REPO = "steiner385/viberpit"
 
 
 def _rel(number, blocked_by=(), parent=None, subs=()):

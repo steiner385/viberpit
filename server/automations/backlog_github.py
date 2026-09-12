@@ -11,7 +11,7 @@ needs-human handoff, and closing out on a merged PR.
 Every GitHub call is routed through an injected ``gh_run`` seam (default
 :func:`ccswitch.gitrepos._run_gh`) so tests never hit the network.  The seam is
 ``gh_run(args: list[str]) -> subprocess.CompletedProcess`` — the ``gh`` binary
-with ``GITHUB_TOKEN`` stripped, exactly as the rest of ccswitch shells it.
+with ``GITHUB_TOKEN`` stripped, exactly as the rest of ViberPit shells it.
 
 Phase D (#994) retired the ``in-progress``/``needs-human`` labels: a claim is the
 runner's durable target-state row (plus board Status ``In progress`` from the

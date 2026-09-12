@@ -196,7 +196,7 @@ class TestOAuth(unittest.TestCase):
 
 
 class TestUserAgent(unittest.TestCase):
-    def test_http_request_sends_ccswitch_user_agent(self):
+    def test_http_request_sends_branded_user_agent(self):
         """Every outbound request must carry a real User-Agent. The token endpoint
         (platform.claude.com) sits behind a Cloudflare bot rule that 403s clients
         with the default `Python-urllib` UA (`error code: 1010`); a header-less

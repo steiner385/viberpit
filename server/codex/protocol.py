@@ -41,7 +41,7 @@ grows a different answer per call site:
   handler answers only from an *installed* callback. With no callback there is
   no reply value to invent, so an approval is `-32601` rather than a default
   allow — and `item/permissions/requestApproval` stays unsupported entirely,
-  because its response hands the server a permissions grant ccswitch has no
+  because its response hands the server a permissions grant ViberPit has no
   vocabulary to describe.
 * **Bounded server requests.** In-flight reply tasks are capped at
   `max_inflight_server_requests`; over the cap a request is *shed* — no task, no
@@ -1152,7 +1152,7 @@ class CodexAppServerClient:
         stakes are the same shape: no handler is `-32601`, unparseable params
         are `-32602`, and a raising handler is `-32603`. None of those paths can
         produce an *allow*, which is the only property that matters here — an
-        approval ccswitch cannot service must never be granted by default.
+        approval ViberPit cannot service must never be granted by default.
         """
         handler = self._approval_handler
         if handler is None:
@@ -1223,7 +1223,7 @@ class CodexAppServerClient:
         Mirrors `_handle_approval_request`'s failure shape exactly: no handler
         is `-32601`, unparseable params are `-32602`, a raising handler is
         `-32603`. None of those paths can invent an answer — the one property
-        that matters here is that a question ccswitch cannot service is never
+        that matters here is that a question ViberPit cannot service is never
         answered with a guess.
         """
         handler = self._user_input_handler

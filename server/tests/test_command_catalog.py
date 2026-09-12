@@ -77,7 +77,7 @@ def test_codex_catalog_offers_the_app_commands_it_actually_supports():
     assert {"help", "context", "clear", "model", "account"} <= names
     assert all(
         c.source == APP for c in build_catalog(None, CODEX_CAPABILITIES)
-    ), "with no vendor answer, every entry is ccswitch's own"
+    ), "with no vendor answer, every entry is ViberPit's own"
 
 
 def test_codex_vendor_entries_are_skills_not_slash_passthrough():

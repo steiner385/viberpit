@@ -170,7 +170,7 @@ def test_logging_percent_s_of_an_envelope_renders_redacted(caplog):
     assert "[REDACTED]" in message
 
 
-def test_public_summary_is_the_projection_the_rest_of_ccswitch_gets():
+def test_public_summary_is_the_projection_the_rest_of_viberpit_gets():
     summary = envelope(generation=9).public_summary()
     assert summary == {
         "account": ACCOUNT,

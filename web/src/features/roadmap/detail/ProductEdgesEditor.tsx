@@ -1,5 +1,5 @@
 // Product-to-product dependencies (roadmap spec §8 "Product dependency"): the
-// ccswitch-owned edges, as chips with a remove each, and one row to add one.
+// ViberPit-owned edges, as chips with a remove each, and one row to add one.
 // Distinct from `DependencyPanel` below it, which mirrors ISSUE-level blocked-by
 // drift from GitHub; these edges are what the portfolio tiers and the
 // per-product dependency tab read.

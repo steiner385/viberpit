@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from ccswitch import brand
 from ccswitch.gitrepos import clones_base
 from ccswitch.worktrees import lock_worktree, worktrees_base
 
@@ -114,7 +115,7 @@ class WorktreeLink:
 
 
 def scan_worktree_links(repo_root: str) -> list[WorktreeLink]:
-    """Every ccswitch session worktree that points at a clone, sorted by path.
+    """Every ViberPit session worktree that points at a clone, sorted by path.
 
     Dirs with no usable ``.git`` pointer are skipped — they are not linked
     worktrees, so there is nothing to diagnose or repair about them.
@@ -401,7 +402,7 @@ def remove_clone(
     reason: str,
     force: bool = False,
 ) -> dict:
-    """Delete a ccswitch-owned clone, refusing while worktrees still need it.
+    """Delete a ViberPit-owned clone, refusing while worktrees still need it.
 
     A shared clone is load-bearing: removing one with live worktrees kills every
     session under it (#1003).  So this refuses — raising :class:`CloneInUseError`
@@ -413,7 +414,7 @@ def remove_clone(
     referencing-worktree count, so a deletion is never invisible again.
 
     Refuses outright — never forceable — for a path outside
-    ``<repo_root>/.ccswitch/clones``: ccswitch must never delete a user checkout.
+    ``<repo_root>/.ccswitch/clones``: ViberPit must never delete a user checkout.
     """
     path = Path(clone_dir).expanduser()
     resolved = str(path)
@@ -423,7 +424,7 @@ def remove_clone(
         log.error("clone.remove_blocked path=%s reason=%s caller=%s cause=outside-clones-base",
                   resolved, reason, caller)
         raise CloneInUseError(
-            f"refusing to remove {resolved!r}: not a ccswitch clone under "
+            f"refusing to remove {resolved!r}: not a {brand.NAME} clone under "
             f"{clones_base(repo_root)}"
         )
 

@@ -3,7 +3,7 @@
 Codex sessions have no transcript file. Their history lives inside the
 app-server, and the plan forbids reading Codex private state (the rollout SQLite,
 the thread JSONL) to reconstruct it: those are internal formats with no
-compatibility promise, and parsing them would make ccswitch break on a Codex
+compatibility promise, and parsing them would make ViberPit break on a Codex
 patch release. So history comes back the supported way — one `thread/read` with
 `includeTurns=true` — and is translated by the SAME
 :class:`~server.codex.translator.CodexEventTranslator` the live stream uses.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Provision the ccswitch Postgres role + database on dobby. Idempotent.
+# Provision the ViberPit Postgres role + database on dobby. Idempotent.
 #   sudo -u postgres bash scripts/viberpit-pg-provision.sh '<password>'
 set -euo pipefail
 

@@ -11,7 +11,7 @@ The properties these tests lock down are the ones a session's survival depends o
 * an **unknown thread item type never raises** — it degrades to
   :class:`UnknownThreadItem` — because a Codex release that adds a nineteenth
   item variant must not end a live session;
-* approval decisions are restricted to the four string variants ccswitch can
+* approval decisions are restricted to the four string variants ViberPit can
   actually offer a human, and the object-shaped policy-amendment variants are
   refused outbound;
 * the thread surface is **not** credential-bearing: a client built with
@@ -85,7 +85,7 @@ def test_thread_notifications_are_supported() -> None:
 def test_only_the_two_answerable_approvals_are_supported() -> None:
     assert schema.METHOD_COMMAND_EXECUTION_APPROVAL in schema.SUPPORTED_SERVER_REQUESTS
     assert schema.METHOD_FILE_CHANGE_APPROVAL in schema.SUPPORTED_SERVER_REQUESTS
-    # ccswitch has no vocabulary for a permissions grant, so it stays unsupported.
+    # ViberPit has no vocabulary for a permissions grant, so it stays unsupported.
     assert "item/permissions/requestApproval" not in schema.SUPPORTED_SERVER_REQUESTS
 
 
@@ -1196,7 +1196,7 @@ async def test_permissions_approval_stays_unsupported_even_with_a_handler() -> N
     async def handler(
         method: str, params: schema.ApprovalParams
     ) -> schema.ApprovalResponse:  # pragma: no cover - must never run
-        raise AssertionError("permissions approvals have no ccswitch vocabulary")
+        raise AssertionError("permissions approvals have no ViberPit vocabulary")
 
     async with FakeCodexAppServer() as fake:
         client = await _ready(fake, approval_handler=handler)

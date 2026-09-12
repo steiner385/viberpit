@@ -60,7 +60,7 @@ def _settings_model(path: Path) -> str | None:
 def inherited_default_model() -> str | None:
     """The model a Claude session launches on when the request names none.
 
-    ccswitch passes no model to the ``claude`` binary for a "default" launch, so the
+    ViberPit passes no model to the ``claude`` binary for a "default" launch, so the
     binary picks one from the same sources it uses interactively, in its own
     precedence: ``ANTHROPIC_MODEL`` in its env (the spawn env is this process's
     environ), then settings.local.json, then settings.json. Every account's config
@@ -68,7 +68,7 @@ def inherited_default_model() -> str | None:
     (``ccswitch.configdir.SHARE_ALLOWLIST``), so ONE default applies fleet-wide and
     is knowable before an account is picked — which is what lets the launch gate
     judge it. A ``/model`` pick in any session rewrites that shared key, so this is
-    whatever the last interactive pick left behind, not a ccswitch setting.
+    whatever the last interactive pick left behind, not a ViberPit setting.
 
     Returns None when nothing pins a model (the binary's own built-in default).
     """

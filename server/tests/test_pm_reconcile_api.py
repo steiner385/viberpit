@@ -132,7 +132,7 @@ def test_journal_endpoint_no_state_filter_returns_all():
 
 
 def test_journal_endpoint_requires_identity():
-    """The journal is the full record of what ccswitch wrote to GitHub — node ids, field
+    """The journal is the full record of what ViberPit wrote to GitHub — node ids, field
     values, batch ids — so it is behind the same identity gate as every other PM route.
     Asserted explicitly because the endpoint takes no path parameter and reads a table
     no other test route touches: a missing Depends here would fail silently."""

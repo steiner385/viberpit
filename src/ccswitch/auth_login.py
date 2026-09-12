@@ -206,7 +206,7 @@ def prepare_reauth_profile(
 
     Args:
         source_profile_dir: Path to a Chrome profile directory. Defaults to the
-            dedicated ccswitch profile, NOT the operator's everyday one.
+            dedicated ViberPit profile, NOT the operator's everyday one.
         extension_ids: Extension ids to carry over. None → REAUTH_EXTENSION_IDS; () → none.
         cookie_hosts: Domains whose cookies to carry. None → REAUTH_COOKIE_HOSTS
             (empty, i.e. none); () → none.

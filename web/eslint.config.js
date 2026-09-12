@@ -25,7 +25,7 @@ export default defineConfig([
     // allowlist is the one exemption.
     files: ['src/**/*.{ts,tsx}'],
     ignores: ['src/features/pipeline/charts/**'],
-    plugins: { ccswitch: { rules: { 'no-raw-palette': noRawPalette } } },
-    rules: { 'ccswitch/no-raw-palette': 'error' },
+    plugins: { viberpit: { rules: { 'no-raw-palette': noRawPalette } } },
+    rules: { 'viberpit/no-raw-palette': 'error' },
   },
 ])

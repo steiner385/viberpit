@@ -8,7 +8,7 @@ def _projects_payload():
     return {"data": {"viewer": {"projectsV2": {
         "pageInfo": {"endCursor": "C1", "hasNextPage": False},
         "nodes": [
-            {"id": "PVT_1", "number": 7, "title": "cc-account-switcher", "closed": False,
+            {"id": "PVT_1", "number": 7, "title": "viberpit", "closed": False,
              "updatedAt": "2026-09-01T10:00:00Z"},
             {"id": "PVT_2", "number": 8, "title": "Old board", "closed": True,
              "updatedAt": "2026-01-01T10:00:00Z"},
@@ -30,7 +30,7 @@ def _items_payload():
         "nodes": [
             {"id": "PVTI_1", "updatedAt": "2026-09-02T09:00:00Z",
              "content": {"__typename": "Issue", "number": 950,
-                         "repository": {"nameWithOwner": "steiner385/cc-account-switcher"}},
+                         "repository": {"nameWithOwner": "steiner385/viberpit"}},
              "fieldValues": {"nodes": [
                  {"name": "Ready", "field": {"name": "Status"}},
                  {"number": 12.0, "field": {"name": "Score"}},
@@ -45,7 +45,7 @@ def _owner_projects_payload():
     return {"data": {"user": {"projectsV2": {
         "pageInfo": {"endCursor": "C1", "hasNextPage": False},
         "nodes": [
-            {"id": "PVT_1", "number": 7, "title": "cc-account-switcher", "closed": False,
+            {"id": "PVT_1", "number": 7, "title": "viberpit", "closed": False,
              "updatedAt": "2026-09-01T10:00:00Z"},
             {"id": "PVT_2", "number": 8, "title": "Old board", "closed": True,
              "updatedAt": "2026-01-01T10:00:00Z"},
@@ -59,7 +59,7 @@ def _repository_owner_projects_payload():
     return {"data": {"repositoryOwner": {"projectsV2": {
         "pageInfo": {"endCursor": "C1", "hasNextPage": False},
         "nodes": [
-            {"id": "PVT_1", "number": 7, "title": "cc-account-switcher", "closed": False,
+            {"id": "PVT_1", "number": 7, "title": "viberpit", "closed": False,
              "updatedAt": "2026-09-01T10:00:00Z"},
             {"id": "PVT_2", "number": 8, "title": "Old board", "closed": True,
              "updatedAt": "2026-01-01T10:00:00Z"},
@@ -68,7 +68,7 @@ def _repository_owner_projects_payload():
 
 def test_parse_viewer_projects_skips_closed_and_pages():
     views, cursor, more = parse_viewer_projects(_projects_payload())
-    assert [(v.number, v.title) for v in views] == [(7, "cc-account-switcher")]
+    assert [(v.number, v.title) for v in views] == [(7, "viberpit")]
     assert cursor == "C1" and more is False
 
 
@@ -76,7 +76,7 @@ def test_parse_viewer_projects_accepts_user_root():
     """Under an App token discovery roots at ``user(login:)`` (viewer = the bot),
     so the parser must read the same connection under ``data.user`` too."""
     views, cursor, more = parse_viewer_projects(_owner_projects_payload())
-    assert [(v.number, v.title) for v in views] == [(7, "cc-account-switcher")]
+    assert [(v.number, v.title) for v in views] == [(7, "viberpit")]
     assert cursor == "C1" and more is False
 
 
@@ -85,7 +85,7 @@ def test_parse_viewer_projects_accepts_repository_owner_root():
     for both Users and Organizations), so the parser must read the same
     connection under ``data.repositoryOwner`` too."""
     views, cursor, more = parse_viewer_projects(_repository_owner_projects_payload())
-    assert [(v.number, v.title) for v in views] == [(7, "cc-account-switcher")]
+    assert [(v.number, v.title) for v in views] == [(7, "viberpit")]
     assert cursor == "C1" and more is False
 
 
@@ -116,7 +116,7 @@ def test_parse_project_items_extracts_fields_and_marks_drafts():
     items, cursor, more = parse_project_items(_items_payload())
     assert cursor == "I1" and more is True
     issue, draft = items
-    assert (issue.repo, issue.number, issue.kind) == ("steiner385/cc-account-switcher", 950, "issue")
+    assert (issue.repo, issue.number, issue.kind) == ("steiner385/viberpit", 950, "issue")
     assert (issue.status, issue.score, issue.stage) == ("Ready", 12.0, None)
     assert draft.kind is None and draft.repo is None
 
@@ -135,46 +135,46 @@ def _relations_payload():
              "blockedBy": {"nodes": []},
              "parent": None,
              "subIssues": {"nodes": [
-                 {"number": 950, "repository": {"nameWithOwner": "steiner385/cc-account-switcher"}},
-                 {"number": 951, "repository": {"nameWithOwner": "steiner385/cc-account-switcher"}},
+                 {"number": 950, "repository": {"nameWithOwner": "steiner385/viberpit"}},
+                 {"number": 951, "repository": {"nameWithOwner": "steiner385/viberpit"}},
              ]}},
             {"number": 950,
              "blockedBy": {"nodes": [
                  {"number": 12, "repository": {"nameWithOwner": "steiner385/KinDash"}}]},
              "parent": {"number": 945,
-                        "repository": {"nameWithOwner": "steiner385/cc-account-switcher"}},
+                        "repository": {"nameWithOwner": "steiner385/viberpit"}},
              "subIssues": {"nodes": []}},
         ]}}}}
 
 
 def test_parse_issue_relations_builds_canonical_refs():
     rels, cursor, more = parse_issue_relations(
-        _relations_payload(), "steiner385/cc-account-switcher")
+        _relations_payload(), "steiner385/viberpit")
     assert cursor == "R1" and more is False
     epic, child = rels
     assert epic.sub_issue_refs == [
-        "steiner385/cc-account-switcher#950", "steiner385/cc-account-switcher#951"]
+        "steiner385/viberpit#950", "steiner385/viberpit#951"]
     assert epic.parent_ref is None
     assert child.blocked_by == ["steiner385/KinDash#12"]
-    assert child.parent_ref == "steiner385/cc-account-switcher#945"
+    assert child.parent_ref == "steiner385/viberpit#945"
 
 
 def test_relations_query_targets_open_issues():
-    q = build_issue_relations_query("steiner385/cc-account-switcher", None)
+    q = build_issue_relations_query("steiner385/viberpit", None)
     # The repository root carries its canonical name so a stored alias can be
     # detected and renamed by the relations pass too (issue #999).
     assert q.index("nameWithOwner") < q.index("issues(")
-    assert 'owner: "steiner385"' in q and 'name: "cc-account-switcher"' in q
+    assert 'owner: "steiner385"' in q and 'name: "viberpit"' in q
     assert "states: OPEN" in q
 
 
 def test_relations_capture_node_id():
     payload = _relations_payload()
     payload["data"]["repository"]["issues"]["nodes"][0]["id"] = "I_945"
-    rels, _, _ = parse_issue_relations(payload, "steiner385/cc-account-switcher")
+    rels, _, _ = parse_issue_relations(payload, "steiner385/viberpit")
     assert rels[0].node_id == "I_945"
     assert "nodes { id number" in build_issue_relations_query(
-        "steiner385/cc-account-switcher", None)
+        "steiner385/viberpit", None)
 
 
 def test_parse_created_field_reads_create_root():

@@ -11,7 +11,7 @@ description: Guard destructive or history-changing Git operations such as rebase
    of divergence and preserve remote-only commits.
 3. Never use `git push --force` or `git push -f`. Use `--force-with-lease` only after
    confirming the expected remote tip.
-4. Never push feature work directly to `master`. In ccswitch, branch from a freshly
+4. Never push feature work directly to `master`. In ViberPit, branch from a freshly
    fetched `origin/master`; the deploy worktree owns local `master` and local refs may
    be stale.
 5. Before deleting a branch, verify it is merged or otherwise recoverable and resolve

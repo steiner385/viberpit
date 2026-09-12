@@ -8,7 +8,7 @@
  * being dropped with it. Every assertion below is the original.
  *
  * The one wording change: the touch target was `min-h-[44px]`, an arbitrary
- * value. `shell/**` bans those (`ccswitch/no-raw-palette`) and the rest of the
+ * value. `shell/**` bans those (`viberpit/no-raw-palette`) and the rest of the
  * shell spells it `min-h-target` / `min-w-target`, which is the SAME 44px — see
  * `PhoneNav.test.tsx`'s "every control meets the 44px touch target".
  */

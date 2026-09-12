@@ -22,7 +22,7 @@ interface CredentialAlertsResponse {
 const QUERY_KEY = ['credential-alerts'] as const
 
 /**
- * Polls the daemon for repos whose ccswitch clone can't fetch because its git
+ * Polls the daemon for repos whose ViberPit clone can't fetch because its git
  * credentials are stale (issue #670). The list auto-clears server-side once a
  * fetch succeeds, so the banner disappears on its own when credentials recover
  * — no client bookkeeping. Gated to production so dev/test never poll.

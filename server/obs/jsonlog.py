@@ -1,4 +1,4 @@
-"""Structured JSON logging for ccswitch.
+"""Structured JSON logging for ViberPit.
 
 JSONFormatter renders each LogRecord as a single-line JSON object including
 correlation fields injected by ContextFilter, structured `event`/`fields` from
@@ -146,7 +146,7 @@ def configure_logging(*, process: str = "edge") -> None:
             file_handler.addFilter(ctx)
             root.addHandler(file_handler)
         except OSError as exc:
-            root.warning("ccswitch: log dir %s unwritable (%s); stdout-only", log_dir, exc)
+            root.warning("jsonlog: log dir %s unwritable (%s); stdout-only", log_dir, exc)
 
     install_redacting_filter()
     # Suppress CancelledError pool-reset noise from sqlalchemy.pool (expected during

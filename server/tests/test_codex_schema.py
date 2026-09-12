@@ -59,11 +59,11 @@ def test_supported_method_sets_are_subsets_of_the_declared_inventory() -> None:
     # Server requests stay an explicit, tiny enumeration. Phase 4 adds the two
     # approval callbacks a human can actually answer; `item/permissions/
     # requestApproval` is deliberately excluded because its response hands the
-    # app-server a permissions grant ccswitch has no vocabulary to describe.
+    # app-server a permissions grant ViberPit has no vocabulary to describe.
     # `item/tool/requestUserInput` (#1271) is Codex's structured-question
     # surface — answered through the same QuestionRegistry the Claude driver
     # uses. `item/tool/call` (#1321) is the assistant drawer's tool surface:
-    # ccswitch declares the tools on `thread/start` and EXECUTES them here, which
+    # ViberPit declares the tools on `thread/start` and EXECUTES them here, which
     # is what makes mounting and gating the same mechanism.
     # `mcpServer/elicitation/request` stays excluded: no MCP server is wired up
     # for a Codex thread, so no live session can ever raise it.
@@ -87,7 +87,7 @@ def test_thread_discovery_methods_are_declared_but_deliberately_unsupported() ->
 
     Unlike Claude's CLI (no listing RPC at all), the pinned app-server genuinely
     declares `thread/list` and `thread/search` — this is not a vendor-absent
-    capability. ccswitch still leaves `adopt=False` (`server/codex/capabilities.py`)
+    capability. ViberPit still leaves `adopt=False` (`server/codex/capabilities.py`)
     because `CODEX_HOME` isolation (`server/codex/process.py`) means a runner's
     own app-server process can only ever enumerate threads it started itself, so
     calling these methods would find nothing to adopt. If a future CODEX_HOME
@@ -188,19 +188,19 @@ def test_check_contract_reports_both_reasons_together() -> None:
 
 def test_initialize_params_advertise_experimental_api_only_when_asked() -> None:
     plain = schema.InitializeParams(
-        client_info=schema.ClientInfo(name="ccswitch", version="1"),
+        client_info=schema.ClientInfo(name="viberpit", version="1"),
     ).to_wire()
     assert plain["capabilities"]["experimentalApi"] is False
 
     experimental = schema.InitializeParams(
-        client_info=schema.ClientInfo(name="ccswitch", version="1", title="ccswitch"),
+        client_info=schema.ClientInfo(name="viberpit", version="1", title="viberpit"),
         capabilities=schema.InitializeCapabilities(experimental_api=True),
     ).to_wire()
     assert experimental["capabilities"]["experimentalApi"] is True
     assert experimental["clientInfo"] == {
-        "name": "ccswitch",
+        "name": "viberpit",
         "version": "1",
-        "title": "ccswitch",
+        "title": "viberpit",
     }
 
 
@@ -1063,7 +1063,7 @@ def test_skill_user_input_round_trips_and_refuses_a_half_identity() -> None:
 
 
 def test_a_skill_input_survives_the_outbound_turn_start_rebuild() -> None:
-    """Everything ccswitch sends is re-parsed from its own wire form, so a skill
+    """Everything ViberPit sends is re-parsed from its own wire form, so a skill
     invocation has to be modelled on BOTH sides or it never reaches the peer."""
     params = schema.TurnStartParams(
         thread_id="t1",

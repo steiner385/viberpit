@@ -155,6 +155,32 @@ renderer are gone; the brand is now three rasters under `web/public/brand/` and 
   `--font-sans: system-ui` — a webfont for an eight-character wordmark is not worth a network
   fetch on a tailnet-only app, and the logo rasters already carry the display face.
 
+**Legacy-brand ratchet (2026-09-12)** — Between phases the tree legitimately carries the old
+spelling in places search-and-replace cannot touch, and the risk is that "later" quietly becomes
+"never" while new mentions creep back in. `scripts/brand_ratchet.py` and its registry
+`.brand-ratchet.toml` make the remainder a checked inventory, enforced by
+`server/tests/test_brand_ratchet.py` inside the lint-and-test gate:
+
+- Every `ccswitch` / `cc-account-switcher` spelling in tracked files (historical records under
+  `docs/superpowers/`, `docs/audits/`, `docs/2026-*`, `specs/` and recorded fixtures excluded)
+  must be **claimed** by one `[[allow]]` entry: a regex and/or path glob, plus either the GitHub
+  `issue` that removes the category or a `permanent` reason citing the design decision that keeps
+  it (the brand modules' `LEGACY_*` constants, the dual-accept parsers, the not-renamed table).
+- **The rule for contributors:** a legacy spelling you cannot rename — a wire contract, a persisted
+  key, host state, the Python package — needs an issue before it can stay. File it, add the entry,
+  and the gate passes. An unclaimed spelling fails with the offending `file:line`.
+- Each entry has a `ceiling`, the count when it was last tightened. A category that grows past it
+  fails; one that shrinks passes and asks for `python scripts/brand_ratchet.py --update`, which
+  rewrites only the ceilings, so the registry only ever ratchets down.
+- `--list <id>` prints every hit an entry claims — the worklist for that entry's issue.
+
+The 2026-09-12 sweep (this PR) took every unclaimed mention to zero: product-name prose in code
+comments, docstrings and help text, living docs, `AGENTS.md` (via `core.md`), arbitrary test
+fixtures, the CI Postgres names, the ESLint rule namespace (`viberpit/no-raw-palette`, the
+web-internals half of #1375), and the `steiner385/ccswitch` slug (the repo is renamed). What
+remains is claimed by #1368, #1369, #1373, #1374, #1376, #1377, the env sweep #1591 and the host
+scaffolding removal #1592.
+
 **Evidence** —
 - **Epic and sub-issues:** #1365 (tracking; name-forms table, standing rules, out-of-scope
   window), #1368 (Phase 2b cookie/headers/localStorage/export id), #1369 (Phase 2c branch prefix +

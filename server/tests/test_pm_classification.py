@@ -40,7 +40,7 @@ def test_chunk_size_matches_spec():
 def test_map_prompt_is_propose_only_one_pr():
     """Existing propose-only guarantees must still hold after the census rework."""
     p = build_map_synthesis_prompt(
-        slug="ccswitch", repo="steiner385/ccswitch", default_branch="master",
+        slug="viberpit", repo="steiner385/viberpit", default_branch="master",
         open_count=120, closed_count=800)
     assert "docs/product/features/" in p
     assert "ONE" in p and "non-draft" in p.lower()
@@ -54,7 +54,7 @@ def test_map_prompt_is_propose_only_one_pr():
 def test_map_prompt_reads_authoritative_docs_first():
     """Step A: prompt must instruct reading README/CLAUDE.md/docs before code."""
     p = build_map_synthesis_prompt(
-        slug="ccswitch", repo="steiner385/ccswitch", default_branch="master",
+        slug="viberpit", repo="steiner385/viberpit", default_branch="master",
         open_count=50, closed_count=200)
     # Authoritative docs step must be named and come before census
     assert "Step A" in p
@@ -68,7 +68,7 @@ def test_map_prompt_reads_authoritative_docs_first():
 def test_map_prompt_has_census_step_with_entry_points_routers_models():
     """Step B: census must enumerate CLI entry points, routers, and DB models."""
     p = build_map_synthesis_prompt(
-        slug="ccswitch", repo="steiner385/ccswitch", default_branch="master",
+        slug="viberpit", repo="steiner385/viberpit", default_branch="master",
         open_count=50, closed_count=200)
     assert "Step B" in p
     # Entry points / CLI
@@ -84,7 +84,7 @@ def test_map_prompt_has_census_step_with_entry_points_routers_models():
 def test_map_prompt_anti_churn_bias_rule_is_explicit():
     """The prompt must state explicitly that churn signals activity not importance."""
     p = build_map_synthesis_prompt(
-        slug="ccswitch", repo="steiner385/ccswitch", default_branch="master",
+        slug="viberpit", repo="steiner385/viberpit", default_branch="master",
         open_count=50, closed_count=200)
     # Anti-bias rule must be stated
     assert "churn" in p.lower()
@@ -96,7 +96,7 @@ def test_map_prompt_anti_churn_bias_rule_is_explicit():
 def test_map_prompt_coverage_audit_in_pr_body():
     """Step E: coverage table must be required and placed in the PR body."""
     p = build_map_synthesis_prompt(
-        slug="ccswitch", repo="steiner385/ccswitch", default_branch="master",
+        slug="viberpit", repo="steiner385/viberpit", default_branch="master",
         open_count=50, closed_count=200)
     assert "Step E" in p
     assert "coverage" in p.lower()
@@ -112,7 +112,7 @@ def test_map_prompt_coverage_audit_in_pr_body():
 def test_map_prompt_churn_is_secondary_not_discovery():
     """Step C: churn enrichment must be labelled as SECONDARY — not discovery."""
     p = build_map_synthesis_prompt(
-        slug="ccswitch", repo="steiner385/ccswitch", default_branch="master",
+        slug="viberpit", repo="steiner385/viberpit", default_branch="master",
         open_count=50, closed_count=200)
     assert "Step C" in p
     step_b_pos = p.index("Step B")

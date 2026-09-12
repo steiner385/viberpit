@@ -1,4 +1,4 @@
-"""Every ccswitch tool hits an allowlisted route; every tool and every starter chip has an eval
+"""Every ViberPit tool hits an allowlisted route; every tool and every starter chip has an eval
 case (spec v2 §4.0)."""
 from __future__ import annotations
 

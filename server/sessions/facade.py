@@ -31,7 +31,7 @@ async def _maybe_await(result):
 # the RPC deadline in as that unrelated argument AND drop the wait_for fallback, leaving
 # the call both mis-parameterised and unbounded. Exactly the shape of bug this module
 # exists to remove, so the capability is declared explicitly instead of inferred.
-_DEADLINE_ATTR = "__ccswitch_rpc_deadline__"
+_DEADLINE_ATTR = "__viberpit_rpc_deadline__"
 
 
 def rpc_deadline(fn):

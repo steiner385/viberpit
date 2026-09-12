@@ -23,7 +23,7 @@ owning host recorded so recovery/rotation don't fight across daemons, exactly on
 fleet-global automation, and stale cross-host bookkeeping cleaned up — without a two-primary
 split-brain silently double-driving everything.
 
-**Target users** — the operator who has added more than one host to their ccswitch deployment and
+**Target users** — the operator who has added more than one host to their ViberPit deployment and
 wants sessions spread across them, plus the dashboard that must show every host's health and every
 fleet session in one view.
 

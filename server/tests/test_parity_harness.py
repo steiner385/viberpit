@@ -42,7 +42,7 @@ def test_uncovered_field_ignored():
 
 def test_oracle_only_and_candidate_only_are_informational():
     # Population differences are reported but do NOT fail parity (Plotroom tracks all
-    # PRs; ccswitch's candidate can differ in coverage/timing). ok = no field mismatches.
+    # PRs; ViberPit's candidate can differ in coverage/timing). ok = no field mismatches.
     rep = diff_snapshots({("o/r", 1): _cand()},
                          {("o/r", 2): _oracle(number=2)}, phase=0)
     assert ("o/r", 1) in rep.candidate_only

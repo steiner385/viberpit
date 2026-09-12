@@ -3,7 +3,7 @@
 Phase 2 of the AI-Native SDLC design (§3.2/§4/§9, issue #804). The playbook's rule
 is *detection deterministic, judgment gated*, and this module is where the two
 meet: ``server.sdlc.control_bands`` decides — with statistics and no model — that
-something moved, ``server/sdlc/bands.yaml`` decides what ccswitch is allowed to do
+something moved, ``server/sdlc/bands.yaml`` decides what ViberPit is allowed to do
 about it, and only then may a session be spawned.
 
 Two objects, the same mold as ``BacklogRunner`` / ``SdlcIntake`` (constitution VI —
@@ -39,6 +39,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from ccswitch import brand
 from server.db.models import TRIAGE_TERMINAL_STATUSES
 from server.sdlc.bands import BandsConfig, BandTier, MetricBand
 from server.sdlc.control_bands import Breach, Sample, evaluate
@@ -117,7 +118,7 @@ class ControlBandMonitor:
     name = "Control-Band Monitor"
     work_class = "maintenance"
     description = (
-        "Watches ccswitch's own delivery metrics against version-controlled "
+        f"Watches {brand.NAME}'s own delivery metrics against version-controlled "
         "control bands. A deterministic breach files a triage item and, by tier, "
         "spawns a read-only diagnosis (2σ) or queues an intent.md (3σ).")
     #: ``monitor`` detects and files ONLY — no session, no queueing, whatever the

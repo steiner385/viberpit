@@ -107,7 +107,7 @@ export interface PrView {
   /** True when costDollars is a known undercount: rates exist but at least
    *  one counted check ran on an unpriced pool — rendered '(partial)'. */
   costDollarsPartial?: boolean;
-  /** ccswitch extension (spec §6): the authoring ccswitch session, if any. */
+  /** ViberPit extension (spec §6): the authoring ViberPit session, if any. */
   session?: { id: string; name: string; fixable: boolean } | null;
 }
 

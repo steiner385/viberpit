@@ -3,6 +3,7 @@ import os
 import unittest
 from unittest import mock
 from tests.helpers import temp_env
+from ccswitch import brand
 
 _TEST_KEY_B64 = base64.b64encode(bytes(range(32))).decode("ascii")
 
@@ -83,7 +84,7 @@ class TestCliUse(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("export CLAUDE_CONFIG_DIR=", out)
             self.assertIn(str(paths.account_cfg_dir("secondary")), out)
-            self.assertIn("ccswitch: secondary", out)
+            self.assertIn(f"{brand.CLI_NAME}: secondary", out)
 
     def test_use_dir_prints_only_path(self):
         import contextlib, io
@@ -116,7 +117,7 @@ class TestCliUse(unittest.TestCase):
                 with contextlib.redirect_stdout(buf):
                     rc = cli.main(["use"])
             self.assertEqual(rc, 0)
-            self.assertIn("ccswitch: beta", buf.getvalue())
+            self.assertIn(f"{brand.CLI_NAME}: beta", buf.getvalue())
 
 
 class TestClonesCommands(unittest.TestCase):
@@ -207,7 +208,7 @@ class TestClonesCommands(unittest.TestCase):
 
 
 class TestCliReauth(unittest.TestCase):
-    """`ccswitch reauth <name>` — the no-browser recovery path (issue #1130).
+    """The `reauth <name>` CLI subcommand — the no-browser recovery path (issue #1130).
 
     Mirrors ReauthManager.submit_code's own calls (setup_token_oauth.begin/exchange,
     crypto.store_oauth_token, accounts.mark_reauthenticated) so a CLI test double

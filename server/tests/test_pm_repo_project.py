@@ -19,7 +19,7 @@ from server.db import db_session, init_db
 from server.db.models import Project, ProjectRepo
 from server.pm.repo_project import RepoOwner, owning_projects_by_repo
 
-REPO = "steiner385/ccswitch"
+REPO = "steiner385/viberpit"
 OTHER_REPO = "steiner385/kindash"
 
 
@@ -62,10 +62,10 @@ class _CountingExecute:
 
 @pytest.mark.asyncio
 async def test_single_owner_returns_id_and_slug(db_env):
-    ids = await _seed(db_env, [("ccswitch", REPO)])
+    ids = await _seed(db_env, [("viberpit", REPO)])
     async with db_session() as db:
         owners = await owning_projects_by_repo(db, {REPO})
-    assert owners == {REPO: RepoOwner(project_id=ids["ccswitch"], slug="ccswitch")}
+    assert owners == {REPO: RepoOwner(project_id=ids["viberpit"], slug="viberpit")}
 
 
 @pytest.mark.asyncio
@@ -89,7 +89,7 @@ async def test_two_owners_lowest_slug_wins_whatever_the_insertion_order(
 async def test_unowned_repo_is_absent_not_none_valued(db_env):
     """Absent, so ``.get()`` is ``None`` and every caller skips rather than
     guessing a project."""
-    await _seed(db_env, [("ccswitch", REPO)])
+    await _seed(db_env, [("viberpit", REPO)])
     async with db_session() as db:
         owners = await owning_projects_by_repo(db, {REPO, "someone/unknown"})
     assert set(owners) == {REPO}
@@ -100,7 +100,7 @@ async def test_unowned_repo_is_absent_not_none_valued(db_env):
 async def test_empty_and_null_repos_are_dropped_without_a_query(db_env):
     """``ProjectRepo.repo`` is nullable, and callers build the input set from
     ``WorkItem.repo`` — which is nullable too. Falsy repos never reach SQL."""
-    ids = await _seed(db_env, [("ccswitch", REPO), ("ccswitch", None)])
+    ids = await _seed(db_env, [("viberpit", REPO), ("viberpit", None)])
     async with db_session() as db:
         counter = _CountingExecute(db)
         with patch.object(db, "execute", counter):
@@ -109,14 +109,14 @@ async def test_empty_and_null_repos_are_dropped_without_a_query(db_env):
             assert counter.calls == 0  # nothing to ask about → no round trip
             # The project's NULL-repo row is not an owner of anything.
             assert await owning_projects_by_repo(db, {"", REPO}) == {
-                REPO: RepoOwner(project_id=ids["ccswitch"], slug="ccswitch")}
+                REPO: RepoOwner(project_id=ids["viberpit"], slug="viberpit")}
             assert counter.calls == 1
 
 
 @pytest.mark.asyncio
 async def test_batch_of_repos_is_one_query_not_n(db_env):
     ids = await _seed(db_env, [
-        ("ccswitch", REPO), ("kindash", OTHER_REPO), ("infra", "steiner385/infra")])
+        ("viberpit", REPO), ("kindash", OTHER_REPO), ("infra", "steiner385/infra")])
     async with db_session() as db:
         counter = _CountingExecute(db)
         with patch.object(db, "execute", counter):
@@ -124,7 +124,7 @@ async def test_batch_of_repos_is_one_query_not_n(db_env):
                 db, {REPO, OTHER_REPO, "steiner385/infra", "someone/unknown"})
     assert counter.calls == 1
     assert owners == {
-        REPO: RepoOwner(project_id=ids["ccswitch"], slug="ccswitch"),
+        REPO: RepoOwner(project_id=ids["viberpit"], slug="viberpit"),
         OTHER_REPO: RepoOwner(project_id=ids["kindash"], slug="kindash"),
         "steiner385/infra": RepoOwner(project_id=ids["infra"], slug="infra"),
     }

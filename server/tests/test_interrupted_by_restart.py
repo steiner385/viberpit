@@ -47,7 +47,7 @@ def test_record_defaults_interrupted_flag_false():
 
 
 def _seed_and_list(tmp_path, *, status: str) -> dict:
-    db_url = f"sqlite+aiosqlite:///{tmp_path / f'ccswitch-{status}.db'}"
+    db_url = f"sqlite+aiosqlite:///{tmp_path / f'viberpit-{status}.db'}"
 
     async def seed():
         await init_db(db_url=db_url)

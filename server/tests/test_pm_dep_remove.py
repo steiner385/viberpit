@@ -33,7 +33,7 @@ async def _seed(db_url: str, *, blocker_node: str | None = "N3") -> str:
     """Returns the blocked item's id. #5 is blocked by #3, natively AND in prose."""
     await init_db(db_url)
     async with db_session() as db:
-        p = Project(slug="ccswitch", name="ccswitch", onboarding_state="live")
+        p = Project(slug="viberpit", name="viberpit", onboarding_state="live")
         db.add(p)
         await db.flush()
         db.add(ProjectRepo(project_id=p.id, repo="o/r", is_primary=True))

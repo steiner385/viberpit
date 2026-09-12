@@ -1,7 +1,7 @@
 """Canonical deploy-environment classifier — the single source of truth for
 mapping a raw GitHub deployment-environment name to a metric bucket.
 
-GitHub environment names are free-form and repo-specific: ``steiner385/ccswitch``
+GitHub environment names are free-form and repo-specific: ``steiner385/viberpit``
 uses a bare ``"production"`` while ``cairnea/KinDash`` namespaces two apps as
 ``"kindash / production"``, ``"kindash / qa"``, ``"kindash / admin-production"``,
 etc. The old ``"production" in deployed_envs`` exact-match silently failed on the

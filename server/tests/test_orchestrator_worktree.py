@@ -103,7 +103,7 @@ def test_branch_session_runs_in_isolated_worktree_and_cleans_up(wt_setup):
         lambda: orch.create_session("wt-test", cwd=str(repo), branch="feature")
     )
 
-    # Session cwd is a ccswitch-managed worktree, checked out to `feature`.
+    # Session cwd is a ViberPit-managed worktree, checked out to `feature`.
     assert worktrees.is_managed_path(rec.cwd, str(repo_root))
     assert os.path.isdir(rec.cwd)
     assert _branch_of(rec.cwd) == "feature"
@@ -213,7 +213,7 @@ def test_repo_session_without_branch_gets_own_detached_worktree(wt_setup):
     rec1 = client.portal.call(lambda: orch.create_session("nb-1", cwd=str(repo)))
     rec2 = client.portal.call(lambda: orch.create_session("nb-2", cwd=str(repo)))
 
-    # Each runs in a ccswitch-managed worktree, NOT the shared repo/clone dir.
+    # Each runs in a ViberPit-managed worktree, NOT the shared repo/clone dir.
     assert worktrees.is_managed_path(rec1.cwd, str(repo_root))
     assert worktrees.is_managed_path(rec2.cwd, str(repo_root))
     assert rec1.cwd != str(repo) and rec2.cwd != str(repo)

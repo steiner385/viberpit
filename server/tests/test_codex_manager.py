@@ -93,7 +93,7 @@ def _manager(**kw):
         return child
 
     kw.setdefault("availability", _availability())
-    kw.setdefault("codex_home_base", Path("/tmp/ccswitch-codex-test"))
+    kw.setdefault("codex_home_base", Path("/tmp/viberpit-codex-test"))
     kw.setdefault("credential_supplier", _credentials)
     kw.setdefault("home_factory", lambda base, account: Path(base) / account)
     kw.setdefault("idle_grace_s", 60.0)

@@ -21,7 +21,7 @@ function pointer(over: Partial<MapChangesPointer> = {}): MapChangesPointer {
   return {
     branch: 'ccswitch/map-changes/kindash',
     prNumber: 12,
-    prUrl: 'https://github.com/steiner385/ccswitch/pull/12',
+    prUrl: 'https://github.com/steiner385/viberpit/pull/12',
     status: 'open',
     openedAt: '2026-09-11T00:00:00Z',
     headSha: 'abc123',
@@ -66,7 +66,7 @@ describe('MapChangesCard', () => {
   it('info variant: links the PR and shows how long ago it opened', () => {
     render(<MapChangesCard product={product(pointer())} />)
     const link = screen.getByRole('link', { name: 'PR #12' })
-    expect(link).toHaveAttribute('href', 'https://github.com/steiner385/ccswitch/pull/12')
+    expect(link).toHaveAttribute('href', 'https://github.com/steiner385/viberpit/pull/12')
     expect(link).toHaveAttribute('target', '_blank')
     expect(link).toHaveAttribute('rel', 'noreferrer')
     expect(screen.getByRole('status')).toHaveTextContent('Capability map changes are open')
@@ -99,7 +99,7 @@ describe('MapChangesCard', () => {
   ] as const)('%s still carries the PR link and its age', (_name, over) => {
     render(<MapChangesCard product={product(pointer(over))} />)
     expect(screen.getByRole('link', { name: 'PR #12' }))
-      .toHaveAttribute('href', 'https://github.com/steiner385/ccswitch/pull/12')
+      .toHaveAttribute('href', 'https://github.com/steiner385/viberpit/pull/12')
     expect(screen.getByRole('status')).toHaveTextContent('opened')
     expect(screen.getByRole('status')).toHaveTextContent('ago')
   })

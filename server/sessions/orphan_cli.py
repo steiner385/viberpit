@@ -20,13 +20,13 @@ daemon owns every live `claude` process*. So at daemon start, an SDK-protocol
 of the incarnation that just died. Three conditions must all hold before we signal
 anything:
 
-1. ``adopt.classify`` says ``"sdk"`` — the stream-json driver protocol ccswitch
+1. ``adopt.classify`` says ``"sdk"`` — the stream-json driver protocol ViberPit
    itself speaks. A human's interactive ``claude`` classifies as ``"session"`` and
    an internal pty-host/spare as ``"helper"``; neither is ever touched.
 2. **Nothing alive owns it** — walking ``ppid`` up finds no live non-CLI ancestor,
    only pid 1 or a parent that has already exited. See :func:`_orphaned` for why
    this, and not "is not a descendant of me", is the predicate.
-3. Its ``CLAUDE_CONFIG_DIR`` maps to a managed ccswitch account. An SDK claude
+3. Its ``CLAUDE_CONFIG_DIR`` maps to a managed ViberPit account. An SDK claude
    belonging to something else on the box (a developer's own agent, another
    checkout's test run) is left strictly alone.
 
@@ -87,7 +87,7 @@ def _orphaned(pid: int, by_pid: dict[int, ProcInfo]) -> bool:
     """True when no LIVE process still owns *pid* — the reap predicate.
 
     The obvious rule, "not a descendant of this daemon", is too broad. Any other
-    live ccswitch process on the box owns CLIs too — an edge running its own
+    live ViberPit process on the box owns CLIs too — an edge running its own
     in-process orchestrator, a second daemon during a staged cutover — and a
     daemon restart must not machine-gun theirs. The rule that actually means
     "leftover" is the one systemd reports: its owner is *gone*, so it has been
@@ -150,7 +150,7 @@ def discover_orphans(
         config_dir = proc.environ.get("CLAUDE_CONFIG_DIR", home_default)
         account = _map_account(config_dir, known_accounts, account_cfg)
         if account is None:
-            continue  # not a ccswitch-managed CLI; not ours to kill
+            continue  # not a ViberPit-managed CLI; not ours to kill
         out.append(OrphanCli(pid=proc.pid, account=account, cwd=proc.cwd,
                              resume=_resume_arg(proc.cmdline)))
     return out

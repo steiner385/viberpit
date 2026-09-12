@@ -57,7 +57,7 @@ def assistant_options(*, server: Any, max_turns: int, model: str,
     prompt that describes a tool surface it does not actually have.
     """
     return {
-        # A plain string REPLACES the factory's claude_code preset + ccswitch marker
+        # A plain string REPLACES the factory's claude_code preset + ViberPit marker
         # append: the completion/PR/model-request marker contracts are coding-session
         # contracts and mean nothing here.
         "system_prompt": ASSISTANT_SYSTEM_PROMPT + (

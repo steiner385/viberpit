@@ -45,7 +45,7 @@ async def test_capture_login_no_token_leakage_in_logs(tmp_path, monkeypatch, cap
     """
     monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
 
-    # Capture DEBUG logs from the auth_login module + parent ccswitch
+    # Capture DEBUG logs from the auth_login module + the parent `ccswitch` package logger
     caplog.set_level(logging.DEBUG, logger="ccswitch")
     caplog.set_level(logging.DEBUG, logger="ccswitch.auth_login")
 

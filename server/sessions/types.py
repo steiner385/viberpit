@@ -1,4 +1,4 @@
-"""Shared in-memory record type for a managed ccswitch session.
+"""Shared in-memory record type for a managed ViberPit session.
 
 Kept separate from the DB model (server.db.models.Session) so that rotation,
 usage, and WS layers can import this without pulling in SQLAlchemy.
@@ -26,8 +26,8 @@ SYSTEM_IDENTITY = "system"
 # waiting_question / ready_review, which normalize identically but must NOT be nudged).
 RESUME_ELIGIBLE_STATUSES = frozenset({"in_progress", "working", "condensing"})
 
-# The full ccswitch session permission-mode vocabulary — the single source of
-# truth for "what modes exist". The first four are ccswitch-native (gated by
+# The full ViberPit session permission-mode vocabulary — the single source of
+# truth for "what modes exist". The first four are ViberPit-native (gated by
 # PermissionRegistry.request); the last two share the Claude Agent SDK's own
 # vocabulary and pass through to its permission engine (see
 # server.sessions.permissions._SDK_PASSTHROUGH_MODES / to_sdk_permission_mode).

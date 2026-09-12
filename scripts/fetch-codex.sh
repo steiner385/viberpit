@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fetch-codex.sh — Download, verify, and install the Codex CLI version ccswitch pins.
+# fetch-codex.sh — Download, verify, and install the Codex CLI version ViberPit pins.
 #
 # Install destination: ~/.local/lib/ccswitch/codex
 # Point the daemon at it with CCSWITCH_CODEX_BIN (server/codex/process.py resolves an
@@ -64,7 +64,7 @@ done
 # version and the app-server contract hash are one pin, and a script carrying its
 # own copy would let the installer and the runtime gate disagree silently.
 if [[ ! -f "${SCHEMA_PY}" ]]; then
-    echo "ERROR: cannot find ${SCHEMA_PY}; run this from a ccswitch checkout." >&2
+    echo "ERROR: cannot find ${SCHEMA_PY}; run this from a ViberPit checkout." >&2
     exit 1
 fi
 PINNED_VERSION_STRING="$(sed -n 's/^PINNED_CLI_VERSION: Final = "\(.*\)"$/\1/p' "${SCHEMA_PY}" | head -1)"
@@ -162,7 +162,7 @@ STAGED="${TMPDIR_WORK}/codex-staged"
 cp "${BINARY}" "${STAGED}"
 chmod +x "${STAGED}"
 
-echo "==> Verifying version against the ccswitch pin..."
+echo "==> Verifying version against the ViberPit pin..."
 INSTALLED_VERSION="$("${STAGED}" --version 2>/dev/null || true)"
 if [[ -z "${INSTALLED_VERSION}" ]]; then
     echo "ERROR: '${ASSET_NAME}' did not answer --version; refusing to install." >&2
@@ -170,7 +170,7 @@ if [[ -z "${INSTALLED_VERSION}" ]]; then
 fi
 if [[ "${INSTALLED_VERSION}" != "${PINNED_VERSION_STRING}" ]]; then
     echo "ERROR: version mismatch — refusing to install." >&2
-    echo "  ccswitch pins: ${PINNED_VERSION_STRING}  (server/codex/schema.py)" >&2
+    echo "  ViberPit pins: ${PINNED_VERSION_STRING}  (server/codex/schema.py)" >&2
     echo "  this binary:   ${INSTALLED_VERSION}" >&2
     echo "  Admitting another version is an explicit operator decision:" >&2
     echo "  set CCSWITCH_CODEX_SUPPORTED_VERSIONS — but note it can never waive a" >&2

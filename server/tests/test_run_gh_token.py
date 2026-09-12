@@ -29,7 +29,7 @@ def test_run_gh_no_token_strips_github_token(monkeypatch):
 
 def test_gh_env_strips_ambient_gh_token(monkeypatch):
     """A stray GH_TOKEN in the ambient env (e.g. a KinDash bot login) must not
-    leak into ccswitch gh calls — it would override the pinned account."""
+    leak into ViberPit gh calls — it would override the pinned account."""
     monkeypatch.setenv("GH_TOKEN", "ghs_BOT_LEAK")
     monkeypatch.delenv("CCSWITCH_GH_CONFIG_DIR", raising=False)
     env = gitrepos._gh_env()

@@ -210,7 +210,7 @@ class PullRequestInfo:
 
 @dataclass(frozen=True)
 class PipelinePr:
-    """A population PR plus the ccswitch session that authored it (if any)."""
+    """A population PR plus the ViberPit session that authored it (if any)."""
     pr: PullRequestInfo
     session_id: str | None = None
     session_name: str | None = None

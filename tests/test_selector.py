@@ -525,7 +525,7 @@ def test_extra_usage_requires_upstream_enabled():
 
 
 def test_extra_usage_without_opt_in_stays_excluded():
-    """The upstream flag alone is not consent — ccswitch must not spend money on an
+    """The upstream flag alone is not consent — ViberPit must not spend money on an
     account the user never toggled on."""
     from ccswitch.selector import rank_accounts
     usages = {"maxed": anthropic_snapshot(100.0, SOON, 20.0, SOON, True)}  # extra ON upstream, not opted in

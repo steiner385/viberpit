@@ -17,7 +17,7 @@ def test_normalize_keys_by_repo_and_number():
 
 
 def test_normalize_maps_state_vocabulary():
-    # Plotroom's per-PR shape -> ccswitch vocabulary ('open'/'draft'/'merged'/'closed').
+    # Plotroom's per-PR shape -> ViberPit vocabulary ('open'/'draft'/'merged'/'closed').
     sample = {"repos": [{"nameWithOwner": "o/r", "prs": [
         {"number": 1, "url": "u", "headRefName": "br", "headSha": "abc",
          "state": "OPEN", "isDraft": True, "checksRollup": "PENDING", "checks": []},

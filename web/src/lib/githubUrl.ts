@@ -4,8 +4,8 @@
  * first consumer — an artifact links to its file *at its SHA*, not at HEAD, so
  * the link keeps pointing at the reviewed bytes even after the branch moves on).
  *
- * `repo` is the "owner/name" slug ccswitch stores everywhere (e.g.
- * "steiner385/ccswitch").
+ * `repo` is the "owner/name" slug ViberPit stores everywhere (e.g.
+ * "steiner385/viberpit").
  */
 
 const BASE = 'https://github.com'

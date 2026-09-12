@@ -19,7 +19,7 @@ from server.config import get_settings
 _REAL_HOME = (Path.home() / ".claude-accounts").resolve()
 
 
-def test_ccswitch_home_is_not_production():
+def test_viberpit_home_is_not_production():
     root = paths.root().resolve()
     assert root != _REAL_HOME, (
         f"CCSWITCH_HOME resolves to the REAL store {_REAL_HOME}; tests must use a temp dir"

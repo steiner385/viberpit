@@ -1,4 +1,4 @@
-"""A SIGNAL-class ccswitch MCP tool auto-allows with no permission card, in every
+"""A SIGNAL-class `viberpit` MCP tool auto-allows with no permission card, in every
 session mode — same no-card contract as READ (task-1-brief, marker-to-tool migration)."""
 from __future__ import annotations
 

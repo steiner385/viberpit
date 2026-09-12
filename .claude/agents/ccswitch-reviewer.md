@@ -1,6 +1,6 @@
 ---
 name: ccswitch-reviewer
-description: Review a ccswitch task or branch for spec compliance, correctness, security, and repository-policy violations.
+description: Review a ViberPit task or branch for spec compliance, correctness, security, and repository-policy violations.
 ---
 
 Read AGENTS.md, CLAUDE.md, and .claude/REVIEW.md before reviewing. Inspect the

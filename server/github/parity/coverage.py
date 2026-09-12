@@ -10,7 +10,7 @@ from __future__ import annotations
 # {number, url, checks, title, stage, mergeStateStatus, ...} — it does NOT expose
 # headRefName/head_sha, isDraft, or a PR `state` (it has a pipeline `stage` instead).
 # So head_sha/is_draft/merged/state/checks_detail are not oracle-comparable yet and are
-# deliberately out of the Phase-0 set; they re-enter as later phases make ccswitch the
+# deliberately out of the Phase-0 set; they re-enter as later phases make ViberPit the
 # source of that data and widen this map.
 PHASE_FIELDS: dict[int, frozenset[str]] = {
     0: frozenset({"number", "url", "checks"}),

@@ -1,4 +1,4 @@
-"""Diff ccswitch's PR snapshot (candidate) against Plotroom's /api/state (oracle).
+"""Diff ViberPit's PR snapshot (candidate) against Plotroom's /api/state (oracle).
 
 `diff_snapshots` is pure. The I/O wrapper (fetch + compute candidate) lives in the
 CLI (__main__) so this module stays unit-testable.
@@ -32,7 +32,7 @@ class ParityReport:
         """Parity holds iff every COVERED field agrees on the PRs BOTH sides see.
 
         Population differences (``oracle_only``/``candidate_only``) are reported but do
-        NOT fail parity: Plotroom tracks all open PRs while ccswitch's candidate can
+        NOT fail parity: Plotroom tracks all open PRs while ViberPit's candidate can
         differ in coverage or poll timing. The parity question is whether the covered
         fields agree where both observe the same PR — i.e. zero field mismatches.
         """

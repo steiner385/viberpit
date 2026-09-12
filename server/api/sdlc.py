@@ -112,7 +112,7 @@ async def _epic_progress_batch(
     """Sub-issue progress for every initiative that points at an epic (spec 003
     §7c), computed in a fixed small number of grouped queries — not one call per
     initiative — so `GET /initiatives` can carry it on every row without an N+1
-    (the same idiom `list_initiatives` already uses to batch artifacts). ccswitch
+    (the same idiom `list_initiatives` already uses to batch artifacts). ViberPit
     deep-links to the GitHub epic rather than rebuilding a board, so ``url``
     matters as much as the counts.
 

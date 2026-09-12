@@ -43,7 +43,7 @@ export interface InitiativeEpicChild {
 }
 
 /** Sub-issue progress for an Initiative adopted from a GitHub-first epic
- *  (`epicRepo`/`epicNumber`). ccswitch deep-links to the GitHub epic via `url`
+ *  (`epicRepo`/`epicNumber`). ViberPit deep-links to the GitHub epic via `url`
  *  rather than rebuilding a board (spec 003 §7c). Both `GET /initiatives` and
  *  `GET /initiatives/{slug}` compute and emit this object (or `null`) on every
  *  row — but the list endpoint omits `children`, since `InitiativeTrack` only

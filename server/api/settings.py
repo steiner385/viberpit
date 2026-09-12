@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from ccswitch import brand
 from server.auth.middleware import current_identity
 from server.config import get_settings
 from server.db import get_db
@@ -40,12 +41,12 @@ _MAX_ARCHIVED_CEILING = 100_000
 # (config attribute, env var name, one-sentence description)
 _MANAGED: tuple[tuple[str, str, str], ...] = (
     ("allow_unauthenticated", "CCSWITCH_ALLOW_UNAUTHENTICATED", "Admit clients with no Tailscale identity as a guest"),
-    ("enable_adoption", "CCSWITCH_ENABLE_ADOPTION", "Allow adopting sessions started outside ccswitch"),
+    ("enable_adoption", "CCSWITCH_ENABLE_ADOPTION", f"Allow adopting sessions started outside {brand.NAME}"),
     ("enable_copilot", "CCSWITCH_ENABLE_COPILOT", "Enable GitHub Copilot accounts"),
     ("enable_xvfb", "CCSWITCH_ENABLE_XVFB", "Virtual displays for browser-using sessions"),
     ("self_model_switch_enabled", "CCSWITCH_SELF_MODEL_SWITCH_ENABLED", "Sessions may request a model change"),
     ("self_model_switch_cap", "CCSWITCH_SELF_MODEL_SWITCH_CAP", "Auto-applied model switches per session before parking for approval"),
-    ("session_tools_enabled", "CCSWITCH_SESSION_TOOLS_ENABLED", "Coding sessions get the ccswitch MCP tools (session_context, report_feedback)"),
+    ("session_tools_enabled", "CCSWITCH_SESSION_TOOLS_ENABLED", f"Coding sessions get the {brand.NAME} MCP tools (session_context, report_feedback)"),
     ("session_feedback_cap", "CCSWITCH_SESSION_FEEDBACK_CAP", "Feedback reports one session may file before further ones are capped"),
     ("error_sink_enabled", "CCSWITCH_ERROR_SINK_ENABLED", "Capture WARNING+ log records into error signatures for Error Triage"),
     ("gh_reconcile_enabled", "CCSWITCH_GH_RECONCILE_ENABLED", "GitHub Projects reconciler may write back"),

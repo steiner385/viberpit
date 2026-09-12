@@ -233,7 +233,7 @@ def evaluate_fire(
     * No cron in the schedule → never fires. (An active-hours-only schedule gates
       a *continuous* automation; it does not fire discrete sessions.)
     * ``last_fired is None`` → establish a watermark at ``now`` WITHOUT firing, so
-      a freshly-created job never backfires cron minutes from before ccswitch knew
+      a freshly-created job never backfires cron minutes from before ViberPit knew
       about it.
     * Otherwise take the most recent cron minute in ``(last_fired, now]`` that is
       no older than ``grace``:

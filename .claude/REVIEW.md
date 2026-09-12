@@ -1,6 +1,6 @@
-# ccswitch PR Review Policy
+# ViberPit PR Review Policy
 
-Version-controlled review policy for ccswitch Initiative PRs.
+Version-controlled review policy for ViberPit Initiative PRs.
 Loaded by `server.sdlc.review_policy` and injected into `pr_doctor` review
 sessions (AI-Native SDLC design §9 Phase 4, issue #806).
 

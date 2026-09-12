@@ -138,7 +138,7 @@ def authority_tls(tmp_path_factory) -> AuthorityTLS:
             directory, ca_key, ca_cert, UNLISTED_RUNNER_IDENTITY, "runner-unlisted"
         ),
         # Same CA, an identity that is neither an edge nor a runner.
-        stranger=_leaf(directory, ca_key, ca_cert, "ccswitch-edge", "stranger"),
+        stranger=_leaf(directory, ca_key, ca_cert, "viberpit-edge", "stranger"),
         rogue_ca=str(rogue_ca_path),
         rogue=_leaf(directory, rogue_ca_key, rogue_ca_cert, EDGE_IDENTITY, "rogue"),
     )
@@ -606,7 +606,7 @@ def test_two_runner_identities_are_ambiguous_and_denied():
 
 @pytest.mark.parametrize(
     "identities",
-    [set(), {"ccswitch-edge"}, {"codex-runner"}, {"edge"}, {"CODEX-EDGE"}],
+    [set(), {"viberpit-edge"}, {"codex-runner"}, {"edge"}, {"CODEX-EDGE"}],
 )
 def test_an_unknown_identity_resolves_to_nothing(identities):
     assert resolve_role(identities) is None

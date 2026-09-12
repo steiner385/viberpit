@@ -1,5 +1,5 @@
 """Tests for server.sessions.claude_bin.resolve_claude_bin — the single source of
-truth for *which* `claude` executable ccswitch runs (picker probe + SDK sessions)."""
+truth for *which* `claude` executable ViberPit runs (picker probe + SDK sessions)."""
 import logging
 import os
 import shutil

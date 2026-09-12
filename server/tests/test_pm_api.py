@@ -223,8 +223,8 @@ def _seed_map_merged(c, slug):
 
 def test_onboarding_state_reflects_engine():
     with _client_with_stubbed_seams() as c:
-        _register(c, "Ccswitch", repo="o/r")
-        r = c.get("/api/pm/projects/ccswitch/onboarding", headers=IDENTITY_HEADERS)
+        _register(c, "Viberpit", repo="o/r")
+        r = c.get("/api/pm/projects/viberpit/onboarding", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
         body = r.json()
         # Registered project with a repo but no backfill → await_backfill.
@@ -235,8 +235,8 @@ def test_onboarding_state_reflects_engine():
 
 def test_propose_map_conflicts_when_backfill_incomplete():
     with _client_with_stubbed_seams() as c:
-        _register(c, "Ccswitch", repo="o/r")
-        r = c.post("/api/pm/projects/ccswitch/propose-map", headers=IDENTITY_HEADERS)
+        _register(c, "Viberpit", repo="o/r")
+        r = c.post("/api/pm/projects/viberpit/propose-map", headers=IDENTITY_HEADERS)
         assert r.status_code == 409
         assert r.json()["detail"]["error"] == "backfill_incomplete"
 
@@ -244,8 +244,8 @@ def test_propose_map_conflicts_when_backfill_incomplete():
 def test_classify_409_when_not_eligible():
     """Classify guard: 409 with error=map_not_merged when state is 'registered'."""
     with _client_with_stubbed_seams() as c:
-        _register(c, "Ccswitch", repo="o/r")
-        r = c.post("/api/pm/projects/ccswitch/classify", headers=IDENTITY_HEADERS)
+        _register(c, "Viberpit", repo="o/r")
+        r = c.post("/api/pm/projects/viberpit/classify", headers=IDENTITY_HEADERS)
         assert r.status_code == 409
         assert r.json()["detail"]["error"] == "map_not_merged"
 
@@ -258,10 +258,10 @@ def test_advance_map_transitions_state():
     from server.db.models import Project, ProjectRepo
 
     with _client_with_stubbed_seams() as c:
-        _register(c, "Ccswitch", repo="o/r")
+        _register(c, "Viberpit", repo="o/r")
 
         # Must be in map_proposed — 409 when still registered
-        r = c.post("/api/pm/projects/ccswitch/advance-map", headers=IDENTITY_HEADERS)
+        r = c.post("/api/pm/projects/viberpit/advance-map", headers=IDENTITY_HEADERS)
         assert r.status_code == 409
         assert r.json()["detail"]["error"] == "not_map_proposed"
 
@@ -269,14 +269,14 @@ def test_advance_map_transitions_state():
         async def _set_proposed():
             async with db_session() as db:
                 p = (await db.execute(select(Project).where(
-                    Project.slug == "ccswitch"))).scalar_one()
+                    Project.slug == "viberpit"))).scalar_one()
                 p.onboarding_state = "map_proposed"
                 (await db.execute(select(ProjectRepo).where(
                     ProjectRepo.project_id == p.id))).scalar_one().backfill_done = True
         c.portal.call(_set_proposed)
 
         # advance succeeds
-        r = c.post("/api/pm/projects/ccswitch/advance-map", headers=IDENTITY_HEADERS)
+        r = c.post("/api/pm/projects/viberpit/advance-map", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
         assert r.json()["onboardingState"] == "map_merged"
 
@@ -284,7 +284,7 @@ def test_advance_map_transitions_state():
         async def _check():
             async with db_session() as db:
                 p = (await db.execute(select(Project).where(
-                    Project.slug == "ccswitch"))).scalar_one()
+                    Project.slug == "viberpit"))).scalar_one()
                 assert p.onboarding_state == "map_merged"
         c.portal.call(_check)
 
@@ -292,10 +292,10 @@ def test_advance_map_transitions_state():
 def test_classify_dispatches_and_is_idempotent():
     # Full narrated flow: register → force map_merged → classify → accept.
     with _client_with_stubbed_seams() as c:
-        _register(c, "Ccswitch", repo="o/r")
-        _seed_map_merged(c, "ccswitch")
+        _register(c, "Viberpit", repo="o/r")
+        _seed_map_merged(c, "viberpit")
 
-        r = c.post("/api/pm/projects/ccswitch/classify", headers=IDENTITY_HEADERS)
+        r = c.post("/api/pm/projects/viberpit/classify", headers=IDENTITY_HEADERS)
         assert r.status_code == 202, r.text
         assert r.json()["dispatched"] == 3
 
@@ -307,12 +307,12 @@ def test_triage_accept_and_reject_flow():
         Feature, Project, TriageProposal, WorkItem)
 
     with _client_with_stubbed_seams() as c:
-        _register(c, "Ccswitch", repo="o/r")
+        _register(c, "Viberpit", repo="o/r")
 
         async def _seed_props():
             async with db_session() as db:
                 p = (await db.execute(select(Project).where(
-                    Project.slug == "ccswitch"))).scalar_one()
+                    Project.slug == "viberpit"))).scalar_one()
                 f = Feature(project_id=p.id, slug="sessions", title="Sessions",
                             state="live")
                 w1 = WorkItem(repo="o/r", number=1, kind="issue", title="a",
@@ -372,12 +372,12 @@ def test_triage_accept_applies_edits_body():
         Feature, Project, TriageProposal, WorkItem)
 
     with _client_with_stubbed_seams() as c:
-        _register(c, "Ccswitch", repo="o/r")
+        _register(c, "Viberpit", repo="o/r")
 
         async def _seed_one():
             async with db_session() as db:
                 p = (await db.execute(select(Project).where(
-                    Project.slug == "ccswitch"))).scalar_one()
+                    Project.slug == "viberpit"))).scalar_one()
                 f = Feature(project_id=p.id, slug="sessions", title="Sessions",
                             state="live")
                 w = WorkItem(repo="o/r", number=1, kind="issue", title="a",
@@ -519,7 +519,7 @@ def test_remote_pm_onboarding_counts_returns_dataclass():
 
 
 def _seed_one_pending(c, *, feature_slug=None, no_fit_suggestion=None, repo="o/r",
-                      number=1, project_slug="ccswitch"):
+                      number=1, project_slug="viberpit"):
     """Seed (optionally) a Feature plus a WorkItem and a pending TriageProposal
     against the already-registered project. Returns (proposalId, workItemId).
 
@@ -573,7 +573,7 @@ def test_accept_bulk_copies_overlay():
     from server.db.models import WorkItem
 
     with _client() as c:
-        _register(c, "Ccswitch", repo="o/r")
+        _register(c, "Viberpit", repo="o/r")
         pid, wid = _seed_one_pending(c, feature_slug="sessions")
 
         r = c.post("/api/pm/triage/accept-bulk",
@@ -611,7 +611,7 @@ def test_accept_bulk_copies_overlay():
 
 def test_overlay_patch_manual_classify():
     with _client() as c:
-        _register(c, "Ccswitch", repo="o/r")
+        _register(c, "Viberpit", repo="o/r")
         _pid, wid = _seed_one_pending(c, feature_slug="sessions")
 
         r = c.patch(f"/api/pm/work-items/{wid}/overlay",
@@ -650,12 +650,12 @@ def test_drift_accept_reproposes_orphaned_siblings():
     from server.db.models import Feature, Project, TriageProposal, WorkItem
 
     with _client() as c:
-        _register(c, "Ccswitch", repo="o/r")
+        _register(c, "Viberpit", repo="o/r")
 
         async def _seed():
             async with db_session() as db:
                 p = (await db.execute(select(Project).where(
-                    Project.slug == "ccswitch"))).scalar_one()
+                    Project.slug == "viberpit"))).scalar_one()
                 feat = Feature(project_id=p.id, slug="offline-mode",
                                title="Offline mode", state="live")
                 db.add(feat)
@@ -709,12 +709,12 @@ def test_drift_accept_handles_two_siblings_in_one_batch():
     from server.db.models import Feature, Project, TriageProposal, WorkItem
 
     with _client() as c:
-        _register(c, "Ccswitch", repo="o/r")
+        _register(c, "Viberpit", repo="o/r")
 
         async def _seed():
             async with db_session() as db:
                 p = (await db.execute(select(Project).where(
-                    Project.slug == "ccswitch"))).scalar_one()
+                    Project.slug == "viberpit"))).scalar_one()
                 db.add(Feature(project_id=p.id, slug="offline-mode",
                                title="Offline mode", state="live"))
                 await db.flush()
@@ -760,12 +760,12 @@ def test_drift_accept_via_single_accept_route():
     from server.db.models import Feature, Project, TriageProposal, WorkItem
 
     with _client() as c:
-        _register(c, "Ccswitch", repo="o/r")
+        _register(c, "Viberpit", repo="o/r")
 
         async def _seed():
             async with db_session() as db:
                 p = (await db.execute(select(Project).where(
-                    Project.slug == "ccswitch"))).scalar_one()
+                    Project.slug == "viberpit"))).scalar_one()
                 db.add(Feature(project_id=p.id, slug="offline-mode",
                                title="Offline mode", state="live"))
                 await db.flush()
@@ -872,7 +872,7 @@ def test_accept_bulk_one_failure_does_not_roll_back_the_batch():
     from server.db.models import TriageProposal, WorkItem
 
     with _client() as c:
-        _register(c, "Ccswitch", repo="o/r")
+        _register(c, "Viberpit", repo="o/r")
         pid1, wid1 = _seed_one_pending(c, feature_slug="sessions", number=1)
         pid2, wid2 = _seed_one_pending(c, feature_slug="queue", number=2)
 
@@ -925,7 +925,7 @@ def test_accept_rejects_out_of_range_rice_edits():
     from server.db.models import TriageProposal, WorkItem
 
     with _client() as c:
-        _register(c, "ccswitch", repo="o/r")
+        _register(c, "viberpit", repo="o/r")
         pid, wid = _seed_one_pending(c, feature_slug="sessions")
 
         for edits in ({"effort": 0}, {"effort": -1}, {"reach": -1},
@@ -957,7 +957,7 @@ def test_accept_rejects_boolean_rice_edits():
     and `effort: true` lands in the overlay as a 1 nobody typed — a real RICE
     score, silently invented from a JSON type error."""
     with _client() as c:
-        _register(c, "ccswitch", repo="o/r")
+        _register(c, "viberpit", repo="o/r")
         pid, _wid = _seed_one_pending(c, feature_slug="sessions")
         for edits in ({"effort": True}, {"reach": False}, {"impact": True},
                       {"confidence": False}):
@@ -980,7 +980,7 @@ def test_accept_with_edits_rejects_an_unknown_feature_id():
     from server.db.models import TriageProposal, WorkItem
 
     with _client() as c:
-        _register(c, "ccswitch", repo="o/r")
+        _register(c, "viberpit", repo="o/r")
         pid, wid = _seed_one_pending(c, feature_slug="sessions")
 
         bad = c.post(f"/api/pm/triage/{pid}/accept",
@@ -1015,7 +1015,7 @@ def test_accept_with_edits_rejects_an_unknown_feature_id():
 
 def test_overlay_patch_rejects_out_of_range_rice_values():
     with _client() as c:
-        _register(c, "Ccswitch", repo="o/r")
+        _register(c, "Viberpit", repo="o/r")
         _pid, wid = _seed_one_pending(c, feature_slug="sessions")
 
         for payload in ({"effort": 0}, {"effort": -1}, {"reach": -1},
@@ -1040,7 +1040,7 @@ def test_overlay_patch_with_empty_body_is_a_no_op():
     from server.db.models import AuditEvent, WorkItem
 
     with _client() as c:
-        _register(c, "Ccswitch", repo="o/r")
+        _register(c, "Viberpit", repo="o/r")
         _pid, wid = _seed_one_pending(c, feature_slug="sessions")
 
         async def _mark_ai():
@@ -1072,7 +1072,7 @@ def test_triage_rows_carry_project_slug():
     """The inbox header groups by project, so every row resolves its project
     server-side via ProjectRepo.repo → Project.slug (the client must not guess)."""
     with _client() as c:
-        _register(c, "Ccswitch", repo="o/r")
+        _register(c, "Viberpit", repo="o/r")
         _seed_one_pending(c, feature_slug="sessions", repo="o/r", number=1)
         # an item whose repo belongs to no project → projectSlug is null
         _seed_one_pending(c, feature_slug=None, repo="other/unowned", number=7)
@@ -1080,11 +1080,11 @@ def test_triage_rows_carry_project_slug():
         rows = c.get("/api/pm/triage", headers=IDENTITY_HEADERS)
         assert rows.status_code == 200, rows.text
         by_repo = {row["repo"]: row for row in rows.json()}
-        assert by_repo["o/r"]["projectSlug"] == "ccswitch"
+        assert by_repo["o/r"]["projectSlug"] == "viberpit"
         assert by_repo["other/unowned"]["projectSlug"] is None
 
         # the projectSlug filter still narrows the list
-        filtered = c.get("/api/pm/triage?projectSlug=ccswitch",
+        filtered = c.get("/api/pm/triage?projectSlug=viberpit",
                          headers=IDENTITY_HEADERS)
         assert filtered.status_code == 200
         assert [row["repo"] for row in filtered.json()] == ["o/r"]
@@ -1095,13 +1095,13 @@ def test_onboarding_view_carries_the_map_pr_search_link():
     number is not stored, but the branch is deterministic, so the view carries
     a GitHub PR search on that branch for the primary repo."""
     with _client_with_stubbed_seams() as c:
-        _register(c, "Ccswitch", repo="o/r")
-        r = c.get("/api/pm/projects/ccswitch/onboarding", headers=IDENTITY_HEADERS)
+        _register(c, "Viberpit", repo="o/r")
+        r = c.get("/api/pm/projects/viberpit/onboarding", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
         map_pr = r.json()["mapPr"]
-        assert map_pr["branch"] == "pm/feature-map-ccswitch"
+        assert map_pr["branch"] == "pm/feature-map-viberpit"
         assert map_pr["url"] == (
-            "https://github.com/o/r/pulls?q=is%3Apr+head%3Apm%2Ffeature-map-ccswitch")
+            "https://github.com/o/r/pulls?q=is%3Apr+head%3Apm%2Ffeature-map-viberpit")
 
 
 def test_advance_live_transitions_state():
@@ -1111,33 +1111,33 @@ def test_advance_live_transitions_state():
     from server.db.models import Project
 
     with _client_with_stubbed_seams() as c:
-        _register(c, "Ccswitch", repo="o/r")
+        _register(c, "Viberpit", repo="o/r")
 
-        r = c.post("/api/pm/projects/ccswitch/advance-live", headers=IDENTITY_HEADERS)
+        r = c.post("/api/pm/projects/viberpit/advance-live", headers=IDENTITY_HEADERS)
         assert r.status_code == 409
         assert r.json()["detail"]["error"] == "not_classifying"
 
         async def _set(state):
             async with db_session() as db:
                 p = (await db.execute(select(Project).where(
-                    Project.slug == "ccswitch"))).scalar_one()
+                    Project.slug == "viberpit"))).scalar_one()
                 p.onboarding_state = state
         assert c.portal is not None
         c.portal.call(_set, "classifying")
 
-        r = c.post("/api/pm/projects/ccswitch/advance-live", headers=IDENTITY_HEADERS)
+        r = c.post("/api/pm/projects/viberpit/advance-live", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
         assert r.json()["onboardingState"] == "live"
 
         async def _check():
             async with db_session() as db:
                 p = (await db.execute(select(Project).where(
-                    Project.slug == "ccswitch"))).scalar_one()
+                    Project.slug == "viberpit"))).scalar_one()
                 assert p.onboarding_state == "live"
         c.portal.call(_check)
 
         # live is absorbing: a second tap is a 409, not a silent no-op
-        r = c.post("/api/pm/projects/ccswitch/advance-live", headers=IDENTITY_HEADERS)
+        r = c.post("/api/pm/projects/viberpit/advance-live", headers=IDENTITY_HEADERS)
         assert r.status_code == 409
 
 
@@ -1146,7 +1146,7 @@ def test_triage_undo_restores_overlay_and_pending():
     the literal 'proposed' — read the pre-accept overlay and assert undo restores
     exactly THOSE values, rather than hardcoding a state the seed never sets."""
     with _client() as c:
-        _register(c, "ccswitch", repo="o/r")
+        _register(c, "viberpit", repo="o/r")
         pid, wid = _seed_one_pending(c, feature_slug="sessions")
         pre = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
                       headers=IDENTITY_HEADERS).json()
@@ -1178,7 +1178,7 @@ def test_triage_undo_after_reject():
     """Same controller ruling as above: assert undo restores the pre-reject
     overlay values (whatever the seed set them to), not a hardcoded literal."""
     with _client() as c:
-        _register(c, "ccswitch", repo="o/r")
+        _register(c, "viberpit", repo="o/r")
         pid, wid = _seed_one_pending(c, feature_slug="sessions")
         pre = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
                       headers=IDENTITY_HEADERS).json()
@@ -1199,7 +1199,7 @@ def test_triage_undo_after_reject():
 def test_triage_undo_unknown_and_expired(monkeypatch):
     import server.api.pm as pm_api
     with _client() as c:
-        _register(c, "ccswitch", repo="o/r")
+        _register(c, "viberpit", repo="o/r")
         assert c.post("/api/pm/triage/nope/undo", headers=IDENTITY_HEADERS).status_code == 404
         pid, _ = _seed_one_pending(c, feature_slug="sessions")
         assert c.post(f"/api/pm/triage/{pid}/accept", headers=IDENTITY_HEADERS).status_code == 200
@@ -1218,7 +1218,7 @@ def test_triage_undo_writes_audit_row():
     from server.db.models import AuditEvent
 
     with _client() as c:
-        _register(c, "ccswitch", repo="o/r")
+        _register(c, "viberpit", repo="o/r")
         pid, wid = _seed_one_pending(c, feature_slug="sessions")
         assert c.post(f"/api/pm/triage/{pid}/accept", headers=IDENTITY_HEADERS).status_code == 200
         assert c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS).status_code == 200
@@ -1252,7 +1252,7 @@ def test_triage_undo_restores_classified_at_across_naive_sqlite_roundtrip():
     prior_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
 
     with _client() as c:
-        _register(c, "ccswitch", repo="o/r")
+        _register(c, "viberpit", repo="o/r")
         pid, wid = _seed_one_pending(c, feature_slug="sessions")
 
         async def _preset():
@@ -1291,7 +1291,7 @@ def test_triage_undo_no_snapshot_409():
     from server.db.models import TriageProposal
 
     with _client() as c:
-        _register(c, "ccswitch", repo="o/r")
+        _register(c, "viberpit", repo="o/r")
         pid, _wid = _seed_one_pending(c, feature_slug="sessions")
         assert c.post(f"/api/pm/triage/{pid}/accept",
                       headers=IDENTITY_HEADERS).status_code == 200
@@ -1321,7 +1321,7 @@ def test_triage_undo_no_snapshot_beats_the_window(monkeypatch):
     from server.db.models import TriageProposal
 
     with _client() as c:
-        _register(c, "ccswitch", repo="o/r")
+        _register(c, "viberpit", repo="o/r")
         pid, _wid = _seed_one_pending(c, feature_slug="sessions")
         assert c.post(f"/api/pm/triage/{pid}/accept",
                       headers=IDENTITY_HEADERS).status_code == 200

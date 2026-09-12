@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ccswitch-health-check.sh — watchdog + early-warning for the ccswitch session daemon.
+# viberpit-health-check.sh — watchdog + early-warning for the ViberPit session daemon.
 #
 # Run every ~60s by ccswitch-health.timer (User=tony). Idempotent, no deps beyond
 # curl / df / python3 / systemctl / ssh. Two jobs:
@@ -124,7 +124,7 @@ alert() {
   local statef="$STATE_DIR/alert-$key" last=0 t; t=$(now)
   [ -f "$statef" ] && last=$(cat "$statef" 2>/dev/null || echo 0)
   if [ $(( t - last )) -ge 1800 ]; then
-    curl -fsS -m 10 -H "Title: ccswitch alert" -d "$msg" "$ALERT_WEBHOOK" >/dev/null 2>&1 || true
+    curl -fsS -m 10 -H "Title: ViberPit alert" -d "$msg" "$ALERT_WEBHOOK" >/dev/null 2>&1 || true
     echo "$t" > "$statef"
   fi
 }

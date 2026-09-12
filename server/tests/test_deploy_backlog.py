@@ -59,6 +59,6 @@ def test_admin_lumps_all_admin_envs():
 
 
 def test_prod_only_repo_reports_only_prod():
-    # steiner385/ccswitch: env is exactly "production" → prod bucket only.
+    # steiner385/viberpit: env is exactly "production" → prod bucket only.
     prs = [_pr(1, ("production",)), _pr(2, ())]
     assert backlog_from_prs(prs) == {"awaitingQa": 0, "awaitingProd": 1, "awaitingAdmin": 0}

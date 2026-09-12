@@ -20,7 +20,7 @@ def shared_base() -> Path:
 
     Reads CLAUDE_CONFIG_DIR (the test harness injects a throwaway mirror source
     this way), but NEVER accepts a value that resolves inside our own account
-    store (cfg_root()). ccswitch sets CLAUDE_CONFIG_DIR per-account when launching
+    store (cfg_root()). ViberPit sets CLAUDE_CONFIG_DIR per-account when launching
     a session, so a value inherited from a running session points at an account
     dir; using that as the mirror source makes reconcile_links() symlink accounts
     to each other — or to themselves, a symlink loop. In that case fall back to
@@ -108,7 +108,7 @@ def reauth_tmp_dir() -> Path:
 
 
 def reauth_chrome_profile_dir() -> Path:
-    """Dedicated, ccswitch-owned Chrome profile used as the reauth copy source.
+    """Dedicated, ViberPit-owned Chrome profile used as the reauth copy source.
 
     Deliberately NOT the operator's everyday ``~/.config/google-chrome/Default``:
     the reauth flow copies its source into a throwaway profile, so pointing it at

@@ -5,6 +5,7 @@ this same id. Behavior currently lives in the orchestrator's _on_pr_change
 (see Task 9); this class supplies identity, modes, config schema, and status."""
 from __future__ import annotations
 
+from ccswitch import brand
 from server.sessions.pr_fix import VALID_AUTOFIX_MODES
 
 from .base import AutomationStatus, ConfigField
@@ -22,7 +23,7 @@ class PrDoctor:
     id = "pr-doctor"
     name = "PR Doctor"
     work_class = "maintenance"
-    description = "Watches CI on PRs created via ccswitch and restores failing ones."
+    description = f"Watches CI on PRs created via {brand.NAME} and restores failing ones."
     modes = _ordered_modes()
     # Audited engine ceiling (Phase 7, Task 7.1; widened #1267). The offline
     # acceptance suite (server/tests/test_pr_doctor_codex_acceptance.py) passes:
@@ -42,7 +43,7 @@ class PrDoctor:
     config_schema = [
         ConfigField(key="enabled_repos", label="Repositories",
                     type="repo-multiselect", default=[],
-                    help="Limit to these repos (empty = all ccswitch-managed repos)."),
+                    help="Limit to these repos (empty = all managed repos)."),
         ConfigField(key="max_attempts", label="Max fix attempts", type="int", default=3,
                     help="Session-fix attempts per PR before giving up (0 = notify only)."),
         ConfigField(key="mechanical_attempts", label="Max branch-update attempts",

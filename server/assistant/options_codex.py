@@ -10,13 +10,13 @@ so it gets its own reviewed surface selected behind the engine
 ===========================================  ==========================================
 Claude                                       Codex (verified, codex-cli 0.153.2)
 ===========================================  ==========================================
-``mcp_servers={"ccswitch": server}``         ``thread/start`` ``dynamicTools`` —
+``mcp_servers={"viberpit": server}``         ``thread/start`` ``dynamicTools`` —
 (in-process SDK MCP server)                  client-declared specs, called back as the
                                              server→client request ``item/tool/call``.
                                              No child process, no config file.
-``can_use_tool`` gate                        **structural**: ccswitch executes every
-                                             ccswitch tool, so a tool cannot run
-                                             without ccswitch answering the callback.
+``can_use_tool`` gate                        **structural**: ViberPit executes every
+                                             ViberPit tool, so a tool cannot run
+                                             without ViberPit answering the callback.
 ``tools=[]`` + ``disallowed_tools``          **no equivalent — built-ins cannot be
 (built-ins removed)                          removed.** The boundary is
                                              ``approvalPolicy: "untrusted"`` +
@@ -41,7 +41,7 @@ are encoded here rather than left to a caller:
   ``instructionSources: []``.
 * **An assistant thread must never be resumed.** ``thread/resume`` has no
   ``dynamicTools`` field (``v2/ThreadResumeParams.json``), so a resumed thread comes
-  back with the built-ins still declared and the ccswitch tools gone. See
+  back with the built-ins still declared and the ViberPit tools gone. See
   :data:`ASSISTANT_CODEX_RESUME_UNSUPPORTED`.
 """
 from __future__ import annotations
@@ -75,7 +75,7 @@ log = logging.getLogger(__name__)
 #:
 #: Read-only is not a convenience — with no way to remove the built-ins, it is
 #: half of what makes a declined approval a real refusal rather than a race — and
-#: `untrusted` is what routes EVERY built-in through an approval ccswitch can
+#: `untrusted` is what routes EVERY built-in through an approval ViberPit can
 #: answer. `on-request` would let the model self-certify a command as safe.
 ASSISTANT_CODEX_SANDBOX = ASSISTANT_PROFILE.sandbox_mode.value
 ASSISTANT_CODEX_APPROVAL_POLICY = ASSISTANT_PROFILE.approval_policy.value
@@ -92,11 +92,11 @@ ASSISTANT_CODEX_DECLINE = "decline"
 #: constant so the driver's refusal and this module's reasoning are one string.
 ASSISTANT_CODEX_RESUME_UNSUPPORTED = (
     "thread/resume cannot re-declare dynamicTools on codex-cli 0.153.2, so a "
-    "resumed assistant thread would keep the built-ins and lose every ccswitch "
+    f"resumed assistant thread would keep the built-ins and lose every {brand.NAME} "
     "tool; starting a new thread instead"
 )
 
-#: Directory name under the ccswitch config root used as an assistant thread's
+#: Directory name under the ViberPit config root used as an assistant thread's
 #: `cwd`. Empty, private, and outside any repository.
 NEUTRAL_CWD_DIRNAME = "codex-neutral-cwd"
 
@@ -132,7 +132,7 @@ def _marker_above(path: str) -> str | None:
 def neutral_cwd() -> str:
     """An empty, private directory outside any repository, created on demand.
 
-    Lives under the ccswitch config root (``ccswitch.paths.cfg_root()``) rather
+    Lives under the ViberPit config root (``ccswitch.paths.cfg_root()``) rather
     than a temp dir so the same path is reused across restarts and shows up in an
     operator's own state directory instead of ``/tmp``.
     """
@@ -170,7 +170,7 @@ ToolHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 def input_schema_for(tool: SdkMcpTool[Any]) -> dict[str, Any]:
     """The JSON Schema Codex must be handed for *tool*.
 
-    Most ccswitch tools build an explicit schema (``tools._schema``) because they
+    Most ViberPit tools build an explicit schema (``tools._schema``) because they
     have optional arguments, but the all-required ones use the SDK's *shorthand*
     — ``{"id": str}`` — which is a mapping of python types, not JSON Schema. The
     Claude path never sees the difference: ``create_sdk_mcp_server`` expands the
@@ -293,7 +293,7 @@ class CodexAssistantOverlay:
     def thread_start_params(self) -> schema.ThreadStartParams:
         """The `thread/start` params for this assistant thread.
 
-        ``developer_instructions`` is deliberately NOT set: the ccswitch marker
+        ``developer_instructions`` is deliberately NOT set: the ViberPit marker
         contracts it carries (completion, PR, self-directed model request) are
         coding-session contracts, and ``base_instructions`` replaces the
         app-server's own agent instructions the way the Claude overlay's plain

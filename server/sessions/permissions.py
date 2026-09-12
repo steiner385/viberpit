@@ -10,15 +10,15 @@ log = logging.getLogger(__name__)
 # File-writing tools whose target is a single path argument.
 _FILE_WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 
-# ccswitch session modes whose names mirror the Claude Agent SDK's own
+# ViberPit session modes whose names mirror the Claude Agent SDK's own
 # ``permission_mode`` vocabulary. For these the SDK's permission engine is the
 # front-line authority (it can auto-accept edits / bypass checks before the
-# ``can_use_tool`` callback even fires); every other ccswitch mode
+# ``can_use_tool`` callback even fires); every other ViberPit mode
 # (interactive/auto/allowlist/full-auto) runs the SDK on ``"default"`` and is
 # gated entirely by ``PermissionRegistry.request`` below.
 _SDK_PASSTHROUGH_MODES = frozenset({"plan", "acceptEdits", "bypassPermissions"})
 
-#: How much a ccswitch permission mode lets a session do without asking — the ONE
+#: How much a ViberPit permission mode lets a session do without asking — the ONE
 #: ordering for "is mode A wider than mode B". A child session may never run wider
 #: than its parent (child-session spec §4.3); an unknown mode ranks widest so it can
 #: never be picked as the "narrower" of two.
@@ -35,7 +35,7 @@ def narrowest(requested: str | None, parent: str) -> str:
 
 
 def to_sdk_permission_mode(mode: str) -> str:
-    """Map a ccswitch session mode to the Claude Agent SDK ``permission_mode``.
+    """Map a ViberPit session mode to the Claude Agent SDK ``permission_mode``.
 
     Single source of truth for the mapping: both the initial spawn
     (``claude_sdk_factory.real_sdk_factory``) and live mode switches
@@ -144,7 +144,7 @@ class PermissionRegistry:
     def _pend(self, session_id, turn_id, tool, input, *, mode, identity, always_allowed,
               items) -> tuple[str, asyncio.Future]:
         """Register a card and log it. The ONE place a pending record is created, so
-        every card — destructive ccswitch tool, mutation tool, or an ordinary tool the
+        every card — destructive ViberPit tool, mutation tool, or an ordinary tool the
         session mode gates — leaves the same line naming the mode the registry saw.
         That line is what distinguishes "the operator chose a prompting mode" from
         "a full-auto driver was rebuilt as interactive" (2026-09-07), which no other
@@ -198,24 +198,24 @@ class PermissionRegistry:
             ann = annotation_for(tool)
             # READ and SIGNAL both auto-allow with no card. They differ in what they
             # claim, not in how they are gated: READ changes nothing, SIGNAL changes
-            # only ccswitch's view of THIS session and replaces an ungated marker.
+            # only ViberPit's view of THIS session and replaces an ungated marker.
             if ann is not None and ann.tool_class in (ToolClass.READ, ToolClass.SIGNAL):
                 return None, _resolved(True), True
             if ann is not None and ann.tool_class == ToolClass.DESTRUCTIVE:
                 # Never consults the grant cache, in ANY mode — a destructive
-                # ccswitch action always surfaces a card, and that card never
+                # ViberPit action always surfaces a card, and that card never
                 # offers "Always allow" (always_allowed=False on the pending
                 # record; resolve() below refuses to persist a grant for it).
                 pid, fut = self._pend(session_id, turn_id, tool, input, mode=mode,
                                       identity=identity, always_allowed=False, items=items)
                 return pid, fut, False
-            # MUTATION, or an unknown/not-yet-registered ccswitch tool (treated
+            # MUTATION, or an unknown/not-yet-registered ViberPit tool (treated
             # conservatively as mutation-like rather than raising on a None
             # annotation — forward-compatible with tools Task 3.3 adds later).
             # Grant cache is honoured in EVERY mode, INCLUDING "interactive" —
             # unlike the generic grant-cache check below, which deliberately
             # skips "interactive" for ordinary tools. This is deliberate here:
-            # the operator granting "always allow" on a ccswitch mutation tool
+            # the operator granting "always allow" on a ViberPit mutation tool
             # is trusting the APP, not accepting session-mode risk.
             if self.is_granted(session_id, tool, input, now):
                 return None, _resolved(True), True
@@ -247,8 +247,8 @@ class PermissionRegistry:
         # "interactive".  The operator opted into trusting MCP unconditionally, so a
         # configured MCP server's tools are never gated here.  (The binary's separate
         # project-`.mcp.json` server-trust gate is suppressed in sdk_factory via
-        # enableAllProjectMcpServers — this only governs ccswitch's own per-tool card.)
-        # ccswitch's own `mcp__ccswitch__*` tools are intercepted above and never
+        # enableAllProjectMcpServers — this only governs ViberPit's own per-tool card.)
+        # ViberPit's own `mcp__ccswitch__*` tools are intercepted above and never
         # reach this branch.
         if tool.startswith("mcp__"):
             return None, _resolved(True), True
@@ -274,22 +274,22 @@ class PermissionRegistry:
     async def request_external(self, session_id, turn_id, tool, input, *, identity,
                                always_allowed: bool = True):
         """Register a prompt an ENGINE already decided needs a human, and return
-        ``(perm_id, future)`` where the future settles to the raw ccswitch
+        ``(perm_id, future)`` where the future settles to the raw ViberPit
         decision string (``"allow"`` / ``"deny"`` / ``"always"``) — or ``False``
         if it was dismissed by :meth:`deny_all`.
 
         Two differences from :meth:`request`, both forced by who is deciding:
 
         * **No auto-approval, in any mode.** ``request`` re-derives "does this
-          need a human?" from the ccswitch mode because the Claude SDK asks about
+          need a human?" from the ViberPit mode because the Claude SDK asks about
           every tool. An external engine asks only when *its own* policy already
           concluded a human is required, and that policy was itself derived from
-          the same ccswitch mode (``server/codex/permissions.py``). Re-applying
+          the same ViberPit mode (``server/codex/permissions.py``). Re-applying
           the mode here would auto-answer a question the engine only raises in
-          the modes where ccswitch wanted the prompt — and it would answer it
+          the modes where ViberPit wanted the prompt — and it would answer it
           ``allow``.
         * **The future carries the decision, not a boolean, and "always" never
-          writes a local grant.** ``self._grants`` is ccswitch's own cache, and
+          writes a local grant.** ``self._grants`` is ViberPit's own cache, and
           it is never consulted for an engine that enforces approvals itself, so
           an entry there would be a second, invisible policy that no longer
           matches what the engine was told. The caller maps ``"always"`` onto the
@@ -319,9 +319,9 @@ class PermissionRegistry:
             if rec.get("always_allowed", True) and not raw:
                 fp = self.fingerprint(rec["tool"], rec["input"])
                 self._grants[(rec["session_id"], fp)] = time.time() + self.GRANT_TTL
-            # else: a destructive ccswitch tool, or an engine-enforced prompt whose
+            # else: a destructive ViberPit tool, or an engine-enforced prompt whose
             # "always" is honoured natively — allow this ONE call but never persist a
-            # ccswitch grant, so the next request() for the same tool asks again.
+            # ViberPit grant, so the next request() for the same tool asks again.
             if not raw:
                 decision = "allow"
         if not rec["future"].done():

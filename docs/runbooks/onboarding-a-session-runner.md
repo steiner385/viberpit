@@ -231,7 +231,7 @@ sudo chmod 640 /etc/viberpit/daemon.env
   READ-ONLY (`allow_refresh=False`): it feeds proactive ceiling rotation and dead-account
   detection for its own sessions without racing the primary over the shared refresh-token
   files.
-- [ ] File permissions: `640` (root-readable, ccswitch-group readable, not world-readable).
+- [ ] File permissions: `640` (root-readable, ViberPit-service-group readable, not world-readable).
 
 ---
 

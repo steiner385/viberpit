@@ -20,7 +20,7 @@ def _key():
 
 def make_ca():
     key = _key()
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "ccswitch-test-ca")])
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "viberpit-test-ca")])
     cert = (
         x509.CertificateBuilder()
         .subject_name(name).issuer_name(name)

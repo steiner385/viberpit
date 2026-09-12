@@ -24,7 +24,7 @@ function wrapper({ children }: { children: ReactNode }) {
 
 const INCIDENT: sdlc.Incident = {
   id: 'i1', key: 'pr_cycle_time_hours:we1:high', metric: 'ccswitch-pr-cycle-time',
-  source: 'pr_cycle_time_hours', repo: 'steiner385/ccswitch',
+  source: 'pr_cycle_time_hours', repo: 'steiner385/viberpit',
   rule: 'we1', sigma: 3, side: 'high', tier: 'propose', response: 'propose',
   value: 51.2345, baselineMean: 10.5, baselineStddev: 0.5, baselineN: 30,
   observedAt: '2026-09-05', summary: 'cycle time above 3σ', evidence: [],

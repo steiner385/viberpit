@@ -1,6 +1,6 @@
 """Per-session git worktrees so concurrent sessions on one repo don't collide.
 
-Each ccswitch session that selects a repo + branch runs in its OWN git worktree
+Each ViberPit session that selects a repo + branch runs in its OWN git worktree
 checked out to that branch, instead of mutating the user's real checkout with a
 `git checkout`.  This means:
 
@@ -10,7 +10,7 @@ checked out to that branch, instead of mutating the user's real checkout with a
     a separate working tree, so there is no collision.
 
 Worktrees live under ``<repo_root>/.ccswitch/worktrees/<repo>/<short-session>``
-(a ccswitch-owned namespace next to the user's repos), and share the original
+(a ViberPit-owned namespace next to the user's repos), and share the original
 repo's object store (cheap — no full clone).
 
 If the selected branch is already checked out somewhere (commonly the user's real
@@ -29,7 +29,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from ccswitch import paths
+from ccswitch import brand, paths
 from ccswitch.gitrepos import git_env_for_remote
 
 log = logging.getLogger(__name__)
@@ -261,14 +261,14 @@ def authored_branches(cwd: str, scratch_branch: str | None = None) -> list[str]:
 
 
 def worktrees_base(repo_root: str) -> Path:
-    """ccswitch-owned root for all session worktrees, under the user's repo root."""
+    """ViberPit-owned root for all session worktrees, under the user's repo root."""
     return Path(repo_root).expanduser() / ".ccswitch" / "worktrees"
 
 
 def is_managed_path(path: str, repo_root: str) -> bool:
-    """True if `path` is one of ccswitch's managed worktree directories.
+    """True if `path` is one of ViberPit's managed worktree directories.
 
-    Used at cleanup time to recognise ccswitch-created worktrees even across a
+    Used at cleanup time to recognise ViberPit-created worktrees even across a
     server restart (no DB column needed — the location is the marker).
     """
     try:
@@ -330,7 +330,7 @@ def lock_worktree(repo_top: str, dest: Path) -> None:
     usable unlocked, just less protected against a concurrent prune.
     """
     r = _run(["git", "-C", repo_top, "worktree", "lock", "--reason",
-              "ccswitch live session", str(dest)])
+              f"{brand.NAME} live session", str(dest)])
     if r.returncode != 0:
         log.warning("worktree.lock_failed path=%s err=%s", dest, r.stderr.strip())
 
@@ -451,7 +451,7 @@ def create_worktree(repo_path: str, branch: str | None, session_id: str, repo_ro
 
 
 def remove_worktree(worktree_path: str, force: bool = False) -> bool:
-    """Remove a ccswitch worktree IFF it has no uncommitted changes.
+    """Remove a ViberPit worktree IFF it has no uncommitted changes.
 
     Returns True if removed, False if it was left in place (dirty — we never
     destroy uncommitted work). Also deletes the per-session ``ccswitch/*`` child

@@ -12,7 +12,7 @@ NOW = datetime(2026, 9, 4, tzinfo=timezone.utc)
 
 
 def _row(**over):
-    base = dict(ref="o/r#1", repo="o/r", number=1, product="ccswitch", title="t", body="", url="u",
+    base = dict(ref="o/r#1", repo="o/r", number=1, product="viberpit", title="t", body="", url="u",
                 status="Ready", score=10.0, gh_created_at=NOW - timedelta(days=1), gh_updated_at=NOW,
                 assignees=(), author="tony", labels=(), open_children=0, open_blockers=(),
                 live_session=False, claimed=False, needs_human_at=None)
@@ -88,7 +88,7 @@ def test_rank_orders_score_desc_nulls_last_then_age_and_counts_skips():
 def test_to_candidate_is_the_runner_shape_plus_provenance():
     entries, _ = rank([_row()], now=NOW)
     assert to_candidate(entries[0]) == {"ref": "o/r#1", "number": 1, "repo": "o/r", "title": "t",
-                                        "body": "", "url": "u", "score": 10.0, "product": "ccswitch"}
+                                        "body": "", "url": "u", "score": 10.0, "product": "viberpit"}
 
 
 def test_rank_rejects_unknown_min_status():

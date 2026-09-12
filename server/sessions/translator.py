@@ -377,7 +377,7 @@ def _error_from_result(msg, turn_id: str):
 
 # The CLI tags a turn that ended on a pending tool_use (no matching tool_result) with
 # this diagnostic. It's an interrupted-mid-tool-call transcript, not anything the user
-# did wrong — and ccswitch heals it on the next resume (see transcript_repair). Replace
+# did wrong — and ViberPit heals it on the next resume (see transcript_repair). Replace
 # the cryptic internals with an honest, actionable message.
 _EDE_MARKER = "[ede_diagnostic]"
 _EDE_HUMAN = ("The previous turn was interrupted while a tool was running, leaving the "

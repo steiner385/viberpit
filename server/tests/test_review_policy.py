@@ -81,7 +81,7 @@ def test_parse_review_md_picks_first_nit_cap():
 
 def test_parse_review_md_with_real_review_md_content():
     text = (
-        "# ccswitch PR Review Policy\n\n"
+        "# ViberPit PR Review Policy\n\n"
         "A review **must not** post more than **3 `[nit]`** findings per PR.\n"
     )
     policy = parse_review_md(text)

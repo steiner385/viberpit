@@ -34,7 +34,7 @@ const h = vi.hoisted(() => {
     projectSlug: 'kindash',
     primaryCapability: { id: 'f1', slug: 'task-views', title: 'Task views' },
     capabilities: [{ id: 'f1', slug: 'task-views', title: 'Task views', isPrimary: true }],
-    buildSessions: [{ id: 's1', status: 'complete', branch: 'ccswitch/views' }],
+    buildSessions: [{ id: 's1', status: 'complete', branch: 'viberpit/views' }],
     nextAction: { type: 'handoff_to_build' },
   }
   // The map is only read for the initiative node's `reason` — the shipped
@@ -157,7 +157,7 @@ describe('InitiativePage', () => {
 
   it('Sessions tab links to the session; Capabilities tab links to the capability', () => {
     mount('/initiatives/views?tab=sessions')
-    expect(screen.getByRole('link', { name: /ccswitch\/views/ })).toHaveAttribute('href', '/sessions/s1')
+    expect(screen.getByRole('link', { name: /viberpit\/views/ })).toHaveAttribute('href', '/sessions/s1')
     fireEvent.click(screen.getByRole('tab', { name: /Capabilities/ }))
     expect(screen.getByRole('link', { name: /Task views/ })).toHaveAttribute('href', '/roadmap/kindash/capabilities/task-views')
   })

@@ -55,6 +55,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Final
 
+from ccswitch import brand
 from server.aio import cancel_and_reap
 from server.codex import process as codex_process
 from server.codex import redaction, schema
@@ -165,7 +166,7 @@ CredentialSupplier = Callable[[str], Awaitable[schema.ExternalAuthLoginParams]]
 #: Builds the `account/chatgptAuthTokens/refresh` handler for ONE account.
 #:
 #: A factory rather than a handler, because the app-server's refresh callback
-#: carries no ccswitch account name — it is a request on *this* connection, and
+#: carries no ViberPit account name — it is a request on *this* connection, and
 #: which account that connection belongs to is knowledge only the manager has. A
 #: single shared handler would have to guess, and the guess would be "refresh
 #: whichever account 401'd", i.e. exactly the confused-deputy shape the whole
@@ -314,7 +315,7 @@ class CodexRunnerManager:
         self.notify_errors = 0
         #: Thread-scoped frames that arrived with no registered owner. Expected to
         #: stay at or near zero; a climbing value means threads are being served
-        #: that no ccswitch session is attached to.
+        #: that no ViberPit session is attached to.
         self.unrouted_events = 0
         self.unrouted_approvals = 0
         self.unrouted_user_input = 0
@@ -853,7 +854,7 @@ class CodexRunnerManager:
                 method=method,
             )
             raise CodexRunnerMissingError(
-                "no live ccswitch session owns this codex approval request"
+                f"no live {brand.NAME} session owns this codex approval request"
             )
         # Approval latency is wall-clock time waiting on a HUMAN, which is exactly
         # what makes it worth measuring: a session left holding an approval blocks
@@ -884,7 +885,7 @@ class CodexRunnerManager:
                 account=account,
             )
             raise CodexRunnerMissingError(
-                "no live ccswitch session owns this codex user-input request"
+                f"no live {brand.NAME} session owns this codex user-input request"
             )
         started = time.monotonic()
         outcome = "error"
@@ -917,7 +918,7 @@ class CodexRunnerManager:
                 account=account,
             )
             raise CodexRunnerMissingError(
-                "no live ccswitch session owns this codex tool call"
+                f"no live {brand.NAME} session owns this codex tool call"
             )
         started = time.monotonic()
         outcome = "error"

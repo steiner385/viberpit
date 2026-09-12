@@ -646,7 +646,7 @@ async def test_an_unrecoverable_runner_is_surfaced_and_signalled(harness):
 
 @pytest.mark.asyncio
 async def test_thread_status_never_overwrites_the_derived_status(harness):
-    """The translator speaks working/idle; ccswitch's dashboard speaks a richer
+    """The translator speaks working/idle; ViberPit's dashboard speaks a richer
     vocabulary. Forwarding the raw status would paint 'idle' over a live turn."""
     driver = await harness.boot()
     await harness.run_turn("hello")

@@ -111,7 +111,7 @@ class TeardownWatchdog:
         current_test = os.environ.get("PYTEST_CURRENT_TEST", "<unknown test>")
         try:
             out.write(
-                f"\n===== ccswitch teardown watchdog: {self._label} exceeded "
+                f"\n===== ViberPit teardown watchdog: {self._label} exceeded "
                 f"{self._timeout:.0f}s (issue #846) =====\n"
                 f"test: {current_test}\n"
                 f"mode: {how}\n"

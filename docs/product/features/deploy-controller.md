@@ -16,7 +16,7 @@ links:
 
 # Self-Hosted Deploy Controller
 
-**Problem** — ccswitch is self-hosted and continuously improves itself, so it must upgrade the
+**Problem** — ViberPit is self-hosted and continuously improves itself, so it must upgrade the
 running edge (web server) and session daemon to a new commit without killing the live `claude`
 sessions it hosts. A naive `git pull` + `systemctl restart` kills in-flight turns, can ship a
 half-broken tip, splits the edge and daemon onto different code versions, and — when the upgrade
@@ -24,7 +24,7 @@ touches deploy code itself — the controller has to restart into new code mid-d
 reporting a phantom failure. Roughly 47 deploy PRs churned this into a controller that treats its
 own upgrade as a first-class, drain-safe, rollback-safe operation.
 
-**Target users** — the single operator running their own ccswitch instance, who deploys new commits
+**Target users** — the single operator running their own ViberPit instance, who deploys new commits
 from the web UI (or on a schedule) and expects live sessions to survive it.
 
 **Desired outcome** — one-button (or automatic) upgrade to the newest CI-green commit that drains

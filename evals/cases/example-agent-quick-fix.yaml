@@ -1,6 +1,6 @@
 id: example-agent-quick-fix
 description: >-
-  EXAMPLE agent-mode case (does not run in the CI gate). A real ccswitch task an
+  EXAMPLE agent-mode case (does not run in the CI gate). A real ViberPit task an
   agent completes end-to-end; run out-of-band with `--kind agent`. Replace with
   real recent tasks as the corpus grows toward the 20–50 target.
 kind: agent

@@ -76,7 +76,7 @@ def _config(**over) -> dict:
 def test_query_queue_excludes_refs_claimed_by_the_runner(tmp_path):
     async def run():
         await _init(tmp_path)
-        await _seed_product("ccswitch", "o/r")
+        await _seed_product("viberpit", "o/r")
         for n in (1, 2, 3, 4):
             await _seed_item("o/r", n, score=float(10 - n))
         orch = _orch_with_ctx()
@@ -99,7 +99,7 @@ def test_query_queue_records_the_last_ranked_result(tmp_path):
     """The ranked pool is kept for the status card's provenance (Phase C, Task 7)."""
     async def run():
         await _init(tmp_path, "last.db")
-        await _seed_product("ccswitch", "o/r")
+        await _seed_product("viberpit", "o/r")
         await _seed_item("o/r", 1, score=3.0)
         orch = _orch_with_ctx()
 
@@ -117,7 +117,7 @@ def test_gave_up_row_is_a_cooldown_not_a_claim(tmp_path):
     ``needs_human_retry_days`` so the issue comes back."""
     async def run():
         await _init(tmp_path, "gaveup.db")
-        await _seed_product("ccswitch", "o/r")
+        await _seed_product("viberpit", "o/r")
         await _seed_item("o/r", 5, status="Backlog", score=5.0)
         orch = _orch_with_ctx()
         await orch._backlog_ctx.set_target_state("o/r#5", {
@@ -154,7 +154,7 @@ def test_gave_up_row_is_never_a_claim_and_an_undated_one_is_no_cooldown(tmp_path
     cannot date must not park an issue forever."""
     async def run():
         await _init(tmp_path, "gaveupnostamp.db")
-        await _seed_product("ccswitch", "o/r")
+        await _seed_product("viberpit", "o/r")
         await _seed_item("o/r", 6, status="Backlog", score=5.0)
         orch = _orch_with_ctx()
         await orch._backlog_ctx.set_target_state(
@@ -175,7 +175,7 @@ def test_gave_up_row_is_never_a_claim_and_an_undated_one_is_no_cooldown(tmp_path
 def test_count_candidates_returns_queue_eligible_and_blocked(tmp_path):
     async def run():
         await _init(tmp_path, "count.db")
-        await _seed_product("ccswitch", "o/r")
+        await _seed_product("viberpit", "o/r")
         await _seed_item("o/r", 1, score=5.0)          # eligible
         blocked = await _seed_item("o/r", 2, score=9.0)  # blocked by open #1
         async with db_session() as db:
@@ -198,7 +198,7 @@ def test_count_candidates_reports_below_min_status_items_as_untriaged(tmp_path):
     triage. The status skip is its own gauge on the card (#990)."""
     async def run():
         await _init(tmp_path, "untriaged.db")
-        await _seed_product("ccswitch", "o/r")
+        await _seed_product("viberpit", "o/r")
         await _seed_item("o/r", 1, score=5.0)                     # Ready → eligible
         await _seed_item("o/r", 2, status="Backlog", score=9.0)   # untriaged
         await _seed_item("o/r", 3, status="Backlog", score=8.0)   # untriaged
@@ -220,7 +220,7 @@ def test_count_candidates_reports_below_min_status_items_as_untriaged(tmp_path):
 def test_query_queue_scopes_candidates_to_enabled_repos(tmp_path):
     async def run():
         await _init(tmp_path, "repos.db")
-        await _seed_product("ccswitch", "o/r")
+        await _seed_product("viberpit", "o/r")
         await _seed_product("kindash", "o/k")
         await _seed_item("o/r", 1, score=1.0)
         await _seed_item("o/k", 2, score=9.0)
@@ -240,7 +240,7 @@ def test_count_candidates_scopes_to_enabled_repos(tmp_path):
     """The card's gauge counts the same pool selection draws from."""
     async def run():
         await _init(tmp_path, "countrepos.db")
-        await _seed_product("ccswitch", "o/r")
+        await _seed_product("viberpit", "o/r")
         await _seed_product("kindash", "o/k")
         await _seed_item("o/r", 1, score=1.0)
         await _seed_item("o/k", 2, score=9.0)
@@ -261,7 +261,7 @@ def test_count_candidates_blocked_gauge_ignores_out_of_scope_products(tmp_path):
     number is the "why isn't THIS backlog draining" note."""
     async def run():
         await _init(tmp_path, "blockedscope.db")
-        await _seed_product("ccswitch", "o/r")
+        await _seed_product("viberpit", "o/r")
         await _seed_product("kindash", "o/k")
         await _seed_item("o/r", 1, score=1.0)                    # in scope, eligible
         await _seed_item("o/k", 2, status="Blocked", score=9.0)  # out of scope, blocked
@@ -310,7 +310,7 @@ def test_select_batch_survives_a_failing_queue_read(tmp_path, monkeypatch):
 def test_query_queue_min_status_comes_from_config(tmp_path):
     async def run():
         await _init(tmp_path, "minstatus.db")
-        await _seed_product("ccswitch", "o/r")
+        await _seed_product("viberpit", "o/r")
         await _seed_item("o/r", 1, status="Ready", score=1.0)
         await _seed_item("o/r", 2, status="Backlog", score=9.0)
         orch = _orch_with_ctx()
@@ -331,7 +331,7 @@ def test_query_queue_min_status_comes_from_config(tmp_path):
 def test_refresh_groups_groups_the_queue_pool(tmp_path, monkeypatch):
     async def run():
         await _init(tmp_path, "groups.db")
-        await _seed_product("ccswitch", "o/r")
+        await _seed_product("viberpit", "o/r")
         await _seed_item("o/r", 1, score=5.0)
         orch = _orch_with_ctx()
 

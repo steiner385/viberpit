@@ -1,6 +1,6 @@
 """Spec 003 §6 "rocky rule": a daemon whose code is not origin/master must not write to GitHub.
 
-The reconciler is the only fleet-global loop that mutates state OUTSIDE ccswitch's own
+The reconciler is the only fleet-global loop that mutates state OUTSIDE ViberPit's own
 database, so a daemon running stale code could converge boards toward a superseded desired
 state. This fence answers "is the running code the tip of master ON GITHUB?".
 

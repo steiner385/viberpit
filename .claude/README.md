@@ -1,6 +1,6 @@
 # Agent SDLC governance control plane
 
-Version-controlled agent policy for ccswitch (AI-Native SDLC design §7, issue #805).
+Version-controlled agent policy for ViberPit (AI-Native SDLC design §7, issue #805).
 This tree is the **enforcement** side of the governance core in
 `server/sdlc/governance.py` (the pure decisions); everything here wires those
 decisions into live Claude sessions and CI.
@@ -20,7 +20,7 @@ the canonical cross-agent context and review-policy documents to avoid parallel 
 
 ## Permission tiers by environment
 
-`governance.permission_tier(env)` maps an environment to an existing ccswitch
+`governance.permission_tier(env)` maps an environment to an existing ViberPit
 session mode — a policy over the permission engine that already exists, not a new
 one:
 

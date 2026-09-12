@@ -238,7 +238,7 @@ def unattended_launch_blocker(engine: AgentEngine, permission_mode: str) -> str 
     Codex's sandbox is network-isolated in every mode except
     ``full-auto`` and ``bypassPermissions``
     (see ``server.codex.permissions.permits_network_egress`` — a fact about the
-    pinned app-server contract, not a ccswitch setting). Claude has no sandbox at
+    pinned app-server contract, not a ViberPit setting). Claude has no sandbox at
     all, so nothing blocks it and this is a no-op for the engine running today.
 
     Checked at launch rather than encoded as "automations must use mode X"

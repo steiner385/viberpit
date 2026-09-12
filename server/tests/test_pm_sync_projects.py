@@ -31,7 +31,7 @@ class Ctx:
 # ---- canned GraphQL payloads (repositoryOwner-rooted discovery) -------------
 
 
-def _owner_projects_payload(title="cc-account-switcher"):
+def _owner_projects_payload(title="viberpit"):
     return {"data": {"repositoryOwner": {"projectsV2": {
         "pageInfo": {"endCursor": None, "hasNextPage": False},
         "nodes": [
@@ -54,7 +54,7 @@ def _items_payload():
         "nodes": [
             {"id": "PVTI_1", "updatedAt": "2026-09-02T09:00:00Z",
              "content": {"__typename": "Issue", "number": 950,
-                         "repository": {"nameWithOwner": "steiner385/cc-account-switcher"}},
+                         "repository": {"nameWithOwner": "steiner385/viberpit"}},
              "fieldValues": {"nodes": [
                  {"name": "Ready", "field": {"name": "Status"}},
              ]}},
@@ -139,9 +139,9 @@ def _loop(ctx, *, products, owner_fetch, repo_fetch, now_fn=None, config=None,
 
 
 def _product(**over):
-    base = dict(project_id="p1", slug="ccswitch", name="cc-account-switcher",
+    base = dict(project_id="p1", slug="viberpit", name="viberpit",
                 gh_project_db_id=None, gh_node_id=None,
-                repos=["steiner385/cc-account-switcher"])
+                repos=["steiner385/viberpit"])
     base.update(over)
     return ProductSyncView(**base)
 
@@ -203,13 +203,13 @@ async def test_relations_pass_runs_per_repo_and_saves():
     def repo_fetch(query):
         return _relations_payload()
 
-    product = _product(repos=["steiner385/cc-account-switcher", "steiner385/KinDash"])
+    product = _product(repos=["steiner385/viberpit", "steiner385/KinDash"])
     loop, calls = _loop(ctx, products=[product],
                         owner_fetch=owner_fetch, repo_fetch=repo_fetch)
     await loop.tick()
 
     saved_repos = [repo for repo, _ in calls["save_relations"]]
-    assert saved_repos == ["steiner385/cc-account-switcher", "steiner385/KinDash"]
+    assert saved_repos == ["steiner385/viberpit", "steiner385/KinDash"]
     for _, rels in calls["save_relations"]:
         assert all(isinstance(r, IssueRelView) for r in rels)
 
@@ -236,17 +236,17 @@ async def test_relations_pass_canonicalizes_a_renamed_repo():
 
     def repo_fetch(query):
         payload = _relations_payload()
-        payload["data"]["repository"]["nameWithOwner"] = "steiner385/ccswitch"
+        payload["data"]["repository"]["nameWithOwner"] = "steiner385/viberpit-renamed"
         return payload
 
     loop, calls = _loop(ctx, products=[_product()], owner_fetch=owner_fetch,
                         repo_fetch=repo_fetch, rename_repo=rename)
     await loop.tick()
 
-    assert renamed == [("steiner385/cc-account-switcher", "steiner385/ccswitch")]
+    assert renamed == [("steiner385/viberpit", "steiner385/viberpit-renamed")]
     [(repo, rels)] = calls["save_relations"]
-    assert repo == "steiner385/ccswitch"
-    assert [r.repo for r in rels] == ["steiner385/ccswitch"]
+    assert repo == "steiner385/viberpit-renamed"
+    assert [r.repo for r in rels] == ["steiner385/viberpit-renamed"]
 
 
 @pytest.mark.asyncio
@@ -384,7 +384,7 @@ async def test_deleted_board_halts_loudly_without_pruning():
                for level, _, kw in ctx.events)
     # Repo relations are board-independent and still ran.
     assert [repo for repo, _ in calls["save_relations"]] == \
-        ["steiner385/cc-account-switcher"]
+        ["steiner385/viberpit"]
 
 
 # ---- Task 10: echo suppression + Stage back-sync — loop-level emit -----------
@@ -439,7 +439,7 @@ async def test_human_edit_returned_by_save_project_items_emits_gh_human_edit():
 
     async def save_project_items(gh_db_id, items):
         calls["save_project_items"].append((gh_db_id, list(items)))
-        return [HumanEdit("steiner385/cc-account-switcher#950", "Status",
+        return [HumanEdit("steiner385/viberpit#950", "Status",
                           "Backlog", "Ready")]
 
     loop._save_project_items = save_project_items
@@ -449,7 +449,7 @@ async def test_human_edit_returned_by_save_project_items_emits_gh_human_edit():
     assert len(human_edits) == 1
     level, text, kw = human_edits[0]
     assert level == "info"
-    assert kw["target"] == "steiner385/cc-account-switcher#950"
+    assert kw["target"] == "steiner385/viberpit#950"
     assert "Status" in text and "Backlog" in text and "Ready" in text
 
 
@@ -466,8 +466,8 @@ async def test_adopt_epics_seam_runs_after_relations_and_emits_epic_adopted():
 
     async def adopt_epics(project_id):
         calls.append(project_id)
-        return ["steiner385/cc-account-switcher#945",
-                "steiner385/cc-account-switcher#950"]
+        return ["steiner385/viberpit#945",
+                "steiner385/viberpit#950"]
 
     def owner_fetch(owner, query):
         if "projectsV2" in query:
@@ -490,7 +490,7 @@ async def test_adopt_epics_seam_runs_after_relations_and_emits_epic_adopted():
     epic_events = [e for e in ctx.events if e[2].get("kind") == "epic_adopted"]
     assert len(epic_events) == 2
     assert {kw["target"] for _, _, kw in epic_events} == {
-        "steiner385/cc-account-switcher#945", "steiner385/cc-account-switcher#950"}
+        "steiner385/viberpit#945", "steiner385/viberpit#950"}
     assert all(level == "info" for level, _, _ in epic_events)
 
 

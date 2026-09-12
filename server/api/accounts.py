@@ -685,7 +685,7 @@ async def _revoke_openai_credentials(request: Request, name: str, *, action: str
     Only then may the caller write the manifest.
 
     The mirror image — write "disabled" first, then revoke — leaves a window in
-    which ccswitch says the account is off while runners still hold live tokens,
+    which ViberPit says the account is off while runners still hold live tokens,
     and if the revoke then fails the window never closes.
 
     A partial failure raises 502 with ``degraded: true``. It is deliberately NOT
@@ -867,9 +867,9 @@ async def set_enabled(
     credential lives outside this host:
 
     * **Disable** must revoke and fan out invalidation BEFORE writing the flag, so
-      the moment ccswitch reports "disabled" no runner can still use it.
+      the moment ViberPit reports "disabled" no runner can still use it.
     * **Enable** writes the flag first, then syncs the authority. If the sync
-      fails the account is enabled in ccswitch but not yet issuable — the
+      fails the account is enabled in ViberPit but not yet issuable — the
       authority simply has not been told — which is the safe direction to fail.
     """
     _check_name_and_slot(name)

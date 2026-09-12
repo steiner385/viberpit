@@ -34,7 +34,7 @@ class CicdDoctor:
     engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY
     config_schema = [
         ConfigField(key="enabled_repos", label="Repositories", type="repo-multiselect",
-                    default=[], help="Limit to these repos (empty = all ccswitch-managed)."),
+                    default=[], help="Limit to these repos (empty = all managed repos)."),
         ConfigField(key="file_issues", label="File GitHub issues", type="bool", default=True,
                     help="Actionable findings become ci-doctor labeled issues."),
         ConfigField(key="min_window_days", label="Graduation window (days)", type="int",

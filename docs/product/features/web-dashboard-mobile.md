@@ -21,7 +21,7 @@ Max accounts from a terminal ties you to one machine. There is no way to glance 
 usage, spot a session that needs your input, or type a follow-up prompt from a phone while
 away from the desk.
 
-**Target users** — The single operator running ccswitch on their tailnet: at the desk on a
+**Target users** — The single operator running ViberPit on their tailnet: at the desk on a
 wide screen, and on a phone or tablet anywhere on the Tailscale network. A wall-mounted kiosk
 display is a fourth, unattended "user" (see Modes below).
 
@@ -102,7 +102,7 @@ raw PTY dump — there is no terminal emulator in the tree.
   `web/src/features/sessions/composer/Composer.tsx`, `web/src/features/sessions/list/DispatchBar.tsx`.
 - Responsiveness: `web/src/shell/useViewport.tsx`; swipe test
   `web/src/features/sessions/list/SessionCardSwipe.test.tsx`.
-- The repo-root `README.md`'s `## ccswitch web` section (Tailscale-served, phone/tablet access).
+- The repo-root `README.md`'s `## ViberPit web` section (Tailscale-served, phone/tablet access).
   `web/README.md` is the frontend developer guide — folders, gates, conventions — with no Tailscale
   prose.
 - PRs: #423 (mobile/desktop single-source invariant), #461 (mobile-reachable tab strip),

@@ -6,7 +6,7 @@ every property here is one the driver could quietly drop:
 
 * the thread is started, never resumed (a resume silently loses `dynamicTools`),
 * the tool surface and the neutral `cwd` reach `thread/start`,
-* a ccswitch tool call is gated by the SAME `PermissionRegistry` as its Claude
+* a ViberPit tool call is gated by the SAME `PermissionRegistry` as its Claude
   twin — reads auto-allow, destructive tools raise a card,
 * every built-in approval is declined without a card,
 * a permission-mode change cannot widen the sandbox.
@@ -90,7 +90,7 @@ async def test_the_thread_starts_with_the_tool_surface_and_a_neutral_cwd(harness
 async def test_an_assistant_thread_is_started_even_when_the_row_says_resume(harness,
                                                                             overlay):
     # The vendor boundary: `thread/resume` has no `dynamicTools`, so resuming
-    # would hand the drawer back with the built-ins declared and every ccswitch
+    # would hand the drawer back with the built-ins declared and every ViberPit
     # tool gone. Starting fresh loses model context; resuming loses the boundary.
     await harness.boot(assistant_overlay=overlay, resume="thread-from-yesterday")
     assert harness.frames(schema.METHOD_THREAD_RESUME) == []
@@ -198,7 +198,7 @@ async def test_a_destructive_tool_raises_a_card_and_a_denial_stops_it(harness, o
             break
         await asyncio.sleep(0.005)
     pending = harness.registry.pending(SESSION)
-    assert pending, "a destructive ccswitch tool ran with no card"
+    assert pending, "a destructive ViberPit tool ran with no card"
     assert pending[0]["tool"] == MCP_PREFIX + "archive_session"
     driver.resolve_permission(pending[0]["permId"], "deny", "user@example.com")
     reply = await _await_reply(harness, request_id)

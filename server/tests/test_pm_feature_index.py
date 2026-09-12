@@ -35,7 +35,7 @@ def _pdoc(slug: str, parent: str | None, links=()) -> FeatureDoc:
 
 
 def test_parent_and_links_are_carried_onto_the_upsert():
-    link = FeatureLinkRef("powered_by", "ccswitch", "sessions")
+    link = FeatureLinkRef("powered_by", "viberpit", "sessions")
     plan = plan_feature_index([], [
         ("d/sessions.md", _pdoc("sessions", None)),
         ("d/dictation.md", _pdoc("dictation", "sessions", [link])),

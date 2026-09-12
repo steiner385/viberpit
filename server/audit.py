@@ -39,7 +39,7 @@ _REDACT_PATTERNS: list[re.Pattern[str]] = [
     # payload or signature — which an OpenAI access token can have — slips past it.
     # The literal prefix keeps this cheap and effectively free of false positives.
     re.compile(r"\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),
-    # ccswitch envelope-encrypted token prefix
+    # ViberPit envelope-encrypted token prefix
     re.compile(r"ccenc1:[A-Za-z0-9+/=]+"),
     # Generic long base64 blobs that are clearly padded secrets (≥60 chars + mandatory
     # padding `=`).  Requiring at least one `=` pad character avoids false-positive

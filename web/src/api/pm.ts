@@ -161,7 +161,7 @@ export function useProjectDeps(slug: string, enabled = true) {
 
 export interface CreateEdgeInput { dstSlug: string; kind: EdgeKind; note?: string }
 
-/** A product-level edge (`depends_on` / `deploys_via` / `integrates_with`), ccswitch-owned. */
+/** A product-level edge (`depends_on` / `deploys_via` / `integrates_with`), ViberPit-owned. */
 export function createEdge(slug: string, input: CreateEdgeInput): Promise<ProjectEdgeInfo> {
   return api.post<ProjectEdgeInfo>(`/pm/projects/${encodeURIComponent(slug)}/edges`, input)
 }

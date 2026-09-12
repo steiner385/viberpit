@@ -40,7 +40,7 @@ _VALID = textwrap.dedent("""
     metrics:
       - id: cycle-time
         source: pr_cycle_time_hours
-        repo: steiner385/ccswitch
+        repo: steiner385/viberpit
         title: PR cycle time
         unit: hours
         direction: higher_is_worse
@@ -73,7 +73,7 @@ def test_loads_metrics_with_defaults_applied():
     cfg = load_bands_text(_VALID)
     (m,) = cfg.metrics
     assert (m.id, m.source, m.repo) == ("cycle-time", "pr_cycle_time_hours",
-                                        "steiner385/ccswitch")
+                                        "steiner385/viberpit")
     assert m.enabled is True
     assert cfg.metric("cycle-time") is m
     assert cfg.metric("nope") is None
@@ -83,7 +83,7 @@ def test_disabled_metrics_are_parsed_but_excluded_from_enabled_metrics():
     cfg = load_bands_text(_with_metric("""
         - id: ci-fail
           source: ci_failure_rate
-          repo: steiner385/ccswitch
+          repo: steiner385/viberpit
           enabled: false
     """))
     assert len(cfg.metrics) == 2

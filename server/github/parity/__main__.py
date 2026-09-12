@@ -37,7 +37,7 @@ def fetch_oracle(base_url: str, *, opener=urllib.request.urlopen) -> dict:
 
 
 def _pr_list_query(repo: str) -> str:
-    """GraphQL doc listing OPEN PRs for *repo* with the same statusCheckRollup ccswitch
+    """GraphQL doc listing OPEN PRs for *repo* with the same statusCheckRollup ViberPit
     keys on, so the candidate's ``checks`` is classified identically to PrStatusPoller.
     Also requests isDraft and mergeStateStatus for the stage classifier (Phase 1a).
     """

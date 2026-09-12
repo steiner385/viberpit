@@ -5,7 +5,7 @@ fact about the vendor contract: ``thread/start`` accepts a *plain*
 ``SandboxMode`` string and nothing else, while the resolved
 ``WorkspaceWriteSandboxPolicy`` the app-server reports back defaults
 ``networkAccess`` to ``false``. So ``workspace-write`` means "no network", and
-ccswitch has no wire knob to say otherwise.
+ViberPit has no wire knob to say otherwise.
 
 That is a claim about a pinned third-party schema, so it is asserted against the
 pinned fixture rather than restated in prose (constitution III: verify against

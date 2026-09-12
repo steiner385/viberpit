@@ -56,7 +56,7 @@ async def _seed(db_url: str, *, payload: dict | None = None,
     await init_db(db_url)
     async with db_session() as db:
         if with_product:
-            p = Project(slug="ccswitch", name="ccswitch", onboarding_state="map_merged")
+            p = Project(slug="viberpit", name="viberpit", onboarding_state="map_merged")
             db.add(p)
             await db.flush()
             db.add(ProjectRepo(project_id=p.id, repo="o/r", is_primary=True))

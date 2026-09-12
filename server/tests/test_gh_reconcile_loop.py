@@ -18,8 +18,8 @@ from server.pm.reconcile_diff import MirrorItem, Mutation
 from server.pm.reconcile_inputs import ProductFacts
 
 T = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
-REPO = "steiner385/cc-account-switcher"
-PRODUCT = ProductSyncView("p1", "ccswitch", "ccswitch", "ghdb1", "PVT_1", [REPO])
+REPO = "steiner385/viberpit"
+PRODUCT = ProductSyncView("p1", "viberpit", "viberpit", "ghdb1", "PVT_1", [REPO])
 # Status covers the full spec vocabulary so the default fixture never triggers Task 9's
 # ensure_fields bootstrap (test_ensure_fields_* below exercise that path directly with their
 # own sparse caches).
@@ -48,7 +48,7 @@ def _item(number, **over):
 
 
 def _facts(**over):
-    base = dict(project_id="p1", slug="ccswitch", owner="steiner385", gh_project_db_id="ghdb1",
+    base = dict(project_id="p1", slug="viberpit", owner="steiner385", gh_project_db_id="ghdb1",
                 project_node_id="PVT_1", field_cache=CACHE, mirror_synced_at=T,
                 items=[_item(5)],
                 mirror={f"{REPO}#5": MirrorItem(f"{REPO}#5", "PVTI_5", "Backlog", None, None,
@@ -453,7 +453,7 @@ def test_bootstrap_failure_parks_and_is_then_never_replanned():
         return {"errors": [{"message": "boom"}]}
 
     key = Mutation("create_field", "PVT_1", "Score", None, {"dataType": "NUMBER"},
-                   "fields:ccswitch").key()
+                   "fields:viberpit").key()
     fcs, parked = {}, set()
     ctx = Ctx(); loop, calls = _loop(ctx, facts=sparse, mutate=mutate, config={"migrate": True},
                                      failure_counts=fcs, parked=parked)

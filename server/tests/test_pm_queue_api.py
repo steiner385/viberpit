@@ -66,27 +66,27 @@ def _seed_ready_and_blocked(c) -> None:
 
     async def _seed_async() -> None:
         async with db_session() as db:
-            proj = Project(slug="ccswitch", name="ccswitch")
+            proj = Project(slug="viberpit", name="viberpit")
             db.add(proj)
             await db.flush()
 
             db.add(ProjectRepo(project_id=proj.id,
-                               repo="steiner385/cc-account-switcher",
+                               repo="steiner385/viberpit",
                                is_primary=True))
 
-            wi_ready = WorkItem(repo="steiner385/cc-account-switcher", number=100,
+            wi_ready = WorkItem(repo="steiner385/viberpit", number=100,
                                 kind="issue", title="ready item", state="open",
                                 body="do the thing", url="https://example.com/100")
-            wi_blocked = WorkItem(repo="steiner385/cc-account-switcher", number=101,
+            wi_blocked = WorkItem(repo="steiner385/viberpit", number=101,
                                   kind="issue", title="blocked item", state="open",
                                   body="blocked thing", url="https://example.com/101")
-            wi_blocker = WorkItem(repo="steiner385/cc-account-switcher", number=102,
+            wi_blocker = WorkItem(repo="steiner385/viberpit", number=102,
                                   kind="issue", title="blocker item", state="open")
             db.add_all([wi_ready, wi_blocked, wi_blocker])
             await db.flush()
 
             ghp = GhProject(project_id=proj.id, gh_project_number=7,
-                            title="cc-account-switcher")
+                            title="viberpit")
             db.add(ghp)
             await db.flush()
 
@@ -97,8 +97,8 @@ def _seed_ready_and_blocked(c) -> None:
 
             # Active native dep: blocked -> blocker (blocker is open) => blocked-by-dep.
             db.add(WorkItemDep(
-                src_ref="steiner385/cc-account-switcher#101",
-                dst_ref="steiner385/cc-account-switcher#102",
+                src_ref="steiner385/viberpit#101",
+                dst_ref="steiner385/viberpit#102",
                 source="native",
                 active=True,
             ))
@@ -116,11 +116,11 @@ def test_queue_endpoint_ranks_ready_and_skips_blocked():
         assert resp.status_code == 200, resp.text
         body = resp.json()
 
-        assert [e["ref"] for e in body["entries"]] == ["steiner385/cc-account-switcher#100"]
+        assert [e["ref"] for e in body["entries"]] == ["steiner385/viberpit#100"]
         entry = body["entries"][0]
-        assert entry["repo"] == "steiner385/cc-account-switcher"
+        assert entry["repo"] == "steiner385/viberpit"
         assert entry["number"] == 100
-        assert entry["product"] == "ccswitch"
+        assert entry["product"] == "viberpit"
         assert entry["title"] == "ready item"
         assert entry["url"] == "https://example.com/100"
         assert entry["score"] == 5.0
@@ -168,16 +168,16 @@ def test_queue_endpoint_reads_the_runners_claims_and_give_ups():
     from datetime import datetime, timezone
     with _client() as c:
         _seed_ready_and_blocked(c)
-        _seed_runner_row(c, "steiner385/cc-account-switcher#100",
+        _seed_runner_row(c, "steiner385/viberpit#100",
                          {"gave_up": True,
-                          "issues": ["steiner385/cc-account-switcher#100"],
+                          "issues": ["steiner385/viberpit#100"],
                           "needs_human_at": datetime.now(timezone.utc).isoformat(),
                           "reason": "max attempts"})
         # ``session_id`` is what makes this a HELD claim rather than a dangler the
         # startup tick reclaims — see _seed_runner_row's docstring.
-        _seed_runner_row(c, "steiner385/cc-account-switcher#101",
+        _seed_runner_row(c, "steiner385/viberpit#101",
                          {"claimed": True, "session_id": "sess-101",
-                          "issues": ["steiner385/cc-account-switcher#101"]})
+                          "issues": ["steiner385/viberpit#101"]})
 
         # ``respect_dependencies=false`` so #101 reports its CLAIM rather than the
         # open dep it also has (the dep gate runs first).
@@ -198,14 +198,14 @@ def test_queue_reads_a_held_claim_after_a_runner_tick():
     from datetime import datetime, timezone
     with _client() as c:
         _seed_ready_and_blocked(c)
-        _seed_runner_row(c, "steiner385/cc-account-switcher#100",
+        _seed_runner_row(c, "steiner385/viberpit#100",
                          {"gave_up": True,
-                          "issues": ["steiner385/cc-account-switcher#100"],
+                          "issues": ["steiner385/viberpit#100"],
                           "needs_human_at": datetime.now(timezone.utc).isoformat(),
                           "reason": "max attempts"})
-        _seed_runner_row(c, "steiner385/cc-account-switcher#101",
+        _seed_runner_row(c, "steiner385/viberpit#101",
                          {"claimed": True, "session_id": "sess-101",
-                          "issues": ["steiner385/cc-account-switcher#101"]})
+                          "issues": ["steiner385/viberpit#101"]})
 
         assert c.portal is not None
         c.portal.call(c.app.state.sessions._orch._backlog_tick_once)

@@ -29,7 +29,7 @@ from server.pm.mirror_store import list_product_views
 from server.pm.reconcile_diff import diff_fields, membership
 from server.pm.reconcile_inputs import load_product_facts
 
-REPO = "steiner385/cc-account-switcher"
+REPO = "steiner385/viberpit"
 T = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
 
 
@@ -40,9 +40,9 @@ def _db():
 def _seed(db):
     """One classified issue with a live session and a mirror row, plus one open issue
     that is not on the board yet (so membership has something to do)."""
-    p = Project(slug="ccswitch", name="ccswitch"); db.add(p); db.flush()
+    p = Project(slug="viberpit", name="viberpit"); db.add(p); db.flush()
     db.add(ProjectRepo(project_id=p.id, repo=REPO))
-    gp = GhProject(project_id=p.id, gh_node_id="PVT_1", gh_project_number=26, title="ccswitch",
+    gp = GhProject(project_id=p.id, gh_node_id="PVT_1", gh_project_number=26, title="viberpit",
                    field_cache={}, last_synced_at=T)
     db.add(gp); db.flush()
     i5 = WorkItem(repo=REPO, number=5, kind="issue", state="open", gh_node_id="I_5",

@@ -224,7 +224,7 @@ class ClaudeAgentDriver:
         self._last_rate_reset: int | None = None  # resets_at (epoch s) from a RateLimitEvent
         self._factory = sdk_factory
         # The loopback HTTP client an assistant-kind session's MCP tools call
-        # ccswitch's own API through (server/assistant/client.py). None for every
+        # ViberPit's own API through (server/assistant/client.py). None for every
         # coding session. Owned here (not the orchestrator) so it is closed exactly
         # once, alongside the SDK client, in aclose() below.
         self._assistant_api = assistant_api
@@ -316,7 +316,7 @@ class ClaudeAgentDriver:
     @property
     def kind(self) -> str | None:
         """"assistant" for an AI-drawer session, None for an ordinary coding
-        session. ``self._assistant_api`` (the loopback HTTP client the ccswitch
+        session. ``self._assistant_api`` (the loopback HTTP client the ViberPit
         MCP tools call through) is the sole, pre-existing signal for this fact —
         every orchestrator call site that builds a driver passes it exactly when
         the session is assistant-kind — so this is a computed property rather

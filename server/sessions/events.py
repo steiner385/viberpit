@@ -184,7 +184,7 @@ class PermissionRequest:
     # cards never offer "Always allow", so the client must hide the button
     # rather than infer it from toolKind (a mutation app_action IS grantable).
     always_allowed: bool = True
-    # Titles of every target a BATCH ccswitch tool (archive_sessions, delete_sessions…)
+    # Titles of every target a BATCH ViberPit tool (archive_sessions, delete_sessions…)
     # would act on — the card must enumerate them, not just say "3 sessions" (spec v2
     # B4). None for every other tool. Populated by `assistant_tools.batch_items`.
     items: list[str] | None = None

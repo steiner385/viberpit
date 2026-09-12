@@ -115,7 +115,7 @@ def test_no_signal_at_all_leaves_the_source_unset():
 
 def test_the_pre_rebrand_tool_name_is_still_recognised():
     t = Translator()
-    feed_assistant_tool_call(t, "mcp__ccswitch__mark_complete", {}, pid=None)
+    feed_assistant_tool_call(t, "mcp__viberpit__mark_complete", {}, pid=None)
     assert feed_result(t).outcome == "complete"
 
 
@@ -170,7 +170,7 @@ def test_a_signalling_tool_call_is_not_rendered_as_a_tool_card():
     assert not any(isinstance(e, ToolCall) for e in out)
 
 
-def test_a_non_signalling_ccswitch_tool_still_renders_a_card():
+def test_a_non_signalling_viberpit_tool_still_renders_a_card():
     from server.sessions.events import ToolCall
     t = Translator()
     out = feed_assistant_tool_call(t, "mcp__viberpit__session_context", {}, pid=None)

@@ -25,7 +25,7 @@ LABEL = "ci-doctor"
 _REPO_SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
 
 # Longest issue/comment body the write endpoints accept. GitHub's own limit is far
-# higher (65 536); this is a ccswitch-side guard so a runaway assistant body can't be
+# higher (65 536); this is a ViberPit-side guard so a runaway assistant body can't be
 # posted publicly, and it is the one both endpoints' pydantic models point at.
 BODY_MAX_CHARS = 10_000
 

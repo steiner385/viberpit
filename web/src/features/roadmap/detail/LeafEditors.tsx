@@ -1,6 +1,6 @@
 // The two inline edits on an issue leaf (roadmap spec §8): "Edit scores" —
 // click the score, four labelled fields with the computed score — and
-// "Reassign an issue's capability". Both write the ccswitch overlay
+// "Reassign an issue's capability". Both write the ViberPit overlay
 // (`PATCH /pm/work-items/{id}/overlay`), immediate; the score reaches the board
 // through the reconciler. Each is a small dialog rather than an in-row input so
 // the row keeps its one-line shape and the change is a deliberate two-step.

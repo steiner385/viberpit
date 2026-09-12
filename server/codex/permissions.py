@@ -1,4 +1,4 @@
-"""ccswitch permission mode -> Codex sandbox + approval policy.
+"""ViberPit permission mode -> Codex sandbox + approval policy.
 
 This is the ONE place that answers "the operator picked mode *M*; how much
 authority does a Codex thread get?". `thread/start`, `turn/start` and
@@ -26,7 +26,7 @@ not an equivalence. Two axes exist on the Codex side (v2 `ThreadStartParams`):
   unattended and asks only to escalate) < `never` (nothing ever asks).
   It decides *whether a human is in the loop*.
 
-ccswitch's axis is a third thing entirely: `PermissionRegistry.request` gates
+ViberPit's axis is a third thing entirely: `PermissionRegistry.request` gates
 per **tool name** (`Bash`, `Edit`, `WebFetch`, …). Codex has no tool-scoped
 tier, so the three middle modes — `allowlist` ("read-only auto, prompt the
 rest"), `auto` ("auto-approve safe tools") and `acceptEdits` ("accept file
@@ -54,11 +54,12 @@ more authority than its name promises; failing closed keeps the damage to "this
 Codex session did not start", which degrades only Codex.
 
 The object-shaped `GranularAskForApproval` variant of `AskForApproval` is out of
-scope: ccswitch has no vocabulary for per-capability grants (the same reason
+scope: ViberPit has no vocabulary for per-capability grants (the same reason
 `item/permissions/requestApproval` stays unsupported).
 """
 from __future__ import annotations
 
+from ccswitch import brand
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -99,12 +100,12 @@ class CodexSandboxMode(StrEnum):
         """True when a command run under this sandbox can reach the network.
 
         Only the unsandboxed mode can. Both `read-only` and `workspace-write`
-        are network-isolated, and ccswitch cannot lift that: the pinned
+        are network-isolated, and ViberPit cannot lift that: the pinned
         `ThreadStartParams` takes a bare `SandboxMode` string with no
         `sandboxPolicy` object, and the policy the app-server reports back
         defaults `workspaceWrite.networkAccess` to `false`. The knob exists in
         Codex's own config file, but managing Codex config is explicitly post-v1
-        (see the plan's Definition of done), so for ccswitch this is a fact about
+        (see the plan's Definition of done), so for ViberPit this is a fact about
         the mode, not a setting.
 
         Asserted against the pinned fixture in
@@ -132,7 +133,7 @@ class CodexApprovalPolicy(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class CodexPermissionProfile:
-    """What a ccswitch permission mode means to a Codex thread.
+    """What a ViberPit permission mode means to a Codex thread.
 
     ``description`` is operator-facing prose rendered next to the mode. It
     states what the **Codex** profile does — never that it reproduces the Claude
@@ -198,14 +199,14 @@ _BYPASS = CodexPermissionProfile(
 #: the drawer it is not a conservative default but the entire boundary: Codex
 #: cannot remove its built-in tools, so the only thing standing between the
 #: assistant and a shell is that every command asks, in a sandbox that could not
-#: write even if one were approved — and ccswitch declines every ask.
+#: write even if one were approved — and ViberPit declines every ask.
 ASSISTANT_PROFILE: Final = CodexPermissionProfile(
     sandbox_mode=CodexSandboxMode.READ_ONLY,
     approval_policy=CodexApprovalPolicy.UNTRUSTED,
     description=(
-        "The ccswitch assistant: a read-only sandbox with every command routed "
-        "through an approval ccswitch always declines. Its only tools are the "
-        "ccswitch tools, which ccswitch itself executes."
+        f"The {brand.NAME} assistant: a read-only sandbox with every command routed "
+        f"through an approval {brand.NAME} always declines. Its only tools are the "
+        f"{brand.NAME} tools, which {brand.NAME} itself executes."
     ),
 )
 
@@ -254,7 +255,7 @@ def supported_modes() -> tuple[str, ...]:
 
 
 def profile_for_mode(mode: str) -> CodexPermissionProfile:
-    """The Codex profile for a ccswitch permission mode.
+    """The Codex profile for a ViberPit permission mode.
 
     Raises :class:`UnsupportedCodexPermissionMode` for anything unmapped — the
     mapping never falls back, and never downgrades to something more permissive.
@@ -266,7 +267,7 @@ def profile_for_mode(mode: str) -> CodexPermissionProfile:
 
 
 def permits_network_egress(mode: str) -> bool:
-    """Whether a Codex thread in ccswitch permission *mode* can reach the network.
+    """Whether a Codex thread in ViberPit permission *mode* can reach the network.
 
     The question an UNATTENDED caller has to ask before it spends a session: an
     automation's own seed prompt ends in ``git push`` and ``gh pr create``, and

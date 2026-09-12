@@ -1,7 +1,7 @@
 import os, subprocess
 from pathlib import Path
 
-SCRIPT = Path(__file__).parent.parent / "scripts" / "ccswitch-reauth-browser"
+SCRIPT = Path(__file__).parent.parent / "scripts" / "viberpit-reauth-browser"
 
 
 def _env(tmp_path, prof, fake, **extra):

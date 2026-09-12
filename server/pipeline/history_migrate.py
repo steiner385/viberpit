@@ -1,4 +1,4 @@
-"""Migrate Plotroom's history.db (read-only) into a ccswitch-owned pipeline_history.db.
+"""Migrate Plotroom's history.db (read-only) into a ViberPit-owned pipeline_history.db.
 
 ADR-1: a SEPARATE sqlite file from the main app DB; stdlib sqlite3, not SQLAlchemy.
 Only the tables the CI-ETA estimator consumes are copied. The source is WAL and
@@ -44,7 +44,7 @@ def migrate_history(source_path: str = SOURCE_DEFAULT, dest_path: str | None = N
         # Migrate the meta table's ciGraph entries so effective_prefixes() can read
         # the oracle's derived required-check prefixes (BFS closure of the rollup
         # job's needs in ci.yml).  Only ciGraph:* keys are needed; other meta keys
-        # (lastSweep, backfilled, …) are operational and not consumed by ccswitch.
+        # (lastSweep, backfilled, …) are operational and not consumed by ViberPit.
         _migrate_meta(src, dest)
         # Indexes mirroring history.ts (speed the read helpers).
         dest.execute("CREATE INDEX IF NOT EXISTS idx_check_durations "

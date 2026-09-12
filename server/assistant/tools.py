@@ -100,7 +100,7 @@ TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("rotate_sessions", ToolClass.MUTATION, "Rotate sessions"),
     ToolSpec("set_autopilot_paused", ToolClass.MUTATION, "Pause/resume autopilot"),
     ToolSpec("fix_pr", ToolClass.MUTATION, "Fix a pull request"),
-    # Pack G writes: the only two tools whose effect is visible outside ccswitch.
+    # Pack G writes: the only two tools whose effect is visible outside ViberPit.
     ToolSpec("comment_on_pr", ToolClass.MUTATION, "Comment on a pull request"),
     ToolSpec("create_issue", ToolClass.MUTATION, "File a GitHub issue"),
     ToolSpec("set_automation_enabled", ToolClass.MUTATION, "Enable/disable automation"),
@@ -198,7 +198,7 @@ def _owner_name(repo: Any) -> tuple[str, str]:
 # Mirrors `ci_issues.BODY_MAX_CHARS`, imported rather than repeated so the tool's local
 # check and the endpoint's 422 can never disagree about where the line is. Checking here
 # too is not redundant: a local ToolArgError tells the model what to fix, where a 422
-# reaches it as an opaque "ccswitch API error".
+# reaches it as an opaque "ViberPit API error".
 _GH_BODY_MAX = ci_issues.BODY_MAX_CHARS
 
 

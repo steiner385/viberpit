@@ -87,7 +87,7 @@ async def serve(api: Any, *, allow_mutations: bool) -> None:
 def _banner(url: str, *, allow_mutations: bool) -> str:
     if allow_mutations:
         return (f"{_P} mcp: serving READ + MUTATION tools from {url}. Mutations run "
-                f"IMMEDIATELY — ccswitch shows no permission card for them on this path, "
+                f"IMMEDIATELY — {brand.NAME} shows no permission card for them on this path, "
                 f"so your MCP client is the only place a human can stop one.")
     return (f"{_P} mcp: serving read-only tools from {url} "
             f"(pass --allow-mutations to also serve mutating tools). "

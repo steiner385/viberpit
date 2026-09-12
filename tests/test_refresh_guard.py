@@ -1,7 +1,7 @@
 """Cross-process refresh lock (_refresh_guard) — prevents single-use-token races.
 
 Anthropic refresh tokens are single-use: two refreshers (web daemon / edge /
-ccswitch CLI) racing would both present the same token, the first rotates it and
+`ccswitch` CLI) racing would both present the same token, the first rotates it and
 the second gets invalid_grant → false needs-reauth. _refresh_guard nests an
 flock (cross-process) inside the per-process threading.Lock.
 """

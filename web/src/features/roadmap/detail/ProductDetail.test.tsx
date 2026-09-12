@@ -127,7 +127,7 @@ describe('ProductDetail', () => {
       ...product,
       mapChanges: {
         branch: 'ccswitch/map-changes/kindash', prNumber: 12,
-        prUrl: 'https://github.com/steiner385/ccswitch/pull/12', status: 'open' as const,
+        prUrl: 'https://github.com/steiner385/viberpit/pull/12', status: 'open' as const,
         openedAt: '2026-09-11T00:00:00Z', headSha: 'abc123', behind: false, conflicting: false,
       },
     }
