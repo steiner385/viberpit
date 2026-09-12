@@ -158,3 +158,8 @@ Mechanics: one map-changes PR on `cairnea/KinDash` (`POST /api/pm/projects/kinda
    (tasks = Task management, calendar = Family calendar, family = Family administration, ai = AI chat assistant).
 3. The five renames are approved.
 4. Sub-epics are neither filtered nor flattened: ccswitch mirrors GitHub's epic nesting onto initiatives (Standardize, item 3).
+5. Applied 2026-09-12 (KinDash branch `docs/roadmap-taxonomy`): five leaf states were set from each doc's own
+   Evidence rather than the table above — member-visual-identity and merge-automation-controls are `delivering`,
+   deploy-health-monitoring, dependency-maintenance and forced-deploy-audit are `discovery`/`delivering`
+   (forced-deploy-audit `delivering`: its one automated closer does not yet enforce the outcome). The rule
+   "evidence beats the table" is the standing one; the table is the review's first cut.
