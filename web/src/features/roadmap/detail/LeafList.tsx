@@ -11,7 +11,7 @@ import { Skeleton } from '@/ui/Skeleton'
 import { EmptyState } from '@/ui/EmptyState'
 import { Banner } from '@/ui/Banner'
 import { Badge } from '@/ui/Badge'
-import { Button } from '@/ui/Button'
+import { Button, buttonVariants } from '@/ui/Button'
 import { ISSUE, bouncedLabel, reasonLabel } from '@/features/products/vocab'
 import { issueUrl } from '@/lib/githubUrl'
 import { tierLabel } from '../roadmapTier'
@@ -19,6 +19,7 @@ import { TierDot } from '../rows/TierDot'
 import { flattenCapabilities } from '../lookup'
 import { LeafScoreButton, LeafCapabilityChip } from './LeafEditors'
 import { leafRows, type LeafListRow } from './leafRows'
+import { leafNeedsAttention } from './leafAttention'
 
 /** `owner/repo#N` → `#N` when it is the leaf's own repo; the full ref otherwise. */
 function shortRef(ref: string, ownRepo: string): string {
@@ -60,9 +61,17 @@ function BlockerRow({ leaf, blockerRef }: { leaf: Leaf; blockerRef: string }) {
 
 function LeafRow({ leaf, capabilities }: { leaf: Leaf; capabilities: { node: CapabilityNode; depth: number }[] }) {
   const blockers = leaf.blockedBy.length
+  const needsAttention = leafNeedsAttention(leaf)
+  const guidance = leaf.tier === 'blocked'
+    ? (blockers > 0
+        ? 'Review the blockers below. Remove a dependency only when it no longer blocks this issue.'
+        : 'Review this issue on GitHub to understand what is blocking it.')
+    : leaf.reason === 'needs_spec'
+      ? 'Clarify the requirements and acceptance criteria on this issue.'
+      : 'Review the issue and check any waiting session for the decision needed.'
   return (
     <div className="flex flex-col gap-1 rounded-md border border-edge bg-surface p-2 text-sm">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <TierDot tier={leaf.tier} />
         {/* GitHub owns the issue; the row links out rather than pretending to a
             detail page ViberPit does not have. A mirrored row can be missing its
@@ -74,18 +83,18 @@ function LeafRow({ leaf, capabilities }: { leaf: Leaf; capabilities: { node: Cap
               href={leaf.url}
               target="_blank"
               rel="noreferrer"
-              className="min-w-0 flex-1 truncate text-ink hover:underline"
+              className="min-w-0 flex-1 basis-48 truncate text-ink hover:underline"
             >
               #{leaf.number} {leaf.title ?? leaf.ref}
             </a>
           )
-          : <span className="min-w-0 flex-1 truncate text-ink">#{leaf.number} {leaf.title ?? leaf.ref}</span>}
+          : <span className="min-w-0 flex-1 basis-48 truncate text-ink">#{leaf.number} {leaf.title ?? leaf.ref}</span>}
         {/* The dot is decorative, so the tier is said in words for a screen
             reader — the same words the pills elsewhere use. */}
         <span className="sr-only">{tierLabel(leaf.tier)}</span>
         {/* `data-testid` so the row's test can assert the chip is ABSENT as an
             element: a text query cannot tell "no chip" from an empty pill. */}
-        {leaf.reason && (
+        {leaf.state === 'open' && leaf.reason && (
           <Badge tone="warning" data-testid="leaf-reason">
             {leaf.reason === 'needs_spec' ? bouncedLabel(leaf.bounces) : reasonLabel(leaf.reason)}
           </Badge>
@@ -97,7 +106,22 @@ function LeafRow({ leaf, capabilities }: { leaf: Leaf; capabilities: { node: Cap
         <LeafCapabilityChip leaf={leaf} capabilities={capabilities} />
         <LeafScoreButton leaf={leaf} />
       </div>
-      {blockers > 0 && (
+      {needsAttention && (
+        <div className="flex flex-wrap items-center gap-2 pl-6">
+          <p className="min-w-0 flex-1 basis-64 text-xs text-ink-muted">{guidance}</p>
+          {leaf.url && (
+            <a
+              href={leaf.url}
+              target="_blank"
+              rel="noreferrer"
+              className={buttonVariants({ variant: 'secondary', size: 'sm' })}
+            >
+              Review issue on GitHub
+            </a>
+          )}
+        </div>
+      )}
+      {leaf.state === 'open' && blockers > 0 && (
         // GitHub owns the edge, but removing it is the one disposition a blocked
         // leaf has, so the row offers it instead of pointing at a blocker count.
         <ul aria-label="Blocked by" className="flex flex-wrap gap-x-4 gap-y-1 pl-6 text-xs text-ink-muted">
@@ -108,7 +132,7 @@ function LeafRow({ leaf, capabilities }: { leaf: Leaf; capabilities: { node: Cap
   )
 }
 
-export function LeafList({ scope, product }: { scope: LeavesScope; product: ProductNode | null }) {
+export function LeafList({ scope, product, attentionOnly = false }: { scope: LeavesScope; product: ProductNode | null; attentionOnly?: boolean }) {
   const { data, isLoading, isError } = useLeaves(scope)
   const capabilities = useMemo(() => (product ? flattenCapabilities(product.capabilities) : []), [product])
   // The leaves are their own query, so a failure here costs only this panel;
@@ -121,8 +145,8 @@ export function LeafList({ scope, product }: { scope: LeavesScope; product: Prod
     )
   }
   if (isLoading && !data) return <Skeleton lines={5} />
-  const leaves = data ?? []
-  if (leaves.length === 0) return <EmptyState title={`No ${ISSUE.plural.toLowerCase()} here yet`} />
+  const leaves = attentionOnly ? (data ?? []).filter(leafNeedsAttention) : (data ?? [])
+  if (leaves.length === 0) return <EmptyState title={attentionOnly ? 'No issues need your attention' : `No ${ISSUE.plural.toLowerCase()} here yet`} />
   return <VirtualRows rows={leafRows(leaves)} capabilities={capabilities} />
 }
 

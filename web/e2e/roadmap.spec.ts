@@ -392,3 +392,42 @@ test.describe('Roadmap — phone', () => {
     await shot(page, 'phone-product')
   })
 })
+
+// An issue-only attention state must lead from the Overview to a visible action,
+// including on phones where wrapped controls change virtualized row heights.
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+  test.describe(`Roadmap issue attention — ${viewport.width}px`, () => {
+    test.use({ viewport })
+
+    test('reviews an attention issue from the capability overview', async ({ page }, testInfo) => {
+      await interceptApi(page)
+      const capability = cap({ slug: 'account-reauthentication', title: 'Account Re-Authentication',
+        tier: 'needs-you', counts: { openIssues: 1, inFlight: 0, blocked: 0, needsYou: 1 } })
+      await page.route('**/api/pm/map', (route) => route.fulfill({ json: {
+        ...MAP, products: [product({ slug: 'viberpit', name: 'ViberPit', tier: 'needs-you',
+          capabilities: [capability] })],
+      } }))
+      await page.route('**/api/pm/leaves?*', (route) => route.fulfill({ json: { items: [{
+        id: 'w-auth', ref: 'steiner385/viberpit#42', repo: 'steiner385/viberpit', number: 42,
+        kind: 'issue', title: 'Restore expired account login', url: 'https://github.com/steiner385/viberpit/issues/42',
+        state: 'open', triageState: 'needs_human', score: null, reach: null, impact: null, effort: null,
+        confidence: null, tier: 'needs-you', blockedBy: [], parentRef: null,
+        featureId: capability.id, sessionStatus: null, ghCreatedAt: null, reason: 'needs_spec', bounces: 2,
+      }] } }))
+      await page.goto('/roadmap/viberpit/capabilities/account-reauthentication')
+      await expect(page.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toBeVisible()
+      await expect(page.getByRole('button', { name: 'Review issues' })).toBeVisible()
+      await page.screenshot({ path: testInfo.outputPath('overview.png') })
+      await page.getByRole('button', { name: 'Review what needs you' }).click()
+      await expect(page.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toBeFocused()
+      await expect(page.getByText('Nothing needs you')).toHaveCount(0)
+      await expect(page.getByText('Clarify the requirements and acceptance criteria on this issue.')).toBeVisible()
+      const action = page.getByRole('link', { name: 'Review issue on GitHub' })
+      await expect(action).toBeVisible()
+      await expect(action).toHaveAttribute('href', 'https://github.com/steiner385/viberpit/issues/42')
+      const overflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
+      expect(overflows).toBe(false)
+      await page.screenshot({ path: testInfo.outputPath('issue-action.png') })
+    })
+  })
+}

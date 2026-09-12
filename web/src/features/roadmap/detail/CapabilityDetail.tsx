@@ -8,12 +8,13 @@ import type { CapabilityNode, ProductNode } from '@/api/roadmap'
 import { Tabs } from '@/ui/Tabs'
 import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
+import { Banner } from '@/ui/Banner'
 import { EmptyState } from '@/ui/EmptyState'
 import { fileUrl } from '@/lib/githubUrl'
 import { CAPABILITY, INITIATIVE, ISSUE, PRODUCT, TIER_LABEL, capabilityStateLabel } from '@/features/products/vocab'
 import { useTabParam } from '../useTabParam'
 import { capabilityPath } from '../roadmapNavState'
-import { findCapability, openMapChanges } from '../lookup'
+import { findCapability, flattenCapabilities, openMapChanges } from '../lookup'
 import { TIER_TONE, tierLabel } from '../roadmapTier'
 import { StatTiles } from './StatTiles'
 import { NeedsYouList } from './NeedsYouList'
@@ -76,16 +77,24 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
     if (program) shownPrograms.add(program.slug)
     return program ? [program, f] : [f]
   })
-  // The product, narrowed to this capability: the Needs-you panel below reads
-  // its rows from this, and the tile and badge count the same object, so the
-  // number above the list can never disagree with the list.
-  // The proposal counts are zeroed deliberately — awaiting triage and "needs a
-  // home" are product-wide decisions, and a capability that claimed them would
-  // repeat the same work on every capability page of the product.
+  // Attention follows the whole selected branch, like its tree tier. Keep
+  // primary initiatives for count subtraction and include touching initiatives
+  // for their own decisions; product-wide proposals stay at product scope.
+  const branch = flattenCapabilities([capability])
+  const branchSlugs = new Set(branch.map(({ node }) => node.slug))
+  const touching = new Set(branch.flatMap(({ node }) => node.initiatives))
   const scoped: ProductNode = {
     ...product,
-    initiatives: mine.filter((i) => i.tier === 'needs-you'),
+    capabilities: [capability],
+    initiatives: product.initiatives.filter((i) =>
+      (i.primaryCapability != null && branchSlugs.has(i.primaryCapability)) || touching.has(i.slug)),
     counts: { ...product.counts, awaitingTriage: 0, needsHome: 0 },
+  }
+  const revealTab = (next: (typeof TABS)[number]) => {
+    // The Overview action disappears after activation. Keep keyboard focus on
+    // the destination tab instead of dropping it onto the document body.
+    document.getElementById(`tab-${next}`)?.focus()
+    setTab(next)
   }
   const needsYou = needsYouCount([scoped])
   const c = capability.counts
@@ -133,6 +142,26 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
       <div role="tabpanel" id={panelId(tab)} aria-labelledby={`tab-${tab}`} className="flex flex-col gap-4">
         {tab === 'overview' && (
           <section className="flex flex-col gap-2 text-sm">
+            {(needsYou > 0 || openIssues > 0) && (
+              <Banner tone={needsYou > 0 ? 'warning' : 'info'} role="none"
+                title={needsYou > 0 ? 'Choose the next step' : 'Review open work'}>
+                <p>
+                  {needsYou > 0
+                    ? 'Review the issues and decisions waiting for you on this capability and its sub-capabilities.'
+                    : `${openIssues} open ${openIssues === 1 ? 'issue is' : 'issues are'} linked to this capability. Open the list to review the work.`}
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {needsYou > 0 && (
+                    <Button size="lg" onClick={() => revealTab('needs-you')}>Review what needs you</Button>
+                  )}
+                  {openIssues > 0 && (
+                    <Button size="lg" variant={needsYou > 0 ? 'secondary' : 'primary'} onClick={() => revealTab('issues')}>
+                      Review issues
+                    </Button>
+                  )}
+                </div>
+              </Banner>
+            )}
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone={capability.state === 'live' ? 'success' : 'info'}>
                 {capabilityStateLabel(capability.state)}
@@ -212,7 +241,7 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
         {/* `repos={[]}` is a real, empty scope: incidents are filed against a
             repository, which belongs to the product, so a capability shows none
             rather than repeating its product's whole incident queue. */}
-        {tab === 'needs-you' && <NeedsYouList products={[scoped]} repos={[]} />}
+        {tab === 'needs-you' && <NeedsYouList products={[scoped]} repos={[]} issueScopeCapability={capability.id} issueProduct={product} />}
       </div>
       {/* Mounted only while open (the RoadmapPage idiom): both forms seed from
           the capability once, so one left mounted would re-open on an abandoned

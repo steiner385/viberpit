@@ -124,6 +124,27 @@ beforeEach(() => {
 })
 
 describe('CapabilityDetail', () => {
+  it('offers a next step from Overview and includes attention issues in Needs you', () => {
+    const attentionCap = cap({ slug: 'auth', title: 'Authentication', tier: 'needs-you', state: 'live',
+      counts: { openIssues: 1, needsYou: 1, blocked: 0, inFlight: 0 } })
+    const attentionProduct = product({ slug: 'kindash', capabilities: [attentionCap] })
+    leavesQuery.data = [leaf({ id: 'attention', number: 42, title: 'Restore login', tier: 'needs-you' })]
+    mount({ product: attentionProduct, capability: attentionCap })
+    expect(tile('Needs you')).toHaveTextContent('1')
+    fireEvent.click(screen.getByRole('button', { name: 'Review what needs you' }))
+    expect(screen.getByRole('tab', { name: /Needs you/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('#42 Restore login')).toBeInTheDocument()
+    expect(screen.queryByText('Nothing needs you')).not.toBeInTheDocument()
+  })
+
+  it('opens the issue list directly from the Overview action', () => {
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Review issues' }))
+    expect(screen.getByRole('tab', { name: /Issues/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('#7 Bulk edit')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /Issues/ })).toHaveFocus()
+  })
+
   it('Overview: state, tier, PR, summary and the feature doc at its SHA', () => {
     mount({ primaryRepo: 'cairnea/KinDash' })
     expect(screen.getByText('Delivering')).toBeInTheDocument()
@@ -202,8 +223,8 @@ describe('CapabilityDetail', () => {
     expect(tile('In flight')).toHaveTextContent('2')
     expect(screen.getByRole('tab', { name: 'In flight (2)' })).toBeInTheDocument()
     expect(tile('Blocked')).toHaveTextContent('2')
-    expect(tile('Needs you')).toHaveTextContent('1')
-    expect(screen.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toBeInTheDocument()
+    expect(tile('Needs you')).toHaveTextContent('3') // one initiative and two blocked issues
+    expect(screen.getByRole('tab', { name: 'Needs you (3, needs attention)' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Sub-capabilities (1)' })).toBeInTheDocument()
   })
 
