@@ -15,10 +15,9 @@ from server.db.models import (
     AutomationEvent,
     AutomationTargetState,
     DispatchOutcome,
-    Project,
     WorkItem,
 )
-from server.pm.outcomes import body_fingerprint
+from server.pm.outcomes import body_fingerprint, project_id_for_slug
 from server.pm.refs import split_ref
 
 log = logging.getLogger(__name__)
@@ -49,15 +48,6 @@ def _elapsed_s(started_at: datetime | None, now: datetime) -> float | None:
     started = (started_at if started_at.tzinfo
                else started_at.replace(tzinfo=timezone.utc))
     return (now - started).total_seconds()
-
-
-async def _project_id_for(db, product_slug: str | None) -> str | None:
-    """The project id behind a product slug, or None (no slug, or no such product).
-    Shared by both ``dispatch_outcomes`` INSERT paths so they cannot disagree."""
-    if not product_slug:
-        return None
-    return (await db.execute(select(Project.id).where(
-        Project.slug == product_slug))).scalar_one_or_none()
 
 
 async def _fingerprint_for(db, target: str) -> str | None:
@@ -249,7 +239,7 @@ class AutomationContext:
                     row.outcome, row.cause = "superseded", None
                     row.ended_at, row.updated_at = now, now
                     row.duration_s = _elapsed_s(row.started_at, now)
-                project_id = await _project_id_for(db, product_slug)
+                project_id = await project_id_for_slug(db, product_slug)
                 fingerprint = await _fingerprint_for(db, target)
                 db.add(DispatchOutcome(
                     automation_id=self.automation_id, project_id=project_id,
@@ -342,7 +332,7 @@ class AutomationContext:
                         return
                     db.add(DispatchOutcome(
                         automation_id=self.automation_id,
-                        project_id=await _project_id_for(db, fallback.get("product_slug")),
+                        project_id=await project_id_for_slug(db, fallback.get("product_slug")),
                         target_ref=target,
                         body_fingerprint=await _fingerprint_for(db, target),
                         session_id=fallback.get("session_id"),

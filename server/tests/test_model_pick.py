@@ -9,8 +9,10 @@ from server.automations.base import validate_config
 from server.automations.model_pick import (
     AUTO_MODEL_POOL,
     AUTOMATION_MODEL_CHOICES,
+    ModelPick,
     assess_codex_effort,
     assess_model,
+    pick_model,
     resolve_codex_model,
     resolve_model,
 )
@@ -176,6 +178,74 @@ async def test_resolve_unknown_or_missing_value_is_account_default(value):
     config = {} if value is None else {"default_model": value}
     got = await resolve_model(config, "job", _assess=_never_assess())
     assert got == (None, None)
+
+
+# --------------------------------------------------------------------------- #
+# pick_model + the capability's tier floor (D9)                                #
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_pick_model_raises_an_auto_pick_to_the_floor():
+    """Evidence over a fresh guess: the capability's issues only ever merged
+    first-pass at ``opus``, so an ``auto`` assessment of ``sonnet`` is raised."""
+    async def pick_sonnet(task_summary):
+        return "sonnet"
+    p = await pick_model({"default_model": "auto"}, "job", floor="opus",
+                         _assess=pick_sonnet)
+    assert p == ModelPick(assessed="sonnet", floor="opus", applied="opus",
+                          source="auto+floor")
+
+
+@pytest.mark.asyncio
+async def test_pick_model_never_lowers_an_auto_pick():
+    """The floor is a floor, never a ceiling — an assessment above it stands."""
+    async def pick_fable(task_summary):
+        return "fable"
+    p = await pick_model({"default_model": "auto"}, "job", floor="opus",
+                         _assess=pick_fable)
+    assert p.applied == "fable" and p.source == "auto"
+    assert p.assessed == "fable" and p.floor == "opus"
+
+
+@pytest.mark.asyncio
+async def test_pick_model_leaves_pinned_and_default_untouched_by_a_floor():
+    """A pinned alias is an operator's decision and a floor never overrides it;
+    ``default`` stays the account default."""
+    assert (await pick_model({"default_model": "sonnet"}, "job", floor="fable",
+                             _assess=_never_assess())
+            ) == ModelPick(None, None, "sonnet", "pinned")
+    assert (await pick_model({"default_model": "default"}, "job", floor="fable",
+                             _assess=_never_assess())).applied is None
+
+
+@pytest.mark.asyncio
+async def test_pick_model_ignores_a_floor_with_no_tier_and_a_failed_assessment():
+    """``best`` has no ``tier_rank`` — no honest comparison exists, so it is
+    ignored rather than applied; a failed assessment still falls back to the
+    account default (the floor alone never picks a model)."""
+    async def none(task_summary):
+        return None
+    failed = await pick_model({"default_model": "auto"}, "job", floor="best",
+                              _assess=none)
+    assert failed.applied is None and failed.source is None
+    assert failed.assessed is None and failed.floor == "best"
+
+    async def pick_sonnet(task_summary):
+        return "sonnet"
+    untiered = await pick_model({"default_model": "auto"}, "job", floor="best",
+                                _assess=pick_sonnet)
+    assert untiered.applied == "sonnet" and untiered.source == "auto"
+
+
+@pytest.mark.asyncio
+async def test_resolve_model_is_the_two_tuple_view_of_pick_model():
+    """ONE resolver: ``resolve_model`` is the wrapper every existing caller
+    keeps using, so the floor rule cannot drift between two implementations."""
+    async def pick_sonnet(task_summary):
+        return "sonnet"
+    got = await resolve_model({"default_model": "auto"}, "job", floor="opus",
+                              _assess=pick_sonnet)
+    assert got == ("opus", "auto+floor")
 
 
 # --------------------------------------------------------------------------- #
