@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { UpdatePendingBanner } from '../UpdatePendingBanner'
+import { UpdatePendingBanner } from './UpdatePendingBanner'
 
 describe('UpdatePendingBanner', () => {
   it('explains the update is applying', () => {

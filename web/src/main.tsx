@@ -6,7 +6,7 @@ import App from './App.tsx'
 import { queryClient } from '@/api/queryClient'
 import { clientLogger } from '@/obs/logger'
 import { installGlobalErrorHandlers } from '@/obs/install'
-import { ErrorBoundary } from '@/components/ErrorBoundary'
+import { ErrorBoundary } from '@/shell/ErrorBoundary'
 import { ThemeProvider } from '@/shell/theme'
 import { AppToaster } from '@/shell/AppToaster'
 

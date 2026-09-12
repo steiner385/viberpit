@@ -32,10 +32,10 @@ export function DaemonHealthIndicator() {
       title={daemonHealthTooltip(data)}
       aria-label={`Daemon health: ${label}`}
       className={cn(
-        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
+        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-2xs font-medium',
         flapping
-          ? 'text-amber-700 dark:text-amber-400 bg-amber-500/10'
-          : 'text-gray-500 dark:text-gray-400',
+          ? 'text-warning bg-warning-wash'
+          : 'text-ink-muted',
       )}
     >
       <Icon size={12} aria-hidden="true" className={flapping ? 'motion-safe:animate-pulse' : undefined} />

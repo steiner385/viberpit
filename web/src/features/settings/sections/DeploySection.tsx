@@ -1,7 +1,7 @@
 import { Button } from '@/ui/Button'
 import { useDeployState } from '@/lib/deployState'
 import { useDeployController } from '@/lib/deployController'
-import { DeployFailureNotice } from '@/components/DeployFailureNotice'
+import { DeployFailureNotice } from '@/shell/DeployFailureNotice'
 import { SETTINGS_BY_ID } from '../settingsDefs'
 import { SettingsSection } from '../chassis/SettingsSection'
 import { SettingsGroup } from '../chassis/SettingsGroup'

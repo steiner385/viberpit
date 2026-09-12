@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { AllLimitedBanner } from '../AllLimitedBanner'
+import { AllLimitedBanner } from './AllLimitedBanner'
 
 describe('AllLimitedBanner', () => {
   const ISO_RESET = '2026-06-19T14:30:00.000Z'

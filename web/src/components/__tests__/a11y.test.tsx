@@ -12,7 +12,7 @@ import { axe, toHaveNoViolations } from 'jest-axe'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { AddAccountDialog } from '../AddAccountDialog'
-import { AllLimitedBanner } from '../AllLimitedBanner'
+import { AllLimitedBanner } from '@/shell/AllLimitedBanner'
 import { DispatchBar } from '../DispatchBar'
 import { EmptyState } from '../EmptyState'
 import { SessionList } from '../SessionList'

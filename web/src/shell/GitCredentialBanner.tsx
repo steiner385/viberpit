@@ -56,7 +56,7 @@ export function GitCredentialBanner() {
                 target="_blank"
                 rel="noreferrer"
                 className={cn(
-                  'rounded-md bg-danger-strong px-3 py-1 text-xs font-semibold text-white',
+                  'rounded-md bg-danger-strong px-3 py-1 text-xs font-semibold text-on-strong',
                   'hover:bg-danger-strong/90 focus:outline-none focus:ring-2 focus:ring-accent',
                 )}
               >

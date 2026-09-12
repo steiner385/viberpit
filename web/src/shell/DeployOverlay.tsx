@@ -45,7 +45,7 @@ export function DeployOverlay() {
           <div className="text-3xl">✓</div>
           <p className="mt-2 font-medium text-ink">Deployed{shortSha && <span className="font-mono text-sm text-ink-muted"> · {shortSha}</span>}</p>
           {deploy?.restore?.failed?.length ? (
-            <p className="mt-2 text-sm text-amber-600 dark:text-amber-400">
+            <p className="mt-2 text-sm text-warning">
               {deploy.restore.failed.length} session{deploy.restore.failed.length === 1 ? '' : 's'} couldn’t be resumed:{' '}
               <span className="font-mono">{deploy.restore.failed.join(', ')}</span>
             </p>
@@ -71,8 +71,8 @@ export function DeployOverlay() {
           <p className="text-xs text-ink-muted">
             {count} change{count === 1 ? '' : 's'}{shortSha && <> · <span className="font-mono">{shortSha}</span></>}
           </p>
-          <div className="mt-4 h-1.5 w-full rounded bg-gray-200 dark:bg-gray-700 overflow-hidden">
-            <div className="h-full bg-amber-500 transition-all duration-500" style={{ width: `${pct}%` }} />
+          <div className="mt-4 h-1.5 w-full rounded bg-surface-raised overflow-hidden">
+            <div className="h-full bg-warning-strong transition-all duration-500" style={{ width: `${pct}%` }} />
           </div>
           <ol className="mt-4 space-y-2">
             {DEPLOY_PHASES.map(p => {
@@ -102,12 +102,12 @@ export function DeployOverlay() {
           </ol>
           <div className="mt-4 min-h-[1.25rem] text-xs">
             {reconnecting ? (
-              <span className="text-amber-600 dark:text-amber-400">Restarting service — reconnecting…</span>
+              <span className="text-warning">Restarting service — reconnecting…</span>
             ) : deploy?.error ? (
               <p className="text-danger">{deploy.error}</p>
             ) : (
               deploy?.warnings?.map((w, i) => (
-                <p key={i} className="text-amber-600 dark:text-amber-400">{w}</p>
+                <p key={i} className="text-warning">{w}</p>
               ))
             )}
           </div>

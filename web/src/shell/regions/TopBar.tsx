@@ -1,5 +1,5 @@
 import { HelpCircle, Sparkles } from 'lucide-react'
-import { BrandMark, Wordmark } from '@/components/BrandMark'
+import { BrandMark, Wordmark } from '@/shell/BrandMark'
 import { useOpenDrawer } from '@/shell/drawerParam'
 import { NavItem } from './NavItem'
 
