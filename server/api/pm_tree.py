@@ -129,11 +129,12 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
     # Threshold per product (D8): a feature belongs to exactly one project, so its
     # issues bounce against THAT product's `give_up_after_bounces`, never a global one.
     threshold_by_project = {p.id: _threshold_for(p) for p in projects}
+    default_threshold = _threshold_for(None)   # once, not per item
     tiers_by_feature: dict[str, list[str]] = {}
     for w in open_items:
         feat = feat_by_id.get(w.feature_id)
-        threshold = (threshold_by_project.get(feat.project_id, _threshold_for(None))
-                    if feat else _threshold_for(None))
+        threshold = (threshold_by_project.get(feat.project_id, default_threshold)
+                    if feat else default_threshold)
         reason = issue_reason(state=w.state, bounces=bounces[w.id],
                               give_up_after_bounces=threshold)
         tiers_by_feature.setdefault(w.feature_id, []).append(

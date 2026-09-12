@@ -2818,3 +2818,14 @@ def test_a_lost_spawn_time_write_is_recovered_at_finalisation(tmp_path):
         assert len(await _outcomes("o/r#1")) == 1
 
     asyncio.run(run())
+
+
+def test_outcome_fallback_is_none_for_a_claim_that_never_dispatched():
+    """A propose claim (no ``session_id``) reaching a give-up branch must not mint
+    a fallback row: nothing ran, so a bounce against that body would be invented."""
+    from server.automations.backlog_runner import BacklogRunnerLoop
+    assert BacklogRunnerLoop._outcome_fallback(
+        {"product": "p1", "proposed": True, "attempts": 0}) is None
+    assert BacklogRunnerLoop._outcome_fallback(
+        {"product": "p1", "session_id": "s1", "attempts": 1}) == {
+        "product_slug": "p1", "session_id": "s1", "model": None, "attempt_no": 1}

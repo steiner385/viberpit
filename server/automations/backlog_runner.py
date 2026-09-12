@@ -1254,14 +1254,21 @@ class BacklogRunnerLoop:
                         exc_info=True)
 
     @staticmethod
-    def _outcome_fallback(st: dict) -> dict:
+    def _outcome_fallback(st: dict) -> "dict | None":
         """The claim's own facts, for spec §13's recovery insert: when the
         spawn-time ``record_outcome`` failed there is no row to finalise, and the
         context inserts one from these instead of losing the bounce. The claim is
         the only surviving account of that dispatch — ``model`` is not stored on it
         today, so it recovers as None rather than as a guess, and ``attempts`` is
         the count at spawn (the sweep charges its increment after this call), which
-        is exactly what ``record_outcome`` would have written."""
+        is exactly what ``record_outcome`` would have written.
+
+        ``None`` for a claim that never dispatched (no ``session_id``: a propose
+        claim, or one the reaper caught before the spawn record). Nothing ran, so
+        there is no lost history to recover — an insert here would count a bounce
+        against an issue body no session ever attempted."""
+        if not st.get("session_id"):
+            return None
         return {"product_slug": st.get("product"), "session_id": st.get("session_id"),
                 "model": st.get("model"), "attempt_no": st.get("attempts", 0)}
 
