@@ -146,7 +146,7 @@ Each row is one PR series with its own implementation plan; each leaves master s
 | 5 | Pipeline → Workspace variant on the chassis | page-migration PR 10 | `.prdash-root` remap, `pipeline/kiosk.ts`, `useKioskCycle` | landed 2026-09-11 (Closes #1469; `pipeline/kiosk.ts` had already moved to `shell/kiosk.ts`, `useKioskCycle` → `features/pipeline/useRepoCycle`; also the shell spec §5 "PR 10 completion": attract cycle, wake lock, idle cursor) |
 | 6 | Archived review → Reader; sub-agent view → Reader | page-migration PR 7 (remainder) | inline dialogs in review | landed 2026-09-11 (Closes #1470; Reader = no composer + dock hidden, the sub-agent page keeps Stop and its pinned cards per the 2026-09-11 sub-agent spec) |
 | 7 | Sweep: `dark:`, raw palette, hex, `z-*` literals, ESLint rule to repo scope, `components/` bucket emptied, `docs/ACCESSIBILITY.md` and `web/README.md` rewritten | page-migration PR 11 | `components/`, `lib/useMediaQuery.ts` | landed 2026-09-12 (Closes #1471; six PRs 7a–7f) |
-| 8 | Roadmap Phases 4–5 (issue leaves, inline edits, map-changes PRs) | roadmap spec Phases 4–5 | — | #1472 |
+| 8 | Roadmap Phases 4–5 (issue leaves, inline edits, map-changes PRs) | roadmap spec Phases 4–5 | — | landed 2026-09-12 (Closes #1472; 8a #1588, 8b #1589, 8c) |
 | 9 | 003 Phase C/D (D11): runner candidates from the board queue, live blocker re-verification, label retirement, plan materialization | 003 spec §7a, §3, §7b; `plan-phase-c.md` Tasks 5–8, 11–16 | `backlog_github.query_candidates`, `backlog_deps.blocked_refs`, the `eligible_label` config field, every label write in `backlog_github.py` | #990, #994, #992 (tracking #1520) |
 
 Rows 2–4 are the visible payoff and go first. Rows 5–7 close the target-state spec. Row 8 is

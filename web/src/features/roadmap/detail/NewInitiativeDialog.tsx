@@ -16,12 +16,7 @@ import { Button } from '@/ui/Button'
 import { CAPABILITY, INITIATIVE } from '@/features/products/vocab'
 import { flattenCapabilities } from '../lookup'
 import { initiativePath } from '../roadmapNavState'
-
-/** What the user is typing, kept slug-shaped: a trailing separator survives so
- *  the space between two words can be typed at all. */
-const sanitize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-/, '')
-/** The final slug — `sanitize` plus the trailing separator a finished word never has. */
-const slugify = (s: string) => sanitize(s.trim()).replace(/-$/, '')
+import { sanitize, slugify } from '../slug'
 
 export function NewInitiativeDialog({ product, open, onClose, defaultCapabilityId }: {
   product: ProductNode

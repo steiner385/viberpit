@@ -52,6 +52,13 @@ vi.mock('@/api/hooks', () => ({
   useRoadmapMap: () => ({ data: MAP }),
   useCreateEdge: () => ({ mutate: vi.fn(), isPending: false }),
   useDeleteEdge: () => ({ mutate: vi.fn(), isPending: false }),
+  // `+ Capability` opens NewCapabilityDialog, which edits the map-changes PR.
+  useEditMapChanges: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null }),
+  mapChangesErrorMessage: (_e: unknown, fallback: string) => fallback,
+  // MapChangesCard's Rebase/Abandon — no product in this file's fixture has an
+  // open pointer by default, so these are exercised by MapChangesCard's own tests.
+  useAbandonMapChanges: () => ({ mutate: vi.fn(), isPending: false }),
+  useRebaseMapChanges: () => ({ mutate: vi.fn(), isPending: false }),
 }))
 
 vi.mock('@/api/pm', async (orig) => ({
@@ -113,6 +120,31 @@ describe('ProductDetail', () => {
     // The stage track travels with the initiative it belongs to.
     expect(screen.getAllByLabelText(/Build: in progress/).length).toBeGreaterThan(0)
     expect(tile('Capabilities')).toHaveTextContent('3')
+  })
+
+  it('Overview: shows the map-changes PR card when the product has an open pointer', () => {
+    const openProduct = {
+      ...product,
+      mapChanges: {
+        branch: 'ccswitch/map-changes/kindash', prNumber: 12,
+        prUrl: 'https://github.com/steiner385/ccswitch/pull/12', status: 'open' as const,
+        openedAt: '2026-09-11T00:00:00Z', headSha: 'abc123', behind: false, conflicting: false,
+      },
+    }
+    render(
+      <ViewportProvider kiosk={null}>
+        <MemoryRouter initialEntries={['/roadmap/kindash']}>
+          <ProductDetail product={openProduct} />
+        </MemoryRouter>
+      </ViewportProvider>,
+    )
+    expect(screen.getByRole('link', { name: 'PR #12' })).toBeInTheDocument()
+  })
+
+  it('Overview: adds a capability from the product itself, not from the page header', () => {
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: '+ Capability' }))
+    expect(screen.getByRole('dialog', { name: 'New capability' })).toBeInTheDocument()
   })
 
   it('counts In flight as the initiatives the In-flight tab lists', () => {

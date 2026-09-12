@@ -28,6 +28,9 @@ const removeState = vi.hoisted(() => ({
   error: null as unknown,
 }))
 
+// The map-changes mutation every Overview edit goes through.
+const editMapChanges = vi.hoisted(() => vi.fn())
+
 // Every hook the tree under test reaches: `useLeaves` and `useRemoveDependency`
 // in `LeafList`, and the two incident hooks in `IncidentQueue` (mounted by
 // `NeedsYouList`).
@@ -37,6 +40,11 @@ vi.mock('@/api/hooks', () => ({
   useUpdateOverlay: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useIncidents: () => ({ data: [], isError: false }),
   useIncidentAction: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  // The Overview's capability edits: the links chip editor, plus the Edit and
+  // + Sub-capability dialogs (the editor also reads the map for link targets).
+  useEditMapChanges: () => ({ mutateAsync: editMapChanges, isPending: false, isError: false, error: null }),
+  useRoadmapMap: () => ({ data: MAP }),
+  mapChangesErrorMessage: (_e: unknown, fallback: string) => fallback,
 }))
 
 const leaf = (over: Partial<Leaf> & { id: string; number: number }): Leaf => ({
@@ -69,6 +77,11 @@ const tasks = cap({
   links: [{ kind: 'powered_by', projectSlug: 'viberpit', featureSlug: 'sessions' }],
   children: [cap({ slug: 'task-views', title: 'Task views', parentSlug: 'tasks', counts: { openIssues: 4, inFlight: 1, blocked: 0, needsYou: 0 } })],
 })
+
+const OPEN_PR = {
+  branch: 'ccswitch/map-changes', prNumber: 31, prUrl: 'https://github.com/o/r/pull/31',
+  status: 'open', openedAt: null, headSha: null, behind: false, conflicting: false,
+}
 
 const busyProduct = product({
   slug: 'kindash', name: 'KinDash',
@@ -151,6 +164,28 @@ describe('CapabilityDetail', () => {
     mount({ onNewInitiative })
     fireEvent.click(screen.getByRole('button', { name: /Initiative here/ }))
     expect(onNewInitiative).toHaveBeenCalled()
+  })
+
+  it('Overview: edits the capability and adds one under it', () => {
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.getByRole('dialog', { name: 'Edit capability' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: '+ Sub-capability' }))
+    expect(screen.getByRole('dialog', { name: 'New capability' })).toBeInTheDocument()
+  })
+
+  it('Overview: the links are an editor, and say where the change is waiting', () => {
+    // `prNumber` alone is history once the PR merged; the pending note needs the
+    // product's map-changes pointer to still be open.
+    mount({ product: { ...busyProduct, mapChanges: OPEN_PR } })
+    expect(screen.getByRole('button', { name: 'Remove link: powered by · viberpit/sessions' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'PR #31' })).toHaveAttribute('href', 'https://github.com/o/r/pull/31')
+  })
+
+  it('Overview: no pending note while the product has no open map-changes PR', () => {
+    mount()
+    expect(screen.queryByText(/Changes pending in/)).toBeNull()
   })
 
   it('every tile counts what the tab beside it lists', () => {

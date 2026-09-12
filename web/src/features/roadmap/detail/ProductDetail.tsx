@@ -1,10 +1,12 @@
 // `/roadmap/:productSlug` — one product, answered the same way the portfolio is:
 // the tiles say how big it is, and the tabs answer what it is, what is moving,
 // what needs me, what is next, and what it waits on (finish-line spec §7).
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { ProductNode } from '@/api/roadmap'
 import { useProject } from '@/api/hooks'
 import { Banner } from '@/ui/Banner'
+import { Button } from '@/ui/Button'
 import { Tabs } from '@/ui/Tabs'
 import { Skeleton } from '@/ui/Skeleton'
 import { InitiativeTrack } from '@/initiatives/InitiativeTrack'
@@ -20,6 +22,8 @@ import { inFlightInitiatives } from './inFlight'
 import { RankedList } from './RankedList'
 import { InitiativeList } from './InitiativeList'
 import { ProductEdgesEditor } from './ProductEdgesEditor'
+import { NewCapabilityDialog } from './NewCapabilityDialog'
+import { MapChangesCard } from './MapChangesCard'
 
 const TABS = ['overview', 'in-flight', 'needs-you', 'ranked', 'dependencies'] as const
 
@@ -27,6 +31,7 @@ const panelId = (id: string) => `product-panel-${id}`
 
 export function ProductDetail({ product }: { product: ProductNode }) {
   const [tab, setTab] = useTabParam(TABS, 'overview')
+  const [addingCapability, setAddingCapability] = useState(false)
   // Shares `QK.project(slug)` with the header and the new-initiative dialog, so
   // the three of them are one fetch.
   const { data: project, isLoading, isError } = useProject(product.slug)
@@ -104,6 +109,16 @@ export function ProductDetail({ product }: { product: ProductNode }) {
                   </p>
                 </section>
               )}
+            {/* On the Overview, not in the page header (R8c-3): the header
+                carries the breadcrumbs and "+ Initiative", and a capability is
+                a change to the MAP — it opens the product's map-changes PR. */}
+            <div>
+              <Button size="sm" variant="ghost" onClick={() => setAddingCapability(true)}>
+                + {CAPABILITY.singular}
+              </Button>
+            </div>
+            {/* Renders nothing unless the product has an open map-changes PR (R8c-3). */}
+            <MapChangesCard product={product} />
             {/* Renders nothing once the product is live. */}
             <OnboardingWizard slug={product.slug} />
             <section aria-label={`${INITIATIVE.plural} in flight`} className="flex flex-col gap-3">
@@ -138,6 +153,10 @@ export function ProductDetail({ product }: { product: ProductNode }) {
           </div>
         )}
       </div>
+      {/* Mounted only while open (the RoadmapPage idiom), so each opening starts
+          on a blank form rather than on whatever the last one was abandoned
+          holding. */}
+      {addingCapability && <NewCapabilityDialog product={product} open onClose={() => setAddingCapability(false)} />}
     </div>
   )
 }

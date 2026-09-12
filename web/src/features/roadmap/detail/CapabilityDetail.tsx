@@ -2,6 +2,7 @@
 // way the levels above it are: the tiles say how much work is on it, and the
 // tabs answer what it is, what is under it, what is moving, what issues are
 // open, and what needs a human (finish-line spec §7).
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { CapabilityNode, ProductNode } from '@/api/roadmap'
 import { Tabs } from '@/ui/Tabs'
@@ -12,7 +13,7 @@ import { fileUrl } from '@/lib/githubUrl'
 import { CAPABILITY, INITIATIVE, ISSUE, PRODUCT, TIER_LABEL, capabilityStateLabel } from '@/features/products/vocab'
 import { useTabParam } from '../useTabParam'
 import { capabilityPath } from '../roadmapNavState'
-import { findCapability } from '../lookup'
+import { findCapability, openMapChanges } from '../lookup'
 import { TIER_TONE, tierLabel } from '../roadmapTier'
 import { StatTiles } from './StatTiles'
 import { NeedsYouList } from './NeedsYouList'
@@ -21,6 +22,9 @@ import { inFlightInitiatives } from './inFlight'
 import { InitiativeList } from './InitiativeList'
 import { LeafList } from './LeafList'
 import { directOpenIssues } from './directOpenIssues'
+import { EditCapabilityDialog } from './EditCapabilityDialog'
+import { NewCapabilityDialog } from './NewCapabilityDialog'
+import { CapabilityLinksEditor } from './CapabilityLinksEditor'
 
 const TABS = ['overview', 'children', 'in-flight', 'issues', 'needs-you'] as const
 
@@ -47,6 +51,8 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
   projectError?: boolean
 }) {
   const [tab, setTab] = useTabParam(TABS, 'overview')
+  const [editing, setEditing] = useState(false)
+  const [addingChild, setAddingChild] = useState(false)
   const mine = initiativesOn(product, capability)
   // The product narrowed to this capability's initiatives, so "in flight" is
   // read by the same module the portfolio and product levels read it with.
@@ -73,6 +79,12 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
     ? fileUrl(primaryRepo, capability.commitSha, capability.docPath)
     : null
   const parent = capability.parentSlug ? findCapability(product, capability.parentSlug) : null
+  // Every edit below commits to the product's map-changes branch, so while that
+  // PR is open and this capability is on it, what the page shows is what the PR
+  // proposes — not what master says (R8c-3).
+  // The same "is there a live PR?" reading the product's card uses, so the note
+  // and the card can never disagree about whether the pointer is still open.
+  const pending = capability.prNumber != null ? openMapChanges(product) : null
 
   return (
     <div className="flex flex-col gap-4">
@@ -134,23 +146,26 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
                 </Link>
               </p>
             )}
-            {capability.links.length > 0 && (
-              <ul className="flex flex-wrap gap-2" aria-label="Linked capabilities">
-                {capability.links.map((l) => (
-                  <li key={`${l.kind}:${l.projectSlug}:${l.featureSlug}`}>
-                    <Link
-                      to={capabilityPath(l.projectSlug, l.featureSlug)}
-                      className="rounded-pill border border-edge px-2 py-0.5 text-xs text-ink-muted hover:text-ink"
-                    >
-                      {l.kind.replace(/_/g, ' ')} · {l.projectSlug}/{l.featureSlug}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
+            {pending && (
+              <p className="text-xs text-ink-muted">
+                Changes pending in{' '}
+                {pending.prUrl
+                  ? (
+                    <a href={pending.prUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                      PR #{pending.prNumber}
+                    </a>
+                  )
+                  : `PR #${pending.prNumber}`}
+              </p>
             )}
+            <CapabilityLinksEditor product={product} capability={capability} />
             {/* The capability is the home an initiative wants: starting one here
                 pre-fills it rather than asking the user to pick it again. */}
-            <div>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>Edit</Button>
+              <Button size="sm" variant="ghost" onClick={() => setAddingChild(true)}>
+                + Sub-{CAPABILITY.singular.toLowerCase()}
+              </Button>
               <Button size="sm" variant="ghost" onClick={onNewInitiative}>
                 + {INITIATIVE.singular} here
               </Button>
@@ -180,6 +195,16 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
             rather than repeating its product's whole incident queue. */}
         {tab === 'needs-you' && <NeedsYouList products={[scoped]} repos={[]} />}
       </div>
+      {/* Mounted only while open (the RoadmapPage idiom): both forms seed from
+          the capability once, so one left mounted would re-open on an abandoned
+          draft — and, because the map polls, would flip "changed" on its own
+          when an edit from elsewhere moved the seed under it. */}
+      {editing && (
+        <EditCapabilityDialog product={product} capability={capability} open onClose={() => setEditing(false)} />
+      )}
+      {addingChild && (
+        <NewCapabilityDialog product={product} parentSlug={capability.slug} open onClose={() => setAddingChild(false)} />
+      )}
     </div>
   )
 }

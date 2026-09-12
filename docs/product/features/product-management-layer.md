@@ -98,7 +98,7 @@ under the nav section `roadmap`, on the same master/detail chassis as Sessions:
 Still owed by that spec: issue leaves and inline overlay edits (phase 4), the Queue scope and the
 Inbox's "Needs a home" Reclassify control (phase 6).
 
-**Map-changes PRs (spec §9) — backend landed, UI is row 8c.** A capability edit made through
+**Map-changes PRs (spec §9) — backend and UI landed (row 8c).** A capability edit made through
 `POST /api/pm/projects/{slug}/map-changes` (`create` | `rename` | `reparent` | `summary` | `links`)
 is committed by the server itself — no agent session — onto one long-lived ccswitch-owned branch
 per product, `pm/map-changes-<slug>`, through GitHub's `createCommitOnBranch` (atomic, so the
@@ -107,8 +107,16 @@ the branch + drop the capabilities that only ever lived on it) and `POST …/map
 runs GitHub's own update-branch while the PR is behind. The sync loop indexes the branch head as
 well as the default branch: a doc that is **new on the branch or changed there** overrides the
 default-branch doc of the same slug and shows as **proposed** until the PR merges, while a doc the
-branch merely inherited unchanged is left alone. The roadmap UI for all of this — inline capability
-edits, the product-header PR card and the proposed badges — is row 8c.
+branch merely inherited unchanged is left alone.
+
+The roadmap UI for all of this is row 8c: a capability's Overview gets **Edit** (title, summary,
+parent, sent as up to three ops) and **+ Sub-capability**; a product's Overview gets **+
+Capability**. A capability's Overview also gets the links chip editor (`CapabilityLinksEditor`, one
+`links` op per change); links belong to a capability, so the product's Overview has **+ Capability**
+and the PR card only. That card is `MapChangesCard` — the open PR's number/link and age, Rebase
+when `behind`, a danger banner when `conflicting`, and Abandon behind a typed-slug confirm — above
+the onboarding wizard. A capability row in the Map scope's tree badges its own `prNumber` (`PR #N`,
+`TreeRowCard`), and its Overview carries the one-line "proposed in PR #N" note until the PR merges.
 
 The pointer row (`feature_map_changes`) carries more than §9 spells out, all written by the
 per-pass PR read: `head_sha` (the branch's current head), `behind` and `conflicting` (from

@@ -135,12 +135,28 @@ export function TreeRowCard({ row, selected, focusable, onOpen, onToggle, onOpen
           </span>
         }
         trailing={
-          attention > 0 ? (
+          attention > 0 || (!isProduct && row.capability.prNumber != null) ? (
             <>
-              {/* The pill is drawn, the name is announced — one node carries the
-                  whole string (`badgedName`), as everywhere else in the shell. */}
-              <span className="sr-only">{badgedName({ label: tierLabel(tier), count: attention })}</span>
-              <Badge tone={TIER_TONE[tier]} count={attention} aria-hidden="true" />
+              {attention > 0 && (
+                <>
+                  {/* The pill is drawn, the name is announced — one node carries the
+                      whole string (`badgedName`), as everywhere else in the shell. */}
+                  <span className="sr-only">{badgedName({ label: tierLabel(tier), count: attention })}</span>
+                  <Badge tone={TIER_TONE[tier]} count={attention} aria-hidden="true" />
+                </>
+              )}
+              {/* Changes to this capability are proposed but not yet merged —
+                  R8c-3's one-line note, mirrored here so the tree itself says so.
+                  Deliberately NOT `openMapChanges(product)`: the badge is the
+                  capability's OWN fact — the sync clears `prNumber` when the PR
+                  merges — and the row does not always have its product's pointer
+                  to read anyway. */}
+              {!isProduct && row.capability.prNumber != null && (
+                <>
+                  <span className="sr-only">{`proposed in pull request ${row.capability.prNumber}`}</span>
+                  <Badge tone="info" aria-hidden="true">PR #{row.capability.prNumber}</Badge>
+                </>
+              )}
             </>
           ) : undefined
         }
