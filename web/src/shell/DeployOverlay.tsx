@@ -8,12 +8,12 @@ import { Dialog } from '@/ui/Dialog'
 import { Button } from '@/ui/Button'
 
 const DOT: Record<string, string> = {
-  done: 'bg-emerald-500', running: 'bg-amber-500 animate-pulse',
-  failed: 'bg-red-500', pending: 'bg-gray-300 dark:bg-gray-600',
+  done: 'bg-success', running: 'bg-warning animate-pulse',
+  failed: 'bg-danger', pending: 'bg-neutral-wash',
 }
 
 const HOST_DOT: Record<string, string> = {
-  ...DOT, offline: 'bg-gray-400', disabled: 'bg-gray-400', unconfigured: 'bg-red-500',
+  ...DOT, offline: 'bg-neutral', disabled: 'bg-neutral', unconfigured: 'bg-danger',
 }
 
 export function DeployOverlay() {
