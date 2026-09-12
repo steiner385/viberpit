@@ -16,7 +16,7 @@ class RoadmapHealth:
 
 
 def roadmap_health(*, capabilities: Iterable[tuple[str, str | None, str | None, datetime | None]],
-                   initiatives: Iterable[tuple[str, int, bool]],
+                   initiatives: Iterable[tuple[str, int, bool, bool]],
                    proposals: Iterable[datetime | None],
                    now: datetime, stale_days: int = 30, inbox_days: int = 7) -> RoadmapHealth:
     caps = list(capabilities)
@@ -24,7 +24,10 @@ def roadmap_health(*, capabilities: Iterable[tuple[str, str | None, str | None, 
     tree_in_use = any(p is None and s in has_child for s, p, _, _ in caps)
     unparented = tuple(sorted(s for s, p, _, _ in caps
                               if tree_in_use and p is None and s not in has_child))
-    unlinked = tuple(sorted(s for s, n, prog in initiatives if n == 0 and not prog))
+    # A program (`prog`) is judged by its phases, never itself — and a `done`
+    # initiative (leaf or program) is finished, not drifting, so neither
+    # belongs in the "needs a capability" readout.
+    unlinked = tuple(sorted(s for s, n, prog, done in initiatives if n == 0 and not prog and not done))
     cutoff = now - timedelta(days=stale_days)
     stale = tuple(sorted(s for s, _, st, upd in caps
                          if st == "proposed" and upd is not None and _aware(upd) < cutoff))

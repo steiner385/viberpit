@@ -179,6 +179,8 @@ def back_sync_stage(db: Session, edits: Sequence[HumanEdit]) -> int:
         # A program's stage is derived from its phases (tree.derived_stage);
         # GitHub may drive a leaf's Stage, never a program's.
         if db.query(Initiative.id).filter_by(parent_initiative_id=ini.id).first() is not None:
+            log.info("mirror_store.back_sync_stage.skipped_program initiative=%s ref=%s",
+                     ini.slug, e.ref)
             continue
         if ini.stage != e.new:
             ini.stage = e.new

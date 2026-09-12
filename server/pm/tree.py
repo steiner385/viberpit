@@ -179,10 +179,17 @@ def rollup_epic_progress(entries: dict[str, dict | None],
 
 def derived_stage(stages: list[str | None]) -> str | None:
     """A program sits where its slowest phase sits: the earliest non-done
-    stage; ``done`` only when every phase is done; None with no phases."""
+    stage among its phases; ``done`` only when every RECOGNIZED phase stage is
+    done and at least one is recognized; ``None`` with no phases, or when none
+    of the phases' stages is a recognized ``INITIATIVE_STAGES`` value (the
+    caller then falls back to the row's own stage rather than a phantom
+    "done")."""
     if not stages:
         return None
-    live = [s for s in stages if s in INITIATIVE_STAGES and s != "done"]
+    recognized = [s for s in stages if s in INITIATIVE_STAGES]
+    if not recognized:
+        return None
+    live = [s for s in recognized if s != "done"]
     if not live:
         return "done"
     return min(live, key=INITIATIVE_STAGES.index)

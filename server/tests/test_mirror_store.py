@@ -526,20 +526,23 @@ def test_link_epic_parents_relinks_rows_adopted_before_nesting_existed():
     assert mirror_store.link_epic_parents(db, project.id) == 0   # idempotent
 
 
-def test_back_sync_stage_ignores_a_program():
+def test_back_sync_stage_ignores_a_program(caplog):
     db = _db()
     project = _seed(db)
     _seed_program(db, project, phases=(950,))
     mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
 
-    n = mirror_store.back_sync_stage(
-        db, [mirror_store.HumanEdit(f"{REPO}#945", "Stage", "build", "plan"),
-             mirror_store.HumanEdit(f"{REPO}#950", "Stage", "design", "plan")])
+    with caplog.at_level("INFO"):
+        n = mirror_store.back_sync_stage(
+            db, [mirror_store.HumanEdit(f"{REPO}#945", "Stage", "build", "plan"),
+                 mirror_store.HumanEdit(f"{REPO}#950", "Stage", "design", "plan")])
 
     assert n == 1
     by_number = {i.epic_number: i for i in db.query(Initiative).all()}
     assert by_number[945].stage != "plan"     # program untouched
     assert by_number[950].stage == "plan"     # phase moved
+    assert "mirror_store.back_sync_stage.skipped_program" in caplog.text
+    assert "ref=steiner385/cc-account-switcher#945" in caplog.text
 
 
 def test_link_epic_parents_counts_a_row_once_when_parent_and_title_both_change():

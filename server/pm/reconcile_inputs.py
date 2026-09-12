@@ -92,6 +92,11 @@ def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) 
     needs_human_at = runner_row_maps(db)[1]
     initiatives = {f"{i.epic_repo}#{i.epic_number}": i for i in db.scalars(
         select(Initiative).where(Initiative.epic_repo.in_(repos))).all()}
+    # A program (an initiative with phases) is never driven directly: its Stage is
+    # derived from its phases (tree.derived_stage), so pushing its own raw column
+    # stage here would fight the UI's derived value and back_sync_stage's refusal
+    # to write a human's correction onto it (mirror_store.back_sync_stage).
+    program_ids = {i.parent_initiative_id for i in initiatives.values() if i.parent_initiative_id}
     mirror: dict[str, MirrorItem] = {}
     if gh is not None:
         for it in db.scalars(select(GhProjectItem).where(GhProjectItem.gh_project_id == gh.id)).all():
@@ -114,7 +119,7 @@ def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) 
             merged_pr_at=merged_at.get(ref),
             open_blocker_refs=tuple(sorted(blockers.get(ref, []))), blockers_at=blockers_at.get(ref),
             needs_human_at=needs_human_at.get(ref),
-            initiative_stage=ini.stage if ini else None,
+            initiative_stage=(ini.stage if ini and ini.id not in program_ids else None),
             initiative_stage_at=_aware(ini.updated_at) if ini else None))
     last_applied = _aware(db.scalar(select(GhWriteJournal.updated_at).where(
         GhWriteJournal.applied.is_(True)).order_by(GhWriteJournal.updated_at.desc()).limit(1)))

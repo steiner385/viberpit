@@ -233,6 +233,13 @@ def test_derived_stage_is_the_earliest_unfinished_phase():
     assert derived_stage(["done", "done"]) == "done"
     assert derived_stage([]) is None
     assert derived_stage([None, "build"]) == "build"
+    # No entry recognized (e.g. every phase's mirrored stage was garbage or
+    # unset) → None, so callers fall back to the row's own stage rather than
+    # a phantom "done". A "done" entry mixed with an unrecognized one is still
+    # "done": every RECOGNIZED entry is done, and at least one is recognized.
+    assert derived_stage([None, None]) is None
+    assert derived_stage(["bogus"]) is None
+    assert derived_stage([None, "done"]) == "done"
 
 
 def test_program_reason_tier_and_counts_come_from_its_phases():

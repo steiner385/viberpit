@@ -324,7 +324,8 @@ async def project_health(slug: str, _identity: str = Depends(current_identity),
             WorkItem.repo.in_(repo_names)))).all()]
     now = datetime.now(timezone.utc)
     h = roadmap_health(capabilities=caps,
-                       initiatives=[(i.slug or "", link_counts.get(i.id, 0), i.id in parents_with_kids) for i in inits],
+                       initiatives=[(i.slug or "", link_counts.get(i.id, 0), i.id in parents_with_kids,
+                                    i.stage == "done" or i.status == "done") for i in inits],
                        proposals=props, now=now)
     return {"unparentedCapabilities": list(h.unparented_capabilities),
             "unlinkedInitiatives": list(h.unlinked_initiatives),

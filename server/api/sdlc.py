@@ -155,7 +155,9 @@ async def _decorate(db, initiatives: list[Initiative], dicts: list[dict]) -> Non
         d["hasChildren"] = bool(phases)
         d["children"] = [{"slug": p.slug, "title": p.title, "stage": p.stage, "status": p.status} for p in phases]
         if phases:
-            d["stage"] = derived_stage([p.stage for p in phases])
+            # None (no phase carries a recognized stage) keeps the row's own
+            # stage rather than overwriting it with a phantom value.
+            d["stage"] = derived_stage([p.stage for p in phases]) or i.stage
 
 
 async def _epic_progress_batch(
@@ -469,6 +471,11 @@ async def get_initiative(
     result["nextAction"] = _action_to_dict(action)
     result["epic"] = (await _progress_rolled_up(db, [ini], include_children=True))[ini.id]
     await _decorate(db, [ini], [result])
+    # A program (an initiative with phases) is never driven directly — advance
+    # and step-back both refuse it (409 has_children above), so its nextAction
+    # is meaningless and must not point at a stage transition nobody can take.
+    if result["hasChildren"]:
+        result["nextAction"] = None
     return result
 
 

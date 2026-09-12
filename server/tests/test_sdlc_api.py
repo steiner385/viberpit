@@ -1315,6 +1315,7 @@ def test_program_detail_derives_stage_rolls_up_leaves_and_refuses_advance():
                 body = c.get("/api/sdlc/initiatives/audit", headers=IDENTITY_HEADERS).json()
                 assert body["stage"] == "plan"                       # earliest phase, not the row's "design"
                 assert body["hasChildren"] is True and body["parentInitiativeSlug"] is None
+                assert body["nextAction"] is None                    # a program is never driven directly
                 assert [ch["slug"] for ch in body["children"]] == ["audit-01", "audit-02"]
                 assert body["epic"]["total"] == 3 and body["epic"]["done"] == 1   # leaf issues, not 2 sub-epics
                 phase = c.get("/api/sdlc/initiatives/audit-01", headers=IDENTITY_HEADERS).json()

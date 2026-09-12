@@ -442,6 +442,40 @@ async def test_auto_link_label_route_folds_case(db_env):
 
 
 @pytest.mark.asyncio
+async def test_label_route_opens_no_session_for_an_unrouted_item(db_env, monkeypatch):
+    """pm-triage ticks every 60s over every labelled pending item; once the
+    per-repo route map cache (``_pm_triage_label_route_cache_for``) is warm, an
+    item whose labels route nowhere must resolve with ZERO DB sessions — not a
+    session per item just to learn there is no route."""
+    await _seed(db_env)
+    async with db_session() as db:
+        from sqlalchemy import select
+        pid = (await db.execute(select(Project.id).where(Project.slug == "ccswitch"))).scalars().one()
+        db.add(Feature(project_id=pid, slug="flaky-test-triage", title="Flaky", state="live",
+                       route_labels=["flaky"]))
+        db.add(WorkItem(repo=REPO, number=7, kind="issue", title="x", state="open",
+                        triage_state="unclassified"))
+    orch = _triage_orch()
+    warm = PendingItemView(repo=REPO, number=7, kind="issue", title="x", body="",
+                           labels=("flaky",), linked_issue_numbers=())
+    assert await orch._pm_triage_route_by_label(warm) is True   # warms the cache for REPO
+
+    import server.sessions.orchestrator as orch_mod
+    real_db_session = orch_mod.db_session
+    calls = {"n": 0}
+
+    def counting_db_session(*a, **kw):
+        calls["n"] += 1
+        return real_db_session(*a, **kw)
+
+    monkeypatch.setattr(orch_mod, "db_session", counting_db_session)
+    unrouted = PendingItemView(repo=REPO, number=8, kind="issue", title="y", body="",
+                               labels=("bug",), linked_issue_numbers=())
+    assert await orch._pm_triage_route_by_label(unrouted) is False
+    assert calls["n"] == 0
+
+
+@pytest.mark.asyncio
 async def test_auto_link_declines_an_already_classified_item_and_an_unmatched_label(db_env):
     await _seed(db_env)
     async with db_session() as db:

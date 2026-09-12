@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, tuple_
 
-from server.api.sdlc import _capabilities_batch, _progress_rolled_up
+from server.api.sdlc import _capabilities_batch, _descendants, _progress_rolled_up
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.db.models import (
@@ -168,7 +168,9 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
                 continue
             cap_list, primary = caps[i.id]
             phases = phases_by_parent.get(i.id, [])
-            stage = derived_stage([ph.stage for ph in phases]) if phases else i.stage
+            # None (no phase carries a recognized stage) keeps the row's own
+            # stage rather than a phantom value.
+            stage = (derived_stage([ph.stage for ph in phases]) or i.stage) if phases else i.stage
             ini_inputs.append(InitiativeIn(
                 slug=i.slug or "", title=i.title, stage=stage, status=i.status,
                 primary_slug=primary["slug"] if primary else None,
@@ -230,7 +232,25 @@ async def get_leaves(
         if ini is None:
             raise HTTPException(status_code=404, detail={"error": "not_found"})
         items = []
-        if ini.epic_repo and ini.epic_number:
+        descendants = await _descendants(db, [ini])
+        if descendants:
+            # A program (an initiative with phases): its epic's direct sub-issues
+            # are sub-epics, not leaves, which would contradict epic.total (the
+            # leaf roll-up, tree.rollup_epic_progress). List the direct sub-issues
+            # of every LEAF descendant's epic instead, so the two agree.
+            parent_ids = {d.parent_initiative_id for d in descendants if d.parent_initiative_id}
+            leaf_inits = [d for d in descendants if d.id not in parent_ids]
+            pointers = [(leaf.epic_repo, leaf.epic_number) for leaf in leaf_inits
+                       if leaf.epic_repo and leaf.epic_number]
+            epic_ids: list[str] = []
+            if pointers:
+                epic_ids = [w.id for w in (await db.execute(select(WorkItem).where(
+                    WorkItem.kind == "issue",
+                    tuple_(WorkItem.repo, WorkItem.number).in_(pointers)))).scalars().all()]
+            if epic_ids:
+                items = (await db.execute(select(WorkItem).where(
+                    WorkItem.parent_work_item_id.in_(epic_ids)))).scalars().all()
+        elif ini.epic_repo and ini.epic_number:
             epic = (await db.execute(select(WorkItem).where(
                 WorkItem.repo == ini.epic_repo, WorkItem.number == ini.epic_number,
                 WorkItem.kind == "issue"))).scalar_one_or_none()
