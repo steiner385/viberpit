@@ -28,11 +28,18 @@ Goals, all first-class:
 | # | Decision |
 |---|----------|
 | D1 | **GitHub-native primitives are truth** for planning state: native blocked-by dependencies, sub-issue epics, Projects v2 fields. ccswitch mirrors, annotates, and renders. |
-| D2 | **Initiative = epic issue.** The `Initiative` row becomes a mirror/overlay keyed to an epic (`repo#number`), like `WorkItem`. Stage machine, artifact chain, and session launching remain ccswitch overlay. |
+| D2 | **Initiative = epic issue:** one effort with a GitHub representation and a lifecycle overlay, not two hierarchy levels. The `Initiative` row becomes a mirror/overlay keyed to an epic (`repo#number`), like `WorkItem`. Stage machine, artifact chain, and session launching remain ccswitch overlay. |
 | D3 | **One Project v2 per product** (cc-account-switcher, KinDash, infra, …); ccswitch aggregates the cross-product portfolio view. |
 | D4 | **Fully automatic write posture.** A reconciler keeps GitHub consistent with decisions already made in ccswitch (triage acceptance, stage transitions, session activity). Judgment lives in the decision layer's existing human gates, not in per-write approval. |
 | D5 | **Global priority queue** across all products/initiatives: rank = Score (RICE-informed) + dependency readiness. Agents always pull the top eligible item anywhere. |
 | D6 | **Evolve in place, phased** (mirror → reconciler/migration → consumers → consolidation). No parallel new subsystem. |
+
+The canonical [product hierarchy](../../docs/product/README.md) is Product → Capability →
+Initiative → Issue. Capabilities may nest through their existing `parent` field.
+An optional program is a parent epic grouping phase initiatives; preserve that
+native GitHub nesting without requiring a program for every initiative. A small
+maintenance issue may attach directly to a capability. PRs and sessions provide
+execution evidence rather than additional planning levels.
 
 ## 3. Architecture & ownership model
 

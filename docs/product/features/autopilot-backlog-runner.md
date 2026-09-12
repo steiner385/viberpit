@@ -1,5 +1,6 @@
 ---
 slug: autopilot-backlog-runner
+parent: planning-and-automation
 title: Autopilot & Backlog Runner
 state: live
 links:
@@ -21,6 +22,8 @@ links:
 ---
 
 # Autopilot & Backlog Runner
+
+Keep eligible backlog work progressing within explicit budgets and governance while yielding promptly to human steering.
 
 **Problem** — Running autonomous development on ViberPit means two distinct, tedious jobs
 that a human would otherwise babysit around the clock: (1) *keeping live sessions moving* —

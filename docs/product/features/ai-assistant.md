@@ -1,5 +1,6 @@
 ---
 slug: ai-assistant
+parent: operator-experience
 title: AI Assistant (drawer)
 state: live
 links:
@@ -27,6 +28,8 @@ links:
 ---
 
 # AI Assistant (drawer)
+
+Ask questions about live coding work and take supported operational actions through a conversational assistant.
 
 **Problem** — Operating a multi-account, multi-host fleet of coding-agent sessions means holding a
 lot of state in your head: which sessions are waiting on you, why one is stuck, which PRs are

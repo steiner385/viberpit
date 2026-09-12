@@ -1,5 +1,6 @@
 ---
 slug: session-engine-terminal
+parent: session-workspaces
 title: Session Engine & Terminal
 state: live
 links:
@@ -24,6 +25,8 @@ links:
 ---
 
 # Session Engine & Terminal
+
+Start and steer live coding sessions from any device while keeping prompts, approvals, and transcript updates in order.
 
 **Problem** — A native `claude` process is a local, terminal-bound thing: to run one you need a
 shell on the host, and if you close that shell the session is gone. Running several accounts'

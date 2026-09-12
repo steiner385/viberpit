@@ -1,5 +1,6 @@
 ---
 slug: session-permissions
+parent: security-and-isolation
 title: Session Permissions & Model Gates
 state: live
 links:
@@ -18,6 +19,8 @@ links:
 ---
 
 # Session Permissions & Model Gates
+
+Keep session actions and model choices within consistent, inspectable permission and approval rules.
 
 **Problem** — An autonomous `claude` session can run shell, edit files, fetch the web, and switch
 models. Different sessions warrant different amounts of trust: some should prompt for every

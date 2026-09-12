@@ -1,5 +1,6 @@
 ---
 slug: session-insights
+parent: operator-experience
 title: Session & CI Insights
 state: live
 links:
@@ -16,6 +17,8 @@ links:
 ---
 
 # Session & CI Insights
+
+Find useful session discoveries and CI health trends that help the operator choose what to investigate or improve.
 
 **Problem** — Across many sessions and repos, the raw firehose of turns, transcripts, PRs,
 and CI runs is too much to read. The operator needs the noise consolidated into digestible

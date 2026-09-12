@@ -1,5 +1,6 @@
 ---
 slug: multi-host-fleet
+parent: fleet-and-delivery-operations
 title: Multi-Host Session Fleet
 state: live
 links:
@@ -15,6 +16,8 @@ links:
 ---
 
 # Multi-Host Session Fleet
+
+Distribute sessions across healthy hosts while keeping each session’s ownership and fleet-wide coordination unambiguous.
 
 **Problem** — a single host can only run so many live `claude` sessions, and it's a single point of
 failure. Running the session daemon across several hosts (a "fleet" — e.g. `dobby` as edge/primary

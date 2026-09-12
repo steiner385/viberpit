@@ -1,5 +1,6 @@
 ---
 slug: web-dashboard-mobile
+parent: operator-experience
 title: Web Dashboard & Mobile Access
 state: live
 links:
@@ -15,6 +16,8 @@ links:
 ---
 
 # Web Dashboard & Mobile Access
+
+Monitor accounts and sessions and steer coding work comfortably from a desktop browser or phone.
 
 **Problem** — Running and switching between several live `claude` sessions across multiple
 Max accounts from a terminal ties you to one machine. There is no way to glance at account

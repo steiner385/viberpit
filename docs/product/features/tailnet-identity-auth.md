@@ -1,5 +1,6 @@
 ---
 slug: tailnet-identity-auth
+parent: security-and-isolation
 title: Tailnet Identity Auth
 state: live
 links:
@@ -14,6 +15,8 @@ links:
 ---
 
 # Tailnet Identity Auth
+
+Restrict application access to verified identities and keep authentication usable from remote devices.
 
 **Problem** — ViberPit runs live `claude` sessions across several Max/Copilot accounts and exposes
 them to a browser over the network. Anyone who can reach the server can drive those sessions and

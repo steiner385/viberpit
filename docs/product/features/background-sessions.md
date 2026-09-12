@@ -1,5 +1,6 @@
 ---
 slug: background-sessions
+parent: planning-and-automation
 title: Background (maintenance) sessions
 state: live
 links:
@@ -17,6 +18,8 @@ links:
 ---
 
 # Background (maintenance) sessions
+
+Run maintenance work separately from interactive coding so routine automation does not crowd the operator’s active sessions.
 
 **Problem** — ViberPit spawns routine maintenance sessions of its own: `pm map`,
 `pm classify`, `pr-doctor fix`, control-band diagnoses, scheduled runs. They ran in the

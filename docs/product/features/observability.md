@@ -1,5 +1,6 @@
 ---
 slug: observability
+parent: fleet-and-delivery-operations
 title: Daemon Observability
 state: live
 links:
@@ -15,6 +16,8 @@ links:
 ---
 
 # Daemon Observability
+
+Diagnose session-service failures and stalls through correlated, secrets-safe logs and visible health signals.
 
 **Problem** — ViberPit is a single-operator, self-hosted daemon that supervises long-lived `claude`
 sessions and their WebSocket fan-out. When it misbehaves — the event loop stalls on blocking work, a

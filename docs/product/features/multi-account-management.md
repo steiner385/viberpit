@@ -1,5 +1,6 @@
 ---
 slug: multi-account-management
+parent: accounts-and-engines
 title: Multi-Account Management
 state: live
 links:
@@ -15,6 +16,8 @@ links:
 ---
 
 # Multi-Account Management
+
+Manage named accounts and their availability from one place while keeping each account’s identity and credentials separate.
 
 **Problem** — A single Claude Max account hits session and weekly usage limits quickly. Users
 who juggle several accounts by hand have to manually track which `CLAUDE_CONFIG_DIR` each shell

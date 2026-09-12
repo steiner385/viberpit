@@ -1,5 +1,6 @@
 ---
 slug: config-dir-isolation
+parent: security-and-isolation
 title: Per-Account Config-Dir Isolation
 state: live
 links:
@@ -12,6 +13,8 @@ links:
 ---
 
 # Per-Account Config-Dir Isolation
+
+Run accounts concurrently without sharing configuration or credentials across their session processes.
 
 **Problem** — The whole product is "cc-account-**switcher**," and the defining primitive is: run the *real* `claude` binary as a chosen account without accounts bleeding into each other. Claude stores auth + state under a config directory; if two accounts shared one, credentials, usage, and session state would collide. Something must give each account its own isolated `CLAUDE_CONFIG_DIR` and let a caller *switch* which one a given `claude` process uses — per-process, never globally.
 
