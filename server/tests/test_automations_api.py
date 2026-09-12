@@ -74,6 +74,31 @@ def test_list_status_reflects_live_ctx_counts():
         assert "1 implementing" in br["status"]["text"]
 
 
+def test_list_carries_products_for_the_runner_and_null_for_pr_doctor():
+    """``AutomationStatus.products`` is a NEW top-level field on the list item
+    (``counts`` stays int-only) — present as a list for an automation whose
+    status reports per-product rows, ``None`` for one that has no concept of
+    products at all."""
+    from unittest.mock import AsyncMock
+
+    from server.automations.backlog_runner import BacklogRunnerLoop
+
+    with patch.object(BacklogRunnerLoop, "_stash_counts", new=AsyncMock()), _client() as c:
+        orch = c.app.state.sessions._orch
+        orch._backlog_ctx.backlog_counts = {"in_flight": 1, "eligible": 3, "needs_human": 0}
+        orch._backlog_ctx.backlog_products = {
+            "kwgt-cairn": {"dispatch": "auto", "eligible": 3, "blocked": 0,
+                           "untriaged": 0, "in_flight": 1, "cap": 1, "bounced": 2},
+        }
+
+        automations = c.get("/api/automations", headers=H).json()
+        br = next(a for a in automations if a["id"] == "backlog-runner")
+        assert br["products"] == [{"slug": "kwgt-cairn", "dispatch": "auto", "inFlight": 1,
+                                   "cap": 1, "eligible": 3, "bounced": 2}]
+        pd = next(a for a in automations if a["id"] == "pr-doctor")
+        assert pd["products"] is None
+
+
 def test_requires_auth():
     with _client() as c:
         assert c.get("/api/automations").status_code == 401

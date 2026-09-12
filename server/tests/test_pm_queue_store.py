@@ -3,10 +3,11 @@ from datetime import datetime, timezone
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from server.db.models import (Automation, AutomationTargetState, Base, GhProject,
-                              GhProjectItem, Project, ProjectRepo,
+from server.db.models import (Automation, AutomationTargetState, Base, DispatchOutcome,
+                              GhProject, GhProjectItem, Project, ProjectRepo,
                               Session as DbSession, WorkItem, WorkItemDep)
 from server.pm import queue_store
+from server.pm.outcomes import body_fingerprint
 from server.pm.queue_store import load_queue_rows, parse_iso_utc, runner_row_maps
 
 NOW = datetime(2026, 9, 4, tzinfo=timezone.utc)
@@ -162,6 +163,31 @@ def test_load_queue_rows_threads_needs_human_at():
     assert by_ref["steiner385/viberpit#5"].needs_human_at == at
     assert all(r.needs_human_at is None for ref, r in by_ref.items()
                if ref != "steiner385/viberpit#5")
+
+
+def test_load_queue_rows_computes_per_product_bounces_from_finalised_outcomes():
+    """D8: only FINALISED (non-``running``/``merged``) outcomes at the CURRENT
+    body fingerprint count. #1 has two ``no_pr`` rows at the current fingerprint,
+    one ``merged`` row (excluded) and one ``no_pr`` row at a stale fingerprint
+    (excluded, an edited body); #2 has no outcome rows at all."""
+    db = _db()
+    _seed_product(db, "viberpit", "steiner385/viberpit", board=True)
+    _item(db, "steiner385/viberpit", 1, status="Ready")
+    _item(db, "steiner385/viberpit", 2, status="Ready")
+    fp = body_fingerprint(f"issue {1}", "body")
+    stale_fp = body_fingerprint("an old title", "an old body")
+    db.add_all([
+        DispatchOutcome(target_ref="steiner385/viberpit#1", body_fingerprint=fp, outcome="no_pr"),
+        DispatchOutcome(target_ref="steiner385/viberpit#1", body_fingerprint=fp, outcome="no_pr"),
+        DispatchOutcome(target_ref="steiner385/viberpit#1", body_fingerprint=fp, outcome="merged"),
+        DispatchOutcome(target_ref="steiner385/viberpit#1", body_fingerprint=stale_fp, outcome="no_pr"),
+    ])
+    db.commit()
+
+    rows = {r.ref: r for r in load_queue_rows(db, now=NOW)}
+
+    assert rows["steiner385/viberpit#1"].bounces == 2
+    assert rows["steiner385/viberpit#2"].bounces == 0
 
 
 def test_load_queue_rows_skips_products_without_a_board_and_closed_items():

@@ -5245,7 +5245,9 @@ class SessionOrchestrator:
                 # The needs-human cooldown stays runner-wide: it is the runner's
                 # own give-up window, not a property of the product's board.
                 needs_human_retry_days=retry_days,
-                now=now)
+                now=now,
+                # D8: THE bounce threshold, from this product's own policy.
+                give_up_after_bounces=int(policy["give_up_after_bounces"]))
             entries.extend(entries_p)
             for reason, n in skipped_p.items():
                 skipped[reason] = skipped.get(reason, 0) + n
@@ -5255,6 +5257,7 @@ class SessionOrchestrator:
                     "eligible": len(entries_p),
                     "blocked": skipped_p.get("blocked", 0),
                     "untriaged": skipped_p.get("status", 0),
+                    "bounced": skipped_p.get("needs_spec", 0),
                 }
         # Merge the per-product rankings into one pool with ``rank``'s OWN key, not
         # a copy of its first two legs: ranking per product and re-sorting on score

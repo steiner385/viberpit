@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from server.pm.desired_state import STATUS_OPTIONS
+from server.pm.desired_state import STATUS_OPTIONS, STATUS_READY
 from server.pm.queue import (MIN_STATUS_OPTIONS, SKIP_REASONS, QueueRow, rank, rank_key,
                              skip_reason, to_candidate)
 
@@ -72,6 +72,26 @@ def test_needs_human_cooldown_outranks_the_board_status_it_causes():
     kw = dict(min_status="Backlog", respect_dependencies=True, needs_human_retry_days=7, now=NOW)
     row = _row(status="Needs human", needs_human_at=NOW - timedelta(days=1))
     assert skip_reason(row, **kw) == "needs_human_cooldown"
+
+
+def test_needs_spec_skips_a_bounced_row_before_the_status_gate():
+    """D8: a row that keeps bouncing on the same body is parked as ``needs_spec``
+    — checked immediately after the needs-human cooldown and before the status
+    gate, so it is reported whatever the board's Status column says."""
+    kw = dict(min_status=STATUS_READY, respect_dependencies=True, needs_human_retry_days=0, now=NOW)
+    row = _row(bounces=2, status=STATUS_READY)
+    assert skip_reason(row, give_up_after_bounces=2, **kw) == "needs_spec"
+    assert skip_reason(row, give_up_after_bounces=3, **kw) is None
+    assert skip_reason(row, give_up_after_bounces=0, **kw) is None  # 0 = never
+    assert "needs_spec" in SKIP_REASONS
+
+
+def test_rank_counts_needs_spec():
+    rows = [_row(ref="o/r#1", number=1, bounces=2), _row(ref="o/r#2", number=2, bounces=0)]
+    entries, skipped = rank(rows, min_status=STATUS_READY, respect_dependencies=True,
+                            needs_human_retry_days=0, now=NOW, give_up_after_bounces=2)
+    assert skipped == {"needs_spec": 1}
+    assert [e.number for e in entries] == [2]
 
 
 def test_rank_orders_score_desc_nulls_last_then_age_and_counts_skips():
@@ -147,7 +167,8 @@ def test_backlog_mode_admits_unstamped_and_foreign_statuses():
 
 
 def test_every_skip_reason_is_in_the_vocabulary():
-    kw = dict(min_status="Ready", respect_dependencies=True, needs_human_retry_days=7, now=NOW)
+    kw = dict(min_status="Ready", respect_dependencies=True, needs_human_retry_days=7, now=NOW,
+             give_up_after_bounces=2)
     cases = {
         "status": _row(status="Done"),
         "blocked": _row(status="Blocked"),
@@ -157,6 +178,7 @@ def test_every_skip_reason_is_in_the_vocabulary():
         "epic_open": _row(open_children=1),
         "bot": _row(author="renovate[bot]"),
         "needs_human_cooldown": _row(needs_human_at=NOW - timedelta(days=1)),
+        "needs_spec": _row(bounces=2),
     }
     seen = set()
     for expected, row in cases.items():

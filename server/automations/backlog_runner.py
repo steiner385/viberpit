@@ -329,10 +329,21 @@ class BacklogRunner:
         # One segment per ON product after the summary: which products this runner
         # is working, how, and how hard. Joined with " · " on ONE line because the
         # web renders ``AutomationStatus.text`` without honouring newlines.
-        for slug, p in _on_products(rows):
+        # ``products`` (spec §9/§10) carries the SAME rows, structured, for the
+        # web's per-product table (Task 5) — the text is the human summary, this
+        # is the machine one, built from one loop so they can never disagree.
+        on = _on_products(rows)
+        products_out = []
+        for slug, p in on:
             text += (f" · {slug}: {p.get('dispatch')} · "
                      f"{p.get('in_flight', 0)}/{p.get('cap', 0)} in flight · "
                      f"{p.get('eligible', 0)} eligible")
+            bounced = p.get("bounced", 0)
+            if bounced:
+                text += f" · {bounced} bounced"
+            products_out.append({"slug": slug, "dispatch": p.get("dispatch"),
+                                 "inFlight": p.get("in_flight", 0), "cap": p.get("cap", 0),
+                                 "eligible": p.get("eligible", 0), "bounced": bounced})
         # Queue provenance (#990): which ranked candidate this came from, and
         # what it was picked over — same formatter the ``picked`` event uses,
         # so the card and the activity feed can never say different things.
@@ -341,7 +352,7 @@ class BacklogRunner:
         pick = getattr(ctx, "backlog_last_pick", None)
         if pick and level != "idle":
             text += f" · {format_pick(pick)}"
-        return AutomationStatus(text=text, level=level, counts=counts)
+        return AutomationStatus(text=text, level=level, counts=counts, products=products_out)
 
     async def on_state_change(self, *, enabled, mode, config, ctx) -> None:
         # The orchestrator's loop reads mode/config each tick; nothing to start here.
