@@ -5135,25 +5135,32 @@ class SessionOrchestrator:
             return False
 
     async def _backlog_pr_doctor_attempts_for(self, pr_ref: str) -> int | None:
-        """How many session fixes PR Doctor injected into *pr_ref* (``repo#N``),
-        or None when that is UNKNOWN.
+        """How much recovery PR Doctor injected into *pr_ref* (``repo#N``), or
+        None when that is UNKNOWN.
 
-        Read off PR Doctor's own per-target state — ``total_attempts`` is its
-        monotonic, re-arm-immune counter (``pr_doctor_engine.record_attempt``),
-        which is the one that answers "did this PR merge without help". The runner
-        turns it into ``first_pass_merge``, so UNKNOWN must never collapse to 0: a
-        PR the doctor never tracked, one whose row it already cleared at terminal
-        (``set_target_state(target, {})``), or a failed read all answer None."""
+        Read off PR Doctor's own per-target state: ``total_attempts`` (session
+        fixes) + ``total_mechanical`` (mechanical injections) are its monotonic,
+        re-arm-immune counters (``pr_doctor_engine.record_attempt``). BOTH count —
+        the runner turns this into ``first_pass_merge``, and a first pass means no
+        doctor recovery of ANY kind, so a merge carried home by mechanical-only
+        fixes is not one (R3-7).
+
+        The UNKNOWN test is the STATE ROW, not the counters: ``record_attempt``
+        only ever writes a counter starting at 1, so a tracked PR the doctor never
+        had to act on carries neither key and is a real, known zero. (Keying
+        unknown on a missing ``total_attempts`` made ``first_pass_merge is True``
+        unreachable in production.) An empty dict — no row at all, or one the
+        doctor already cleared at terminal (``set_target_state(target, {})``) — and
+        a failed read both answer None; UNKNOWN must never collapse to 0."""
         try:
             st = await self._pr_doctor_ctx.get_target_state(pr_ref)
         except Exception:
             log.debug("backlog_runner.pr_doctor_attempts_failed", exc_info=True)
             return None
-        total = st.get("total_attempts")
-        if total is None:
+        if not st:
             return None
         try:
-            return int(total)
+            return int(st.get("total_attempts", 0)) + int(st.get("total_mechanical", 0))
         except (TypeError, ValueError):
             return None
 

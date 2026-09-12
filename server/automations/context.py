@@ -10,7 +10,16 @@ from sqlalchemy import delete, select
 
 from ccswitch import brand
 from server.db import db_session
-from server.db.models import AutomationEvent, AutomationTargetState
+from server.db.models import (
+    DISPATCH_OUTCOMES,
+    AutomationEvent,
+    AutomationTargetState,
+    DispatchOutcome,
+    Project,
+    WorkItem,
+)
+from server.pm.outcomes import body_fingerprint
+from server.pm.refs import split_ref
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +36,18 @@ log = logging.getLogger(__name__)
 # there is no middle tier that permits edits and shell while gating anything else —
 # "auto" still prompts on both, since Bash and Edit are on the DANGEROUS denylist.
 _AUTOMATION_FALLBACK_PERMISSION_MODE = "full-auto"
+
+
+def _elapsed_s(started_at: datetime | None, now: datetime) -> float | None:
+    """Seconds between a dispatch's start and *now*, or None when it never
+    recorded a start. Every ``dispatch_outcomes`` datetime column is naive UTC, so
+    a stored value is re-stamped UTC before the subtraction rather than compared
+    against an aware ``now`` (that raises)."""
+    if started_at is None:
+        return None
+    started = (started_at if started_at.tzinfo
+               else started_at.replace(tzinfo=timezone.utc))
+    return (now - started).total_seconds()
 
 
 def _account_defaults_for(account: str) -> dict:
@@ -176,12 +197,28 @@ class AutomationContext:
                              session_id: str | None, model: str | None,
                              attempt_no: int) -> None:
         """Insert the ``running`` outcome row for a dispatch (spec §6). Best-effort:
-        history must never block a spawn (§13)."""
-        from server.db.models import DispatchOutcome, Project, WorkItem
-        from server.pm.outcomes import body_fingerprint
-        from server.pm.refs import split_ref
+        history must never block a spawn (§13).
+
+        A new dispatch first closes any row still ``running`` for this target as
+        ``abandoned``/``superseded``: AT MOST ONE running row per (automation,
+        target) is the invariant every reader leans on. Without it a double tap or
+        a manual dispatch over a live claim stranded the earlier row ``running``
+        forever — uncounted as a bounce, and a decoy for the next finalise.
+
+        Every import this needs sits at module scope: an ImportError raised inside
+        the method would escape the ``try`` below, and "best effort" has to mean
+        the whole write."""
         try:
             async with db_session() as db:
+                now = datetime.now(timezone.utc)
+                stale = (await db.execute(select(DispatchOutcome).where(
+                    DispatchOutcome.automation_id == self.automation_id,
+                    DispatchOutcome.target_ref == target,
+                    DispatchOutcome.outcome == "running"))).scalars().all()
+                for row in stale:
+                    row.outcome, row.cause = "abandoned", "superseded"
+                    row.ended_at, row.updated_at = now, now
+                    row.duration_s = _elapsed_s(row.started_at, now)
                 project_id = None
                 if product_slug:
                     project_id = (await db.execute(select(Project.id).where(
@@ -206,40 +243,62 @@ class AutomationContext:
 
     async def finalize_outcome(self, target: str, *, outcome: str, cause: str | None = None,
                                pr_number: int | None = None, pr_url: str | None = None,
-                               first_pass_merge: bool | None = None) -> None:
+                               first_pass_merge: bool | None = None,
+                               upgrade_from: tuple[str, ...] = ()) -> None:
         """Finalise the newest ``running`` row for *target* (spec §6). An unknown
         outcome is a programming error and raises; a DB failure is logged and
-        swallowed (§13)."""
-        from server.db.models import DISPATCH_OUTCOMES, DispatchOutcome
+        swallowed (§13).
+
+        *upgrade_from* is the fallback for a verdict that arrives a SWEEP LATE.
+        The runner's give-up branches fire on the tick that charges the last
+        attempt, and the tick that charged the previous one already closed that
+        same dispatch as ``no_pr`` — nothing re-dispatches in between. With no
+        running row to claim, the newest row whose outcome is listed here is
+        RE-finalised in place: one row per dispatch, ending at its real verdict,
+        never a second bounce for one session (R3-7). ``ended_at``/``duration_s``
+        are kept — the dispatch ended when its session did, not when the loop
+        noticed — and the PR fields are overwritten only when given, so an upgrade
+        that knows nothing new about the PR does not erase what the bounce
+        recorded. Neither a running nor an upgradable row → still a no-op."""
         if outcome not in DISPATCH_OUTCOMES:
             raise ValueError(f"unknown dispatch outcome {outcome!r}")
         try:
             async with db_session() as db:
-                row = (await db.execute(
-                    select(DispatchOutcome).where(
+                # ``id`` breaks a created_at TIE deterministically: two dispatches
+                # of one target can overlap (a propose tap racing the loop's own
+                # spawn, or a double tap), and without a tiebreak which of two
+                # same-stamped rows gets finalised is whatever the dialect felt
+                # like returning.
+                def _newest(*outcomes: str):
+                    return (select(DispatchOutcome).where(
                         DispatchOutcome.automation_id == self.automation_id,
                         DispatchOutcome.target_ref == target,
-                        DispatchOutcome.outcome == "running")
-                    # ``id`` breaks a created_at TIE deterministically: two
-                    # dispatches of one target can overlap (a propose tap racing
-                    # the loop's own spawn, or a double tap), and without a
-                    # tiebreak which of two same-stamped rows gets finalised is
-                    # whatever the dialect felt like returning.
-                    .order_by(DispatchOutcome.created_at.desc(),
-                              DispatchOutcome.id.desc()).limit(1))).scalars().first()
+                        DispatchOutcome.outcome.in_(outcomes))
+                        .order_by(DispatchOutcome.created_at.desc(),
+                                  DispatchOutcome.id.desc()).limit(1))
+
+                row = (await db.execute(_newest("running"))).scalars().first()
+                upgrade = row is None
+                if upgrade and upgrade_from:
+                    row = (await db.execute(
+                        _newest(*upgrade_from))).scalars().first()
                 if row is None:
                     log.info("automation_context.finalize_outcome_no_running_row target=%s",
                              target)
                     return
                 now = datetime.now(timezone.utc)
                 row.outcome, row.cause = outcome, cause
-                row.pr_number, row.pr_url = pr_number, pr_url
-                row.first_pass_merge = first_pass_merge
-                row.ended_at, row.updated_at = now, now
-                if row.started_at is not None:
-                    started = (row.started_at if row.started_at.tzinfo
-                               else row.started_at.replace(tzinfo=timezone.utc))
-                    row.duration_s = (now - started).total_seconds()
+                if pr_number is not None:
+                    row.pr_number = pr_number
+                if pr_url is not None:
+                    row.pr_url = pr_url
+                if first_pass_merge is not None:
+                    row.first_pass_merge = first_pass_merge
+                row.updated_at = now
+                if not upgrade:
+                    # A live dispatch ends NOW; an upgrade keeps the end it had.
+                    row.ended_at = now
+                    row.duration_s = _elapsed_s(row.started_at, now)
         except Exception:
             log.warning("automation_context.finalize_outcome_failed target=%s", target,
                         exc_info=True)

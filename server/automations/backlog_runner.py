@@ -1252,11 +1252,13 @@ class BacklogRunnerLoop:
     async def _finalize_outcome(self, target: str, *, outcome: str,
                                 cause: str | None = None, pr_number: int | None = None,
                                 pr_url: str | None = None,
-                                first_pass_merge: bool | None = None) -> None:
+                                first_pass_merge: bool | None = None,
+                                upgrade_from: tuple[str, ...] = ()) -> None:
         try:
             await self._ctx.finalize_outcome(
                 target, outcome=outcome, cause=cause, pr_number=pr_number,
-                pr_url=pr_url, first_pass_merge=first_pass_merge)
+                pr_url=pr_url, first_pass_merge=first_pass_merge,
+                upgrade_from=upgrade_from)
         except Exception:
             log.warning("backlog_runner.finalize_outcome_failed target=%s", target,
                         exc_info=True)
@@ -1423,16 +1425,26 @@ class BacklogRunnerLoop:
                         "info",
                         f"released {target} (session never ran a turn — not escalating)",
                         kind="unclaimed", target=target)
+                    # The cap is reached a sweep AFTER the bounce that carried the
+                    # dispatch to it, and nothing re-dispatches in between — so
+                    # the row this closes is the ``no_pr`` that sweep already
+                    # wrote, upgraded in place rather than left as the bounce it
+                    # no longer is (R3-7).
                     await self._finalize_outcome(
                         target, outcome="abandoned",
-                        cause="session never ran a turn")
+                        cause="session never ran a turn",
+                        upgrade_from=("no_pr",))
                     await self._ctx.delete_target_state(target)
                     return
                 reason = f"max attempts ({attempts}) reached with no mergeable PR"
                 await self._ctx.emit("warn", f"{target}: {reason} — giving up",
                                      kind="gave_up", target=target)
+                # Same sweep-late verdict as the release path above: this
+                # escalation belongs to the dispatch the previous sweep closed as
+                # ``no_pr``, so it upgrades that row instead of finding nothing.
                 await self._finalize_outcome(target, outcome="needs_human",
-                                             cause=reason)
+                                             cause=reason,
+                                             upgrade_from=("no_pr",))
                 await self._give_up(target, st, reason)
             else:
                 # Charge the attempt and mark this session consumed so we don't

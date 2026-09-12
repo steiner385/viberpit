@@ -765,16 +765,23 @@ def test_seed_once_normalises_a_legacy_mode_even_after_a_post_flip_config_save(t
 
 
 def test_pr_doctor_attempts_seam_reads_the_total_off_the_doctors_row(tmp_path):
-    """``first_pass_merge`` hangs off this seam (spec §6, R3-4): it answers how
-    many session fixes PR Doctor injected into a PR, and ``None`` whenever that
-    is UNKNOWN — a target it never tracked, or one whose row it already cleared
-    at terminal. Answering 0 for unknown would brand every late-swept merge a
-    first-pass merge."""
+    """``first_pass_merge`` hangs off this seam (spec §6, R3-4/R3-7): it answers
+    how much recovery PR Doctor injected into a PR — session fixes AND mechanical
+    ones — and ``None`` whenever that is UNKNOWN (a target it never tracked, or
+    one whose row it already cleared at terminal).
+
+    Two halves, both load-bearing:
+    * UNKNOWN must never collapse to 0 — that would brand every late-swept merge
+      a first-pass merge;
+    * a TRACKED row the doctor never had to act on IS a real zero, even though
+      neither counter exists yet: the counters only ever appear at 1 (see
+      ``pr_doctor_engine.record_attempt``), so keying "unknown" on a missing
+      ``total_attempts`` made ``first_pass_merge`` unreachable in production."""
     async def run():
         await _init(tmp_path, "prdoc_attempts.db")
         orch = _orch_with_ctx()
 
-        # The monotonic, re-arm-immune total — not the per-head ``attempts``.
+        # The monotonic, re-arm-immune totals — not the per-head ``attempts``.
         await orch._pr_doctor_ctx.set_target_state(
             "o/r#12", {"total_attempts": 2, "attempts": 1})
         assert await orch._backlog_pr_doctor_attempts_for("o/r#12") == 2
@@ -783,6 +790,21 @@ def test_pr_doctor_attempts_seam_reads_the_total_off_the_doctors_row(tmp_path):
         await orch._pr_doctor_ctx.set_target_state(
             "o/r#13", {"total_attempts": 0, "last_head_sha": "abc"})
         assert await orch._backlog_pr_doctor_attempts_for("o/r#13") == 0
+
+        # Tracked, never acted on, and the counters were never written at all
+        # (the production shape of a clean PR) — still a known zero.
+        await orch._pr_doctor_ctx.set_target_state("o/r#15", {"last_head_sha": "x"})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#15") == 0
+
+        # Either counter alone counts: first-pass means NO doctor recovery of any
+        # kind, so a merge carried home by mechanical-only fixes is not one.
+        await orch._pr_doctor_ctx.set_target_state("o/r#16", {"total_attempts": 1})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#16") == 1
+        await orch._pr_doctor_ctx.set_target_state("o/r#17", {"total_mechanical": 2})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#17") == 2
+        await orch._pr_doctor_ctx.set_target_state(
+            "o/r#18", {"total_attempts": 1, "total_mechanical": 2})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#18") == 3
 
         # No row at all → unknown.
         assert await orch._backlog_pr_doctor_attempts_for("o/r#404") is None

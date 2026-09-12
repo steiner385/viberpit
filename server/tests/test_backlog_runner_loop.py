@@ -103,7 +103,8 @@ def build_loop(*, mode="on", config=None, clock=None,
                refresh_groups=None, spawn=None, close_out_result=None,
                credential_alerts=None, verify_ready=None, queue_tail=None,
                wall_clock=None, needs_human_raises=False,
-               spawn_result=None, session_ran=None, pr_doctor_attempts=None):
+               spawn_result=None, session_ran=None, pr_doctor_attempts=None,
+               pr_doctor_attempts_fn=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .announced and
@@ -189,8 +190,13 @@ def build_loop(*, mode="on", config=None, clock=None,
 
     async def pr_doctor_attempts_for(pr_ref):
         # {``repo#N``: attempts}; a ref the map does not carry is UNKNOWN (None),
-        # which is exactly what a cleared PR Doctor row reads as.
+        # which is exactly what a cleared PR Doctor row reads as. A test that
+        # wants the REAL seam (the orchestrator method over PR Doctor's own state
+        # rows) passes it as ``pr_doctor_attempts_fn`` instead of a map.
         return (pr_doctor_attempts or {}).get(pr_ref)
+
+    attempts_seam = pr_doctor_attempts_fn or (
+        pr_doctor_attempts_for if pr_doctor_attempts is not None else None)
 
     async def read_policies():
         # The harness's default product, matching production: every batch the
@@ -218,8 +224,7 @@ def build_loop(*, mode="on", config=None, clock=None,
         clock=clk,
         needs_human=needs_human,
         session_ran=session_ran_probe if session_ran is not None else None,
-        pr_doctor_attempts_for=(pr_doctor_attempts_for
-                                if pr_doctor_attempts is not None else None),
+        pr_doctor_attempts_for=attempts_seam,
         close_out=close_out,
         count_candidates=count_candidates if candidate_count is not None else None,
         refresh_groups=refresh_groups,
@@ -2384,6 +2389,49 @@ def test_merged_pr_finalises_merged_with_first_pass_from_pr_doctor(tmp_path):
     asyncio.run(run())
 
 
+def test_a_doctor_row_without_counters_still_reads_as_a_first_pass_merge(tmp_path):
+    """The composition the fake map cannot check (R3-7): the REAL seam over PR
+    Doctor's own state row. ``record_attempt`` only ever writes ``total_attempts``
+    / ``total_mechanical`` starting at 1, so a tracked PR the doctor never had to
+    act on carries NEITHER key — and that is precisely a first-pass merge. Reading
+    a missing counter as UNKNOWN made ``first_pass_merge is True`` unreachable in
+    production."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_first_pass.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+
+        from server.db.models import Automation
+        from server.github.pr_status import PullRequestInfo
+        from server.sessions.orchestrator import SessionOrchestrator
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        async with db_session() as db:
+            db.add(Automation(id="pr-doctor"))
+
+        orch = SessionOrchestrator.__new__(SessionOrchestrator)
+        orch._pr_doctor_ctx = AutomationContext("pr-doctor")
+        # What PR Doctor's row looks like for a PR it tracked and never touched.
+        await orch._pr_doctor_ctx.set_target_state("o/r#12", {"last_head_sha": "abc"})
+
+        merged = PullRequestInfo(number=12, url="https://example/pr/12",
+                                 state="merged", checks="none", title="", merged=True)
+        loop, _rec, _ctx = build_loop(
+            candidates=[batch("o/r#1")], pr_status={"o/r#1": merged},
+            spawn_result=SimpleNamespace(id="sess-1"),
+            pr_doctor_attempts_fn=orch._backlog_pr_doctor_attempts_for)
+
+        await loop.tick()
+
+        rows = await _outcomes("o/r#1")
+        assert len(rows) == 1
+        assert rows[0].outcome == "merged" and rows[0].first_pass_merge is True
+
+    asyncio.run(run())
+
+
 def test_pr_doctor_gave_up_finalises_pr_gave_up(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_prgu.db'}"
 
@@ -2448,6 +2496,12 @@ def test_pr_closed_unmerged_finalises_abandoned(tmp_path):
 
 
 def test_max_attempts_give_up_finalises_needs_human(tmp_path):
+    """The PRODUCTION walk to the cap, sweep by sweep: nothing re-dispatches
+    between them, so the sweep that charges the last attempt is escalating the
+    very dispatch the previous sweep already closed as ``no_pr``. That row is
+    UPGRADED in place — one row for one session, ending ``needs_human``. Jumping
+    the state row straight to the cap hid this: the escalation then found a live
+    ``running`` row that production never has (R3-7)."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_needs_human.db'}"
 
     async def run():
@@ -2461,15 +2515,22 @@ def test_max_attempts_give_up_finalises_needs_human(tmp_path):
             spawn_result=SimpleNamespace(id="sess-1"),
             policies={DEFAULT_PRODUCT: policy(max_in_flight=1000, max_attempts=2)})
 
-        await loop.tick()                                   # spawn → running
-        await _mark_session_ended(ctx, "o/r#1", attempts=1)  # one short of the cap
-        await loop.tick()                                   # → give up
+        await loop.tick()                       # spawn → running
+        await _mark_session_ended(ctx, "o/r#1")
+        await loop.tick()                       # sweep: attempt 1 of 2 → no_pr
+        rows = await _outcomes("o/r#1")
+        assert len(rows) == 1 and rows[0].outcome == "no_pr"
+        assert rec.needs_humans == []
+        ended_at = rows[0].ended_at
+
+        await loop.tick()                       # sweep: attempt 2 = the cap → give up
 
         assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
         rows = await _outcomes("o/r#1")
-        assert len(rows) == 1
+        assert len(rows) == 1                   # never two bounce rows for one session
         assert rows[0].outcome == "needs_human"
         assert "max attempts" in (rows[0].cause or "")
+        assert rows[0].ended_at == ended_at     # the dispatch ended when the session did
         assert (await ctx.get_target_state("o/r#1"))["gave_up"] is True
 
     asyncio.run(run())
@@ -2493,12 +2554,17 @@ def test_release_after_never_ran_finalises_abandoned(tmp_path):
             session_ran=False,
             policies={DEFAULT_PRODUCT: policy(max_in_flight=1000, max_attempts=2)})
 
-        await loop.tick()
-        await _mark_session_ended(ctx, "o/r#1", attempts=1)
-        await loop.tick()
+        await loop.tick()                       # spawn → running
+        await _mark_session_ended(ctx, "o/r#1")
+        await loop.tick()                       # sweep: attempt 1 of 2 → no_pr
+        rows = await _outcomes("o/r#1")
+        assert len(rows) == 1 and rows[0].outcome == "no_pr"
+
+        await loop.tick()                       # sweep: the cap → release
 
         assert rec.needs_humans == []                 # released, not escalated
         assert await ctx.get_target_state("o/r#1") == {}
+        # The same row this dispatch already bounced, upgraded — not a second one.
         rows = await _outcomes("o/r#1")
         assert len(rows) == 1
         assert rows[0].outcome == "abandoned"
