@@ -180,7 +180,7 @@ def _leaf(w: WorkItem, tier: str, blockers: list[str], session_status: str | Non
         "title": w.title, "url": w.url, "state": w.state, "triageState": w.triage_state,
         "score": score, "reach": w.reach, "impact": w.impact, "effort": w.effort,
         "confidence": w.confidence, "tier": tier, "blockedBy": blockers,
-        "parentRef": parent_ref, "sessionStatus": session_status,
+        "parentRef": parent_ref, "featureId": w.feature_id, "sessionStatus": session_status,
         "ghCreatedAt": w.gh_created_at.isoformat() if w.gh_created_at else None,
     }
 

@@ -22,18 +22,20 @@ import type {
 import { fetchDeployStatus, startDeploy } from './deploy'
 import {
   fetchInitiative, advanceInitiative, stepBackInitiative, unblockInitiative, createInitiative,
+  updateInitiative,
   fetchMaterialization, acceptMaterialization, rejectMaterialization,
   fetchIncidents, actOnIncident,
-  type Initiative, type CreateInitiativeInput,
+  type Initiative, type CreateInitiativeInput, type UpdateInitiativeInput,
   type MaterializationProposal, type MaterializationApplied,
   type Incident, type IncidentActionInput,
 } from './sdlc'
 import {
   createProject, requestProjectSync,
   fetchOnboarding, proposeMap, runClassify, advanceMap, advanceLive,
-  removeDependency,
+  removeDependency, createEdge, deleteEdge,
   type Project, type CreateProjectInput, type OnboardingView,
   type RemoveDependencyInput, type RemoveDependencyResult,
+  type CreateEdgeInput, type ProjectEdgeInfo,
 } from './pm'
 import {
   fetchRoadmapMap, fetchLeaves, fetchQueue, fetchProject,
@@ -1593,6 +1595,22 @@ export function useCreateInitiative() {
   })
 }
 
+/** Inline edit of an initiative's title / capabilities. The detail and the map
+ *  both carry the capability links (the map places the ◆ row under its primary),
+ *  so both are invalidated. */
+export function useUpdateInitiative() {
+  const qc = useQueryClient()
+  return useMutation<Initiative, ApiRequestError, { slug: string; input: UpdateInitiativeInput }>({
+    mutationFn: ({ slug, input }) => updateInitiative(slug, input),
+    onSuccess: (_result, { slug }) => {
+      void qc.invalidateQueries({ queryKey: QK.initiative(slug) })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+    },
+    onError: (e) => toast.error(extractMutationErrorMessage(e, 'Could not update the initiative')),
+    meta: PM_MUTATION_META,
+  })
+}
+
 /** The control-band incident queue (#804). Polled on the initiatives cadence —
  *  the monitor's own tick is far slower (5 min) than either, and the board
  *  invalidates this alongside the tracks on `/ws` status frames. */
@@ -1764,6 +1782,51 @@ export function useProject(slug: string | null) {
     enabled: slug !== null && slug !== '',
     staleTime: 5_000,
     refetchInterval: 15_000,
+  })
+}
+
+/** Product dependency chips (spec §8 "Product dependency"). The project payload
+ *  carries the edges; the map's product tiers read them; the deps panel below
+ *  the chips polls its own key. */
+export function useCreateEdge(slug: string) {
+  const qc = useQueryClient()
+  return useMutation<ProjectEdgeInfo, ApiRequestError, CreateEdgeInput>({
+    mutationFn: (input) => createEdge(slug, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.project(slug) })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      void qc.invalidateQueries({ queryKey: ['pm', 'deps', slug] })
+    },
+    onError: (e) => toast.error(extractMutationErrorMessage(e, 'Could not add the dependency')),
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** Optimistic, in the triage hooks' shape: removing a chip is a direct,
+ *  non-modal affordance with no loading state of its own, so the chip has to go
+ *  the instant it is clicked and come back with a toast if the request fails. */
+export function useDeleteEdge(slug: string) {
+  const qc = useQueryClient()
+  const key = QK.project(slug)
+  return useMutation<void, ApiRequestError, string, { prev?: Project }>({
+    mutationFn: (edgeId) => deleteEdge(slug, edgeId),
+    onMutate: async (edgeId) => {
+      await qc.cancelQueries({ queryKey: key })
+      const prev = qc.getQueryData<Project>(key)
+      qc.setQueryData<Project>(key, (cur) => (
+        cur ? { ...cur, edges: cur.edges.filter((e) => e.id !== edgeId) } : cur))
+      return { prev }
+    },
+    onError: (e, _edgeId, ctx) => {
+      if (ctx?.prev) qc.setQueryData(key, ctx.prev)
+      toast.error(extractMutationErrorMessage(e, 'Could not remove the dependency'))
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      void qc.invalidateQueries({ queryKey: ['pm', 'deps', slug] })
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: key }),
+    meta: PM_MUTATION_META,
   })
 }
 
@@ -2007,7 +2070,13 @@ export function useUpdateOverlay() {
     { itemId: string; edit: OverlayEdits }
   >({
     mutationFn: ({ itemId, edit }) => updateOverlay(itemId, edit),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.triage }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.triage })
+      // A score reorders every leaves list the row is in; a capability change
+      // moves the row between nodes and shifts two nodes' counts on the map.
+      void qc.invalidateQueries({ queryKey: ['pm', 'leaves'] })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+    },
     onError: (e) => toast.error(extractMutationErrorMessage(e, 'Could not update work item')),
     meta: PM_MUTATION_META,
   })

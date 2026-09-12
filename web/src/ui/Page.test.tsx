@@ -102,6 +102,13 @@ describe('page primitives', () => {
     expect(el.className).not.toContain('overflow-y-auto')
   })
 
+  it('PageContent exposes its scroll element to a virtualized list only when it scrolls', () => {
+    const { rerender } = render(<PageContent><div>content</div></PageContent>)
+    expect(screen.getByTestId('page-content')).toHaveAttribute('data-page-scroll', '')
+    rerender(<PageContent scroll={false}><div>content</div></PageContent>)
+    expect(screen.getByTestId('page-content')).not.toHaveAttribute('data-page-scroll')
+  })
+
   it('Skeleton renders the requested number of decorative rows', () => {
     const { container } = render(<Skeleton lines={5} />)
     expect(container.querySelectorAll('.animate-pulse')).toHaveLength(5)

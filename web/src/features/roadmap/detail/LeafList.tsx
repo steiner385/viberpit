@@ -2,7 +2,9 @@
 // work actually is. Open first and closed below it, because "what is left" is
 // the question the list is opened with; the closed rows stay because they are
 // the evidence a capability is finished (finish-line spec §7).
-import type { Leaf, LeavesScope } from '@/api/roadmap'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import type { Leaf, LeavesScope, ProductNode, CapabilityNode } from '@/api/roadmap'
 import { useLeaves, useRemoveDependency } from '@/api/hooks'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { Skeleton } from '@/ui/Skeleton'
@@ -14,6 +16,9 @@ import { ISSUE } from '@/features/products/vocab'
 import { issueUrl } from '@/lib/githubUrl'
 import { tierLabel } from '../roadmapTier'
 import { TierDot } from '../rows/TierDot'
+import { flattenCapabilities } from '../lookup'
+import { LeafScoreButton, LeafCapabilityChip } from './LeafEditors'
+import { leafRows, type LeafListRow } from './leafRows'
 
 /** `owner/repo#N` → `#N` when it is the leaf's own repo; the full ref otherwise. */
 function shortRef(ref: string, ownRepo: string): string {
@@ -53,10 +58,10 @@ function BlockerRow({ leaf, blockerRef }: { leaf: Leaf; blockerRef: string }) {
   )
 }
 
-function LeafRow({ leaf }: { leaf: Leaf }) {
+function LeafRow({ leaf, capabilities }: { leaf: Leaf; capabilities: { node: CapabilityNode; depth: number }[] }) {
   const blockers = leaf.blockedBy.length
   return (
-    <li className="flex flex-col gap-1 rounded-md border border-edge bg-surface p-2 text-sm">
+    <div className="flex flex-col gap-1 rounded-md border border-edge bg-surface p-2 text-sm">
       <div className="flex items-center gap-2">
         <TierDot tier={leaf.tier} />
         {/* GitHub owns the issue; the row links out rather than pretending to a
@@ -82,9 +87,8 @@ function LeafRow({ leaf }: { leaf: Leaf }) {
         {blockers > 0 && (
           <Badge tone="danger" count={blockers} aria-label={`${blockers} blocker${blockers === 1 ? '' : 's'}`} />
         )}
-        <span className="w-10 shrink-0 text-right text-xs tabular-nums text-ink-muted" title="Priority score">
-          {leaf.score?.toFixed(1) ?? '—'}
-        </span>
+        <LeafCapabilityChip leaf={leaf} capabilities={capabilities} />
+        <LeafScoreButton leaf={leaf} />
       </div>
       {blockers > 0 && (
         // GitHub owns the edge, but removing it is the one disposition a blocked
@@ -93,12 +97,13 @@ function LeafRow({ leaf }: { leaf: Leaf }) {
           {leaf.blockedBy.map((blockerRef) => <BlockerRow key={blockerRef} leaf={leaf} blockerRef={blockerRef} />)}
         </ul>
       )}
-    </li>
+    </div>
   )
 }
 
-export function LeafList({ scope }: { scope: LeavesScope }) {
+export function LeafList({ scope, product }: { scope: LeavesScope; product: ProductNode | null }) {
   const { data, isLoading, isError } = useLeaves(scope)
+  const capabilities = useMemo(() => (product ? flattenCapabilities(product.capabilities) : []), [product])
   // The leaves are their own query, so a failure here costs only this panel;
   // everything around it came from the map and stays on screen.
   if (isError && !data) {
@@ -111,26 +116,74 @@ export function LeafList({ scope }: { scope: LeavesScope }) {
   if (isLoading && !data) return <Skeleton lines={5} />
   const leaves = data ?? []
   if (leaves.length === 0) return <EmptyState title={`No ${ISSUE.plural.toLowerCase()} here yet`} />
-  const open = leaves.filter((l) => l.state === 'open')
-  const closed = leaves.filter((l) => l.state !== 'open')
+  return <VirtualRows rows={leafRows(leaves)} capabilities={capabilities} />
+}
+
+// jsdom reports a zero-height scroll container, so the window collapses to the
+// first row plus `overscan`; the tests rely on that (short fixtures render
+// whole, long ones do not).
+const OVERSCAN = 10
+
+function VirtualRows({ rows, capabilities }: { rows: LeafListRow[]; capabilities: { node: CapabilityNode; depth: number }[] }) {
+  const listRef = useRef<HTMLDivElement>(null)
+  // How far the list starts down the SCROLL CONTAINER's content — the offset the
+  // virtualizer subtracts from the page's scrollTop. It has to be measured:
+  // `offsetTop` is relative to the nearest positioned ancestor, and nothing
+  // between this list and <body> is positioned, so it would also count the top
+  // bar and the PageHeader, which are outside the scroll container. Making
+  // `PageContent` positioned instead would turn it into the containing block for
+  // every absolutely positioned descendant of a page, and clip them.
+  const [scrollMargin, setScrollMargin] = useState(0)
+  useLayoutEffect(() => {
+    const list = listRef.current
+    const scrollEl = list?.closest<HTMLElement>('[data-page-scroll]')
+    if (!list || !scrollEl) return
+    const measure = () => setScrollMargin(
+      scrollEl.scrollTop + list.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top,
+    )
+    measure()
+    // The tiles and tabs above the list resize (a banner arrives, text wraps),
+    // which moves where the list starts without re-rendering it.
+    const ro = new ResizeObserver(measure)
+    ro.observe(scrollEl)
+    return () => ro.disconnect()
+  }, [rows.length])
+  // The page scrolls (`PageContent`), not this list — it is one panel among the
+  // tiles and tabs above it — so the virtualizer measures against the page's
+  // scroll element and offsets by where the list starts inside it.
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => listRef.current?.closest<HTMLElement>('[data-page-scroll]') ?? null,
+    estimateSize: (i) => (rows[i].kind === 'header' ? 28 : 44),
+    overscan: OVERSCAN,
+    getItemKey: (i) => rows[i].key,
+    scrollMargin,
+  })
   return (
-    <div className="flex flex-col gap-4">
-      {open.length > 0 && (
-        <section>
-          <h3 className="mb-1 text-xs font-medium uppercase text-ink-muted">Open · {open.length}</h3>
-          <ul className="flex flex-col gap-1">
-            {open.map((l) => <LeafRow key={l.id} leaf={l} />)}
-          </ul>
-        </section>
-      )}
-      {closed.length > 0 && (
-        <section>
-          <h3 className="mb-1 text-xs font-medium uppercase text-ink-muted">Closed · {closed.length}</h3>
-          <ul className="flex flex-col gap-1">
-            {closed.map((l) => <LeafRow key={l.id} leaf={l} />)}
-          </ul>
-        </section>
-      )}
+    <div ref={listRef} role="list" aria-label={ISSUE.plural} className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
+      {virtualizer.getVirtualItems().map((item) => {
+        const row = rows[item.index]
+        return (
+          <div
+            key={item.key}
+            role="listitem"
+            // Only a window of the list is in the DOM, so the row says where it
+            // sits in the whole of it — otherwise a screen reader announces the
+            // handful of mounted rows as the entire list.
+            aria-setsize={rows.length}
+            aria-posinset={item.index + 1}
+            data-index={item.index}
+            ref={virtualizer.measureElement}
+            className="absolute left-0 top-0 w-full pb-1"
+            style={{ transform: `translateY(${item.start - virtualizer.options.scrollMargin}px)` }}
+          >
+            {row.kind === 'header'
+              ? <h3 className="mb-1 text-xs font-medium uppercase text-ink-muted">{row.label}</h3>
+              : <LeafRow leaf={row.leaf} capabilities={capabilities} />}
+          </div>
+        )
+      })}
     </div>
   )
 }

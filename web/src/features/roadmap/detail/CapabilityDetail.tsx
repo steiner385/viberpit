@@ -174,7 +174,7 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
             </ul>
           ))}
         {tab === 'in-flight' && <InitiativeList initiatives={inFlight} />}
-        {tab === 'issues' && <LeafList scope={{ capability: capability.id }} />}
+        {tab === 'issues' && <LeafList scope={{ capability: capability.id }} product={product} />}
         {/* `repos={[]}` is a real, empty scope: incidents are filed against a
             repository, which belongs to the product, so a capability shows none
             rather than repeating its product's whole incident queue. */}

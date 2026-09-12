@@ -166,6 +166,26 @@ describe('useUpdateOverlay', () => {
     expect(mocked.updateOverlay).toHaveBeenCalledWith('w1', { triageState: 'classified' })
     expect(toast.error).toHaveBeenCalledTimes(1)
   })
+
+  it('invalidates triage, every leaves list and the map on success — a score reorders leaves lists, a capability change moves counts on the map', async () => {
+    const qc = makeClient()
+    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries')
+    mocked.updateOverlay.mockResolvedValueOnce({
+      id: 'w1', repo: 'o/r', number: 7, kind: 'issue', title: 'A', state: 'open',
+      featureId: 'f2', reach: 5, impact: 5, effort: 4, confidence: 1,
+      triageState: 'classified', classifiedBy: null, classifiedAt: null, url: null,
+    })
+
+    const { result } = renderHook(() => useUpdateOverlay(), { wrapper: makeWrapper(qc) })
+    await act(async () => {
+      result.current.mutate({ itemId: 'w1', edit: { effort: 4 } })
+    })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: QK.triage })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['pm', 'leaves'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: QK.roadmapMap })
+  })
 })
 
 describe('undo', () => {

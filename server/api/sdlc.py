@@ -3,6 +3,7 @@ control-band triage queue (#804)."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
@@ -221,6 +222,40 @@ def _action_to_dict(action: object) -> dict:
     return {"type": "unknown"}  # pragma: no cover — union is closed
 
 
+async def _resolve_capabilities(
+    db, primary_id: str | None, capability_ids: list[str],
+) -> tuple[list[str], dict[str, Feature]]:
+    """The capability set an initiative may link: ``capability_ids`` plus the
+    primary (which always belongs to the set), de-duplicated in order; every id
+    must exist and all must sit under ONE product. Shared by create and PATCH so
+    the two cannot drift (constitution VI). Returns ``(wanted_ids, features)``."""
+    wanted = list(dict.fromkeys(capability_ids + ([primary_id] if primary_id else [])))
+    features: dict[str, Feature] = {}
+    if wanted:
+        features = {f.id: f for f in (await db.execute(
+            select(Feature).where(Feature.id.in_(wanted)))).scalars().all()}
+        missing = [fid for fid in wanted if fid not in features]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"error": "capability_not_found",
+                        "message": f"unknown capability id(s): {', '.join(missing)}"})
+        if len({f.project_id for f in features.values()}) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"error": "capabilities_span_products",
+                        "message": "all capabilities must belong to one product"})
+    return wanted, features
+
+
+def _project_of(wanted: list[str], features: dict[str, Feature], primary_id: str | None) -> str | None:
+    """The product an initiative belongs to: its primary's, else its first capability's."""
+    if not wanted:
+        return None
+    anchor = features[primary_id] if primary_id else features[wanted[0]]
+    return anchor.project_id
+
+
 class InitiativeCreateBody(BaseModel):
     title: str
     repo: str
@@ -288,27 +323,8 @@ async def create_initiative(
             detail={"error": "slug_conflict", "message": f"Initiative '{slug}' already exists"},
         )
 
-    wanted = list(dict.fromkeys(body.capabilityIds
-                                + ([body.primaryCapabilityId] if body.primaryCapabilityId else [])))
-    features: dict[str, Feature] = {}
-    if wanted:
-        features = {f.id: f for f in (await db.execute(
-            select(Feature).where(Feature.id.in_(wanted)))).scalars().all()}
-        missing = [fid for fid in wanted if fid not in features]
-        if missing:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={"error": "capability_not_found",
-                        "message": f"unknown capability id(s): {', '.join(missing)}"})
-        if len({f.project_id for f in features.values()}) > 1:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={"error": "capabilities_span_products",
-                        "message": "all capabilities must belong to one product"})
-    project_id = None
-    if wanted:
-        anchor = features[body.primaryCapabilityId] if body.primaryCapabilityId else features[wanted[0]]
-        project_id = anchor.project_id
+    wanted, features = await _resolve_capabilities(db, body.primaryCapabilityId, body.capabilityIds)
+    project_id = _project_of(wanted, features, body.primaryCapabilityId)
 
     ini = Initiative(
         slug=slug,
@@ -471,6 +487,84 @@ async def step_back_initiative(
     await db.flush()
     await record_audit(db=db, type="sdlc.initiative.step_back", identity=identity,
                        detail={"slug": slug, "stage": prev})
+    d = _initiative_to_dict(ini)
+    await _decorate(db, [ini], [d])
+    return d
+
+
+class InitiativePatchBody(BaseModel):
+    title: str | None = None
+    primaryCapabilityId: str | None = None
+    capabilityIds: list[str] | None = None
+
+
+@router.patch("/initiatives/{slug}")
+async def update_initiative(
+    slug: str,
+    body: InitiativePatchBody,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Inline edit of what a human owns on an initiative (roadmap spec §8, §10):
+    the title, and which capabilities it is primary to / touches.
+
+    ``capabilityIds`` REPLACES the touched set; the primary always belongs to
+    the set (as on create). A primary given alone re-primaries inside the
+    current set; a set given alone keeps the current primary while it is still
+    a member and drops it otherwise. The product is re-derived from the primary
+    (else the first capability) — ``None`` when the set empties — because the
+    initiative's product IS its primary capability's product (§10 model). An
+    empty body is a read-through: nothing to audit.
+
+    ``primaryCapabilityId: ""`` is normalised to ``None`` — "not chosen", never
+    "clear the primary". A blank select value must not orphan an initiative:
+    clearing the primary clears the product too, and ``pm_tree`` selects
+    initiatives by product, so a product-less one appears NOWHERE on the map.
+    Emptying the touched set is expressible on its own (``capabilityIds: []``)."""
+    ini = await _load_initiative(db, slug)
+    if body.primaryCapabilityId == "":
+        body.primaryCapabilityId = None
+    fields = body.model_dump(exclude_none=True)
+    if not fields:
+        d = _initiative_to_dict(ini)
+        await _decorate(db, [ini], [d])
+        return d
+    # The audit carries the VALUES written, not just which fields moved — every
+    # sibling audit here records what it wrote, and "fields: [title]" cannot
+    # answer "what was it renamed to?".
+    detail: dict[str, Any] = {"slug": slug, "fields": sorted(fields)}
+    if body.title is not None:
+        title = body.title.strip()
+        if not title:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={
+                "error": "bad_title", "message": "title must not be blank"})
+        ini.title = title
+        detail["title"] = title
+    if body.primaryCapabilityId is not None or body.capabilityIds is not None:
+        # Serialize concurrent PATCHes of this initiative: the delete → flush →
+        # re-add below is read-modify-write, so under READ COMMITTED two
+        # overlapping requests both delete and the loser's INSERT then violates
+        # `uq_initiative_feature` (a 500). A no-op on SQLite, which has one writer.
+        await db.execute(select(Initiative).where(Initiative.id == ini.id).with_for_update())
+        current = (await db.execute(select(InitiativeFeature).where(
+            InitiativeFeature.initiative_id == ini.id))).scalars().all()
+        current_primary = next((r.feature_id for r in current if r.is_primary), None)
+        ids = body.capabilityIds if body.capabilityIds is not None else [r.feature_id for r in current]
+        if body.primaryCapabilityId is not None:
+            primary: str | None = body.primaryCapabilityId
+        else:
+            primary = current_primary if current_primary in ids else None
+        wanted, features = await _resolve_capabilities(db, primary, ids)
+        for r in current:
+            await db.delete(r)
+        await db.flush()
+        for fid in wanted:
+            db.add(InitiativeFeature(initiative_id=ini.id, feature_id=fid, is_primary=(fid == primary)))
+        ini.project_id = _project_of(wanted, features, primary)
+        detail["primaryCapabilityId"] = primary
+        detail["capabilityIds"] = wanted
+    await db.flush()
+    await record_audit(db=db, type="sdlc.initiative.update", identity=identity, detail=detail)
     d = _initiative_to_dict(ini)
     await _decorate(db, [ini], [d])
     return d

@@ -100,6 +100,8 @@ export interface Leaf {
   tier: RoadmapTier
   blockedBy: string[]
   parentRef: string | null
+  /** The capability the issue sits under on the map; null while unclassified. */
+  featureId: string | null
   sessionStatus: string | null
   ghCreatedAt: string | null
 }

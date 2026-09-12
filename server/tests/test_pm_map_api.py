@@ -238,6 +238,7 @@ def test_leaves_for_capability_and_initiative():
             assert [i["number"] for i in items] == [2, 1, 3]          # open by score desc, closed last
             assert items[0]["score"] == 125.0 and items[0]["tier"] == "idle"
             assert items[0]["parentRef"] == "o/r#10"
+            assert items[0]["featureId"] == cap_id
             assert items[2]["tier"] == "live"
 
             r = c.get("/api/pm/leaves?initiative=whisper", headers=IDENTITY_HEADERS)

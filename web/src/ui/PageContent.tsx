@@ -19,6 +19,10 @@ export function PageContent({ busy = false, scroll = true, className, children }
     <div
       data-testid="page-content"
       aria-busy={busy || undefined}
+      // A virtualized list inside a page finds its scroll container by this
+      // attribute (LeafList); a Workspace page (scroll=false) has none — its
+      // panes scroll themselves.
+      {...(scroll ? { 'data-page-scroll': '' } : {})}
       className={cn('flex-1 min-h-0 flex flex-col', scroll ? 'overflow-y-auto px-4 py-4 md:px-6' : 'overflow-hidden', className)}
     >
       {children}

@@ -34,6 +34,7 @@ const removeState = vi.hoisted(() => ({
 vi.mock('@/api/hooks', () => ({
   useLeaves: () => leavesQuery,
   useRemoveDependency: () => ({ mutate: removeMutate, ...removeState }),
+  useUpdateOverlay: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useIncidents: () => ({ data: [], isError: false }),
   useIncidentAction: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
 }))
@@ -42,11 +43,13 @@ const leaf = (over: Partial<Leaf> & { id: string; number: number }): Leaf => ({
   ref: `cairnea/KinDash#${over.number}`, repo: 'cairnea/KinDash', kind: 'issue', title: null,
   url: `https://x/${over.number}`, state: 'open', triageState: 'classified', score: null, reach: null,
   impact: null, effort: null, confidence: null, tier: 'idle', blockedBy: [], parentRef: null,
-  sessionStatus: null, ghCreatedAt: null, ...over,
+  featureId: null, sessionStatus: null, ghCreatedAt: null, ...over,
 })
 
 const LEAVES: Leaf[] = [
-  leaf({ id: 'w1', number: 7, title: 'Bulk edit', score: 6.5, tier: 'in-flight', sessionStatus: 'in_progress' }),
+  // `featureId` names a capability in `busyProduct`'s tree (`cap()` ids are
+  // `f-<slug>`), so the row's move chip has a tree to render from.
+  leaf({ id: 'w1', number: 7, title: 'Bulk edit', score: 6.5, tier: 'in-flight', sessionStatus: 'in_progress', featureId: 'f-tasks' }),
   leaf({ id: 'w2', number: 9, title: 'Blocked one', tier: 'blocked', blockedBy: ['cairnea/KinDash#7'] }),
   leaf({ id: 'w3', number: 3, title: 'Old', state: 'closed', tier: 'live' }),
   leaf({ id: 'w4', number: 11, title: 'No URL', url: null }),
@@ -86,7 +89,11 @@ function mount(
   const props = { product: busyProduct, capability: tasks, onNewInitiative: () => {}, ...over }
   return render(
     <ViewportProvider kiosk={null}>
-      <MemoryRouter initialEntries={[path]}><CapabilityDetail {...props} /></MemoryRouter>
+      {/* Real mount point is inside PageContent, whose scroll div carries
+          data-page-scroll — LeafList's virtualizer measures against it. */}
+      <div data-page-scroll="">
+        <MemoryRouter initialEntries={[path]}><CapabilityDetail {...props} /></MemoryRouter>
+      </div>
     </ViewportProvider>,
   )
 }
@@ -186,9 +193,10 @@ describe('CapabilityDetail', () => {
 
   it('Issues: open work first, with its blockers, score and live session', () => {
     mount({}, '/roadmap/kindash/capabilities/tasks?tab=issues')
-    // Excludes the "Blocked by" sub-list's own <li> refs, which share the
-    // listitem role but are not leaf rows.
-    const items = screen.getAllByRole('listitem').filter((el) => el.closest('[aria-label="Blocked by"]') === null)
+    // Excludes the "Blocked by" sub-list's own <li> refs and the virtualizer's
+    // section-header rows, which all share the listitem role but are not leaf rows.
+    const items = screen.getAllByRole('listitem')
+      .filter((el) => el.closest('[aria-label="Blocked by"]') === null && el.querySelector('h3') === null)
     expect(items[0]).toHaveTextContent('Bulk edit')
     expect(items[0]).toHaveTextContent('session')
     expect(items[0]).toHaveTextContent('6.5')
@@ -198,6 +206,14 @@ describe('CapabilityDetail', () => {
     expect(screen.getByRole('heading', { name: /Open · 3/ })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: /Closed · 1/ })).toBeInTheDocument()
     expect(items[3]).toHaveTextContent('Old')
+  })
+
+  it('Issues: a row offers to move the issue, which needs the product tree passed down', () => {
+    // Pins the `product` prop end-to-end: drop it at the LeafList mount and the
+    // chip disappears (the flattened tree is empty), which nothing else notices.
+    mount({}, '/roadmap/kindash/capabilities/tasks?tab=issues')
+    expect(screen.getAllByRole('button', { name: /Move #\d+/ }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: 'Move #7 to another capability' })).toHaveTextContent('Tasks')
   })
 
   it('Issues: a blocked leaf names each blocker and offers to remove it', () => {
