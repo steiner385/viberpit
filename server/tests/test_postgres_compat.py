@@ -268,6 +268,11 @@ _FK_LINKS: dict[str, dict[str, str]] = {
     "work_item_deps": {"src_work_item_id": "work_items", "dst_work_item_id": "work_items"},
     # roadmap spec §9: the map-changes PR pointer hangs off a product.
     "feature_map_changes": {"project_id": "projects"},
+    # product automation policy spec §6: one dispatch-outcome row per Backlog Runner
+    # dispatch, pointing at the product it was dispatched for and the session that ran
+    # it. No _REQUIRED_EXTRAS entry — id/created_at are its only NOT NULL columns and
+    # both are defaulted.
+    "dispatch_outcomes": {"project_id": "projects", "session_id": "sessions"},
 }
 
 

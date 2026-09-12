@@ -3,6 +3,7 @@ per-target state, and (Task 4) de-duplicated session spawning."""
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from sqlalchemy import delete, select
@@ -170,6 +171,72 @@ class AutomationContext:
             rows = (await db.execute(select(AutomationTargetState).where(
                 AutomationTargetState.automation_id == self.automation_id))).scalars().all()
         return {r.target: dict(r.state) for r in rows}
+
+    async def record_outcome(self, target: str, *, product_slug: str | None,
+                             session_id: str | None, model: str | None,
+                             attempt_no: int) -> None:
+        """Insert the ``running`` outcome row for a dispatch (spec §6). Best-effort:
+        history must never block a spawn (§13)."""
+        from server.db.models import DispatchOutcome, Project, WorkItem
+        from server.pm.outcomes import body_fingerprint
+        from server.pm.refs import split_ref
+        try:
+            async with db_session() as db:
+                project_id = None
+                if product_slug:
+                    project_id = (await db.execute(select(Project.id).where(
+                        Project.slug == product_slug))).scalar_one_or_none()
+                fingerprint = None
+                parts = split_ref(target)
+                if parts is not None:
+                    repo, number = parts
+                    wi = (await db.execute(select(WorkItem).where(
+                        WorkItem.repo == repo, WorkItem.number == number,
+                        WorkItem.kind == "issue"))).scalars().first()
+                    if wi is not None:
+                        fingerprint = body_fingerprint(wi.title, wi.body)
+                db.add(DispatchOutcome(
+                    automation_id=self.automation_id, project_id=project_id,
+                    target_ref=target, body_fingerprint=fingerprint, session_id=session_id,
+                    model=model, attempt_no=attempt_no,
+                    started_at=datetime.now(timezone.utc), outcome="running"))
+        except Exception:
+            log.warning("automation_context.record_outcome_failed target=%s", target,
+                        exc_info=True)
+
+    async def finalize_outcome(self, target: str, *, outcome: str, cause: str | None = None,
+                               pr_number: int | None = None, pr_url: str | None = None,
+                               first_pass_merge: bool | None = None) -> None:
+        """Finalise the newest ``running`` row for *target* (spec §6). An unknown
+        outcome is a programming error and raises; a DB failure is logged and
+        swallowed (§13)."""
+        from server.db.models import DISPATCH_OUTCOMES, DispatchOutcome
+        if outcome not in DISPATCH_OUTCOMES:
+            raise ValueError(f"unknown dispatch outcome {outcome!r}")
+        try:
+            async with db_session() as db:
+                row = (await db.execute(
+                    select(DispatchOutcome).where(
+                        DispatchOutcome.automation_id == self.automation_id,
+                        DispatchOutcome.target_ref == target,
+                        DispatchOutcome.outcome == "running")
+                    .order_by(DispatchOutcome.created_at.desc()).limit(1))).scalars().first()
+                if row is None:
+                    log.info("automation_context.finalize_outcome_no_running_row target=%s",
+                             target)
+                    return
+                now = datetime.now(timezone.utc)
+                row.outcome, row.cause = outcome, cause
+                row.pr_number, row.pr_url = pr_number, pr_url
+                row.first_pass_merge = first_pass_merge
+                row.ended_at, row.updated_at = now, now
+                if row.started_at is not None:
+                    started = (row.started_at if row.started_at.tzinfo
+                               else row.started_at.replace(tzinfo=timezone.utc))
+                    row.duration_s = (now - started).total_seconds()
+        except Exception:
+            log.warning("automation_context.finalize_outcome_failed target=%s", target,
+                        exc_info=True)
 
     async def _existing_session(self, key: str):
         """The live session already spawned for *key*, or None.

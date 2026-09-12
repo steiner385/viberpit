@@ -654,6 +654,45 @@ class AutomationTargetState(Base):
         DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
 
+# Dispatch outcome vocabulary (spec 2026-09-12 product automation policy §6).
+# ``reverted`` is reserved — nothing writes it in v1.
+DISPATCH_OUTCOMES: tuple[str, ...] = (
+    "running", "merged", "no_pr", "pr_gave_up", "needs_human", "reverted", "abandoned")
+
+
+class DispatchOutcome(Base):
+    """One row per Backlog Runner dispatch (spec §6, D5): inserted ``running`` at
+    spawn, finalised by the runner's sweep. Never overwritten in place — the
+    history the queue's ``needs_spec`` skip and the roadmap's bounce chip read.
+    Every column but ``id``/``created_at`` is nullable or defaulted so init_db's
+    reconcile creates it on both dialects without a hand-written default."""
+
+    __tablename__ = "dispatch_outcomes"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    automation_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    project_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("projects.id"), nullable=True, index=True)
+    target_ref: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    body_fingerprint: Mapped[str | None] = mapped_column(String, nullable=True)
+    session_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("sessions.id"), nullable=True)
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    attempt_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+    outcome: Mapped[str | None] = mapped_column(
+        String, nullable=True, default="running", index=True)  # DISPATCH_OUTCOMES
+    cause: Mapped[str | None] = mapped_column(String, nullable=True)
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pr_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    first_pass_merge: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+
 class BacklogGroup(Base):
     """One planned unit of Backlog Runner work: an ordered group of related
     issue refs the background grouping optimizer decided belong in one PR.
