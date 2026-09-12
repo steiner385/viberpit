@@ -441,7 +441,7 @@ def test_triage_accept_and_reject_flow():
 
 def test_triage_accept_applies_edits_body():
     """An optional {edits} body overrides copied overlay values (the shared
-    _apply_accept helper); this is what phase-3 edit-then-accept relies on."""
+    apply_accept helper); this is what phase-3 edit-then-accept relies on."""
     from server.db import db_session
     from sqlalchemy import select
     from server.db.models import (
@@ -827,7 +827,7 @@ def test_drift_accept_handles_two_siblings_in_one_batch():
 
 
 def test_drift_accept_via_single_accept_route():
-    """The drift branch lives in the shared ``_apply_accept`` helper, so plain
+    """The drift branch lives in the shared ``apply_accept`` helper, so plain
     single-accept inherits it: a no_fit whose suggestion is now a real feature
     links to that feature and re-proposes its siblings."""
     from sqlalchemy import select
@@ -952,16 +952,19 @@ def test_accept_bulk_one_failure_does_not_roll_back_the_batch():
         pid1, wid1 = _seed_one_pending(c, feature_slug="sessions", number=1)
         pid2, wid2 = _seed_one_pending(c, feature_slug="queue", number=2)
 
-        real_apply = pm_api._apply_accept
+        # Patched through the ROUTER's reference (the name the route body resolves),
+        # not the owning module's, so the seam is the call site under test.
+        real_apply = pm_api.apply_accept
 
-        async def _flaky(db, proposal, identity, *, edits=None):
+        async def _flaky(db, proposal, *, decided_by, audit_identity, edits=None):
             # Mutate first, THEN blow up: proves the savepoint discards this id's
             # partial work while leaving the sibling ids' work committed.
-            await real_apply(db, proposal, identity, edits=edits)
+            await real_apply(db, proposal, decided_by=decided_by,
+                             audit_identity=audit_identity, edits=edits)
             if proposal.id == pid2:
                 raise RuntimeError("boom")
 
-        with patch.object(pm_api, "_apply_accept", _flaky):
+        with patch.object(pm_api, "apply_accept", _flaky):
             r = c.post("/api/pm/triage/accept-bulk",
                        json={"ids": [pid1, pid2]}, headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
@@ -1313,7 +1316,7 @@ def test_triage_undo_restores_classified_at_across_naive_sqlite_roundtrip():
     """Fix-round-1 regression: on SQLite a DateTime(timezone=True) column hands
     back a NAIVE datetime after a round trip through the DB — the exact slip the
     DB clock rule exists for. Pre-set classified_at directly (simulating a prior
-    classification), accept (forcing _apply_accept to re-query the WorkItem fresh
+    classification), accept (forcing apply_accept to re-query the WorkItem fresh
     off SQLite, which comes back naive), undo, and assert the restored
     classifiedAt is the SAME INSTANT as what was set — compared as parsed aware
     datetimes, not strings, so a silent naive/aware drift would fail the

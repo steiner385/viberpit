@@ -9,11 +9,13 @@ from server.automations.product_policy import (
 def test_schema_keys_and_defaults():
     keys = [f.key for f in PRODUCT_POLICY_SCHEMA]
     assert keys == ["dispatch", "queue_min_status", "max_in_flight", "weight",
-                    "max_attempts", "default_model", "respect_dependencies"]
+                    "max_attempts", "default_model", "respect_dependencies",
+                    "triage_auto_accept"]
     assert DISPATCH_MODES == ("off", "propose", "auto")
     assert effective_policy(None) == {
         "dispatch": "off", "queue_min_status": "Ready", "max_in_flight": 1, "weight": 1,
-        "max_attempts": 2, "default_model": "auto", "respect_dependencies": True}
+        "max_attempts": 2, "default_model": "auto", "respect_dependencies": True,
+        "triage_auto_accept": "off"}
 
 
 def test_effective_policy_fills_defaults_and_falls_back_on_garbage():
@@ -29,3 +31,14 @@ def test_queue_min_status_choices_are_the_queue_vocabulary():
     from server.pm.queue import MIN_STATUS_OPTIONS
     field = next(f for f in PRODUCT_POLICY_SCHEMA if f.key == "queue_min_status")
     assert field.choices == list(MIN_STATUS_OPTIONS)
+
+
+def test_triage_auto_accept_is_the_eighth_field_with_the_spec_choices():
+    field = {f.key: f for f in PRODUCT_POLICY_SCHEMA}["triage_auto_accept"]
+    assert field.type == "enum"
+    assert field.default == "off"
+    assert field.choices == ["off", "high", "medium"]
+    assert effective_policy(None)["triage_auto_accept"] == "off"
+    assert effective_policy({"triage_auto_accept": "medium"})["triage_auto_accept"] == "medium"
+    # A bad value degrades the WHOLE policy to defaults (effective_policy's contract).
+    assert effective_policy({"triage_auto_accept": "always"})["triage_auto_accept"] == "off"

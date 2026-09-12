@@ -420,9 +420,12 @@ def test_seed_writes_policies_for_the_owning_products_of_enabled_repos(tmp_path)
 
         policies = await _policies()
         alpha, stamp = policies["alpha"]
+        # ``triage_auto_accept`` is stored at its default: the legacy runner config
+        # never had a triage knob, so the seed cannot invent an opt-in for one.
         assert alpha == {"dispatch": "auto", "queue_min_status": "Backlog",
                          "max_in_flight": 4, "weight": 3, "max_attempts": 5,
-                         "default_model": "opus", "respect_dependencies": False}
+                         "default_model": "opus", "respect_dependencies": False,
+                         "triage_auto_accept": "off"}
         assert stamp is not None
         beta, _ = policies["beta"]
         assert beta["max_in_flight"] == 1 and beta["weight"] == 1   # unlisted → 1

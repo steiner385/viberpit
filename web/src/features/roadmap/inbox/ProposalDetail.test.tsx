@@ -94,7 +94,7 @@ describe('ProposalDetail', () => {
     fireEvent.change(screen.getByLabelText('impact'), { target: { value: '9' } })
     fireEvent.change(screen.getByRole('combobox', { name: 'Capability' }), { target: { value: 'f-billing' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save edits & accept' }))
-    // No overlay PATCH first: `_apply_accept` snapshots the overlay for Undo as
+    // No overlay PATCH first: `apply_accept` snapshots the overlay for Undo as
     // it finds it, so a pre-accept write would put the edits INTO the snapshot
     // and undo would restore the decision. The accept applies the same fields.
     expect(accept).toHaveBeenCalledWith({ id: 'p1', edits: { impact: 9, featureId: 'f-billing' } })

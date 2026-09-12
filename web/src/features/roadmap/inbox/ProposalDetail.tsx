@@ -19,7 +19,7 @@
  * while Accept has focus would accept whatever row the list's own cursor is on,
  * irreversibly, and it would not be the proposal on screen.
  *
- * "Save edits & accept" does NOT PATCH the overlay first. `_apply_accept`
+ * "Save edits & accept" does NOT PATCH the overlay first. `apply_accept`
  * snapshots the overlay for Undo as it finds it, so a pre-accept PATCH writes
  * the edits into the snapshot and Undo restores the decision it was meant to
  * take back. The accept body carries the same five fields, and the server
