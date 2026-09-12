@@ -5589,11 +5589,17 @@ class SessionOrchestrator:
 
         fields = {f.key: f for f in PRODUCT_POLICY_SCHEMA}
 
-        def _int(value) -> "int | None":
+        def _int(key: str, value) -> "int | None":
             """A repo-number-map entry (or a legacy int) as a whole number, or
             ``None`` when the legacy config never set a usable one — the caller
-            then omits the key and the schema default stands."""
+            then omits the key and the schema default stands. Below the field's
+            phase-1 ``min`` counts as unusable too (``max_attempts: 0`` and a
+            negative cap were legal pre-flip): like ``_enum``, one out-of-range
+            legacy value degrades ONE field, never the whole policy."""
             if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            minimum = fields[key].min
+            if minimum is not None and int(value) < minimum:
                 return None
             return int(value)
 
@@ -5674,11 +5680,11 @@ class SessionOrchestrator:
                 if "queue_min_status" in raw:
                     legacy["queue_min_status"] = _enum(
                         "queue_min_status", raw.get("queue_min_status"))
-                if (cap := _int(caps.get(repo))) is not None:
+                if (cap := _int("max_in_flight", caps.get(repo))) is not None:
                     legacy["max_in_flight"] = cap
-                if (weight := _int(weights.get(repo))) is not None:
+                if (weight := _int("weight", weights.get(repo))) is not None:
                     legacy["weight"] = weight
-                if (attempts := _int(raw.get("max_attempts"))) is not None:
+                if (attempts := _int("max_attempts", raw.get("max_attempts"))) is not None:
                     legacy["max_attempts"] = attempts
                 if "default_model" in raw:
                     legacy["default_model"] = _enum(
@@ -5720,13 +5726,29 @@ class SessionOrchestrator:
         durable in a way "does any product have a policy" was not — the latter
         re-armed the moment an operator cleared the last policy, re-opting every
         product back in at the retired defaults."""
-        from server.automations.backlog_runner import BacklogRunner
+        from sqlalchemy import select as sa_select
+        from server.automations.backlog_runner import BacklogRunner, fold_global_mode
         from server.automations.base import retired_config_keys_of
+        from server.db.models import Automation
         enabled, mode_before, raw = await self._backlog_read_raw_config()
         if not enabled or not mode_before:
             return 0
         if not set(raw) & set(retired_config_keys_of(BacklogRunner)):
-            return 0          # already migrated (or never carried legacy settings)
+            # Already migrated — or a runner-card config save stripped the retired
+            # keys before the seed ever ran (the config PATCH validates against
+            # the phase-1 schema). Nothing is seeded from such a row: its
+            # ``enabled_repos`` is gone, and seeding every board at the legacy
+            # mode would opt in products nobody chose. The row's legacy mode is
+            # still folded so ``GET /api/automations`` stops describing a mode the
+            # runner no longer has (M4) — the one half of the migration that needs
+            # no retired key to be correct.
+            if fold_global_mode(mode_before) != mode_before:
+                async with db_session() as db:
+                    row = (await db.execute(sa_select(Automation).where(
+                        Automation.id == BacklogRunner.id))).scalar_one_or_none()
+                    if row is not None and row.mode == mode_before:
+                        row.mode = fold_global_mode(mode_before)
+            return 0
         return await self._backlog_seed_policies(raw, mode_before)
 
     async def _backlog_policy_model(self, product: "str | None") -> str:

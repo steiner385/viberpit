@@ -214,7 +214,11 @@ the same transaction it strips every retired key off the runner row's config and
 `propose`/`auto` mode to the phase-1 `on`, and a row carrying none of those keys is what makes the
 next call a no-op. That marker is what makes it safe to run on every process start rather than
 exactly once in history — durably, unlike the earlier "does any product have a policy" check, which
-re-armed the moment an operator cleared the last policy. A product that already carries one is
+re-armed the moment an operator cleared the last policy. A runner-card config save strips those keys
+too (the config PATCH validates against the phase-1 schema); a row left that way is never seeded
+from — its repo list is gone — but its legacy mode is still folded to `on`. A legacy value below a
+field's phase-1 minimum (`max_attempts: 0`, a negative per-repo cap) costs that one field its legacy
+value, never the whole policy. A product that already carries one is
 skipped individually, so a human-set policy is never overwritten and never blocks the rest of the
 migration.
 

@@ -108,14 +108,19 @@ def test_a_pre_flip_runner_mode_reads_as_on_after_the_seed():
                 row.config = {"enabled_repos": []}
         c.portal.call(_pre_flip_row)
 
-        def _mode():
+        def _runner():
             return next(a for a in c.get("/api/automations", headers=H).json()
-                        if a["id"] == "backlog-runner")["mode"]
-        assert _mode() == "auto"
-
+                        if a["id"] == "backlog-runner")
+        # No "reads ``auto`` first" assertion: the app's live runner loop shares
+        # this event loop and its first tick runs the same seed, so between the
+        # row write and a read it may already have normalised the row (it did,
+        # under a loaded parallel run). What is pinned is the outcome: after the
+        # seed the row the operator sees says ``on`` and carries no retired key.
         orch = c.app.state.sessions._orch
         c.portal.call(orch._backlog_seed_policies_once)
-        assert _mode() == "on"
+        row = _runner()
+        assert row["mode"] == "on"
+        assert "enabled_repos" not in (row.get("config") or {})
 
 
 def test_patch_bad_mode_422():

@@ -708,3 +708,52 @@ def test_seed_once_runs_for_an_enabled_row_with_a_stored_mode(tmp_path):
         assert (await _policies())["alpha"][0]["dispatch"] == "auto"
 
     asyncio.run(run())
+
+
+def test_seed_degrades_one_out_of_range_legacy_value_not_the_whole_policy(tmp_path):
+    """A legacy value below one of the phase-1 minimums (``max_attempts: 0`` was
+    legal pre-flip; so was a negative per-repo cap) must cost that ONE field its
+    legacy value — never make ``effective_policy`` raise and reset the product to
+    an all-defaults policy with ``dispatch: off``, which would be the migration
+    silently stopping a product that was running while still consuming the marker."""
+    async def run():
+        await _init(tmp_path, "seedbelowmin.db")
+        await _seed_product("alpha", "o/a")
+        orch = _orch_with_ctx()
+        await _set_runner_row(enabled=True, mode="auto", config={
+            "enabled_repos": ["o/a"], "repo_caps": {"o/a": -1},
+            "repo_weights": {"o/a": 4}, "max_attempts": 0})
+
+        assert await orch._backlog_seed_policies_once() == 1
+        policy = (await _policies())["alpha"][0]
+        assert policy["dispatch"] == "auto"
+        assert policy["weight"] == 4                    # the in-range value survives
+        assert policy["max_attempts"] == 2              # schema default, not 0
+        assert policy["max_in_flight"] == 1             # schema default, not -1
+
+    asyncio.run(run())
+
+
+def test_seed_once_normalises_a_legacy_mode_even_after_a_post_flip_config_save(tmp_path):
+    """A runner-card config save strips the retired keys too (the config PATCH
+    validates against the phase-1 schema), which consumes the marker without the
+    seed having run. Products are NOT seeded from it — the ``enabled_repos`` list
+    is gone, and seeding every board at the legacy mode would opt in products nobody
+    chose — but the row's legacy ``auto`` must still fold to ``on`` so
+    ``GET /api/automations`` stops describing a mode the runner no longer has."""
+    async def run():
+        from sqlalchemy import select
+        from server.db.models import Automation
+        await _init(tmp_path, "seedlegacymode.db")
+        await _seed_product("alpha", "o/a")
+        orch = _orch_with_ctx()
+        await _set_runner_row(enabled=True, mode="auto", config={"max_concurrent": 3})
+
+        assert await orch._backlog_seed_policies_once() == 0
+        assert (await _policies())["alpha"] == (None, None)
+        async with db_session() as db:
+            row = (await db.execute(select(Automation).where(
+                Automation.id == "backlog-runner"))).scalar_one()
+            assert row.mode == "on"
+
+    asyncio.run(run())
