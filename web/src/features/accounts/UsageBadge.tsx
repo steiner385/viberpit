@@ -74,7 +74,7 @@ export function UsageBadge({ pct, label, resetsAt, markerPct, compact, className
             aria-hidden="true"
           />
         </span>
-        <span className="text-[10px] font-medium tabular-nums text-ink-muted">
+        <span className="text-2xs font-medium tabular-nums text-ink-muted">
           {clampedPct}%
         </span>
         {isStale && <Clock size={10} className="text-ink-muted" aria-hidden="true" />}
@@ -90,7 +90,7 @@ export function UsageBadge({ pct, label, resetsAt, markerPct, compact, className
     >
       <span className="flex items-baseline gap-1 leading-none">
         {label && (
-          <span className="text-[10px] font-medium uppercase tracking-wide text-ink-muted">
+          <span className="text-2xs font-medium uppercase tracking-wide text-ink-muted">
             {label}
           </span>
         )}

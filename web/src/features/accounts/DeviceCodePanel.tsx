@@ -33,11 +33,11 @@ export interface DeviceCodePanelProps {
 export function DeviceCodePanel({ state, started, providerLabel }: DeviceCodePanelProps) {
   if (state?.state === 'awaiting_authorization' && state.userCode) {
     return (
-      <div className="mt-4 space-y-2 rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3">
-        <p className="text-xs text-amber-700 dark:text-amber-300">
+      <div className="mt-4 space-y-2 rounded-lg border border-warning bg-warning-wash p-3">
+        <p className="text-xs text-warning">
           Enter this code at the link below to authorize with {providerLabel}:
         </p>
-        <p className="text-lg font-mono font-bold tracking-widest text-amber-900 dark:text-amber-100 text-center">
+        <p className="text-lg font-mono font-bold tracking-widest text-warning text-center">
           {state.userCode}
         </p>
         {state.verificationUri && (
@@ -49,7 +49,7 @@ export function DeviceCodePanel({ state, started, providerLabel }: DeviceCodePan
               'block text-xs text-accent hover:underline text-center',
               // A device code is typed on a phone as often as clicked, so the
               // link is a 44px target rather than a bare line of text.
-              'min-h-[44px] flex items-center justify-center',
+              'min-h-target flex items-center justify-center',
             )}
           >
             {state.verificationUri}
@@ -61,7 +61,7 @@ export function DeviceCodePanel({ state, started, providerLabel }: DeviceCodePan
 
   if (started && (state === undefined || state.state === 'pending')) {
     return (
-      <p className="mt-4 text-xs text-amber-600 dark:text-amber-400">
+      <p className="mt-4 text-xs text-warning">
         Starting device authorization…
       </p>
     )

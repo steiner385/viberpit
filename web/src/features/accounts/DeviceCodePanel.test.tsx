@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { DeviceCodePanel } from '../DeviceCodePanel'
+import { DeviceCodePanel } from './DeviceCodePanel'
 import type { DeviceCodeState } from '@/api/types'
 
 function state(over: Partial<DeviceCodeState> = {}): DeviceCodeState {
@@ -53,7 +53,7 @@ describe('DeviceCodePanel', () => {
     expect(link).toHaveAttribute('href', 'https://github.com/login/device')
     expect(link).toHaveAttribute('rel', expect.stringContaining('noreferrer'))
     // Typed on a phone as often as clicked.
-    expect(link.className).toContain('min-h-[44px]')
+    expect(link.className).toContain('min-h-target')
   })
 
   it('reports a failure as an alert, preferring the server-scrubbed reason', () => {

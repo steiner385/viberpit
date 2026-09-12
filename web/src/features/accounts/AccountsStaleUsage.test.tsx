@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { AccountsManager } from '../AccountsManager'
+import { AccountsManager } from './AccountsManager'
 import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
 import { anthropicUsage, appSettings } from '@/test/factories'
@@ -10,7 +10,7 @@ import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
   useAllPrs: vi.fn(() => ({ data: [] })),
-  useDaemonHealth: vi.fn(() => ({ data: { available: false } })),  // issue #434 indicator
+  useDaemonHealth: vi.fn(() => ({ data: { available: false } })),
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
   useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
@@ -25,7 +25,7 @@ vi.mock('@/api/hooks', () => ({
   useDeleteAccount: vi.fn(),
   useSetAccountEnabled: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useGithubRepos: vi.fn(),
-  useModels: vi.fn(() => ({ data: [] })),
+  useModels: vi.fn(() => ({ data: [{ id: 'default', label: 'Default' }, { id: 'opus', label: 'Opus' }, { id: 'fable', label: 'Fable' }] })),
   useSettings: vi.fn(),
   useUpdateSettings: vi.fn(),
   useReauthAccount: vi.fn(),
@@ -49,8 +49,6 @@ vi.mock('@/api/hooks', () => ({
   useAddCopilotAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useCopilotAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
   useCancelCopilotAdd: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
-  // Task 5.2: the engine-aware launch path (`useEngineOffers`) and the OpenAI
-  // device flow. An empty offer list is the pre-Codex answer — no Agent selector.
   useEngineOffers: vi.fn(() => []),
   useAddOpenAIAccount: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useOpenAIAddStatus: vi.fn(() => ({ data: undefined, isLoading: false })),
@@ -84,14 +82,13 @@ function makeAccount(overrides: Partial<Account> = {}): Account {
     liveSessions: { active: 0, idle: 0 },
     rank: null,
     rankReason: null,
+    weeklyReservePct: null,
     ...overrides,
   }
 }
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  // MemoryRouter at ?section=accounts: the Accounts panel is a Settings-tab
-  // section now, so the wrapper mounts it active for every test.
   return (
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={['/settings?section=accounts']}>{children}</MemoryRouter>
@@ -99,7 +96,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
   )
 }
 
-describe('AccountsStrip — session counts & next-pick rank', () => {
+describe('AccountRow — stale usage fallback', () => {
   beforeEach(() => {
     vi.clearAllMocks()
 
@@ -124,33 +121,26 @@ describe('AccountsStrip — session counts & next-pick rank', () => {
     vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
   })
 
-  async function renderWith(account: Partial<Account>) {
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount(account)]))
+  it('labels the usage badge stale when the API reports staleAsOf', () => {
+    const fetchedAt = new Date(Date.now() - 10 * 60_000).toISOString()
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([
+      makeAccount({ usage: anthropicUsage(30, 50, { staleAsOf: fetchedAt }) }),
+    ]))
+
     render(<AccountsManager />, { wrapper })
-  }
 
-  it('shows split active/idle session counts', async () => {
-    await renderWith({ liveSessions: { active: 2, idle: 1 } })
-    expect(screen.getByText('2 active · 1 idle')).toBeInTheDocument()
+    const badge = screen.getByLabelText(/session usage: 30%/i)
+    expect(badge.getAttribute('aria-label')).toMatch(/stale, fetched 10m ago/i)
   })
 
-  it('shows a dash when no live sessions', async () => {
-    await renderWith({ liveSessions: { active: 0, idle: 0 } })
-    expect(screen.getByText('—')).toBeInTheDocument()
-  })
+  it('does not label a fresh reading as stale', () => {
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([
+      makeAccount({ usage: anthropicUsage(30, 50, { staleAsOf: null }) }),
+    ]))
 
-  it('marks the next pick with #1 next and a reason tooltip', async () => {
-    await renderWith({ rank: 1, rankReason: 'perishable quota, lowest load' })
-    expect(screen.getByText('#1 next')).toHaveAttribute('title', 'perishable quota, lowest load')
-  })
+    render(<AccountsManager />, { wrapper })
 
-  it('renders a plain rank number for non-first picks', async () => {
-    await renderWith({ rank: 2, rankReason: 'fresh quota — saved for last' })
-    expect(screen.getByText('#2')).toBeInTheDocument()
-  })
-
-  it('shows unavailable when an account has no rank', async () => {
-    await renderWith({ rank: null })
-    expect(screen.getByText('unavailable')).toBeInTheDocument()
+    const badge = screen.getByLabelText(/session usage: 30%/i)
+    expect(badge.getAttribute('aria-label')).not.toMatch(/stale/i)
   })
 })

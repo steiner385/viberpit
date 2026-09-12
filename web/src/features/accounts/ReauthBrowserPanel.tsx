@@ -1,4 +1,4 @@
-import { BrowserTab } from './BrowserTab'
+import { BrowserTab } from '@/components/BrowserTab'
 
 /** In-page VNC viewer for the reauth browser, pointed at the backend-reported session key.
  *
@@ -8,7 +8,7 @@ import { BrowserTab } from './BrowserTab'
  *  so growing the box is all that's needed to make the login legible and clickable. */
 export function ReauthBrowserPanel({ vncSession }: { vncSession: string }) {
   return (
-    <div className="mt-2 h-[72vh] max-h-[88vh] min-h-[360px] w-full max-w-full resize overflow-hidden rounded-md border">
+    <div className="mt-2 h-[72vh] max-h-[88vh] min-h-[22.5rem] w-full max-w-full resize overflow-hidden rounded-md border">
       <BrowserTab sessionId={vncSession} statusState="working" />
     </div>
   )

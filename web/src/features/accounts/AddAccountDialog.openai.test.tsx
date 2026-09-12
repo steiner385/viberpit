@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { AddAccountDialog } from '../AddAccountDialog'
+import { AddAccountDialog } from './AddAccountDialog'
 import * as hooks from '@/api/hooks'
 import type { DeviceCodeState } from '@/api/types'
 

@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import { describe, it, expect } from 'vitest'
-import { StatusPill } from '../UsageBadge'
+import { StatusPill } from './UsageBadge'
 import type { SessionStatus } from '@/api/types'
 
 describe('StatusPill rich session statuses', () => {

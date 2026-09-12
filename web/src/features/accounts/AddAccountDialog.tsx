@@ -241,7 +241,7 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
             onClick={() => pickProvider(tab.id)}
             disabled={copilotStarting || openaiStarting}
             className={cn(
-              'flex-1 py-2 px-3 text-center transition-colors min-h-[44px]',
+              'flex-1 py-2 px-3 text-center transition-colors min-h-target',
               provider === tab.id
                 ? 'bg-accent text-accent-ink'
                 : 'bg-surface text-ink hover:bg-surface-raised',
@@ -284,19 +284,19 @@ export function AddAccountDialog({ onClose, initialProvider, initialName }: AddA
       {provider === 'anthropic' && isRunning && (
         status?.vncSession ? (
           <>
-            <p className="mt-4 text-xs text-amber-600 dark:text-amber-400">
+            <p className="mt-4 text-xs text-warning">
               Sign in to Claude in the window below…
             </p>
             <ReauthBrowserPanel vncSession={status.vncSession} />
           </>
         ) : (
-          <p className="mt-4 text-xs text-amber-600 dark:text-amber-400">
+          <p className="mt-4 text-xs text-warning">
             Opening Chrome on the host screen — sign in there…
           </p>
         )
       )}
       {provider === 'anthropic' && isSuccess && (
-        <p className="mt-4 text-xs text-green-600 dark:text-green-400">
+        <p className="mt-4 text-xs text-success">
           ✓ Account added.
         </p>
       )}

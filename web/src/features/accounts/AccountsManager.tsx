@@ -48,7 +48,7 @@ function SessionsBadge({ counts }: { counts?: LiveSessionCounts | null }) {
     <span
       className={cn(
         'text-xs whitespace-nowrap',
-        active === 0 && idle === 0 ? 'text-gray-400 dark:text-gray-600' : 'text-gray-600 dark:text-gray-300',
+        active === 0 && idle === 0 ? 'text-ink-muted' : 'text-ink-muted',
       )}
       aria-label="Live sessions using this account"
     >
@@ -59,7 +59,7 @@ function SessionsBadge({ counts }: { counts?: LiveSessionCounts | null }) {
 
 function RankBadge({ rank, reason }: { rank?: number | null; reason?: string | null }) {
   if (rank == null) {
-    return <span className="text-xs text-gray-400 dark:text-gray-600">unavailable</span>
+    return <span className="text-xs text-ink-muted">unavailable</span>
   }
   const label = rank === 1 ? '#1 next' : `#${rank}`
   return (
@@ -68,8 +68,8 @@ function RankBadge({ rank, reason }: { rank?: number | null; reason?: string | n
       className={cn(
         'text-xs font-medium rounded px-1.5 py-0.5 whitespace-nowrap',
         rank === 1
-          ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
-          : 'text-gray-500 dark:text-gray-400',
+          ? 'bg-success-wash text-success'
+          : 'text-ink-muted',
       )}
     >
       {label}
@@ -99,7 +99,7 @@ function DeleteAccountDialog({ account, activeSessions, onClose, onConfirm, isPe
       </p>
 
       {activeSessions.length > 0 && (
-        <p className="text-sm text-amber-700 dark:text-amber-400" role="alert">
+        <p className="text-sm text-warning" role="alert">
           {activeSessions.length} active session{activeSessions.length === 1 ? '' : 's'} use this
           account and will lose access.
         </p>
@@ -124,7 +124,7 @@ function CopilotChip() {
     <span
       className={cn(
         'text-xs font-medium rounded px-1.5 py-0.5 whitespace-nowrap',
-        'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
+        'bg-info-wash text-info',
       )}
       aria-label="GitHub Copilot account"
     >
@@ -138,7 +138,7 @@ function OpenAIChip() {
     <span
       className={cn(
         'text-xs font-medium rounded px-1.5 py-0.5 whitespace-nowrap',
-        'bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-200',
+        'bg-success-wash text-success',
       )}
       aria-label="OpenAI (ChatGPT) account"
     >
@@ -175,23 +175,23 @@ function CodexHealthLine({ account }: { account: Account }) {
         className={cn(
           'whitespace-nowrap',
           authority == null
-            ? 'text-gray-500 dark:text-gray-400'
+            ? 'text-ink-muted'
             : authority.reachable
-              ? 'text-green-600 dark:text-green-400'
-              : 'text-red-600 dark:text-red-400',
+              ? 'text-success'
+              : 'text-danger',
         )}
         title={authority?.detail ?? undefined}
       >
         {authorityText}
       </span>
-      <span className="text-gray-600 dark:text-gray-300 whitespace-nowrap">
+      <span className="text-ink-muted whitespace-nowrap">
         {runners === 1 ? '1 active runner' : `${runners} active runners`}
       </span>
       {codex.degradedReason && (
         <span
           className={cn(
             'rounded px-1.5 py-0.5 font-medium whitespace-nowrap',
-            'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+            'bg-warning-wash text-warning',
           )}
           role="status"
         >
@@ -207,7 +207,7 @@ function OverReserveChip() {
     <span
       className={cn(
         'text-xs font-medium rounded px-1.5 py-0.5 whitespace-nowrap',
-        'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+        'bg-warning-wash text-warning',
       )}
       title="Weekly usage is at/over this account's reserve — only picked as a last resort"
     >
@@ -221,7 +221,7 @@ function ExtraUsageChip() {
     <span
       className={cn(
         'text-xs font-medium rounded px-1.5 py-0.5 whitespace-nowrap',
-        'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+        'bg-warning-wash text-warning',
       )}
       title="At its ceiling, this account keeps being selected and spends paid extra-usage credits — but only once every other account is exhausted"
     >
@@ -235,7 +235,7 @@ function ExtraUsageUnavailableChip() {
     <span
       className={cn(
         'text-xs font-medium rounded px-1.5 py-0.5 whitespace-nowrap',
-        'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+        'bg-danger-wash text-danger',
       )}
       title="Extra usage is switched on here but off in the Anthropic console, so no credits can be spent. Enable it there, or turn this off."
     >
@@ -412,8 +412,8 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
   return (
     <div
       className={cn(
-        'flex flex-col gap-1 rounded-lg border border-gray-200 dark:border-gray-700',
-        'bg-white dark:bg-gray-800 px-3 py-2',
+        'flex flex-col gap-1 rounded-lg border border-edge',
+        'bg-surface px-3 py-2',
       )}
     >
       {/* Top row: account name / edit inputs + action icon buttons */}
@@ -429,10 +429,10 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               aria-label={`Nickname for ${account.name}`}
               placeholder={account.name}
               className={cn(
-                'flex-1 min-w-0 rounded border border-gray-300 dark:border-gray-600',
-                'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
+                'flex-1 min-w-0 rounded border border-edge-strong',
+                'bg-surface text-ink',
                 'px-2 py-1 text-sm',
-                'focus:outline-none focus:ring-2 focus:ring-blue-500',
+                'focus:outline-none focus:ring-2 focus:ring-accent',
               )}
             />
             <input
@@ -446,10 +446,10 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               placeholder="reserve %"
               title="Stop auto-selecting this account once weekly usage reaches this % (blank = no reserve)"
               className={cn(
-                'w-24 rounded border border-gray-300 dark:border-gray-600',
-                'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
+                'w-24 rounded border border-edge-strong',
+                'bg-surface text-ink',
                 'px-2 py-1 text-sm',
-                'focus:outline-none focus:ring-2 focus:ring-blue-500',
+                'focus:outline-none focus:ring-2 focus:ring-accent',
               )}
             />
             {/* Behind the edit form rather than a one-click row button (unlike the
@@ -458,7 +458,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
             <label
               className={cn(
                 'flex items-center gap-1.5 text-xs whitespace-nowrap',
-                'text-gray-600 dark:text-gray-300',
+                'text-ink-muted',
               )}
               title="When every other account is at its usage ceiling, keep selecting this one and spend paid extra-usage credits"
             >
@@ -468,7 +468,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
                 onChange={(e) => setExtraUsageDraft(e.target.checked)}
                 onKeyDown={handleKeyDown}
                 aria-label={`Allow extra usage credits for ${account.name}`}
-                className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 accent-amber-600"
+                className="h-4 w-4 rounded border-edge-strong accent-warning"
               />
               extra credits
             </label>
@@ -477,10 +477,10 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               onClick={saveEdit}
               aria-label="Save account settings"
               className={cn(
-                'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
-                'text-green-600 dark:text-green-400',
-                'hover:bg-gray-100 dark:hover:bg-gray-700',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                'min-h-target min-w-target flex items-center justify-center rounded',
+                'text-success',
+                'hover:bg-surface-raised',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
               )}
             >
               <Check size={14} aria-hidden="true" />
@@ -490,10 +490,10 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               onClick={cancelEdit}
               aria-label="Cancel rename"
               className={cn(
-                'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
-                'text-gray-500 dark:text-gray-400',
-                'hover:bg-gray-100 dark:hover:bg-gray-700',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                'min-h-target min-w-target flex items-center justify-center rounded',
+                'text-ink-muted',
+                'hover:bg-surface-raised',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
               )}
             >
               <X size={14} aria-hidden="true" />
@@ -503,7 +503,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
           <>
             <div className="flex-1 min-w-0 flex items-center gap-2">
               <span className={cn(
-                'text-sm font-medium text-gray-900 dark:text-gray-100 truncate',
+                'text-sm font-medium text-ink truncate',
                 isDisabled && 'opacity-50 line-through',
               )}>
                 {displayLabel}
@@ -516,10 +516,10 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               <button
                 type="button"
                 className={cn(
-                  'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
-                  isDisabled ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400',
-                  'hover:bg-gray-100 dark:hover:bg-gray-700',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                  'min-h-target min-w-target flex items-center justify-center rounded',
+                  isDisabled ? 'text-success' : 'text-ink-muted',
+                  'hover:bg-surface-raised',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
                   'disabled:opacity-40',
                 )}
                 aria-label={`${isDisabled ? 'Enable' : 'Disable'} account ${account.name}`}
@@ -534,10 +534,10 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               <button
                 type="button"
                 className={cn(
-                  'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
-                  'text-gray-500 dark:text-gray-400',
-                  'hover:bg-gray-100 dark:hover:bg-gray-700',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                  'min-h-target min-w-target flex items-center justify-center rounded',
+                  'text-ink-muted',
+                  'hover:bg-surface-raised',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
                 )}
                 aria-label={`Rename ${account.name}`}
                 onClick={startEdit}
@@ -547,10 +547,10 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               <button
                 type="button"
                 className={cn(
-                  'min-h-[44px] min-w-[44px] flex items-center justify-center rounded',
-                  'text-red-500 dark:text-red-400',
-                  'hover:bg-red-50 dark:hover:bg-red-900/30',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500',
+                  'min-h-target min-w-target flex items-center justify-center rounded',
+                  'text-danger',
+                  'hover:bg-danger-wash',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger',
                 )}
                 aria-label={`Delete account ${account.name}`}
                 onClick={() => onDelete(account)}
@@ -561,9 +561,9 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
                 type="button"
                 className={cn(
                   'h-8 w-8 flex items-center justify-center rounded',
-                  'text-gray-500 dark:text-gray-400',
-                  'hover:bg-gray-100 dark:hover:bg-gray-700',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                  'text-ink-muted',
+                  'hover:bg-surface-raised',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
                   'disabled:opacity-40',
                 )}
                 aria-label={`Refresh account ${account.name}`}
@@ -587,7 +587,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
           <StatusPill status={account.status} />
           {isDisabled && (
             <span
-              className="rounded px-1.5 py-0.5 text-xs font-medium bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+              className="rounded px-1.5 py-0.5 text-xs font-medium bg-surface-raised text-ink-muted"
             >
               Disabled
             </span>
@@ -640,10 +640,10 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               <button
                 type="button"
                 className={cn(
-                  'rounded min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500',
+                  'rounded min-h-target focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warning',
                   needsReauth
-                    ? 'px-2 py-1 text-xs font-medium bg-amber-500 text-white hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-500'
-                    : 'min-w-[44px] flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-gray-100 dark:hover:bg-gray-700',
+                    ? 'px-2 py-1 text-xs font-medium bg-warning-strong text-on-strong hover:bg-warning-strong'
+                    : 'min-w-target flex items-center justify-center text-ink-muted hover:text-warning hover:bg-surface-raised',
                 )}
                 aria-label={`Re-run device flow for ${account.name}`}
                 onClick={() => onCopilotReauth?.(account)}
@@ -656,10 +656,10 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               <button
                 type="button"
                 className={cn(
-                  'rounded min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500',
+                  'rounded min-h-target focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warning',
                   needsReauth
-                    ? 'px-2 py-1 text-xs font-medium bg-amber-500 text-white hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-500'
-                    : 'min-w-[44px] flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-gray-100 dark:hover:bg-gray-700',
+                    ? 'px-2 py-1 text-xs font-medium bg-warning-strong text-on-strong hover:bg-warning-strong'
+                    : 'min-w-target flex items-center justify-center text-ink-muted hover:text-warning hover:bg-surface-raised',
                 )}
                 aria-label={`Re-run device flow for ${account.name}`}
                 onClick={handleOpenAIReauth}
@@ -672,10 +672,10 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               <button
                 type="button"
                 className={cn(
-                  'rounded min-h-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500',
+                  'rounded min-h-target focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warning',
                   needsReauth
-                    ? 'px-2 py-1 text-xs font-medium bg-amber-500 text-white hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-500'
-                    : 'min-w-[44px] flex items-center justify-center text-gray-400 dark:text-gray-500 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-gray-100 dark:hover:bg-gray-700',
+                    ? 'px-2 py-1 text-xs font-medium bg-warning-strong text-on-strong hover:bg-warning-strong'
+                    : 'min-w-target flex items-center justify-center text-ink-muted hover:text-warning hover:bg-surface-raised',
                 )}
                 aria-label={`Re-authenticate ${account.name}`}
                 onClick={handleReauth}
@@ -689,11 +689,11 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
             <button
               type="button"
               className={cn(
-                'rounded px-2 py-1 text-xs font-medium min-h-[44px]',
-                'border border-gray-300 dark:border-gray-600',
-                'text-gray-700 dark:text-gray-300',
-                'hover:bg-gray-100 dark:hover:bg-gray-700',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                'rounded px-2 py-1 text-xs font-medium min-h-target',
+                'border border-edge-strong',
+                'text-ink',
+                'hover:bg-surface-raised',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
               )}
               aria-label="Cancel reauth"
               onClick={deviceReauthStarted ? handleOpenAICancel : handleCancel}
@@ -719,13 +719,13 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
 
       {/* Reauth status line */}
       {!editing && isReauthRunning && (
-        <p className="text-xs text-amber-600 dark:text-amber-400">
+        <p className="text-xs text-warning">
           {reauthStatus?.message ?? 'Verifying the pasted code…'}
         </p>
       )}
       {!editing && isAwaitingCode && reauthStatus?.authUrl && (
         <div className="flex flex-col gap-2 mt-1">
-          <p className="text-xs text-amber-600 dark:text-amber-400">
+          <p className="text-xs text-warning">
             Open this URL, approve, then paste the code below.
           </p>
           <div className="flex items-center gap-2 min-w-0">
@@ -734,7 +734,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               target="_blank"
               rel="noopener noreferrer"
               className={cn(
-                'text-xs text-blue-600 dark:text-blue-400 underline truncate min-w-0 flex-1',
+                'text-xs text-accent underline truncate min-w-0 flex-1',
               )}
             >
               {reauthStatus.authUrl}
@@ -743,10 +743,10 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               type="button"
               className={cn(
                 'rounded px-2 py-1 text-xs flex-shrink-0',
-                'border border-gray-300 dark:border-gray-600',
-                'text-gray-700 dark:text-gray-300',
-                'hover:bg-gray-100 dark:hover:bg-gray-700',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                'border border-edge-strong',
+                'text-ink',
+                'hover:bg-surface-raised',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
               )}
               onClick={() => { void navigator.clipboard.writeText(reauthStatus.authUrl!) }}
             >
@@ -761,19 +761,18 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               aria-label={`Authorization code for ${account.name}`}
               placeholder="Paste authorization code…"
               className={cn(
-                'flex-1 min-w-0 rounded border border-gray-300 dark:border-gray-600',
-                'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
+                'flex-1 min-w-0 rounded border border-edge-strong',
+                'bg-surface text-ink',
                 'px-2 py-1 text-xs',
-                'focus:outline-none focus:ring-2 focus:ring-blue-500',
+                'focus:outline-none focus:ring-2 focus:ring-accent',
               )}
             />
             <button
               type="button"
               className={cn(
                 'rounded px-2 py-1 text-xs font-medium flex-shrink-0',
-                'bg-blue-600 text-white hover:bg-blue-700',
-                'dark:bg-blue-700 dark:hover:bg-blue-600',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+                'bg-accent text-accent-ink hover:bg-accent/90',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
                 'disabled:opacity-40',
               )}
               disabled={!code.trim()}
@@ -790,7 +789,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
         </div>
       )}
       {!editing && isReauthSuccess && (
-        <p className="text-xs text-green-600 dark:text-green-400">
+        <p className="text-xs text-success">
           ✓ Re-authentication successful — account refreshed.
         </p>
       )}
@@ -798,12 +797,12 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
           but cannot read usage (no user:profile scope). Say so here, at the
           moment it is actionable, rather than only as a blank quota badge. */}
       {!editing && isReauthSuccess && reauthStatus?.message && (
-        <p className="text-xs text-amber-600 dark:text-amber-400" role="status">
+        <p className="text-xs text-warning" role="status">
           {reauthStatus.message}
         </p>
       )}
       {!editing && isReauthError && reauthStatus?.message && (
-        <p className="text-xs text-red-600 dark:text-red-400" role="alert">
+        <p className="text-xs text-danger" role="alert">
           {reauthStatus.message}
         </p>
       )}
@@ -813,7 +812,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
         <div className="flex items-center gap-2 pt-1">
           <label
             htmlFor={`account-model-approval-${account.name}`}
-            className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap"
+            className="text-xs text-ink-muted whitespace-nowrap"
           >
             Model approval:
           </label>
@@ -830,10 +829,10 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
               })
             }}
             className={cn(
-              'flex-1 min-w-0 rounded border border-gray-300 dark:border-gray-600',
-              'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100',
+              'flex-1 min-w-0 rounded border border-edge-strong',
+              'bg-surface text-ink',
               'px-2 py-1 text-xs',
-              'focus:outline-none focus:ring-2 focus:ring-blue-500',
+              'focus:outline-none focus:ring-2 focus:ring-accent',
             )}
           >
             <option value="">Inherit (global default)</option>
@@ -923,7 +922,7 @@ export function AccountsManager() {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
           Accounts
         </h2>
         <Button

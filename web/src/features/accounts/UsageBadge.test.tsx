@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { UsageBadge, StatusPill } from '../UsageBadge'
+import { UsageBadge, StatusPill } from './UsageBadge'
 
 describe('UsageBadge', () => {
   it('renders the numeric percentage text', () => {

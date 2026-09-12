@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { AccountsManager } from '../AccountsManager'
+import { AccountsManager } from './AccountsManager'
 import * as hooks from '@/api/hooks'
 import type { Account } from '@/api/types'
 import { anthropicUsage, appSettings } from '@/test/factories'
@@ -11,7 +11,7 @@ import { queryResult } from '@/test/reactQuery'
 
 vi.mock('@/api/hooks', () => ({
   useAllPrs: vi.fn(() => ({ data: [] })),
-  useDaemonHealth: vi.fn(() => ({ data: { available: false } })),
+  useDaemonHealth: vi.fn(() => ({ data: { available: false } })),  // issue #434 indicator
   useGenerateSuggestions: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn(() => Promise.resolve([])), isPending: false })),
   useConfig: vi.fn(() => ({ data: { adoptionEnabled: false } })),
   useAdoptable: vi.fn(() => ({ data: { candidates: [] } })),
@@ -81,18 +81,19 @@ function makeAccount(overrides: Partial<Account> = {}): Account {
   return {
     name: 'work',
     status: 'ok',
-    usage: anthropicUsage(30, 50, { extraUsageEnabled: true }),
+    usage: anthropicUsage(30, 50),
     liveSessions: { active: 0, idle: 0 },
     rank: null,
     rankReason: null,
     weeklyReservePct: null,
-    allowExtraUsage: false,
     ...overrides,
   }
 }
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // MemoryRouter at ?section=accounts: the Accounts panel is a Settings-tab
+  // section now, so the wrapper mounts it active for every test.
   return (
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={['/settings?section=accounts']}>{children}</MemoryRouter>
@@ -100,7 +101,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
   )
 }
 
-describe('AccountRow — extra usage credits', () => {
+describe('AccountRow — weekly reserve', () => {
   const updateMutate = vi.fn()
 
   beforeEach(() => {
@@ -130,103 +131,100 @@ describe('AccountRow — extra usage credits', () => {
     vi.mocked(hooks.useBulkPermanentDeleteSessions).mockReturnValue(NOOP_MUTATION as unknown as ReturnType<typeof hooks.useBulkPermanentDeleteSessions>)
   })
 
-  function mockAccounts(...accounts: Account[]) {
-    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult(accounts))
-  }
-
-  it('edit mode shows a checkbox reflecting the current opt-in', async () => {
+  it('edit mode shows a reserve input prefilled with the current value', async () => {
     const user = userEvent.setup()
-    mockAccounts(makeAccount({ name: 'work', allowExtraUsage: true }))
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', weeklyReservePct: 90 })]))
 
     render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /rename work/i }))
 
-    const box = screen.getByRole('checkbox', { name: /extra usage credits for work/i })
-    expect((box as HTMLInputElement).checked).toBe(true)
+    const input = screen.getByRole('spinbutton', { name: /weekly reserve % for work/i })
+    expect((input as HTMLInputElement).value).toBe('90')
   })
 
-  it('opting in sends allowExtraUsage alongside the other settings', async () => {
+  it('saving sends nickname and reserve together', async () => {
     const user = userEvent.setup()
-    mockAccounts(makeAccount({ name: 'work', nickname: null, allowExtraUsage: false }))
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', nickname: null, weeklyReservePct: null })]))
 
     render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /rename work/i }))
-    await user.click(screen.getByRole('checkbox', { name: /extra usage credits for work/i }))
+    const reserveInput = screen.getByRole('spinbutton', { name: /weekly reserve % for work/i })
+    await user.clear(reserveInput)
+    await user.type(reserveInput, '85')
     await user.click(screen.getByRole('button', { name: /save account settings/i }))
 
     expect(updateMutate).toHaveBeenCalledWith({
-      name: 'work', nickname: null, weeklyReservePct: null, allowExtraUsage: true,
+      name: 'work', nickname: null, weeklyReservePct: 85, allowExtraUsage: false,
     })
   })
 
-  it('opting back out sends false, not an omitted field', async () => {
+  it('clearing the reserve input sends null', async () => {
     const user = userEvent.setup()
-    mockAccounts(makeAccount({ name: 'work', nickname: null, allowExtraUsage: true }))
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', weeklyReservePct: 90 })]))
 
     render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /rename work/i }))
-    await user.click(screen.getByRole('checkbox', { name: /extra usage credits for work/i }))
+    await user.clear(screen.getByRole('spinbutton', { name: /weekly reserve % for work/i }))
     await user.click(screen.getByRole('button', { name: /save account settings/i }))
 
-    expect(updateMutate).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'work', allowExtraUsage: false }),
-    )
+    expect(updateMutate).toHaveBeenCalledWith({
+      name: 'work', nickname: null, weeklyReservePct: null, allowExtraUsage: false,
+    })
   })
 
-  it('cancelling discards the toggle change', async () => {
+  it('typing 0 into the reserve input and saving sends null (not 1)', async () => {
     const user = userEvent.setup()
-    mockAccounts(makeAccount({ name: 'work', allowExtraUsage: false }))
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', weeklyReservePct: 90 })]))
 
     render(<AccountsManager />, { wrapper })
     await user.click(screen.getByRole('button', { name: /rename work/i }))
-    await user.click(screen.getByRole('checkbox', { name: /extra usage credits for work/i }))
-    await user.click(screen.getByRole('button', { name: /cancel/i }))
+    const reserveInput = screen.getByRole('spinbutton', { name: /weekly reserve % for work/i })
+    await user.clear(reserveInput)
+    await user.type(reserveInput, '0')
+    await user.click(screen.getByRole('button', { name: /save account settings/i }))
 
-    expect(updateMutate).not.toHaveBeenCalled()
+    expect(updateMutate).toHaveBeenCalledWith({
+      name: 'work', nickname: null, weeklyReservePct: null, allowExtraUsage: false,
+    })
   })
 
-  it('shows an extra-usage chip on opted-in accounts only', async () => {
-    mockAccounts(
-      makeAccount({ name: 'work', allowExtraUsage: true }),
-      makeAccount({ name: 'personal', allowExtraUsage: false }),
-    )
+  it('shows the over-reserve chip when weekly usage is at/over the reserve', async () => {
+    vi.mocked(hooks.useAccounts).mockReturnValue({
+      data: [makeAccount({
+        name: 'work', weeklyReservePct: 90,
+        usage: anthropicUsage(10, 95),
+      })],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useAccounts>)
 
     render(<AccountsManager />, { wrapper })
 
-    expect(screen.getAllByText(/extra usage/i)).toHaveLength(1)
+    expect(screen.getByText('over reserve')).toBeInTheDocument()
   })
 
-  it('warns when opted in but the provider has extra usage disabled', async () => {
-    mockAccounts(makeAccount({
-      name: 'work',
-      allowExtraUsage: true,
-      // off upstream — the opt-in cannot take effect
-      usage: anthropicUsage(30, 50, { extraUsageEnabled: false }),
-    }))
+  it('no chip when below reserve or reserve unset', async () => {
+    vi.mocked(hooks.useAccounts).mockReturnValue({
+      data: [
+        makeAccount({ name: 'below', weeklyReservePct: 90,
+          usage: anthropicUsage(10, 50) }),
+        makeAccount({ name: 'unset', weeklyReservePct: null,
+          usage: anthropicUsage(10, 99) }),
+      ],
+      isLoading: false,
+    } as ReturnType<typeof hooks.useAccounts>)
 
     render(<AccountsManager />, { wrapper })
 
-    expect(screen.getByText(/not enabled upstream/i)).toBeInTheDocument()
+    expect(screen.queryByText('over reserve')).not.toBeInTheDocument()
   })
 
-  it('does not warn when the provider has extra usage enabled', async () => {
-    mockAccounts(makeAccount({ name: 'work', allowExtraUsage: true }))
+  it('weekly usage bar renders a marker at the reserve position', async () => {
+    vi.mocked(hooks.useAccounts).mockReturnValue(queryResult([makeAccount({ name: 'work', weeklyReservePct: 90 })]))
 
     render(<AccountsManager />, { wrapper })
 
-    expect(screen.queryByText(/not enabled upstream/i)).not.toBeInTheDocument()
-  })
-
-  it('does not warn on an account that never opted in', async () => {
-    mockAccounts(makeAccount({
-      name: 'work',
-      allowExtraUsage: false,
-      usage: anthropicUsage(30, 50, { extraUsageEnabled: false }),
-    }))
-
-    render(<AccountsManager />, { wrapper })
-
-    expect(screen.queryByText(/not enabled upstream/i)).not.toBeInTheDocument()
-    expect(screen.queryByText(/extra usage/i)).not.toBeInTheDocument()
+    const marker = screen.getByTestId('reserve-marker')
+    expect(marker).toBeInTheDocument()
+    expect(marker.style.left).toBe('90%')
   })
 })
