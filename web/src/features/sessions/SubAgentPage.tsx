@@ -23,6 +23,7 @@ import { useStopSubAgent } from '@/api/hooks'
 import { useSessionRuntime } from '@/session/useSessionRuntime'
 import { listScopeForPath, sessionPath } from '@/session/sessionNavState'
 import type { SubAgentStatus } from '@/session/selectors'
+import { STATUS_LABEL, statusTone } from '@/features/sessions/subAgentStatus'
 import { agentDuration } from '@/components/session/subAgentDuration'
 import { TranscriptView } from '@/components/session/TranscriptView'
 import { PendingPermissionPanel } from '@/components/session/PendingPermissionPanel'
@@ -32,17 +33,6 @@ import { PageContent } from '@/ui/PageContent'
 import { EmptyState } from '@/ui/EmptyState'
 import { Breadcrumb } from '@/ui/Breadcrumb'
 import { Button } from '@/ui/Button'
-
-/** Status → dot tone. The one place a sub-agent status becomes a colour. */
-const STATUS_TONE: Record<SubAgentStatus, string> = {
-  running: 'bg-info animate-pulse motion-reduce:animate-none',
-  done: 'bg-success',
-  failed: 'bg-danger',
-  stopped: 'bg-neutral',
-}
-const STATUS_LABEL: Record<SubAgentStatus, string> = {
-  running: 'running', done: 'completed', failed: 'failed', stopped: 'stopped',
-}
 
 export function SubAgentReaderPage({ sessionId, agentId }: { sessionId: string; agentId: string }) {
   // Back and the breadcrumb return to the parent INSIDE the list scope it is open in.
@@ -80,7 +70,7 @@ export function SubAgentReaderPage({ sessionId, agentId }: { sessionId: string; 
           <div className="flex min-w-0 flex-col gap-1">
             <Breadcrumb items={[{ label: rt.title || sessionId.slice(0, 8), to: parentPath }, { label }]} />
             <div className="flex items-center gap-2 text-xs">
-              <span aria-hidden className={cn('h-2 w-2 rounded-full', STATUS_TONE[status])} />
+              <span aria-hidden className={cn('h-2 w-2 rounded-full', statusTone(status))} />
               <span className="uppercase tracking-wide">{STATUS_LABEL[status]}</span>
               {usage && <span className="tabular-nums">· {usage}</span>}
             </div>

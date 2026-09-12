@@ -12,7 +12,7 @@ import {
   useRenameSession, useSendPrompt, useSessions,
 } from '@/api/hooks'
 import { RenameDialog } from '@/features/sessions/RenameDialog'
-import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
+import { PermanentDeleteDialog } from '@/features/sessions/list/PermanentDeleteDialog'
 import { useSessionListState } from '@/features/sessions/useSessionListState'
 import type { SessionListColumnProps } from '@/features/sessions/SessionListColumn'
 import { useRoadmapWorkspace } from '@/features/roadmap/useRoadmapWorkspace'

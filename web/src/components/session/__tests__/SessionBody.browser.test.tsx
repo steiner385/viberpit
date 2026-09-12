@@ -21,7 +21,7 @@ function renderWithQuery(ui: React.ReactElement) {
 }
 
 // Stub BrowserTab so noVNC and vncClient never load
-vi.mock('../../BrowserTab', () => ({
+vi.mock('@/features/sessions/browser/BrowserTab', () => ({
   BrowserTab: ({ sessionId }: { sessionId: string }) => (
     <div data-testid="browser-tab-stub">BrowserTab:{sessionId}</div>
   ),

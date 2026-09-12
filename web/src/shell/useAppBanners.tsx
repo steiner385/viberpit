@@ -1,10 +1,10 @@
 import type { BannerStackItem } from '@/ui/BannerStack'
-import { GlobalUpdateBanner } from '@/components/GlobalUpdateBanner'
-import { DaemonRestartBanner } from '@/components/DaemonRestartBanner'
-import { GitCredentialBanner } from '@/components/GitCredentialBanner'
-import { AllLimitedBanner } from '@/components/AllLimitedBanner'
-import { UpdatePendingBanner } from '@/components/UpdatePendingBanner'
-import { DeployPanel } from '@/components/DeployPanel'
+import { GlobalUpdateBanner } from '@/shell/GlobalUpdateBanner'
+import { DaemonRestartBanner } from '@/shell/DaemonRestartBanner'
+import { GitCredentialBanner } from '@/shell/GitCredentialBanner'
+import { AllLimitedBanner } from '@/shell/AllLimitedBanner'
+import { UpdatePendingBanner } from '@/shell/UpdatePendingBanner'
+import { DeployPanel } from '@/shell/DeployPanel'
 import { useInputHold } from '@/hooks/useInputHold'
 
 export interface AppBannersOptions {

@@ -4,7 +4,7 @@
 // (`useCheckInsights`), the same shape as the automation-detail page's own
 // per-row reads.
 import { useCheckInsights } from '@/api/hooks'
-import { CardFrame } from '@/components/card/CardFrame'
+import { CardFrame } from '@/ui/list/CardFrame'
 import { ciRepoKey } from '../deliveryNavState'
 import { fmtSecs } from '../ci/format'
 

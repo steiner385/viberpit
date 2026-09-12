@@ -4,7 +4,7 @@
 // `automationTier.ts`), with the actionable count folded into the tier and
 // tier-line text rather than recomputed here.
 import type { Automation } from '@/api/automations'
-import { CardFrame } from '@/components/card/CardFrame'
+import { CardFrame } from '@/ui/list/CardFrame'
 import { TIER_ACCENT } from '@/features/roadmap/roadmapTier'
 import { TierDot } from '@/features/roadmap/rows/TierDot'
 import { Badge } from '@/ui/Badge'

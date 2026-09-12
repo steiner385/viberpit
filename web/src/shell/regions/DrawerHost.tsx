@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { Sheet } from '@/ui/Sheet'
-import { SidebarResizer } from '@/components/SidebarResizer'
+import { SidebarResizer } from '@/features/sessions/list/SidebarResizer'
 import { useDrawerName, useCloseDrawer, type DrawerName } from '@/shell/drawerParam'
 import { DRAWER_MIN, DRAWER_MAX, useDrawerWidth } from '@/shell/drawerWidth'
 import { useViewport } from '@/shell/useViewport'

@@ -143,6 +143,14 @@ tester.run('no-raw-palette', rule, {
       output: null,
       errors: [{ messageId: 'whiteOnFill' }],
     },
+    // Recommendation 1: a hover/focus/active onto `bg-canvas` is a no-op on a
+    // canvas-backed page — the fixer bumps it a tier to bg-surface-raised
+    // instead of following the light-state bg-gray-50 → bg-canvas mapping.
+    {
+      code: `<div className="bg-surface hover:bg-gray-50 dark:hover:bg-gray-700" />`,
+      output: `<div className="bg-surface hover:bg-surface-raised" />`,
+      errors: [{ messageId: 'palette' }, { messageId: 'dark' }],
+    },
   ],
 })
 

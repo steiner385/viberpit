@@ -1,7 +1,7 @@
 import { useLocation } from 'react-router-dom'
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { BrandMark, Wordmark } from '@/components/BrandMark'
+import { BrandMark, Wordmark } from '@/shell/BrandMark'
 import { IconButton } from '@/ui/IconButton'
 import { NAV_BY_ID, NAV_DEFS, navDefForPath } from '@/shell/navDefs'
 import { navBadgeProps, useNavBadges } from '@/shell/useNavBadges'

@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { getOverlayRoot } from '@/ui/portal'
 import { useRequireDeployController } from '@/lib/deployController'
-import { DeployOverlay } from '@/components/DeployOverlay'
+import { DeployOverlay } from '@/shell/DeployOverlay'
 
 /** The region name, exported so tests and `AppShell` cannot spell it two ways. */
 export const OVERLAY_REGION = 'app.overlays'

@@ -6,7 +6,7 @@
 // Initiatives scope's `GroupedList` panels, which are `role="list"` and whose
 // children must be `listitem` (`aria-required-children`).
 import { Diamond } from 'lucide-react'
-import { CardFrame } from '@/components/card/CardFrame'
+import { CardFrame } from '@/ui/list/CardFrame'
 import { Badge } from '@/ui/Badge'
 import type { InitiativeNode } from '@/api/roadmap'
 import { INITIATIVE, nextStage, reasonLabel, stageLabel } from '@/features/products/vocab'

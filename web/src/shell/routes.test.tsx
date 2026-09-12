@@ -127,7 +127,7 @@ vi.mock('@/ws/client', async (importOriginal) => {
   }
 })
 
-import { ErrorBoundary } from '@/components/ErrorBoundary'
+import { ErrorBoundary } from '@/shell/ErrorBoundary'
 import { LAYOUT_MODE_QUERIES, stubMatchMedia } from '@/test/matchMedia'
 import { ThemeProvider } from '@/shell/theme'
 import { AppShell } from './AppShell'

@@ -4,7 +4,7 @@
  * action, no composer, busy/empty states from the page primitives, and the
  * scroll-up paging that the old read-only view had.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -52,6 +52,14 @@ const TURNS = {
   earliestTurn: 0,
   totalTurns: 2,
 }
+
+// The virtualizer arms a 150 ms "scrolling reset" timer on every scroll
+// (`isScrollingResetDelay`); a scroll fired by the last test in this file would
+// let that timer fire after vitest has torn down jsdom, and react-virtual's
+// notify then dispatches into React with no `window` ("Unhandled Error:
+// ReferenceError: window is not defined" — the CI flake first seen on
+// finish-line row 6). Let it fire while the environment still exists.
+afterEach(() => new Promise<void>((resolve) => setTimeout(resolve, 200)))
 
 describe('ArchivedReviewPage', () => {
   beforeEach(() => {

@@ -17,7 +17,7 @@
 import { useEffect, useRef } from 'react'
 import { Check, Inbox } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { CardFrame } from '@/components/card/CardFrame'
+import { CardFrame } from '@/ui/list/CardFrame'
 import { Badge } from '@/ui/Badge'
 import type { RoadmapTier } from '@/api/roadmap'
 import type { TriageProposal } from '@/api/triage'

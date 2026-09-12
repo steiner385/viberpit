@@ -22,7 +22,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Archive, MoreVertical, Pencil, RefreshCw, Shuffle, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useCloseSession, usePermanentDeleteSession } from '@/api/hooks'
-import { PermanentDeleteDialog } from '@/components/PermanentDeleteDialog'
+import { PermanentDeleteDialog } from '@/features/sessions/list/PermanentDeleteDialog'
 import { popOverlay, pushOverlay } from '@/shell/useOverlayState'
 
 interface Props {

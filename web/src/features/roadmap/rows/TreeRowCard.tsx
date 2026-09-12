@@ -7,7 +7,7 @@
 // Tokens only — this file is under `src/features/`.
 import { ChevronDown, ChevronRight, HelpCircle, Inbox, Layers, Package } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { CardFrame } from '@/components/card/CardFrame'
+import { CardFrame } from '@/ui/list/CardFrame'
 import { Badge } from '@/ui/Badge'
 import { badgedName } from '@/ui/badgedName'
 import { CAPABILITY, PRODUCT } from '@/features/products/vocab'

@@ -87,6 +87,17 @@ function splitVariants(token) {
   return i === -1 ? ['', token] : [token.slice(0, i + 1), token.slice(i + 1)]
 }
 
+// Interaction-state variants: a hover/focus/active class onto `bg-canvas` is a
+// no-op on a canvas-backed page (the element already sits on that colour), so
+// the fixer bumps it a tier to `bg-surface-raised` instead of following the
+// light-state `bg-gray-50`/`bg-gray-900` → `bg-canvas` mapping verbatim.
+const STATE_VARIANTS = new Set(['hover', 'focus', 'focus-visible', 'active'])
+
+/** Does this token's (non-dark) variant chain contain an interaction-state variant? */
+function hasStateVariant(variants) {
+  return variants.split(':').some((p) => STATE_VARIANTS.has(p))
+}
+
 /**
  * Split a Tailwind important marker off a base: `!bg-gray-100` (v3, leading) or
  * `bg-gray-100!` (v4, trailing) → ['!', 'bg-gray-100', ''] / ['', 'bg-gray-100', '!'].
@@ -168,7 +179,12 @@ export function rewriteClassString(text, externalLightKeys, { emptyAsSeparator =
     if (variants.split(':').includes('dark')) { darkAt.push(out.length); out.push(raw); continue }
     const [lead, base, trail] = splitImportant(rawBase)
     const to = MAPPING[base]
-    if (to) { out.push(variants + lead + to + trail); if (isColorBase(base)) mappedLightKeys.add(partnerKey(variants, base)); changed = true }
+    if (to) {
+      const mappedTo = to === 'bg-canvas' && hasStateVariant(variants) ? 'bg-surface-raised' : to
+      out.push(variants + lead + mappedTo + trail)
+      if (isColorBase(base)) mappedLightKeys.add(partnerKey(variants, base))
+      changed = true
+    }
     else out.push(raw)
   }
   // pass 2: a dark: COLOUR token is dropped iff its light partner mapped;

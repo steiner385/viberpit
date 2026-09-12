@@ -1,0 +1,77 @@
+// web/src/ui/list/GroupHeader.tsx
+import { useEffect, useRef } from 'react'
+import { ChevronRight, ChevronDown } from 'lucide-react'
+import { inGroup, matchShortcut } from '@/shell/shortcuts'
+import { cn } from '@/lib/utils'
+
+interface GroupHeaderProps {
+  groupKey: string
+  label: string
+  count: number
+  collapsed: boolean
+  /** Keyboard cursor is on this header. */
+  selected?: boolean
+  /** When true, the selected header takes real DOM focus so single keys land here. */
+  listMode?: boolean
+  onToggle: (key: string) => void
+  onExpand?: (key: string) => void
+  onCollapse?: (key: string) => void
+  onNavigate?: (dir: 'up' | 'down') => void
+  onExit?: () => void
+}
+
+export function GroupHeader({
+  groupKey, label, count, collapsed, selected = false, listMode = false,
+  onToggle, onExpand, onCollapse, onNavigate, onExit,
+}: GroupHeaderProps) {
+  const ref = useRef<HTMLButtonElement>(null)
+  const panelId = `group-panel-${groupKey}`
+
+  // In list-focus mode, give the highlighted header REAL keyboard focus so the
+  // single-key shortcuts land here (mirrors SessionCard row focus).
+  useEffect(() => {
+    if (listMode && selected) ref.current?.focus()
+  }, [listMode, selected])
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    // The header rows only — ← collapses a group here, where it would exit the
+    // list on a session row — through the same selection rule the shell's one
+    // keydown listener uses. See `matchShortcut` for why no context is passed.
+    const action = matchShortcut(e, inGroup('list-mode-header'))?.action
+    if (!action) return
+    e.preventDefault()
+    switch (action.type) {
+      case 'expand': onExpand?.(groupKey); break
+      case 'collapse': onCollapse?.(groupKey); break
+      case 'toggle': onToggle(groupKey); break
+      case 'navigate': onNavigate?.(action.dir); break
+      case 'exit': onExit?.(); break
+    }
+  }
+
+  return (
+    <button
+      ref={ref}
+      type="button"
+      id={`group-header-${groupKey}`}
+      tabIndex={selected ? 0 : -1}
+      data-selected={selected}
+      onClick={() => onToggle(groupKey)}
+      onKeyDown={handleKeyDown}
+      aria-expanded={!collapsed}
+      aria-controls={collapsed ? undefined : panelId}
+      className={cn(
+        'sticky top-0 z-raised flex w-full items-center gap-2 px-1 py-1',
+        'bg-canvas/95 backdrop-blur',
+        'text-xs font-medium uppercase tracking-wide text-ink-muted',
+        'hover:text-ink',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded',
+        selected && 'ring-2 ring-accent text-ink',
+      )}
+    >
+      {collapsed ? <ChevronRight size={14} aria-hidden /> : <ChevronDown size={14} aria-hidden />}
+      <span>{label}</span>
+      <span className="tabular-nums text-ink-muted">{count}</span>
+    </button>
+  )
+}
