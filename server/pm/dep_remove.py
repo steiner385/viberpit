@@ -5,6 +5,16 @@ The human disposition for a `blocked` issue leaf. Shaped like
 back through the same ``mutate`` seam, and the local ``WorkItemDep`` rows are
 deactivated only once GitHub has agreed — the map's tier reads those rows, so a
 refused removal leaves the row red rather than lying green for a sync cycle.
+
+The local deactivation is only what makes the leaf flip NOW. What makes the
+removal durable is the applied journal row: the mirror re-derives ``order`` and
+``prose`` dep edges from the epic's sibling order and the issue body on every
+sync pass, so ``mirror_store.upsert_relations`` checks the same applied
+``remove_blocked_by`` key before it creates or reactivates one (the counterpart
+of ``reconcile_diff.compile_edges`` on the GitHub side). That suppression is
+deliberately scoped to the mirror's own re-derivation: a human who re-adds the
+dependency on GitHub produces a ``native`` edge, which is a newer decision than
+our removal and is NOT suppressed.
 """
 from __future__ import annotations
 
@@ -18,17 +28,13 @@ from server.db.models import WorkItem, WorkItemDep
 
 from . import journal
 from .gh_mutations import build_batch, parse_batch
-from .materialize_apply import Mutate, _error_text
+from .materialize_apply import Mutate, error_text
 from .reconcile_diff import remove_blocked_by_mutation
+from .refs import split_ref
 from .repo_project import owning_projects_by_repo
 from .sync_request import request_project_sync
 
 INITIATED_BY_PREFIX = "dep-remove:"
-
-
-def _split_ref(ref: str) -> tuple[str, int] | None:
-    repo, _, num = ref.rpartition("#")
-    return (repo, int(num)) if repo and num.isdigit() else None
 
 
 async def remove(db: AsyncSession, *, src: WorkItem, blocker_ref: str,
@@ -37,9 +43,16 @@ async def remove(db: AsyncSession, *, src: WorkItem, blocker_ref: str,
 
     Returns ``{"ok": True, "src", "blocker"}`` or ``{"ok": False, "step", "error"}``
     with ``step`` in ``resolve`` (blocker not mirrored), ``node_id`` (a side has
-    no GitHub node id yet) or ``mutate`` (GitHub refused). Does not commit."""
+    no GitHub node id yet) or ``mutate`` (GitHub refused). Does not commit.
+
+    Crash window: a crash between ``mark_applied`` and the caller's commit leaves
+    the journal row ``interrupted`` and the local rows still active. GitHub's
+    state is the truth there (the edge is gone) and a second Remove tap repairs
+    ccswitch's view — there is deliberately no resume path, unlike
+    ``materialize_apply``, because re-issuing the removal is idempotent and costs
+    nothing, while a half-applied issue creation is not."""
     src_ref = f"{src.repo}#{src.number}"
-    parsed = _split_ref(blocker_ref)
+    parsed = split_ref(blocker_ref)
     dst = None
     if parsed is not None:
         dst = (await db.execute(select(WorkItem).where(
@@ -66,7 +79,7 @@ async def remove(db: AsyncSession, *, src: WorkItem, blocker_ref: str,
         payload = {"errors": [{"message": str(e)}]}
     error = parse_batch(payload, alias_map).errors.get("m0") or ""
     if error:
-        error = error if error != "no data returned" else (_error_text(payload) or error)
+        error = error if error != "no data returned" else (error_text(payload) or error)
         await db.run_sync(lambda s: journal.mark_failed(s, row_id, error, now))
         return {"ok": False, "step": "mutate", "error": error}
     await db.run_sync(lambda s: journal.mark_applied(s, [row_id], now))

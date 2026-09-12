@@ -15,6 +15,7 @@ from server.db.models import (
     Feature, FeatureLink, GhProjectItem, Initiative, Project, ProjectRepo,
     Session as DbSession, TriageItem, TriageProposal, WorkItem, WorkItemDep)
 from server.pm.desired_state import ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES
+from server.pm.refs import split_ref
 from server.pm.score import rice_score
 from server.pm.tree import CapabilityIn, InitiativeIn, ProductIn, build_product_tree, issue_tier
 
@@ -25,11 +26,6 @@ _LIVE = ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES
 
 def _ref(w: WorkItem) -> str:
     return f"{w.repo}#{w.number}"
-
-
-def _split_ref(ref: str) -> tuple[str, int] | None:
-    repo, _, num = ref.rpartition("#")
-    return (repo, int(num)) if repo and num.isdigit() else None
 
 
 async def _issue_facts(db, items: list[WorkItem]) -> tuple[
@@ -44,7 +40,7 @@ async def _issue_facts(db, items: list[WorkItem]) -> tuple[
     deps = (await db.execute(select(WorkItemDep).where(
         WorkItemDep.src_ref.in_(refs), WorkItemDep.active.is_(True)))).scalars().all()
     dst_refs = {d.dst_ref for d in deps if d.dst_ref}
-    parsed = [p for p in (_split_ref(r) for r in dst_refs) if p is not None]
+    parsed = [p for p in (split_ref(r) for r in dst_refs) if p is not None]
     dst_state: dict[str, str] = {}
     if parsed:
         dst_state = {_ref(w): w.state or "open" for w in (await db.execute(select(WorkItem).where(
