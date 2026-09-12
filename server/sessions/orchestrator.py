@@ -6440,16 +6440,17 @@ class SessionOrchestrator:
             ) for w in rows if w.id not in pending_ids]
 
     async def _pm_triage_auto_link(self, item) -> bool:
-        """Mechanical PR→feature inheritance (design §6.2): if any issue this PR
-        closes is already classified onto a feature, copy that feature onto the
-        PR's overlay (``classified_by='auto-link'``). No AI session, no proposal —
-        the closing reference IS the evidence. Returns True on a real link."""
+        """Mechanical routing, no AI session (design §6.2): a PR whose closing
+        refs point at a classified issue inherits that feature
+        (``classified_by='auto-link'``) — the closing reference IS the evidence.
+        Falls through to ``_pm_triage_route_by_label`` when that does not link,
+        so a labelled issue with no closing ref still gets a mechanical home."""
         from datetime import datetime, timezone
         from sqlalchemy import select
         from server.db.models import WorkItem
         numbers = [int(n) for n in (item.linked_issue_numbers or ())]
         if not numbers:
-            return False
+            return await self._pm_triage_route_by_label(item)
         async with db_session() as db:
             issue = (await db.execute(
                 select(WorkItem).where(
@@ -6459,20 +6460,53 @@ class SessionOrchestrator:
                     WorkItem.feature_id.isnot(None))
             )).scalars().first()
             if issue is None:
-                return False
+                return await self._pm_triage_route_by_label(item)
             pr = (await db.execute(
                 select(WorkItem).where(
                     WorkItem.repo == item.repo, WorkItem.kind == "pr",
                     WorkItem.number == item.number)
             )).scalar_one_or_none()
             if pr is None:
-                return False
+                return await self._pm_triage_route_by_label(item)
             pr.feature_id = issue.feature_id
             pr.triage_state = "classified"
             pr.classified_by = "auto-link"
             # Naive-UTC everywhere: never func.now() (Postgres CURRENT_TIMESTAMP
             # is tz-aware and SQLite-only tests hide the difference).
             pr.classified_at = datetime.now(timezone.utc)
+        return True
+
+    async def _pm_triage_route_by_label(self, item) -> bool:
+        """``labels:`` on a feature doc → mechanical home for a labelled item.
+        Exactly one feature in the item's OWNING project must route one of its
+        labels; zero or several → False, the classifier decides."""
+        from datetime import datetime, timezone
+        from sqlalchemy import select
+        from server.db.models import Feature, WorkItem
+        from server.pm.repo_project import owning_projects_by_repo
+        labels = {lbl for lbl in (item.labels or ()) if lbl}
+        if not labels:
+            return False
+        async with db_session() as db:
+            owner = (await owning_projects_by_repo(db, [item.repo])).get(item.repo)
+            if owner is None:
+                return False
+            routed = [f for f in (await db.execute(select(Feature).where(
+                Feature.project_id == owner.project_id,
+                Feature.route_labels.isnot(None),
+                Feature.orphaned.isnot(True)))).scalars().all()
+                      if labels & set(f.route_labels or [])]
+            if len(routed) != 1:
+                return False
+            wi = (await db.execute(select(WorkItem).where(
+                WorkItem.repo == item.repo, WorkItem.kind == item.kind,
+                WorkItem.number == item.number))).scalar_one_or_none()
+            if wi is None or wi.feature_id is not None:
+                return False
+            wi.feature_id = routed[0].id
+            wi.triage_state = "classified"
+            wi.classified_by = "label-route"
+            wi.classified_at = datetime.now(timezone.utc)
         return True
 
     async def _pm_triage_open_map_diffs(self, clusters) -> tuple[str, ...]:

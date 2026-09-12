@@ -488,3 +488,16 @@ def test_pm_triage_status_idle_without_counts():
     from server.automations.pm_triage import PmTriage
 
     assert PmTriage().status(None).level == "idle"
+
+
+@pytest.mark.asyncio
+async def test_labelled_issues_are_offered_to_auto_link_and_leave_the_queue():
+    ctx = Ctx()
+    flaky = PendingItemView(repo="o/r", number=7, kind="issue", title="[flaky] x", body="",
+                            labels=("flaky",), linked_issue_numbers=())
+    plain = _item(8)
+    loop, rec = _loop(ctx, pending=[flaky, plain],
+                      autolink_pred=lambda item: "flaky" in item.labels)
+    await loop.tick()
+    assert rec["autolinked"] == [7]
+    assert rec["classified"] == [[8]]          # only the unrouted item reaches the classifier
