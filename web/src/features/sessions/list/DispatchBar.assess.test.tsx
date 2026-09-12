@@ -15,9 +15,7 @@ vi.mock('@/api/hooks', () => ({
   useAssessDispatch: () => ({ assess: mockAssess }),
 }))
 
-// useImageAttachments is imported by DispatchBar via a relative path; stub it
-// so we don't pull in the real fetch/image infrastructure.
-vi.mock('../session/useImageAttachments', () => ({
+vi.mock('@/components/session/useImageAttachments', () => ({
   useImageAttachments: () => ({
     attachments: [],
     addFiles: vi.fn(),
@@ -27,11 +25,11 @@ vi.mock('../session/useImageAttachments', () => ({
   }),
 }))
 
-vi.mock('../session/AttachmentChips', () => ({
+vi.mock('@/components/session/AttachmentChips', () => ({
   AttachmentChips: () => null,
 }))
 
-vi.mock('../session/MicButton', () => ({
+vi.mock('@/components/session/MicButton', () => ({
   MicButton: () => null,
 }))
 

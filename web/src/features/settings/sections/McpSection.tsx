@@ -21,7 +21,7 @@ export function McpSection() {
         {servers.map((s) => (
           <li key={`${s.source}/${s.name}`}>
             <button
-              className="w-full text-left border border-edge rounded-lg p-3 hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent"
+              className="w-full text-left border border-edge rounded-lg p-3 hover:bg-surface-raised focus:outline-none focus:ring-2 focus:ring-accent"
               aria-label={s.name}
               onClick={() => setDialogServer(s)}
             >
@@ -60,7 +60,7 @@ export function McpSection() {
         <button
           type="button"
           onClick={() => setDialogServer(null)}
-          className="rounded border border-edge-strong px-3 py-2 text-sm hover:bg-canvas"
+          className="rounded border border-edge-strong px-3 py-2 text-sm hover:bg-surface-raised"
         >
           Add server
         </button>

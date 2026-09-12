@@ -1,4 +1,4 @@
-// web/src/components/__tests__/GroupHeader.test.tsx
+// web/src/ui/list/GroupHeader.test.tsx
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'

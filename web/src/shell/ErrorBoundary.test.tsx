@@ -1,4 +1,4 @@
-// web/src/components/ErrorBoundary.test.tsx
+// web/src/shell/ErrorBoundary.test.tsx
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { ErrorBoundary } from './ErrorBoundary'

@@ -21,7 +21,7 @@ vi.mock('@/api/hooks', () => ({
 }))
 
 // Also mock ReauthBrowserPanel since it needs a VNC connection
-vi.mock('../ReauthBrowserPanel', () => ({
+vi.mock('@/features/accounts/ReauthBrowserPanel', () => ({
   ReauthBrowserPanel: () => <div data-testid="reauth-panel" />,
 }))
 

@@ -96,7 +96,7 @@ A `dark:` token with **no** same-key mapped partner is left exactly as written a
 'text-[10px]': 'text-2xs', 'text-[11px]': 'text-2xs', 'text-[12px]': 'text-xs', 'text-[13px]': 'text-sm',
 ```
 
-Hand-mapping rules for residuals (the rule reports them): a `text-white` on an `accent` fill → `text-accent-ink`; on a `-strong` fill → `text-on-strong`; `bg-gray-*` used as a *disabled* fill → `bg-surface-raised text-ink-faint`; `hover:bg-gray-50/100` → `hover:bg-surface-raised`; `hover:text-gray-*` → `hover:text-ink`; `placeholder:text-gray-*` → `placeholder:text-ink-faint`; `focus:ring-*` → `focus-visible:ring-accent`; a colour that encodes *identity* (an account's avatar tint, an engine badge) → the `Badge`/`StatusPill` tone API rather than a class.
+Hand-mapping rules for residuals (the rule reports them): a `text-white` on an `accent` fill → `text-accent-ink`; on a `-strong` fill → `text-on-strong`; `bg-gray-*` used as a *disabled* fill → `bg-surface-raised text-ink-faint`; `hover:text-gray-*` → `hover:text-ink`; `placeholder:text-gray-*` → `placeholder:text-ink-faint`; `focus:ring-*` → `focus-visible:ring-accent`; a colour that encodes *identity* (an account's avatar tint, an engine badge) → the `Badge`/`StatusPill` tone API rather than a class. `hover:bg-gray-50/100` → `hover:bg-surface-raised` is no longer hand-mapped: the fixer itself detects a hover/focus/focus-visible/active variant landing on `bg-canvas` (a no-op on a canvas-backed page) and emits `bg-surface-raised` in its place — see `rewriteClassString`'s `hasStateVariant` check in `no-raw-palette.js`.
 
 ## File map
 

@@ -1,4 +1,4 @@
-// web/src/components/GroupHeader.tsx
+// web/src/ui/list/GroupHeader.tsx
 import { useEffect, useRef } from 'react'
 import { ChevronRight, ChevronDown } from 'lucide-react'
 import { inGroup, matchShortcut } from '@/shell/shortcuts'

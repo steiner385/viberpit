@@ -1,4 +1,4 @@
-// web/src/components/library/PluginsSection.tsx
+// web/src/features/settings/sections/PluginsSection.tsx
 import { useState } from 'react'
 import { useLibraryPluginDetail, useLibraryPlugins, useTogglePlugin } from '@/api/hooks'
 import type { LibraryPlugin } from '@/api/types'

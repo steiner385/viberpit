@@ -1,4 +1,4 @@
-// web/src/components/DeployPanel.test.tsx
+// web/src/shell/DeployPanel.test.tsx
 import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { DeployPanel } from './DeployPanel'

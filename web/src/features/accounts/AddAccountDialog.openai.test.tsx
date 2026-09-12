@@ -30,7 +30,7 @@ vi.mock('@/api/hooks', () => ({
   useAssessDispatch: vi.fn(() => ({ assess: vi.fn() })),
 }))
 
-vi.mock('../ReauthBrowserPanel', () => ({
+vi.mock('@/features/accounts/ReauthBrowserPanel', () => ({
   ReauthBrowserPanel: () => <div data-testid="reauth-panel" />,
 }))
 

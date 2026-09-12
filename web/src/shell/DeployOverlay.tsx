@@ -1,4 +1,4 @@
-// web/src/components/DeployOverlay.tsx
+// web/src/shell/DeployOverlay.tsx
 import { Fragment } from 'react'
 import { BRAND_NAME } from '@/brand'
 import { useDeployController } from '@/lib/deployController'
@@ -9,7 +9,7 @@ import { Button } from '@/ui/Button'
 
 const DOT: Record<string, string> = {
   done: 'bg-success', running: 'bg-warning animate-pulse',
-  failed: 'bg-danger', pending: 'bg-neutral-wash',
+  failed: 'bg-danger', pending: 'bg-edge-strong',
 }
 
 const HOST_DOT: Record<string, string> = {

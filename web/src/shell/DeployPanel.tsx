@@ -1,4 +1,4 @@
-// web/src/components/DeployPanel.tsx
+// web/src/shell/DeployPanel.tsx
 import { useState } from 'react'
 import { Banner } from '@/ui/Banner'
 import { Button } from '@/ui/Button'

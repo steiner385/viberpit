@@ -642,7 +642,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
                 className={cn(
                   'rounded min-h-target focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warning',
                   needsReauth
-                    ? 'px-2 py-1 text-xs font-medium bg-warning-strong text-on-strong hover:bg-warning-strong'
+                    ? 'px-2 py-1 text-xs font-medium bg-warning-strong text-on-strong hover:bg-warning-strong/90'
                     : 'min-w-target flex items-center justify-center text-ink-muted hover:text-warning hover:bg-surface-raised',
                 )}
                 aria-label={`Re-run device flow for ${account.name}`}
@@ -658,7 +658,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
                 className={cn(
                   'rounded min-h-target focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warning',
                   needsReauth
-                    ? 'px-2 py-1 text-xs font-medium bg-warning-strong text-on-strong hover:bg-warning-strong'
+                    ? 'px-2 py-1 text-xs font-medium bg-warning-strong text-on-strong hover:bg-warning-strong/90'
                     : 'min-w-target flex items-center justify-center text-ink-muted hover:text-warning hover:bg-surface-raised',
                 )}
                 aria-label={`Re-run device flow for ${account.name}`}
@@ -674,7 +674,7 @@ function AccountRow({ account, onRefresh, refreshing, onSave, onDelete, onCopilo
                 className={cn(
                   'rounded min-h-target focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-warning',
                   needsReauth
-                    ? 'px-2 py-1 text-xs font-medium bg-warning-strong text-on-strong hover:bg-warning-strong'
+                    ? 'px-2 py-1 text-xs font-medium bg-warning-strong text-on-strong hover:bg-warning-strong/90'
                     : 'min-w-target flex items-center justify-center text-ink-muted hover:text-warning hover:bg-surface-raised',
                 )}
                 aria-label={`Re-authenticate ${account.name}`}

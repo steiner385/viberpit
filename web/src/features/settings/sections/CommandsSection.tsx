@@ -28,7 +28,7 @@ export function CommandsSection() {
         <button
           type="button"
           onClick={() => setDialog({ id: null })}
-          className="text-xs px-2 py-1 rounded border border-edge hover:bg-canvas"
+          className="text-xs px-2 py-1 rounded border border-edge hover:bg-surface-raised"
         >
           New command
         </button>

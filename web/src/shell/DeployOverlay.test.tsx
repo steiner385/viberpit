@@ -1,4 +1,4 @@
-// web/src/components/DeployOverlay.test.tsx
+// web/src/shell/DeployOverlay.test.tsx
 import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { DeployOverlay } from './DeployOverlay'

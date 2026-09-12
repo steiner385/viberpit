@@ -19,7 +19,7 @@ function Row({ sessionId, node, depth }: { sessionId: string; node: SubAgentNode
         style={{ paddingLeft: 12 + Math.min(depth, 6) * 16 }}
         className={cn(
           'flex w-full items-center gap-2 py-1.5 pr-2 text-left text-xs min-h-9 rounded',
-          'text-ink-muted hover:bg-canvas',
+          'text-ink-muted hover:bg-surface-raised',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
         )}
         aria-label={`Review sub-agent ${node.agentType}: ${node.description}`}

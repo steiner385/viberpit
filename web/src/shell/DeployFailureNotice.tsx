@@ -1,4 +1,4 @@
-// web/src/components/DeployFailureNotice.tsx
+// web/src/shell/DeployFailureNotice.tsx
 import type { DeployState } from '@/lib/deployState'
 
 /**

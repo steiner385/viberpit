@@ -1,4 +1,4 @@
-// web/src/components/ErrorBoundary.tsx
+// web/src/shell/ErrorBoundary.tsx
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { clientLogger, ClientLogger } from '@/obs/logger'
 

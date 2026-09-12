@@ -26,7 +26,7 @@ export function ChildSessionRows({ sessions }: { sessions: Session[] }) {
               aria-label={`Open child session ${c.name}`}
               className={cn(
                 'flex w-full items-center gap-2 py-1.5 pl-3 pr-2 text-left text-xs min-h-9 rounded',
-                'text-ink-muted hover:bg-canvas',
+                'text-ink-muted hover:bg-surface-raised',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
               )}
             >
