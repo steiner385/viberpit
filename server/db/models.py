@@ -1540,6 +1540,42 @@ class FeatureLink(Base):
         DateTime(timezone=True), nullable=False, default=_utcnow)
 
 
+FEATURE_MAP_CHANGE_STATUSES: tuple[str, ...] = ("open", "merged", "abandoned")
+
+
+class FeatureMapChange(Base):
+    """The pointer to a product's ccswitch-owned map-changes branch/PR (roadmap
+    spec §9): ``pm/map-changes-<slug>`` in the primary repo. Branch content is
+    truth; this row only says where it is and what GitHub last said about it.
+    At most one ``open`` row per project — enforced by the service's lookup, not
+    a partial index (SQLite's reconcile path cannot add one)."""
+
+    __tablename__ = "feature_map_changes"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    project_id: Mapped[str] = mapped_column(
+        String, ForeignKey("projects.id"), nullable=True, index=True)
+    repo: Mapped[str | None] = mapped_column(String, nullable=True)
+    branch: Mapped[str | None] = mapped_column(String, nullable=True)
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pr_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str | None] = mapped_column(String, nullable=True, default="open")
+    head_sha: Mapped[str | None] = mapped_column(String, nullable=True)
+    # GitHub's mergeable_state, folded to the two facts the UI acts on (§9:
+    # "offers Rebase when it is behind"; "conflicts … surface as a Banner").
+    behind: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    conflicting: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    merged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
 class WorkItem(Base):
     """Read-only mirror of one GitHub issue or PR, plus the ccswitch-owned
     overlay. Mirror columns are disposable (rebuildable by re-sync); overlay

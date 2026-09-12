@@ -266,6 +266,8 @@ _FK_LINKS: dict[str, dict[str, str]] = {
     "gh_projects": {"project_id": "projects"},
     "gh_project_items": {"gh_project_id": "gh_projects", "work_item_id": "work_items"},
     "work_item_deps": {"src_work_item_id": "work_items", "dst_work_item_id": "work_items"},
+    # roadmap spec §9: the map-changes PR pointer hangs off a product.
+    "feature_map_changes": {"project_id": "projects"},
 }
 
 
