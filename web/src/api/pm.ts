@@ -6,6 +6,7 @@
  */
 import { useQuery } from '@tanstack/react-query'
 import { api } from './client'
+import type { MapChangesPointer } from './roadmap'
 
 export const PROJECT_ONBOARDING_STATES = [
   'registered', 'syncing', 'map_proposed', 'map_merged', 'classifying', 'live',
@@ -167,6 +168,55 @@ export function createEdge(slug: string, input: CreateEdgeInput): Promise<Projec
 
 export function deleteEdge(slug: string, edgeId: string): Promise<void> {
   return api.del<void>(`/pm/projects/${encodeURIComponent(slug)}/edges/${encodeURIComponent(edgeId)}`)
+}
+
+/** Map-changes ops (spec §8/§9; server contract `server/api/pm.py:703` `MapChangeBody`,
+ *  `Pointer.to_dict()`): each op below becomes exactly one commit on the product's
+ *  open branch — the first opens the branch and PR, later ones append. */
+export type MapChangeOp = 'create' | 'rename' | 'reparent' | 'summary' | 'links'
+
+export interface MapChangeLink {
+  kind: 'powered_by' | 'integrates_with'
+  project: string
+  feature: string
+}
+
+export interface MapChangeInput {
+  op: MapChangeOp
+  slug: string
+  title?: string
+  parentSlug?: string | null
+  summary?: string
+  links?: MapChangeLink[]
+}
+
+export interface MapChangeResult {
+  pointer: MapChangesPointer
+  path: string
+  commitSha: string
+}
+
+export interface AbandonResult {
+  pointer: MapChangesPointer
+  cleanup: { deleted: number; orphaned: number }
+}
+
+/** One capability edit on the product's map-changes branch (R8c-1/R8c-2: a dialog
+ *  sends one op per request, in sequence, for only the fields that changed). */
+export function editMapChanges(slug: string, input: MapChangeInput): Promise<MapChangeResult> {
+  return api.post<MapChangeResult>(`/pm/projects/${encodeURIComponent(slug)}/map-changes`, input)
+}
+
+/** R8c-4's one destructive roadmap action: closes the PR, deletes the branch, and
+ *  drops every capability that only ever lived on it. */
+export function abandonMapChanges(slug: string): Promise<AbandonResult> {
+  return api.del<AbandonResult>(`/pm/projects/${encodeURIComponent(slug)}/map-changes`)
+}
+
+/** Merges the base branch into the map-changes PR through GitHub's own
+ *  update-branch — only offered while the pointer reports `behind` (R8c-3's card). */
+export function rebaseMapChanges(slug: string): Promise<{ pointer: MapChangesPointer }> {
+  return api.post<{ pointer: MapChangesPointer }>(`/pm/projects/${encodeURIComponent(slug)}/map-changes/rebase`)
 }
 
 export interface RemoveDependencyInput { workItemId: string; blocker: string }

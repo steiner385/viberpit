@@ -33,13 +33,15 @@ import {
   createProject, requestProjectSync,
   fetchOnboarding, proposeMap, runClassify, advanceMap, advanceLive,
   removeDependency, createEdge, deleteEdge,
+  editMapChanges, abandonMapChanges, rebaseMapChanges,
   type Project, type CreateProjectInput, type OnboardingView,
   type RemoveDependencyInput, type RemoveDependencyResult,
   type CreateEdgeInput, type ProjectEdgeInfo,
+  type MapChangeInput, type MapChangeResult, type AbandonResult,
 } from './pm'
 import {
   fetchRoadmapMap, fetchLeaves, fetchQueue, fetchProject,
-  type RoadmapMap, type Leaf, type LeavesScope, type QueueView,
+  type RoadmapMap, type Leaf, type LeavesScope, type QueueView, type MapChangesPointer,
 } from './roadmap'
 import {
   fetchTriage, acceptProposal, rejectProposal, acceptBulk, updateOverlay, undoProposal,
@@ -1826,6 +1828,69 @@ export function useDeleteEdge(slug: string) {
       void qc.invalidateQueries({ queryKey: ['pm', 'deps', slug] })
     },
     onSettled: () => void qc.invalidateQueries({ queryKey: key }),
+    meta: PM_MUTATION_META,
+  })
+}
+
+/**
+ * R8c-5: the two GitHub-flavored failures get their own copy — a 409 `conflict`
+ * means another edit landed first (the form stays open with the user's values so
+ * they can just retry), a 502 `github` names which step GitHub refused. Anything
+ * else (422 validation, `not_behind`, `no_open_map_changes`) surfaces the
+ * server's own `message`, falling back when the body carries none.
+ */
+export function mapChangesErrorMessage(e: unknown, fallback: string): string {
+  if (!(e instanceof ApiRequestError)) return fallback
+  const detail = e.body?.detail
+  const record = detail && typeof detail === 'object' ? (detail as Record<string, unknown>) : null
+  const error = record && typeof record.error === 'string' ? record.error : null
+  const step = record && typeof record.step === 'string' ? record.step : null
+  const message = record && typeof record.message === 'string' ? record.message : null
+  if (e.status === 409 && error === 'conflict') return 'The map changed under you — try again.'
+  if (e.status === 502 && error === 'github') return `GitHub refused the ${step ?? 'request'} step: ${message ?? fallback}`
+  return message ?? fallback
+}
+
+/** One capability edit (R8c-1/R8c-2's dialogs send one op per request, in
+ *  sequence). Invalidates both the map (tree, PR badges) and the product (the
+ *  Overview's PR card and capability list). */
+export function useEditMapChanges(slug: string) {
+  const qc = useQueryClient()
+  return useMutation<MapChangeResult, ApiRequestError, MapChangeInput>({
+    mutationFn: (input) => editMapChanges(slug, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      void qc.invalidateQueries({ queryKey: QK.project(slug) })
+    },
+    onError: (e) => toast.error(mapChangesErrorMessage(e, 'Could not save the change')),
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** R8c-4's one destructive roadmap action, gated behind a typed-slug confirm. */
+export function useAbandonMapChanges(slug: string) {
+  const qc = useQueryClient()
+  return useMutation<AbandonResult, ApiRequestError, void>({
+    mutationFn: () => abandonMapChanges(slug),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      void qc.invalidateQueries({ queryKey: QK.project(slug) })
+    },
+    onError: (e) => toast.error(mapChangesErrorMessage(e, 'Could not abandon the map changes')),
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** The PR card's Rebase tap (R8c-3) — only offered while the pointer reports `behind`. */
+export function useRebaseMapChanges(slug: string) {
+  const qc = useQueryClient()
+  return useMutation<{ pointer: MapChangesPointer }, ApiRequestError, void>({
+    mutationFn: () => rebaseMapChanges(slug),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      void qc.invalidateQueries({ queryKey: QK.project(slug) })
+    },
+    onError: (e) => toast.error(mapChangesErrorMessage(e, 'Could not rebase the PR')),
     meta: PM_MUTATION_META,
   })
 }
