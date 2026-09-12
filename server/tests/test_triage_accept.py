@@ -103,3 +103,28 @@ def test_pending_proposal_stmt_is_the_one_builder_both_accept_paths_use():
     router = inspect.getsource(pm_api._load_pending_proposal)
     assert "pending_proposal_stmt(proposal_id)" in router
     assert "select(TriageProposal)" not in router
+
+
+def test_restore_overlay_ignores_the_provenance_key():
+    """``_restore_overlay`` reads named keys only, so the extra ``decidedBy``
+    rides along harmlessly: the overlay comes back exactly as it was and nothing
+    sets a ``decidedBy`` attribute on the WorkItem."""
+    from server.db.models import WorkItem
+    from server.pm.triage_accept import _overlay_snapshot, _restore_overlay
+
+    before = WorkItem(repo="o/r", number=1, kind="issue", title="a", state="open",
+                      feature_id="f-old", reach=3, impact=2, effort=1, confidence=80,
+                      triage_state="proposed", classified_by="human", classified_at=None)
+    snap = _overlay_snapshot(before)
+    assert "decidedBy" not in snap          # the snapshot helper's own contract
+    snap["decidedBy"] = "auto"              # what apply_accept adds beside it
+
+    after = WorkItem(repo="o/r", number=1, kind="issue", title="a", state="open",
+                     feature_id="f-new", reach=9, impact=9, effort=9, confidence=9,
+                     triage_state="classified", classified_by="auto")
+    _restore_overlay(after, snap)
+    assert (after.feature_id, after.reach, after.impact, after.effort,
+            after.confidence) == ("f-old", 3, 2, 1, 80)
+    assert after.triage_state == "proposed" and after.classified_by == "human"
+    assert after.classified_at is None
+    assert not hasattr(after, "decidedBy")

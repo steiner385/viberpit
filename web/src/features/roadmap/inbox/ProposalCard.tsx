@@ -24,6 +24,7 @@ import type { RoadmapTier } from '@/api/roadmap'
 import type { TriageProposal } from '@/api/triage'
 import { TIER_ACCENT, TIER_TONE } from '../roadmapTier'
 import { TierDot } from '../rows/TierDot'
+import { isPending } from './triageSelectors'
 
 /** The classifier's confidence, in the roadmap's tier words. An unknown level
  *  (the server may add one) reads as `idle` — calm, never a false alarm. */
@@ -51,7 +52,7 @@ export function ProposalCard({
   const name = p.title ?? p.id
   const tier = CONF_TIER[p.confidenceLevel ?? 'low'] ?? 'idle'
   const scores = [p.reach, p.impact, p.effort, p.confidence].map((v) => v ?? '—')
-  const pending = p.status === 'pending'
+  const pending = isPending(p)
   // The PM Triage loop's own accept, still inside the undo window (spec §8/§9)
   // — the ONE undo path (`useUndoProposal`) is what puts it back to pending.
   const autoAccepted = p.status === 'accepted' && p.classifiedBy === 'auto'

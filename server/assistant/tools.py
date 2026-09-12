@@ -783,7 +783,11 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                "resolve_triage to accept or reject one.", {})
     @guarded
     async def list_triage(args: dict[str, Any]) -> Any:
-        return await api.get("/api/pm/triage")
+        # `pendingOnly`: the route's default list is WIDENED for the inbox — it also
+        # carries the triage loop's fresh auto-accepts for their undo window, so the
+        # chip has something to render. Those are decided, not awaiting anyone, and
+        # this tool's whole claim is "awaiting a human decision".
+        return await api.get("/api/pm/triage", params={"pendingOnly": "true"})
 
     @spec_tool("get_onboarding_status",
                "Where a product is in the onboarding wizard: its state, the next action "

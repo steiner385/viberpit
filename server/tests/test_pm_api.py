@@ -1535,6 +1535,66 @@ def test_undo_of_an_auto_accept_marks_the_proposal_auto_undone():
         c.portal.call(_check)
 
 
+def test_undo_of_an_auto_accept_a_human_patched_first_still_marks_auto_undone():
+    """`auto_undone` must come from the PROPOSAL's own record of who decided it,
+    not from ``WorkItem.classified_by`` — that column is live overlay state any
+    overlay PATCH rewrites to "human". Score the auto-accepted item inside the
+    undo window (the exact thing the chip invites: look, tweak, then undo) and
+    the machine's own decision is no longer legible from the work item. Read that
+    way, the flag stayed NULL and the loop was free to auto-accept the same
+    proposal on its next tick — undoing the human."""
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import Feature, Project, TriageProposal, WorkItem
+    from server.pm.triage_accept import apply_accept
+
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Viberpit", repo="o/r")
+
+        async def _seed():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "viberpit"))).scalar_one()
+                f = Feature(project_id=p.id, slug="sessions", title="Sessions", state="live")
+                w = WorkItem(repo="o/r", number=1, kind="issue", title="a",
+                             state="open", triage_state="proposed")
+                db.add_all([f, w])
+                await db.flush()
+                prop = TriageProposal(work_item_id=w.id, proposed_feature_id=f.id,
+                                      confidence_level="high", status="pending")
+                db.add(prop)
+                await db.flush()
+                await apply_accept(db, prop, decided_by="auto", audit_identity="pm-triage")
+                return prop.id, w.id
+        pid, wid = c.portal.call(_seed)
+
+        patched = c.patch(f"/api/pm/work-items/{wid}/overlay", json={"reach": 5},
+                          headers=IDENTITY_HEADERS)
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["classifiedBy"] == "human"
+
+        async def _snapshot():
+            async with db_session() as db:
+                return (await db.execute(select(TriageProposal.undo_snapshot).where(
+                    TriageProposal.id == pid))).scalars().one()
+        snap = c.portal.call(_snapshot)
+        # `decidedBy` is the machine's decision, beside the snapshot rather than
+        # inside it: `classifiedBy` is the PRE-accept overlay value (nobody had
+        # classified the item), which is exactly why it cannot carry provenance.
+        assert snap["decidedBy"] == "auto"
+        assert snap["classifiedBy"] is None
+
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+
+        async def _check():
+            async with db_session() as db:
+                prop = (await db.execute(select(TriageProposal).where(
+                    TriageProposal.id == pid))).scalar_one()
+                assert prop.status == "pending" and prop.auto_undone is True
+        c.portal.call(_check)
+
+
 def test_undo_of_a_human_accept_does_not_mark_auto_undone():
     """Mirror of the auto case: undoing a human decision must not flip the flag
     the loop checks — otherwise it would wrongly withhold the machine from a
@@ -1622,6 +1682,48 @@ def test_triage_list_includes_a_fresh_auto_accept_with_its_marker():
         assert by_id[auto_id]["status"] == "accepted"
         assert by_id[auto_id]["classifiedBy"] == "auto"
         assert isinstance(by_id[auto_id]["resolvedAt"], str) and by_id[auto_id]["resolvedAt"]
+
+
+def test_triage_list_pending_only_omits_a_fresh_auto_accept():
+    """``?pendingOnly=true`` is the un-widened list — exactly ``status ==
+    "pending"``. Consumers that COUNT the queue (the assistant's list_triage, and
+    any caller that wants "awaiting a decision") must not see the undo-window
+    rows the inbox renders, or they over-count by every fresh auto-accept."""
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import Feature, Project, TriageProposal, WorkItem
+    from server.pm.triage_accept import apply_accept
+
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Viberpit", repo="o/r")
+
+        async def _seed():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "viberpit"))).scalar_one()
+                f = Feature(project_id=p.id, slug="sessions", title="Sessions", state="live")
+                w_pending = WorkItem(repo="o/r", number=1, kind="issue", title="pending",
+                                     state="open", triage_state="proposed")
+                w_auto = WorkItem(repo="o/r", number=2, kind="issue", title="auto",
+                                  state="open", triage_state="proposed")
+                db.add_all([f, w_pending, w_auto])
+                await db.flush()
+                pending = TriageProposal(work_item_id=w_pending.id, proposed_feature_id=f.id,
+                                         confidence_level="high", status="pending")
+                auto_prop = TriageProposal(work_item_id=w_auto.id, proposed_feature_id=f.id,
+                                           confidence_level="high", status="pending")
+                db.add_all([pending, auto_prop])
+                await db.flush()
+                await apply_accept(db, auto_prop, decided_by="auto", audit_identity="pm-triage")
+                return pending.id, auto_prop.id
+        pending_id, auto_id = c.portal.call(_seed)
+
+        widened = c.get("/api/pm/triage", headers=IDENTITY_HEADERS)
+        assert {row["id"] for row in widened.json()} == {pending_id, auto_id}
+
+        r = c.get("/api/pm/triage?pendingOnly=true", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert [row["id"] for row in r.json()] == [pending_id]
 
 
 def test_triage_list_drops_an_auto_accept_after_the_undo_window():

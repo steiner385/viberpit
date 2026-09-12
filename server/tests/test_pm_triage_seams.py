@@ -756,6 +756,41 @@ async def test_list_auto_accept_candidates_is_ordered_oldest_first(db_env):
 
 
 @pytest.mark.asyncio
+async def test_list_auto_accept_candidates_breaks_a_created_at_tie_on_id(db_env):
+    """``created_at`` alone is not a total order. One classify session writes its
+    whole batch of proposals inside the same transaction, and on Postgres that is
+    one ``CURRENT_TIMESTAMP`` for all of them — a tie is the COMMON case, not a
+    freak one. Untied, which of a tied batch the per-product cap admits is back to
+    whatever the storage engine hands back, and a proposal can be jumped tick
+    after tick. ``id`` is the tiebreak: arbitrary, but stable."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+    await _seed(db_env)
+    tie = datetime(2026, 9, 12, 10, 0, tzinfo=timezone.utc)
+    async with db_session() as db:
+        pid = (await db.execute(select(Project.id).where(
+            Project.slug == "viberpit"))).scalars().one()
+        feat = Feature(project_id=pid, slug="sessions", title="Sessions", state="live")
+        db.add(feat)
+        await db.flush()
+        # Inserted b-then-a, with ONE created_at: insertion order is not the answer
+        # and neither is the clock — only the id is left.
+        for n, prop_id in ((11, "bbbb"), (12, "aaaa")):
+            w = WorkItem(repo=REPO, number=n, kind="issue", title=prop_id,
+                         state="open", triage_state="unclassified")
+            db.add(w)
+            await db.flush()
+            db.add(TriageProposal(id=prop_id, work_item_id=w.id, status="pending",
+                                  proposed_feature_id=feat.id, confidence_level="high",
+                                  created_at=tie))
+            await db.flush()
+    orch = _triage_orch()
+    out = await orch._pm_triage_list_auto_accept_candidates()
+    assert [c.proposal_id for c in out] == ["aaaa", "bbbb"]
+
+
+@pytest.mark.asyncio
 async def test_auto_accept_seam_accepts_audits_and_returns_detail(db_env):
     """One transaction: the shared ``apply_accept`` writes the overlay with
     ``classified_by="auto"`` and the undo snapshot, and the seam audits

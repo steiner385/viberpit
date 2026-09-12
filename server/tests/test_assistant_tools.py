@@ -862,6 +862,22 @@ async def test_product_tools_hit_one_endpoint(name, args, method, path):
 
 
 @pytest.mark.asyncio
+async def test_list_triage_asks_for_pending_only():
+    """GET /api/pm/triage is WIDENED for the inbox: it also carries the loop's
+    fresh auto-accepts for their undo window, so the assistant would report them
+    as "awaiting a decision". The tool asks for the un-widened list."""
+    seen: list[str] = []
+
+    def handler(req: httpx.Request):
+        seen.append(str(req.url))
+        return httpx.Response(200, json=[])
+
+    out = await _tool(build_tools(_api(handler)), "list_triage").handler({})
+    assert "is_error" not in out
+    assert len(seen) == 1 and "pendingOnly=true" in seen[0]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("name", ["get_product", "get_product_deps", "get_onboarding_status",
                                   "request_product_sync"])
 async def test_product_tools_reject_a_bad_slug_locally(name):

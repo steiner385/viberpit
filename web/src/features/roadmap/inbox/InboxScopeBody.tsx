@@ -42,6 +42,7 @@ import { inboxReducer, initialInboxState, isTypingTarget, resolveCursorIndex } f
 import { clearInboxOrder, setInboxOrder } from './inboxOrderStore'
 import { INBOX_ORDERING_SPEC, type InboxGroupBy, type InboxSortBy } from './inboxOrdering'
 import { ProposalCard } from './ProposalCard'
+import { pendingProposals } from './triageSelectors'
 
 export interface InboxScopeBodyProps {
   proposals: readonly TriageProposal[]
@@ -83,11 +84,13 @@ export function InboxScopeBody({
   // open): the pane must fall back rather than follow a frozen order.
   useEffect(() => clearInboxOrder, [])
 
-  // The rows the user can still decide. ONE definition of "still pending",
-  // shared by the selection prune below and by `acceptSelected` — two copies
-  // would be free to disagree about what the bulk bar counts and what it sends.
+  // The rows the user can still decide, through `triageSelectors`' one
+  // definition of "still pending" (the nav badge and the Inbox scope count read
+  // the same one). Shared from here by the selection prune below and by
+  // `acceptSelected` — two copies would be free to disagree about what the bulk
+  // bar counts and what it sends.
   const pendingIds = useMemo(
-    () => ordered.filter((p) => p.status === 'pending').map((p) => p.id),
+    () => pendingProposals(ordered).map((p) => p.id),
     [ordered],
   )
 

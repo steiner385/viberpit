@@ -417,6 +417,10 @@ export function InitiativePage() {
   const next = nextStage(initiative?.stage)
   const prev = prevStage(initiative?.stage)
   const blocked = initiative?.status === 'blocked'
+  // NOT `inbox/triageSelectors`' `isPending`: this `proposal` is a
+  // `MaterializationProposal` (initiative → work items), a different domain that
+  // merely shares the word. Routing it through the triage selector would tie two
+  // unrelated vocabularies together.
   const proposalPending = proposal?.status === 'pending'
 
   // A renamed slug or a stale bookmark is an ADDRESS problem, not a connection

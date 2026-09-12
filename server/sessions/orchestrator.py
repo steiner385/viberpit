@@ -7240,7 +7240,14 @@ class SessionOrchestrator:
         read would leave *which* of a backlog gets accepted to the storage
         engine (Postgres reorders a heap after UPDATE/VACUUM, or when the plan
         flips seq-scan↔index-scan) and a proposal could be jumped by newer ones
-        tick after tick. Oldest-first is also the queue order the inbox shows."""
+        tick after tick. Oldest-first is also the queue order the inbox shows.
+
+        ``id`` breaks the tie, because ``created_at`` alone is not a total order:
+        one classify session writes its whole batch in a single transaction, and
+        on Postgres that is one ``CURRENT_TIMESTAMP`` for every row in it — ties
+        are the common case. Which of a tied batch the per-product cap admits
+        would otherwise be back to the storage engine. The id is arbitrary, but
+        it is STABLE, which is the whole property the cap needs."""
         from sqlalchemy import select
         from server.automations.pm_triage import AutoAcceptCandidateView
         from server.db.models import Feature, TriageProposal, WorkItem
@@ -7250,7 +7257,7 @@ class SessionOrchestrator:
                 select(TriageProposal, WorkItem)
                 .join(WorkItem, WorkItem.id == TriageProposal.work_item_id)
                 .where(TriageProposal.status == "pending")
-                .order_by(TriageProposal.created_at))).all()
+                .order_by(TriageProposal.created_at, TriageProposal.id))).all()
             repos = {wi.repo for _, wi in rows if wi.repo}
             owners = await owning_projects_by_repo(db, repos) if repos else {}
             feature_ids = {p.proposed_feature_id for p, _ in rows if p.proposed_feature_id}

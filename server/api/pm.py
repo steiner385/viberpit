@@ -962,6 +962,7 @@ def _triage_to_dict(prop: TriageProposal, wi: WorkItem | None,
 async def list_triage(
     projectSlug: str | None = None,
     confidenceLevel: str | None = None,
+    pendingOnly: bool = False,
     _identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> list[dict]:
@@ -972,14 +973,23 @@ async def list_triage(
     the inbox shows them with an "auto-accepted · undo" chip, then they leave
     like a human accept. A human accept never appears here — its undo lives in
     the toast of the browser that made it.
+
+    ``pendingOnly=true`` suppresses that widened leg and answers exactly
+    ``status == "pending"``. The widening exists for ONE surface — the inbox,
+    which renders the chip. Every other consumer is COUNTING "awaiting a human
+    decision" (the assistant's ``list_triage``, and anything that asks the API
+    rather than filtering client-side), and for those a fresh auto-accept is a
+    decision already taken: including it over-counts the queue and invites a
+    "3 proposals need you" that names rows nobody has to touch.
     """
     since = datetime.now(timezone.utc) - timedelta(seconds=TRIAGE_UNDO_WINDOW_S)
     auto_ids = select(WorkItem.id).where(WorkItem.classified_by == DECIDED_BY_AUTO)
-    stmt = select(TriageProposal).where(or_(
-        TriageProposal.status == "pending",
-        and_(TriageProposal.status == "accepted",
-             TriageProposal.resolved_at >= since,
-             TriageProposal.work_item_id.in_(auto_ids))))
+    stmt = select(TriageProposal).where(
+        TriageProposal.status == "pending" if pendingOnly else or_(
+            TriageProposal.status == "pending",
+            and_(TriageProposal.status == "accepted",
+                 TriageProposal.resolved_at >= since,
+                 TriageProposal.work_item_id.in_(auto_ids))))
     if confidenceLevel:
         stmt = stmt.where(TriageProposal.confidence_level == confidenceLevel)
     props = (await db.execute(
@@ -1169,8 +1179,16 @@ async def undo_triage(
             "message": f"undo is only available for {TRIAGE_UNDO_WINDOW_S}s after a decision"})
     wi = (await db.execute(select(WorkItem).where(
         WorkItem.id == prop.work_item_id))).scalar_one_or_none()
-    if wi is not None and wi.classified_by == DECIDED_BY_AUTO and prop.status == "accepted":
+    if snap.get("decidedBy") == DECIDED_BY_AUTO and prop.status == "accepted":
         # The decision being undone was the machine's: never let it re-decide.
+        #
+        # Read from the SNAPSHOT (`apply_accept` stamps `decidedBy` there), not
+        # from `WorkItem.classified_by`. That column is live overlay state: any
+        # overlay PATCH rewrites it to "human", and the undo window is exactly
+        # when a human is invited to look at the auto-accept and tweak it. Scored
+        # first, then undone, the machine's authorship was gone — the flag stayed
+        # NULL and the loop auto-accepted the same proposal on its next tick,
+        # undoing the human who had just undone it.
         prop.auto_undone = True
     if wi is not None:
         _restore_overlay(wi, snap)

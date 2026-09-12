@@ -166,7 +166,16 @@ async def apply_accept(db, proposal: TriageProposal, *, decided_by: str,
         WorkItem.id == proposal.work_item_id))).scalar_one_or_none()
     if wi is None:
         raise WorkItemMissing(proposal.work_item_id)
-    proposal.undo_snapshot = _overlay_snapshot(wi)
+    # The snapshot is the pre-decision overlay; ``decidedBy`` rides BESIDE it as
+    # this proposal's own, immutable record of who decided it. ``undo_triage``
+    # reads that key to arm ``auto_undone`` — it cannot read ``WorkItem
+    # .classified_by``, which is live overlay state any overlay PATCH rewrites to
+    # "human" inside the very undo window the inbox chip invites you to poke at.
+    # It is added AFTER ``_overlay_snapshot`` and is not part of that helper's
+    # contract: ``_restore_overlay`` reads named overlay keys only and ignores it.
+    snapshot = _overlay_snapshot(wi)
+    snapshot["decidedBy"] = decided_by
+    proposal.undo_snapshot = snapshot
     now = datetime.now(timezone.utc)
     edits = edits or {}
     feature_id = edits.get("featureId", proposal.proposed_feature_id)

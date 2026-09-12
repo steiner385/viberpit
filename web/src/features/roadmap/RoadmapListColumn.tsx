@@ -21,6 +21,7 @@ import { useItemOrdering, type OrderingSpec } from '@/session/useSessionOrdering
 import { INITIATIVE, PRODUCT, ROADMAP, stageLabel } from '@/features/products/vocab'
 import { ScopeBody } from '@/features/sessions/ScopeBody'
 import { InboxScopeBody, type InboxScopeBodyProps } from './inbox/InboxScopeBody'
+import { pendingProposals } from './inbox/triageSelectors'
 import { programTitleOf } from './lookup'
 import { TIER_RANK } from './roadmapTier'
 import { RoadmapScopeSegment } from './RoadmapScopeSegment'
@@ -84,11 +85,14 @@ export function RoadmapListColumn({
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <div className="shrink-0 p-2">
+        {/* `inboxCount` is PENDING only: `inbox.proposals` is widened with the
+            triage loop's fresh auto-accepts so the rows below can wear the undo
+            chip, and a badge that counted those reports decided work as backlog. */}
         <RoadmapScopeSegment
           scope={scope}
           productCount={products.length}
           initiativeCount={entries.length}
-          inboxCount={inbox.proposals.length}
+          inboxCount={pendingProposals(inbox.proposals).length}
         />
       </div>
       {/* The map's error, not the inbox's — the Inbox scope's body owns its own

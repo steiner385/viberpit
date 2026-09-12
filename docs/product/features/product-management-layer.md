@@ -4,7 +4,7 @@ parent: planning-and-automation
 title: Product-Management Layer
 state: delivering
 links:
-  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/tree.py, server/pm/triage_accept.py, server/automations/pm_triage.py, server/automations/product_policy.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/detail/AutomationPolicyCard.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalCard.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts]
+  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/tree.py, server/pm/triage_accept.py, server/automations/pm_triage.py, server/automations/product_policy.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/detail/AutomationPolicyCard.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalCard.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts, web/src/features/roadmap/inbox/triageSelectors.ts]
   prs: ['#866', '#879', '#893', '#897', '#899', '#1327']
 ---
 
@@ -271,20 +271,33 @@ event, leaving the rest of the tick (including the status-card counts) to finish
 accept failure is logged and emits `auto_accept_failed` without aborting the rest of the pass; each
 accepted candidate emits `auto_accepted`; and a product that hits its cap emits one
 `auto_accept_capped` event, after the loop, naming the product (not the individual proposal ids)
-the cap deferred to the next tick. Candidates are read oldest-first, so which of a backlog the cap
-lets through is the queue order the inbox shows and not the storage engine's.
+the cap deferred to the next tick. Candidates are read oldest-first and tie-broken on `id`
+(`order_by(created_at, id)`), so which of a backlog the cap lets through is the queue order the
+inbox shows and not the storage engine's — `created_at` alone is not a total order, since one
+classify session writes its whole batch under a single transaction timestamp.
 
 An auto-accept is undoable for the same `TRIAGE_UNDO_WINDOW_S` (60 s) window as a human accept,
 through the same `POST /api/pm/triage/{id}/undo` (`undo_triage`, `server/api/pm.py`) — but undoing
-one the loop made also sets `TriageProposal.auto_undone = True` (detected via the work item's
-`classified_by == DECIDED_BY_AUTO` at undo time, before the overlay is restored) so the gate above
-refuses to ever re-accept that proposal on a later tick; undoing a human accept the same way leaves
-`auto_undone` unset. `list_triage`'s query widens to match: alongside every `pending` proposal it
-now also returns proposals that are `accepted`, resolved within the undo window, AND whose work
-item carries `classified_by == DECIDED_BY_AUTO` — so a fresh auto-accept stays visible in the Inbox
-for exactly as long as it is undoable, then drops out of the list like a human accept's undo toast
-expires. `_triage_to_dict` carries `classifiedBy` and `resolvedAt` on every row so the web can tell
-a fresh auto-accept apart from a pending one. `ProposalCard.tsx` renders an `auto-accepted` info
+one the loop made also sets `TriageProposal.auto_undone = True` so the gate above refuses to ever
+re-accept that proposal on a later tick; undoing a human accept the same way leaves `auto_undone`
+unset. Who decided is read from the proposal's OWN record: `apply_accept` stamps
+`undo_snapshot["decidedBy"]` (beside the pre-decision overlay, not inside it — `_restore_overlay`
+reads named overlay keys only and ignores it), and `undo_triage` keys `auto_undone` off that. It
+must not read `WorkItem.classified_by`, which is live overlay state any overlay PATCH rewrites to
+`"human"` — score an auto-accepted item inside its undo window, which is exactly what the chip
+invites, and the machine's authorship is gone, so the flag stays NULL and the loop re-accepts the
+proposal on its next tick. `list_triage`'s query widens to match the chip: alongside every `pending`
+proposal it now also returns proposals that are `accepted`, resolved within the undo window, AND
+whose work item carries `classified_by == DECIDED_BY_AUTO` — so a fresh auto-accept stays visible in
+the Inbox for exactly as long as it is undoable, then drops out of the list like a human accept's
+undo toast expires. That widening is for ONE surface, so `?pendingOnly=true` suppresses it and
+answers exactly `status == "pending"`; the assistant's `list_triage` tool passes it, because a
+decided row is not "awaiting a human decision". On the web the same distinction is one exported
+selector, `inbox/triageSelectors.ts` (`isPending` / `pendingProposals`), which the nav badge, the
+Inbox scope count, the bulk-selection prune and the row itself all read — no call site compares
+`status` for itself. `_triage_to_dict` carries `classifiedBy` and `resolvedAt` on every row so the
+web can tell a fresh auto-accept apart from a pending one. `ProposalCard.tsx` renders an
+`auto-accepted` info
 badge plus an inline Undo button (calling the ONE `useUndoProposal` hook — no second undo path) on
 exactly those rows, and disables rather than hides the row's bulk-select tick, so the leading rail
 stays aligned across a list mixing pending and fresh-auto-accepted rows. `InboxScopeBody.tsx`'s
@@ -323,7 +336,7 @@ routes and the loop's auto-accept, and the pure `auto_accept_eligible` gate);
 mechanical auto-link pass, one engine action per tick, rolling daily classify-session cap, the
 `_auto_accept_pass`); `server/sessions/orchestrator.py` (`_pm_triage_*` seams, including
 `_pm_triage_load_policies` / `_pm_triage_list_auto_accept_candidates` / `_pm_triage_auto_accept`,
-+ the loop's primary-only task);
+and the loop's primary-only task);
 `server/automations/pm_onboard.py`, `server/automations/pm_classify.py` (the two session
 origins' audited engine ceilings and their operator-triggered `modes = ()` declaration);
 `server/pm/repo_project.py` (the one repo→project resolver); `server/pm/score.py`
@@ -334,8 +347,8 @@ origins' audited engine ceilings and their operator-triggered `modes = ()` decla
 with `OnboardingWizard` and `DependencyPanel` mounted as product tabs),
 `web/src/features/roadmap/RoadmapListColumn.tsx` (the Map, Initiatives and Inbox list scopes),
 `web/src/features/roadmap/InitiativePage.tsx`, `web/src/projects/OnboardingWizard.tsx`,
-`web/src/features/roadmap/inbox/InboxScopeBody.tsx` + `inboxKeys.ts` + `ProposalCard.tsx` +
-`ProposalDetail.tsx` (the keyboard-first inbox: `j/k/a/e/r/x/A`, optimistic accept with a
+`web/src/features/roadmap/inbox/InboxScopeBody.tsx` + `inboxKeys.ts` + `triageSelectors.ts` +
+`ProposalCard.tsx` + `ProposalDetail.tsx` (the keyboard-first inbox: `j/k/a/e/r/x/A`, optimistic accept with a
 six-second server-backed Undo, cursor anchored to a proposal id so a queue that reorders under
 the user cannot misdirect a keystroke, and the "auto-accepted" chip + Undo for the loop's own
 accepts);

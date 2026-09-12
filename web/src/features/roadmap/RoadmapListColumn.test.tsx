@@ -118,6 +118,19 @@ describe('RoadmapListColumn', () => {
     expect(screen.getByRole('link', { name: 'Inbox (1)' })).toBeInTheDocument()
   })
 
+  // `proposals` is the WIDENED list: it also carries the triage loop's fresh
+  // auto-accepts so the inbox can show the "auto-accepted · undo" chip. The
+  // badge is a backlog count, and a decided row is not backlog.
+  it('the Inbox badge excludes a fresh auto-accept in its undo window', () => {
+    const proposals: TriageProposal[] = [
+      ...['a', 'b', 'c', 'd', 'e'].map((id) => ({ ...PROPOSALS[0], id })),
+      { ...PROPOSALS[0], id: 'auto', status: 'accepted', classifiedBy: 'auto' },
+    ]
+    mount({ inbox: { proposals, isLoading: false, isError: false, product: null,
+                     onOpenProposal: vi.fn(), onClearProduct: vi.fn() } })
+    expect(screen.getByRole('link', { name: 'Inbox (5)' })).toBeInTheDocument()
+  })
+
   it('states: loading, error, empty', () => {
     mount({ map: undefined, isLoading: true })
     expect(screen.getByRole('status', { name: 'Loading roadmap' })).toBeInTheDocument()

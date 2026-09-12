@@ -116,6 +116,21 @@ describe('useNavBadges', () => {
     expect(empty.current.roadmap).toBeUndefined()
   })
 
+  // The list `useTriage` returns is WIDENED: it also carries the triage loop's
+  // fresh auto-accepts for their undo window, so the inbox can render the
+  // "auto-accepted · undo" chip. A badge that counted those says "6 need you"
+  // about 5 — and the sixth is already decided.
+  it('roadmap badge excludes a fresh auto-accept in its undo window', () => {
+    useTriage.mockReturnValue({
+      data: [
+        ...['a', 'b', 'c', 'd', 'e'].map((id) => proposal({ id })),
+        proposal({ id: 'auto', status: 'accepted', classifiedBy: 'auto' }),
+      ],
+    })
+    const { result } = renderHook(() => useNavBadges())
+    expect(result.current.roadmap).toBe(5)
+  })
+
   it('settings is boolean-or-undefined, never a number', () => {
     useAccounts.mockReturnValue({ data: [account({ status: 'needs-reauth' })] })
     const { result } = renderHook(() => useNavBadges())
