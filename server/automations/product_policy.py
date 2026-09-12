@@ -4,7 +4,7 @@ product's automation knobs — whether the Backlog Runner dispatches for it, how
 board it reaches, its in-flight cap and weight, its attempt cap, its session model.
 
 `triage_auto_accept` joined the schema in phase 2 (the PM Triage loop's auto-accept tier);
-`give_up_after_bounces` (phase 3) is not part of this schema yet.
+`give_up_after_bounces` joined it in phase 3 (the dispatch-bounce threshold D8).
 
 Stored on ``Project.automation_policy`` as a JSON blob validated through this schema at write
 time (``PATCH /api/pm/projects/{slug}/policy``) — so a row in the DB is already valid. But
@@ -54,6 +54,15 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
     # ever claims, escalating the whole product to needs-human.
     ConfigField(key="max_attempts", label="Max attempts per issue", type="int", default=2,
                 min=1),
+    # Phase 3 (spec §6/§7, D8): THE bounce threshold, compared through
+    # ``server/pm/outcomes.py:bounced_out`` by both consumers. ``min=0`` because 0 is
+    # meaningful ("never give up"); a NEGATIVE threshold is what is rejected, since
+    # ``bounced_out`` would then fire on the very first finalised outcome.
+    ConfigField(key="give_up_after_bounces", label="Give up after bounces", type="int",
+                default=2, min=0,
+                help="Finalised non-merged outcomes on the same issue body before the "
+                     "queue skips it as needs_spec and the roadmap flags it; 0 never "
+                     "gives up. Editing the issue body restarts the count."),
     ConfigField(key="default_model", label="Session model", type="enum", default="auto",
                 choices=AUTOMATION_MODEL_CHOICES,
                 help="Model for this product's sessions; 'auto' assesses each job."),

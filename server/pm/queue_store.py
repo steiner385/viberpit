@@ -23,6 +23,7 @@ from server.time_iso import parse_iso_utc
 
 from .desired_state import ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES
 from .mirror_store import deps_in_repos, list_product_views
+from .outcomes import body_fingerprint, bounces_stmt, rows_to_bounces
 from .queue import QueueRow
 from .reconcile_inputs import _aware
 from .refs import split_ref
@@ -118,6 +119,15 @@ def load_queue_rows(db: Session, *, now: datetime,
         if not items:
             continue
 
+        # D8: per-product bounce lookup — only FINALISED outcomes whose
+        # ``body_fingerprint`` matches this mirror row's CURRENT body count, so an
+        # edited issue (a new fingerprint) drops its stale bounce history.
+        pairs = [(f"{w.repo}#{w.number}", body_fingerprint(w.title, w.body)) for _, w in items]
+        # Row -> plain tuple: ``Result.all()`` is typed ``Sequence[Row[Any]]``, not
+        # structurally a ``tuple[str, str, int]`` (mypy), though it unpacks as one.
+        bounce_rows = [(ref, fp, n) for ref, fp, n in db.execute(bounces_stmt(pairs)).all()]
+        bounces = rows_to_bounces(bounce_rows, pairs) if pairs else {}
+
         open_children: dict[str | None, int] = {
             parent_id: count for parent_id, count in db.execute(
                 select(WorkItem.parent_work_item_id, func.count(WorkItem.id))
@@ -162,5 +172,6 @@ def load_queue_rows(db: Session, *, now: datetime,
                 open_blockers=tuple(sorted(blockers.get(ref, ()))),
                 live_session=ref in live_refs, claimed=ref in claimed_refs,
                 needs_human_at=needs_human_at.get(ref),
+                bounces=bounces.get(ref, 0),
             ))
     return rows

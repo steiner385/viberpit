@@ -11,8 +11,9 @@ from __future__ import annotations
 import asyncio
 
 from server.db import db_session, init_db
-from server.db.models import (GhProject, GhProjectItem, Project, ProjectRepo,
+from server.db.models import (DispatchOutcome, GhProject, GhProjectItem, Project, ProjectRepo,
                               WorkItem, WorkItemDep)
+from server.pm.outcomes import body_fingerprint
 
 
 def _orch_with_ctx():
@@ -304,6 +305,56 @@ def test_query_queue_min_status_comes_from_the_product_policy(tmp_path):
                                        "queue_min_status": "Backlog"})
         both = await orch._backlog_query_queue(_config())
         assert [c["ref"] for c in both] == ["o/r#2", "o/r#1"]
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# D8: a body that keeps bouncing is parked, not re-dispatched                  #
+# --------------------------------------------------------------------------- #
+
+def test_query_queue_excludes_a_bounced_row_and_reports_it(tmp_path):
+    async def run():
+        await _init(tmp_path, "bounced.db")
+        await _seed_product("viberpit", "o/r",
+                            policy={"dispatch": "auto", "give_up_after_bounces": 2})
+        await _seed_item("o/r", 1, score=5.0)
+        fp = body_fingerprint("issue 1", "body")
+        async with db_session() as db:
+            db.add_all([
+                DispatchOutcome(target_ref="o/r#1", body_fingerprint=fp, outcome="no_pr"),
+                DispatchOutcome(target_ref="o/r#1", body_fingerprint=fp, outcome="no_pr"),
+            ])
+        orch = _orch_with_ctx()
+
+        per_product: dict = {}
+        cands = await orch._backlog_query_queue(_config(), products_out=per_product)
+
+        assert cands == []
+        assert per_product["viberpit"]["bounced"] == 1
+
+    asyncio.run(run())
+
+
+def test_query_queue_keeps_a_bounced_row_when_give_up_after_bounces_is_zero(tmp_path):
+    async def run():
+        await _init(tmp_path, "neverbounce.db")
+        await _seed_product("viberpit", "o/r",
+                            policy={"dispatch": "auto", "give_up_after_bounces": 0})
+        await _seed_item("o/r", 1, score=5.0)
+        fp = body_fingerprint("issue 1", "body")
+        async with db_session() as db:
+            db.add_all([
+                DispatchOutcome(target_ref="o/r#1", body_fingerprint=fp, outcome="no_pr"),
+                DispatchOutcome(target_ref="o/r#1", body_fingerprint=fp, outcome="no_pr"),
+            ])
+        orch = _orch_with_ctx()
+
+        per_product: dict = {}
+        cands = await orch._backlog_query_queue(_config(), products_out=per_product)
+
+        assert [c["ref"] for c in cands] == ["o/r#1"]
+        assert per_product["viberpit"]["bounced"] == 0
 
     asyncio.run(run())
 

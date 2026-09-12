@@ -4,7 +4,7 @@ parent: planning-and-automation
 title: Product-Management Layer
 state: delivering
 links:
-  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/tree.py, server/pm/triage_accept.py, server/automations/pm_triage.py, server/automations/product_policy.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/detail/AutomationPolicyCard.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalCard.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts, web/src/features/roadmap/inbox/triageSelectors.ts]
+  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/tree.py, server/pm/outcomes.py, server/pm/triage_accept.py, server/automations/pm_triage.py, server/automations/product_policy.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/detail/AutomationPolicyCard.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalCard.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts, web/src/features/roadmap/inbox/triageSelectors.ts]
   prs: ['#866', '#879', '#893', '#897', '#899', '#1327']
 ---
 
@@ -161,12 +161,12 @@ the live `STAGE_SEQUENCE`, affecting every existing initiative, and it currently
 Revive it only when a concrete initiative needs a discovery artifact gate ahead of `intake`; the
 design for it is preserved in `docs/superpowers/plans/2026-08-31-pm-product-layer-phase4.md` Task 2.
 
-**Product automation policy (phases 1–2).** Each `Project` carries an opt-in `automation_policy`
+**Product automation policy (phases 1–3).** Each `Project` carries an opt-in `automation_policy`
 (JSON, nullable, `server/db/models.py`) that the Backlog Runner — and, as of phase 2, the PM Triage
 loop — read per product instead of one global config row governing every onboarded product alike.
 The schema — `PRODUCT_POLICY_SCHEMA` in `server/automations/product_policy.py`, the one
 `ConfigField` list and the one validated reader (`effective_policy`) every caller shares
-(constitution VI) — has eight fields: `dispatch`
+(constitution VI) — has nine fields: `dispatch`
 (`off | propose | auto`, default `off` — whether the runner works this product's board at all, and
 whether a claimed batch is only announced or actually spawned), `queue_min_status` (default `Ready`,
 or `Backlog` to reach untriaged items — how far down the board the runner reaches), `max_in_flight`
@@ -176,7 +176,12 @@ still runs at most this many sessions total; a `proposed` announce-only claim ho
 like a spawned one, a `gave_up` or `handed_off` claim does not. `0` means PAUSED — the product takes
 no claim while keeping the rest of its policy — never "unlimited"), `weight` (default 1, minimum 0 —
 its share when a freed slot is contested under the `weighted` selection strategy), `max_attempts`
-(default 2, minimum 1 — attempts per issue before the runner gives up), `default_model` (default
+(default 2, minimum 1 — attempts per issue before the runner gives up), `give_up_after_bounces`
+(default 2, minimum 0 — landed in phase 3, D8: the bounce threshold both the queue's `needs_spec`
+skip and the roadmap's `needs_spec` reason compare against through the one predicate
+`server/pm/outcomes.py:bounced_out`; `0` means never give up, and editing the issue's title/body
+changes its `body_fingerprint` and restarts the count — see "Dispatch outcomes" below),
+`default_model` (default
 `auto` — the session model; `auto` assesses each job), `respect_dependencies` (default `true`), and,
 landed in phase 2, `triage_auto_accept` (`off | high | medium`, default `off` — the PM Triage loop's
 own accept gate, at or above this confidence; `medium` includes `high`; see "Triage auto-accept"
@@ -184,10 +189,7 @@ below). The minimums are `ConfigField.min`, enforced in `validate_config` (a bel
 `bad_policy`, not a browser courtesy) and published in the schema JSON so `ConfigInput` renders the
 same floor on the number input. `effective_policy`
 never raises: a `None` row (never opted in) and an unparseable one both read as the pure defaults,
-i.e. `dispatch: off` and `triage_auto_accept: off`. `give_up_after_bounces` (bounce-based retry) is
-still in the design only
-(`docs/superpowers/specs/2026-09-12-product-automation-policy-design.md` §4) and arrives with
-phase 3, not this schema.
+i.e. `dispatch: off` and `triage_auto_accept: off`.
 
 It is edited from the product's Overview page (`web/src/features/roadmap/detail/AutomationPolicyCard.tsx`),
 an **Automation** card that renders every schema field through the same `ConfigInput` component the
@@ -236,10 +238,94 @@ concurrency-cap), `max_concurrent` (sessions in flight across every product comb
 behaviour, not of any one product's board).
 
 Phase 2 of the design has landed: confidence-tiered triage auto-accept per product
-(`triage_auto_accept`, §8 — the "Triage auto-accept" paragraph below). Phases 3–4 have not: a
-`dispatch_outcomes` table feeding a bounce-based `needs_spec` skip and roadmap tier reason
-(`give_up_after_bounces`, §6–7), and a history-informed floor on the runner's model pick (§7) — see
+(`triage_auto_accept`, §8 — the "Triage auto-accept" paragraph below). **Phase 3 has landed**: the
+`dispatch_outcomes` table feeding the bounce-based `needs_spec` skip and roadmap tier reason
+(`give_up_after_bounces`, §6–7 — the "Dispatch outcomes" paragraph below). Phase 4 has not: a
+history-informed floor on the runner's model pick (§7) — see
 `docs/superpowers/specs/2026-09-12-product-automation-policy-design.md` §11 for the phasing.
+
+**Dispatch outcomes (phase 3, spec §6/§7, D5/D8).** Every Backlog Runner dispatch leaves one durable
+`dispatch_outcomes` row (`DispatchOutcome`/`DISPATCH_OUTCOMES` in `server/db/models.py`), never
+overwritten in place: `id, created_at, updated_at, automation_id, project_id, target_ref,
+body_fingerprint, session_id, model, attempt_no, started_at, ended_at, duration_s, outcome, cause,
+pr_number, pr_url, first_pass_merge`, every column but `id`/`created_at` nullable so `init_db`'s
+reconcile creates the table on both dialects with no hand-written migration default.
+`outcome` is one of an eight-value vocabulary, `DISPATCH_OUTCOMES`: `running` (inserted at spawn),
+`merged`, `no_pr`, `pr_gave_up`, `needs_human`, `reverted` (reserved, never written in v1),
+`abandoned`, and — a phase-3 amendment to the original design's seven-value list —
+`superseded`, the row a later dispatch on the same target replaced before it could finish; a
+`superseded` row is not counted as a bounce (see "the bounced rule" below).
+
+The two writers are `AutomationContext.record_outcome` / `.finalize_outcome`
+(`server/automations/context.py`), both best-effort (spec §13): a DB failure is logged and
+swallowed, never blocking a spawn or a sweep — and a spawn-time write that was lost that way is
+RECOVERED at finalisation: with no `running` row and nothing to upgrade, `finalize_outcome`'s
+`fallback` (the claim's own `product_slug`/`session_id`/`model`/`attempt_no`, passed by the loop's
+`_outcome_fallback`) inserts the already-finalised row itself, fingerprinted off the mirror row and
+with `started_at` left `None` because nobody knows when that dispatch began. It inserts at most one
+row per dispatch — a target that already has a row for the same `session_id` is left alone, so the
+sweep re-running its "ended with no PR" branch on later ticks cannot mint a bounce each time.
+`record_outcome` inserts the `running` row right after
+a spawn succeeds — from the loop's own `_refill` (`server/automations/backlog_runner.py`, guarded by
+its `_record_outcome` wrapper) and from the two manual taps,
+`SessionOrchestrator.backlog_runner_implement_core` (the propose tap) and `.backlog_runner_dispatch`
+(manual dispatch) — and it first closes any row still `running` for that target as `superseded`
+(`cause=None`; the outcome column alone carries the fact), so at most one `running` row exists per
+target even when a tap races the loop's own claim.
+
+`finalize_outcome` closes the row at whichever branch of `BacklogRunnerLoop._sweep_one` ends the
+dispatch: a merged PR with a clean close-out → `merged` (with `first_pass_merge`); a merged PR that
+still needs a human close-out → `needs_human`; PR Doctor giving up → `pr_gave_up`; the PR closing
+unmerged → `abandoned`; the session ending with no mergeable PR and attempts still left →
+`no_pr` (a bounce); reaching the attempt cap with the session having never run a turn → `abandoned`;
+reaching the attempt cap with a real attempt behind it → `needs_human`. The two attempt-cap branches
+pass `upgrade_from=("no_pr",)`: the cap is discovered a sweep AFTER the bounce that carried the
+dispatch to it, with nothing re-dispatched in between, so rather than leaving a stray second row for
+one session, `finalize_outcome` re-finalises the newest matching row in place (`ended_at`/
+`duration_s` kept, outcome/cause replaced) — one dispatch, one row.
+
+`first_pass_merge` is `True`/`False` only when PR Doctor's recovery count for that PR is knowable at
+the moment the merge is swept, and `None` otherwise — never guessed. The seam is
+`SessionOrchestrator._backlog_pr_doctor_attempts_for`: an unknown target (no PR Doctor state row at
+all) answers `None`; a tracked one answers `total_attempts + total_mechanical` (PR Doctor's
+monotonic, re-arm-immune counters) plus `lifetime_attempts + lifetime_mechanical` — the same counts
+carried forward by `SessionOrchestrator._pr_doctor_lifetime_carry` across BOTH of PR Doctor's state
+clears: the CI-recovery clear (`_on_pr_change`, triggered when checks go back to passing) and the
+terminal clear (`_pr_doctor_step`, when the PR merges or closes — the very moment the runner's sweep
+asks the question). Both clears still reset
+`total_attempts`/`total_mechanical` to zero, because the give-up ceiling in
+`server/automations/pr_doctor_engine.py` reads exactly those keys and a recovered PR earns a fresh
+budget — but without the `lifetime_*` carry (which the engine never reads, and which `apply_rearm`/
+`record_attempt` preserve through every later cycle because both copy the whole state dict) a
+doctor-rescued PR's history would be erased right before the runner's sweep asks whether the merge
+was a first pass, and every doctor-rescued merge would misreport `True`.
+
+**The bounced rule (D8).** `server/pm/outcomes.py:body_fingerprint(title, body)` is the one "same
+issue body" identity, computed both when a dispatch's `running` row is written (from the mirror
+row's title/body at that moment) and again whenever the bounce count is read — so editing an issue's
+title or body changes its fingerprint and silently restarts the count; nothing marks it explicit.
+`bounces_stmt`/`rows_to_bounces` count only FINALISED, non-`running`/`merged`/`superseded` outcomes
+whose `body_fingerprint` matches the issue's CURRENT fingerprint. `bounced_out(bounces,
+give_up_after_bounces)` is the one predicate compared against the product's own
+`give_up_after_bounces` policy field (`0` = never): the queue's `needs_spec` skip
+(`server/pm/queue.py:skip_reason`) and the roadmap's `needs_spec` reason
+(`server/pm/tree.py:issue_reason`, folded into `issue_tier`'s `needs-you` short-circuit) both call it
+and nothing else duplicates the comparison.
+
+The roadmap surfaces a bounced-out issue as a leaf chip: `web/src/features/roadmap/detail/LeafList.tsx`
+renders a `Badge tone="warning"` (`data-testid="leaf-reason"`) whenever a leaf carries a `reason`,
+reading `bouncedLabel(leaf.bounces)` — `` `bounced ${n}× — needs spec` `` — for `reason ===
+'needs_spec'`, else the generic `reasonLabel(leaf.reason)` for any other reason (`advance`,
+`blocked`, `epic_blocked`). `leaf.reason`/`leaf.bounces` come off `server/api/pm_tree.py`'s `_leaf`,
+computed once per open item from one `bounces_stmt` execution over the whole page (`_issue_facts`)
+rather than a per-leaf query.
+
+Every dispatch an issue has had is readable through `GET /api/pm/work-items/{item_id}/outcomes`
+(`server/api/pm.py:get_work_item_outcomes`): 404 `{"error": "not_found"}` for an unknown work item,
+else `{"items": [...]}`, newest first (`list_outcomes_stmt`), each row shaped by
+`outcome_to_dict` (camelCase: `targetRef`, `prNumber`, `firstPassMerge`, `attemptNo`, …). The web's
+`fetchOutcomes`/`useOutcomes` (`web/src/api/pm.ts`, `web/src/api/hooks.ts`) wrap it, unpolled
+(dispatch history has no live-update need).
 
 **Triage auto-accept (phase 2).** For a product whose policy sets `triage_auto_accept` above `off`,
 `PmTriageLoop._auto_accept_pass` (`server/automations/pm_triage.py`) runs on every `propose`-mode

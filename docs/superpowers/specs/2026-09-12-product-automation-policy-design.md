@@ -78,7 +78,7 @@ Table `dispatch_outcomes` (migration `0041`, all columns nullable or defaulted; 
 | `model` | the resolved model alias |
 | `attempt_no` | the runner's attempt counter at spawn |
 | `started_at`, `ended_at`, `duration_s` | |
-| `outcome` | `running | merged | no_pr | pr_gave_up | needs_human | reverted | abandoned` |
+| `outcome` | `running | merged | no_pr | pr_gave_up | needs_human | reverted | abandoned` — **phase-3 amendment:** plus `superseded` (a later dispatch replaced this still-`running` row before it could finish; not counted as a bounce) |
 | `cause` | free text: the give-up reason / PR Doctor class / "session archived by human" |
 | `pr_number`, `pr_url` | when a PR was found |
 | `first_pass_merge` | bool — merged with no PR Doctor recovery attempt |

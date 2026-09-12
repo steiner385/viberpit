@@ -64,4 +64,34 @@ describe('AutomationDetail', () => {
     fireEvent.click(screen.getByRole('switch', { name: 'PR doctor enabled' }))
     expect(patch).toHaveBeenCalledWith({ id: 'pr-doctor', body: { enabled: false } })
   })
+  it('Status tab: a per-product table when status.products is non-empty, linking to the roadmap', () => {
+    const runner = {
+      ...AUTOMATIONS[1],
+      status: {
+        ...AUTOMATIONS[1].status,
+        products: [{ slug: 'viberpit', dispatch: 'auto', inFlight: 1, cap: 1, eligible: 12, bounced: 2 }],
+      },
+    }
+    mount(runner, '/delivery/automations/backlog-runner')
+    expect(screen.getByRole('link', { name: 'viberpit' })).toHaveAttribute('href', '/roadmap/viberpit')
+    expect(screen.getByText('auto')).toBeInTheDocument()
+    expect(screen.getByText('1/1')).toBeInTheDocument()
+    expect(screen.getByText('12')).toBeInTheDocument()
+    expect(screen.getByText('2')).toBeInTheDocument()
+  })
+  it('Status tab: no per-product table when status.products is null', () => {
+    mount(prDoctor)
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+  })
+  it('Status tab: no per-product section at all when status.products is empty', () => {
+    // The runner answers `[]` while no product has dispatch on. `CheckTable` with
+    // no rows renders its heading and empty state but NO <table>, so a bare
+    // "no table" assertion would miss a dropped `.length > 0` guard — the card
+    // would grow an empty "Products" section reading like a broken read.
+    const runner = { ...AUTOMATIONS[1], status: { ...AUTOMATIONS[1].status, products: [] } }
+    mount(runner, '/delivery/automations/backlog-runner')
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Products' })).not.toBeInTheDocument()
+    expect(screen.queryByText('No products yet.')).not.toBeInTheDocument()
+  })
 })

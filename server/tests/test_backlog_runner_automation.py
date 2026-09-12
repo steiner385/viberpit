@@ -130,6 +130,39 @@ def test_status_appends_a_line_per_product_with_dispatch_on():
     assert "\n" not in text
 
 
+def test_status_appends_bounced_count_and_publishes_products():
+    """D8: the card's per-product segment gains "N bounced" when the product has
+    any needs_spec skips, and ``AutomationStatus.products`` carries the same rows
+    (camelCase, spec §10) for the web's per-product table (Task 5)."""
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(
+        backlog_counts={"in_flight": 1, "eligible": 12, "blocked": 0},
+        backlog_products={
+            "kwgt-cairn": {"dispatch": "auto", "eligible": 12, "blocked": 0,
+                           "untriaged": 0, "in_flight": 1, "cap": 1, "bounced": 2},
+        })
+    status = BacklogRunner().status(ctx)
+    assert "kwgt-cairn: auto · 1/1 in flight · 12 eligible · 2 bounced" in status.text
+    assert status.products == [{"slug": "kwgt-cairn", "dispatch": "auto", "inFlight": 1,
+                                "cap": 1, "eligible": 12, "bounced": 2}]
+
+
+def test_status_omits_bounced_segment_when_zero():
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(
+        backlog_counts={"in_flight": 1, "eligible": 12, "blocked": 0},
+        backlog_products={
+            "kwgt-cairn": {"dispatch": "auto", "eligible": 12, "blocked": 0,
+                           "untriaged": 0, "in_flight": 1, "cap": 1, "bounced": 0},
+        })
+    text = BacklogRunner().status(ctx).text
+    assert "bounced" not in text
+
+
 def test_status_omits_products_with_dispatch_off():
     from types import SimpleNamespace
 
@@ -158,6 +191,10 @@ def test_status_says_so_when_no_product_has_dispatch_on():
     status = BacklogRunner().status(ctx)
     assert status.text == "idle — no product has dispatch on"
     assert status.level == "idle"
+    # ``[]`` — "this automation HAS products, none are on" — not ``None``, which
+    # is reserved for an automation with no concept of products (PR Doctor). The
+    # web renders the two differently (empty table vs no section at all).
+    assert status.products == []
 
 
 def test_status_says_unavailable_when_the_count_read_failed():

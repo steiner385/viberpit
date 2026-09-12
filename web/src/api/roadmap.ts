@@ -130,6 +130,13 @@ export interface Leaf {
   featureId: string | null
   sessionStatus: string | null
   ghCreatedAt: string | null
+  /** Why this leaf needs a human beyond its tier (product automation policy
+   *  §7), or null. `'needs_spec'` is the only value today — the body has
+   *  bounced `bounces` times at its current fingerprint without merging. */
+  reason: string | null
+  /** Finalised, non-merged dispatches at the CURRENT body fingerprint (D8);
+   *  0 when `reason` is null. */
+  bounces: number
 }
 
 /** Exactly one of the two, enforced by the server (422 `bad_scope`). */

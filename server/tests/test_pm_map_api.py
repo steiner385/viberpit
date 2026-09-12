@@ -302,3 +302,90 @@ def test_leaves_for_capability_and_initiative():
                          headers=IDENTITY_HEADERS).status_code == 422
             assert c.get("/api/pm/leaves?capability=nope", headers=IDENTITY_HEADERS).status_code == 404
             assert c.get("/api/pm/leaves?initiative=nope", headers=IDENTITY_HEADERS).status_code == 404
+
+
+def test_leaves_and_map_surface_needs_spec_bounces():
+    """D8: a product's `give_up_after_bounces` policy turns FINALISED non-merged
+    outcomes at an issue's CURRENT body into a `needs_spec` reason — on
+    /api/pm/leaves (tier/reason/bounces on the leaf) and rolled into /api/pm/map's
+    needsYou count. An outcome row for a STALE fingerprint (the body has since
+    been edited) never counts (spec §7/§8, D8; constitution VI: pm_tree.py never
+    re-compares the count itself)."""
+    import asyncio
+
+    from server.db import db_session, init_db
+    from server.db.models import DispatchOutcome, Feature, Project, ProjectRepo, WorkItem
+    from server.pm.outcomes import body_fingerprint
+
+    async def _seed(db_url: str) -> str:
+        await init_db(db_url)
+        async with db_session() as db:
+            prod = Project(slug="example-product", name="Example product",
+                           automation_policy={"give_up_after_bounces": 2})
+            db.add(prod)
+            await db.flush()
+            db.add(ProjectRepo(project_id=prod.id, repo="o/r", is_primary=True))
+            cap = Feature(project_id=prod.id, slug="dictation", title="Dictation", state="live")
+            db.add(cap)
+            await db.flush()
+            bounced = WorkItem(repo="o/r", number=1, kind="issue", state="open", title="Bounced",
+                               body="needs a spec", feature_id=cap.id, triage_state="classified")
+            stale = WorkItem(repo="o/r", number=2, kind="issue", state="open", title="Stale",
+                             body="edited since", feature_id=cap.id, triage_state="classified")
+            # Bounced the same number of times, but DONE: a resolved issue carries no
+            # reason (R3-12) — its tier already reads 'live'.
+            done = WorkItem(repo="o/r", number=3, kind="issue", state="closed", title="Done",
+                            body="shipped anyway", feature_id=cap.id, triage_state="classified")
+            db.add_all([bounced, stale, done])
+            await db.flush()
+            fp = body_fingerprint("Bounced", "needs a spec")
+            done_fp = body_fingerprint("Done", "shipped anyway")
+            db.add_all([
+                DispatchOutcome(target_ref="o/r#1", body_fingerprint=fp, outcome="no_pr"),
+                DispatchOutcome(target_ref="o/r#1", body_fingerprint=fp, outcome="no_pr"),
+                # A row for #2's OLD body — must not count against the current one.
+                DispatchOutcome(target_ref="o/r#2", body_fingerprint="stale-fp", outcome="no_pr"),
+                DispatchOutcome(target_ref="o/r#3", body_fingerprint=done_fp, outcome="no_pr"),
+                DispatchOutcome(target_ref="o/r#3", body_fingerprint=done_fp, outcome="no_pr"),
+            ])
+            await db.commit()
+            return cap.id
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        cap_id = asyncio.run(_seed(db_url))
+
+        with _client(db_url) as c:
+            leaves = c.get(f"/api/pm/leaves?capability={cap_id}", headers=IDENTITY_HEADERS)
+            assert leaves.status_code == 200, leaves.text
+            by_ref = {i["ref"]: i for i in leaves.json()["items"]}
+            assert by_ref["o/r#1"]["tier"] == "needs-you"
+            assert by_ref["o/r#1"]["reason"] == "needs_spec"
+            assert by_ref["o/r#1"]["bounces"] == 2
+            assert by_ref["o/r#2"]["reason"] is None
+            assert by_ref["o/r#2"]["bounces"] == 0
+            assert by_ref["o/r#2"]["tier"] == "idle"
+            # The closed leaf keeps its bounce COUNT (the history is real) but the
+            # reason is scrubbed, so the chip cannot contradict the 'live' tier.
+            assert by_ref["o/r#3"]["tier"] == "live"
+            assert by_ref["o/r#3"]["reason"] is None
+            assert by_ref["o/r#3"]["bounces"] == 2
+
+            r = c.get("/api/pm/map", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            products = {p["slug"]: p for p in r.json()["products"]}
+            dictation = products["example-product"]["capabilities"][0]
+            assert dictation["slug"] == "dictation"
+            assert dictation["counts"]["needsYou"] == 1
+
+
+def test_threshold_fallback_is_the_schema_default_for_both_handlers():
+    """Both handlers read the D8 threshold through ONE helper, so an item with no
+    owning product falls back to the POLICY SCHEMA's default rather than to a
+    hand-written literal (the two defaulted to 0 and 2 before — R3-12)."""
+    from server.api.pm_tree import _threshold_for
+    from server.automations.product_policy import PRODUCT_POLICY_SCHEMA
+
+    default = next(f.default for f in PRODUCT_POLICY_SCHEMA
+                   if f.key == "give_up_after_bounces")
+    assert _threshold_for(None) == default

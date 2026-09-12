@@ -41,9 +41,15 @@ class AutomationStatus:
     text: str
     level: str = "idle"  # idle | active | warn | error
     counts: dict | None = None
+    # Phase 3 (spec §9/§10): the runner's per-product rows for the web's
+    # per-product table (Task 5) — a NEW field, not folded into ``counts``,
+    # which stays int-only (the web types it ``Record<string, number>``). ``None``
+    # for every automation with no concept of products (e.g. PR Doctor).
+    products: list[dict] | None = None
 
     def to_dict(self) -> dict:
-        return {"text": self.text, "level": self.level, "counts": self.counts}
+        return {"text": self.text, "level": self.level, "counts": self.counts,
+                "products": self.products}
 
 
 @dataclass

@@ -10,15 +10,19 @@ from sqlalchemy import select, tuple_
 
 from server.api.sdlc import _capabilities_batch, _descendants, _progress_rolled_up
 from server.auth.middleware import current_identity
+from server.automations.product_policy import effective_policy
 from server.db import get_db
 from server.db.models import (
     Feature, FeatureLink, GhProjectItem, Initiative, Project, ProjectRepo,
     Session as DbSession, TriageItem, TriageProposal, WorkItem, WorkItemDep)
 from server.pm.desired_state import ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES
 from server.pm.map_changes import Pointer, open_pointer_rows
+from server.pm.outcomes import body_fingerprint, bounces_stmt, rows_to_bounces
 from server.pm.refs import split_ref
 from server.pm.score import rice_score
-from server.pm.tree import CapabilityIn, InitiativeIn, ProductIn, build_product_tree, derived_stage, issue_tier
+from server.pm.tree import (
+    CapabilityIn, InitiativeIn, ProductIn, build_product_tree, derived_stage, issue_reason,
+    issue_tier)
 
 router = APIRouter(prefix="/api/pm", tags=["pm"])
 
@@ -29,13 +33,28 @@ def _ref(w: WorkItem) -> str:
     return f"{w.repo}#{w.number}"
 
 
+def _threshold_for(project: Project | None) -> int:
+    """This product's D8 bounce threshold — the ONE reading both handlers use.
+
+    A missing product (an unowned feature, an initiative with no project) falls
+    back through ``effective_policy(None)`` to the SCHEMA's default, never to a
+    hand-written literal: the two handlers defaulted to 0 and 2 respectively
+    before, so the same orphan leaf could read bounced-out on one surface and
+    fine on the other."""
+    return int(effective_policy(project.automation_policy if project else None)
+               ["give_up_after_bounces"])
+
+
 async def _issue_facts(db, items: list[WorkItem]) -> tuple[
-        dict[str, bool], dict[str, str | None], dict[str, list[str]], dict[str, str | None]]:
+        dict[str, bool], dict[str, str | None], dict[str, list[str]], dict[str, str | None],
+        dict[str, int]]:
     """For each work item id: has an open blocker; the live session status if any;
-    the open blocker refs; the mirrored board Status if any. Blockers fail closed:
-    an unmirrored destination counts as open (spec 003 §10)."""
+    the open blocker refs; the mirrored board Status if any; the bounce count
+    against the CURRENT body (spec §7/§8, D8) — ONE ``bounces_stmt`` execution
+    over every item's ``(ref, fingerprint)`` pair, never one query per leaf.
+    Blockers fail closed: an unmirrored destination counts as open (spec 003 §10)."""
     if not items:
-        return {}, {}, {}, {}
+        return {}, {}, {}, {}, {}
     ids = [w.id for w in items]
     refs = [_ref(w) for w in items]
     deps = (await db.execute(select(WorkItemDep).where(
@@ -63,7 +82,11 @@ async def _issue_facts(db, items: list[WorkItem]) -> tuple[
     by_id_session = {w.id: session_by_ref.get(_ref(w)) for w in items}
     by_id_blockers = {w.id: blockers.get(_ref(w), []) for w in items}
     by_id_board_status = {w.id: board_status.get(w.id) for w in items}
-    return by_id_blocked, by_id_session, by_id_blockers, by_id_board_status
+    pairs = {_ref(w): body_fingerprint(w.title, w.body) for w in items}
+    bounce_rows = (await db.execute(bounces_stmt(pairs.items()))).all()
+    bounces_by_ref = rows_to_bounces(bounce_rows, pairs.items())
+    by_id_bounces = {w.id: bounces_by_ref.get(_ref(w), 0) for w in items}
+    return by_id_blocked, by_id_session, by_id_blockers, by_id_board_status, by_id_bounces
 
 
 @router.get("/map")
@@ -102,12 +125,21 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
         WorkItem.feature_id.in_(list(feat_by_id)), WorkItem.state == "open",
         WorkItem.kind == "issue"))).scalars().all() \
         if feat_by_id else []
-    blocked, session, _, board_status = await _issue_facts(db, open_items)
+    blocked, session, _, board_status, bounces = await _issue_facts(db, open_items)
+    # Threshold per product (D8): a feature belongs to exactly one project, so its
+    # issues bounce against THAT product's `give_up_after_bounces`, never a global one.
+    threshold_by_project = {p.id: _threshold_for(p) for p in projects}
+    default_threshold = _threshold_for(None)   # once, not per item
     tiers_by_feature: dict[str, list[str]] = {}
     for w in open_items:
+        feat = feat_by_id.get(w.feature_id)
+        threshold = (threshold_by_project.get(feat.project_id, default_threshold)
+                    if feat else default_threshold)
+        reason = issue_reason(state=w.state, bounces=bounces[w.id],
+                              give_up_after_bounces=threshold)
         tiers_by_feature.setdefault(w.feature_id, []).append(
             issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id],
-                      board_status[w.id]))
+                      board_status[w.id], reason=reason))
 
     initiatives = (await db.execute(select(Initiative).where(
         Initiative.project_id.in_(pids)).order_by(Initiative.created_at))).scalars().all()
@@ -190,7 +222,7 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
 
 
 def _leaf(w: WorkItem, tier: str, blockers: list[str], session_status: str | None,
-          parent_ref: str | None) -> dict:
+          parent_ref: str | None, *, reason: str | None = None, bounces: int = 0) -> dict:
     score = rice_score(w.reach, w.impact, w.effort, w.confidence)
     return {
         "id": w.id, "ref": _ref(w), "repo": w.repo, "number": w.number, "kind": w.kind,
@@ -199,6 +231,7 @@ def _leaf(w: WorkItem, tier: str, blockers: list[str], session_status: str | Non
         "confidence": w.confidence, "tier": tier, "blockedBy": blockers,
         "parentRef": parent_ref, "featureId": w.feature_id, "sessionStatus": session_status,
         "ghCreatedAt": w.gh_created_at.isoformat() if w.gh_created_at else None,
+        "reason": reason, "bounces": bounces,
     }
 
 
@@ -226,11 +259,13 @@ async def get_leaves(
         feat = (await db.execute(select(Feature).where(Feature.id == capability))).scalar_one_or_none()
         if feat is None:
             raise HTTPException(status_code=404, detail={"error": "not_found"})
+        project_id = feat.project_id
         items = (await db.execute(select(WorkItem).where(WorkItem.feature_id == feat.id))).scalars().all()
     else:
         ini = (await db.execute(select(Initiative).where(Initiative.slug == initiative))).scalar_one_or_none()
         if ini is None:
             raise HTTPException(status_code=404, detail={"error": "not_found"})
+        project_id = ini.project_id
         items = []
         descendants = await _descendants(db, [ini])
         if descendants:
@@ -257,13 +292,21 @@ async def get_leaves(
             if epic is not None:
                 items = (await db.execute(select(WorkItem).where(
                     WorkItem.parent_work_item_id == epic.id))).scalars().all()
-    blocked, session, blockers, board_status = await _issue_facts(db, items)
+    blocked, session, blockers, board_status, bounces = await _issue_facts(db, items)
+    project = (await db.execute(select(Project).where(
+        Project.id == project_id))).scalar_one_or_none() if project_id else None
+    threshold = _threshold_for(project)
     parent_ids = {w.parent_work_item_id for w in items if w.parent_work_item_id}
     parents = {p.id: _ref(p) for p in (await db.execute(select(WorkItem).where(
         WorkItem.id.in_(parent_ids)))).scalars().all()} if parent_ids else {}
-    leaves = [_leaf(w, issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id],
-                                  board_status[w.id]),
-                    blockers[w.id], session[w.id], parents.get(w.parent_work_item_id))
-              for w in items]
+    leaves = []
+    for w in items:
+        reason = issue_reason(state=w.state, bounces=bounces[w.id],
+                              give_up_after_bounces=threshold)
+        leaves.append(_leaf(
+            w, issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id],
+                         board_status[w.id], reason=reason),
+            blockers[w.id], session[w.id], parents.get(w.parent_work_item_id),
+            reason=reason, bounces=bounces[w.id]))
     leaves.sort(key=_leaf_sort_key)
     return {"items": leaves}

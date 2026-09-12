@@ -12,7 +12,7 @@ import { EmptyState } from '@/ui/EmptyState'
 import { Banner } from '@/ui/Banner'
 import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
-import { ISSUE } from '@/features/products/vocab'
+import { ISSUE, bouncedLabel, reasonLabel } from '@/features/products/vocab'
 import { issueUrl } from '@/lib/githubUrl'
 import { tierLabel } from '../roadmapTier'
 import { TierDot } from '../rows/TierDot'
@@ -83,6 +83,13 @@ function LeafRow({ leaf, capabilities }: { leaf: Leaf; capabilities: { node: Cap
         {/* The dot is decorative, so the tier is said in words for a screen
             reader — the same words the pills elsewhere use. */}
         <span className="sr-only">{tierLabel(leaf.tier)}</span>
+        {/* `data-testid` so the row's test can assert the chip is ABSENT as an
+            element: a text query cannot tell "no chip" from an empty pill. */}
+        {leaf.reason && (
+          <Badge tone="warning" data-testid="leaf-reason">
+            {leaf.reason === 'needs_spec' ? bouncedLabel(leaf.bounces) : reasonLabel(leaf.reason)}
+          </Badge>
+        )}
         {leaf.sessionStatus && <Badge tone="success">session</Badge>}
         {blockers > 0 && (
           <Badge tone="danger" count={blockers} aria-label={`${blockers} blocker${blockers === 1 ? '' : 's'}`} />

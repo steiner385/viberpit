@@ -260,6 +260,48 @@ export function fetchProjectHealth(slug: string): Promise<ProjectHealth> {
   return api.get<ProjectHealth>(`/pm/projects/${encodeURIComponent(slug)}/health`)
 }
 
+// --- dispatch outcome history (spec §6/§7; server contract `server/pm/outcomes.py`,
+// `server/api/pm.py:get_work_item_outcomes`) ---
+
+// Mirrors `server/db/models.py:DISPATCH_OUTCOMES` — `superseded` is a dispatch a
+// newer one replaced before it could answer (never counted as a bounce).
+export const DISPATCH_OUTCOMES = [
+  'running', 'merged', 'no_pr', 'pr_gave_up', 'needs_human', 'reverted', 'abandoned',
+  'superseded',
+] as const
+export type DispatchOutcomeKind = (typeof DISPATCH_OUTCOMES)[number]
+
+/** One Backlog Runner dispatch of one issue — the history behind the roadmap's
+ *  "bounced N× — needs spec" chip (D8). */
+export interface DispatchOutcome {
+  id: string
+  targetRef: string
+  projectId: string | null
+  sessionId: string | null
+  model: string | null
+  attemptNo: number | null
+  outcome: DispatchOutcomeKind | string
+  cause: string | null
+  prNumber: number | null
+  prUrl: string | null
+  /** Whether PR Doctor never had to recover this PR — `null` when its attempt
+   *  count was unknown at the moment the runner's sweep saw the merge (never
+   *  guessed, spec §6). */
+  firstPassMerge: boolean | null
+  bodyFingerprint: string | null
+  startedAt: string | null
+  endedAt: string | null
+  durationS: number | null
+  createdAt: string | null
+}
+
+/** Every dispatch a work item has had, newest first. */
+export async function fetchOutcomes(workItemId: string): Promise<DispatchOutcome[]> {
+  const res = await api.get<{ items: DispatchOutcome[] }>(
+    `/pm/work-items/${encodeURIComponent(workItemId)}/outcomes`)
+  return res.items
+}
+
 export interface RemoveDependencyInput { workItemId: string; blocker: string }
 export interface RemoveDependencyResult { ok: boolean; src: string; blocker: string }
 

@@ -7,8 +7,11 @@
  * the automation's name.
  */
 import { useState } from 'react'
-import type { Automation } from '@/api/automations'
+import { Link } from 'react-router-dom'
+import type { Automation, AutomationStatusProduct } from '@/api/automations'
 import { AUTOMATION_TAB, AUTOMATION_TABS, type AutomationTab } from '@/features/products/vocab'
+import { CheckTable, type Column } from '@/features/delivery/ci/CheckTable'
+import { productPath } from '@/features/roadmap/roadmapNavState'
 import { useSearchParamState } from '@/lib/useSearchParamState'
 import { Button } from '@/ui/Button'
 import { Tabs } from '@/ui/Tabs'
@@ -20,6 +23,14 @@ import { EventsList } from './EventsList'
 import { ManualDispatchDialog } from './ManualDispatchDialog'
 import { SchedulePanel } from './SchedulePanel'
 import { SessionsList } from './SessionsList'
+
+const PRODUCT_COLUMNS: Column<AutomationStatusProduct>[] = [
+  { header: 'Product', cell: (p) => <Link to={productPath(p.slug)} className="text-ink hover:underline">{p.slug}</Link> },
+  { header: 'Dispatch', cell: (p) => p.dispatch },
+  { header: 'In flight', cell: (p) => `${p.inFlight}/${p.cap}` },
+  { header: 'Eligible', cell: (p) => p.eligible },
+  { header: 'Bounced', cell: (p) => p.bounced },
+]
 
 export function AutomationDetail({ automation: a, onOpenSession }: {
   automation: Automation
@@ -49,6 +60,14 @@ export function AutomationDetail({ automation: a, onOpenSession }: {
                 header carries them (R9), where they stay visible on every tab
                 rather than only on this one. */}
             <AutomationActions automationId={a.id} enabled />
+            {a.status.products && a.status.products.length > 0 && (
+              <CheckTable<AutomationStatusProduct>
+                title="Products"
+                columns={PRODUCT_COLUMNS}
+                rows={a.status.products}
+                empty="No products yet."
+              />
+            )}
             {a.id === 'pr-doctor' && <ConsolidatePanel enabled onOpenSession={onOpenSession} />}
             {a.id === 'backlog-runner' && (
               <>

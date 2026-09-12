@@ -22,6 +22,7 @@ def _orch_with_ctx():
     from server.automations.context import AutomationContext
     orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
     orch._backlog_ctx = AutomationContext("backlog-runner")
+    orch._pr_doctor_ctx = AutomationContext("pr-doctor")
     orch._backlog_last_queue = []
     orch._backlog_last_policies = {}
     orch._backlog_last_repos = {}
@@ -420,12 +421,13 @@ def test_seed_writes_policies_for_the_owning_products_of_enabled_repos(tmp_path)
 
         policies = await _policies()
         alpha, stamp = policies["alpha"]
-        # ``triage_auto_accept`` is stored at its default: the legacy runner config
-        # never had a triage knob, so the seed cannot invent an opt-in for one.
+        # ``triage_auto_accept`` and ``give_up_after_bounces`` are stored at their
+        # defaults: the legacy runner config never had a triage knob or a bounce
+        # threshold, so the seed cannot invent a setting for either.
         assert alpha == {"dispatch": "auto", "queue_min_status": "Backlog",
                          "max_in_flight": 4, "weight": 3, "max_attempts": 5,
-                         "default_model": "opus", "respect_dependencies": False,
-                         "triage_auto_accept": "off"}
+                         "give_up_after_bounces": 2, "default_model": "opus",
+                         "respect_dependencies": False, "triage_auto_accept": "off"}
         assert stamp is not None
         beta, _ = policies["beta"]
         assert beta["max_in_flight"] == 1 and beta["weight"] == 1   # unlisted → 1
@@ -758,5 +760,192 @@ def test_seed_once_normalises_a_legacy_mode_even_after_a_post_flip_config_save(t
             row = (await db.execute(select(Automation).where(
                 Automation.id == "backlog-runner"))).scalar_one()
             assert row.mode == "on"
+
+    asyncio.run(run())
+
+
+def test_pr_doctor_attempts_seam_reads_the_total_off_the_doctors_row(tmp_path):
+    """``first_pass_merge`` hangs off this seam (spec §6, R3-4/R3-7): it answers
+    how much recovery PR Doctor injected into a PR — session fixes AND mechanical
+    ones — and ``None`` whenever that is UNKNOWN (a target it never tracked, or
+    one whose row it already cleared at terminal).
+
+    Two halves, both load-bearing:
+    * UNKNOWN must never collapse to 0 — that would brand every late-swept merge
+      a first-pass merge;
+    * a TRACKED row the doctor never had to act on IS a real zero, even though
+      neither counter exists yet: the counters only ever appear at 1 (see
+      ``pr_doctor_engine.record_attempt``), so keying "unknown" on a missing
+      ``total_attempts`` made ``first_pass_merge`` unreachable in production."""
+    async def run():
+        await _init(tmp_path, "prdoc_attempts.db")
+        orch = _orch_with_ctx()
+
+        # The monotonic, re-arm-immune totals — not the per-head ``attempts``.
+        await orch._pr_doctor_ctx.set_target_state(
+            "o/r#12", {"total_attempts": 2, "attempts": 1})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#12") == 2
+
+        # A tracked PR PR Doctor never had to act on: a real, known zero.
+        await orch._pr_doctor_ctx.set_target_state(
+            "o/r#13", {"total_attempts": 0, "last_head_sha": "abc"})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#13") == 0
+
+        # Tracked, never acted on, and the counters were never written at all
+        # (the production shape of a clean PR) — still a known zero.
+        await orch._pr_doctor_ctx.set_target_state("o/r#15", {"last_head_sha": "x"})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#15") == 0
+
+        # Either counter alone counts: first-pass means NO doctor recovery of any
+        # kind, so a merge carried home by mechanical-only fixes is not one.
+        await orch._pr_doctor_ctx.set_target_state("o/r#16", {"total_attempts": 1})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#16") == 1
+        await orch._pr_doctor_ctx.set_target_state("o/r#17", {"total_mechanical": 2})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#17") == 2
+        await orch._pr_doctor_ctx.set_target_state(
+            "o/r#18", {"total_attempts": 1, "total_mechanical": 2})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#18") == 3
+
+        # No row at all → unknown.
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#404") is None
+
+        # A CLEARED row (``set_target_state(target, {})`` at terminal) → unknown.
+        await orch._pr_doctor_ctx.set_target_state("o/r#14", {})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#14") is None
+
+    asyncio.run(run())
+
+
+def test_the_seam_counts_the_lifetime_totals_that_outlive_a_recovery_clear(tmp_path):
+    """R3-10: the doctor's ``total_*`` ceiling is deliberately reset when CI
+    recovers (a green PR earns a fresh budget), so ``total_*`` alone cannot answer
+    "did the doctor ever act on this PR". The recovery clear carries the counts
+    forward under ``lifetime_*``, which the ENGINE never reads — the seam sums all
+    four, so a doctored PR reads ≥1 no matter how many recoveries it went through.
+    An empty row is still UNKNOWN: the carry writes ``{}`` when there is nothing
+    to carry, so ``{}`` still means "the doctor's row says nothing"."""
+    async def run():
+        await _init(tmp_path, "prdoc_lifetime.db")
+        orch = _orch_with_ctx()
+
+        # Post-recovery-clear shape: only the lifetime counters remain.
+        await orch._pr_doctor_ctx.set_target_state(
+            "o/r#20", {"lifetime_attempts": 2, "lifetime_mechanical": 0})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#20") == 2
+        await orch._pr_doctor_ctx.set_target_state(
+            "o/r#21", {"lifetime_attempts": 0, "lifetime_mechanical": 1})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#21") == 1
+
+        # Recovered once, then doctored again: both halves count, never double.
+        await orch._pr_doctor_ctx.set_target_state("o/r#22", {
+            "lifetime_attempts": 2, "lifetime_mechanical": 1,
+            "total_attempts": 1, "total_mechanical": 1, "attempts": 0})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#22") == 5
+
+        # A row carrying explicit zeros is still a known zero, not unknown.
+        await orch._pr_doctor_ctx.set_target_state(
+            "o/r#23", {"lifetime_attempts": 0, "lifetime_mechanical": 0,
+                       "last_head_sha": "abc"})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#23") == 0
+
+    asyncio.run(run())
+
+
+def test_the_recovery_carry_keeps_the_counts_and_drops_the_give_up_ceiling(tmp_path):
+    """The pure half of the clear (``_pr_doctor_lifetime_carry``). Two invariants:
+
+    * the engine's give-up keys (``total_attempts`` / ``total_mechanical``,
+      ``attempts``, ``attempted``, ``gave_up``, ``last_*``) are NOT carried — the
+      clear must still hand a recovered PR a fresh budget, exactly as before;
+    * a target the doctor never acted on carries nothing, so its clear is still a
+      byte-for-byte ``{}`` and the seam still answers UNKNOWN for it.
+    """
+    orch = _orch_with_ctx()
+    carry = orch._pr_doctor_lifetime_carry
+
+    assert carry({}) == {}
+    assert carry({"last_head_sha": "abc", "attempts": 0}) == {}
+    assert carry({"attempted": True, "attempts": 1, "total_attempts": 1,
+                  "last_action_sha": "sha1", "gave_up": False}) == {
+        "lifetime_attempts": 1, "lifetime_mechanical": 0}
+    assert carry({"total_mechanical": 2}) == {
+        "lifetime_attempts": 0, "lifetime_mechanical": 2}
+    # Cumulative across repeated recoveries.
+    assert carry({"lifetime_attempts": 2, "lifetime_mechanical": 1,
+                  "total_attempts": 1, "total_mechanical": 3}) == {
+        "lifetime_attempts": 3, "lifetime_mechanical": 4}
+    # A garbage value from an old row degrades to 0 — the clear must never raise
+    # inside the PR poller's transition callback.
+    assert carry({"total_attempts": "x", "total_mechanical": None}) == {}
+
+
+def test_both_tap_spawn_paths_record_a_running_outcome(tmp_path):
+    """The propose tap and manual dispatch are dispatches too (spec §6): each
+    leaves the same ``running`` row the loop's auto path writes, carrying the
+    product's model and the claim's attempt count. Only the claim WITHOUT a spawn
+    (the loop's propose branch) records nothing."""
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from server.automations.product_policy import effective_policy
+    from server.db.models import DispatchOutcome
+
+    async def run():
+        await _init(tmp_path, "tap_outcomes.db")
+        await _seed_product("widget", "o/r")
+        await _seed_item("o/r", 1)
+        await _seed_item("o/r", 2)
+        orch = _orch_with_ctx()
+
+        async def read_config():
+            return "on", _config()
+        orch._backlog_read_config = read_config
+
+        async def query_queue(_config, **_kw):
+            return [{"ref": "o/r#1", "repo": "o/r", "title": "one",
+                     "product": "widget"},
+                    {"ref": "o/r#2", "repo": "o/r", "title": "two",
+                     "product": "widget"}]
+        orch._backlog_query_queue = query_queue
+
+        async def load_policies():
+            return {"widget": effective_policy({"dispatch": "auto",
+                                                "default_model": "opus"})}
+        orch._backlog_load_policies = load_policies
+
+        async def announce(_batch):
+            return None
+        orch._backlog_announce = announce
+
+        async def account_for(_ctx, _ref):
+            return "acct"
+        orch._automation_account_for = account_for
+
+        spawned: list = []
+
+        async def spawn(batch, account, *, default_model):
+            spawned.append((batch.primary, account, default_model))
+            return SimpleNamespace(id=f"sess-{len(spawned)}", branch="b")
+        orch._backlog_spawn = spawn
+
+        # The claim the tap spawns for already carries one spent attempt.
+        await orch._backlog_ctx.set_target_state("o/r#1", {
+            "repo": "o/r", "product": "widget", "attempts": 1,
+            "issues": ["o/r#1"], "claimed": True, "proposed": True})
+
+        assert await orch.backlog_runner_implement_core("o/r#1") == "spawned"
+        assert (await orch.backlog_runner_dispatch(["o/r#2"]))["status"] == "spawned"
+
+        async with db_session() as db:
+            rows = {r.target_ref: r for r in (await db.execute(
+                select(DispatchOutcome))).scalars().all()}
+        assert set(rows) == {"o/r#1", "o/r#2"}
+        tapped, dispatched = rows["o/r#1"], rows["o/r#2"]
+        assert tapped.outcome == "running" and tapped.session_id == "sess-1"
+        assert tapped.model == "opus" and tapped.attempt_no == 1
+        assert tapped.project_id is not None and tapped.body_fingerprint is not None
+        assert dispatched.outcome == "running" and dispatched.session_id == "sess-2"
+        assert dispatched.model == "opus" and dispatched.attempt_no == 0
 
     asyncio.run(run())

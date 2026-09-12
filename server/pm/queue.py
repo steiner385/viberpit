@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from .desired_state import STATUS_BACKLOG, STATUS_BLOCKED, STATUS_OPTIONS, STATUS_READY
+from .outcomes import bounced_out
 
 # How long an escalated issue waits for a human before the runner reconsiders it.
 # Escalation stamps ``needs_human_at`` on the runner's row; the runner deletes the
@@ -32,7 +33,7 @@ SKIP_ISSUE_LABELS = frozenset({"dependencies", "renovate"})
 SKIP_ISSUE_TITLES = frozenset({"dependency dashboard"})
 
 SKIP_REASONS = ("status", "blocked", "live_session", "claimed", "assigned", "epic_open", "bot",
-                 "needs_human_cooldown")
+                 "needs_human_cooldown", "needs_spec")
 
 # The only two ``min_status`` values the queue accepts today (C1 will feed this from
 # stored runner config). Explicit rather than derived from a slice of STATUS_OPTIONS
@@ -72,6 +73,13 @@ class QueueRow:
     # a human. Defaulted so every caller that has no runner state (the API's
     # queue view) keeps constructing rows positionally.
     needs_human_at: datetime | None = None
+    # D8: how many FINALISED (non-``running``/``merged``) dispatches this exact
+    # body (by ``body_fingerprint``) has already had — the loader
+    # (``queue_store.load_queue_rows``) computes it, ``skip_reason`` compares it
+    # against the product's ``give_up_after_bounces``. Defaulted 0 (never
+    # bounced) so a caller with no outcome history keeps constructing rows
+    # positionally.
+    bounces: int = 0
 
 
 @dataclass(frozen=True)
@@ -114,6 +122,7 @@ def skip_reason(
     respect_dependencies: bool,
     needs_human_retry_days: int,
     now: datetime,
+    give_up_after_bounces: int = 0,
 ) -> str | None:
     """Decision C-2: a row whose board Status is ``None`` (never stamped by the
     reconciler) or outside the spec vocabulary (e.g. GitHub's default "Todo" column)
@@ -129,6 +138,10 @@ def skip_reason(
             needs_human_retry_days <= 0
             or now - row.needs_human_at < timedelta(days=needs_human_retry_days)):
         return "needs_human_cooldown"
+    # D8: this body has already bounced enough — a spec edit (which changes the
+    # fingerprint the count is keyed on) is what re-arms it, not time.
+    if bounced_out(row.bounces, give_up_after_bounces):
+        return "needs_spec"
     status = row.status if row.status in STATUS_OPTIONS else STATUS_BACKLOG
     if status not in (STATUS_BACKLOG, STATUS_READY, STATUS_BLOCKED):
         return "status"  # Done / In progress / Needs human
@@ -177,6 +190,7 @@ def rank(
     respect_dependencies: bool = True,
     needs_human_retry_days: int = NEEDS_HUMAN_RETRY_DAYS_DEFAULT,
     now: datetime,
+    give_up_after_bounces: int = 0,
 ) -> tuple[list[QueueEntry], dict[str, int]]:
     kept: list[QueueRow] = []
     skipped: dict[str, int] = {}
@@ -187,6 +201,7 @@ def rank(
             respect_dependencies=respect_dependencies,
             needs_human_retry_days=needs_human_retry_days,
             now=now,
+            give_up_after_bounces=give_up_after_bounces,
         )
         if why:
             skipped[why] = skipped.get(why, 0) + 1

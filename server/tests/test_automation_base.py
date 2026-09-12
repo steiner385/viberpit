@@ -103,4 +103,5 @@ def test_repo_number_map_rejects_bool_value():
 def test_status_to_dict():
     from server.automations.base import AutomationStatus
     s = AutomationStatus(text="watching 3 PRs", level="active", counts={"failing": 3})
-    assert s.to_dict() == {"text": "watching 3 PRs", "level": "active", "counts": {"failing": 3}}
+    assert s.to_dict() == {"text": "watching 3 PRs", "level": "active", "counts": {"failing": 3},
+                           "products": None}

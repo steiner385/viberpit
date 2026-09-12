@@ -1006,6 +1006,7 @@ class SessionOrchestrator:
             healthy_account=self._backlog_loop_healthy_account,
             pr_status_for=self._backlog_pr_status_for,
             pr_doctor_active=self._backlog_pr_doctor_active,
+            pr_doctor_attempts_for=self._backlog_pr_doctor_attempts_for,
             read_config=self._backlog_read_config,
             read_policies=self._backlog_load_policies,
             seed_policies=self._backlog_seed_policies_once,
@@ -5133,6 +5134,78 @@ class SessionOrchestrator:
             log.debug("backlog_runner.pr_doctor_active_failed", exc_info=True)
             return False
 
+    @staticmethod
+    def _pr_doctor_lifetime_carry(state: dict) -> dict:
+        """What PR Doctor's RECOVERY clear leaves behind — the lifetime counts.
+
+        The clear (``_on_pr_change``, CI back to green after an attempt) must keep
+        resetting the engine's give-up ceiling: ``plan_recovery`` keys give-up on
+        ``total_attempts`` / ``total_mechanical``, and a PR whose CI recovered has
+        earned a fresh budget. But after that reset NOTHING remembers that the
+        doctor ever acted, and ``first_pass_merge`` is exactly that question
+        (R3-10) — every successful session fix ends in a failing→passing
+        transition, so the wipe hit the metric in precisely the case it exists to
+        detect.
+
+        So the counts are carried forward under ``lifetime_*`` keys, which:
+        * the ENGINE NEVER READS (give-up is unaffected — proven by PR Doctor's
+          own suite passing untouched), and
+        * ``apply_rearm`` / ``record_attempt`` preserve through every later cycle
+          (both copy the whole dict, so unknown keys survive).
+
+        ``{}`` when there is nothing to carry, so a target the doctor only ever
+        WATCHED clears byte-for-byte as it did before and the seam below still
+        answers UNKNOWN for it rather than inventing a zero."""
+        def _n(key: str) -> int:
+            try:
+                return int(state.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                return 0  # a garbage value must never raise inside the poller
+
+        carry = {"lifetime_attempts": _n("lifetime_attempts") + _n("total_attempts"),
+                 "lifetime_mechanical": _n("lifetime_mechanical") + _n("total_mechanical")}
+        if not (carry["lifetime_attempts"] or carry["lifetime_mechanical"]):
+            return {}
+        return carry
+
+    async def _backlog_pr_doctor_attempts_for(self, pr_ref: str) -> int | None:
+        """How much recovery PR Doctor injected into *pr_ref* (``repo#N``), or
+        None when that is UNKNOWN.
+
+        Read off PR Doctor's own per-target state: ``total_attempts`` (session
+        fixes) + ``total_mechanical`` (mechanical injections) are its monotonic,
+        re-arm-immune counters (``pr_doctor_engine.record_attempt``), and
+        ``lifetime_attempts`` / ``lifetime_mechanical`` are the same counts
+        carried across a recovery clear by ``_pr_doctor_lifetime_carry`` (the
+        ``total_*`` pair is deliberately reset there, so it alone under-reports a
+        doctor-rescued PR — R3-10). All four count, and they never overlap: the
+        carry moves ``total_*`` into ``lifetime_*`` and zeroes the source.
+
+        BOTH KINDS count — the runner turns this into ``first_pass_merge``, and a
+        first pass means no doctor recovery of ANY kind, so a merge carried home
+        by mechanical-only fixes is not one (R3-7).
+
+        The UNKNOWN test is the STATE ROW, not the counters: ``record_attempt``
+        only ever writes a counter starting at 1, so a tracked PR the doctor never
+        had to act on carries none of the keys and is a real, known zero. (Keying
+        unknown on a missing ``total_attempts`` made ``first_pass_merge is True``
+        unreachable in production.) An empty dict — no row at all, or one the
+        doctor already cleared at terminal (``set_target_state(target, {})``) — and
+        a failed read both answer None; UNKNOWN must never collapse to 0."""
+        try:
+            st = await self._pr_doctor_ctx.get_target_state(pr_ref)
+        except Exception:
+            log.debug("backlog_runner.pr_doctor_attempts_failed", exc_info=True)
+            return None
+        if not st:
+            return None
+        try:
+            return (int(st.get("total_attempts", 0)) + int(st.get("total_mechanical", 0))
+                    + int(st.get("lifetime_attempts", 0))
+                    + int(st.get("lifetime_mechanical", 0)))
+        except (TypeError, ValueError):
+            return None
+
     async def _backlog_query_queue(self, config: dict, *,
                                    skipped_out: dict | None = None,
                                    products_out: dict | None = None) -> list[dict]:
@@ -5221,7 +5294,9 @@ class SessionOrchestrator:
                 # The needs-human cooldown stays runner-wide: it is the runner's
                 # own give-up window, not a property of the product's board.
                 needs_human_retry_days=retry_days,
-                now=now)
+                now=now,
+                # D8: THE bounce threshold, from this product's own policy.
+                give_up_after_bounces=int(policy["give_up_after_bounces"]))
             entries.extend(entries_p)
             for reason, n in skipped_p.items():
                 skipped[reason] = skipped.get(reason, 0) + n
@@ -5231,6 +5306,7 @@ class SessionOrchestrator:
                     "eligible": len(entries_p),
                     "blocked": skipped_p.get("blocked", 0),
                     "untriaged": skipped_p.get("status", 0),
+                    "bounced": skipped_p.get("needs_spec", 0),
                 }
         # Merge the per-product rankings into one pool with ``rank``'s OWN key, not
         # a copy of its first two legs: ranking per product and re-sorting on score
@@ -5884,9 +5960,8 @@ class SessionOrchestrator:
         account = await self._automation_account_for(self._backlog_ctx, primary)
         if account is None:
             return "no_account"
-        rec = await self._backlog_spawn(
-            batch, account,
-            default_model=await self._backlog_policy_model(batch.product))
+        model = await self._backlog_policy_model(batch.product)
+        rec = await self._backlog_spawn(batch, account, default_model=model)
         if rec is None:
             # REFUSED before anything was created (engine policy, or an
             # engine/permission-mode pair that could not open a PR). Reporting
@@ -5895,6 +5970,18 @@ class SessionOrchestrator:
             # say so; the spawn path already recorded the reason.
             await self._backlog_ctx.delete_target_state(primary)
             return "refused"
+        # A tap IS a dispatch, so it leaves the same ``running`` outcome row the
+        # loop's auto path writes (spec §6) — same place in the sequence: after a
+        # successful spawn, before the claim row is finalised. ``attempt_no`` comes
+        # off the claim this tap is spawning for.
+        try:
+            await self._backlog_ctx.record_outcome(
+                primary, product_slug=batch.product,
+                session_id=getattr(rec, "id", None),
+                model=getattr(rec, "model", None) or model,
+                attempt_no=st.get("attempts", 0))
+        except Exception:  # history is best-effort (spec §13); the claim write below must run
+            log.warning("backlog_runner.tap_record_outcome_failed target=%s", primary, exc_info=True)
         # A de-dup hit returns the existing row without appending to spawns; treat
         # a matching origin_ref that already existed as "exists".
         await self._backlog_ctx.set_target_state(primary, {
@@ -5966,12 +6053,21 @@ class SessionOrchestrator:
         if account is None:
             return {"status": "no_account", "session_id": None,
                     "session_name": None}
-        rec = await self._backlog_spawn(
-            batch, account,
-            default_model=await self._backlog_policy_model(batch.product))
+        model = await self._backlog_policy_model(batch.product)
+        rec = await self._backlog_spawn(batch, account, default_model=model)
         if rec is None:
             await self._backlog_ctx.delete_target_state(primary)
             return {"status": "refused", "session_id": None, "session_name": None}
+        # Manual dispatch is a dispatch too — same ``running`` row, same position
+        # (after the spawn, before the claim row is finalised).
+        try:
+            await self._backlog_ctx.record_outcome(
+                primary, product_slug=batch.product,
+                session_id=getattr(rec, "id", None),
+                model=getattr(rec, "model", None) or model,
+                attempt_no=st.get("attempts", 0))
+        except Exception:  # history is best-effort (spec §13); the claim write below must run
+            log.warning("backlog_runner.tap_record_outcome_failed target=%s", primary, exc_info=True)
         await self._backlog_ctx.set_target_state(primary, {
             "session_id": getattr(rec, "id", None),
             "repo": batch.repo,
@@ -9596,10 +9692,15 @@ class SessionOrchestrator:
                     # Any recorded attempt (session-fix or mechanical) means we
                     # tried and CI is now green → clear the per-target state so a
                     # fresh break re-attempts. ``attempted`` kept for back-compat
-                    # with rows written before the engine migration.
+                    # with rows written before the engine migration. The clear
+                    # keeps ONLY the seam-only lifetime counts (R3-10): the
+                    # give-up ceiling is still reset, but the fact that the doctor
+                    # acted has to outlive the wipe or every doctor-rescued merge
+                    # reads as a first-pass merge.
                     if (state.get("attempted") or state.get("attempts")
                             or state.get("mechanical_attempts")):
-                        await self._pr_doctor_ctx.set_target_state(target, {})
+                        await self._pr_doctor_ctx.set_target_state(
+                            target, self._pr_doctor_lifetime_carry(state))
                         await self._pr_doctor_ctx.emit(
                             "info", f"{repo}#{info.number} CI recovered",
                             kind="recovered", target=target)
@@ -9725,10 +9826,17 @@ class SessionOrchestrator:
         config = await self._pr_doctor_config()
         await self._bump_automation_active("pr-doctor")
 
-        # Terminal (merged/closed): clear per-target state and stop.
+        # Terminal (merged/closed): clear per-target state and stop. Same carry as
+        # the recovery clear (R3-11) — this wipe lands on a MERGED PR, the exact
+        # row ``_backlog_pr_doctor_attempts_for`` reads to answer whether the
+        # doctor ever acted, so dropping the counts here turns a doctor-rescued
+        # merge's ``first_pass_merge`` into UNKNOWN. The engine reads none of the
+        # ``lifetime_*`` keys, so nothing about terminal behaviour changes.
         if engine.target_terminal(info):
             target = f"{repo}#{info.number}"
-            await self._pr_doctor_ctx.set_target_state(target, {})
+            terminal_st = await self._pr_doctor_ctx.get_target_state(target)
+            await self._pr_doctor_ctx.set_target_state(
+                target, self._pr_doctor_lifetime_carry(terminal_st))
             await self._pr_doctor_ctx.emit(
                 "info", f"{target} {info.state}", kind="terminal", target=target)
             return False

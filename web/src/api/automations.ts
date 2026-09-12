@@ -1,10 +1,24 @@
 import { api } from './client'
 import type { WorkClass } from './types'
 
+/** One product's Backlog Runner numbers (spec §9/§10) — a status-card detail,
+ *  not folded into `counts`, whose web type stays int-only. */
+export interface AutomationStatusProduct {
+  slug: string
+  dispatch: string
+  inFlight: number
+  cap: number
+  eligible: number
+  bounced: number
+}
+
 export interface AutomationStatus {
   text: string
   level: 'idle' | 'active' | 'warn' | 'error'
   counts: Record<string, number> | null
+  /** Per-product Backlog Runner detail (spec §9), or null/absent for an
+   *  automation with no per-product policy (every automation but the runner). */
+  products?: AutomationStatusProduct[] | null
 }
 
 export interface ConfigField {
