@@ -1,4 +1,4 @@
-// web/src/components/ConsolidatePanel.test.tsx
+// web/src/features/delivery/automation/ConsolidatePanel.test.tsx
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { ConsolidatePanel } from './ConsolidatePanel'

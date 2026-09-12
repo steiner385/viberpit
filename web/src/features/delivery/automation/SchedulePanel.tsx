@@ -6,7 +6,7 @@
  */
 import type { Automation } from '@/api/automations'
 import { usePatchAutomation } from '@/api/hooks'
-import { ScheduleEditor } from '@/components/ScheduleEditor'
+import { ScheduleEditor } from './ScheduleEditor'
 
 export function SchedulePanel({ automation: a }: { automation: Automation }) {
   const patch = usePatchAutomation()

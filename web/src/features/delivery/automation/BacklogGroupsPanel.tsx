@@ -37,7 +37,7 @@ function GroupRow({
           </a>
         ))}
         {group.consumedAt ? (
-          <span className="ml-auto rounded bg-blue-100 dark:bg-blue-900/40 px-1 text-xs text-blue-700 dark:text-blue-300 shrink-0">
+          <span className="ml-auto rounded bg-accent-wash px-1 text-xs text-accent shrink-0">
             picked up
           </span>
         ) : (
@@ -45,7 +45,7 @@ function GroupRow({
             type="button"
             onClick={onDispatch}
             disabled={isDispatching}
-            className="ml-auto rounded bg-blue-600 px-2 py-0.5 text-xs text-white hover:bg-blue-700 disabled:opacity-40 shrink-0"
+            className="ml-auto rounded bg-accent px-2 py-0.5 text-xs text-accent-ink hover:bg-accent/90 disabled:opacity-40 shrink-0"
           >
             {isDispatching ? 'Dispatching…' : 'Dispatch'}
           </button>

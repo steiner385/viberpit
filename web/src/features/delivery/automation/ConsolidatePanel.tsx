@@ -5,15 +5,15 @@ import type { ActiveConsolidation, ConsolidationCandidate, ConsolidationCluster 
 type OutcomeLevel = 'ok' | 'warn' | 'error'
 
 const OUTCOME_TONE: Record<OutcomeLevel, string> = {
-  ok: 'text-neutral-300',
-  warn: 'text-amber-300',
-  error: 'text-red-300',
+  ok: 'text-ink',
+  warn: 'text-warning',
+  error: 'text-danger',
 }
 
 function ciDot(checks: string): string {
-  if (checks === 'passing') return 'bg-green-500'
-  if (checks === 'failing') return 'bg-red-500'
-  return 'bg-amber-500'
+  if (checks === 'passing') return 'bg-success'
+  if (checks === 'failing') return 'bg-danger'
+  return 'bg-warning'
 }
 
 export function ConsolidatePanel({ enabled, onOpenSession }: {
@@ -75,8 +75,8 @@ export function ConsolidatePanel({ enabled, onOpenSession }: {
   if (!group.candidates.length) return null
 
   return (
-    <div className="mt-3 border-t border-neutral-800 pt-3">
-      <div className="mb-2 text-xs font-medium text-neutral-400">
+    <div className="mt-3 border-t border-edge pt-3">
+      <div className="mb-2 text-xs font-medium text-ink-muted">
         Consolidate PRs · {repo}
       </div>
 
@@ -89,8 +89,8 @@ export function ConsolidatePanel({ enabled, onOpenSession }: {
               onClick={() => selectCluster(cl)}
               className={`rounded-full px-3 py-1 text-xs ${
                 cl.risk === 'risky'
-                  ? 'bg-red-950 text-red-300 hover:bg-red-900'
-                  : 'bg-neutral-800 text-neutral-200 hover:bg-neutral-700'
+                  ? 'bg-danger-wash text-danger hover:bg-danger-wash/90'
+                  : 'bg-surface-raised text-ink hover:bg-surface-raised/90'
               }`}
             >
               {cl.numbers.length} PRs · {cl.rationale}
@@ -113,14 +113,14 @@ export function ConsolidatePanel({ enabled, onOpenSession }: {
               #{c.number} {c.title}
             </a>
             {c.mergeable === 'CONFLICTING' && (
-              <span className="rounded bg-red-950 px-1 text-xs text-red-300">conflict</span>
+              <span className="rounded bg-danger-wash px-1 text-xs text-danger">conflict</span>
             )}
             {underway.has(c.number) && (
               <button
                 type="button"
                 aria-label={`consolidation underway for PR ${c.number} — open session`}
                 onClick={() => onOpenSession?.(underway.get(c.number)!)}
-                className="rounded bg-amber-950 px-1 text-xs text-amber-300 hover:bg-amber-900 shrink-0"
+                className="rounded bg-warning-wash px-1 text-xs text-warning hover:bg-warning-wash/90 shrink-0"
               >
                 consolidating…
               </button>
@@ -133,7 +133,7 @@ export function ConsolidatePanel({ enabled, onOpenSession }: {
         type="button"
         onClick={run}
         disabled={!canConsolidate}
-        className="rounded bg-blue-600 px-3 py-1 text-sm text-white disabled:opacity-40"
+        className="rounded bg-accent px-3 py-1 text-sm text-accent-ink disabled:opacity-40"
       >
         {consolidate.isPending ? 'Consolidating…' : `Consolidate ${chosen.length} PRs`}
       </button>

@@ -15,9 +15,9 @@ vi.mock('@/api/hooks', () => ({
   useGithubRepos: () => ({ data: [{ nameWithOwner: 'o/r' }], isLoading: false }),
   useConsolidation: () => ({ data: undefined }), useConsolidate: () => ({ mutate: vi.fn(), isPending: false }),
 }))
-vi.mock('@/components/ConsolidatePanel', () => ({ ConsolidatePanel: () => <div data-testid="consolidate" /> }))
-vi.mock('@/components/BacklogGroupsPanel', () => ({ BacklogGroupsPanel: () => <div data-testid="groups" /> }))
-vi.mock('@/components/ManualDispatchDialog', () => ({ ManualDispatchDialog: () => null }))
+vi.mock('./ConsolidatePanel', () => ({ ConsolidatePanel: () => <div data-testid="consolidate" /> }))
+vi.mock('./BacklogGroupsPanel', () => ({ BacklogGroupsPanel: () => <div data-testid="groups" /> }))
+vi.mock('./ManualDispatchDialog', () => ({ ManualDispatchDialog: () => null }))
 
 const prDoctor = AUTOMATIONS[0]
 const mount = (a = prDoctor, path = '/delivery/automations/pr-doctor') => {

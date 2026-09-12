@@ -46,12 +46,12 @@ vi.mock('@/api/hooks', () => ({
   useConsolidation: () => ({ data: undefined }),
   useConsolidate: () => ({ mutate: vi.fn(), isPending: false }),
 }))
-vi.mock('@/components/ConsolidatePanel', () => ({ ConsolidatePanel: () => <div data-testid="consolidate" /> }))
-vi.mock('@/components/BacklogGroupsPanel', () => ({ BacklogGroupsPanel: () => <div data-testid="groups" /> }))
+vi.mock('./automation/ConsolidatePanel', () => ({ ConsolidatePanel: () => <div data-testid="consolidate" /> }))
+vi.mock('./automation/BacklogGroupsPanel', () => ({ BacklogGroupsPanel: () => <div data-testid="groups" /> }))
 // Renders the `open` prop rather than nothing, so a test can tell whether
 // `AutomationDetail`'s local `customDispatch` flag survived a swap to a
 // different automation and back (regression #1468).
-vi.mock('@/components/ManualDispatchDialog', () => ({
+vi.mock('./automation/ManualDispatchDialog', () => ({
   ManualDispatchDialog: ({ open }: { open: boolean }) => <div data-testid="dispatch-dialog" data-open={String(open)} />,
 }))
 
