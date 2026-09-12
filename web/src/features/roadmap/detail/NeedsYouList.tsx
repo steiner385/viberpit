@@ -8,6 +8,7 @@ import { IncidentQueue } from '@/initiatives/IncidentQueue'
 import { EmptyState } from '@/ui/EmptyState'
 import { initiativeStatusLabel, reasonLabel } from '@/features/products/vocab'
 import { inboxPath, initiativePath } from '../roadmapNavState'
+import { TIER_TEXT } from '../roadmapTier'
 import { needsYouRows } from './needsYou'
 
 export function NeedsYouList({ products, repos }: { products: ProductNode[]; repos?: readonly string[] }) {
@@ -29,7 +30,7 @@ export function NeedsYouList({ products, repos }: { products: ProductNode[]; rep
               <div className="text-xs text-ink-muted">
                 {product.name ?? product.slug}
                 {' · '}
-                <span className={initiative.tier === 'blocked' ? 'text-danger' : 'text-warning'}>
+                <span className={TIER_TEXT[initiative.tier]}>
                   {reasonLabel(initiative.reason) || initiativeStatusLabel(initiative.status)}
                 </span>
               </div>

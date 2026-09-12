@@ -544,7 +544,7 @@ export function InitiativePage() {
           description={
             'This returns the initiative to awaiting-human without moving the gate. '
             + `If the failed materialize left an ${EPIC.singular.toLowerCase()} or sub-issues on GitHub, `
-            + 'close them first: the next decomposition creates a fresh set.'
+            + 'close them first: a later decomposition creates a fresh set.'
           }
         >
           <div className="flex justify-end gap-2">

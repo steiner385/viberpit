@@ -233,7 +233,7 @@ add-repo form; the onboarding-state chip uses the wizard's friendly labels.
 | Create initiative; set primary and touched capabilities | `a` on a capability row; chips on the initiative header; drag ◆ row to another capability | ccswitch DB, immediate |
 | Reassign an issue's capability | Click the capability chip on the row; type-ahead over the tree | Overlay PATCH, immediate |
 | Edit scores | Click score chips; four labelled fields with computed score | Overlay PATCH; Score reaches the board via the reconciler |
-| Remove issue dependency | `Remove` beside each blocker on the leaf row | GitHub native `removeBlockedBy` through the reconciler journal (`DELETE /api/pm/work-items/{id}/deps?blocker=`); add stays a GitHub-side edit for now |
+| Remove issue dependency | `Remove` beside each blocker on the leaf row | GitHub native `removeBlockedBy` through the reconciler journal (`DELETE /api/pm/work-items/{id}/deps?blocker=`); add stays a GitHub-side edit for now; an initiative's epic-blocked count reads the board Status and lags the leaf by one reconcile cycle |
 | Product dependency | Chip editor on the product's Dependencies tab | ccswitch DB (endpoints exist) |
 | Advance / step back / unblock | Header buttons with confirm; Advance and Step back refuse a blocked row, Unblock returns it to awaiting-human without moving the gate | ccswitch DB (`/advance`, `/step-back`, `/unblock`); back-synced to the board Stage field |
 
@@ -298,9 +298,10 @@ migration revision chained off the newest.
   summary|links, …}` → commits to the branch, opens or appends the PR, returns the
   pointer. `DELETE` abandons.
 - `PATCH /api/sdlc/initiatives/{slug}` `{title?, primaryCapabilityId?,
-  capabilityIds?}`; `POST /api/sdlc/initiatives/{slug}/step-back`.
-- `POST/DELETE /api/pm/work-items/{id}/deps` → journal `add_blocked_by` /
-  `remove_blocked_by` mutations; the reconciler applies them under its SHA fence.
+  capabilityIds?}`; `POST /api/sdlc/initiatives/{slug}/step-back`;
+  `POST /api/sdlc/initiatives/{slug}/unblock`.
+- `DELETE /api/pm/work-items/{id}/deps?blocker=` → journaled `removeBlockedBy`
+  (shipped); `POST` (add) is a GitHub-side edit for now.
 - `POST /api/pm/triage/{id}/undo` → returns an accepted or rejected proposal to
   pending and the item to `proposed`, within a server-enforced window.
 - Existing: overlay PATCH (gains UI for `featureId`), edges create/delete, advance-map.

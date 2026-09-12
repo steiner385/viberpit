@@ -10,7 +10,7 @@ import { CardFrame } from '@/ui/list/CardFrame'
 import { Badge } from '@/ui/Badge'
 import type { InitiativeNode } from '@/api/roadmap'
 import { INITIATIVE, nextStage, reasonLabel, stageLabel } from '@/features/products/vocab'
-import { TIER_ACCENT, TIER_TONE, tierLabel } from '../roadmapTier'
+import { TIER_ACCENT, TIER_TEXT, TIER_TONE, tierLabel } from '../roadmapTier'
 import { indentClass } from './indent'
 import { TierDot } from './TierDot'
 
@@ -70,7 +70,7 @@ export function InitiativeCard({
       >
         <span className="block truncate text-xs text-ink-muted">
           {reason
-            ? <span className={initiative.tier === 'blocked' ? 'text-danger' : 'text-warning'}>{reason}{next ? ` → ${stageLabel(next)}` : ''}</span>
+            ? <span className={TIER_TEXT[initiative.tier]}>{reason}{next ? ` → ${stageLabel(next)}` : ''}</span>
             : tierLabel(initiative.tier)}
           {epic ? ` · ${epic.done}/${epic.total} done` : ''}
         </span>

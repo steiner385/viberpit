@@ -165,7 +165,7 @@ describe('InitiativePage', () => {
     expect(screen.getByRole('list', { name: 'Blocked by' })).toBeInTheDocument()
   })
 
-  it('steps back only after confirming, and never past intake', () => {
+  it('steps back only after confirming', () => {
     mount()
     fireEvent.click(screen.getByRole('button', { name: /Step back/ }))
     expect(h.stepBackMutate).not.toHaveBeenCalled()

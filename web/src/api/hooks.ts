@@ -1718,8 +1718,10 @@ export function useLeaves(scope: LeavesScope | null) {
 }
 
 /** Remove a blocked-by edge from a leaf. Every leaves list is invalidated by
- *  prefix — the row does not know which scope(s) it is rendered under — and the
- *  map, whose blocked counts and initiative tiers read the same dep rows. */
+ *  prefix — the row does not know which scope(s) it is rendered under — plus the
+ *  map, whose blocked counts and initiative tiers read the same dep rows, and
+ *  every initiative detail by prefix: the input carries only a `workItemId`, so
+ *  the row cannot say which initiative's epic-blocked count it just changed. */
 export function useRemoveDependency() {
   const qc = useQueryClient()
   return useMutation<RemoveDependencyResult, ApiRequestError, RemoveDependencyInput>({
@@ -1727,6 +1729,7 @@ export function useRemoveDependency() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['pm', 'leaves'] })
       void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      void qc.invalidateQueries({ queryKey: ['sdlc', 'initiative'] })
     },
     meta: PM_MUTATION_META,
   })
