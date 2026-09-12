@@ -38,11 +38,13 @@ def _item(number, kind="issue", links=()):
 
 def _loop(ctx, *, mode="propose", config=None, pending=None, state=None,
           autolink_pred=None, clock=None, list_pending=None,
-          policies=None, candidates=None, accept_fails=(), accept_none=()):
+          policies=None, candidates=None, accept_fails=(), accept_none=(),
+          candidate_list_fails=False):
     """Wire a loop over recorder fakes. Returns (loop, rec).
 
     The auto-accept seams are wired whenever *candidates* is given; ``policies=None``
-    then makes the policy read RAISE (the failure case the pass must survive)."""
+    then makes the policy read RAISE, and ``candidate_list_fails=True`` makes the
+    candidate read raise (the two failure cases the pass must survive)."""
     rec = {"classified": [], "map_diffs": [], "stale": [], "autolinked": [],
            "auto_accepted": []}
     cfg = dict(config or {"drift_threshold": 5, "batch_size": 50,
@@ -85,6 +87,8 @@ def _loop(ctx, *, mode="propose", config=None, pending=None, state=None,
         return dict(policies)
 
     async def list_candidates():
+        if candidate_list_fails:
+            raise RuntimeError("candidate read failed")
         return list(candidates or [])
 
     async def auto_accept(proposal_id):
@@ -631,6 +635,25 @@ async def test_a_failed_policy_read_skips_the_pass_but_the_tick_completes():
     assert ctx.pm_triage_counts == {"unclassified": 0, "pending": 0, "drift": 0}
     warns = [e for e in ctx.events if e[2].get("kind") == "auto_accept_skipped"]
     assert len(warns) == 1 and warns[0][0] == "warn"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_candidate_read_skips_the_pass_but_the_tick_completes():
+    """R2-7, the twin of the policy-read guard: the candidate listing is the
+    pass's OTHER DB read, and an unguarded failure there took the whole tick
+    down with it — including ``_stash``, which is what the status card reads, so
+    one transient DB blip showed the operator "status unknown" instead of the
+    counts the tick had already computed."""
+    ctx = Ctx()
+    loop, rec = _loop(ctx, policies={"viberpit": _policy("high")},
+                      candidates=[_cand("p1")], candidate_list_fails=True)
+    await loop.tick()
+    assert rec["auto_accepted"] == []
+    warns = [e for e in ctx.events if e[2].get("kind") == "auto_accept_skipped"]
+    assert len(warns) == 1 and warns[0][0] == "warn"
+    assert "candidate read failed" in warns[0][1]
+    # the rest of the tick still ran: the counts the status card reads are set
+    assert ctx.pm_triage_counts == {"unclassified": 0, "pending": 0, "drift": 0}
 
 
 @pytest.mark.asyncio

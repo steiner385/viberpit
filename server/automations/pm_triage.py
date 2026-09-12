@@ -333,9 +333,10 @@ class PmTriageLoop:
         the seam, undoable for the same window. Runs every tick so a policy
         change catches up on the next one.
 
-        Fail-safe by construction: no policies (a failed read) → no accepts this
-        tick, with a warn; one proposal's failure is logged and skipped, never
-        the pass; a proposal a human resolved between the list and the accept
+        Fail-safe by construction: either DB read failing (policies, candidates)
+        → no accepts this tick, with a warn, and the tick carries on to
+        ``_stash``; one proposal's failure is logged and skipped, never the
+        pass; a proposal a human resolved between the list and the accept
         answers ``None`` from the seam and is silently dropped.
         """
         if (self._read_policies is None or self._list_candidates is None
@@ -353,7 +354,21 @@ class PmTriageLoop:
             return
         accepted_by_product: dict[str, int] = {}
         capped: set[str] = set()
-        for cand in await self._list_candidates():
+        # The pass's OTHER DB read, guarded like the policy read above (R2-7).
+        # Unguarded, a transient failure here escapes ``_run`` and takes the
+        # WHOLE tick with it — including the ``_stash`` that feeds the status
+        # card — so a blip in this optional pass would blank counts the tick had
+        # already computed. Skipping the pass costs one tick of auto-accepts;
+        # the next tick re-reads and catches up.
+        try:
+            candidates = await self._list_candidates()
+        except Exception as exc:
+            log.warning("pm_triage.candidate_list_failed", exc_info=True)
+            await self._ctx.emit("warn",
+                                 f"auto-accept skipped: candidate read failed: {exc}",
+                                 kind="auto_accept_skipped")
+            return
+        for cand in candidates:
             slug = cand.product_slug
             if not slug:
                 continue

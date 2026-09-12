@@ -83,10 +83,25 @@ export function InboxScopeBody({
   // open): the pane must fall back rather than follow a frozen order.
   useEffect(() => clearInboxOrder, [])
 
+  // The rows the user can still decide. ONE definition of "still pending",
+  // shared by the selection prune below and by `acceptSelected` — two copies
+  // would be free to disagree about what the bulk bar counts and what it sends.
+  const pendingIds = useMemo(
+    () => ordered.filter((p) => p.status === 'pending').map((p) => p.id),
+    [ordered],
+  )
+
   const [state, dispatch] = useReducer(inboxReducer, initialInboxState)
   // Re-anchor whenever the queue moves — an optimistic removal, a live prepend,
-  // a re-group, or a search that hid the anchored row.
-  useEffect(() => { dispatch({ type: 'rowsChanged', ids }) }, [ids])
+  // a re-group, or a search that hid the anchored row — and drop from the
+  // selection any row that stopped being pending WITHOUT leaving: a fresh
+  // auto-accept stays visible for its undo window, so a ticked row can go
+  // `accepted` under the user's hands and `rowsChanged` (which sees ids, not
+  // statuses) would keep counting it in the bulk bar.
+  useEffect(() => {
+    dispatch({ type: 'rowsChanged', ids })
+    dispatch({ type: 'pruneSelected', pendingIds })
+  }, [ids, pendingIds])
   const current: TriageProposal | undefined = ordered[resolveCursorIndex(ids, state)]
 
   const accept = useAcceptProposal(product ?? undefined)
@@ -109,15 +124,15 @@ export function InboxScopeBody({
   }, [rejectMutate])
   // Cleared on SUCCESS, not on dispatch: a failed sweep rolls the rows back,
   // and a selection cleared ahead of that leaves them restored but unselected.
-  // A selected id can also outlive its row going non-pending under the user's
-  // hands (a live `/ws` nudge lands a fresh auto-accept mid-selection) — the
-  // sweep only ever resends ids the server still calls pending.
+  // The `pendingIds` filter is belt to the prune effect's braces: the prune
+  // runs on a render, this runs on a keystroke, and only this one decides what
+  // actually goes over the wire.
   const acceptSelected = useCallback(() => {
-    const pendingIds = new Set(ordered.filter((p) => p.status === 'pending').map((p) => p.id))
-    const sel = [...state.selected].filter((id) => pendingIds.has(id))
+    const stillPending = new Set(pendingIds)
+    const sel = [...state.selected].filter((id) => stillPending.has(id))
     if (sel.length === 0) return
     bulkMutate(sel, { onSuccess: () => dispatch({ type: 'clearSelection' }) })
-  }, [bulkMutate, state.selected, ordered])
+  }, [bulkMutate, state.selected, pendingIds])
 
   useEffect(() => {
     function onKey(ev: KeyboardEvent) {

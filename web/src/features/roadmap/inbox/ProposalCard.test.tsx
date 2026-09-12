@@ -61,6 +61,16 @@ describe('ProposalCard', () => {
     expect(screen.queryByText('auto-accepted')).toBeNull()
   })
 
+  it('shows no chip on a HUMAN-accepted proposal', () => {
+    // `accepted` alone is not the chip's condition — `classifiedBy` is the
+    // other half. A person's own accept must never come back at them as
+    // "auto-accepted", with an Undo framed as undoing the machine.
+    mount({ status: 'accepted', classifiedBy: 'human',
+            resolvedAt: new Date().toISOString() })
+    expect(screen.queryByText('auto-accepted')).toBeNull()
+    expect(screen.queryByRole('button', { name: /undo auto-accept/i })).toBeNull()
+  })
+
   it('disables the select tick on a non-pending row', () => {
     mount({ status: 'accepted', classifiedBy: 'auto', resolvedAt: new Date().toISOString() })
     expect(screen.getByRole('button', { name: 'Select p1' })).toBeDisabled()

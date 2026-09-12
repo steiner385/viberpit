@@ -7233,7 +7233,14 @@ class SessionOrchestrator:
     async def _pm_triage_list_auto_accept_candidates(self) -> list:
         """Every pending proposal, with what the auto-accept gate needs:
         owning product (via ``owning_projects_by_repo`` — the ONE repo→project
-        resolver), the target capability's lifecycle state, and the flags."""
+        resolver), the target capability's lifecycle state, and the flags.
+
+        Ordered OLDEST FIRST, and that is load-bearing: the loop accepts only
+        the first ``MAX_AUTO_ACCEPTS_PER_TICK`` per product, so an unordered
+        read would leave *which* of a backlog gets accepted to the storage
+        engine (Postgres reorders a heap after UPDATE/VACUUM, or when the plan
+        flips seq-scan↔index-scan) and a proposal could be jumped by newer ones
+        tick after tick. Oldest-first is also the queue order the inbox shows."""
         from sqlalchemy import select
         from server.automations.pm_triage import AutoAcceptCandidateView
         from server.db.models import Feature, TriageProposal, WorkItem
@@ -7242,7 +7249,8 @@ class SessionOrchestrator:
             rows = (await db.execute(
                 select(TriageProposal, WorkItem)
                 .join(WorkItem, WorkItem.id == TriageProposal.work_item_id)
-                .where(TriageProposal.status == "pending"))).all()
+                .where(TriageProposal.status == "pending")
+                .order_by(TriageProposal.created_at))).all()
             repos = {wi.repo for _, wi in rows if wi.repo}
             owners = await owning_projects_by_repo(db, repos) if repos else {}
             feature_ids = {p.proposed_feature_id for p, _ in rows if p.proposed_feature_id}
@@ -7270,14 +7278,21 @@ class SessionOrchestrator:
         proposal (a human may have resolved it since the list), accept through
         the shared ``apply_accept`` with ``decided_by="auto"``, audit
         ``pm.triage.auto_accept`` as ``pm-triage``. Returns the audit detail, or
-        ``None`` when there was nothing left to accept."""
-        from sqlalchemy import select
+        ``None`` when there was nothing left to accept.
+
+        The re-read takes a row lock (the shared ``pending_proposal_stmt``,
+        which explains it): this loop and a human at the inbox are two writers
+        for one proposal, and unlocked they can both read "pending" under
+        Postgres READ COMMITTED and both write — last committer wins, so the
+        loop's plain copy can silently overwrite a human's accept-with-edits and
+        stamp it ``classified_by="auto"``. Locked, the loser re-reads the row as
+        ``accepted`` and returns ``None`` here."""
         from server.audit import record_audit
-        from server.db.models import TriageProposal
-        from server.pm.triage_accept import DECIDED_BY_AUTO, WorkItemMissing, apply_accept
+        from server.pm.triage_accept import (
+            DECIDED_BY_AUTO, WorkItemMissing, apply_accept, pending_proposal_stmt)
         async with db_session() as db:
-            prop = (await db.execute(select(TriageProposal).where(
-                TriageProposal.id == proposal_id))).scalar_one_or_none()
+            prop = (await db.execute(
+                pending_proposal_stmt(proposal_id))).scalar_one_or_none()
             if prop is None or prop.status != "pending":
                 return None
             try:

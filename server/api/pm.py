@@ -59,6 +59,7 @@ from server.pm.triage_accept import (
     _overlay_snapshot,
     _restore_overlay,
     apply_accept,
+    pending_proposal_stmt,
 )
 
 log = logging.getLogger(__name__)
@@ -1019,8 +1020,18 @@ async def list_triage(
 
 
 async def _load_pending_proposal(db, proposal_id: str) -> TriageProposal:
-    prop = (await db.execute(select(TriageProposal).where(
-        TriageProposal.id == proposal_id))).scalar_one_or_none()
+    """Re-read the proposal under a row lock and refuse it unless it is still
+    pending — the human half of the human-vs-loop race.
+
+    The lock lives in the shared ``pending_proposal_stmt`` (server/pm/
+    triage_accept.py), which explains it: without one, this route and the PM
+    Triage loop's auto-accept can both read "pending" under Postgres READ
+    COMMITTED and both write, so whoever commits last wins — a human's
+    accept-with-edits silently replaced by the loop's plain copy, stamped
+    ``classified_by="auto"``. Locking here is what makes the loser re-read the
+    row as resolved and answer 409 instead."""
+    prop = (await db.execute(
+        pending_proposal_stmt(proposal_id))).scalar_one_or_none()
     if prop is None:
         raise HTTPException(status_code=404, detail={"error": "not_found"})
     if prop.status != "pending":

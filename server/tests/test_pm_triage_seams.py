@@ -719,6 +719,43 @@ async def test_list_auto_accept_candidates_carries_product_feature_state_and_fla
 
 
 @pytest.mark.asyncio
+async def test_list_auto_accept_candidates_is_ordered_oldest_first(db_env):
+    """Deterministic order, oldest first. The loop takes only the first
+    ``MAX_AUTO_ACCEPTS_PER_TICK`` per product, so without an ORDER BY *which* 25
+    of a backlog get accepted is whatever the storage engine hands back — and
+    Postgres reorders a heap after UPDATE/VACUUM or a plan flip, so a proposal
+    could sit un-accepted for ticks while newer ones jump it. Oldest-first also
+    matches the queue the inbox shows."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+    await _seed(db_env)
+    base = datetime(2026, 9, 12, 10, 0, tzinfo=timezone.utc)
+    inserted: dict[str, str] = {}
+    async with db_session() as db:
+        pid = (await db.execute(select(Project.id).where(
+            Project.slug == "viberpit"))).scalars().one()
+        feat = Feature(project_id=pid, slug="sessions", title="Sessions", state="live")
+        db.add(feat)
+        await db.flush()
+        # Inserted middle, newest, oldest — so insertion order is NOT the answer.
+        for name, minutes in (("middle", 5), ("newest", 9), ("oldest", 1)):
+            w = WorkItem(repo=REPO, number=abs(hash(name)) % 1000, kind="issue",
+                         title=name, state="open", triage_state="unclassified")
+            db.add(w)
+            await db.flush()
+            p = TriageProposal(work_item_id=w.id, status="pending",
+                               proposed_feature_id=feat.id, confidence_level="high",
+                               created_at=base + timedelta(minutes=minutes))
+            db.add(p)
+            await db.flush()
+            inserted[p.id] = name
+    orch = _triage_orch()
+    out = await orch._pm_triage_list_auto_accept_candidates()
+    assert [inserted[c.proposal_id] for c in out] == ["oldest", "middle", "newest"]
+
+
+@pytest.mark.asyncio
 async def test_auto_accept_seam_accepts_audits_and_returns_detail(db_env):
     """One transaction: the shared ``apply_accept`` writes the overlay with
     ``classified_by="auto"`` and the undo snapshot, and the seam audits

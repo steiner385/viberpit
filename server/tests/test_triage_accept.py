@@ -59,3 +59,47 @@ def test_an_undone_auto_accept_is_never_retried():
     assert not _ok(auto_undone=True)
     assert _ok(auto_undone=False)
     assert _ok(auto_undone=None)
+
+
+# --------------------------------------------------------------------------- #
+# The shared pending-proposal SELECT (row lock)                                #
+# --------------------------------------------------------------------------- #
+
+
+def test_pending_proposal_stmt_takes_a_row_lock_on_postgres():
+    """The human accept route and the loop's auto-accept seam must read the
+    proposal under a row lock, or both can pass the ``status == "pending"``
+    check and last-writer-wins (a human's edits silently overwritten by the
+    loop's un-edited copy, ``classified_by`` reading "auto" for a human's
+    decision).
+
+    Compiled for the postgresql dialect because that is where the lock exists:
+    SQLAlchemy's SQLite dialect renders ``with_for_update()`` as nothing at all,
+    so a SQLite-only assertion could not tell a locked statement from an
+    unlocked one — and every test here runs on SQLite."""
+    from sqlalchemy.dialects import postgresql
+
+    from server.pm.triage_accept import pending_proposal_stmt
+
+    sql = str(pending_proposal_stmt("p1").compile(dialect=postgresql.dialect()))
+    assert "FOR UPDATE" in sql
+
+
+def test_pending_proposal_stmt_is_the_one_builder_both_accept_paths_use():
+    """Constitution VI: one statement builder, not a copy per call site. Both
+    the router's ``_load_pending_proposal`` and the orchestrator's auto-accept
+    seam import THIS function — a second hand-rolled ``select(TriageProposal)``
+    at either site would silently drop the lock the test above guards."""
+    import inspect
+
+    from server.api import pm as pm_api
+    from server.pm import triage_accept
+    from server.sessions import orchestrator
+
+    assert pm_api.pending_proposal_stmt is triage_accept.pending_proposal_stmt
+    seam = inspect.getsource(orchestrator.SessionOrchestrator._pm_triage_auto_accept)
+    assert "pending_proposal_stmt(proposal_id)" in seam
+    assert "select(TriageProposal)" not in seam
+    router = inspect.getsource(pm_api._load_pending_proposal)
+    assert "pending_proposal_stmt(proposal_id)" in router
+    assert "select(TriageProposal)" not in router

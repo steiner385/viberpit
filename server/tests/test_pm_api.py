@@ -988,6 +988,80 @@ def test_accept_bulk_one_failure_does_not_roll_back_the_batch():
         assert second == ("unclassified", "pending")    # rolled back to itself only
 
 
+def _delete_work_item(c, work_item_id):
+    """Drop the WorkItem row out from under a still-pending proposal.
+
+    The real shape this stands in for: the GitHub reconciler deletes a work item
+    (issue transferred, repo unmapped) between the proposal being written and a
+    human deciding it. ``apply_accept`` then raises ``WorkItemMissing``, and both
+    accept routes owe a specific answer rather than a 500."""
+    from sqlalchemy import delete
+
+    from server.db import db_session
+    from server.db.models import WorkItem
+
+    async def _run():
+        async with db_session() as db:
+            await db.execute(delete(WorkItem).where(WorkItem.id == work_item_id))
+    c.portal.call(_run)
+
+
+def test_accept_404s_when_the_work_item_row_is_gone():
+    """``WorkItemMissing`` out of the shared ``apply_accept`` maps to a 404
+    ``work_item_missing`` — not the 500 an unhandled LookupError would be, and
+    not the generic ``not_found`` the proposal lookup answers (the proposal is
+    right there; it is the item it names that vanished)."""
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        _delete_work_item(c, wid)
+
+        r = c.post(f"/api/pm/triage/{pid}/accept", headers=IDENTITY_HEADERS)
+        assert r.status_code == 404, r.text
+        assert r.json()["detail"] == {"error": "work_item_missing"}
+
+
+def test_accept_bulk_reports_work_item_missing_per_id():
+    """The per-id twin: one id's missing work item is that id's failure, with
+    the SAME ``work_item_missing`` code single-accept 404s with — not the
+    generic ``failed`` the catch-all branch would downgrade it to, and not a
+    batch-wide error that would lose the ids that did land."""
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        gone_pid, gone_wid = _seed_one_pending(c, feature_slug="sessions", number=1)
+        good_pid, good_wid = _seed_one_pending(c, feature_slug="queue", number=2)
+        _delete_work_item(c, gone_wid)
+
+        r = c.post("/api/pm/triage/accept-bulk",
+                   json={"ids": [gone_pid, good_pid]}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["accepted"] == 1
+        by_id = {x["id"]: x for x in body["results"]}
+        assert by_id[gone_pid] == {"id": gone_pid, "ok": False,
+                                   "error": "work_item_missing"}
+        assert by_id[good_pid] == {"id": good_pid, "ok": True}
+
+        # …and the savepoint left the good id's work committed.
+        from sqlalchemy import select
+
+        from server.db import db_session
+        from server.db.models import TriageProposal, WorkItem
+
+        async def _check():
+            async with db_session() as db:
+                w = (await db.execute(select(WorkItem).where(
+                    WorkItem.id == good_wid))).scalar_one()
+                props = {p.id: p.status for p in (await db.execute(
+                    select(TriageProposal).where(TriageProposal.id.in_(
+                        [gone_pid, good_pid])))).scalars().all()}
+                return w.triage_state, props
+        state, props = c.portal.call(_check)
+        assert state == "classified"
+        assert props[good_pid] == "accepted"
+        assert props[gone_pid] == "pending"     # untouched, still decidable
+
+
 def test_accept_rejects_out_of_range_rice_edits():
     """Accept-with-edits writes the same four numbers the overlay PATCH does, so
     it needs the same range guard.

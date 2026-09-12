@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import Select, select
 
 from server.audit import record_audit
 from server.db.models import Feature, TriageProposal, WorkItem
@@ -33,6 +33,31 @@ DECIDED_BY_AUTO = "auto"
 
 class WorkItemMissing(LookupError):
     """The proposal's work item row is gone. The API maps this to 404."""
+
+
+def pending_proposal_stmt(proposal_id: str) -> Select[tuple[TriageProposal]]:
+    """The ONE re-read both accept paths take before deciding a proposal — the
+    inbox routes' ``_load_pending_proposal`` (server/api/pm.py) and the PM Triage
+    loop's ``_pm_triage_auto_accept`` seam (server/sessions/orchestrator.py). Do
+    NOT hand-roll a second ``select(TriageProposal)`` at either site.
+
+    ``with_for_update()`` is the point. Checking ``status == "pending"`` and then
+    writing is a read-then-write race, and the two writers are a HUMAN and an
+    unattended loop that fires every 60 s: under Postgres READ COMMITTED both can
+    read "pending", the second ``UPDATE`` blocks on the row and then lands, and
+    last-writer-wins. Worst case the loop's un-edited copy overwrites a human
+    accept-WITH-EDITS and ``classified_by`` reads "auto" for a decision a person
+    made — which then also arms ``auto_undone`` when they undo it. The lock makes
+    the loser of the race re-read the row as ``accepted`` and back out (the seam
+    answers ``None``; the route answers 409 ``already_resolved``).
+
+    Dialect-safe: SQLAlchemy's SQLite dialect renders ``FOR UPDATE`` as nothing
+    (SQLite serializes writes anyway), so dev/test behaviour is unchanged and
+    only Postgres — where the concurrency is real — takes the lock.
+    """
+    return (select(TriageProposal)
+            .where(TriageProposal.id == proposal_id)
+            .with_for_update())
 
 
 def auto_accept_eligible(*, tier: str, confidence_level: str | None,
