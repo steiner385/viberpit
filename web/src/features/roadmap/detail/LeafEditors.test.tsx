@@ -14,6 +14,7 @@ const leaf: Leaf = {
   id: 'w1', ref: 'o/r#7', repo: 'o/r', number: 7, kind: 'issue', title: 'Add filters', url: null,
   state: 'open', triageState: 'classified', score: 12.5, reach: 5, impact: 5, effort: 2, confidence: 1,
   tier: 'idle', blockedBy: [], parentRef: null, sessionStatus: null, ghCreatedAt: null, featureId: 'f1',
+  reason: null, bounces: 0,
 }
 const node = (id: string, slug: string, title: string) => ({
   id, slug, title, state: 'live', summary: null, docPath: null, commitSha: null, prNumber: null,

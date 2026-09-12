@@ -37,11 +37,13 @@ import {
   editMapChanges, abandonMapChanges, rebaseMapChanges,
   fetchPolicySchema, updateProductPolicy,
   fetchProjectHealth,
+  fetchOutcomes,
   type Project, type CreateProjectInput, type OnboardingView,
   type RemoveDependencyInput, type RemoveDependencyResult,
   type CreateEdgeInput, type ProjectEdgeInfo,
   type MapChangeInput, type MapChangeResult, type AbandonResult,
   type ProjectHealth,
+  type DispatchOutcome,
 } from './pm'
 import {
   fetchRoadmapMap, fetchLeaves, fetchQueue, fetchProject,
@@ -115,6 +117,7 @@ export const QK = {
   project: (slug: string) => ['pm', 'project', slug] as const,
   policySchema: ['pm', 'policy-schema'] as const,
   health: (slug: string) => ['pm', 'health', slug] as const,
+  outcomes: (workItemId: string) => ['pm', 'outcomes', workItemId] as const,
 }
 
 /**
@@ -1740,6 +1743,19 @@ export function useLeaves(scope: LeavesScope | null) {
     enabled: scope !== null,
     staleTime: 5_000,
     refetchInterval: 30_000,
+  })
+}
+
+/** Every Backlog Runner dispatch a work item has had, newest first — the
+ *  history behind the roadmap's "bounced N× — needs spec" chip. `enabled`
+ *  defaults true so a detail panel mounted already-open fetches immediately;
+ *  a lazily-opened one (e.g. a disclosure) passes `enabled: false` until opened. */
+export function useOutcomes(workItemId: string, { enabled = true }: { enabled?: boolean } = {}) {
+  return useQuery<DispatchOutcome[]>({
+    queryKey: QK.outcomes(workItemId),
+    queryFn: () => fetchOutcomes(workItemId),
+    enabled,
+    staleTime: 5_000,
   })
 }
 

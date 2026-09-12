@@ -52,7 +52,7 @@ const leaf = (over: Partial<Leaf> & { id: string; number: number }): Leaf => ({
   ref: `cairnea/KinDash#${over.number}`, repo: 'cairnea/KinDash', kind: 'issue', title: null,
   url: `https://x/${over.number}`, state: 'open', triageState: 'classified', score: null, reach: null,
   impact: null, effort: null, confidence: null, tier: 'idle', blockedBy: [], parentRef: null,
-  featureId: null, sessionStatus: null, ghCreatedAt: null, ...over,
+  featureId: null, sessionStatus: null, ghCreatedAt: null, reason: null, bounces: 0, ...over,
 })
 
 const LEAVES: Leaf[] = [

@@ -105,10 +105,19 @@ export const REASON_LABEL: Record<string, string> = {
   // apply and the synthesizer giving up on a plan), and the row does not say which.
   blocked: 'Blocked, needs clearing',
   epic_blocked: 'Blocked by open dependencies',
+  // A leaf's reason, not an initiative's — `bouncedLabel` below says the SAME
+  // thing with the bounce count, which is what the leaf chip actually renders.
+  needs_spec: 'Needs spec',
 }
 
 export const reasonLabel = (reason: string | null | undefined): string =>
   reason ? (REASON_LABEL[reason] ?? reason) : ''
+
+/** The leaf chip's text for `reason === 'needs_spec'` (product automation
+ *  policy §7): the issue's body has bounced `n` times at its current
+ *  fingerprint without merging, so the runner has stopped re-dispatching it
+ *  until a human edits it. */
+export const bouncedLabel = (n: number) => `bounced ${n}× — needs spec`
 
 /** The stage the human gate would move an initiative to, or null at the end of
  *  the lifecycle. Beside `reasonLabel` because the two are said together: a row
