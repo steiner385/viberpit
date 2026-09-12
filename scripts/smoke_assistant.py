@@ -4,16 +4,19 @@
 Exercises the real edge + real daemon + real DB — no mocks. Never imported by
 server/; throwaway verification harness whose output is pasted into the PR body.
 
+Requires an explicitly disposable, isolated dev edge, daemon and DB with stable
+unlimited archive retention (maxArchivedSessions=null). Never run on a shared fleet.
 Requires a running dev edge (CCSWITCH_DEV=1, a tailnet allowlist that admits
 the identity below, CCSWITCH_ASSISTANT_ENABLED=true) and the SAME
 CCSWITCH_DB_URL the edge is using, so this script can read back the audit
 trail the edge wrote.
 
 Usage:
-    CCSWITCH_DB_URL=<the edge's DB url> python scripts/smoke_assistant.py
+    CCSWITCH_DB_URL=<the edge's DB url> python scripts/smoke_assistant.py --disposable-environment
     [--base-url http://127.0.0.1:8787] [--identity smoke@ccswitch.local]
 
 Steps:
+  0. Require the disposable environment acknowledgement and verify unlimited retention.
   1. POST /api/assistant/session — create (or resume) the caller's assistant thread.
   2. POST /api/sessions — create a throwaway coding session to archive later.
   3. Attach the assistant thread over /ws, prompt "List my sessions", wait for turnEnd.
@@ -91,13 +94,39 @@ async def _read_tool_call_audit(db_url: str, identity: str, tool: str) -> bool:
         await engine.dispose()
 
 
+async def _retention_is_safe(http: httpx.AsyncClient, step: Step) -> bool:
+    """Fail closed: archiving can permanently purge unrelated retained sessions."""
+    try:
+        response = await http.get("/api/settings")
+        response.raise_for_status()
+        settings = response.json()
+    except (httpx.HTTPError, ValueError):
+        step.finish(False, "cannot verify archive retention; no archive cleanup performed")
+        return False
+    safe = (
+        isinstance(settings, dict)
+        and "maxArchivedSessions" in settings
+        and settings["maxArchivedSessions"] is None
+    )
+    step.finish(safe, "unlimited retention verified" if safe else
+                "requires explicit maxArchivedSessions=null; no archive cleanup performed")
+    return safe
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://127.0.0.1:8787")
     parser.add_argument("--identity", default="smoke@ccswitch.local")
     parser.add_argument("--db-url", default=None,
                          help="Defaults to $CCSWITCH_DB_URL — must match the edge's DB.")
+    parser.add_argument("--disposable-environment", action="store_true",
+                        help="Acknowledge a dedicated disposable edge, daemon and DB with "
+                             "stable unlimited archive retention; never a shared fleet.")
     args = parser.parse_args()
+    if not args.disposable_environment:
+        print("--disposable-environment is required: use a dedicated isolated edge, daemon "
+              "and DB with stable unlimited archive retention", file=sys.stderr)
+        return 2
 
     import os
     db_url = args.db_url or os.environ.get("CCSWITCH_DB_URL")
@@ -112,6 +141,11 @@ async def main() -> int:
     steps: list[Step] = []
 
     async with httpx.AsyncClient(base_url=args.base_url, headers=headers, timeout=30.0) as http:
+        step = Step("archive retention preflight")
+        steps.append(step)
+        if not await _retention_is_safe(http, step):
+            return _summarize(steps)
+
         step = Step("create/resume assistant session")
         steps.append(step)
         r = await http.post("/api/assistant/session", json={})
@@ -185,8 +219,20 @@ async def main() -> int:
         survived = r.status_code == 200 and status_ != "archived"
         step.finish(survived, f"status={status_!r}")
 
-        # Best-effort cleanup — the throwaway session's purpose is spent either way.
-        await http.delete(f"/api/sessions/{throwaway_id}")
+        # Client checks cannot lock retention settings: isolation and stable configuration
+        # remain mandatory. Never adjust the cap or permanently delete to bypass it.
+        step = Step("archive retention cleanup check")
+        steps.append(step)
+        if not await _retention_is_safe(http, step):
+            print(f"Session {throwaway_id} left intact; inspect the isolated environment manually.")
+            return _summarize(steps)
+        step = Step("archive owned throwaway session")
+        steps.append(step)
+        try:
+            r = await http.delete(f"/api/sessions/{throwaway_id}")
+            step.finish(r.status_code == 204, f"HTTP {r.status_code}")
+        except httpx.HTTPError:
+            step.finish(False, "cleanup request failed; inspect the isolated environment manually")
 
     return _summarize(steps)
 

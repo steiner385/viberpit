@@ -8,7 +8,7 @@
 The open source cockpit for builders who'd rather create than click around: run and switch
 between live AI coding-agent sessions across several accounts, with automatic usage-aware
 account rotation. The CLI is still installed as `ccswitch` until the package rename lands.
-See `docs/` for the design spec and `docs/product/features/viberpit-rebrand.md` for the brand.
+See `docs/` for the design spec and `docs/product/guides/viberpit-rebrand.md` for the brand.
 
 ## Usage
 

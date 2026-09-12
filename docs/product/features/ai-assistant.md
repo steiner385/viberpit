@@ -64,6 +64,33 @@ eval set asserts the model explains this limitation rather than attempting a wor
 (`cant-deploy-to-prod`, `cant-change-account-credentials`). No multi-thread history browser, thread
 sharing, voice, or proactive/unsolicited messages — the assistant only speaks when asked.
 
+## Running the operational smoke safely
+
+Run `scripts/smoke_assistant.py --disposable-environment` only against a dedicated,
+disposable edge **and daemon and database**, using the matching database URL and a test
+identity. A separate identity, fresh session or alternate edge sharing the usual daemon or
+database does not isolate cleanup. Provision that test environment with unlimited archive
+retention and keep its configuration stable throughout the run.
+
+The harness reads `GET /api/settings` before creating or resuming any session and accepts
+only an explicit `maxArchivedSessions: null`. Finite limits (even with apparent headroom),
+missing or malformed settings, and failed reads stop the run before any session mutation.
+It repeats the check before archiving its owned coding session; if unsafe, it reports a
+failure and leaves the session intact for inspection. It never changes the cap or uses
+permanent deletion to bypass retention. These client checks cannot prevent a concurrent
+settings change between the check and archive; the dedicated environment and stable
+configuration are required, not guaranteed by the acknowledgement flag. The assistant
+thread remains available in the disposable environment for inspection.
+
+**Symptom:** cleanup of a fresh test session can remove older, unrelated archived records
+and their worktrees. **Anti-pattern:** assuming an archive request is confined to its
+session because it is a soft delete. **Fix shape:** isolate the entire test environment,
+verify unlimited retention before mutations, and fail closed before cleanup when retention
+cannot be verified. **Where to look:** operational smoke scripts and any cleanup invoking
+session archive endpoints; `SessionOrchestrator.archive_session` schedules global archive
+limit enforcement, which can permanently delete the oldest retained sessions. A denied
+assistant mutation does not make subsequent harness cleanup safe.
+
 **Notes** —
 - **Kind, not a parallel chat stack** — the assistant is a session with `kind == "assistant"`
   (`server/sessions/types.py`), driven by the same `SessionDriver` as coding sessions. What makes it

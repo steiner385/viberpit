@@ -1,10 +1,13 @@
 # 003 — GitHub-Native Planning: Projects v2 Integration for the SDLC/PM Suite
 
-**Status:** approved design, pending Phase 0 verification
+**Status:** architecture consolidated against the implementation (2026-09-12); operational acceptance remains separately tracked.
 **Date:** 2026-09-03
 **Origin:** brainstorming session; supersedes the freestanding-Initiative model of
 `docs/product/features/product-management-layer.md` Phase 4 (cross-project initiatives) where they
 conflict. Phases 1–3 of the PM layer are unaffected and are load-bearing prerequisites.
+The feature document already marks Phase 4 superseded; its optional discovery stage remains
+deferred. This spec is the single planning architecture reference. Phase plans and probe
+logs remain historical evidence; §12 consolidates their implementation findings.
 
 ## 1. Problem & goals
 
@@ -53,8 +56,8 @@ Issue/PR state               ←→   WorkItem (exists)                   Backlo
 ```
 
 - **Read path:** `pm_sync` grows three reads per product — Project v2 items+fields, native
-  dependency edges, sub-issue relationships — landing in mirror tables. Polling (user-account
-  Projects have no webhooks); the existing watermark pattern applies.
+  dependency edges, sub-issue relationships — landing in mirror tables. Project items are fully
+  paged each pass; issue/PR sync retains its watermark and resumable-backfill mechanism (§12).
 - **Write path:** a new reconciler automation converges GitHub toward the decision layer's desired
   state via diffed, batched, journaled GraphQL mutations (§6).
 
@@ -74,8 +77,9 @@ newer than the mirrored value's `gh_updated_at`. Its own writes are echo-suppres
 next poll does not re-ingest them as human edits. Direct GitHub edits therefore always win.
 
 **What dies (constitution VI):** the Initiative table's freestanding identity; prose-dependency
-*authoring* as a convention (the parser survives as a compiler input and dispatch-time safety
-net); eventually the `in-progress`/`needs-human` labels (replaced by `Status`).
+*authoring* as a convention (the parser survives as a mirror/compiler input; live dispatch
+verification reads native `blockedBy`, not prose); eventually the `in-progress`/`needs-human`
+labels (replaced by `Status`).
 
 ## 4. GitHub schema & conventions
 
@@ -147,10 +151,11 @@ Safety rails:
   `hosts.sha == origin/master`. A stale daemon must refuse to write to GitHub (rocky rule).
 - **Kill switch + dry-run:** `CCSWITCH_GH_RECONCILE_ENABLED` (default off until Phase B ships);
   `dry_run` computes and journals diffs with `applied=false`.
-- **Blast-radius cap:** max mutations per cycle (config, default ~50); exceeding halts loudly on
-  the status card. Caps are logged, never silent.
+- **Blast-radius cap:** max non-schema mutations per product per tick (config, default 50);
+  exceeding halts loudly on the status card. Caps are logged, never silent.
 - **Rate budget:** GraphQL point tracking with backoff, shared with `pm_sync` accounting.
-- **No blind retry:** a mutation failing twice parks as `needs_human` in the journal.
+- **No blind retry:** a mutation rejected twice on its own merits parks in the journal. Document-level transient
+  errors do not count toward that threshold (§12).
 
 **One-time migration** = a `migrate` mode of this same machinery: compile all open-issue prose
 deps to native; restructure existing epics (task lists → sub-issues + sibling blocked-by); create
@@ -164,10 +169,10 @@ journal, apply. Historical prose stays in bodies.
 Candidate source flips from live label-search to the mirror:
 
 ```
-eligible = GhProjectItem where status = Ready
+eligible = GhProjectItem passing queue.skip_reason (configured Backlog/Ready minimum)
          ∧ no active WorkItemDep edge with an open blocker
          ∧ not assigned to a live session
-ordered by score DESC, then epic phase order, then age   — across all products
+ordered by score DESC (unscored last), then age, then ref — across all products
 ```
 
 - `backlog_deps.py` eligibility becomes a mirror query. The prose parser and epic-order logic
@@ -176,6 +181,9 @@ ordered by score DESC, then epic phase order, then age   — across all products
 - Retained safety net: re-verify the top candidate's blockers against live GitHub immediately
   before dispatch (one query; fails closed on error).
 - `respect_dependencies` config keeps its meaning; `blocked` counts come from the graph.
+- `queue_min_status` selects Backlog or Ready eligibility. Missing or nonstandard board Status
+  is Backlog-equivalent; `queue.skip_reason` also excludes active claims/sessions, assignments,
+  epics with open children, bot work, and the configured needs-human cooldown.
 - Status card gains queue provenance ("picked X (score S, product P) over Y…").
 
 ### 7b. Plan materialization
@@ -250,7 +258,7 @@ executes.
 | Reconciler bug wants mass-edit | Blast cap halts at N, loud status; journal old→new enables reverting an applied batch |
 | Human edits field mid-cycle | Timestamp rule: their edit is newer → delta suppressed, back-syncs next poll |
 | Project/field deleted or renamed by hand | Field-cache validation fails → that product halts as `needs_human`; no guessing |
-| Dep targets unmirrored repo | `dst_ref` text edge; resolved live at dispatch (retained `_resolve_dep_states` path) |
+| Dep targets unmirrored repo | `load_queue_rows` treats the unknown `dst_ref` as an open blocker. With dependency checks enabled, it stays blocked until the target is mirrored with a known closed state; closing it on GitHub alone cannot clear the mirror gate. The pre-dispatch `verify_ready_live` check reads native `blockedBy`, not prose references. |
 | Stale fleet daemon | SHA fence refuses the cycle before any read or write |
 
 ## 11. Out of scope (v1)
@@ -260,3 +268,81 @@ executes.
 - Org migration or any org-only feature (issue types, Projects webhooks).
 - Milestones (Projects fields cover the need).
 - Automated view creation (API does not support it).
+
+## 12. Consolidated implementation and steady-state hygiene
+
+This section records the Phase A/B findings and consumer transition in their current
+implementation homes. [#985](https://github.com/steiner385/viberpit/issues/985) is closed;
+[PR #1015](https://github.com/steiner385/viberpit/pull/1015) merged its remaining steady-state
+hygiene. Its proposed 24-hour ownership window was deliberately replaced by latest-value
+retention. Completing these source changes does not certify the separate operator work in
+[#988](https://github.com/steiner385/viberpit/issues/988) or
+[#996](https://github.com/steiner385/viberpit/issues/996).
+
+### Ownership and data flow
+
+| Responsibility | Canonical implementation and boundary |
+|---|---|
+| Mirror polling | [pm_sync.py](../../server/automations/pm_sync.py) pages Projects v2 items and issue relations; issue/PR backfill is resumable. A failed read must not masquerade as a deleted board. |
+| Mirror persistence and identity | [mirror_store.py](../../server/pm/mirror_store.py) persists board fields and relations, back-syncs human edits, and rekeys repository aliases to GitHub's canonical name. `deps_in_repos` supplies the shared SQL predicate for dependency reads. |
+| Dependency compilation | [dep_plan.py](../../server/pm/dep_plan.py) and [reconcile_diff.py](../../server/pm/reconcile_diff.py) consume native/prose/order provenance. [backlog_deps.py](../../server/automations/backlog_deps.py) retains pure parsing for compilation/drift; it no longer runs a parallel live candidate gate. Native edges remain authoritative; removed compiled edges are suppressed using journal history. |
+| Decisions and reconciliation | [reconcile_inputs.py](../../server/pm/reconcile_inputs.py) loads facts; [desired_state.py](../../server/pm/desired_state.py) derives field decisions; `reconcile_diff.py` handles ownership and diffs; [gh_reconcile.py](../../server/automations/gh_reconcile.py) owns the fenced, journaled control loop. |
+| Shared queue | [queue_store.py](../../server/pm/queue_store.py) loads mirror rows and durable runner claims/handoffs. [queue.py](../../server/pm/queue.py) owns `skip_reason`, `rank`, and `rank_key`, shared by the runner and queue API. Phase order constrains eligibility through dependency edges, not a separate sorting implementation. |
+| Live dispatch boundary | [backlog_github.py](../../server/automations/backlog_github.py): `verify_ready_live` rechecks issue state, assignees and native blockers immediately before claiming. Errors, unresolved refs and truncated blocker lists fail closed. It does not resolve unmirrored prose destinations. |
+| Shared operational seams | [config_store.py](../../server/automations/config_store.py): `read_automation_config` owns validated config loading; the reconciler supplies explicit modes without an enabled-row fallback to apply. [sync_request.py](../../server/pm/sync_request.py): `request_project_sync` stamps repository watermarks for both the sync-now API and reconciler. |
+
+The initiative lifecycle and artifact chain remain overlays on the GitHub epic. Program
+stages derive from phase initiatives; the reconciler does not push a program's raw stage
+column as an independent decision. The capability map remains versioned product documentation,
+not another copy of epic membership or queue readiness.
+
+### Findings that constrain operation
+
+- **Credentials and paging.** The [Phase 0/B probes](phase0-findings.md) corrected the initial
+  App-token false positive: an empty user Projects list did not prove access. The shared
+  `_pm_gh_graphql` seam in [orchestrator.py](../../server/sessions/orchestrator.py) prefers
+  `CCSWITCH_GH_PROJECT_TOKEN`, then an owner-scoped App token, then ambient credentials.
+  User-owned boards require the verified `project` + `repo` PAT path; App permissions cover
+  org boards. Reads reject GraphQL errors; mutation reads preserve alias verdicts. Project
+  items use full pagination, not an assumed updated-time filter.
+- **Journal retention.** [journal.py](../../server/pm/journal.py) uses one SQL ranking for
+  `own_applied_values` and `prune_superseded_applied`. The latest applied Status/Score/Stage
+  value per item/field survives indefinitely; superseded history is pruned after 30 days.
+  The separate echo-suppression window and dry-run dedupe/prune window are 24 hours.
+  Applied structural mutation keys remain unwindowed so a human-deleted dependency is not
+  recreated from old prose. A current value can still be ours after a month of inactivity.
+- **Freshness.** `newest_decision_at` includes classification, initiative, dependency-edge
+  (including deactivation), durable runner give-up, and last-applied timestamps. Generic
+  `Session.updated_at` is intentionally excluded because every session write bumps it and
+  would hold the freshness gate stale forever. Session field decisions still carry their
+  timestamp into the ownership comparison. A never-synced board requests sync and skips.
+- **Board schema.** `_field_gap` and `_ensure_fields` both require a nonempty `field_id`.
+  Apply rechecks after bootstrap and stops before item batches if a gap remains; dry run
+  retains its preview without pretending fields were created. Missing-schema notifications
+  are latched per product. Migration unions Status options while preserving existing option
+  IDs; names-only replacement regenerates IDs and clears assignments. Steady state does
+  not repair schema. The [Phase B runbook](phase-b-runbook.md) owns the enable/repair procedure.
+- **Failure accounting and caps.** [gh_mutations.py](../../server/pm/gh_mutations.py)
+  distinguishes alias-specific rejections from document-level failures. The latter receive
+  `journal.TRANSIENT_PREFIX`, warn, and retry without accumulating toward a permanent park.
+  The non-schema mutation cap is per product per tick; migration uses its separate cap and bounded schema
+  bootstrap. Mode `off` clears previous status counts so stopped work is not shown as current.
+- **Dependency query scope and API auth.** Facts loading, queue loading, and the deps API
+  reuse `deps_in_repos` to filter source refs in SQL. The journal API remains identity-gated;
+  [test_pm_reconcile_api.py](../../server/tests/test_pm_reconcile_api.py) explicitly checks
+  unauthenticated journal reads return 401, including filtered reads.
+
+### Acceptance boundary and retained procedures
+
+First apply still requires a reviewed dry-run journal, the existing primary/SHA fence and
+kill switch, a complete board vocabulary, and the runbook's operator checks. Newly added
+board items receive fields only after pm-sync re-ingests membership; a field-cache refresh
+alone is insufficient. Keep migration on until two consecutive `0 planned` ticks, then
+return to steady state. Mode `off` is the immediate operational stop.
+
+The [Phase B runbook](phase-b-runbook.md) and [Phase D runbook](phase-d-runbook.md) are
+procedures supporting this architecture, not alternate implementations. The archived spike
+repository deletion and live journal index verification remain #996 operator acceptance;
+source inspection cannot certify either. Historical phase plans and probe records remain
+unchanged. No new runtime registry, queue, parser, config reader, or sync helper is needed
+for documentation consolidation.

@@ -14,7 +14,7 @@
 # that shrinks passes and asks you to run `python scripts/brand_ratchet.py --update`.
 #
 # The rebrand plan: docs/superpowers/specs/2026-09-06-viberpit-rebrand-design.md
-# The feature doc:  docs/product/features/viberpit-rebrand.md
+# The guide:        docs/product/guides/viberpit-rebrand.md
 
 [scan]
 needles = ["ccswitch", "cc-account-switcher", "cc_account_switcher"]
@@ -46,8 +46,8 @@ ceiling = 56
 
 [[allow]]
 id = "rebrand-narrative"
-paths = ["docs/product/features/viberpit-rebrand.md", "README.md", ".brand-ratchet.toml", "scripts/brand_ratchet.py", "server/tests/test_brand_*.py", "tests/test_brand.py", "web/src/brand.test.ts"]
-permanent = "Text that names the old brand in order to explain the rename (the feature doc, README's 'formerly' line, the ratchet and its tests)."
+paths = ["docs/product/guides/viberpit-rebrand.md", "README.md", ".brand-ratchet.toml", "scripts/brand_ratchet.py", "server/tests/test_brand_*.py", "tests/test_brand.py", "web/src/brand.test.ts"]
+permanent = "Text that names the old brand in order to explain the rename (the migration guide, README's 'formerly' line, the ratchet and its tests)."
 ceiling = 86
 
 [[allow]]

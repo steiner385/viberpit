@@ -1,8 +1,5 @@
 ---
-slug: viberpit-rebrand
-parent: operator-experience
 title: ViberPit Rebrand (ccswitch → ViberPit, outside-in, zero-downtime)
-state: delivering
 links:
   specs:
     - docs/superpowers/specs/2026-09-06-viberpit-rebrand-design.md
