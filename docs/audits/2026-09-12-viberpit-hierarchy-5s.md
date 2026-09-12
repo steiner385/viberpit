@@ -72,6 +72,11 @@ decision; a subsequent GitHub read still showed In progress. No held record
 appeared in the Ready queue snapshot. The explicit maintenance hold on #1372
 also remained Needs human on GitHub.
 
+After the existing reconciler ran, all 23 classified records appeared in the
+live Ready queue with the reviewed scores, and none of the 37 held records
+appeared there. This verifies propagation beyond the overlay write response;
+it does not waive the runner's subsequent live eligibility checks.
+
 Immediately after scoring, onboarding still reported eight unclassified records:
 the seven reports awaiting PR closure and #1521's deliberately retained triage
 value. There were zero pending proposals. The onboarding state was not advanced
@@ -85,10 +90,19 @@ Observation periods remain open until the required time and measurements exist.
 
 The planning consolidation epic [#997](https://github.com/steiner385/viberpit/issues/997)
 remains open for its actual unfinished children: [#988](https://github.com/steiner385/viberpit/issues/988)
-requires board reconciliation acceptance, [#995](https://github.com/steiner385/viberpit/issues/995)
-requires documentation consolidation, and [#996](https://github.com/steiner385/viberpit/issues/996)
-requires operational cleanup verification. None is closed merely to make the
-hierarchy appear complete.
+requires board reconciliation acceptance, and [#996](https://github.com/steiner385/viberpit/issues/996)
+requires operational cleanup verification. Neither is closed merely to make
+the hierarchy appear complete.
+
+The documentation child [#995](https://github.com/steiner385/viberpit/issues/995)
+is completed by consolidating Phase A/B findings, ownership/data flow, and the
+nine steady-state hygiene outcomes into the existing [spec 003 architecture](../../specs/003-gh-projects-integration/spec.md).
+Its prerequisite #985 is closed by merged PR #1015; the capability document
+already marks the earlier Phase 4 model superseded. The consolidation removes
+the stale deleted dependency-resolver reference and explains the actual
+fail-closed behavior for unknown cross-repository blockers. It adds no parallel
+runtime implementation or architecture document. Independent review confirmed
+the issue's acceptance criteria; this PR can close #995.
 
 A read-only check narrowed #996: the live database already contains
 `ix_gh_write_journal_mutation_id` on `gh_write_journal(mutation_id)`, so no index
@@ -106,6 +120,9 @@ grader, permission, and external-token tests. The brand-ratchet ceilings remain
 unchanged and local documentation links resolve. Independent task and branch
 reviews found no remaining qualifying findings after two stale backlog premises
 were moved to verification holds.
+
+The architecture consolidation also passed 92 existing focused tests for the
+journal, mutations, reconciler, queue, shared configuration, and API behavior.
 
 Use the canonical product maintenance rules for subsequent changes: preserve
 stable identities, verify references before retirement, distinguish parentage
