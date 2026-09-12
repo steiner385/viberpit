@@ -48,6 +48,9 @@ vi.mock('@/api/hooks', () => ({
     },
     isLoading: false,
   }),
+  // The capability Overview's edits (Edit, + Sub-capability, the links editor).
+  useEditMapChanges: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null }),
+  mapChangesErrorMessage: (_e: unknown, fallback: string) => fallback,
   useProposeMap: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useClassify: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useAdvanceMap: () => ({ mutate: vi.fn(), isPending: false, isError: false }),

@@ -52,6 +52,9 @@ vi.mock('@/api/hooks', () => ({
   useRoadmapMap: () => ({ data: MAP }),
   useCreateEdge: () => ({ mutate: vi.fn(), isPending: false }),
   useDeleteEdge: () => ({ mutate: vi.fn(), isPending: false }),
+  // `+ Capability` opens NewCapabilityDialog, which edits the map-changes PR.
+  useEditMapChanges: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null }),
+  mapChangesErrorMessage: (_e: unknown, fallback: string) => fallback,
 }))
 
 vi.mock('@/api/pm', async (orig) => ({
@@ -113,6 +116,12 @@ describe('ProductDetail', () => {
     // The stage track travels with the initiative it belongs to.
     expect(screen.getAllByLabelText(/Build: in progress/).length).toBeGreaterThan(0)
     expect(tile('Capabilities')).toHaveTextContent('3')
+  })
+
+  it('Overview: adds a capability from the product itself, not from the page header', () => {
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: '+ Capability' }))
+    expect(screen.getByRole('dialog', { name: 'New capability' })).toBeInTheDocument()
   })
 
   it('counts In flight as the initiatives the In-flight tab lists', () => {
