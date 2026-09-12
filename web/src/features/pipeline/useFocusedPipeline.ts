@@ -7,7 +7,9 @@ import { useCallback, useEffect, useState } from 'react'
 import { storageKey, migrateStorageKey } from '@/lib/storageKey'
 
 const STORE_KEY = storageKey('pipeline.focused')
-/** Pre-namespace key. Migrated forward on first read (row 7b). */
+/** Pre-namespace key. Migrated forward on the first read of the store (row 7b);
+ *  a load whose `?pipeline=` resolves never reads the store, so it migrates on
+ *  the next plain load — harmless, a later `focus()` write to the new key wins. */
 const LEGACY_STORE_KEY = 'workspace.focusedPipeline'
 const URL_PARAM = 'pipeline'
 

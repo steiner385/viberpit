@@ -16,7 +16,13 @@ export const SIDEBAR_MIN = 280
 export const SIDEBAR_MAX = 560
 export const SIDEBAR_DEFAULT = 320
 export const SIDEBAR_STORAGE_KEY = storageKey('listWidth')
-/** Pre-AppShell key (DEC-11). Read once, then written forward under the new key. */
+/**
+ * Pre-AppShell key (DEC-11). Read once, then written forward under the new key.
+ * Deliberately NOT `migrateStorageKey`: this migration parses and clamps the
+ * value on the way forward (a raw copy could carry a corrupt width), and it
+ * leaves the legacy key alone when the new key already exists — the sidebarWidth
+ * tests pin both differences.
+ */
 const LEGACY_STORAGE_KEY = storageKey('sidebarWidth')
 
 /** Clamp to [MIN, MAX] and round; non-finite input falls back to the default. */

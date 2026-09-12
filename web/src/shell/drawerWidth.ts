@@ -10,9 +10,10 @@ import { storageKey } from '@/lib/storageKey'
  * `Sheet` primitive's own default, so an unresized drawer looks exactly like
  * every other right-hand sheet in the app.
  *
- * `web/src/lib/` has four bespoke persisted values and no generic
- * persisted-value helper to route through, so this module keeps its own pair
- * and mirrors `lib/sidebarWidth.ts` clause for clause, the two reading alike.
+ * The key goes through `lib/storageKey.ts` like every persisted key (row 7b),
+ * but the read/write pair stays bespoke: it parses and clamps the value, which
+ * a raw key helper cannot do. It mirrors `lib/sidebarWidth.ts` clause for
+ * clause, the two reading alike.
  * All access is wrapped: a blocked or unavailable localStorage degrades to the
  * default, never a crash.
  *

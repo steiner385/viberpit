@@ -22,14 +22,13 @@ export function storageKey(name: string): string {
 export function migrateStorageKey(storage: Storage, from: string, to: string): void {
   try {
     const oldValue = storage.getItem(from)
-    const newValue = storage.getItem(to)
+    // Nothing to migrate: return before touching storage. Callers run this on
+    // every read (some from a useSyncExternalStore getSnapshot), so the
+    // steady-state path must be one read and no write.
+    if (oldValue === null) return
 
-    // Copy old → new only if new is absent
-    if (oldValue !== null && newValue === null) {
-      storage.setItem(to, oldValue)
-    }
-
-    // Always remove the old key
+    // Copy old → new only if new is absent; always remove the old key.
+    if (storage.getItem(to) === null) storage.setItem(to, oldValue)
     storage.removeItem(from)
   } catch {
     // Swallow exceptions: storage may be unavailable (private mode, quota exceeded, etc.)
