@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { render, fireEvent, screen, act } from '@testing-library/react'
 import { elementScroll, type Virtualizer, type VirtualizerOptions } from '@tanstack/react-virtual'
 import { TranscriptView } from './TranscriptView'
@@ -49,6 +49,14 @@ function setGeometry(el: HTMLElement, scrollTop: number) {
 function fakeInstance(el: HTMLDivElement) {
   return { scrollElement: el, options: { horizontal: false } } as unknown as Virtualizer<HTMLDivElement, Element>
 }
+
+// The virtualizer arms a 150 ms "scrolling reset" timer on every scroll
+// (`isScrollingResetDelay`); a scroll fired by the last test in this file would
+// let that timer fire after vitest has torn down jsdom, and react-virtual's
+// notify then dispatches into React with no `window` ("Unhandled Error:
+// ReferenceError: window is not defined" — the CI flake first seen on
+// finish-line row 6). Let it fire while the environment still exists.
+afterEach(() => new Promise<void>((resolve) => setTimeout(resolve, 200)))
 
 describe('TranscriptView auto-pin vs virtualizer scroll adjustments', () => {
   // On entry every row above the viewport measures for the first time, and the
