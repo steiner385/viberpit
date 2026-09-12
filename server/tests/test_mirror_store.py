@@ -466,6 +466,82 @@ def test_back_sync_stage_updates_adopted_initiative():
         epic_repo=REPO, epic_number=945).one().stage == "deploy"
 
 
+# --- adoption mirrors epic nesting onto initiatives (roadmap 5S plan) ---------
+
+
+def _seed_program(db, project, *, program=945, phases=(950, 951)):
+    """A program epic whose sub-issues are themselves epics, all on the board."""
+    gid = _seed_board_epic(db, project, number=program,
+                           title="epic(ui-audit): September 2026 audit")
+    parent = db.query(WorkItem).filter_by(number=program).one()
+    for i, n in enumerate(phases, start=1):
+        wi = db.query(WorkItem).filter_by(number=n).one()
+        wi.is_epic = True
+        wi.title = f"epic(ui-audit): 0{i} — Phase {i}"
+        wi.state = "open"
+        wi.parent_work_item_id = parent.id
+        db.add(GhProjectItem(gh_project_id=gid, gh_item_node_id=f"PVTI_{n}",
+                             work_item_id=wi.id, stage="design"))
+    db.commit()
+
+
+def test_adopt_epics_links_phases_to_their_program_and_strips_the_prefix():
+    db = _db()
+    project = _seed(db)
+    _seed_program(db, project)
+
+    refs = mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    assert set(refs) == {f"{REPO}#945", f"{REPO}#950", f"{REPO}#951"}
+    by_number = {i.epic_number: i for i in db.query(Initiative).all()}
+    program, p1, p2 = by_number[945], by_number[950], by_number[951]
+    assert program.parent_initiative_id is None
+    assert p1.parent_initiative_id == program.id and p2.parent_initiative_id == program.id
+    assert program.title == "September 2026 audit" and program.slug == "september-2026-audit"
+    assert p1.title == "01 — Phase 1" and p1.slug == "01-phase-1"
+
+
+def test_link_epic_parents_relinks_rows_adopted_before_nesting_existed():
+    """Rows adopted flat (pre-#nesting) get their parent on the next pass; a
+    human-edited title is left alone, an untouched raw title is normalized."""
+    db = _db()
+    project = _seed(db)
+    _seed_program(db, project, phases=(950,))
+    db.add(Initiative(slug="old-program", title="epic(ui-audit): September 2026 audit",
+                      repo=REPO, epic_repo=REPO, epic_number=945, project_id=project.id,
+                      origin="epic-adoption"))
+    db.add(Initiative(slug="old-phase", title="My renamed phase",
+                      repo=REPO, epic_repo=REPO, epic_number=950, project_id=project.id,
+                      origin="epic-adoption"))
+    db.commit()
+
+    changed = mirror_store.link_epic_parents(db, project.id)
+
+    assert changed == 2     # the program's raw title normalized + the phase's parent linked
+    program = db.query(Initiative).filter_by(slug="old-program").one()
+    phase = db.query(Initiative).filter_by(slug="old-phase").one()
+    assert phase.parent_initiative_id == program.id
+    assert program.title == "September 2026 audit"       # raw title → normalized
+    assert phase.title == "My renamed phase"             # edited title → kept
+    assert mirror_store.link_epic_parents(db, project.id) == 0   # idempotent
+
+
+def test_back_sync_stage_ignores_a_program():
+    db = _db()
+    project = _seed(db)
+    _seed_program(db, project, phases=(950,))
+    mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    n = mirror_store.back_sync_stage(
+        db, [mirror_store.HumanEdit(f"{REPO}#945", "Stage", "build", "plan"),
+             mirror_store.HumanEdit(f"{REPO}#950", "Stage", "design", "plan")])
+
+    assert n == 1
+    by_number = {i.epic_number: i for i in db.query(Initiative).all()}
+    assert by_number[945].stage != "plan"     # program untouched
+    assert by_number[950].stage == "plan"     # phase moved
+
+
 # --- applied removals survive the next mirror pass (#1472) ---------------------
 
 
