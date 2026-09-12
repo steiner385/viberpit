@@ -542,7 +542,7 @@ def test_back_sync_stage_ignores_a_program(caplog):
     assert by_number[945].stage != "plan"     # program untouched
     assert by_number[950].stage == "plan"     # phase moved
     assert "mirror_store.back_sync_stage.skipped_program" in caplog.text
-    assert "ref=steiner385/cc-account-switcher#945" in caplog.text
+    assert f"ref={REPO}#945" in caplog.text
 
 
 def test_link_epic_parents_counts_a_row_once_when_parent_and_title_both_change():

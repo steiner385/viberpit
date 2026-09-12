@@ -379,7 +379,7 @@ async def test_auto_link_routes_an_issue_by_feature_label(db_env):
     await _seed(db_env)
     async with db_session() as db:
         from sqlalchemy import select
-        pid = (await db.execute(select(Project.id).where(Project.slug == "ccswitch"))).scalars().one()
+        pid = (await db.execute(select(Project.id).where(Project.slug == "viberpit"))).scalars().one()
         f = Feature(project_id=pid, slug="flaky-test-triage", title="Flaky", state="live",
                     route_labels=["flaky"])
         db.add(f)
@@ -405,7 +405,7 @@ async def test_auto_link_declines_when_two_features_route_the_same_label(db_env)
     await _seed(db_env)
     async with db_session() as db:
         from sqlalchemy import select
-        pid = (await db.execute(select(Project.id).where(Project.slug == "ccswitch"))).scalars().one()
+        pid = (await db.execute(select(Project.id).where(Project.slug == "viberpit"))).scalars().one()
         db.add(Feature(project_id=pid, slug="a", title="A", state="live", route_labels=["ci"]))
         db.add(Feature(project_id=pid, slug="b", title="B", state="live", route_labels=["ci"]))
         db.add(WorkItem(repo=REPO, number=7, kind="issue", title="x", state="open",
@@ -421,7 +421,7 @@ async def test_auto_link_label_route_folds_case(db_env):
     await _seed(db_env)
     async with db_session() as db:
         from sqlalchemy import select
-        pid = (await db.execute(select(Project.id).where(Project.slug == "ccswitch"))).scalars().one()
+        pid = (await db.execute(select(Project.id).where(Project.slug == "viberpit"))).scalars().one()
         f = Feature(project_id=pid, slug="flaky-test-triage", title="Flaky", state="live",
                     route_labels=["Flaky"])
         db.add(f)
@@ -450,7 +450,7 @@ async def test_label_route_opens_no_session_for_an_unrouted_item(db_env, monkeyp
     await _seed(db_env)
     async with db_session() as db:
         from sqlalchemy import select
-        pid = (await db.execute(select(Project.id).where(Project.slug == "ccswitch"))).scalars().one()
+        pid = (await db.execute(select(Project.id).where(Project.slug == "viberpit"))).scalars().one()
         db.add(Feature(project_id=pid, slug="flaky-test-triage", title="Flaky", state="live",
                        route_labels=["flaky"]))
         db.add(WorkItem(repo=REPO, number=7, kind="issue", title="x", state="open",
@@ -480,7 +480,7 @@ async def test_auto_link_declines_an_already_classified_item_and_an_unmatched_la
     await _seed(db_env)
     async with db_session() as db:
         from sqlalchemy import select
-        pid = (await db.execute(select(Project.id).where(Project.slug == "ccswitch"))).scalars().one()
+        pid = (await db.execute(select(Project.id).where(Project.slug == "viberpit"))).scalars().one()
         f = Feature(project_id=pid, slug="flaky-test-triage", title="Flaky", state="live",
                     route_labels=["flaky"])
         db.add(f)
