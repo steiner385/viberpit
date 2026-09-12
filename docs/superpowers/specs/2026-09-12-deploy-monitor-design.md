@@ -167,7 +167,9 @@ last_commented_at)` and a per-day cap `daily_cap` (default 10):
 - issue open → `comment` (throttled by `comment_every_h`, default 6) — only when the failing
   sha moved, so a static failure does not chatter.
 - closed `not_planned` → mute until recovery (row `muted=true`).
-- closed `completed` while still failing → `regress`: file a new issue linking the old one.
+- closed `completed` → acknowledged for the sha failing at close time; if a *newer* sha is still
+  failing → `regress`: file a new issue linking the old one. (Refiling on the same sha would
+  punish a human who closed the issue knowing a fix was on its way.)
 
 Issue state is learned with `ci_issues.issue_states` on rows that carry an `issue_number`. Filing
 is two-phase like Error Triage: the row is written before the `gh` call, `issue_number` after it,
