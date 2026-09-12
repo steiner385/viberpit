@@ -3,6 +3,7 @@ control-band triage queue (#804)."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
@@ -513,20 +514,38 @@ async def update_initiative(
     a member and drops it otherwise. The product is re-derived from the primary
     (else the first capability) — ``None`` when the set empties — because the
     initiative's product IS its primary capability's product (§10 model). An
-    empty body is a read-through: nothing to audit."""
+    empty body is a read-through: nothing to audit.
+
+    ``primaryCapabilityId: ""`` is normalised to ``None`` — "not chosen", never
+    "clear the primary". A blank select value must not orphan an initiative:
+    clearing the primary clears the product too, and ``pm_tree`` selects
+    initiatives by product, so a product-less one appears NOWHERE on the map.
+    Emptying the touched set is expressible on its own (``capabilityIds: []``)."""
     ini = await _load_initiative(db, slug)
+    if body.primaryCapabilityId == "":
+        body.primaryCapabilityId = None
     fields = body.model_dump(exclude_none=True)
     if not fields:
         d = _initiative_to_dict(ini)
         await _decorate(db, [ini], [d])
         return d
+    # The audit carries the VALUES written, not just which fields moved — every
+    # sibling audit here records what it wrote, and "fields: [title]" cannot
+    # answer "what was it renamed to?".
+    detail: dict[str, Any] = {"slug": slug, "fields": sorted(fields)}
     if body.title is not None:
         title = body.title.strip()
         if not title:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={
                 "error": "bad_title", "message": "title must not be blank"})
         ini.title = title
+        detail["title"] = title
     if body.primaryCapabilityId is not None or body.capabilityIds is not None:
+        # Serialize concurrent PATCHes of this initiative: the delete → flush →
+        # re-add below is read-modify-write, so under READ COMMITTED two
+        # overlapping requests both delete and the loser's INSERT then violates
+        # `uq_initiative_feature` (a 500). A no-op on SQLite, which has one writer.
+        await db.execute(select(Initiative).where(Initiative.id == ini.id).with_for_update())
         current = (await db.execute(select(InitiativeFeature).where(
             InitiativeFeature.initiative_id == ini.id))).scalars().all()
         current_primary = next((r.feature_id for r in current if r.is_primary), None)
@@ -542,9 +561,10 @@ async def update_initiative(
         for fid in wanted:
             db.add(InitiativeFeature(initiative_id=ini.id, feature_id=fid, is_primary=(fid == primary)))
         ini.project_id = _project_of(wanted, features, primary)
+        detail["primaryCapabilityId"] = primary
+        detail["capabilityIds"] = wanted
     await db.flush()
-    await record_audit(db=db, type="sdlc.initiative.update", identity=identity,
-                       detail={"slug": slug, "fields": sorted(fields)})
+    await record_audit(db=db, type="sdlc.initiative.update", identity=identity, detail=detail)
     d = _initiative_to_dict(ini)
     await _decorate(db, [ini], [d])
     return d

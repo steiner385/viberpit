@@ -33,6 +33,7 @@ import {
   initiativeStatusLabel, nextActionLabel, nextStage, prevStage, reasonLabel, stageLabel,
 } from '@/features/products/vocab'
 import { capabilityPath, productPath, roadmapPath } from './roadmapNavState'
+import { findProduct } from './lookup'
 import { TIER_TONE } from './roadmapTier'
 import { useTabParam } from './useTabParam'
 import { StatTiles } from './detail/StatTiles'
@@ -290,12 +291,25 @@ function SessionsTab({ initiative }: { initiative: Initiative }) {
   )
 }
 
-function CapabilitiesTab({ initiative, onEdit }: { initiative: Initiative; onEdit: () => void }) {
+function CapabilitiesTab({ initiative, onEdit }: {
+  initiative: Initiative
+  /** `null` until the map the dialog picks from has arrived. */
+  onEdit: (() => void) | null
+}) {
   const { projectSlug } = initiative
   // "Edit capabilities" surfaces from this tab too, not just the header — the
-  // empty state is exactly where a human wants to fix a missing home.
+  // empty state is exactly where a human wants to fix a missing home. Same gate
+  // as the header's Edit: no map, no dialog to open.
   const editButton = (
-    <Button size="sm" variant="ghost" onClick={onEdit}>Edit {CAPABILITY.plural.toLowerCase()}</Button>
+    <Button
+      size="sm"
+      variant="ghost"
+      disabled={!onEdit}
+      title={onEdit ? undefined : 'Loading the map…'}
+      onClick={() => onEdit?.()}
+    >
+      Edit {CAPABILITY.plural.toLowerCase()}
+    </Button>
   )
   if (!projectSlug || initiative.capabilities.length === 0) {
     return (
@@ -367,7 +381,7 @@ export function InitiativePage() {
   // The map is where a product's display NAME lives; the detail payload only
   // carries its slug, and a slug among titles reads as a different kind of thing.
   const productSlug = initiative?.projectSlug ?? node?.projectSlug ?? null
-  const productNode = productSlug ? (map?.products.find((p) => p.slug === productSlug) ?? null) : null
+  const productNode = productSlug ? findProduct(map, productSlug) : null
   const productName = productSlug ? (productNode?.name ?? productSlug) : null
 
   const crumbs: BreadcrumbItem[] = [
@@ -400,8 +414,18 @@ export function InitiativePage() {
         actions={initiative && (
           <div className="flex items-center gap-2">
             {/* The one place an initiative's own facts are edited; the gate
-                controls beside it move it, this names it. */}
-            <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>Edit</Button>
+                controls beside it move it, this names it. The dialog needs the
+                map (it picks a capability out of it), so the button waits for
+                it rather than opening onto nothing. */}
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={!map}
+              title={map ? undefined : 'Loading the map…'}
+              onClick={() => setEditing(true)}
+            >
+              Edit
+            </Button>
             {/* The undo for a mis-tapped Advance. Disabled, not absent, at intake
                 for the same reason Advance is at done: the row of controls must
                 not change shape as the initiative moves. */}
@@ -478,7 +502,9 @@ export function InitiativePage() {
               {tab === 'track' && <TrackTab initiative={initiative} />}
               {tab === 'epic' && <EpicTab initiative={initiative} product={productNode} />}
               {tab === 'sessions' && <SessionsTab initiative={initiative} />}
-              {tab === 'capabilities' && <CapabilitiesTab initiative={initiative} onEdit={() => setEditing(true)} />}
+              {tab === 'capabilities' && (
+                <CapabilitiesTab initiative={initiative} onEdit={map ? () => setEditing(true) : null} />
+              )}
             </div>
           </div>
         )}
@@ -577,11 +603,15 @@ export function InitiativePage() {
           </div>
         </Dialog>
       )}
-      {initiative && map && (
+      {/* Mounted only while it is open (the RoadmapPage idiom): the form seeds
+          from the initiative once, so a dialog left mounted would re-open on an
+          abandoned draft — and, because the detail polls, would flip "changed"
+          on its own when an external rename moved the seed under it. */}
+      {initiative && map && editing && (
         <EditInitiativeDialog
           initiative={initiative}
           products={map.products}
-          open={editing}
+          open
           onClose={() => setEditing(false)}
         />
       )}

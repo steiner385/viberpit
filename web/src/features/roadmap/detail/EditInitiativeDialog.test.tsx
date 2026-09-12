@@ -47,6 +47,26 @@ describe('EditInitiativeDialog', () => {
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 
+  it('offers no way to un-home the initiative', () => {
+    // "— none —" sent `primaryCapabilityId: ""` with an empty set, which cleared
+    // the product and took the initiative off every node of the map.
+    render(<EditInitiativeDialog initiative={initiative} products={products} open onClose={() => {}} />)
+    expect(screen.queryByRole('option', { name: '— none —' })).toBeNull()
+    expect(screen.getAllByRole('option').every((o) => (o as HTMLOptionElement).value !== '')).toBe(true)
+  })
+
+  it('a same-product primary swap keeps the outgoing primary in the touched set', () => {
+    // The initiative still touches what it was primary on; dropping it silently
+    // would unlink a capability nobody asked to unlink.
+    render(<EditInitiativeDialog initiative={initiative} products={products} open onClose={() => {}} />)
+    fireEvent.change(screen.getByLabelText('Primary capability'), { target: { value: 'f2' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    const [vars] = h.mutate.mock.calls[0] as [{ slug: string; input: { primaryCapabilityId?: string; capabilityIds?: string[] } }]
+    expect(vars.input.primaryCapabilityId).toBe('f2')
+    expect(vars.input.capabilityIds).toEqual(expect.arrayContaining(['f1', 'f2']))
+    expect(vars.input.capabilityIds?.[0]).toBe('f2')   // the primary leads the set
+  })
+
   it('sends only the changed fields', () => {
     render(<EditInitiativeDialog initiative={initiative} products={products} open onClose={() => {}} />)
     fireEvent.change(screen.getByLabelText('Title', { exact: false }), { target: { value: 'Task views, use-case first' } })

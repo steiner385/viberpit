@@ -54,17 +54,23 @@ export function EditInitiativeDialog({ initiative, products, open, onClose }: {
   const save = () => {
     const input: UpdateInitiativeInput = {}
     if (titleChanged) input.title = trimmed
-    if (primary !== seedPrimary) input.primaryCapabilityId = primary
+    // Never send an empty primary: the server would read it as "no primary",
+    // clear the product with it, and an initiative with no product is on no
+    // node of the map. This form CHANGES an initiative's home, never removes it.
+    if (primary !== '' && primary !== seedPrimary) input.primaryCapabilityId = primary
     // The set is sent whole whenever any part of it moved — it replaces, not merges.
-    if (setChanged) input.capabilityIds = primary ? [primary, ...touched] : touched
+    if (setChanged && primary !== '') input.capabilityIds = [primary, ...touched]
     update.mutate({ slug: initiative.slug, input }, { onSuccess: onClose })
   }
 
   const choosePrimary = (id: string) => {
-    const next = id ? productOfCapability(products, id) : null
-    // Same product: keep the touched set (minus the new primary). Another
-    // product, or none: start over.
-    setTouched((cur) => (next && product && next.slug === product.slug ? cur.filter((x) => x !== id) : []))
+    const next = productOfCapability(products, id)
+    // Same product: the OUTGOING primary is still a capability the initiative
+    // touches, so it joins the touched set as the incoming one leaves it.
+    // Another product: the set cannot span products, so it starts over.
+    setTouched((cur) => (next && product && next.slug === product.slug
+      ? [...cur.filter((x) => x !== id), ...(primary && primary !== id ? [primary] : [])]
+      : []))
     setPrimary(id)
   }
 
@@ -75,8 +81,11 @@ export function EditInitiativeDialog({ initiative, products, open, onClose }: {
           <Input ref={titleRef} id="ei-title" invalid={!!titleError} value={title} onChange={(e) => setTitle(e.target.value)} />
         </Field>
         <Field label={`Primary ${CAPABILITY.singular.toLowerCase()}`} htmlFor="ei-primary" help="Decides which product the initiative belongs to">
+          {/* No "none" option: an initiative's home is changed here, not
+              removed. Clearing the primary clears the product with it, which
+              takes the initiative off every node of the map; unticking is how
+              the touched set is emptied. */}
           <Select id="ei-primary" value={primary} onChange={(e) => choosePrimary(e.target.value)}>
-            <option value="">— none —</option>
             {products.map((p) => (
               <optgroup key={p.slug} label={p.name ?? p.slug}>
                 {flattenCapabilities(p.capabilities).map(({ node, depth }) => (

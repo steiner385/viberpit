@@ -2,7 +2,7 @@
 // work actually is. Open first and closed below it, because "what is left" is
 // the question the list is opened with; the closed rows stay because they are
 // the evidence a capability is finished (finish-line spec §7).
-import { useMemo, useRef } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { Leaf, LeavesScope, ProductNode, CapabilityNode } from '@/api/roadmap'
 import { useLeaves, useRemoveDependency } from '@/api/hooks'
@@ -126,6 +126,28 @@ const OVERSCAN = 10
 
 function VirtualRows({ rows, capabilities }: { rows: LeafListRow[]; capabilities: { node: CapabilityNode; depth: number }[] }) {
   const listRef = useRef<HTMLDivElement>(null)
+  // How far the list starts down the SCROLL CONTAINER's content — the offset the
+  // virtualizer subtracts from the page's scrollTop. It has to be measured:
+  // `offsetTop` is relative to the nearest positioned ancestor, and nothing
+  // between this list and <body> is positioned, so it would also count the top
+  // bar and the PageHeader, which are outside the scroll container. Making
+  // `PageContent` positioned instead would turn it into the containing block for
+  // every absolutely positioned descendant of a page, and clip them.
+  const [scrollMargin, setScrollMargin] = useState(0)
+  useLayoutEffect(() => {
+    const list = listRef.current
+    const scrollEl = list?.closest<HTMLElement>('[data-page-scroll]')
+    if (!list || !scrollEl) return
+    const measure = () => setScrollMargin(
+      scrollEl.scrollTop + list.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top,
+    )
+    measure()
+    // The tiles and tabs above the list resize (a banner arrives, text wraps),
+    // which moves where the list starts without re-rendering it.
+    const ro = new ResizeObserver(measure)
+    ro.observe(scrollEl)
+    return () => ro.disconnect()
+  }, [rows.length])
   // The page scrolls (`PageContent`), not this list — it is one panel among the
   // tiles and tabs above it — so the virtualizer measures against the page's
   // scroll element and offsets by where the list starts inside it.
@@ -136,7 +158,7 @@ function VirtualRows({ rows, capabilities }: { rows: LeafListRow[]; capabilities
     estimateSize: (i) => (rows[i].kind === 'header' ? 28 : 44),
     overscan: OVERSCAN,
     getItemKey: (i) => rows[i].key,
-    scrollMargin: listRef.current?.offsetTop ?? 0,
+    scrollMargin,
   })
   return (
     <div ref={listRef} role="list" aria-label={ISSUE.plural} className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
@@ -146,6 +168,11 @@ function VirtualRows({ rows, capabilities }: { rows: LeafListRow[]; capabilities
           <div
             key={item.key}
             role="listitem"
+            // Only a window of the list is in the DOM, so the row says where it
+            // sits in the whole of it — otherwise a screen reader announces the
+            // handful of mounted rows as the entire list.
+            aria-setsize={rows.length}
+            aria-posinset={item.index + 1}
             data-index={item.index}
             ref={virtualizer.measureElement}
             className="absolute left-0 top-0 w-full pb-1"

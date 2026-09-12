@@ -14,7 +14,7 @@ import { Field } from '@/ui/Field'
 import { Select } from '@/ui/Select'
 import { Button } from '@/ui/Button'
 import { CAPABILITY } from '@/features/products/vocab'
-import { ScoreFields, SCORE_FIELDS } from '../inbox/ScoreFields'
+import { ScoreFields, SCORE_FIELDS, type ScoreField } from '../inbox/ScoreFields'
 import { riceScore } from '../inbox/rice'
 
 const seedOf = (leaf: Leaf): OverlayEdits => ({
@@ -28,10 +28,18 @@ export function LeafScoreButton({ leaf }: { leaf: Leaf }) {
   const [edits, setEdits] = useState<OverlayEdits>(() => seedOf(leaf))
   const firstRef = useRef<HTMLInputElement>(null)
   const seed = seedOf(leaf)
+  // An emptied box is NOT a change: the overlay PATCH cannot clear a RICE field
+  // (it assigns only what it is given), so sending the key would read back
+  // unchanged while the dialog closed as if it had saved. Blank means "leave
+  // this one alone", which is what the live read-out below shows too.
+  const effective = (f: ScoreField) => edits[f] ?? seed[f]
   const changed: OverlayEdits = {}
-  for (const f of SCORE_FIELDS) if ((edits[f] ?? null) !== (seed[f] ?? null)) changed[f] = edits[f]
+  for (const f of SCORE_FIELDS) {
+    if (edits[f] === undefined) continue
+    if (edits[f] !== seed[f]) changed[f] = edits[f]
+  }
   const dirty = Object.keys(changed).length > 0
-  const preview = riceScore(edits.reach, edits.impact, edits.effort, edits.confidence)
+  const preview = riceScore(effective('reach'), effective('impact'), effective('effort'), effective('confidence'))
   const openDialog = () => { setEdits(seedOf(leaf)); setOpen(true) }
   return (
     <>
@@ -90,6 +98,10 @@ export function LeafCapabilityChip({ leaf, capabilities }: {
         <form className="flex flex-col gap-3" onSubmit={(e) => { e.preventDefault(); if (dirty) update.mutate({ itemId: leaf.id, edit: { featureId: target } }, { onSuccess: () => setOpen(false) }) }}>
           <Field label={CAPABILITY.singular} htmlFor={`leaf-cap-${leaf.id}`}>
             <Select id={`leaf-cap-${leaf.id}`} value={target} onChange={(e) => setTarget(e.target.value)}>
+              {/* An unclassified leaf seeds `''`, which matches no option — the
+                  select would open on nothing at all. This names that state
+                  instead; `dirty` already refuses it as a destination. */}
+              <option value="">— {CAPABILITY.singular.toLowerCase()} —</option>
               {capabilities.map(({ node, depth }) => (
                 <option key={node.id} value={node.id}>{'  '.repeat(depth)}{node.title ?? node.slug}</option>
               ))}

@@ -1802,16 +1802,30 @@ export function useCreateEdge(slug: string) {
   })
 }
 
+/** Optimistic, in the triage hooks' shape: removing a chip is a direct,
+ *  non-modal affordance with no loading state of its own, so the chip has to go
+ *  the instant it is clicked and come back with a toast if the request fails. */
 export function useDeleteEdge(slug: string) {
   const qc = useQueryClient()
-  return useMutation<void, ApiRequestError, string>({
+  const key = QK.project(slug)
+  return useMutation<void, ApiRequestError, string, { prev?: Project }>({
     mutationFn: (edgeId) => deleteEdge(slug, edgeId),
+    onMutate: async (edgeId) => {
+      await qc.cancelQueries({ queryKey: key })
+      const prev = qc.getQueryData<Project>(key)
+      qc.setQueryData<Project>(key, (cur) => (
+        cur ? { ...cur, edges: cur.edges.filter((e) => e.id !== edgeId) } : cur))
+      return { prev }
+    },
+    onError: (e, _edgeId, ctx) => {
+      if (ctx?.prev) qc.setQueryData(key, ctx.prev)
+      toast.error(extractMutationErrorMessage(e, 'Could not remove the dependency'))
+    },
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: QK.project(slug) })
       void qc.invalidateQueries({ queryKey: QK.roadmapMap })
       void qc.invalidateQueries({ queryKey: ['pm', 'deps', slug] })
     },
-    onError: (e) => toast.error(extractMutationErrorMessage(e, 'Could not remove the dependency')),
+    onSettled: () => void qc.invalidateQueries({ queryKey: key }),
     meta: PM_MUTATION_META,
   })
 }

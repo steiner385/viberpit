@@ -15,6 +15,7 @@ import { Button } from '@/ui/Button'
 import { IconButton } from '@/ui/IconButton'
 import { Skeleton } from '@/ui/Skeleton'
 import { PRODUCT } from '@/features/products/vocab'
+import { findProduct } from '../lookup'
 
 const KIND_LABEL: Record<EdgeKind, string> = {
   depends_on: 'depends on', deploys_via: 'deploys via', integrates_with: 'integrates with',
@@ -30,7 +31,7 @@ export function ProductEdgesEditor({ product }: { product: ProductNode }) {
   const [note, setNote] = useState('')
   const edges = project?.edges ?? []
   const taken = new Set(edges.map((e) => `${e.kind}:${e.dstSlug}`))
-  const nameOf = (slug: string | null) => map?.products.find((p) => p.slug === slug)?.name ?? slug ?? '?'
+  const nameOf = (slug: string | null) => (slug ? findProduct(map, slug)?.name ?? slug : '?')
   // Every other product on the map that this one does not already point at with this kind.
   const targets = (map?.products ?? []).filter((p) => p.slug !== product.slug && !taken.has(`${kind}:${p.slug}`))
   const canAdd = dst !== '' && !create.isPending
@@ -47,7 +48,14 @@ export function ProductEdgesEditor({ product }: { product: ProductNode }) {
               return (
                 <li key={e.id} className="flex items-center gap-1 rounded-pill border border-edge bg-surface-raised py-0.5 pl-3 pr-1 text-sm text-ink" title={e.note ?? undefined}>
                   <span>{label}</span>
-                  <IconButton size="sm" aria-label={`Remove: ${label}`} disabled={remove.isPending} onClick={() => remove.mutate(e.id)}>
+                  {/* Only the chip actually being removed goes busy — one
+                      pending request must not freeze every other chip's X. */}
+                  <IconButton
+                    size="sm"
+                    aria-label={`Remove: ${label}`}
+                    disabled={remove.isPending && remove.variables === e.id}
+                    onClick={() => remove.mutate(e.id)}
+                  >
                     <X size={14} aria-hidden="true" />
                   </IconButton>
                 </li>

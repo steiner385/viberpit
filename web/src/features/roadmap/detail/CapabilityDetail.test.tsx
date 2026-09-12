@@ -47,7 +47,9 @@ const leaf = (over: Partial<Leaf> & { id: string; number: number }): Leaf => ({
 })
 
 const LEAVES: Leaf[] = [
-  leaf({ id: 'w1', number: 7, title: 'Bulk edit', score: 6.5, tier: 'in-flight', sessionStatus: 'in_progress' }),
+  // `featureId` names a capability in `busyProduct`'s tree (`cap()` ids are
+  // `f-<slug>`), so the row's move chip has a tree to render from.
+  leaf({ id: 'w1', number: 7, title: 'Bulk edit', score: 6.5, tier: 'in-flight', sessionStatus: 'in_progress', featureId: 'f-tasks' }),
   leaf({ id: 'w2', number: 9, title: 'Blocked one', tier: 'blocked', blockedBy: ['cairnea/KinDash#7'] }),
   leaf({ id: 'w3', number: 3, title: 'Old', state: 'closed', tier: 'live' }),
   leaf({ id: 'w4', number: 11, title: 'No URL', url: null }),
@@ -204,6 +206,14 @@ describe('CapabilityDetail', () => {
     expect(screen.getByRole('heading', { name: /Open · 3/ })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: /Closed · 1/ })).toBeInTheDocument()
     expect(items[3]).toHaveTextContent('Old')
+  })
+
+  it('Issues: a row offers to move the issue, which needs the product tree passed down', () => {
+    // Pins the `product` prop end-to-end: drop it at the LeafList mount and the
+    // chip disappears (the flattened tree is empty), which nothing else notices.
+    mount({}, '/roadmap/kindash/capabilities/tasks?tab=issues')
+    expect(screen.getAllByRole('button', { name: /Move #\d+/ }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: 'Move #7 to another capability' })).toHaveTextContent('Tasks')
   })
 
   it('Issues: a blocked leaf names each blocker and offers to remove it', () => {

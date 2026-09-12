@@ -1,7 +1,7 @@
 // The two inline edits a leaf row offers (spec §8): the score, through the same
 // four fields the inbox uses, and the capability it sits under.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import type { Leaf } from '@/api/roadmap'
 import { LeafScoreButton, LeafCapabilityChip } from './LeafEditors'
 
@@ -36,6 +36,20 @@ describe('LeafScoreButton', () => {
     expect(h.mutate).toHaveBeenCalledWith({ itemId: 'w1', edit: { effort: 4 } }, expect.anything())
   })
 
+  it('a blanked field is not a change: Save stays disabled and the read-out keeps the seeded value', () => {
+    // The server cannot clear a RICE field, so an emptied box must not count as
+    // a change — it would enable Save, send `{}` and close as if it had saved.
+    render(<LeafScoreButton leaf={leaf} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit score for #7' }))
+    fireEvent.change(screen.getByLabelText('reach'), { target: { value: '' } })
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('effort'), { target: { value: '4' } })
+    // 5*5*1/4 — the blanked reach still reads as its seeded 5, not as unscored.
+    expect(screen.getByText('6.25')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(h.mutate).toHaveBeenCalledWith({ itemId: 'w1', edit: { effort: 4 } }, expect.anything())
+  })
+
   it('an unscored leaf opens blank and reads "—"', () => {
     render(<LeafScoreButton leaf={{ ...leaf, score: null, reach: null, impact: null, effort: null, confidence: null }} />)
     expect(screen.getByRole('button', { name: 'Edit score for #7' })).toHaveTextContent('—')
@@ -56,6 +70,15 @@ describe('LeafCapabilityChip', () => {
     fireEvent.change(select, { target: { value: 'f2' } })
     fireEvent.click(screen.getByRole('button', { name: 'Move' }))
     expect(h.mutate).toHaveBeenCalledWith({ itemId: 'w1', edit: { featureId: 'f2' } }, expect.anything())
+  })
+
+  it('an unclassified leaf opens on a named placeholder, not a blank select', () => {
+    render(<LeafCapabilityChip leaf={{ ...leaf, featureId: null }} capabilities={capabilities} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Move #7 to another capability' }))
+    const select = screen.getByLabelText('Capability')
+    expect(select).toHaveValue('')
+    expect(within(select).getByRole('option', { name: '— capability —' })).toHaveProperty('selected', true)
+    expect(screen.getByRole('button', { name: 'Move' })).toBeDisabled()
   })
 
   it('renders nothing to click when the tree is not known', () => {

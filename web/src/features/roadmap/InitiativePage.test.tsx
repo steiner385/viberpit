@@ -222,6 +222,24 @@ describe('InitiativePage', () => {
     expect(h.updateMutate).toHaveBeenCalledWith({ slug: 'views', input: { title: 'Views' } }, expect.anything())
   })
 
+  it('re-opening Edit after Cancel seeds from the initiative again, not from the abandoned draft', () => {
+    // The dialog seeds once, on mount, so it has to be mounted per opening.
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.change(screen.getByLabelText('Title', { exact: false }), { target: { value: 'Abandoned' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.getByLabelText('Title', { exact: false })).toHaveValue('Use-case-first task views')
+    expect(h.updateMutate).not.toHaveBeenCalled()
+  })
+
+  it('Edit waits for the map the dialog picks a capability out of', () => {
+    h.state.map = undefined
+    mount()
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Edit' })).toHaveAttribute('title', 'Loading the map…')
+  })
+
   it('links the latest commit, not the first one committed', () => {
     // The server sends artifacts oldest first, so the newest committed SHA is
     // the LAST one — this used to link the intent commit.

@@ -36,10 +36,15 @@ describe('LeafList', () => {
   it('mounts a window, not the whole list, for a long one', () => {
     h.leaves = Array.from({ length: 300 }, (_, i) => leaf(i + 1, 'open'))
     render(<div data-page-scroll=""><LeafList scope={{ capability: 'f1' }} product={null} /></div>)
-    const rendered = screen.getAllByRole('listitem').length
-    expect(rendered).toBeGreaterThan(1)
-    expect(rendered).toBeLessThan(100)
+    const items = screen.getAllByRole('listitem')
+    expect(items.length).toBeGreaterThan(1)
+    expect(items.length).toBeLessThan(100)
     expect(screen.queryByText('#300 Issue 300')).toBeNull()
+    // Only a window is mounted, so each row carries its place in the WHOLE list
+    // (1 header + 300 leaves); without it assistive tech announces "1 of 11".
+    expect(items[0]).toHaveAttribute('aria-posinset', '1')
+    expect(items[0]).toHaveAttribute('aria-setsize', '301')
+    expect(items[1]).toHaveAttribute('aria-posinset', '2')
   })
 
   it('says so when there is nothing', () => {
