@@ -42,7 +42,7 @@ import { inboxReducer, initialInboxState, isTypingTarget, resolveCursorIndex } f
 import { clearInboxOrder, setInboxOrder } from './inboxOrderStore'
 import { INBOX_ORDERING_SPEC, type InboxGroupBy, type InboxSortBy } from './inboxOrdering'
 import { ProposalCard } from './ProposalCard'
-import { pendingProposals } from './triageSelectors'
+import { isPending, pendingProposals } from './triageSelectors'
 
 export interface InboxScopeBodyProps {
   proposals: readonly TriageProposal[]
@@ -152,19 +152,19 @@ export function InboxScopeBody({
         // window) has already had its one decision — none of these keys have
         // anything left to act on, so the cursor sitting on it is inert.
         case 'x':
-          if (!current || current.status !== 'pending') return
+          if (!isPending(current)) return
           dispatch({ type: 'toggleSelect', id: current.id })
           break
         case 'a':
-          if (!current || current.status !== 'pending') return
+          if (!isPending(current)) return
           acceptOne(current)
           break
         case 'r':
-          if (!current || current.status !== 'pending') return
+          if (!isPending(current)) return
           rejectOne(current)
           break
         case 'e':
-          if (!current || current.status !== 'pending') return
+          if (!isPending(current)) return
           onOpen(current, { edit: true })
           break
         case 'A':

@@ -1769,3 +1769,43 @@ def test_triage_list_drops_an_auto_accept_after_the_undo_window():
         r = c.get("/api/pm/triage", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
         assert all(row["id"] != pid for row in r.json())
+
+
+def test_triage_list_keeps_an_auto_accept_a_human_patched_inside_the_window():
+    """The inbox chip's row must not vanish when a human scores the leaf inside
+    the undo window: the overlay PATCH re-stamps ``WorkItem.classified_by`` as
+    human, so the list's provenance is read off the proposal's own snapshot."""
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import Feature, Project, TriageProposal, WorkItem
+    from server.pm.triage_accept import DECIDED_BY_AUTO, apply_accept
+
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Viberpit", repo="o/r")
+
+        async def _seed():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "viberpit"))).scalar_one()
+                f = Feature(project_id=p.id, slug="sessions", title="Sessions", state="live")
+                w = WorkItem(repo="o/r", number=1, kind="issue", title="a",
+                             state="open", triage_state="proposed")
+                db.add_all([f, w])
+                await db.flush()
+                prop = TriageProposal(work_item_id=w.id, proposed_feature_id=f.id,
+                                      confidence_level="high", status="pending")
+                db.add(prop)
+                await db.flush()
+                await apply_accept(db, prop, decided_by=DECIDED_BY_AUTO,
+                                   audit_identity="pm-triage")
+                return prop.id, w.id
+        pid, wid = c.portal.call(_seed)
+
+        r = c.patch(f"/api/pm/work-items/{wid}/overlay", json={"reach": 5},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+
+        rows = c.get("/api/pm/triage", headers=IDENTITY_HEADERS).json()
+        mine = [x for x in rows if x["id"] == pid]
+        assert len(mine) == 1
+        assert mine[0]["status"] == "accepted" and mine[0]["classifiedBy"] == "auto"

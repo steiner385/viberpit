@@ -22,7 +22,7 @@ import type { TriageProposal } from '@/api/triage'
 
 /** Is this one proposal still awaiting a human? The ONE `'pending'` literal.
  *  Takes null/undefined because a detail pane renders before its row arrives. */
-export function isPending(p: TriageProposal | null | undefined): boolean {
+export function isPending(p: TriageProposal | null | undefined): p is TriageProposal {
   return p?.status === 'pending'
 }
 

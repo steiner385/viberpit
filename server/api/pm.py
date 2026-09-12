@@ -931,6 +931,13 @@ async def classify(
     return {"dispatched": dispatched}
 
 
+def _decided_by(prop: TriageProposal) -> str | None:
+    """Who resolved *prop*: the ``decidedBy`` ``apply_accept`` stamps into the undo
+    snapshot (``human`` | ``auto``), or ``None`` for a pending row or a decision
+    taken before the snapshot carried it."""
+    return (prop.undo_snapshot or {}).get("decidedBy")
+
+
 def _triage_to_dict(prop: TriageProposal, wi: WorkItem | None,
                     feat_slug: str | None, project_slug: str | None) -> dict:
     return {
@@ -953,7 +960,9 @@ def _triage_to_dict(prop: TriageProposal, wi: WorkItem | None,
         "confidenceLevel": prop.confidence_level,
         "status": prop.status,
         "createdAt": prop.created_at.isoformat() if prop.created_at else None,
-        "classifiedBy": wi.classified_by if wi else None,
+        # Provenance of a RESOLVED proposal comes from the proposal itself (see
+        # ``list_triage``); a pending one has none.
+        "classifiedBy": _decided_by(prop) if prop.status != "pending" else None,
         "resolvedAt": prop.resolved_at.isoformat() if prop.resolved_at else None,
     }
 
@@ -983,17 +992,22 @@ async def list_triage(
     "3 proposals need you" that names rows nobody has to touch.
     """
     since = datetime.now(timezone.utc) - timedelta(seconds=TRIAGE_UNDO_WINDOW_S)
-    auto_ids = select(WorkItem.id).where(WorkItem.classified_by == DECIDED_BY_AUTO)
     stmt = select(TriageProposal).where(
         TriageProposal.status == "pending" if pendingOnly else or_(
             TriageProposal.status == "pending",
             and_(TriageProposal.status == "accepted",
-                 TriageProposal.resolved_at >= since,
-                 TriageProposal.work_item_id.in_(auto_ids))))
+                 TriageProposal.resolved_at >= since)))
     if confidenceLevel:
         stmt = stmt.where(TriageProposal.confidence_level == confidenceLevel)
     props = (await db.execute(
         stmt.order_by(TriageProposal.created_at.desc()))).scalars().all()
+    # Who decided is read off the PROPOSAL (``undo_snapshot["decidedBy"]``, written
+    # by ``apply_accept``), never off ``WorkItem.classified_by``: an overlay PATCH
+    # inside the window re-stamps that column ``human``, and keying the widened
+    # leg on it made the row — and its undo chip — vanish while the undo was
+    # still valid. The window holds a handful of rows, so the filter is Python.
+    props = [p for p in props if p.status == "pending"
+             or _decided_by(p) == DECIDED_BY_AUTO]
     if not props:
         return []
     wi_ids = [p.work_item_id for p in props]
