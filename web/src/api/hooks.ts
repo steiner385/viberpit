@@ -9,6 +9,7 @@ import {
   type Automation, type AutomationEvent, type AutomationPatch,
   type ActionableItem, type TriggerResult, type ConsolidationView,
   type BacklogGroupsView, type BacklogCandidatesView, type DispatchGroupResponse,
+  type ConfigField,
 } from './automations'
 import { DEFAULT_AGENT_ENGINE } from './types'
 import type {
@@ -34,6 +35,7 @@ import {
   fetchOnboarding, proposeMap, runClassify, advanceMap, advanceLive,
   removeDependency, createEdge, deleteEdge,
   editMapChanges, abandonMapChanges, rebaseMapChanges,
+  fetchPolicySchema, updateProductPolicy,
   type Project, type CreateProjectInput, type OnboardingView,
   type RemoveDependencyInput, type RemoveDependencyResult,
   type CreateEdgeInput, type ProjectEdgeInfo,
@@ -109,6 +111,7 @@ export const QK = {
   leaves: (scope: string) => ['pm', 'leaves', scope] as const,
   queue: ['pm', 'queue'] as const,
   project: (slug: string) => ['pm', 'project', slug] as const,
+  policySchema: ['pm', 'policy-schema'] as const,
 }
 
 /**
@@ -1784,6 +1787,34 @@ export function useProject(slug: string | null) {
     enabled: slug !== null && slug !== '',
     staleTime: 5_000,
     refetchInterval: 15_000,
+  })
+}
+
+/** The ONE automation-policy schema every product's policy validates against
+ *  (server `PRODUCT_POLICY_SCHEMA`, spec §4). `staleTime: Infinity`: it only
+ *  changes on a deploy, never per-request — no poll, no re-fetch on focus. */
+export function usePolicySchema() {
+  return useQuery<ConfigField[]>({
+    queryKey: QK.policySchema,
+    queryFn: fetchPolicySchema,
+    staleTime: Infinity,
+  })
+}
+
+/** The product Overview's Automation card (spec §9): a whole-object replace of
+ *  the policy blob. Invalidates this project's own detail (the card reads its
+ *  `automationPolicy` back) and the map (a product's "is automation on" chip,
+ *  if the map ever grows one, would read the same field). */
+export function useUpdateProductPolicy(slug: string) {
+  const qc = useQueryClient()
+  return useMutation<Project, ApiRequestError, Record<string, unknown> | null>({
+    mutationFn: (policy) => updateProductPolicy(slug, policy),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.project(slug) })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+    },
+    onError: (e) => toast.error(extractMutationErrorMessage(e, 'Could not update the automation policy')),
+    meta: PM_MUTATION_META,
   })
 }
 

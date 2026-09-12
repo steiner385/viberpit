@@ -420,7 +420,7 @@ def test_give_up_releases_instead_of_escalating_when_the_session_never_ran():
         calls: dict = {}
         loop = _runner(ran=False, calls=calls)
         await loop._sweep_one("acme/repo#1", {"session_id": "s1", "attempts": 2},
-                              {"max_attempts": 3}, set())
+                              set())
 
         assert "needs_human" not in calls, (
             "escalated an issue whose session never ran a single turn — it is now "
@@ -438,7 +438,7 @@ def test_give_up_still_escalates_when_the_session_actually_ran():
         calls: dict = {}
         loop = _runner(ran=True, calls=calls)
         await loop._sweep_one("acme/repo#2", {"session_id": "s2", "attempts": 2},
-                              {"max_attempts": 3}, set())
+                              set())
 
         assert calls.get("needs_human") == "acme/repo#2"
         assert "deleted" not in calls, "a give-up keeps its row — it IS the handoff"
@@ -452,7 +452,7 @@ def test_give_up_escalates_when_no_ran_probe_is_wired():
         calls: dict = {}
         loop = _runner(ran=None, calls=calls)
         await loop._sweep_one("acme/repo#3", {"session_id": "s3", "attempts": 2},
-                              {"max_attempts": 3}, set())
+                              set())
 
         assert calls.get("needs_human") == "acme/repo#3"
 

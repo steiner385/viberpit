@@ -63,10 +63,8 @@ class FakeClock:
 
 def make_config(**over) -> dict:
     cfg = {
-        "enabled_repos": ["o/r"],
         "max_concurrent": 1,
         "max_spawns_per_day": 10,
-        "max_attempts": 2,
         "max_issues_per_pr": 1,
     }
     cfg.update(over)
@@ -131,6 +129,7 @@ class Harness:
             pr_status_for=self._pr_status_for,
             pr_doctor_active=self._pr_doctor_active_fn,
             read_config=self._read_config,
+            read_policies=self._read_policies,
             clock=clock,
             needs_human=self._needs_human,
             session_ended=self._session_ended,
@@ -140,7 +139,16 @@ class Harness:
         self.needs_human_reasons: list[str] = []
 
     async def _read_config(self):
-        return "auto", self.config
+        return "on", self.config
+
+    async def _read_policies(self):
+        """The product every ``_queue_row`` belongs to, dispatching automatically.
+        Its ``max_in_flight`` is well clear of ``max_concurrent`` so the fleet-wide
+        slot budget stays the thing these tests measure; the per-product ceiling
+        has its own tests in test_backlog_runner_loop.py."""
+        from server.automations.product_policy import effective_policy
+        return {"viberpit": effective_policy({"dispatch": "auto",
+                                              "max_in_flight": 100})}
 
     async def _query_queue(self, _config: dict | None = None) -> list[dict]:
         """The candidate pool, ranked exactly as ``_backlog_query_queue`` does:
@@ -188,7 +196,7 @@ class Harness:
         await asyncio.to_thread(backlog_github.announce_needs_human, batch, reason,
                                 gh_run=self.gh)
 
-    async def _spawn(self, batch, account: str):
+    async def _spawn(self, batch, account: str, **_kw):
         if self.spawn_raises:
             raise RuntimeError("clone failed (injected)")
         # No real clone / SDK session: route through the context spawner, which
@@ -325,7 +333,7 @@ def test_ended_without_pr_increments_then_gives_up(tmp_path):
     async def go():
         await init_db(db_url=db_url)
         await _seed_rows()
-        h = Harness(config=make_config(max_concurrent=1, max_attempts=2),
+        h = Harness(config=make_config(max_concurrent=1),
                     clock=FakeClock(),
                     candidate_refs=[("o/r", 1, "one")], pr_status={})
         await h.loop.tick()                  # spawn o/r#1, attempts=0

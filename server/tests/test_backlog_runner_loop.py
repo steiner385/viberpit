@@ -33,14 +33,26 @@ class FakeClock:
 
 def make_config(**over) -> dict:
     cfg = {
-        "enabled_repos": [],
         "max_concurrent": 2,
         "max_spawns_per_day": 10,
-        "max_attempts": 2,
         "max_issues_per_pr": 1,
     }
     cfg.update(over)
     return cfg
+
+
+# Every batch the real queue hands ``_refill`` carries the slug of a product whose
+# dispatch is ON (the queue read is policy-scoped, and ``QueueRow.product`` is not
+# optional), so the harness's default batch does too — a product-less batch is a
+# state the loop is entitled to refuse.
+DEFAULT_PRODUCT = "p1"
+
+
+def policy(**over) -> dict:
+    """A product policy as ``read_policies`` hands it to the loop — the validated
+    shape ``effective_policy`` returns, never a hand-rolled subset."""
+    from server.automations.product_policy import effective_policy
+    return effective_policy({"dispatch": "auto", **over})
 
 
 async def _seed_row(automation_id: str = "backlog-runner") -> None:
@@ -49,10 +61,12 @@ async def _seed_row(automation_id: str = "backlog-runner") -> None:
         db.add(Automation(id=automation_id))
 
 
-def build_loop(*, mode="auto", config=None, clock=None,
+def build_loop(*, mode="on", config=None, clock=None,
                candidates=None, healthy="a", in_flight_counter=None,
                pr_status=None, pr_doctor_active=True, announce=None,
                candidate_count=None, blocked_count=0, untriaged_count=0,
+               per_product=None, count_read_failed=False,
+               policies=None, seed_policies=None,
                refresh_groups=None, spawn=None, close_out_result=None,
                credential_alerts=None, verify_ready=None, queue_tail=None,
                wall_clock=None, needs_human_raises=False):
@@ -92,7 +106,7 @@ def build_loop(*, mode="auto", config=None, clock=None,
 
     announce_fn = announce or _default_announce
 
-    async def _default_spawn(batch, account):
+    async def _default_spawn(batch, account, **_kw):
         rec.spawns.append((batch, account))
         rec.in_flight += 1
         return object()
@@ -123,10 +137,24 @@ def build_loop(*, mode="auto", config=None, clock=None,
         return close_out_result
 
     async def count_candidates():
-        # The seam reports (eligible, blocked, untriaged) — dependency-gated and
-        # below-min-status skips this sweep, both surfaced on the Automation card.
+        # The seam reports (eligible, blocked, untriaged, per_product) — the
+        # dependency-gated and below-min-status skips this sweep, plus one row per
+        # product, all surfaced on the Automation card. ``per_product is None`` is
+        # the seam's own "the queue read FAILED" answer, distinct from ``{}``.
         return (candidate_count if candidate_count is not None else 0,
-                blocked_count, untriaged_count)
+                blocked_count, untriaged_count,
+                None if count_read_failed else (per_product or {}))
+
+    async def read_policies():
+        # The harness's default product, matching production: every batch the
+        # queue produces carries the slug of a product whose dispatch is ON, so a
+        # test that says nothing about policies gets exactly that. Its
+        # ``max_in_flight`` is deliberately huge — the fleet-wide
+        # ``max_concurrent`` is what most of these tests are about, and the
+        # per-product ceiling has its own tests below.
+        if policies is not None:
+            return dict(policies)
+        return {DEFAULT_PRODUCT: policy(max_in_flight=1000)}
 
     loop = BacklogRunnerLoop(
         ctx,
@@ -138,6 +166,8 @@ def build_loop(*, mode="auto", config=None, clock=None,
         pr_status_for=pr_status_for,
         pr_doctor_active=pr_doctor_active_fn,
         read_config=read_config,
+        read_policies=read_policies,
+        seed_policies=seed_policies,
         clock=clk,
         needs_human=needs_human,
         close_out=close_out,
@@ -151,8 +181,8 @@ def build_loop(*, mode="auto", config=None, clock=None,
     return loop, rec, ctx
 
 
-def batch(primary: str, issues=None) -> Batch:
-    return Batch(primary=primary, issues=issues or [primary])
+def batch(primary: str, issues=None, product=DEFAULT_PRODUCT) -> Batch:
+    return Batch(primary=primary, issues=issues or [primary], product=product)
 
 
 # --------------------------------------------------------------------------- #
@@ -259,14 +289,17 @@ def test_non_reentrant_no_double_spawn(tmp_path):
         gate = asyncio.Event()
 
         async def read_config():
-            return "auto", cfg
+            return "on", cfg
+
+        async def read_policies():
+            return {DEFAULT_PRODUCT: policy(max_in_flight=1000)}
 
         cand = [batch("r#1"), batch("r#2")]
 
         async def select_batch(_c):
             return cand.pop(0) if cand else None
 
-        async def spawn(b, account):
+        async def spawn(b, account, **_kw):
             await gate.wait()  # slow spawn: hold the lock
             spawns.append(b)
             in_flight["n"] += 1
@@ -288,7 +321,8 @@ def test_non_reentrant_no_double_spawn(tmp_path):
             ctx, select_batch=select_batch, spawn=spawn,
             count_in_flight=count_in_flight, healthy_account=healthy_account,
             pr_status_for=pr_status_for, pr_doctor_active=pr_doctor_active,
-            read_config=read_config, clock=FakeClock(),
+            read_config=read_config, read_policies=read_policies,
+            clock=FakeClock(),
         )
 
         t1 = asyncio.create_task(loop.tick())
@@ -443,7 +477,7 @@ def test_give_up_keeps_a_row_with_needs_human_at(tmp_path):
         at = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
         loop, rec, ctx = build_loop(candidates=[], pr_status={},
                                     wall_clock=lambda: at,
-                                    config=make_config(max_attempts=2))
+                                    config=make_config())
         # A spawned target whose session ended with no PR, one attempt short of max.
         await ctx.set_target_state("o/r#7", {
             "session_id": "s1", "repo": "o/r", "issues": ["o/r#7", "o/r#8"],
@@ -476,7 +510,7 @@ def test_give_up_row_is_stamped_even_when_the_announce_fails(tmp_path):
         at = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
         loop, rec, ctx = build_loop(candidates=[], pr_status={},
                                     wall_clock=lambda: at, needs_human_raises=True,
-                                    config=make_config(max_attempts=2))
+                                    config=make_config())
         await ctx.set_target_state("o/r#7", {
             "session_id": "s1", "repo": "o/r", "issues": ["o/r#7"],
             "claimed": True, "attempts": 1, "_ended": True})
@@ -836,26 +870,434 @@ def test_merged_after_handoff_still_runs_close_out(tmp_path):
     asyncio.run(run())
 
 
-def test_propose_mode_writes_state_row_before_claim(tmp_path):
-    """Propose-mode must write a durable state row (proposed=True) BEFORE calling
-    claim — RECORDS-BEFORE-LABELS so a crash after the gh label write leaves a
-    recoverable row rather than a row-less orphaned label."""
+def test_propose_dispatch_writes_state_row_before_claim(tmp_path):
+    """A ``propose`` PRODUCT must write a durable state row (proposed=True) BEFORE
+    calling claim — RECORDS-BEFORE-ANYTHING, so a crash after the announce leaves a
+    recoverable row rather than a row-less orphaned comment."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'p1.db'}"
 
     async def run():
         await init_db(db_url=db_url)
         await _seed_row()
         loop, rec, ctx = build_loop(
-            mode="propose",
-            candidates=[batch("r#1")],
+            candidates=[batch("r#1", product="p1")],
+            policies={"p1": policy(dispatch="propose")},
         )
         await loop.tick()
 
         assert rec.announced, "the claim announce should have been called"
+        assert rec.spawns == [], "propose must not spawn"
         st = await ctx.get_target_state("r#1")
         assert st.get("claimed") is True
         assert st.get("proposed") is True
         assert st.get("issues") == ["r#1"]
+        assert st.get("product") == "p1"
+
+    asyncio.run(run())
+
+
+def test_dispatch_is_per_product_propose_announces_auto_spawns(tmp_path):
+    """One global mode, two products: the ``auto`` one gets a session, the
+    ``propose`` one gets a pending-tap claim — on the SAME tick."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'perproduct.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+        await init_db(db_url=db_url)
+        await _seed_row()
+        spawned: list = []
+
+        async def spawn(b, account, **_kw):
+            spawned.append((b, account))
+            # A real record: a spawn whose row never records a session id is the
+            # dangling claim reconciliation deletes at the end of the tick.
+            return SimpleNamespace(id=f"sess-{b.primary}", branch=None)
+
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=2), spawn=spawn,
+            candidates=[batch("r#1", product="p1"), batch("k#2", product="p2")],
+            policies={"p1": policy(dispatch="propose"), "p2": policy(dispatch="auto")},
+        )
+        await loop.tick()
+        rec.spawns = spawned
+
+        assert [b.primary for b, _acct in rec.spawns] == ["k#2"]
+        assert (await ctx.get_target_state("r#1")).get("proposed") is True
+        assert (await ctx.get_target_state("k#2")).get("proposed") is None
+        # The claim records which product owns it — the sweep reads its policy back.
+        assert (await ctx.get_target_state("k#2")).get("product") == "p2"
+
+    asyncio.run(run())
+
+
+def test_dispatch_off_skips_the_batch_and_keeps_serving_other_products(tmp_path):
+    """A product flipped OFF between the queue read and the claim takes no claim —
+    and the skip is a ``continue``, not a ``break``: another product's batch is
+    still perfectly workable on the same tick."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'dispatchoff.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=2),
+            candidates=[batch("r#1", product="p-off"), batch("k#2", product="p-on")],
+            policies={"p-off": policy(dispatch="off"), "p-on": policy()},
+        )
+        await loop.tick()
+
+        assert [b.primary for b, _a in rec.spawns] == ["k#2"]
+        assert [b.primary for b in rec.announced] == ["k#2"]
+        assert await ctx.get_target_state("r#1") == {}     # no claim at all
+        assert len(await ctx.list_events(kind="skipped_dispatch_off")) == 1
+
+    asyncio.run(run())
+
+
+def test_an_unknown_product_is_never_auto_spawned(tmp_path):
+    """The dispatch fallback is fail-SAFE: a batch whose product the snapshot does
+    not know resolves to the pure schema defaults (dispatch ``off``), so an
+    unattended session is never started on a guess."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'unknownproduct.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            candidates=[batch("r#1", product="ghost")], policies={})
+        await loop.tick()
+
+        assert rec.spawns == [] and rec.announced == []
+        assert await ctx.get_target_state("r#1") == {}
+
+    asyncio.run(run())
+
+
+def test_a_failed_policy_read_with_no_snapshot_skips_refill_but_still_sweeps(tmp_path):
+    """Guessing dispatch either spawns for a product whose operator said "ask me
+    first" or refuses one that said "go", so a first-tick read failure skips
+    refill entirely. The SWEEP still runs — stalling the work that frees slots and
+    escalates stuck targets on a DB blip is its own outage."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'policyreadfail.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+
+        async def boom():
+            raise RuntimeError("policy read down (injected)")
+
+        loop, rec, ctx = build_loop(candidates=[batch("r#1")], candidate_count=3)
+        loop._read_policies = boom
+        selections: list[dict] = []
+
+        async def counting_select(config):
+            selections.append(config)
+            return batch("r#1")
+        loop._select_batch = counting_select
+        # A dangling claim row (claimed, no session id, no proposed flag): the
+        # sweep's reconciliation is what deletes it, so its absence afterwards
+        # proves the sweep half of the tick ran.
+        await ctx.set_target_state("o/x#9", {"repo": "o/x", "claimed": True,
+                                             "issues": ["o/x#9"]})
+
+        await loop.tick()
+
+        assert rec.spawns == [] and rec.announced == []
+        # SKIPPED, not "ran and refused everything": the candidate/plan seam is
+        # never touched, so no plan group is consumed and no pick is burnt. Without
+        # this, the same visible outcome (no spawn, no announce) is also what a
+        # refill that ran on guessed policies produces — every batch falling
+        # through the fail-safe dispatch-off branch, one consumed group each.
+        assert selections == []
+        assert await ctx.list_events(kind="skipped_dispatch_off") == []
+        assert await ctx.get_target_state("o/x#9") == {}      # the sweep ran
+        assert getattr(ctx, "backlog_counts", {}).get("eligible") == 3
+
+    asyncio.run(run())
+
+
+def test_a_failed_policy_read_falls_back_to_the_last_good_snapshot(tmp_path):
+    """Policies change rarely, so a snapshot one tick old is far better than none:
+    a read failure AFTER a good tick keeps working from what it knows."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'policysnapshot.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        fail = {"now": False}
+
+        async def maybe_boom():
+            if fail["now"]:
+                raise RuntimeError("policy read down (injected)")
+            return {"p1": policy(max_in_flight=1000)}
+
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=5),
+            candidates=[batch("r#1", product="p1")])
+        loop._read_policies = maybe_boom
+
+        await loop.tick()
+        assert [b.primary for b, _a in rec.spawns] == ["r#1"]
+
+        fail["now"] = True
+        rec.candidates.append(batch("r#2", product="p1"))
+        await loop.tick()
+        assert [b.primary for b, _a in rec.spawns] == ["r#1", "r#2"]
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# max_in_flight is a PRODUCT ceiling, enforced in refill                       #
+# --------------------------------------------------------------------------- #
+
+def test_max_in_flight_caps_one_product_while_another_keeps_going(tmp_path):
+    """The cap is per PRODUCT and skips only that product's batch — the freed slot
+    goes to a product still under its own ceiling, never idles on its account."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'prodcap.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=4),
+            candidates=[batch("a#1", product="capped"), batch("a#2", product="capped"),
+                        batch("b#3", product="roomy")],
+            policies={"capped": policy(max_in_flight=1),
+                      "roomy": policy(max_in_flight=5)})
+
+        await loop.tick()
+
+        assert [b.primary for b, _a in rec.spawns] == ["a#1", "b#3"]
+        assert len(await ctx.list_events(kind="skipped_product_cap")) == 1
+
+    asyncio.run(run())
+
+
+def test_max_in_flight_is_one_ceiling_across_all_of_a_products_repos(tmp_path):
+    """The bug the per-repo aliasing had: a product owning N repos ran N × its cap
+    while the card (product-aggregated) showed a number nothing enforced."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'prodcapnrepos.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=9),
+            candidates=[batch(f"repo{i}#1", product="multi") for i in range(4)],
+            policies={"multi": policy(max_in_flight=2)})
+
+        await loop.tick()
+
+        assert len(rec.spawns) == 2
+
+    asyncio.run(run())
+
+
+def test_a_zero_max_in_flight_pauses_the_product(tmp_path):
+    """``max_in_flight: 0`` is the PAUSED setting (schema ``min=0``), not an
+    "unlimited" sentinel: the product keeps the rest of its policy and takes no
+    claim. The guard that exempted ``cap <= 0`` from the ceiling made 0 — and any
+    hand-edited negative — mean the exact opposite of what it says."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'zerocap.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=4),
+            candidates=[batch("a#1", product="paused"), batch("b#2", product="roomy")],
+            policies={"paused": policy(max_in_flight=0),
+                      "roomy": policy(max_in_flight=5)})
+
+        await loop.tick()
+
+        assert [b.primary for b, _a in rec.spawns] == ["b#2"]
+        assert await ctx.get_target_state("a#1") == {}       # no claim at all
+        events = await ctx.list_events(kind="skipped_product_cap")
+        assert len(events) == 1 and "cap (0)" in events[0]["summary"]
+
+    asyncio.run(run())
+
+
+def test_the_spawn_gets_the_products_model_from_this_ticks_snapshot(tmp_path):
+    """The session model travels WITH the claim: the loop hands the spawn seam the
+    ``default_model`` off the same policy snapshot its dispatch decision was made
+    on, instead of the spawn site re-reading policies and possibly getting a
+    different (or failed, i.e. ``auto``) answer."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'spawnmodel.db'}"
+
+    async def run():
+        seen: list = []
+
+        async def spawn(b, account, *, default_model):
+            seen.append((b.primary, default_model))
+            return object()
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=4), spawn=spawn,
+            candidates=[batch("a#1", product="pinned"), batch("b#2", product="assessed")],
+            policies={"pinned": policy(default_model="opus"),
+                      "assessed": policy(default_model="auto")})
+
+        await loop.tick()
+
+        assert seen == [("a#1", "opus"), ("b#2", "auto")]
+
+    asyncio.run(run())
+
+
+def test_a_proposed_claim_holds_its_products_slot(tmp_path):
+    """A ``proposed`` row is a claim awaiting a human tap; it holds the product's
+    slot exactly like a spawned session, or a propose-mode product would claim its
+    whole backlog on one tick."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'proposecap.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=4),
+            candidates=[batch("a#1", product="p1"), batch("a#2", product="p1")],
+            policies={"p1": policy(dispatch="propose", max_in_flight=1)})
+
+        await loop.tick()
+
+        assert [b.primary for b in rec.announced] == ["a#1"]
+        assert await ctx.get_target_state("a#2") == {}
+
+    asyncio.run(run())
+
+
+def test_max_attempts_is_read_from_the_products_policy(tmp_path):
+    """Two claims, two products, two attempt caps: the one-attempt product gives
+    up after its first failed session while the two-attempt product does not."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'attempts.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            candidates=[], pr_status={},
+            policies={"p1": policy(max_attempts=1), "p2": policy(max_attempts=2)})
+        for target, product in (("o/r#1", "p1"), ("o/k#2", "p2")):
+            await ctx.set_target_state(target, {
+                "session_id": f"s-{target}", "repo": target.split("#")[0],
+                "issues": [target], "claimed": True, "attempts": 0,
+                "product": product, "_ended": True})
+
+        await loop.tick()
+
+        assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
+        assert (await ctx.get_target_state("o/r#1"))["gave_up"] is True
+        st2 = await ctx.get_target_state("o/k#2")
+        assert not st2.get("gave_up") and st2["attempts"] == 1
+
+    asyncio.run(run())
+
+
+def test_policies_are_seeded_once_per_process_on_the_first_tick(tmp_path):
+    """D10: the flip carries the retired ``enabled_repos`` settings onto the
+    products exactly once — a per-tick seed would fight every human edit."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'seedonce.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        calls: list[int] = []
+
+        async def seed():
+            calls.append(1)
+            return 2
+
+        loop, rec, ctx = build_loop(candidates=[], seed_policies=seed)
+        await loop.tick()
+        await loop.tick()
+        assert len(calls) == 1
+
+    asyncio.run(run())
+
+
+def test_a_failing_seed_does_not_stop_the_tick(tmp_path):
+    """Best-effort by contract: the seed is a migration convenience, never a gate
+    on the sweep that frees slots and escalates stuck work."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'seedfail.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+
+        async def seed():
+            raise RuntimeError("db down (injected)")
+
+        loop, rec, ctx = build_loop(candidates=[batch("r#1")], seed_policies=seed)
+        await loop.tick()
+        assert len(rec.spawns) == 1
+
+    asyncio.run(run())
+
+
+def test_per_product_counts_reach_the_status_card(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'prodcounts.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        rows = {"p1": {"dispatch": "auto", "eligible": 4, "blocked": 0,
+                       "untriaged": 1, "in_flight": 0, "cap": 2}}
+        loop, rec, ctx = build_loop(candidates=[], candidate_count=4,
+                                    per_product=rows)
+        await loop.tick()
+        assert getattr(ctx, "backlog_products") == rows
+        # …and never mixed into the int-only counts the web types as numbers.
+        assert "p1" not in getattr(ctx, "backlog_counts", {})
+
+    asyncio.run(run())
+
+
+def test_a_failed_count_read_publishes_unknown_not_an_empty_product_map(tmp_path):
+    """"We don't know" and "no product is opted in" are different sentences on the
+    card: a failed read publishes ``None``, which ``status()`` renders as
+    unavailable rather than as the idle "no product has dispatch on"."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'countfail.db'}"
+
+    async def run():
+        from server.automations.backlog_runner import BacklogRunner
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(candidates=[], candidate_count=0,
+                                    count_read_failed=True)
+        await loop.tick()
+
+        assert getattr(ctx, "backlog_products", "absent") is None
+        status = BacklogRunner().status(ctx)
+        assert "unavailable" in status.text
+        assert status.text != "idle — no product has dispatch on"
+
+    asyncio.run(run())
+
+
+def test_a_pre_flip_claim_without_a_product_keeps_the_default_attempt_cap(tmp_path):
+    """A claim written before the flip carries no ``product``. The sweep must
+    still charge and cap its attempts — at the pure schema default (2), which IS
+    the global ``max_attempts`` those claims ran under."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'preflipattempts.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(candidates=[], pr_status={}, policies={})
+        await ctx.set_target_state("o/r#1", {
+            "session_id": "s-1", "repo": "o/r", "issues": ["o/r#1"],
+            "claimed": True, "attempts": 1, "_ended": True})   # no "product"
+
+        await loop.tick()
+
+        assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
+        assert (await ctx.get_target_state("o/r#1"))["gave_up"] is True
 
     asyncio.run(run())
 
@@ -874,7 +1316,7 @@ def test_handed_off_row_never_charges_attempts(tmp_path):
             number=1, url="", state="open", checks="pending", title="",
             auto_merge_enabled=True)}
         loop, rec, ctx = build_loop(
-            config=make_config(max_concurrent=1, max_attempts=1),
+            config=make_config(max_concurrent=1),
             candidates=[batch("r#1")],
             pr_status=pr_status,
             pr_doctor_active=True,
@@ -968,7 +1410,7 @@ def test_handed_off_row_with_no_session_id_is_not_reconciled_away(tmp_path):
         await init_db(db_url=db_url)
         await _seed_row()
         # No candidates — only reconciliation and sweep run.
-        loop, rec, ctx = build_loop(mode="auto", candidates=[])
+        loop, rec, ctx = build_loop(mode="on", candidates=[])
         # Seed a handed_off row with no session_id (e.g. from a prior worktree
         # that handed off before recording the spawn, or a direct DB seed).
         await ctx.set_target_state("r#1", {
@@ -1065,17 +1507,17 @@ def test_live_check_not_ready_skips_with_not_ready_result(tmp_path):
     asyncio.run(run())
 
 
-def test_live_check_gates_propose_mode_claims_too(tmp_path):
-    """Propose mode writes a claim row before the user tap — a stale pick must
-    not be claimed there either."""
+def test_live_check_gates_propose_dispatch_claims_too(tmp_path):
+    """A ``propose`` product's claim row is written before the user tap — a stale
+    pick must not be claimed there either."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'd.db'}"
 
     async def run():
         await init_db(db_url=db_url)
         await _seed_row()
-        loop, rec, ctx = build_loop(mode="propose",
+        loop, rec, ctx = build_loop(policies={"p1": policy(dispatch="propose")},
                                     verify_ready=_scripted_verify([False]),
-                                    candidates=[batch("o/r#7")])
+                                    candidates=[batch("o/r#7", product="p1")])
         await loop.tick()
         assert rec.announced == []
         assert await ctx.get_target_state("o/r#7") == {}
@@ -1161,7 +1603,7 @@ def test_group_refresh_runs_on_first_enabled_tick_only(tmp_path):
         await _seed_row()
         refresh, calls = _refresh_recorder()
         loop, rec, ctx = build_loop(
-            mode="auto", candidates=[batch("r#1"), batch("r#2")],
+            mode="on", candidates=[batch("r#1"), batch("r#2")],
             refresh_groups=refresh)
         await loop.tick()
         assert len(calls) == 1          # cold start → refresh before refill
@@ -1180,7 +1622,7 @@ def test_group_refresh_nudged_when_starved(tmp_path):
         await init_db(db_url=db_url)
         await _seed_row()
         refresh, calls = _refresh_recorder()
-        loop, rec, ctx = build_loop(mode="auto", candidates=[],
+        loop, rec, ctx = build_loop(mode="on", candidates=[],
                                     refresh_groups=refresh)
         await loop.tick()               # cold start refresh + starved refill
         assert len(calls) == 1
@@ -1200,7 +1642,7 @@ def test_group_refresh_interval_elapsed_refreshes(tmp_path):
         clock = FakeClock()
         refresh, calls = _refresh_recorder()
         loop, rec, ctx = build_loop(
-            mode="auto", clock=clock, candidates=[batch("r#1"), batch("r#2")],
+            mode="on", clock=clock, candidates=[batch("r#1"), batch("r#2")],
             config=make_config(grouping_interval_minutes=30),
             refresh_groups=refresh)
         await loop.tick()
@@ -1224,7 +1666,7 @@ def test_group_refresh_failure_backs_off_nudges_and_debounces_event(tmp_path):
         await _seed_row()
         clock = FakeClock()
         refresh, calls = _refresh_recorder(fail=True)
-        loop, rec, ctx = build_loop(mode="auto", clock=clock, candidates=[],
+        loop, rec, ctx = build_loop(mode="on", clock=clock, candidates=[],
                                     refresh_groups=refresh)
         await loop.tick()               # cold start → refresh fails
         await loop.tick()               # nudged, but backing off → NO retry
@@ -1253,7 +1695,7 @@ def test_group_refresh_emits_refreshed_event_on_count_change(tmp_path):
         await _seed_row()
         clock = FakeClock()
         refresh, calls = _refresh_recorder()
-        loop, rec, ctx = build_loop(mode="auto", clock=clock, candidates=[],
+        loop, rec, ctx = build_loop(mode="on", clock=clock, candidates=[],
                                     refresh_groups=refresh)
         await loop.tick()
         clock.advance(31 * 60)
@@ -1300,7 +1742,7 @@ def test_spawn_failure_backs_off_target(tmp_path):
         clock = FakeClock()
         attempts: list[float] = []
 
-        async def failing_spawn(b, account):
+        async def failing_spawn(b, account, **_kw):
             attempts.append(clock())
             raise RuntimeError("git worktree add --detach failed: boom")
 
@@ -1335,7 +1777,7 @@ def test_spawn_backoff_ramps_per_consecutive_failure(tmp_path):
         clock = FakeClock()
         attempts: list[float] = []
 
-        async def failing_spawn(b, account):
+        async def failing_spawn(b, account, **_kw):
             attempts.append(clock())
             raise RuntimeError("boom")
 
@@ -1394,7 +1836,7 @@ def test_spawn_success_clears_backoff(tmp_path):
         clock = FakeClock()
         calls = {"n": 0}
 
-        async def flaky_spawn(b, account):
+        async def flaky_spawn(b, account, **_kw):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise RuntimeError("boom")
@@ -1425,7 +1867,7 @@ def test_enospc_spawn_failure_trips_circuit_immediately(tmp_path):
         clock = FakeClock()
         attempts: list[str] = []
 
-        async def enospc_spawn(b, account):
+        async def enospc_spawn(b, account, **_kw):
             attempts.append(b.primary)
             raise RuntimeError(
                 "git worktree add --detach failed: error: unable to create "
@@ -1459,7 +1901,7 @@ def test_three_consecutive_failures_trip_circuit(tmp_path):
         clock = FakeClock()
         attempts: list[str] = []
 
-        async def failing_spawn(b, account):
+        async def failing_spawn(b, account, **_kw):
             attempts.append(b.primary)
             raise RuntimeError("boom")          # no disk marker
 
@@ -1486,7 +1928,7 @@ def test_spawn_success_resets_consecutive_failures(tmp_path):
         clock = FakeClock()
         calls = {"n": 0}
 
-        async def alternating_spawn(b, account):
+        async def alternating_spawn(b, account, **_kw):
             calls["n"] += 1
             if calls["n"] % 2:
                 raise RuntimeError("boom")
@@ -1717,7 +2159,7 @@ def test_queue_tail_raising_does_not_disturb_spawn_bookkeeping(tmp_path):
 
         spawned: list = []
 
-        async def spawn(b, account):
+        async def spawn(b, account, **_kw):
             spawned.append((b, account))
             return SimpleNamespace(id="s-picked-1", branch="b-picked-1")
 

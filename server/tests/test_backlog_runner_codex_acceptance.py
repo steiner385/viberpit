@@ -36,8 +36,20 @@ from server.sessions.completion import (
     resolution_from_text,
 )
 
+# A batch carries the slug of a product whose dispatch is ON — the queue read is
+# policy-scoped, so `_refill` is entitled to refuse anything else.
+PRODUCT = "viberpit"
 BATCH = Batch(primary="o/r#1", issues=["o/r#1", "o/r#2"], repo="o/r",
-              titles={"o/r#1": "one", "o/r#2": "two"})
+              titles={"o/r#1": "one", "o/r#2": "two"}, product=PRODUCT)
+
+
+def _policies():
+    """The loop's ``read_policies`` seam: ``PRODUCT`` dispatches automatically,
+    with a per-product ceiling well clear of ``max_concurrent`` so the fleet-wide
+    slot budget stays the thing under test."""
+    from server.automations.product_policy import effective_policy
+    return _some({PRODUCT: effective_policy({"dispatch": "auto",
+                                             "max_in_flight": 100})})
 
 
 # --------------------------------------------------------------------------- #
@@ -228,7 +240,8 @@ def _loop(ctx, *, spawn, **overrides):
         healthy_account=overrides.pop("healthy_account", lambda: _some("acct")),
         pr_status_for=lambda _t: _some(None),
         pr_doctor_active=lambda _r: _some(False),
-        read_config=overrides.pop("read_config", lambda: _some(("auto", _CONFIG))),
+        read_config=overrides.pop("read_config", lambda: _some(("on", _CONFIG))),
+        read_policies=overrides.pop("read_policies", _policies),
         needs_human=_needs_human,
         clock=clock,
     )
@@ -237,7 +250,7 @@ def _loop(ctx, *, spawn, **overrides):
     return loop, announced, escalated
 
 
-_CONFIG = {"max_concurrent": 1, "max_spawns_per_day": 10, "max_attempts": 2}
+_CONFIG = {"max_concurrent": 1, "max_spawns_per_day": 10}
 
 
 def _some(value):
@@ -257,7 +270,7 @@ def test_a_refused_launch_releases_the_claim_instead_of_holding_a_slot(
     async def run():
         ctx = await _codex_runner_ctx(tmp_path, "cx_d.db", monkeypatch)
 
-        async def refusing_spawn(_batch, _account):
+        async def refusing_spawn(_batch, _account, **_kw):
             return None
 
         loop, announced, escalated = _loop(ctx, spawn=refusing_spawn)
@@ -274,7 +287,7 @@ def test_a_refused_launch_does_not_burn_the_daily_spawn_cap(tmp_path, monkeypatc
     async def run():
         ctx = await _codex_runner_ctx(tmp_path, "cx_e.db", monkeypatch)
 
-        async def refusing_spawn(_batch, _account):
+        async def refusing_spawn(_batch, _account, **_kw):
             return None
 
         loop, _announced, _escalated = _loop(ctx, spawn=refusing_spawn)
@@ -293,7 +306,7 @@ def test_a_successful_codex_spawn_records_the_session_and_holds_the_slot(
             id = "sess-1"
             branch = "feat/x"
 
-        async def ok_spawn(_batch, _account):
+        async def ok_spawn(_batch, _account, **_kw):
             return Rec()
 
         loop, announced, _escalated = _loop(ctx, spawn=ok_spawn)
@@ -332,7 +345,7 @@ def _orch_with_refusing_spawn(monkeypatch):
             return None
 
     async def read_config():
-        return "auto", _CONFIG
+        return "on", _CONFIG
 
     async def announce(_batch):
         return None
@@ -340,7 +353,7 @@ def _orch_with_refusing_spawn(monkeypatch):
     async def account(*_a, **_k):
         return "acct"
 
-    async def spawn(_batch, _account):
+    async def spawn(_batch, _account, **_kw):
         return None
 
     monkeypatch.setattr(orch, "_backlog_ctx", Ctx(), raising=False)
@@ -410,7 +423,7 @@ def test_two_runners_on_one_account_cannot_claim_the_same_batch(tmp_path, monkey
             id = "sess-1"
             branch = None
 
-        async def ok_spawn(batch, _account):
+        async def ok_spawn(batch, _account, **_kw):
             spawned.append(batch.primary)
             return Rec()
 

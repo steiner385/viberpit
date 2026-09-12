@@ -6,7 +6,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from server.pm.desired_state import STATUS_OPTIONS
-from server.pm.queue import MIN_STATUS_OPTIONS, SKIP_REASONS, QueueRow, rank, skip_reason, to_candidate
+from server.pm.queue import (MIN_STATUS_OPTIONS, SKIP_REASONS, QueueRow, rank, rank_key,
+                             skip_reason, to_candidate)
 
 NOW = datetime(2026, 9, 4, tzinfo=timezone.utc)
 
@@ -83,6 +84,32 @@ def test_rank_orders_score_desc_nulls_last_then_age_and_counts_skips():
     entries, skipped = rank(rows, now=NOW)
     assert [e.ref for e in entries] == ["o/r#4", "o/r#3", "o/r#1", "o/r#2"]
     assert skipped == {"blocked": 1, "status": 1}
+
+
+def test_rank_key_is_the_one_ordering_and_applies_to_rows_and_entries():
+    """``rank`` is not always the last word on ordering: a caller that ranks each
+    product separately (the Backlog Runner, whose products have their own reach)
+    has to merge, and that merge must sort by exactly this key rather than a
+    hand-copied tuple that can drift from it. So the key is exported, and it takes
+    a ``QueueRow`` before ranking and a ``QueueEntry`` after it."""
+    rows = [_row(ref="o/r#1", score=5.0, gh_created_at=NOW - timedelta(days=1)),
+            _row(ref="o/r#2", score=None, gh_created_at=NOW - timedelta(days=9)),
+            _row(ref="o/r#3", score=5.0, gh_created_at=NOW - timedelta(days=3)),
+            _row(ref="o/r#4", score=9.0),
+            _row(ref="o/r#5", score=None, gh_created_at=None)]
+    assert [r.ref for r in sorted(rows, key=rank_key)] == [
+        "o/r#4", "o/r#3", "o/r#1", "o/r#2", "o/r#5"]
+
+    # The same key over ENTRIES reproduces rank()'s own order — which is what
+    # makes a cross-product merge and a single rank() agree.
+    entries, _ = rank(rows, now=NOW)
+    assert [e.ref for e in sorted(entries, key=rank_key)] == [e.ref for e in entries]
+
+    # An undated row sorts last on its own boolean leg rather than via a sentinel
+    # datetime, so the key never compares a naive datetime with an aware one.
+    undated = _row(ref="o/r#9", score=5.0, gh_created_at=None)
+    assert rank_key(undated)[2] is True
+    assert sorted([undated, rows[0]], key=rank_key)[0].ref == "o/r#1"
 
 
 def test_to_candidate_is_the_runner_shape_plus_provenance():

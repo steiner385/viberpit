@@ -84,6 +84,11 @@ class QueueEntry:
     body: str
     url: str
     score: float | None
+    # Carried off the row purely so ``rank_key`` applies to an ENTRY too: a caller
+    # that merges several ``rank`` results (the runner ranks one product at a time)
+    # has to re-sort by the same key, and age is the tie-break. Defaulted so every
+    # positional construction keeps working.
+    gh_created_at: datetime | None = None
 
 
 def _is_bot(row: QueueRow) -> bool:
@@ -145,6 +150,26 @@ def skip_reason(
     return None
 
 
+def rank_key(row: "QueueRow | QueueEntry") -> tuple:
+    """THE queue ordering, as a sort key: highest score first (an unscored row
+    last), then oldest first, then ref.
+
+    Exported because ``rank`` is not always the last word on ordering: the Backlog
+    Runner ranks each product separately (each has its own ``queue_min_status`` /
+    ``respect_dependencies``) and then merges, and that merge must sort by exactly
+    this key rather than a hand-copied tuple that can drift from it. Takes anything
+    carrying ``score`` / ``gh_created_at`` / ``ref``, so it applies to a ``QueueRow``
+    before ranking and a ``QueueEntry`` after it.
+
+    A missing ``gh_created_at`` sorts last via its own boolean leg rather than a
+    sentinel datetime, so the key never compares a naive datetime against an aware
+    one (which raises).
+    """
+    created = row.gh_created_at
+    return (row.score is None, -(row.score or 0.0), created is None,
+            created or datetime.min, row.ref)
+
+
 def rank(
     rows: Iterable[QueueRow],
     *,
@@ -167,10 +192,10 @@ def rank(
             skipped[why] = skipped.get(why, 0) + 1
         else:
             kept.append(row)
-    far_future = datetime.max.replace(tzinfo=now.tzinfo)
-    kept.sort(key=lambda r: (r.score is None, -(r.score or 0.0), r.gh_created_at or far_future, r.ref))
+    kept.sort(key=rank_key)
     return [
-        QueueEntry(r.ref, r.repo, r.number, r.product, r.title, r.body, r.url, r.score)
+        QueueEntry(r.ref, r.repo, r.number, r.product, r.title, r.body, r.url, r.score,
+                   r.gh_created_at)
         for r in kept
     ], skipped
 

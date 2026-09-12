@@ -14,6 +14,11 @@ export interface ConfigField {
   default: unknown
   help: string
   choices: string[] | null
+  /** Inclusive lower bound for an `int` field, or null/absent when unbounded.
+   *  What `choices` is for an enum — the server enforces it (422) and publishes
+   *  it here, so the number input renders the same floor instead of hard-coding
+   *  one. Optional so older fixtures still compile. */
+  min?: number | null
 }
 
 export interface Automation {

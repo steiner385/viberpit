@@ -19,10 +19,18 @@ class ConfigField:
     default: Any
     help: str = ""
     choices: list[str] | None = None  # required for type == "enum"
+    #: Inclusive lower bound for an ``int`` field. ``None`` (the default) means
+    #: unbounded — an existing field keeps its old, unchecked behaviour. What an
+    #: enum's ``choices`` are for a string, this is for a number: the ONE
+    #: statement of the legal range, enforced in ``validate_config`` (so every
+    #: write path 422s the same way) and published in ``to_dict`` (so the browser
+    #: renders the same floor on the number input instead of hard-coding one).
+    min: int | None = None
 
     def to_dict(self) -> dict:
         return {"key": self.key, "label": self.label, "type": self.type,
-                "default": self.default, "help": self.help, "choices": self.choices}
+                "default": self.default, "help": self.help, "choices": self.choices,
+                "min": self.min}
 
 
 ConfigSchema = list[ConfigField]
@@ -134,6 +142,12 @@ def validate_config(schema: ConfigSchema, config: dict,
                 raise ValueError(f"{f.key}: expected {f.type}, got {type(value).__name__}")
             if f.type == "enum" and value not in (f.choices or []):
                 raise ValueError(f"{f.key}: {value!r} not in {f.choices}")
+            # A declared floor is a validation rule, not a UI hint: the browser's
+            # ``min`` attribute is trivially bypassed (curl, a stale tab), and a
+            # negative cap read as "unlimited" by a loop is the shape of an
+            # unattended spawn nobody asked for.
+            if f.min is not None and f.type == "int" and value < f.min:
+                raise ValueError(f"{f.key}: {value} is below the minimum {f.min}")
             out[f.key] = value
         else:
             out[f.key] = f.default

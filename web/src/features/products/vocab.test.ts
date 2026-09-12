@@ -81,7 +81,7 @@ describe('DELIVERY vocabulary (finish-line D9)', () => {
     expect([DELIVERY.automations, DELIVERY.ci]).toEqual(['Automations', 'CI health'])
     expect(Object.values(AUTOMATION_TAB)).toEqual(['Status', 'Schedule', 'Events', 'Sessions', 'Config'])
     expect(DELIVERY.help.length).toBeGreaterThan(40)
-    expect(Object.keys(MODE_DESCRIPTION)).toEqual(['off', 'propose', 'auto'])
+    expect(Object.keys(MODE_DESCRIPTION)).toEqual(['off', 'on', 'propose', 'auto'])
   })
 
   // Each said in more than one component (list empty state, welcome pane,

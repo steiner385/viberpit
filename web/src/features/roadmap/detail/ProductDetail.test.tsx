@@ -52,6 +52,9 @@ vi.mock('@/api/hooks', () => ({
   useRoadmapMap: () => ({ data: MAP }),
   useCreateEdge: () => ({ mutate: vi.fn(), isPending: false }),
   useDeleteEdge: () => ({ mutate: vi.fn(), isPending: false }),
+  // The Overview's Automation card.
+  usePolicySchema: () => ({ data: [], isLoading: false }),
+  useUpdateProductPolicy: () => ({ mutate: vi.fn(), isPending: false }),
   // `+ Capability` opens NewCapabilityDialog, which edits the map-changes PR.
   useEditMapChanges: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null }),
   mapChangesErrorMessage: (_e: unknown, fallback: string) => fallback,
@@ -78,7 +81,7 @@ const PROJECT = {
   id: 'p', slug: 'kindash', name: 'KinDash', description: 'Family dashboard', status: null,
   portfolioTags: [], onboardingState: 'live', createdAt: null, updatedAt: null,
   repos: [{ id: 'r1', repo: 'cairnea/KinDash', isPrimary: true, backfillDone: true, lastSyncedAt: null }],
-  edges: [], featureCount: 3, workItemCount: 40,
+  edges: [], featureCount: 3, workItemCount: 40, automationPolicy: null,
 }
 
 const ONBOARDING = {

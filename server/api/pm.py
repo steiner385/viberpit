@@ -17,6 +17,8 @@ from sqlalchemy import func, select, tuple_
 
 from server.audit import record_audit
 from server.auth.middleware import current_identity
+from server.automations.base import validate_config
+from server.automations.product_policy import PRODUCT_POLICY_SCHEMA
 from server.db import get_db
 from server.db.models import (
     PROJECT_EDGE_KINDS,
@@ -107,6 +109,9 @@ def _project_to_dict(p: Project) -> dict:
         "onboardingState": p.onboarding_state,
         "createdAt": p.created_at.isoformat() if p.created_at else None,
         "updatedAt": p.updated_at.isoformat() if p.updated_at else None,
+        # The RAW validated blob, or null when the product never opted in — the web
+        # renders it through PRODUCT_POLICY_SCHEMA's defaults (server/automations/product_policy.py).
+        "automationPolicy": p.automation_policy,
     }
 
 
@@ -162,6 +167,12 @@ class EdgeCreateBody(BaseModel):
     dstSlug: str
     kind: str
     note: str | None = None
+
+
+class PolicyPatchBody(BaseModel):
+    # `None` clears the policy (opts the product back out entirely); a dict is
+    # validated against PRODUCT_POLICY_SCHEMA before it's stored.
+    policy: dict | None = None
 
 
 async def _load_project(db, slug: str) -> Project:
@@ -271,13 +282,10 @@ async def list_projects(
     return out
 
 
-@router.get("/projects/{slug}")
-async def get_project(
-    slug: str,
-    _identity: str = Depends(current_identity),
-    db=Depends(get_db),
-) -> dict:
-    p = await _load_project(db, slug)
+async def _project_detail_dict(db, p: Project) -> dict:
+    """`_project_to_dict` plus repos/edges — the full shape the frontend Project type
+    requires. Shared by `get_project` and `update_project_policy` so the two response
+    shapes cannot drift."""
     repos = (await db.execute(
         select(ProjectRepo).where(ProjectRepo.project_id == p.id))).scalars().all()
     edges = (await db.execute(
@@ -331,6 +339,50 @@ async def project_health(slug: str, _identity: str = Depends(current_identity),
             "unlinkedInitiatives": list(h.unlinked_initiatives),
             "staleProposed": list(h.stale_proposed), "staleInbox": h.stale_inbox,
             "generatedAt": now.isoformat()}
+
+
+@router.get("/policy-schema")
+async def policy_schema(
+    _identity: str = Depends(current_identity),
+) -> list[dict]:
+    return [f.to_dict() for f in PRODUCT_POLICY_SCHEMA]
+
+
+@router.get("/projects/{slug}")
+async def get_project(
+    slug: str,
+    _identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    p = await _load_project(db, slug)
+    return await _project_detail_dict(db, p)
+
+
+@router.patch("/projects/{slug}/policy")
+async def update_project_policy(
+    slug: str,
+    body: PolicyPatchBody,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    p = await _load_project(db, slug)
+    if body.policy is None:
+        validated = None
+        p.automation_policy = None
+        p.automation_policy_updated_at = None
+    else:
+        try:
+            validated = validate_config(PRODUCT_POLICY_SCHEMA, body.policy)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": "bad_policy", "message": str(e)}) from e
+        p.automation_policy = validated
+        p.automation_policy_updated_at = datetime.now(timezone.utc)
+    await db.flush()
+    await record_audit(db=db, type="pm.project.policy", identity=identity,
+                       detail={"slug": slug, "policy": validated})
+    return await _project_detail_dict(db, p)
 
 
 @router.post("/projects/{slug}/sync", status_code=status.HTTP_202_ACCEPTED)

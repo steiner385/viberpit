@@ -184,19 +184,28 @@ async def test_resolve_unknown_or_missing_value_is_account_default(value):
 
 @pytest.mark.parametrize("automation_cls", ["BacklogRunner", "PrDoctor"])
 def test_spawning_automations_carry_default_model(automation_cls):
+    # Since policy phase 1 the Backlog Runner's model is the PRODUCT's call: the
+    # field lives in PRODUCT_POLICY_SCHEMA (one product, one model) and the
+    # runner's own config retired it — carrying both would be two sources of
+    # truth for one spawn (constitution Principle VI).
     if automation_cls == "BacklogRunner":
-        from server.automations.backlog_runner import BacklogRunner as cls
+        from server.automations.backlog_runner import BacklogRunner
+        from server.automations.product_policy import PRODUCT_POLICY_SCHEMA
+        assert "default_model" not in {f.key for f in BacklogRunner.config_schema}
+        assert "default_model" in BacklogRunner.retired_config_keys
+        schema = PRODUCT_POLICY_SCHEMA
     else:
-        from server.automations.pr_doctor import PrDoctor as cls
-    field = {f.key: f for f in cls.config_schema}["default_model"]
+        from server.automations.pr_doctor import PrDoctor
+        schema = PrDoctor.config_schema
+    field = {f.key: f for f in schema}["default_model"]
     assert field.type == "enum"
     assert field.default == "auto"
     assert field.choices == AUTOMATION_MODEL_CHOICES
 
     # validate_config fills the default and rejects out-of-catalog values.
-    assert validate_config(cls.config_schema, {})["default_model"] == "auto"
+    assert validate_config(schema, {})["default_model"] == "auto"
     with pytest.raises(ValueError):
-        validate_config(cls.config_schema, {"default_model": "gpt-5"})
+        validate_config(schema, {"default_model": "gpt-5"})
 
 
 def test_non_spawning_automations_do_not_carry_default_model():

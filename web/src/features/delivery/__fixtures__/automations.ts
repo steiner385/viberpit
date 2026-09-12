@@ -13,8 +13,8 @@ export const AUTOMATIONS: Automation[] = [
     activeSessions: 1, workClass: 'maintenance',
   },
   {
-    id: 'backlog-runner', name: 'Backlog runner', description: 'Dispatches eligible issues.', enabled: true, mode: 'auto',
-    modes: ['off', 'propose', 'auto'], status: { text: 'Idle', level: 'idle', counts: null },
+    id: 'backlog-runner', name: 'Backlog runner', description: 'Dispatches eligible issues.', enabled: true, mode: 'on',
+    modes: ['off', 'on'], status: { text: 'Idle', level: 'idle', counts: null },
     enginePolicy: 'claude_only', operatorTriggered: false, configSchema: [], config: {}, schedule: null,
     lastActiveAt: null, activeSessions: 0, workClass: 'development',
   },

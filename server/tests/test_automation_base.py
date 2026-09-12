@@ -24,6 +24,33 @@ def test_validate_config_accepts_and_coerces():
     assert out["lens"] == "a"  # default filled
 
 
+def test_validate_config_enforces_an_int_fields_minimum():
+    """``min`` is what ``choices`` is for an enum: the ONE statement of a field's
+    legal range, enforced server-side. The browser's ``min`` attribute is a hint
+    anyone can bypass, and a loop reading a negative cap literally treats it as an
+    unreachable ceiling — i.e. unlimited."""
+    from server.automations.base import ConfigField, validate_config
+    schema = [ConfigField(key="cap", label="Cap", type="int", default=1, min=0),
+              ConfigField(key="tries", label="Tries", type="int", default=2, min=1),
+              ConfigField(key="free", label="Free", type="int", default=0)]
+    assert validate_config(schema, {"cap": 0})["cap"] == 0      # the floor itself is legal
+    assert validate_config(schema, {"free": -99})["free"] == -99  # no min declared
+    with pytest.raises(ValueError, match="cap: -1 is below the minimum 0"):
+        validate_config(schema, {"cap": -1})
+    with pytest.raises(ValueError, match="tries: 0 is below the minimum 1"):
+        validate_config(schema, {"tries": 0})
+
+
+def test_config_field_publishes_its_minimum():
+    """The browser renders the floor from the schema rather than hard-coding one
+    (the parallel-implementation shape the policy card was one edit away from)."""
+    from server.automations.base import ConfigField
+    assert ConfigField(key="cap", label="Cap", type="int", default=1, min=0
+                       ).to_dict()["min"] == 0
+    assert ConfigField(key="free", label="Free", type="int", default=1
+                       ).to_dict()["min"] is None
+
+
 def test_validate_config_rejects_unknown_key():
     from server.automations.base import validate_config
     with pytest.raises(ValueError, match="unknown config key"):

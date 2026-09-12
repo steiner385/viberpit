@@ -4,7 +4,7 @@ parent: planning-and-automation
 title: Product-Management Layer
 state: delivering
 links:
-  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/tree.py, server/automations/pm_triage.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts]
+  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/tree.py, server/automations/pm_triage.py, server/automations/product_policy.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/detail/AutomationPolicyCard.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts]
   prs: ['#866', '#879', '#893', '#897', '#899', '#1327']
 ---
 
@@ -158,6 +158,83 @@ optional **discovery** SDLC stage, which is **deferred, not planned**: it would 
 the live `STAGE_SEQUENCE`, affecting every existing initiative, and it currently has no consumer.
 Revive it only when a concrete initiative needs a discovery artifact gate ahead of `intake`; the
 design for it is preserved in `docs/superpowers/plans/2026-08-31-pm-product-layer-phase4.md` Task 2.
+
+**Product automation policy (phase 1).** Each `Project` carries an opt-in `automation_policy` (JSON,
+nullable, `server/db/models.py`) that the Backlog Runner reads per product instead of one global
+config row governing every onboarded product alike. The schema — `PRODUCT_POLICY_SCHEMA` in
+`server/automations/product_policy.py`, the one `ConfigField` list and the one validated reader
+(`effective_policy`) every caller shares (constitution VI) — has seven fields this phase: `dispatch`
+(`off | propose | auto`, default `off` — whether the runner works this product's board at all, and
+whether a claimed batch is only announced or actually spawned), `queue_min_status` (default `Ready`,
+or `Backlog` to reach untriaged items — how far down the board the runner reaches), `max_in_flight`
+(default 1, minimum 0 — this product's concurrent runner sessions, enforced per PRODUCT in the
+runner's refill loop rather than translated into a per-repo cap, so a product owning several repos
+still runs at most this many sessions total; a `proposed` announce-only claim holds the slot exactly
+like a spawned one, a `gave_up` or `handed_off` claim does not. `0` means PAUSED — the product takes
+no claim while keeping the rest of its policy — never "unlimited"), `weight` (default 1, minimum 0 —
+its share when a freed slot is contested under the `weighted` selection strategy), `max_attempts`
+(default 2, minimum 1 — attempts per issue before the runner gives up), `default_model` (default
+`auto` — the session model; `auto` assesses each job), and `respect_dependencies` (default `true`).
+The minimums are `ConfigField.min`, enforced in `validate_config` (a below-minimum int is a 422
+`bad_policy`, not a browser courtesy) and published in the schema JSON so `ConfigInput` renders the
+same floor on the number input. `effective_policy`
+never raises: a `None` row (never opted in) and an unparseable one both read as the pure defaults,
+i.e. `dispatch: off`. `give_up_after_bounces` (bounce-based retry) and `triage_auto_accept`
+(confidence-tiered triage auto-accept) are in the design
+(`docs/superpowers/specs/2026-09-12-product-automation-policy-design.md` §4) but arrive with phases
+3 and 2 respectively, not this schema.
+
+It is edited from the product's Overview page (`web/src/features/roadmap/detail/AutomationPolicyCard.tsx`),
+an **Automation** card that renders every schema field through the same `ConfigInput` component the
+Delivery → Automations Config tab uses (`web/src/features/delivery/automation/ConfigInput.tsx`,
+moved out of `ConfigPanel.tsx` and exported so the two surfaces share one renderer instead of two),
+disabled with an explanatory note until the product reaches `onboardingState == "live"`. A product
+that has never opted in shows every field at its schema default with dispatch `off` and a note that
+the first change opts it in; the card always PATCHes the *whole* effective object (every schema key,
+current value or default) to `PATCH /api/pm/projects/{slug}/policy` (`server/api/pm.py`, validated
+against `PRODUCT_POLICY_SCHEMA`, audited `pm.project.policy`) — so changing any one field, including
+`dispatch` itself, writes a complete, non-null policy row, and the product is opted in from that
+write on. `GET /api/pm/policy-schema` serves the schema itself to the card.
+
+At the flip, the Backlog Runner's global `enabled_repos` / `repo_weights` / `repo_caps` /
+`queue_min_status` / `max_attempts` / `default_model` / `respect_dependencies` knobs retired
+(`server/automations/backlog_runner.py`'s `retired_config_keys`); a one-shot seed
+(`server/sessions/orchestrator.py`'s `_backlog_seed_policies`, run once per daemon process on the
+runner loop's first tick, gated on the runner row being ENABLED and carrying a stored mode — a
+never-configured or currently-disabled row has nothing to migrate) carries the old settings onto
+the products that owned them so the flip changed no behaviour: the prior global mode becomes each
+seeded product's `dispatch` (`auto` stayed `auto`, anything else became `propose`), a product's
+primary repo's entry in the old `repo_caps` / `repo_weights` becomes its `max_in_flight` / `weight`
+— or, for a product with no repo flagged primary, its lowest-named repo's entry — and the remaining
+globals are copied onto every seeded product, but only the keys the legacy config actually set: a
+key it left unset is left at the schema default rather than pinned to a made-up value. A non-empty
+`enabled_repos` seeded exactly the products owning those repos; the empty list — which meant "every
+onboarded product" — seeded every product with a linked board. The seed CONSUMES its own input: in
+the same transaction it strips every retired key off the runner row's config and normalises a stored
+`propose`/`auto` mode to the phase-1 `on`, and a row carrying none of those keys is what makes the
+next call a no-op. That marker is what makes it safe to run on every process start rather than
+exactly once in history — durably, unlike the earlier "does any product have a policy" check, which
+re-armed the moment an operator cleared the last policy. A runner-card config save strips those keys
+too (the config PATCH validates against the phase-1 schema); a row left that way is never seeded
+from — its repo list is gone — but its legacy mode is still folded to `on`. A legacy value below a
+field's phase-1 minimum (`max_attempts: 0`, a negative per-repo cap) costs that one field its legacy
+value, never the whole policy. A product that already carries one is
+skipped individually, so a human-set policy is never overwritten and never blocks the rest of the
+migration.
+
+What stays global on the runner: whether it runs at all (`off | on` — one row-level toggle;
+propose-vs-auto is now the per-product `dispatch` value, not a runner mode), `selection_strategy`
+(how a freed slot chooses among the ON products' repos — balanced / priority / weighted /
+concurrency-cap), `max_concurrent` (sessions in flight across every product combined),
+`max_spawns_per_day`, `max_issues_per_pr`, `grouping_interval_minutes`, and
+`needs_human_retry_days` (the runner's own give-up cooldown — a property of the runner's retry
+behaviour, not of any one product's board).
+
+Phases 2–4 of the design add, respectively: confidence-tiered triage auto-accept per product
+(`triage_auto_accept`, §8), a `dispatch_outcomes` table feeding a bounce-based `needs_spec` skip and
+roadmap tier reason (`give_up_after_bounces`, §6–7), and a history-informed floor on the runner's
+model pick (§7). None of that has landed yet — see
+`docs/superpowers/specs/2026-09-12-product-automation-policy-design.md` §11 for the phasing.
 
 This capability doc set is itself produced by the archaeology onboarding path dogfooding itself.
 The classification, onboarding and triage engines are pure functions (no I/O) mirroring

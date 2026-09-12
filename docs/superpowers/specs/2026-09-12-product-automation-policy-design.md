@@ -49,7 +49,7 @@ Five products are onboarded today (viberpit `classifying`, kindash and ghostdriv
 | `respect_dependencies` | bool | true | today's meaning |
 | `triage_auto_accept` | enum `off | high | medium` | `off` | accept proposals at or above this confidence (`medium` includes `high`); never `no_fit` |
 
-Storage: `Project.automation_policy` (JSON, nullable) + `Project.automation_policy_updated_at`. Nullable, so `_reconcile_columns` adds them on both dialects; migration `0041_product_automation_policy` recorded anyway.
+Storage: `Project.automation_policy` (JSON, nullable) + `Project.automation_policy_updated_at`. Nullable, so `_reconcile_columns` adds them on both dialects; migration `0042_product_automation_policy` recorded anyway.
 
 **[default]** `selection_strategy` stays global (`balanced | weighted | priority | concurrency-cap`) and reads `weight`/`max_in_flight` from the policies instead of the two dicts; `priority` order becomes the products' `updated_at`-independent order of `Project.created_at` unless a `priority` int is added later (YAGNI now).
 

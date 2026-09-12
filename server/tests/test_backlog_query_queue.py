@@ -21,6 +21,8 @@ def _orch_with_ctx():
     orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
     orch._backlog_ctx = AutomationContext("backlog-runner")
     orch._backlog_last_queue = []
+    orch._backlog_last_policies = {}
+    orch._backlog_last_repos = {}
     return orch
 
 
@@ -30,15 +32,27 @@ async def _init(tmp_path, name="q.db"):
     await registry.ensure_rows()
 
 
-async def _seed_product(slug: str, repo: str) -> None:
+async def _seed_product(slug: str, repo: str, *,
+                        policy: dict | None = None) -> None:
+    """A product the runner works: every candidate read is now scoped to products
+    whose policy says ``dispatch != off``, so the fixture opts in by default."""
     async with db_session() as db:
-        project = Project(slug=slug, name=slug)
+        project = Project(slug=slug, name=slug,
+                          automation_policy=policy or {"dispatch": "auto"})
         db.add(project)
         await db.flush()
         db.add(ProjectRepo(project_id=project.id, repo=repo, is_primary=True))
         db.add(GhProject(project_id=project.id, gh_node_id=f"PVT_{slug}",
                          gh_project_number=1, title=slug))
         await db.flush()
+
+
+async def _set_policy(slug: str, policy: dict | None) -> None:
+    from sqlalchemy import select
+    async with db_session() as db:
+        project = (await db.execute(select(Project).where(
+            Project.slug == slug))).scalar_one()
+        project.automation_policy = policy
 
 
 async def _seed_item(repo: str, number: int, *, status: str = "Ready",
@@ -63,8 +77,7 @@ async def _seed_item(repo: str, number: int, *, status: str = "Ready",
 
 
 def _config(**over) -> dict:
-    cfg = {"enabled_repos": [], "queue_min_status": "Ready",
-           "respect_dependencies": True, "needs_human_retry_days": 7}
+    cfg = {"needs_human_retry_days": 7}
     cfg.update(over)
     return cfg
 
@@ -117,7 +130,8 @@ def test_gave_up_row_is_a_cooldown_not_a_claim(tmp_path):
     ``needs_human_retry_days`` so the issue comes back."""
     async def run():
         await _init(tmp_path, "gaveup.db")
-        await _seed_product("viberpit", "o/r")
+        await _seed_product("viberpit", "o/r",
+                            policy={"dispatch": "auto", "queue_min_status": "Backlog"})
         await _seed_item("o/r", 5, status="Backlog", score=5.0)
         orch = _orch_with_ctx()
         await orch._backlog_ctx.set_target_state("o/r#5", {
@@ -125,15 +139,13 @@ def test_gave_up_row_is_a_cooldown_not_a_claim(tmp_path):
             "needs_human_at": "2026-09-09T00:00:00+00:00", "reason": "max attempts"})
 
         skipped: dict = {}
-        cands = await orch._backlog_query_queue(
-            _config(queue_min_status="Backlog"), skipped_out=skipped)
+        cands = await orch._backlog_query_queue(_config(), skipped_out=skipped)
         assert cands == [] and skipped == {"needs_human_cooldown": 1}
 
         # 0 = permanent handoff: still cooling down, never retried.
         skipped = {}
         cands = await orch._backlog_query_queue(
-            _config(queue_min_status="Backlog", needs_human_retry_days=0),
-            skipped_out=skipped)
+            _config(needs_human_retry_days=0), skipped_out=skipped)
         assert cands == [] and skipped == {"needs_human_cooldown": 1}
 
         # Once the window has passed the issue is a candidate again.
@@ -141,8 +153,7 @@ def test_gave_up_row_is_a_cooldown_not_a_claim(tmp_path):
             "repo": "o/r", "issues": ["o/r#5"], "gave_up": True,
             "needs_human_at": "2020-01-01T00:00:00+00:00", "reason": "max attempts"})
         skipped = {}
-        cands = await orch._backlog_query_queue(
-            _config(queue_min_status="Backlog"), skipped_out=skipped)
+        cands = await orch._backlog_query_queue(_config(), skipped_out=skipped)
         assert [c["ref"] for c in cands] == ["o/r#5"] and skipped == {}
 
     asyncio.run(run())
@@ -154,14 +165,15 @@ def test_gave_up_row_is_never_a_claim_and_an_undated_one_is_no_cooldown(tmp_path
     cannot date must not park an issue forever."""
     async def run():
         await _init(tmp_path, "gaveupnostamp.db")
-        await _seed_product("viberpit", "o/r")
+        await _seed_product("viberpit", "o/r",
+                            policy={"dispatch": "auto", "queue_min_status": "Backlog"})
         await _seed_item("o/r", 6, status="Backlog", score=5.0)
         orch = _orch_with_ctx()
         await orch._backlog_ctx.set_target_state(
             "o/r#6", {"repo": "o/r", "issues": ["o/r#6"], "gave_up": True,
                       "claimed": True, "needs_human_at": "not-a-date"})
 
-        cands = await orch._backlog_query_queue(_config(queue_min_status="Backlog"))
+        cands = await orch._backlog_query_queue(_config())
 
         assert [c["ref"] for c in cands] == ["o/r#6"]
 
@@ -184,10 +196,12 @@ def test_count_candidates_returns_queue_eligible_and_blocked(tmp_path):
         orch = _orch_with_ctx()
 
         async def _read_config():
-            return "auto", _config()
+            return "on", _config()
         orch._backlog_read_config = _read_config
 
-        assert await orch._backlog_count_candidates() == (1, 1, 0)
+        eligible, blocked, untriaged, _per_product = \
+            await orch._backlog_count_candidates()
+        assert (eligible, blocked, untriaged) == (1, 1, 0)
 
     asyncio.run(run())
 
@@ -205,73 +219,41 @@ def test_count_candidates_reports_below_min_status_items_as_untriaged(tmp_path):
         orch = _orch_with_ctx()
 
         async def _read_config():
-            return "auto", _config()
+            return "on", _config()
         orch._backlog_read_config = _read_config
 
-        assert await orch._backlog_count_candidates() == (1, 0, 2)
+        eligible, blocked, untriaged, _per_product = \
+            await orch._backlog_count_candidates()
+        assert (eligible, blocked, untriaged) == (1, 0, 2)
 
     asyncio.run(run())
 
 
 # --------------------------------------------------------------------------- #
-# enabled_repos still scopes the pool (empty = every onboarded product)        #
+# Policy scoping: only products whose dispatch is on are in the pool           #
 # --------------------------------------------------------------------------- #
 
-def test_query_queue_scopes_candidates_to_enabled_repos(tmp_path):
-    async def run():
-        await _init(tmp_path, "repos.db")
-        await _seed_product("viberpit", "o/r")
-        await _seed_product("kindash", "o/k")
-        await _seed_item("o/r", 1, score=1.0)
-        await _seed_item("o/k", 2, score=9.0)
-        orch = _orch_with_ctx()
-
-        # Empty list = all onboarded products (score order, so o/k#2 first).
-        assert [c["ref"] for c in await orch._backlog_query_queue(_config())] == \
-            ["o/k#2", "o/r#1"]
-        # A non-empty list scopes the pool to those repos.
-        scoped = await orch._backlog_query_queue(_config(enabled_repos=["o/r"]))
-        assert [c["ref"] for c in scoped] == ["o/r#1"]
-
-    asyncio.run(run())
-
-
-def test_count_candidates_scopes_to_enabled_repos(tmp_path):
-    """The card's gauge counts the same pool selection draws from."""
-    async def run():
-        await _init(tmp_path, "countrepos.db")
-        await _seed_product("viberpit", "o/r")
-        await _seed_product("kindash", "o/k")
-        await _seed_item("o/r", 1, score=1.0)
-        await _seed_item("o/k", 2, score=9.0)
-        orch = _orch_with_ctx()
-
-        async def _read_config():
-            return "auto", _config(enabled_repos=["o/r"])
-        orch._backlog_read_config = _read_config
-
-        assert await orch._backlog_count_candidates() == (1, 0, 0)
-
-    asyncio.run(run())
-
-
-def test_count_candidates_blocked_gauge_ignores_out_of_scope_products(tmp_path):
-    """The blocked gauge is scoped too. An unscoped product's stuck backlog must
-    not read as "40 blocked" on a card whose runner can only see one repo — the
-    number is the "why isn't THIS backlog draining" note."""
+def test_count_candidates_gauges_ignore_products_with_dispatch_off(tmp_path):
+    """The card's gauges count the same pool selection draws from. Another
+    product's stuck backlog must not read as "40 blocked" on a card whose runner
+    was never turned on for it — the number is the "why isn't THIS backlog
+    draining" note."""
     async def run():
         await _init(tmp_path, "blockedscope.db")
-        await _seed_product("viberpit", "o/r")
-        await _seed_product("kindash", "o/k")
-        await _seed_item("o/r", 1, score=1.0)                    # in scope, eligible
-        await _seed_item("o/k", 2, status="Blocked", score=9.0)  # out of scope, blocked
+        await _seed_product("viberpit", "o/r")                     # dispatch on
+        await _seed_product("kindash", "o/k", policy={"dispatch": "off"})
+        await _seed_item("o/r", 1, score=1.0)                      # on, eligible
+        await _seed_item("o/k", 2, status="Blocked", score=9.0)    # off, blocked
         orch = _orch_with_ctx()
 
         async def _read_config():
-            return "auto", _config(enabled_repos=["o/r"])
+            return "on", _config()
         orch._backlog_read_config = _read_config
 
-        assert await orch._backlog_count_candidates() == (1, 0, 0)
+        eligible, blocked, untriaged, per_product = \
+            await orch._backlog_count_candidates()
+        assert (eligible, blocked, untriaged) == (1, 0, 0)
+        assert set(per_product) == {"viberpit"}
 
     asyncio.run(run())
 
@@ -289,7 +271,7 @@ def test_select_batch_survives_a_failing_queue_read(tmp_path, monkeypatch):
         await _init(tmp_path, "selectfail.db")
         orch = _orch_with_ctx()
 
-        async def _boom(config, *, skipped_out=None):
+        async def _boom(config, *, skipped_out=None, products_out=None):
             raise RuntimeError("mirror unavailable")
         orch._backlog_query_queue = _boom
 
@@ -304,10 +286,10 @@ def test_select_batch_survives_a_failing_queue_read(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# queue_min_status: the operator's Ready-vs-Backlog choice reaches rank()      #
+# The Ready-vs-Backlog choice is the PRODUCT's, and it reaches rank()          #
 # --------------------------------------------------------------------------- #
 
-def test_query_queue_min_status_comes_from_config(tmp_path):
+def test_query_queue_min_status_comes_from_the_product_policy(tmp_path):
     async def run():
         await _init(tmp_path, "minstatus.db")
         await _seed_product("viberpit", "o/r")
@@ -318,7 +300,9 @@ def test_query_queue_min_status_comes_from_config(tmp_path):
         ready_only = await orch._backlog_query_queue(_config())
         assert [c["ref"] for c in ready_only] == ["o/r#1"]
 
-        both = await orch._backlog_query_queue(_config(queue_min_status="Backlog"))
+        await _set_policy("viberpit", {"dispatch": "auto",
+                                       "queue_min_status": "Backlog"})
+        both = await orch._backlog_query_queue(_config())
         assert [c["ref"] for c in both] == ["o/r#2", "o/r#1"]
 
     asyncio.run(run())

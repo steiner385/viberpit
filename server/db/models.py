@@ -1429,6 +1429,18 @@ class Project(Base):
         DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+    # The Backlog Runner's per-product policy (server/automations/product_policy.py):
+    # dispatch mode, queue reach, in-flight cap/weight, attempt cap, session model. The
+    # RAW validated blob or null ("never opted in" — effective_policy reads null as the
+    # off-by-default schema). Nullable: not every product has one. none_as_null=True so
+    # clearing it via None persists SQL NULL — not the JSON literal text 'null', which
+    # reads back as a policy object and would make the seed's "has any product opted
+    # in?" scan (and every `IS NOT NULL` filter over this column) answer yes for a
+    # product that never did.
+    automation_policy: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True)
+    automation_policy_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
 
 
 class ProjectRepo(Base):

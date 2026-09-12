@@ -6,6 +6,7 @@
  */
 import { useQuery } from '@tanstack/react-query'
 import { api } from './client'
+import type { ConfigField } from './automations'
 import type { MapChangesPointer } from './roadmap'
 
 export const PROJECT_ONBOARDING_STATES = [
@@ -46,6 +47,11 @@ export interface Project {
   edges: ProjectEdgeInfo[]
   featureCount: number
   workItemCount: number
+  /** The RAW stored automation-policy blob (server/automations/product_policy.py),
+   *  or null when the product has never opted in. Render it through
+   *  `PRODUCT_POLICY_SCHEMA`'s defaults (`usePolicySchema`) — never trust this
+   *  alone as "every key present". */
+  automationPolicy: Record<string, unknown> | null
 }
 
 export interface CreateProjectInput {
@@ -61,6 +67,25 @@ export function createProject(input: CreateProjectInput): Promise<Project> {
 
 export function requestProjectSync(slug: string): Promise<{ requested: boolean }> {
   return api.post<{ requested: boolean }>(`/pm/projects/${encodeURIComponent(slug)}/sync`)
+}
+
+// --- product automation policy (design §4/§9; server contract server/api/pm.py) ---
+
+/** The ONE schema every product's automation policy validates against
+ *  (server `PRODUCT_POLICY_SCHEMA`) — `staleTime: Infinity` in `usePolicySchema`
+ *  since it only changes on a deploy. */
+export function fetchPolicySchema(): Promise<ConfigField[]> {
+  return api.get<ConfigField[]>('/pm/policy-schema')
+}
+
+/** Whole-object replace: the server validates and stores the FULL policy, never
+ *  a partial patch (`server/api/pm.py:update_project_policy`). `null` clears it
+ *  (opts the product back out). Returns the full project detail so the card's
+ *  invalidation has fresh data without a second fetch. */
+export function updateProductPolicy(
+  slug: string, policy: Record<string, unknown> | null,
+): Promise<Project> {
+  return api.patch<Project>(`/pm/projects/${encodeURIComponent(slug)}/policy`, { policy })
 }
 
 // --- phase 2: onboarding wizard (design §5) ---

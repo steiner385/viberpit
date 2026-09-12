@@ -24,6 +24,12 @@ class Batch:
     # ref → issue title for the batched issues; feeds the "auto" model
     # assessor's job summary (refs alone carry no complexity signal).
     titles: dict[str, str] = field(default_factory=dict)
+    # The product (``Project.slug``) whose board this batch came off, carried from
+    # the candidate pool. It is what the loop looks the PRODUCT POLICY up by —
+    # dispatch (propose vs auto), attempt cap, session model — and what the claim
+    # row records so the sweep can read the same policy back later. ``None`` for a
+    # batch reconstructed from a pre-policy claim or built outside the queue.
+    product: str | None = None
 
 
 def should_free_slot(pr_info: PullRequestInfo, pr_doctor_active: bool) -> bool:

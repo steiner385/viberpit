@@ -88,6 +88,41 @@ def test_patch_valid_mode_persists():
         assert pd["enabled"] is True and pd["mode"] == "auto"
 
 
+def test_a_pre_flip_runner_mode_reads_as_on_after_the_seed():
+    """M4: the global vocabulary is ``off | on`` since policy phase 1, but a row
+    written before the flip still STORED ``propose``/``auto``. Every acting read
+    folds it, so the runner kept working — what did not fold was the row the
+    operator sees here, which went on claiming a mode the UI no longer offers (and
+    the mode select, hidden at two modes, gave them no way to correct it). The
+    one-shot policy seed normalises the stored value as it consumes the row."""
+    with _client() as c:
+        async def _pre_flip_row():
+            from sqlalchemy import select
+
+            from server.db import db_session
+            from server.db.models import Automation
+            async with db_session() as db:
+                row = (await db.execute(select(Automation).where(
+                    Automation.id == "backlog-runner"))).scalar_one()
+                row.enabled, row.mode = True, "auto"
+                row.config = {"enabled_repos": []}
+        c.portal.call(_pre_flip_row)
+
+        def _runner():
+            return next(a for a in c.get("/api/automations", headers=H).json()
+                        if a["id"] == "backlog-runner")
+        # No "reads ``auto`` first" assertion: the app's live runner loop shares
+        # this event loop and its first tick runs the same seed, so between the
+        # row write and a read it may already have normalised the row (it did,
+        # under a loaded parallel run). What is pinned is the outcome: after the
+        # seed the row the operator sees says ``on`` and carries no retired key.
+        orch = c.app.state.sessions._orch
+        c.portal.call(orch._backlog_seed_policies_once)
+        row = _runner()
+        assert row["mode"] == "on"
+        assert "enabled_repos" not in (row.get("config") or {})
+
+
 def test_patch_bad_mode_422():
     with _client() as c:
         assert c.patch("/api/automations/pr-doctor", json={"mode": "nope"}, headers=H).status_code == 422

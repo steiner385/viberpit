@@ -31,6 +31,7 @@ vi.mock('@/api/hooks', () => ({
 const PROJECT = {
   id: 'p', slug: 'kindash', name: 'KinDash', description: null, status: null, portfolioTags: [],
   onboardingState: 'live', createdAt: null, updatedAt: null, edges: [], featureCount: 3, workItemCount: 0,
+  automationPolicy: null,
   repos: [
     { id: 'r1', repo: 'cairnea/KinDash', isPrimary: true, backfillDone: true, lastSyncedAt: null },
     { id: 'r2', repo: 'cairnea/KinDash-infra', isPrimary: false, backfillDone: true, lastSyncedAt: null },

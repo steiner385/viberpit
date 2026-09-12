@@ -12,6 +12,7 @@ links:
     - server/automations/backlog_selection.py
     - server/automations/backlog_grouping.py
     - server/automations/backlog_github.py
+    - server/automations/product_policy.py
     - server/automations/action_providers.py
     - server/automations/consolidation_engine.py
     - server/automations/completion_bar.py
@@ -84,19 +85,82 @@ PR linkage, never on labels alone.
   slot once auto-merge is armed), and terminal sessions (charge an attempt, give up at max).
   Candidates come from the **global priority queue** over the mirrored Projects v2 boards
   (spec 003 §7a, `server/pm/queue.py`) — the same ranking `GET /api/pm/queue` renders, so
-  what the operator sees is what agents do next. It is scoped by `enabled_repos` (empty =
-  every onboarded product *for candidate selection only* — the `priority` selection
-  strategy reads the list directly, so an empty list makes that strategy a
-  no-op), gated by `queue_min_status` (`Ready`, the safe default, or
-  `Backlog` to reach untriaged items), dependency-gated from the compiled graph
-  (`respect_dependencies`; native blocked-by edges, `Depends on #N` body references and epic
-  list order), and the top pick is re-verified against live GitHub immediately before the
+  what the operator sees is what agents do next.
+
+  **Scope, reach and per-product knobs are the products' now** (product automation policy
+  phase 1 — `docs/superpowers/specs/2026-09-12-product-automation-policy-design.md`,
+  `docs/product/features/product-management-layer.md` § Product automation policy): each
+  `Project.automation_policy` (`server/automations/product_policy.py`), not the runner's own
+  config, decides. `_backlog_query_queue` keeps only products whose policy `dispatch != off`
+  (a product that never opted in is `off` and contributes nothing), and ranks each ON product
+  with ITS OWN `queue_min_status` (`Ready`, the safe default, or `Backlog` to reach untriaged
+  items) and `respect_dependencies` (dependency-gated from the compiled graph: native
+  blocked-by edges, `Depends on #N` body references and epic list order), merging the
+  per-product rankings into one pool by the queue's own `rank_key` (score, then age, then issue
+  ref) — never a hand-copied tie-break — so a cross-product tie between two unscored issues breaks
+  by age, not by product slug. `weight` comes from each ON product's policy, applied to every repo
+  it owns and handed to the selection strategies below as a per-repo weight/order (never a cap).
+  `max_in_flight` is enforced directly per PRODUCT in the loop's `_refill`, counted once per tick
+  from the runner's durable target-state rows and kept in step with every claim taken that tick: a
+  `proposed` (announce-only) claim holds its product's slot exactly like a spawned one, while a
+  `gave_up` or `handed_off` row does not (one predicate, `backlog_runner.is_in_flight`, shared with
+  the fleet-wide `max_concurrent` count so the two ledgers cannot disagree about a row) — it is
+  never translated into a per-repo cap, so a product owning several repos cannot run more than its
+  own cap across all of them combined. Every cap is read literally, `0` included: `0` is the
+  PAUSED setting (the product takes no claim but keeps the rest of its policy), not an
+  "unlimited" sentinel, and the schema's `min: 0` keeps a negative value — which `_refill` would
+  read as an unreachable ceiling — out of the store in the first place. The
+  runner's own `mode` is just `off | on` now — whether it runs at all; dispatch mode (`propose`
+  announces a batch without spawning, `auto` spawns) is a PER-PRODUCT decision
+  (`policy["dispatch"]`), so one enabled runner can announce for a product still being trusted and
+  spawn for one that's earned auto, on the same tick. `max_attempts` and `default_model` are read
+  the same way, off the target's recorded product (falling back to the pure defaults with
+  `dispatch: auto` for a claim written before the flip, or a product the policy map has lost — the
+  queue is the real off-gate, so anything that reached the loop this far was already decided to
+  run). A policy read that fails outright (the injected `read_policies` seam,
+  `_backlog_load_policies`, raises) keeps the LAST
+  good snapshot for that tick's refill if there is one, or skips refill entirely with no snapshot
+  yet — either way the sweep (handoffs, give-ups, reconciliation) still runs, since stalling that
+  on the same DB blip would be its own outage. The runner's OWN config schema keeps only
+  fleet-wide knobs: `selection_strategy`, `max_concurrent`, `max_spawns_per_day`,
+  `max_issues_per_pr`, `grouping_interval_minutes`, `needs_human_retry_days`.
+  `retired_config_keys` (`eligible_label`, `enabled_repos`, `repo_weights`, `repo_caps`,
+  `queue_min_status`, `max_attempts`, `default_model`, `respect_dependencies`) still lists the
+  retired ones so a row that still carries them keeps the rest of its settings; on read, a stored
+  `off` mode survives verbatim (an operator who parked the runner is never silently restarted), a
+  stored `propose` or `auto` mode (written before the flip) folds to `on`, and an unset (`NULL`)
+  mode on an otherwise-enabled row also reads as `on` (the two-mode UI hides the mode select, so
+  its toggle alone must be enough to start the row) — the flip's one-shot seed
+  (`server/sessions/orchestrator.py`'s `_backlog_seed_policies`, run once per daemon process on
+  the loop's first tick, but only for an ENABLED row carrying a stored mode — a never-configured or
+  disabled row has nothing to migrate) is what turns that old value, and the old `enabled_repos` /
+  `repo_weights` / `repo_caps` / the rest, into each owning product's policy instead — a product's
+  primary repo's entry in `repo_caps` / `repo_weights` becomes its `max_in_flight` / `weight`, or
+  its lowest-named repo's when none is flagged primary, and only the keys the legacy config
+  actually set are written, the rest left at the schema default — so no product's behaviour
+  changed at the flip. The seed is one-shot because it CONSUMES its own input: in the same
+  transaction that writes the policies it strips every `retired_config_keys` key off the runner
+  row's stored config and normalises a stored `propose`/`auto` mode to `on` (so the row an
+  operator sees in `GET /api/automations` stops claiming a mode the UI no longer offers), and a
+  row carrying none of those keys is what makes the next call a no-op. A product that ALREADY has
+  a policy is skipped individually — a human's answer is never overwritten, and their edit does
+  not strand the other products on the wrong side of the migration. The status
+  card appends one ` · `-joined segment per product whose dispatch is on, onto the SAME status-card
+  line ("slug: dispatch · in_flight/cap in flight · eligible eligible") rather than a separate line
+  each (the web renders `AutomationStatus.text` without honouring newlines); it reports "idle — no
+  product has dispatch on" when every product's is off, or, when the per-product count read itself
+  failed, "N implementing · product counts unavailable (the queue read failed)" rather than either
+  — "we don't know" and "no product is opted in" are different sentences on the card.
+
+  The top pick is re-verified against live GitHub immediately before the
   claim — that check **fails closed** (§10), so a mirror lagging reality costs a tick, never
   a session spawned on stale work. The old `eligible_label` gate is retired: board status,
   not a label, says what is workable.
   Grouping is a background Sonnet optimizer (#610) persisted in `backlog_groups`; selection
   ordering supports balanced / priority / weighted / concurrency-cap strategies (#773) for
-  per-repo fairness (#771). A **claim is the runner's durable target-state row** (#994): writing
+  per-repo fairness (#771) — `priority` now serves the ON products' repos oldest-first by
+  `Project.created_at`, the deterministic stand-in for the retired hand-ordered `enabled_repos`
+  list. A **claim is the runner's durable target-state row** (#994): writing
   the row is what takes the issue out of the pool, the session it spawns is what the reconciler
   renders as board Status `In progress`, and the issue comment that follows is the claim's
   human-visible trace only — a failed comment cannot lose a claim. Reconciliation heals dangling
@@ -130,6 +194,12 @@ PR linkage, never on labels alone.
 - Backlog work selection / claim / spawn: `server/automations/backlog_runner.py`,
   `server/automations/backlog_selection.py`, `server/automations/backlog_grouping.py`,
   `server/automations/backlog_github.py`.
+- Per-product automation policy (phase 1 — scope, reach, caps/weights/attempts/model, the
+  one-shot seed off the retired repo knobs): `server/automations/product_policy.py`,
+  `server/sessions/orchestrator.py` (`_backlog_query_queue`, `_backlog_select_batch`,
+  `_backlog_seed_policies`), `web/src/features/roadmap/detail/AutomationPolicyCard.tsx`;
+  see `docs/product/features/product-management-layer.md` § Product automation policy and
+  `docs/superpowers/specs/2026-09-12-product-automation-policy-design.md`.
 - Claim-label retirement (#994): `server/pm/label_retirement.py`,
   `scripts/retire_claim_labels.py`, `specs/003-gh-projects-integration/phase-d-runbook.md`.
 - Action surface / consolidation / API / web: `server/automations/action_providers.py`,

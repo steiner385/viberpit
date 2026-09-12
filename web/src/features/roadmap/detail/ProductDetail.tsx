@@ -24,6 +24,7 @@ import { InitiativeList } from './InitiativeList'
 import { ProductEdgesEditor } from './ProductEdgesEditor'
 import { NewCapabilityDialog } from './NewCapabilityDialog'
 import { MapChangesCard } from './MapChangesCard'
+import { AutomationPolicyCard } from './AutomationPolicyCard'
 
 const TABS = ['overview', 'in-flight', 'needs-you', 'ranked', 'dependencies'] as const
 
@@ -93,21 +94,24 @@ export function ProductDetail({ product }: { product: ProductNode }) {
             {isLoading && !project
               ? <Skeleton lines={3} />
               : project && (
-                <section className="flex flex-col gap-2 text-sm">
-                  {project.description && <p className="text-ink">{project.description}</p>}
-                  {project.repos.length > 0 && (
-                    <ul className="flex flex-wrap gap-2" aria-label="Repositories">
-                      {project.repos.map((r) => (
-                        <li key={r.id} className="rounded-pill border border-edge px-2 py-0.5 text-xs text-ink-muted">
-                          {r.repo}{r.isPrimary ? ' · primary' : ''}{r.backfillDone ? '' : ' · backfilling'}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  <p className="text-xs text-ink-muted">
-                    {project.workItemCount} {ISSUE.plural.toLowerCase()} mirrored
-                  </p>
-                </section>
+                <>
+                  <section className="flex flex-col gap-2 text-sm">
+                    {project.description && <p className="text-ink">{project.description}</p>}
+                    {project.repos.length > 0 && (
+                      <ul className="flex flex-wrap gap-2" aria-label="Repositories">
+                        {project.repos.map((r) => (
+                          <li key={r.id} className="rounded-pill border border-edge px-2 py-0.5 text-xs text-ink-muted">
+                            {r.repo}{r.isPrimary ? ' · primary' : ''}{r.backfillDone ? '' : ' · backfilling'}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <p className="text-xs text-ink-muted">
+                      {project.workItemCount} {ISSUE.plural.toLowerCase()} mirrored
+                    </p>
+                  </section>
+                  <AutomationPolicyCard product={product} project={project} />
+                </>
               )}
             {/* On the Overview, not in the page header (R8c-3): the header
                 carries the breadcrumbs and "+ Initiative", and a capability is
