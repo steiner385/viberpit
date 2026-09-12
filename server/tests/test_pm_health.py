@@ -26,3 +26,18 @@ def test_health_of_a_flat_map_flags_nothing_as_unparented():
     caps = [("a", None, "live", NEW), ("b", None, "live", NEW)]
     h = roadmap_health(capabilities=caps, initiatives=[], proposals=[], now=NOW)
     assert h.unparented_capabilities == ()
+
+
+def test_health_accepts_naive_utc_timestamps():
+    # Every DB column is naive UTC (SQLite always, Postgres by column
+    # definition), so the production path compares a naive `updated_at` /
+    # `created_at` against the aware `now` this function receives.
+    NAIVE_OLD = (NOW - timedelta(days=45)).replace(tzinfo=None)
+    NAIVE_NEW = (NOW - timedelta(days=3)).replace(tzinfo=None)
+    caps = [("old", None, "proposed", NAIVE_OLD), ("root", None, "live", NAIVE_NEW),
+            ("kid", "root", "live", NAIVE_NEW)]
+    h = roadmap_health(capabilities=caps, initiatives=[],
+                       proposals=[NAIVE_OLD, NAIVE_NEW, None], now=NOW)
+    assert h.stale_proposed == ("old",)
+    assert h.stale_inbox == 1
+    assert h.unparented_capabilities == ("old",)

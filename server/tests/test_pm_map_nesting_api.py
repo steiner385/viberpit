@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
@@ -23,6 +24,13 @@ def test_map_initiative_nodes_carry_their_parent():
             db.add(ProjectRepo(project_id=p.id, repo="o/r", is_primary=True))
             f = Feature(project_id=p.id, slug="accessibility", title="Accessibility", state="live")
             db.add(f)
+            await db.flush()
+            # A stale root (proposed, long untouched) while `accessibility` gains a
+            # child below — so the tree is "in use" and stale-leaf is the loose one.
+            db.add(Feature(project_id=p.id, slug="stale-leaf", title="Stale", state="proposed",
+                           updated_at=datetime(2026, 7, 1, tzinfo=timezone.utc)))
+            db.add(Feature(project_id=p.id, slug="child", parent_feature_id=f.id,
+                           title="Child", state="live"))
             await db.flush()
             prog = Initiative(slug="audit", title="UI audit", stage="design", status="active", project_id=p.id)
             db.add(prog)
@@ -55,5 +63,8 @@ def test_map_initiative_nodes_carry_their_parent():
                 health = c.get("/api/pm/projects/kindash/health", headers=IDENTITY_HEADERS).json()
                 assert health["unlinkedInitiatives"] == []   # a program is judged by its phases, the phase is linked
                 assert health["staleInbox"] == 0
-                assert health["unparentedCapabilities"] == []   # flat one-capability map flags nothing
-                assert health["staleProposed"] == []
+                # accessibility now has a child, so the tree is in use and stale-leaf
+                # (a root with none) is the loose one — read back as a naive UTC
+                # timestamp from SQLite, which is the path under test.
+                assert health["unparentedCapabilities"] == ["stale-leaf"]
+                assert health["staleProposed"] == ["stale-leaf"]
