@@ -1,31 +1,41 @@
 // A capability's links to other capabilities (spec §8 "Capability links — chip
-// editor on Overview", R8c-2): the chips it has, a remove on each, and one row
-// to add another. Every change sends the FULL list as one `links` op — the
-// server replaces the doc's link block rather than merging into it, so a
-// partial list would silently drop the rest.
+// editor on Overview", R8c-2): a labelled section saying what a link IS, the
+// chips it has with a remove on each, and an add row that stays behind a
+// "+ Link" button until asked for — almost no capability has links, so a
+// permanently open three-select form read as an unexplained chore on every
+// Overview. Every change sends the FULL list as one `links` op — the server
+// replaces the doc's link block rather than merging into it, so a partial
+// list would silently drop the rest.
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { X } from 'lucide-react'
-import type { CapabilityLink, CapabilityNode, ProductNode } from '@/api/roadmap'
+import type { CapabilityLink, CapabilityNode, ProductNode, RoadmapMap } from '@/api/roadmap'
 import type { MapChangeLink } from '@/api/pm'
 import { useEditMapChanges, useRoadmapMap, mapChangesErrorMessage } from '@/api/hooks'
-import { Field } from '@/ui/Field'
 import { Select } from '@/ui/Select'
 import { Button } from '@/ui/Button'
 import { IconButton } from '@/ui/IconButton'
 import { CAPABILITY, PRODUCT } from '@/features/products/vocab'
-import { flattenCapabilities } from '../lookup'
+import { findCapability, findProduct, flattenCapabilities } from '../lookup'
 import { capabilityPath } from '../roadmapNavState'
 
-/** The two kinds a feature doc may declare (`FEATURE_LINK_KINDS`), in the words
- *  the chips and the add row both read them with. */
-const LINK_KIND_LABEL: Record<string, string> = {
-  powered_by: 'powered by',
-  integrates_with: 'integrates with',
+/** The two kinds a feature doc may declare (`FEATURE_LINK_KINDS`). `chip` is the
+ *  predicate a chip reads with ("powered by · X"); `sentence` completes the add
+ *  row's sentence, whose subject is the capability itself ("Tasks is powered
+ *  by …"). */
+const LINK_KIND: Record<string, { chip: string; sentence: string }> = {
+  powered_by: { chip: 'powered by', sentence: 'is powered by' },
+  integrates_with: { chip: 'integrates with', sentence: 'integrates with' },
 }
+const kindChip = (kind: string) => LINK_KIND[kind]?.chip ?? kind.replace(/_/g, ' ')
 
-const labelOf = (l: CapabilityLink) =>
-  `${LINK_KIND_LABEL[l.kind] ?? l.kind.replace(/_/g, ' ')} · ${l.projectSlug}/${l.featureSlug}`
+/** "Sessions (ViberPit)" when the target is on the map; the raw slug pair when
+ *  it is not (a link to a capability the index has not seen yet). */
+const targetOf = (map: RoadmapMap | undefined, l: CapabilityLink) => {
+  const product = findProduct(map, l.projectSlug)
+  const node = product ? findCapability(product, l.featureSlug) : null
+  return node ? `${node.title ?? node.slug} (${product?.name ?? l.projectSlug})` : `${l.projectSlug}/${l.featureSlug}`
+}
 /** The map names a link's target `projectSlug`/`featureSlug`; the API wants
  *  `project`/`feature`. The conversion lives here, at the one boundary. */
 const toApi = (l: CapabilityLink): MapChangeLink => ({
@@ -47,6 +57,7 @@ export function CapabilityLinksEditor({ product, capability }: {
   // page already holds this query, so the editor costs no extra fetch.
   const { data: map } = useRoadmapMap({ poll: false })
   const edit = useEditMapChanges(product.slug)
+  const [adding, setAdding] = useState(false)
   const [kind, setKind] = useState<string>('powered_by')
   const [targetProduct, setTargetProduct] = useState('')
   const [targetCapability, setTargetCapability] = useState('')
@@ -84,6 +95,14 @@ export function CapabilityLinksEditor({ product, capability }: {
       && !taken.has(`${kind}:${chosen.slug}/${node.slug}`))
     : []
   const canAdd = targetProduct !== '' && targetCapability !== '' && !edit.isPending
+  const title = capability.title ?? capability.slug
+  const lowerCapability = CAPABILITY.singular.toLowerCase()
+
+  const closeAddRow = () => {
+    setAdding(false)
+    setTargetProduct('')
+    setTargetCapability('')
+  }
 
   const send = async (next: CapabilityLink[], after?: () => void) => {
     // Captured before the await: the record must name the capability this
@@ -101,13 +120,20 @@ export function CapabilityLinksEditor({ product, capability }: {
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <section aria-labelledby="capability-links-heading" className="flex flex-col gap-2">
+      <div>
+        <h3 id="capability-links-heading" className="text-xs font-medium uppercase text-ink-muted">Links</h3>
+        <p className="text-xs text-ink-muted">
+          What this {lowerCapability} is powered by or integrates with — other {CAPABILITY.plural.toLowerCase()},
+          here or in another {PRODUCT.singular.toLowerCase()} — as declared in its feature doc.
+        </p>
+      </div>
       {links.length === 0
-        ? <p className="text-sm text-ink-muted">No linked {CAPABILITY.plural.toLowerCase()} yet.</p>
+        ? <p className="text-sm text-ink-muted">No links yet.</p>
         : (
           <ul aria-label={`Linked ${CAPABILITY.plural.toLowerCase()}`} className="flex flex-wrap gap-2">
             {links.map((l) => {
-              const label = labelOf(l)
+              const label = `${kindChip(l.kind)} · ${targetOf(map, l)}`
               return (
                 <li key={keyOf(l)} className="flex items-center gap-1 rounded-pill border border-edge bg-surface-raised py-0.5 pl-3 pr-1 text-xs text-ink">
                   <Link to={capabilityPath(l.projectSlug, l.featureSlug)} className="hover:underline">{label}</Link>
@@ -124,47 +150,64 @@ export function CapabilityLinksEditor({ product, capability }: {
             })}
           </ul>
         )}
-      <form
-        className="flex flex-wrap items-end gap-2"
-        onSubmit={(e) => {
-          e.preventDefault()
-          if (!canAdd) return
-          const added: CapabilityLink = { kind, projectSlug: targetProduct, featureSlug: targetCapability }
-          void send([...links, added], () => { setTargetCapability('') })
-        }}
-      >
-        <Field label="Relationship" htmlFor="link-kind">
-          <Select id="link-kind" value={kind} disabled={edit.isPending} onChange={(e) => { setKind(e.target.value); setTargetCapability('') }}>
-            {Object.entries(LINK_KIND_LABEL).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
-          </Select>
-        </Field>
-        <Field label={PRODUCT.singular} htmlFor="link-product">
-          <Select
-            id="link-product"
-            value={targetProduct}
-            disabled={edit.isPending}
-            onChange={(e) => { setTargetProduct(e.target.value); setTargetCapability('') }}
+      {adding
+        ? (
+          <form
+            aria-label="Add a link"
+            className="flex flex-col gap-1"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (!canAdd) return
+              const added: CapabilityLink = { kind, projectSlug: targetProduct, featureSlug: targetCapability }
+              void send([...links, added], closeAddRow)
+            }}
           >
-            <option value="">— choose —</option>
-            {products.map((p) => <option key={p.slug} value={p.slug}>{p.name ?? p.slug}</option>)}
-          </Select>
-        </Field>
-        <Field label={CAPABILITY.singular} htmlFor="link-capability">
-          <Select
-            id="link-capability"
-            value={targetCapability}
-            disabled={edit.isPending || targetProduct === ''}
-            onChange={(e) => setTargetCapability(e.target.value)}
-          >
-            <option value="">— choose —</option>
-            {targets.map(({ node, depth }) => (
-              <option key={node.slug} value={node.slug}>{'  '.repeat(depth)}{node.title ?? node.slug}</option>
-            ))}
-          </Select>
-        </Field>
-        <Button type="submit" disabled={!canAdd} loading={edit.isPending}>Add</Button>
-      </form>
+            {/* One sentence, subject first: "Tasks · is powered by · ViberPit / Sessions". */}
+            <div className="flex flex-wrap items-center gap-2 text-sm text-ink">
+              <span className="font-medium">{title}</span>
+              <Select size="sm" aria-label="Relationship" value={kind} disabled={edit.isPending} onChange={(e) => { setKind(e.target.value); setTargetCapability('') }}>
+                {Object.entries(LINK_KIND).map(([k, { sentence }]) => <option key={k} value={k}>{sentence}</option>)}
+              </Select>
+              <Select
+                size="sm"
+                aria-label={PRODUCT.singular}
+                value={targetProduct}
+                disabled={edit.isPending}
+                onChange={(e) => { setTargetProduct(e.target.value); setTargetCapability('') }}
+              >
+                <option value="">— {PRODUCT.singular.toLowerCase()} —</option>
+                {products.map((p) => <option key={p.slug} value={p.slug}>{p.name ?? p.slug}</option>)}
+              </Select>
+              <span aria-hidden="true" className="text-ink-muted">/</span>
+              <Select
+                size="sm"
+                aria-label={CAPABILITY.singular}
+                value={targetCapability}
+                disabled={edit.isPending || targetProduct === ''}
+                onChange={(e) => setTargetCapability(e.target.value)}
+              >
+                <option value="">— {lowerCapability} —</option>
+                {targets.map(({ node, depth }) => (
+                  <option key={node.slug} value={node.slug}>{'  '.repeat(depth)}{node.title ?? node.slug}</option>
+                ))}
+              </Select>
+              <Button type="submit" size="sm" disabled={!canAdd} loading={edit.isPending}>Add</Button>
+              <Button type="button" size="sm" variant="ghost" disabled={edit.isPending} onClick={closeAddRow}>Cancel</Button>
+            </div>
+            {/* Add is not a local save: it commits to the product's map-changes
+                branch and opens (or appends to) its PR, which is a surprise
+                unless said here. */}
+            <p className="text-xs text-ink-muted">
+              Add proposes the link in {product.name ?? product.slug}&rsquo;s map-changes PR; it shows as proposed until that PR merges.
+            </p>
+          </form>
+        )
+        : (
+          <div>
+            <Button size="sm" variant="ghost" disabled={edit.isPending} onClick={() => setAdding(true)}>+ Link</Button>
+          </div>
+        )}
       {failure && <p role="alert" className="text-sm text-danger">{failure}</p>}
-    </div>
+    </section>
   )
 }
