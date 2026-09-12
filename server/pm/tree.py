@@ -117,21 +117,49 @@ def incident_tier(status: str | None) -> str:
     return "idle"
 
 
+def _acyclic_parents(parent_of: dict[str, str | None]) -> dict[str, str | None]:
+    """*parent_of* with every unknown or cyclic parent link severed to
+    ``None`` — "an unknown or cyclic parent counts as a root" (the nesting
+    plan's rule), computed once so every downstream walker
+    (``rollup_epic_progress``'s leaf recursion, ``build_product_tree``'s depth
+    and phase grouping) can trust the result is already a forest, never a
+    graph with cycles."""
+    out: dict[str, str | None] = {}
+    for iid, parent in parent_of.items():
+        if parent is not None and parent not in parent_of:
+            parent = None
+        if parent is not None:
+            seen = {iid}
+            cur: str | None = parent
+            while cur is not None and cur not in seen:
+                seen.add(cur)
+                cur = parent_of.get(cur)
+                if cur is not None and cur not in parent_of:
+                    cur = None
+            if cur is not None:      # loop only exits early on a revisit → cyclic
+                parent = None
+        out[iid] = parent
+    return out
+
+
 def rollup_epic_progress(entries: dict[str, dict | None],
                          parent_of: dict[str, str | None]) -> dict[str, dict | None]:
     """A program's progress is the sum over its LEAF descendants' epics — the
     issues people close — never a count of its sub-epics. Leaves pass through.
     A program without an epic entry of its own gets one (ref/url None)."""
+    parent_of = _acyclic_parents(parent_of)
     children: dict[str, list[str]] = {}
     for cid, pid in parent_of.items():
         if pid is not None:
             children.setdefault(pid, []).append(cid)
 
-    def leaves(iid: str) -> list[str]:
+    def leaves(iid: str, seen: frozenset[str] = frozenset()) -> list[str]:
+        if iid in seen:  # defensive second guard: parent_of is already acyclic,
+            return []    # but recursion should never trust that alone.
         kids = children.get(iid, [])
         if not kids:
             return [iid]
-        return [leaf for k in kids for leaf in leaves(k)]
+        return [leaf for k in kids for leaf in leaves(k, seen | {iid})]
 
     out: dict[str, dict | None] = {}
     for iid, entry in entries.items():
@@ -203,7 +231,8 @@ class ProductIn:
 
 
 def _initiative_node(ini: InitiativeIn, project_slug: str, *,
-                     has_children: bool = False) -> dict:
+                     has_children: bool = False,
+                     parent_slug: str | None = None) -> dict:
     epic = ini.epic or {}
     total, done = int(epic.get("total", 0)), int(epic.get("done", 0))
     # NOTE: this node's `primaryCapability` is a slug string (the map tree is
@@ -223,7 +252,10 @@ def _initiative_node(ini: InitiativeIn, project_slug: str, *,
         "tier": tier,
         "reason": reason,
         "epic": ini.epic,
-        "parentInitiative": ini.parent_slug,
+        # `parent_slug` here is the caller's already-sanitized parent (never
+        # `ini.parent_slug` directly) so a cyclic/unknown pointer never leaks
+        # through as a phantom `parentInitiative`.
+        "parentInitiative": parent_slug,
         "hasChildren": has_children,
     }
 
@@ -280,36 +312,35 @@ def build_product_tree(product: ProductIn) -> dict:
         children_of.setdefault(parent, []).append(c)
 
     by_slug = {i.slug: i for i in product.initiatives}
-    has_children = {i.parent_slug for i in product.initiatives if i.parent_slug}
-
-    def _valid_parent(slug: str) -> str | None:
-        parent = by_slug[slug].parent_slug
-        return parent if parent in by_slug else None
+    # One sanitized parent map for the whole build: an unknown OR cyclic
+    # parent_slug is severed to None here, once, so has_children/phases_of/
+    # depth/parentInitiative all agree a cyclic pair is two independent roots
+    # rather than each treating the other as its program.
+    parent_of = _acyclic_parents({i.slug: i.parent_slug for i in product.initiatives})
+    has_children = {p for p in parent_of.values() if p is not None}
 
     def _depth(slug: str) -> int:
-        # An unknown or cyclic parent counts as a root: stop the walk the
-        # moment it would revisit a slug already seen.
         seen = {slug}
         depth = 0
-        cur = _valid_parent(slug)
+        cur = parent_of.get(slug)
         while cur is not None and cur not in seen:
             seen.add(cur)
             depth += 1
-            cur = _valid_parent(cur)
+            cur = parent_of.get(cur)
         return depth
 
     phases_of: dict[str, list[str]] = {}
-    for i in product.initiatives:
-        parent = _valid_parent(i.slug)
+    for slug, parent in parent_of.items():
         if parent is not None:
-            phases_of.setdefault(parent, []).append(i.slug)
+            phases_of.setdefault(parent, []).append(slug)
 
     # Build leaves before the programs that roll them up: deepest slug first.
     built: dict[str, dict] = {}
     for slug in sorted(by_slug, key=_depth, reverse=True):
         ini = by_slug[slug]
         is_program = slug in has_children
-        node = _initiative_node(ini, product.slug, has_children=is_program)
+        node = _initiative_node(ini, product.slug, has_children=is_program,
+                                parent_slug=parent_of.get(slug))
         if is_program:
             phase_tiers = [built[p]["tier"] for p in phases_of.get(slug, []) if p in built]
             node["tier"] = max_tier(node["tier"], *phase_tiers)

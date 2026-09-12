@@ -261,3 +261,39 @@ def test_program_reason_tier_and_counts_come_from_its_phases():
     a11y = tree["capabilities"][0]
     assert a11y["counts"]["needsYou"] == 1 and a11y["counts"]["inFlight"] == 1   # leaves only, no double count
     assert tree["counts"]["needsYou"] == 1
+
+
+def test_rollup_breaks_a_cycle_into_roots():
+    """A mutual parent_slug pair must never blow the stack: 'unknown or cyclic
+    parent counts as a root' applies here too, so each entry passes through
+    unchanged — both are simultaneously roots and leaves of themselves."""
+    entries = {
+        "a": {"ref": "o/r#1", "url": "u1", "total": 2, "done": 1, "blocked": 0, "needsHuman": 0},
+        "b": {"ref": "o/r#2", "url": "u2", "total": 3, "done": 0, "blocked": 1, "needsHuman": 0},
+    }
+    parent_of = {"a": "b", "b": "a"}
+    out = rollup_epic_progress(entries, parent_of)
+    assert out == entries
+
+
+def test_cyclic_initiative_parents_become_roots():
+    """A mutual parent_slug pair must not silently become two "programs" that
+    hide each other's counts (both hasChildren=True bumps nothing): the
+    sanitize rule demotes both to independent, leaf roots."""
+    product = ProductIn(
+        slug="p", name="P", capabilities=(_cap("infra"),),
+        initiatives=(
+            InitiativeIn(slug="x", title="X", stage="build", status="blocked",
+                         primary_slug="infra", capability_slugs=("infra",), epic=None,
+                         parent_slug="y"),
+            InitiativeIn(slug="y", title="Y", stage="build", status="blocked",
+                         primary_slug="infra", capability_slugs=("infra",), epic=None,
+                         parent_slug="x"),
+        ),
+        awaiting_triage=0, needs_home=0, incident_statuses=())
+    tree = build_product_tree(product)
+    by_slug = {i["slug"]: i for i in tree["initiatives"]}
+    assert by_slug["x"]["parentInitiative"] is None and by_slug["x"]["hasChildren"] is False
+    assert by_slug["y"]["parentInitiative"] is None and by_slug["y"]["hasChildren"] is False
+    infra = tree["capabilities"][0]
+    assert infra["counts"]["blocked"] == 2
