@@ -8,6 +8,7 @@ import type { Leaf } from '@/api/roadmap'
 import { ApiRequestError } from '@/api/client'
 import { MAP, cap, ini, product } from '../__fixtures__/map'
 import { findCapability } from '../lookup'
+import { initiativeKey } from '../treeRows'
 import { CapabilityDetail } from './CapabilityDetail'
 import { ViewportProvider } from '@/shell/useViewport'
 
@@ -224,6 +225,50 @@ describe('CapabilityDetail', () => {
     // Shipped is history; the other capability's initiative is not ours at all.
     expect(screen.queryByText('Already shipped')).toBeNull()
     expect(screen.queryByText('Somewhere else')).toBeNull()
+  })
+
+  it('In flight: a program appears above its in-flight phase, but only the phase counts', () => {
+    // `MAP`'s `tasks` capability carries the `audit` program and its
+    // `audit-01` phase (both `primaryCapability: 'tasks'`) — the fixture this
+    // task's nesting exercises (`__fixtures__/map.ts`).
+    const capability = findCapability(kindash, 'tasks')!
+    const { container } = mount({ product: kindash, capability }, '/roadmap/kindash/capabilities/tasks?tab=in-flight')
+    const rowIds = [...container.querySelectorAll('[data-testid^="row-initiative:"]')]
+      .map((el) => el.getAttribute('data-testid'))
+    expect(rowIds).toEqual([`row-${initiativeKey('audit')}`, `row-${initiativeKey('audit-01')}`])
+    // Leaf-only (`inFlight.ts`): the program is shown for context but never
+    // counted — only its phase is in flight.
+    expect(tile('In flight')).toHaveTextContent('1')
+    expect(screen.getByRole('tab', { name: 'In flight (1)' })).toBeInTheDocument()
+  })
+
+  it('In flight: a program interleaves before its first phase, not ahead of a leaf that precedes it in map order', () => {
+    // A leaf (`leaf-a`) that has no program at all comes BEFORE the program
+    // (`prog`) in `product.initiatives` (map order). The old code prepended
+    // every qualifying program ahead of the whole in-flight list, which would
+    // have put `prog` above `leaf-a` even though `leaf-a` comes first on the
+    // map; the fix keeps map order and only inserts `prog` right before its
+    // own first phase.
+    const workProduct = product({
+      slug: 'work-product', name: 'Work',
+      capabilities: [cap({ slug: 'work', title: 'Work' })],
+      initiatives: [
+        ini({ slug: 'leaf-a', title: 'Leaf A', projectSlug: 'work-product', primaryCapability: 'work', tier: 'in-flight' }),
+        ini({ slug: 'prog', title: 'Program', projectSlug: 'work-product', primaryCapability: 'work', hasChildren: true }),
+        ini({ slug: 'phase-a', title: 'Phase A', projectSlug: 'work-product', primaryCapability: 'work', parentInitiative: 'prog', tier: 'in-flight' }),
+      ],
+    })
+    const { container } = mount(
+      { product: workProduct, capability: findCapability(workProduct, 'work')! },
+      '/roadmap/work-product/capabilities/work?tab=in-flight',
+    )
+    const rowIds = [...container.querySelectorAll('[data-testid^="row-initiative:"]')]
+      .map((el) => el.getAttribute('data-testid'))
+    expect(rowIds).toEqual([
+      `row-${initiativeKey('leaf-a')}`,
+      `row-${initiativeKey('prog')}`,
+      `row-${initiativeKey('phase-a')}`,
+    ])
   })
 
   it('Issues: open work first, with its blockers, score and live session', () => {

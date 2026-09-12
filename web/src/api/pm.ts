@@ -244,6 +244,22 @@ export function rebaseMapChanges(slug: string): Promise<{ pointer: MapChangesPoi
   return api.post<{ pointer: MapChangesPointer }>(`/pm/projects/${encodeURIComponent(slug)}/map-changes/rebase`)
 }
 
+/** The product overview's hygiene notice (spec Sustain: health readout — server
+ *  contract `server/api/pm.py` `GET /pm/projects/{slug}/health`, merged in #1597):
+ *  capabilities and initiatives the map nesting doesn't reach, capabilities still
+ *  `proposed` after their map-changes PR merged, and inbox items no one triaged. */
+export interface ProjectHealth {
+  unparentedCapabilities: string[]
+  unlinkedInitiatives: string[]
+  staleProposed: string[]
+  staleInbox: number
+  generatedAt: string
+}
+
+export function fetchProjectHealth(slug: string): Promise<ProjectHealth> {
+  return api.get<ProjectHealth>(`/pm/projects/${encodeURIComponent(slug)}/health`)
+}
+
 export interface RemoveDependencyInput { workItemId: string; blocker: string }
 export interface RemoveDependencyResult { ok: boolean; src: string; blocker: string }
 

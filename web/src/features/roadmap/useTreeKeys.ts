@@ -17,11 +17,13 @@
 import { useCallback, useRef, useState } from 'react'
 import type { TreeRow } from './treeRows'
 
-/** Rows that can be folded carry `expanded`/`hasChildren`; leaves do not. */
+/** Rows that can be folded carry `expanded`/`hasChildren`; leaves do not. A
+ *  program initiative row structurally qualifies the same way a product or
+ *  capability row does — it just names a third `kind`. */
 type ExpandableRow = Extract<TreeRow, { expanded: boolean }>
 
 const expandable = (row: TreeRow): row is ExpandableRow =>
-  (row.kind === 'product' || row.kind === 'capability') && row.hasChildren
+  (row.kind === 'product' || row.kind === 'capability' || row.kind === 'initiative') && row.hasChildren
 
 export interface TreeKeys {
   /** Put on the `role="tree"` element. */

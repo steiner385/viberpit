@@ -13,6 +13,7 @@ import { INITIATIVE, nextStage, reasonLabel, stageLabel } from '@/features/produ
 import { TIER_ACCENT, TIER_TEXT, TIER_TONE, tierLabel } from '../roadmapTier'
 import { indentClass } from './indent'
 import { TierDot } from './TierDot'
+import { FoldChevron } from './FoldChevron'
 
 export interface InitiativeCardProps {
   initiative: InitiativeNode
@@ -26,10 +27,22 @@ export interface InitiativeCardProps {
    *  Initiatives scope is a plain list with no cursor of its own, so every row
    *  there stays a tab stop — hence the default. */
   focusable?: boolean
+  /** Program fold state — the Map scope's tree passes these three from the row's
+   *  `TreeRow` (same shape a capability row already carries); every other
+   *  caller (a plain detail list, the Initiatives scope) omits them, which is
+   *  the same as `hasChildren: false` — no chevron, no toggle. */
+  expanded?: boolean
+  hasChildren?: boolean
+  onToggle?: () => void
+  /** The program a PHASE belongs to, badged before the stage chip. Only the
+   *  Initiatives scope (leaf rows grouped by stage) looks this up and passes
+   *  it; every other caller omits it. */
+  programTitle?: string | null
 }
 
 export function InitiativeCard({
   initiative, rowKey, depth, selected, onOpen, rowRole = 'treeitem', focusable = true,
+  expanded = false, hasChildren = false, onToggle, programTitle = null,
 }: InitiativeCardProps) {
   const title = initiative.title ?? initiative.slug
   const reason = reasonLabel(initiative.reason)
@@ -45,8 +58,10 @@ export function InitiativeCard({
       role={rowRole}
       aria-level={rowRole === 'treeitem' ? depth + 1 : undefined}
       // `aria-selected` belongs to a treeitem; on a listitem it is not a valid
-      // attribute at all (axe rejects it).
+      // attribute at all (axe rejects it). Same reasoning for `aria-expanded`
+      // below — a program row only carries it inside the Map scope's tree.
       aria-selected={rowRole === 'treeitem' ? selected : undefined}
+      aria-expanded={rowRole === 'treeitem' && hasChildren ? expanded : undefined}
       className={indentClass(depth)}
     >
       <CardFrame
@@ -58,7 +73,13 @@ export function InitiativeCard({
         focusable={focusable}
         swipeEnabled={false}
         onOpen={onOpen}
-        leading={<span aria-hidden="true" className="size-6 shrink-0" />}
+        leading={
+          hasChildren ? (
+            <FoldChevron expanded={expanded} label={title} focusable={focusable} onToggle={() => onToggle?.()} />
+          ) : (
+            <span aria-hidden="true" className="size-6 shrink-0" />
+          )
+        }
         identity={
           <span className="flex min-w-0 items-center gap-2">
             <TierDot tier={initiative.tier} />
@@ -66,7 +87,20 @@ export function InitiativeCard({
             <span className="truncate text-sm font-medium text-ink">{title}</span>
           </span>
         }
-        trailing={<Badge tone={TIER_TONE[initiative.tier]}>{stageLabel(initiative.stage)}</Badge>}
+        trailing={
+          <>
+            {programTitle && (
+              // `title` + `aria-label` so assistive tech and a hover both read
+              // this as "part of the program", not just its bare name — which
+              // would otherwise be indistinguishable from the stage badge
+              // beside it.
+              <Badge tone="neutral" title={`Part of ${programTitle}`} aria-label={`Part of ${programTitle}`}>
+                {programTitle}
+              </Badge>
+            )}
+            <Badge tone={TIER_TONE[initiative.tier]}>{stageLabel(initiative.stage)}</Badge>
+          </>
+        }
       >
         <span className="block truncate text-xs text-ink-muted">
           {reason

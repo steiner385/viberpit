@@ -56,6 +56,13 @@ export interface InitiativeNode {
   /** Why it needs a human beyond its status: 'advance', or for a blocked row 'blocked' | 'epic_blocked'. */
   reason: 'advance' | 'blocked' | 'epic_blocked' | string | null
   epic: InitiativeEpic | null
+  /** Slug of the program initiative this is a phase of, or null for a root
+   *  initiative (spec: initiative nesting). A phase whose parent names an
+   *  initiative not present in the product's tree is treated as a root — the
+   *  web never hides a node over a dangling reference. */
+  parentInitiative: string | null
+  /** Whether this initiative has phases nested under it (a "program"). */
+  hasChildren: boolean
 }
 
 export interface ProductCounts {

@@ -3,7 +3,7 @@
  * what the URL names without a second fetch (the map is one query, shared by
  * the list column and every detail level).
  */
-import type { CapabilityNode, MapChangesPointer, ProductNode, RoadmapMap } from '@/api/roadmap'
+import type { CapabilityNode, InitiativeNode, MapChangesPointer, ProductNode, RoadmapMap } from '@/api/roadmap'
 
 export function findProduct(map: RoadmapMap | undefined, slug: string): ProductNode | null {
   return map?.products.find((p) => p.slug === slug) ?? null
@@ -24,6 +24,44 @@ export function findProduct(map: RoadmapMap | undefined, slug: string): ProductN
 export function openMapChanges(product: ProductNode | null | undefined): MapChangesPointer | null {
   const pointer = product?.mapChanges
   return pointer && pointer.status === 'open' ? pointer : null
+}
+
+/**
+ * A phase's program title, by parent slug — built once so a list of
+ * initiatives can label each phase with the program it belongs to without
+ * re-walking the source on every row. Falls back to the parent's own slug in
+ * both forms, so a titleless program still yields a label — ONE fallback
+ * rule, shared by every caller instead of each re-deriving it:
+ *
+ * - Given a `ProductNode` (`ProductDetail`'s overview and In-flight tab,
+ *   `RoadmapListColumn`'s Initiatives-scope chip, and any other caller of
+ *   `InitiativeList`), the returned lookup takes the phase's own
+ *   `InitiativeNode` and reads its `parentInitiative` — the product's
+ *   initiatives are enough, because a phase's program is always in the same
+ *   product's tree.
+ * - Given the whole `RoadmapMap` (`InitiativePage`, which only has the
+ *   parent's SLUG off the initiative detail payload — `parentInitiativeSlug`
+ *   — not a `ProductNode` to search, and the detail endpoint does not say
+ *   which product the parent lives in), the returned lookup takes that slug
+ *   directly and searches every product's initiatives.
+ */
+export function programTitleOf(source: ProductNode): (initiative: InitiativeNode) => string | null
+export function programTitleOf(source: RoadmapMap): (parentSlug: string | null) => string | null
+export function programTitleOf(
+  source: ProductNode | RoadmapMap,
+): ((initiative: InitiativeNode) => string | null) | ((parentSlug: string | null) => string | null) {
+  if ('products' in source) {
+    const byslug = new Map(source.products.flatMap((p) => p.initiatives).map((i) => [i.slug, i.title]))
+    return (parentSlug: string | null) => {
+      if (!parentSlug) return null
+      return byslug.get(parentSlug) ?? parentSlug
+    }
+  }
+  const byslug = new Map(source.initiatives.map((i) => [i.slug, i.title]))
+  return (initiative: InitiativeNode) => {
+    if (!initiative.parentInitiative) return null
+    return byslug.get(initiative.parentInitiative) ?? initiative.parentInitiative
+  }
 }
 
 export function findCapability(product: ProductNode, slug: string): CapabilityNode | null {

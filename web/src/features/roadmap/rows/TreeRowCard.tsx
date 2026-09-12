@@ -5,7 +5,7 @@
 // The frame is `CardFrame`, the same one the sessions list uses, so a roadmap
 // row and a session row share their rail, selection ring and open control.
 // Tokens only — this file is under `src/features/`.
-import { ChevronDown, ChevronRight, HelpCircle, Inbox, Layers, Package } from 'lucide-react'
+import { HelpCircle, Inbox, Layers, Package } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { CardFrame } from '@/ui/list/CardFrame'
 import { Badge } from '@/ui/Badge'
@@ -15,6 +15,7 @@ import { TIER_ACCENT, TIER_TONE, tierLabel } from '../roadmapTier'
 import type { TreeRow } from '../treeRows'
 import { indentClass } from './indent'
 import { TierDot } from './TierDot'
+import { FoldChevron } from './FoldChevron'
 
 export interface TreeRowCardProps {
   row: Exclude<TreeRow, { kind: 'initiative' }>
@@ -103,22 +104,7 @@ export function TreeRowCard({ row, selected, focusable, onOpen, onToggle, onOpen
         onOpen={() => onOpen(row)}
         leading={
           row.hasChildren ? (
-            <button
-              type="button"
-              // Part of the same roving tab stop as the open control beside it:
-              // one Tab enters the tree, `←`/`→` fold and unfold from there.
-              tabIndex={focusable ? 0 : -1}
-              aria-label={`${row.expanded ? 'Collapse' : 'Expand'} ${title}`}
-              onClick={(e) => { e.stopPropagation(); onToggle(row.key) }}
-              className={cn(
-                'flex size-6 shrink-0 items-center justify-center rounded-sm text-ink-muted',
-                'hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-              )}
-            >
-              {row.expanded
-                ? <ChevronDown size={14} aria-hidden="true" />
-                : <ChevronRight size={14} aria-hidden="true" />}
-            </button>
+            <FoldChevron expanded={row.expanded} label={title} focusable={focusable} onToggle={() => onToggle(row.key)} />
           ) : (
             <span aria-hidden="true" className="size-6 shrink-0" />
           )

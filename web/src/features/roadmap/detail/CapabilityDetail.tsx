@@ -56,7 +56,26 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
   const mine = initiativesOn(product, capability)
   // The product narrowed to this capability's initiatives, so "in flight" is
   // read by the same module the portfolio and product levels read it with.
+  // Leaf-only (`inFlight.ts`): a program itself is never counted, only its
+  // phases are.
   const inFlight = inFlightInitiatives([{ ...product, initiatives: mine }])
+  // The In-flight tab still shows a phase's program above it for context — it
+  // is just never part of the count above. `InitiativeList` nests purely
+  // structurally, so passing the program alongside the one phase that
+  // qualifies is enough; it does not need the rest of that program's phases.
+  //
+  // INTERLEAVED, not prepended: a program is inserted immediately before its
+  // first in-flight phase, keeping `inFlight`'s own map order for everything
+  // else — prepending every qualifying program ahead of the whole list would
+  // jump it above leaves that precede it in map order.
+  const shownPrograms = new Set<string>()
+  const inFlightWithProgramContext = inFlight.flatMap((f) => {
+    const program = f.parentInitiative && !shownPrograms.has(f.parentInitiative)
+      ? mine.find((i) => i.hasChildren && i.slug === f.parentInitiative)
+      : undefined
+    if (program) shownPrograms.add(program.slug)
+    return program ? [program, f] : [f]
+  })
   // The product, narrowed to this capability: the Needs-you panel below reads
   // its rows from this, and the tile and badge count the same object, so the
   // number above the list can never disagree with the list.
@@ -188,7 +207,7 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
               ))}
             </ul>
           ))}
-        {tab === 'in-flight' && <InitiativeList initiatives={inFlight} />}
+        {tab === 'in-flight' && <InitiativeList initiatives={inFlightWithProgramContext} />}
         {tab === 'issues' && <LeafList scope={{ capability: capability.id }} product={product} />}
         {/* `repos={[]}` is a real, empty scope: incidents are filed against a
             repository, which belongs to the product, so a capability shows none

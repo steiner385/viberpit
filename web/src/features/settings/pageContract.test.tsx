@@ -72,6 +72,12 @@ vi.mock('@/api/client', async (importOriginal) => {
             },
           }
         }
+        if (path.startsWith('/pm/projects') && path.endsWith('/health')) {
+          return {
+            unparentedCapabilities: [], unlinkedInitiatives: [], staleProposed: [],
+            staleInbox: 0, generatedAt: 'x',
+          }
+        }
         if (path.startsWith('/pm/projects') && path.endsWith('/onboarding')) {
           return {
             state: 'live',

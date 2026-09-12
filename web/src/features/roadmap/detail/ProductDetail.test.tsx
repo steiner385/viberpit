@@ -62,6 +62,9 @@ vi.mock('@/api/hooks', () => ({
   // open pointer by default, so these are exercised by MapChangesCard's own tests.
   useAbandonMapChanges: () => ({ mutate: vi.fn(), isPending: false }),
   useRebaseMapChanges: () => ({ mutate: vi.fn(), isPending: false }),
+  // The Overview's hygiene notice — no data, so `RoadmapHealthCard` renders
+  // nothing and stays out of this file's assertions.
+  useProjectHealth: () => ({ data: undefined, isLoading: false, isError: false }),
 }))
 
 vi.mock('@/api/pm', async (orig) => ({
@@ -154,9 +157,11 @@ describe('ProductDetail', () => {
     mount()
     // The tile and the badge beside it must not be two different numbers: both
     // are the moving-or-stuck initiatives (`counts.inFlight` also rolls up issue
-    // tiers, which belong to the capability level).
-    expect(tile('In flight')).toHaveTextContent('2')
-    expect(screen.getByRole('tab', { name: 'In flight (2)' })).toBeInTheDocument()
+    // tiers, which belong to the capability level). `views`, `orphan`, and the
+    // `audit` program's `audit-01` phase — the `audit` program itself is
+    // excluded (leaf-only, `inFlight.ts`), so it is 3, not 4.
+    expect(tile('In flight')).toHaveTextContent('3')
+    expect(screen.getByRole('tab', { name: 'In flight (3)' })).toBeInTheDocument()
   })
 
   it('counts Needs you exactly as the portfolio counts it for this product', () => {
@@ -199,6 +204,17 @@ describe('ProductDetail', () => {
     mount('/roadmap/kindash?tab=in-flight')
     expect(screen.getByRole('button', { name: 'Open initiative Use-case-first task views' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Open initiative No home yet' })).toBeInTheDocument()
+  })
+
+  it('a phase in flight names the program it belongs to, in the overview and the In-flight tab', () => {
+    // `inFlightInitiatives` is leaf-only, so `audit-01` (parented under the
+    // `audit` program) has no program row of its own to nest under at product
+    // level — the badge is how it still says which program it is part of.
+    mount()
+    expect(screen.getByText('01 Restore')).toBeInTheDocument()
+    expect(screen.getByTitle('Part of UI audit')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: /In flight/ }))
+    expect(screen.getByTitle('Part of UI audit')).toBeInTheDocument()
   })
 
   it('Ranked: only this product', () => {

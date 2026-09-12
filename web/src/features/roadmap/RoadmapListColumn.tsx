@@ -21,6 +21,7 @@ import { useItemOrdering, type OrderingSpec } from '@/session/useSessionOrdering
 import { INITIATIVE, PRODUCT, ROADMAP, stageLabel } from '@/features/products/vocab'
 import { ScopeBody } from '@/features/sessions/ScopeBody'
 import { InboxScopeBody, type InboxScopeBodyProps } from './inbox/InboxScopeBody'
+import { programTitleOf } from './lookup'
 import { TIER_RANK } from './roadmapTier'
 import { RoadmapScopeSegment } from './RoadmapScopeSegment'
 import { InitiativeCard } from './rows/InitiativeCard'
@@ -171,6 +172,11 @@ function MapScopeBody({ map, isLoading, selectedKey, onOpen, onOpenInbox }: MapS
               selected={selectedKey === row.key}
               focusable={rovingKey === row.key}
               onOpen={() => onOpen(row)}
+              expanded={row.expanded}
+              hasChildren={row.hasChildren}
+              // Same fold state a capability row's chevron and `useTreeKeys`'s
+              // ArrowLeft/ArrowRight both toggle through.
+              onToggle={() => setTree((t) => toggleKey(t, row.key))}
             />
           ) : (
             <TreeRowCard
@@ -238,11 +244,25 @@ interface InitiativesScopeBodyProps {
 function InitiativesScopeBody({ entries, isLoading, selectedKey, onOpen }: InitiativesScopeBodyProps) {
   const [query, setQuery] = useState('')
   const q = query.trim().toLowerCase()
+  // A program row has no stage of its own that a human acts on directly — its
+  // phases do — so this scope lists LEAF initiatives only. A phase wears its
+  // program as a chip instead (`programTitle`, below) so the context is not lost.
+  const leaves = useMemo(() => entries.filter((e) => !e.initiative.hasChildren), [entries])
+  // One `programTitleOf` lookup per PRODUCT among the visible leaves, not one
+  // per row: a product's `Map` build is the same on every phase that belongs
+  // to it, and this scope can list phases from several products at once.
+  const programTitleFns = useMemo(() => {
+    const fns = new Map<string, (initiative: InitiativeNode) => string | null>()
+    for (const e of leaves) {
+      if (!fns.has(e.product.slug)) fns.set(e.product.slug, programTitleOf(e.product))
+    }
+    return fns
+  }, [leaves])
   const visible = useMemo(
     () => (q
-      ? entries.filter((e) => `${e.initiative.title ?? ''} ${e.initiative.slug}`.toLowerCase().includes(q))
-      : entries),
-    [entries, q],
+      ? leaves.filter((e) => `${e.initiative.title ?? ''} ${e.initiative.slug}`.toLowerCase().includes(q))
+      : leaves),
+    [leaves, q],
   )
   const ordering = useItemOrdering(visible, INITIATIVE_SPEC)
   return (
@@ -283,6 +303,10 @@ function InitiativesScopeBody({ entries, isLoading, selectedKey, onOpen }: Initi
         ariaLabel={ROADMAP.initiatives}
         renderRow={(e) => {
           const key = initiativeKey(e.initiative.slug)
+          // `lookup.ts:programTitleOf` — a titleless program still has to
+          // yield a chip, so it falls back to its own slug rather than the
+          // lookup's `null`, same as `InitiativePage`'s "Part of" link.
+          const programTitle = programTitleFns.get(e.product.slug)?.(e.initiative) ?? null
           return (
             <InitiativeCard
               key={key}
@@ -290,9 +314,14 @@ function InitiativesScopeBody({ entries, isLoading, selectedKey, onOpen }: Initi
               depth={0}
               rowRole="listitem"
               initiative={e.initiative}
+              programTitle={programTitle}
               selected={selectedKey === key}
               onOpen={() => onOpen({
                 kind: 'initiative', key, depth: 0, product: e.product, initiative: e.initiative,
+                // A flat list, not the tree: there is no fold state here, and
+                // `hasChildren` is a fact about the initiative the row already
+                // carries — not something this scope renders nested itself.
+                expanded: false, hasChildren: e.initiative.hasChildren,
               })}
             />
           )
