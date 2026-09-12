@@ -124,6 +124,15 @@ class GhWrite:
             raise GhWriteError("head", f"no sha for {default_branch}")
         return sha
 
+    def branch_exists(self, branch: str) -> bool:
+        """Whether the ref exists — WITHOUT creating it.
+
+        Validation needs this: a branch can hold docs while no pointer row
+        exists (a crash between the commit and the DB write), and those docs
+        are part of the truth the next edit validates against."""
+        out = self._gh(["api", f"repos/{self.repo}/git/ref/heads/{branch}"], "branch", allow_404=True)
+        return bool(str((self._json(out).get("object") or {}).get("sha") or ""))
+
     def ensure_branch(self, branch: str, from_sha: str) -> str:
         existing = self._json(self._gh(["api", f"repos/{self.repo}/git/ref/heads/{branch}"], "branch", allow_404=True))
         sha = str((existing.get("object") or {}).get("sha") or "")
@@ -143,7 +152,12 @@ class GhWrite:
         Empty when the directory does not exist on the ref (a branch opened
         before any doc landed). The contents API answers a directory with an
         array of stubs — no ``content`` — so each doc still needs
-        :meth:`read_file`."""
+        :meth:`read_file`.
+
+        NOTE: the contents API lists at most 1000 entries per directory and is
+        NOT paginated (over 1000 it answers 403 and only the Git trees API can
+        read the directory). A product with >1000 capability docs would need
+        that path; nothing near it exists today."""
         out = self._gh(["api", f"repos/{self.repo}/contents/{path}?ref={ref}"], "list", allow_404=True)
         if not out.strip():
             return []
@@ -189,6 +203,25 @@ class GhWrite:
                                  "-f", f"title={title}", "-F", "draft=false", "-F", "body=@-"],
                                 "pr", input=body))
         return _pr_state(d)
+
+    def find_open_pr(self, branch: str) -> PrState | None:
+        """The open PR whose head is *branch*, or ``None``.
+
+        This is what makes a half-finished edit recoverable: the GitHub commit
+        and the PR land before the DB row does, so a failure in between leaves
+        an open PR with no pointer row. The next edit adopts that PR instead of
+        asking GitHub to open a second one (which answers "A pull request
+        already exists" forever)."""
+        owner = self.repo.split("/")[0]
+        out = self._gh(
+            ["api", f"repos/{self.repo}/pulls?head={owner}:{branch}&state=open"], "pr_find")
+        if not out.strip():
+            return None
+        found = json.loads(out)
+        if not isinstance(found, list) or not found:
+            return None
+        first = found[0]
+        return _pr_state(first) if isinstance(first, Mapping) else None
 
     def read_pr(self, number: int) -> PrState:
         return _pr_state(self._json(self._gh(["api", f"repos/{self.repo}/pulls/{number}"], "pr_read")))

@@ -3,10 +3,10 @@ map-changes service behind the API (roadmap drill-down spec §8/§9, row 8b).
 
 Every GitHub call goes through the orchestrator's injectable ``_gh_run`` seam,
 so these tests assert the exact ``gh`` argv sequence one edit produces (the
-branch-from-default-head, the content read, the atomic GraphQL commit, the PR)
-without touching the network. ``_sdlc_default_branch`` resolves through
-``gitrepos.list_remote_branches``, which does NOT use that seam — it is patched
-per client.
+branch-doc probe, the branch-from-default-head, the content read, the atomic
+GraphQL commit, the PR) without touching the network. ``_sdlc_default_branch``
+resolves through ``gitrepos.list_remote_branches``, which does NOT use that
+seam — it is patched per client.
 """
 from __future__ import annotations
 
@@ -15,7 +15,9 @@ import base64
 import contextlib
 import json
 import os
+import subprocess
 import tempfile
+import threading
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -27,12 +29,17 @@ REPO = "o/r"
 SLUG = "example-product"
 BRANCH = "pm/map-changes-example-product"
 DOCS = "docs/product/features"
+# The slug of a product whose name never survived slugification — underscores
+# are not branch-safe, so every map-changes edit on it is refused.
+UNSAFE_SLUG = "bad_slug"
 
 
 # -- fake `gh` answers --------------------------------------------------------
 
 _404 = ("", 1, "HTTP 404: Not Found")
 _OK = ("", 0, "")
+_EMPTY_LIST = ("[]", 0, "")
+_NO_PR = _EMPTY_LIST
 _STALE = (json.dumps(
     {"errors": [{"message": 'Expected branch to point to "old" but it did not'}]}), 0, "")
 
@@ -49,11 +56,20 @@ def _commit(oid: str):
     return (json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": oid}}}}), 0, "")
 
 
-def _pr(*, number: int = 12, mergeable_state: str = "clean"):
-    return (json.dumps({
+def _pr_json(*, number: int = 12, mergeable_state: str = "clean") -> dict:
+    return {
         "number": number, "html_url": f"https://github.com/{REPO}/pull/{number}",
         "state": "open", "merged": False, "merged_at": None,
-        "head": {"sha": "c0"}, "mergeable_state": mergeable_state}), 0, "")
+        "head": {"sha": "c0"}, "mergeable_state": mergeable_state}
+
+
+def _pr(*, number: int = 12, mergeable_state: str = "clean"):
+    return (json.dumps(_pr_json(number=number, mergeable_state=mergeable_state)), 0, "")
+
+
+def _pr_list(*, number: int = 12):
+    """What ``find_open_pr`` sees: the list endpoint, not the single-PR one."""
+    return (json.dumps([_pr_json(number=number)]), 0, "")
 
 
 def _contents(text: str):
@@ -65,11 +81,17 @@ def _listing(*names: str):
     return (json.dumps([{"name": n, "path": f"{DOCS}/{n}", "type": "file"} for n in names]), 0, "")
 
 
-def _doc(slug: str, title: str, *, parent: str | None = None) -> str:
+def _doc(slug: str, title: str, *, parent: str | None = None, body: str | None = None) -> str:
     front = f"slug: {slug}\ntitle: {title}\nstate: proposed"
     if parent:
         front += f"\nparent: {parent}"
-    return f"---\n{front}\n---\n# {title}\n"
+    return f"---\n{front}\n---\n{body if body is not None else f'# {title}'}\n"
+
+
+# The scripted answers one first edit produces: the branch-doc probe, the base
+# head, the branch create, the (absent) doc, the commit, the PR lookup, the PR.
+def _first_create_answers() -> list:
+    return [_404, _ref("base1"), _404, _created("base1"), _404, _commit("c0"), _NO_PR, _pr()]
 
 
 # -- fixtures -----------------------------------------------------------------
@@ -77,7 +99,8 @@ def _doc(slug: str, title: str, *, parent: str | None = None) -> str:
 
 def _seed(db_url: str) -> None:
     """A product with a primary repo and two indexed capabilities (``sessions``
-    with the child ``dictation``), plus a second product with no repo at all."""
+    with the child ``dictation``), a second product with no repo at all, and a
+    third whose slug is not branch-safe."""
     from server.db import db_session, init_db
     from server.db.models import Feature, Project, ProjectRepo
 
@@ -94,6 +117,7 @@ def _seed(db_url: str) -> None:
             db.add(Feature(project_id=p.id, slug="dictation", title="Dictation",
                            state="delivering", parent_feature_id=root.id))
             db.add(Project(slug="bare-product", name="Bare product"))
+            db.add(Project(slug=UNSAFE_SLUG, name="Bad slug product"))
             await db.commit()
 
     asyncio.run(_go())
@@ -197,6 +221,11 @@ def _set_behind(c, value: bool) -> None:
     c.portal.call(_write)
 
 
+async def _loop_thread() -> threading.Thread:
+    """The thread the app's event loop runs on (a TestClient portal thread)."""
+    return threading.current_thread()
+
+
 @contextmanager
 def _seeded(gh):
     with tempfile.TemporaryDirectory() as tmp:
@@ -213,11 +242,18 @@ def _edit(c, project: str = SLUG, **body):
                   headers=IDENTITY_HEADERS)
 
 
+def _committed(gh, index: int = -1) -> str:
+    """The text of the file added by the recorded GraphQL commit at *index*."""
+    payload = json.loads(gh.calls[index][2])
+    added = payload["variables"]["input"]["fileChanges"]["additions"][0]
+    return base64.b64decode(added["contents"]).decode()
+
+
 # -- tests --------------------------------------------------------------------
 
 
 def test_create_opens_the_branch_the_pr_and_the_pointer_row():
-    gh = FakeGh([_ref("base1"), _404, _created("base1"), _404, _commit("c0"), _pr()])
+    gh = FakeGh(_first_create_answers())
     with _seeded(gh) as c:
         r = _edit(c, op="create", slug="payments", title="Payments", summary="Take money.")
         assert r.status_code == 200, r.text
@@ -234,23 +270,24 @@ def test_create_opens_the_branch_the_pr_and_the_pointer_row():
         assert ptr["openedAt"]
 
         argv = _argv(gh)
-        assert argv[0] == ["api", f"repos/{REPO}/git/ref/heads/master"]
-        assert argv[1] == ["api", f"repos/{REPO}/git/ref/heads/{BRANCH}"]
-        assert argv[2][:4] == ["api", "-X", "POST", f"repos/{REPO}/git/refs"]
-        assert f"ref=refs/heads/{BRANCH}" in argv[2] and "sha=base1" in argv[2]
-        assert argv[3] == ["api", f"repos/{REPO}/contents/{DOCS}/payments.md?ref={BRANCH}"]
-        assert argv[4] == ["api", "graphql", "--input", "-"]
-        assert argv[5][:4] == ["api", "-X", "POST", f"repos/{REPO}/pulls"]
-        assert len(argv) == 6
+        # The branch-doc probe comes first: docs can be stranded on the branch
+        # with no pointer row, and validation must see them.
+        assert argv[0] == ["api", f"repos/{REPO}/git/ref/heads/{BRANCH}"]
+        assert argv[1] == ["api", f"repos/{REPO}/git/ref/heads/master"]
+        assert argv[2] == ["api", f"repos/{REPO}/git/ref/heads/{BRANCH}"]
+        assert argv[3][:4] == ["api", "-X", "POST", f"repos/{REPO}/git/refs"]
+        assert f"ref=refs/heads/{BRANCH}" in argv[3] and "sha=base1" in argv[3]
+        assert argv[4] == ["api", f"repos/{REPO}/contents/{DOCS}/payments.md?ref={BRANCH}"]
+        assert argv[5] == ["api", "graphql", "--input", "-"]
+        assert argv[6] == ["api", f"repos/{REPO}/pulls?head=o:{BRANCH}&state=open"]
+        assert argv[7][:4] == ["api", "-X", "POST", f"repos/{REPO}/pulls"]
+        assert len(argv) == 8
 
         # The committed text is the canonical serialized doc, proposed on create.
-        payload = json.loads(gh.calls[4][2])
-        added = payload["variables"]["input"]["fileChanges"]["additions"][0]
-        assert added["path"] == f"{DOCS}/payments.md"
-        text = base64.b64decode(added["contents"]).decode()
+        text = _committed(gh, 5)
         assert "slug: payments" in text and "state: proposed" in text
         assert "Take money." in text
-        assert payload["variables"]["input"]["expectedHeadOid"] == "base1"
+        assert json.loads(gh.calls[5][2])["variables"]["input"]["expectedHeadOid"] == "base1"
 
         assert _pointers(c) == [(REPO, BRANCH, 12, "open", "c0", False)]
         assert _sync_requested(c) is True
@@ -261,11 +298,10 @@ def test_create_opens_the_branch_the_pr_and_the_pointer_row():
 
 def test_second_edit_reuses_the_pointer_and_sees_the_branch_only_capability():
     """No second PR, one commit — and ``payments`` (created on the branch, not
-    yet indexed) is a valid parent because ``context()`` reads the branch docs."""
+    yet indexed) is a valid parent because the branch docs are read."""
     gh = FakeGh([
-        # first edit: create payments
-        _ref("base1"), _404, _created("base1"), _404, _commit("c0"), _pr(),
-        # second edit: context lists the branch docs, then commits billing
+        *_first_create_answers(),
+        # second edit: the branch docs are listed, then billing is committed
         _listing("payments.md"), _contents(_doc("payments", "Payments")),
         _ref("base1"), _ref("c0"), _404, _commit("c1"),
     ])
@@ -278,6 +314,7 @@ def test_second_edit_reuses_the_pointer_and_sees_the_branch_only_capability():
         assert r.json()["pointer"]["prNumber"] == 12
 
         argv = _argv(gh)[first:]
+        # An open pointer proves the branch exists, so no second existence probe.
         assert argv[0] == ["api", f"repos/{REPO}/contents/{DOCS}?ref={BRANCH}"]
         assert argv[1] == ["api", f"repos/{REPO}/contents/{DOCS}/payments.md?ref={BRANCH}"]
         assert [a for a in argv if a[:1] == ["api"] and "graphql" in a] == [
@@ -288,8 +325,25 @@ def test_second_edit_reuses_the_pointer_and_sees_the_branch_only_capability():
         assert _pointers(c) == [(REPO, BRANCH, 12, "open", "c1", False)]
 
 
+def test_a_branch_only_capability_is_a_valid_link_target():
+    """R8b-10 as amended: a capability proposed on the branch can be linked to
+    from the same PR, before any index pass has seen it."""
+    gh = FakeGh([
+        *_first_create_answers(),
+        _listing("payments.md"), _contents(_doc("payments", "Payments")),
+        _ref("base1"), _ref("c0"), _contents(_doc("sessions", "Sessions")), _commit("c1"),
+    ])
+    with _seeded(gh) as c:
+        assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
+        r = _edit(c, op="links", slug="sessions",
+                  links=[{"kind": "powered_by", "project": SLUG, "feature": "payments"}])
+        assert r.status_code == 200, r.text
+        text = _committed(gh)
+        assert "kind: powered_by" in text and "feature: payments" in text
+
+
 def test_unknown_slug_bad_op_and_missing_primary_repo_are_422():
-    gh = FakeGh([])
+    gh = FakeGh([_404, *_first_create_answers()])
     with _seeded(gh) as c:
         r = _edit(c, op="rename", slug="nope", title="Nope")
         assert r.status_code == 422, r.text
@@ -303,13 +357,32 @@ def test_unknown_slug_bad_op_and_missing_primary_repo_are_422():
         assert r.status_code == 422
         assert r.json()["detail"]["error"] == "no_primary_repo"
 
-        assert gh.calls == []
+        # Only the branch probe for the `rename`: an op the shape check rejects
+        # never reaches GitHub at all.
+        assert _argv(gh) == [["api", f"repos/{REPO}/git/ref/heads/{BRANCH}"]]
         assert _pointers(c) == []
 
+        # …and the same holds with a pointer open, where context() would
+        # otherwise cost a directory listing plus one read per branch doc.
+        assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
+        after_create = len(gh.calls)
+        assert _edit(c, op="explode", slug="payments").status_code == 422
+        assert len(gh.calls) == after_create
+        assert not [a for a in _argv(gh)[after_create:] if "contents" in "".join(a)]
 
-def test_create_of_an_existing_branch_doc_is_slug_taken():
+
+def test_a_project_slug_that_is_not_branch_safe_is_422_before_any_github_call():
+    gh = FakeGh([])
+    with _seeded(gh) as c:
+        r = _edit(c, UNSAFE_SLUG, op="create", slug="payments", title="Payments")
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "bad_slug"
+        assert gh.calls == []
+
+
+def test_create_of_an_existing_branch_doc_is_slug_taken_and_names_the_branch():
     gh = FakeGh([
-        _ref("base1"), _404, _created("base1"), _404, _commit("c0"), _pr(),
+        *_first_create_answers(),
         _listing("payments.md"), _contents(_doc("payments", "Payments")),
     ])
     with _seeded(gh) as c:
@@ -317,28 +390,45 @@ def test_create_of_an_existing_branch_doc_is_slug_taken():
         r = _edit(c, op="create", slug="payments", title="Payments again")
         assert r.status_code == 422, r.text
         assert r.json()["detail"]["error"] == "slug_taken"
+        assert BRANCH in r.json()["detail"]["message"]
 
 
-def test_a_moved_head_is_re_read_once_and_retried():
+def test_a_moved_head_re_reads_the_doc_and_re_applies_the_op():
+    """The retry must not re-commit the text computed at the old head:
+    ``fileChanges.additions`` replaces the file, so a concurrent writer's line
+    would be silently dropped (the AI map-diff session shares this branch)."""
+    v1 = _doc("payments", "Payments", body="# Payments\n\nOld summary.")
+    v2 = _doc("payments", "Payments", body="# Payments\n\nOld summary.\n\nConcurrent line.")
     gh = FakeGh([
-        _ref("base1"), _404, _created("base1"), _404,
-        _STALE,            # someone else committed between the read and the commit
-        _ref("moved"),     # one re-read of the branch head
-        _commit("c0"),
-        _pr(),
+        *_first_create_answers(),
+        _listing("payments.md"), _contents(v1),   # branch docs for validation
+        _ref("base1"),                            # default-branch head
+        _ref("c0"), _contents(v1),                # head + doc at the old head
+        _STALE,                                   # someone else committed
+        _ref("moved"), _contents(v2),             # re-read BOTH, re-apply
+        _commit("c1"),
     ])
     with _seeded(gh) as c:
-        r = _edit(c, op="create", slug="payments", title="Payments")
+        assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
+        first = len(gh.calls)
+        r = _edit(c, op="summary", slug="payments", summary="New summary.")
         assert r.status_code == 200, r.text
-        argv = _argv(gh)
-        assert argv[5] == ["api", f"repos/{REPO}/git/ref/heads/{BRANCH}"]
-        assert json.loads(gh.calls[6][2])["variables"]["input"]["expectedHeadOid"] == "moved"
+
+        argv = _argv(gh)[first:]
+        assert argv[-3] == ["api", f"repos/{REPO}/git/ref/heads/{BRANCH}"]
+        assert argv[-2] == ["api", f"repos/{REPO}/contents/{DOCS}/payments.md?ref={BRANCH}"]
+        assert argv[-1] == ["api", "graphql", "--input", "-"]
+        assert json.loads(gh.calls[-1][2])["variables"]["input"]["expectedHeadOid"] == "moved"
+
+        text = _committed(gh)
+        assert "New summary." in text and "Old summary." not in text
+        assert "Concurrent line." in text        # the concurrent write survived
 
 
 def test_a_head_that_moves_twice_is_409_conflict():
     gh = FakeGh([
-        _ref("base1"), _404, _created("base1"), _404,
-        _STALE, _ref("moved"), _STALE,
+        _404, _ref("base1"), _404, _created("base1"), _404,
+        _STALE, _ref("moved"), _404, _STALE,
     ])
     with _seeded(gh) as c:
         r = _edit(c, op="create", slug="payments", title="Payments")
@@ -349,12 +439,104 @@ def test_a_head_that_moves_twice_is_409_conflict():
 
 
 def test_a_github_failure_is_502_with_the_step():
-    gh = FakeGh([("", 1, "HTTP 502: Bad Gateway")])
+    gh = FakeGh([_404, ("", 1, "HTTP 502: Bad Gateway")])
     with _seeded(gh) as c:
         r = _edit(c, op="create", slug="payments", title="Payments")
         assert r.status_code == 502, r.text
         assert r.json()["detail"]["error"] == "github"
         assert r.json()["detail"]["step"] == "head"
+
+
+def test_a_gh_timeout_is_502_not_a_500():
+    class _TimeoutGh:
+        def __init__(self) -> None:
+            self.calls: list = []
+
+        def __call__(self, args, token=None, *, input=None, timeout=None):
+            self.calls.append((list(args), token, input))
+            raise subprocess.TimeoutExpired(["gh", *args], timeout or 60)
+
+    gh = _TimeoutGh()
+    with _seeded(gh) as c:
+        r = _edit(c, op="create", slug="payments", title="Payments")
+        assert r.status_code == 502, r.text
+        assert r.json()["detail"] == {
+            "error": "github", "step": "timeout",
+            "message": r.json()["detail"]["message"]}
+        assert "timed out" in r.json()["detail"]["message"]
+        assert gh.calls
+
+
+def test_the_github_client_is_built_off_the_event_loop():
+    """Minting the App token reads a PEM, takes a process-global lock and may
+    POST — all blocking, so the factory has to run in a worker thread."""
+    import server.pm.map_changes_gh as gh_mod
+
+    gh = FakeGh(_first_create_answers())
+    built: list[threading.Thread] = []
+    real = gh_mod.GhWrite
+
+    def _record(*a, **k):
+        built.append(threading.current_thread())
+        return real(*a, **k)
+
+    with _seeded(gh) as c:
+        with patch.object(gh_mod, "GhWrite", _record):
+            assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
+        loop_thread = c.portal.call(_loop_thread)
+        assert built and all(t is not loop_thread for t in built)
+
+
+def test_a_pr_that_failed_to_record_is_adopted_not_reopened():
+    """The GitHub commit and the PR land before the DB row: a failure between
+    them strands a doc (and possibly a PR) with no pointer. ``create`` still
+    refuses the slug, but every other op works and adopts the open PR."""
+    doc = _doc("payments", "Payments")
+    gh = FakeGh([
+        # 1) create: the commit lands, opening the PR 502s → the row rolls back
+        _404, _ref("base1"), _404, _created("base1"), _404, _commit("c0"),
+        _NO_PR, ("", 1, "HTTP 502: Bad Gateway"),
+        # 2) the same create again: the doc is visible on the branch now
+        _ref("c0"), _listing("payments.md"), _contents(doc),
+        # 3) any other op on that slug works, and adopts the PR that IS open
+        _ref("c0"), _listing("payments.md"), _contents(doc),
+        _ref("base1"), _ref("c0"), _contents(doc), _commit("c1"), _pr_list(),
+    ])
+    with _seeded(gh) as c:
+        r = _edit(c, op="create", slug="payments", title="Payments")
+        assert r.status_code == 502, r.text
+        assert r.json()["detail"]["step"] == "pr"
+        assert _pointers(c) == []
+        after_failure = len(gh.calls)
+
+        r = _edit(c, op="create", slug="payments", title="Payments")
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "slug_taken"
+        assert BRANCH in r.json()["detail"]["message"]
+
+        r = _edit(c, op="summary", slug="payments", summary="Take money.")
+        assert r.status_code == 200, r.text
+        assert r.json()["pointer"]["prNumber"] == 12
+        assert _pointers(c) == [(REPO, BRANCH, 12, "open", "c1", False)]
+        # The PR was adopted, never re-opened: a second `POST pulls` would
+        # answer "A pull request already exists" forever.
+        assert not [a for a in _argv(gh)[after_failure:]
+                    if a[:4] == ["api", "-X", "POST", f"repos/{REPO}/pulls"]]
+
+
+def test_an_open_pr_without_a_row_is_adopted_on_the_first_edit():
+    gh = FakeGh([
+        _ref("c0"), _EMPTY_LIST,   # the branch exists, with no docs on it yet
+        _ref("base1"), _ref("c0"), _404, _commit("c1"), _pr_list(number=12),
+    ])
+    with _seeded(gh) as c:
+        r = _edit(c, op="create", slug="payments", title="Payments")
+        assert r.status_code == 200, r.text
+        assert r.json()["pointer"]["prNumber"] == 12
+        assert _pointers(c) == [(REPO, BRANCH, 12, "open", "c1", False)]
+        argv = _argv(gh)
+        assert argv[-1] == ["api", f"repos/{REPO}/pulls?head=o:{BRANCH}&state=open"]
+        assert not [a for a in argv if a[:4] == ["api", "-X", "POST", f"repos/{REPO}/pulls"]]
 
 
 def test_delete_without_a_pointer_is_404():
@@ -367,7 +549,7 @@ def test_delete_without_a_pointer_is_404():
 
 def test_delete_closes_the_pr_deletes_the_branch_and_abandons_the_row():
     gh = FakeGh([
-        _ref("base1"), _404, _created("base1"), _404, _commit("c0"), _pr(),
+        *_first_create_answers(),
         _OK,  # PATCH pulls/12 state=closed
         _OK,  # DELETE git/refs/heads/<branch>
     ])
@@ -394,7 +576,7 @@ def test_delete_closes_the_pr_deletes_the_branch_and_abandons_the_row():
 
 def test_rebase_is_409_until_the_pr_is_behind_then_updates_the_branch():
     gh = FakeGh([
-        _ref("base1"), _404, _created("base1"), _404, _commit("c0"), _pr(),
+        *_first_create_answers(),
         _OK,  # PUT pulls/12/update-branch
     ])
     with _seeded(gh) as c:

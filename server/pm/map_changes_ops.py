@@ -67,11 +67,20 @@ def _is_ancestor(ctx: MapContext, candidate: str, of: str) -> bool:
     return False
 
 
-def validate_op(op: MapOp, ctx: MapContext) -> None:
+def validate_op_shape(op: MapOp) -> None:
+    """The checks that need no context at all — op name and slug syntax.
+
+    Split out of :func:`validate_op` (which still runs it) so a caller can
+    reject a malformed op BEFORE paying for the context reads it would need:
+    the service builds ``MapContext`` from GitHub contents calls."""
     if op.op not in MAP_OPS:
         raise MapOpError("bad_op", f"op must be one of {MAP_OPS}")
     if not SLUG_RE.match(op.slug or ""):
         raise MapOpError("bad_slug", "slug must be lowercase letters, digits and dashes")
+
+
+def validate_op(op: MapOp, ctx: MapContext) -> None:
+    validate_op_shape(op)
     exists = op.slug in ctx.parents
     if op.op == "create":
         if exists:

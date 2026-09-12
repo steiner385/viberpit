@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import subprocess
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
@@ -731,6 +732,11 @@ def _map_changes_http(e: Exception) -> HTTPException:
                 "error": "conflict", "step": e.step, "message": e.detail})
         return HTTPException(status_code=502, detail={
             "error": "github", "step": e.step, "message": e.detail})
+    if isinstance(e, subprocess.TimeoutExpired):
+        # `gh` hung past _run_gh's timeout — an upstream failure like any other
+        # GitHub error, not a 500: the edit simply did not happen.
+        return HTTPException(status_code=502, detail={
+            "error": "github", "step": "timeout", "message": str(e)})
     raise e
 
 
@@ -757,7 +763,7 @@ async def map_changes_edit(
                     for link in (body.links or [])))
     try:
         pointer, path, sha = await svc.edit(db, p, op, identity)
-    except (MapOpError, NoPrimaryRepo, GhWriteError) as e:
+    except (MapOpError, NoPrimaryRepo, GhWriteError, subprocess.TimeoutExpired) as e:
         raise _map_changes_http(e) from e
     return {"pointer": pointer.to_dict(), "path": path, "commitSha": sha}
 
@@ -775,7 +781,8 @@ async def map_changes_abandon(
     svc = request.app.state.sessions.pm_map_changes()
     try:
         pointer = await svc.abandon(db, p, identity)
-    except (NoOpenMapChanges, NoPrimaryRepo, GhWriteError) as e:
+    except (NoOpenMapChanges, NoPrimaryRepo, GhWriteError,
+            subprocess.TimeoutExpired) as e:
         raise _map_changes_http(e) from e
     return {"pointer": pointer.to_dict()}
 
@@ -793,7 +800,8 @@ async def map_changes_rebase(
     svc = request.app.state.sessions.pm_map_changes()
     try:
         pointer = await svc.rebase(db, p, identity)
-    except (NoOpenMapChanges, NotBehind, NoPrimaryRepo, GhWriteError) as e:
+    except (NoOpenMapChanges, NotBehind, NoPrimaryRepo, GhWriteError,
+            subprocess.TimeoutExpired) as e:
         raise _map_changes_http(e) from e
     return {"pointer": pointer.to_dict()}
 

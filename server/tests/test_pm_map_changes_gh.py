@@ -55,6 +55,31 @@ def test_ensure_branch_returns_the_existing_head():
     assert len(fake.calls) == 1
 
 
+def test_branch_exists_is_a_probe_that_never_creates_the_ref():
+    gh, fake = _gh([
+        (json.dumps({"object": {"sha": "def"}}), 0, ""),
+        ("", 1, "HTTP 404: Not Found"),
+    ])
+    assert gh.branch_exists("pm/map-changes-kindash") is True
+    assert gh.branch_exists("pm/map-changes-kindash") is False
+    assert fake.calls[0][0] == ["api", f"repos/{REPO}/git/ref/heads/pm/map-changes-kindash"]
+    # No POST git/refs — unlike ensure_branch, this one only looks.
+    assert all("-X" not in call[0] for call in fake.calls)
+
+
+def test_find_open_pr_returns_the_head_branch_pr_or_none():
+    pr = {"number": 12, "html_url": "https://github.com/cairnea/KinDash/pull/12",
+          "state": "open", "merged": False, "merged_at": None,
+          "head": {"sha": "new1"}, "mergeable_state": "clean"}
+    gh, fake = _gh([(json.dumps([pr]), 0, ""), ("[]", 0, "")])
+    found = gh.find_open_pr("pm/map-changes-kindash")
+    assert found is not None and found.number == 12 and found.head_sha == "new1"
+    # `head` is qualified with the repo owner — GitHub ignores an unqualified one.
+    assert fake.calls[0][0] == [
+        "api", f"repos/{REPO}/pulls?head=cairnea:pm/map-changes-kindash&state=open"]
+    assert gh.find_open_pr("pm/map-changes-kindash") is None
+
+
 def test_read_file_decodes_and_404_is_none():
     text = "---\nslug: x\n---\n# X\n"
     gh, fake = _gh([
