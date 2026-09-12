@@ -26,3 +26,8 @@ export function commitUrl(repo: string, sha: string): string {
 export function prUrl(repo: string, number: number): string {
   return `${BASE}/${repo}/pull/${number}`
 }
+
+/** An issue. */
+export function issueUrl(repo: string, number: number): string {
+  return `${BASE}/${repo}/issues/${number}`
+}

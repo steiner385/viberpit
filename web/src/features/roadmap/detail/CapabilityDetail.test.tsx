@@ -2,9 +2,10 @@
 // badge beside it count the same population, and that the issue list puts open
 // work above closed history.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { Leaf } from '@/api/roadmap'
+import { ApiRequestError } from '@/api/client'
 import { MAP, cap, ini, product } from '../__fixtures__/map'
 import { findCapability } from '../lookup'
 import { CapabilityDetail } from './CapabilityDetail'
@@ -18,10 +19,21 @@ const leavesQuery = vi.hoisted(() => ({
   isError: false,
 }))
 
-// Every hook the tree under test reaches: `useLeaves` in `LeafList`, and the two
-// incident hooks in `IncidentQueue` (mounted by `NeedsYouList`).
+// The remove-dependency mutation is per-row, per-test state: whether it is
+// pending or refused, and with what error.
+const removeMutate = vi.hoisted(() => vi.fn())
+const removeState = vi.hoisted(() => ({
+  isPending: false,
+  isError: false,
+  error: null as unknown,
+}))
+
+// Every hook the tree under test reaches: `useLeaves` and `useRemoveDependency`
+// in `LeafList`, and the two incident hooks in `IncidentQueue` (mounted by
+// `NeedsYouList`).
 vi.mock('@/api/hooks', () => ({
   useLeaves: () => leavesQuery,
+  useRemoveDependency: () => ({ mutate: removeMutate, ...removeState }),
   useIncidents: () => ({ data: [], isError: false }),
   useIncidentAction: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
 }))
@@ -86,6 +98,8 @@ const tile = (label: string) =>
 
 beforeEach(() => {
   Object.assign(leavesQuery, { data: LEAVES, isLoading: false, isError: false })
+  removeMutate.mockClear()
+  Object.assign(removeState, { isPending: false, isError: false, error: null })
 })
 
 describe('CapabilityDetail', () => {
@@ -172,7 +186,9 @@ describe('CapabilityDetail', () => {
 
   it('Issues: open work first, with its blockers, score and live session', () => {
     mount({}, '/roadmap/kindash/capabilities/tasks?tab=issues')
-    const items = screen.getAllByRole('listitem')
+    // Excludes the "Blocked by" sub-list's own <li> refs, which share the
+    // listitem role but are not leaf rows.
+    const items = screen.getAllByRole('listitem').filter((el) => el.closest('[aria-label="Blocked by"]') === null)
     expect(items[0]).toHaveTextContent('Bulk edit')
     expect(items[0]).toHaveTextContent('session')
     expect(items[0]).toHaveTextContent('6.5')
@@ -182,6 +198,25 @@ describe('CapabilityDetail', () => {
     expect(screen.getByRole('heading', { name: /Open · 3/ })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: /Closed · 1/ })).toBeInTheDocument()
     expect(items[3]).toHaveTextContent('Old')
+  })
+
+  it('Issues: a blocked leaf names each blocker and offers to remove it', () => {
+    mount({}, '/roadmap/kindash/capabilities/tasks?tab=issues')
+    const list = screen.getByRole('list', { name: 'Blocked by' })
+    // Same repo as the leaf → short form; the link goes to the blocker on GitHub.
+    expect(within(list).getByRole('link', { name: '#7' }))
+      .toHaveAttribute('href', 'https://github.com/cairnea/KinDash/issues/7')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove blocker cairnea/KinDash#7' }))
+    expect(removeMutate).toHaveBeenCalledWith({ workItemId: 'w2', blocker: 'cairnea/KinDash#7' })
+  })
+
+  it('Issues: a refused removal says so on that row only', () => {
+    Object.assign(removeState, {
+      isError: true,
+      error: new ApiRequestError(502, { detail: { error: 'dep_remove_failed', step: 'node_id', message: 'o/r#7 has no GitHub node id yet; wait for the next sync' } }),
+    })
+    mount({}, '/roadmap/kindash/capabilities/tasks?tab=issues')
+    expect(screen.getByText('o/r#7 has no GitHub node id yet; wait for the next sync')).toBeInTheDocument()
   })
 
   it('Issues: a leaf with no URL is text, not a dead link', () => {
