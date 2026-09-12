@@ -89,7 +89,7 @@ more.
 
 ## 5. Tokens and contrast
 
-Colour lives in exactly one place, `web/src/index.css`, in two layers (documented at `index.css:23`).
+Colour lives in exactly one place, `web/src/index.css`, in two layers (documented at `index.css:24`).
 The values are raw `--t-*` custom properties in three blocks: `:root` (light), a
 `@media (prefers-color-scheme: dark)` block, and a `:root[data-theme="dark"]` block for the explicit
 theme toggle. A separate `@theme inline` block (from `index.css:135`) then bridges those variables

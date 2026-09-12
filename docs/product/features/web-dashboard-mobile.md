@@ -64,9 +64,10 @@ phone/tablet/desktop/wide). It is a *finer* axis than `LayoutMode` and gates far
 vs. single-band rendering is the `LayoutMode`'s call, made by `REGION_VISIBILITY` in `AppShell.tsx`
 (`app.list` stays mounted beside an open item on `desktop`, and gives up the one band to it on
 phone/tablet), and touch targets are the unconditional `min-h-target` token rather than anything
-width-dependent. The only non-test readers of the tier itself are
-`shell/regions/NavRail.tsx` (the rail may expand only at `wide`) and `ui/list/CardFrame.tsx` (swipe
-gestures are live only below `desktop`). See `docs/ACCESSIBILITY.md` §2 for the full region/mode
+width-dependent. The non-test readers of the tier itself are
+`shell/regions/NavRail.tsx` (the rail may expand only at `wide`), `shell/regions/ContextList.tsx`
+(the list column is resizable only at `desktop`/`wide`) and `ui/list/CardFrame.tsx` (swipe gestures
+are live only below `desktop`). See `docs/ACCESSIBILITY.md` §2 for the full region/mode
 table.
 
 **Success metrics** — (unknown — needs owner input). Observable proxies in code: session
@@ -95,7 +96,7 @@ raw PTY dump — there is no terminal emulator in the tree.
 **Evidence** —
 - Shell and layout: `web/src/shell/AppShell.tsx` (regions + mode matrix), `web/src/shell/useViewport.tsx`
   (the one layout `matchMedia` reader), `web/src/shell/routes.tsx` (the one route table —
-  `web/src/App.tsx` is a 40-line entry point that mounts it).
+  `web/src/App.tsx` is a 41-line entry point that mounts it).
 - Session UI: `web/src/features/sessions/list/SessionCard.tsx`,
   `web/src/features/sessions/SessionBody.tsx` (transcript host),
   `web/src/features/sessions/composer/Composer.tsx`, `web/src/features/sessions/list/DispatchBar.tsx`.
