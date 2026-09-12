@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- New columns nullable (`_reconcile_columns` adds them on both dialects); migration `0041_product_automation_policy` chained off `0040_feature_map_changes`, recorded anyway. No new table in this phase → no `_FK_LINKS`/`_REQUIRED_EXTRAS`/`RECONCILE_EXEMPT` changes; state so in the report.
+- New columns nullable (`_reconcile_columns` adds them on both dialects); migration `0042_product_automation_policy` chained off `0041_initiative_nesting_route_labels` (master gained its own 0041 in #1597), recorded anyway. No new table in this phase → no `_FK_LINKS`/`_REQUIRED_EXTRAS`/`RECONCILE_EXEMPT` changes; state so in the report.
 - DB clock: never `func.now()`; the models' `_utcnow` default / `server/db/clock.py`.
 - Every mutation audits (`record_audit`) with the acting identity; the runner's seed audits with identity `backlog-runner`.
 - Constitution VI: ONE schema (`PRODUCT_POLICY_SCHEMA`), ONE validator (`validate_config`), ONE web renderer (`ConfigInput`), ONE "which products are on" reading (`effective_policy(...)["dispatch"] != "off"`).
@@ -27,7 +27,7 @@
 |---|---|
 | `server/automations/product_policy.py` | `DISPATCH_MODES`, `PRODUCT_POLICY_SCHEMA`, `effective_policy(raw) -> dict`, `policies_by_slug(db) -> dict[str, dict]` (sync-session helper for the queue loader), `load_policies(db_async)` |
 | `server/db/models.py` | `Project.automation_policy` (JSON), `Project.automation_policy_updated_at` |
-| `server/db/migrations/versions/0041_product_automation_policy.py` | the record |
+| `server/db/migrations/versions/0042_product_automation_policy.py` | the record |
 | `server/api/pm.py` | `automationPolicy` in `_project_to_dict`; `GET /pm/policy-schema`; `PATCH /pm/projects/{slug}/policy` |
 | `server/automations/backlog_runner.py` | modes `off | on`; retired keys; `status()` per-product lines; loop `seed_policies` seam called once per process at the first tick |
 | `server/sessions/orchestrator.py` | `_backlog_query_queue` scopes and ranks per product; `_backlog_select_batch` translates policies to repo-keyed weights/caps/order; `_backlog_spawn` reads the product's `default_model` and stores `product` in the claim; `_sweep_one` reads `max_attempts` per product via the claim's `product`; `_backlog_count_candidates` returns per-product counts; `_backlog_seed_policies` |
@@ -45,7 +45,7 @@ Task order: 1 (schema, model, API) → 2 (runner) → 3 (web) → 4 (docs + reti
 **Files:**
 - Create: `server/automations/product_policy.py`
 - Modify: `server/db/models.py` (`Project`, ~:1406-1425)
-- Create: `server/db/migrations/versions/0041_product_automation_policy.py`
+- Create: `server/db/migrations/versions/0042_product_automation_policy.py`
 - Modify: `server/api/pm.py` (`_project_to_dict` :96-107; routes after `get_project` :271)
 - Test: `server/tests/test_product_policy.py` (new), `server/tests/test_pm_api.py` (append)
 

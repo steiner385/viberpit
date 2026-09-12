@@ -1,7 +1,7 @@
 """product_automation_policy: automation_policy, automation_policy_updated_at on projects
 
-Revision ID: 0041_product_automation_policy
-Revises: 0040_feature_map_changes
+Revision ID: 0042_product_automation_policy
+Revises: 0041_initiative_nesting_route_labels
 
 Reviewable record of the schema change (spec 2026-09-12-product-automation-policy-design §4).
 Nothing runs `alembic upgrade` at deploy time: init_db's reconcile adds both nullable
@@ -10,8 +10,8 @@ columns on SQLite and Postgres.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0041_product_automation_policy"
-down_revision = "0040_feature_map_changes"
+revision = "0042_product_automation_policy"
+down_revision = "0041_initiative_nesting_route_labels"
 branch_labels = None
 depends_on = None
 
