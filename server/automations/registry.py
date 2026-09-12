@@ -102,6 +102,7 @@ from .pm_onboard import PmOnboard  # noqa: E402
 from .pm_classify import PmClassify  # noqa: E402
 from .gh_reconcile import GhReconcile  # noqa: E402
 from .error_triage import ErrorTriage  # noqa: E402
+from .deploy_monitor import DeployMonitor  # noqa: E402
 
 registry.register(PrDoctor())
 registry.register(BacklogRunner())
@@ -117,3 +118,4 @@ registry.register(PmOnboard())
 registry.register(PmClassify())
 registry.register(GhReconcile())
 registry.register(ErrorTriage())
+registry.register(DeployMonitor())

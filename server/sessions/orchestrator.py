@@ -567,6 +567,7 @@ _PRIMARY_ONLY_LOOP_ATTRS: frozenset[str] = frozenset({
     "_autopilot_task", "_cicd_task", "_archaudit_task", "_sweep_task",
     "_archive_limit_task", "_recurring_task", "_mirror_task",
     "_error_triage_task",
+    "_deploy_monitor_task",
 })
 
 # How many raw rows a control-band metric reader pulls per repo (#804). Generous
@@ -910,12 +911,14 @@ class SessionOrchestrator:
             CicdDoctorActionProvider,
         )
         from server.automations.error_triage import ErrorTriageActionProvider
+        from server.automations.deploy_monitor import DeployMonitorActionProvider
         from server.automations.base import ActionProvider
         self._action_providers: dict[str, ActionProvider] = {
             "pr-doctor": PrDoctorActionProvider(self),
             "backlog-runner": BacklogRunnerActionProvider(self),
             "cicd-doctor": CicdDoctorActionProvider(self),
             "error-triage": ErrorTriageActionProvider(self),
+            "deploy-monitor": DeployMonitorActionProvider(self),
         }
         # In-memory map: session_id → SessionRecord
         self._records: dict[str, SessionRecord] = {}
@@ -1266,6 +1269,19 @@ class SessionOrchestrator:
         self._error_triage_loop = ErrorTriageLoop(
             self._error_triage_ctx, read_config=self._error_triage_read_config)
         self._error_triage_task: asyncio.Task | None = None
+        # Deploy Monitor: GitHub deployment statuses → incidents / one alert / one
+        # issue per failing environment (spec 2026-09-12). Repos come from the same
+        # "managed repos" seam the CI/CD Doctor uses; the fetch is one GraphQL doc.
+        from server.automations.deploy_monitor import DeployMonitorLoop
+        from server.github import deployments as gh_deployments
+        self._deploy_monitor_ctx = AutomationContext("deploy-monitor")
+        self._deploy_monitor_loop = DeployMonitorLoop(
+            self._deploy_monitor_ctx,
+            read_config=self._deploy_monitor_read_config,
+            list_repos=self._cicd_list_repos,
+            fetch_deployments=lambda repos: asyncio.to_thread(
+                gh_deployments.fetch_deployments, repos))
+        self._deploy_monitor_task: asyncio.Task | None = None
         # Archive Audit control loop: periodic re-audit of recently-archived sessions.
         from server.automations.archive_audit import ArchiveAuditLoop, _real_gh, _real_gh_num
         from server.automations.archive_audit import list_recent_archived_rows
@@ -1922,6 +1938,11 @@ class SessionOrchestrator:
             self._error_triage_task = asyncio.create_task(
                 self._error_triage_tick_loop(interval=60.0), name="error-triage-loop"
             )
+            # Deploy Monitor: 120 s — deployments are minutes apart and the read is
+            # one GraphQL call per App token, so a slower cadence loses nothing.
+            self._deploy_monitor_task = asyncio.create_task(
+                self._deploy_monitor_tick_loop(interval=120.0), name="deploy-monitor-loop"
+            )
             # Archive Audit: re-audit recently-archived sessions every 6 hours.
             self._archaudit_task = asyncio.create_task(
                 self._archaudit_tick_loop(interval=21600.0), name="archive-audit-loop"
@@ -2264,7 +2285,7 @@ class SessionOrchestrator:
                      "_pm_sync_task", "_pm_triage_task", "_gh_reconcile_task",
                      "_sdlc_synth_task", "_control_band_task",
                      "_autopilot_task", "_mirror_task",
-                     "_cicd_task", "_error_triage_task", "_archaudit_task", "_sweep_task",
+                     "_cicd_task", "_error_triage_task", "_deploy_monitor_task", "_archaudit_task", "_sweep_task",
                      "_archive_limit_task", "_janitor_task", "_assistant_reap_task", "_recurring_task",
                      "_lease_task", "_session_lease_task", "_hb_task", "_drain_timer"):
             # Default None: stop() must be safe on an orchestrator that never
@@ -8868,6 +8889,36 @@ class SessionOrchestrator:
             log_key="error_triage")
 
     # ------------------------------------------------------------------
+    # Deploy Monitor control loop
+    # ------------------------------------------------------------------
+    async def _deploy_monitor_tick_loop(self, interval: float) -> None:
+        while True:
+            await self._deploy_monitor_tick_once()
+            await asyncio.sleep(interval)
+
+    async def _deploy_monitor_tick_once(self) -> None:
+        if not await self._schedule_allows_tick("deploy-monitor"):
+            return
+        await self._deploy_monitor_loop.tick()
+        try:
+            mode, _ = await self._deploy_monitor_read_config()
+            if mode != "off":
+                await self._bump_automation_active("deploy-monitor")
+        except Exception:
+            log.debug("deploy_monitor.heartbeat_failed", exc_info=True)
+
+    async def _deploy_monitor_read_config(self) -> tuple[str, dict]:
+        """(effective mode, validated config); off + defaults on any bad row. An
+        enabled row with no explicit mode resolves to ``watch`` — the least
+        invasive active mode — never to ``file``."""
+        from server.automations.deploy_monitor import DeployMonitor
+        from server.automations import config_store
+        active = tuple(m for m in DeployMonitor.modes if m != "off")
+        return await config_store.read_automation_config(
+            DeployMonitor, modes=active, default_mode=active[0],
+            log_key="deploy_monitor")
+
+    # ------------------------------------------------------------------
     # Archive Audit control-loop dependencies (injected into ArchiveAuditLoop)
     # ------------------------------------------------------------------
 
@@ -12025,6 +12076,7 @@ class SessionOrchestrator:
             "pm-triage": getattr(self, "_pm_triage_ctx", None),
             "gh-reconcile": getattr(self, "_gh_reconcile_ctx", None),
             "error-triage": getattr(self, "_error_triage_ctx", None),
+            "deploy-monitor": getattr(self, "_deploy_monitor_ctx", None),
         }
         out: dict[str, dict] = {}
         for a in registry.all():
