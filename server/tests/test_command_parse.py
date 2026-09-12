@@ -1,5 +1,5 @@
 """Unit tests for parse_command_line — the backend mirror of the Composer's
-runCommandFromText slash detection (web/src/components/session/Composer.tsx).
+runCommandFromText slash detection (web/src/features/sessions/composer/Composer.tsx).
 
 Keeping the two in lockstep is what lets the initial-prompt panel route slash
 commands through the SAME dispatch path the interactive composer uses.

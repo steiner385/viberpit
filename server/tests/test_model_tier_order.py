@@ -46,5 +46,5 @@ def test_web_tiers_match_server_tier_order():
 def test_panel_has_no_private_tier_label_copy():
     """PendingModelApprovalPanel must use the shared TIERS, not a local copy."""
     panel = (Path(__file__).resolve().parents[2]
-             / "web/src/components/session/PendingModelApprovalPanel.tsx").read_text()
+             / "web/src/features/sessions/panels/PendingModelApprovalPanel.tsx").read_text()
     assert "TIER_LABELS" not in panel

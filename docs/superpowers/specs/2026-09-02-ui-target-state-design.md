@@ -206,13 +206,13 @@ Redirects kept: `/session/:id`, `/session/:id/subagent/:a`, `/review/:id`, `/set
 | 4 | Sessions workspace: `SessionHeader`, composer row, shortcuts, list filters, `PromptDock` | B | `SessionView` top bar, `MainPaneSession` |
 | 5–9 | Settings (Split) · Automations · Archived + Reader · Insights · Products + Initiatives | C | each page's feature CSS and ad-hoc headers |
 | 10 | Pipeline as Workspace; attract cycle + wake-lock + `--scale`; Playwright viewport projects | B/C | `pipeline/kiosk.ts`, `useKioskCycle` (moved) — landed 2026-09-11 (finish-line row 5, #1469; viewport projects deferred to row 7) |
-| 11 | Repo-wide palette sweep; ESLint to full scope; rewrite `docs/ACCESSIBILITY.md`, `web/README.md` | C | remaining `dark:` / raw palette |
+| 11 | Repo-wide palette sweep; ESLint to full scope; rewrite `docs/ACCESSIBILITY.md`, `web/README.md` | C | remaining `dark:` / raw palette — landed 2026-09-12 (finish-line row 7, #1471) |
 | 12 | `AssistantSheet` UI against the assistant API | B (after backend spec) | "coming soon" sheet |
 
 ## 9. Success criteria
 
 - `grep -c 'dark:' web/src` → 0 outside `index.css`; `grep -cE 'bg-(gray|blue|amber|red)-' web/src` → 0
-  outside the chart allowlist.
+  outside the chart allowlist. (met 2026-09-12)
 - Exactly one of `Dashboard.tsx` / `DesktopShell.tsx` / `AppShell.tsx` exists: `AppShell.tsx`.
 - Every route in §6 renders the same page at 390, 820, 1440 and `?kiosk=1`, verified by Playwright.
 - `web/dist` CSS contains every token utility the app uses (build-output test green).

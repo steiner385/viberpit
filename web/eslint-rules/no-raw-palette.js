@@ -1,7 +1,7 @@
 // ccswitch/no-raw-palette — bans Tailwind palette literals, dark: variants, hex
 // colors, z-index literals and arbitrary pixel sizes inside class strings.
-// Scope is decided in eslint.config.js (src/ui, src/shell now; wider per
-// sub-spec C). Rationale: docs/superpowers/specs/2026-09-02-ui-foundation-tokens-primitives-design.md §2.5.
+// Scope is `src/**` minus the chart allowlist (row 7f, 2026-09), applied in
+// eslint.config.js. Rationale: docs/superpowers/specs/2026-09-02-ui-foundation-tokens-primitives-design.md §2.5.
 //
 // Auto-fixable (meta.fixable = 'code'): MAPPING is the sweep's codemod table —
 // single source of truth, copied verbatim from

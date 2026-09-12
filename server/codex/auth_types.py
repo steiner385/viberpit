@@ -47,7 +47,7 @@ AUTHORITY_PROTOCOL_VERSION: Final = 1
 
 #: Device-login state vocabulary. Deliberately the SAME four words
 #: ``server/sessions/copilot_auth.py`` already uses (and that
-#: ``web/src/components/AddAccountDialog.tsx`` already renders), so the browser
+#: ``web/src/features/accounts/AddAccountDialog.tsx`` already renders), so the browser
 #: has one device-flow state machine rather than one per provider.
 LOGIN_PENDING: Final = "pending"
 LOGIN_AWAITING_AUTHORIZATION: Final = "awaiting_authorization"

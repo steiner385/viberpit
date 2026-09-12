@@ -35,8 +35,8 @@ X display, `003-gh-projects-integration`); design notes and plans under `docs/`.
   (hook + managed deny rules + `REVIEW.md`).
 - Other server packages: `api/` routers, `auth/`, `automations/`, `github/`, `pipeline/`, `pm/`, `library/`, `obs/`, `usage/`, `stt/`,
   `bridge/`.
-- `web/src/` — `api/` (fetch + React Query hooks per domain), `session/` (event reducer + selectors), `shell/` (`AppShell`, nav, prompt
-  dock), `components/`, `features/`, `ws/`.
+- `web/src/` — `api/` (React Query hooks), `session/` (event reducer + selectors), `shell/` (`AppShell`, nav, routes), `ui/`,
+  `features/<domain>/`, `lib/`, `hooks/`, `pipeline/`, `ws/`, …
 - `deploy/` — systemd units + `deploy/README.md` (the ops runbook); `docs/runbooks/` for host procedures (Postgres cutover, onboarding a
   session runner, rocky).
 
