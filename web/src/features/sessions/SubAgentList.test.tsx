@@ -1,12 +1,23 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, screen, cleanup, act } from '@testing-library/react'
+import { render, screen, cleanup, act, fireEvent } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { SubAgentList } from './SubAgentList'
 import { agentDuration } from './subAgentDuration'
 import type { SubAgent } from '@/session/selectors'
 
+const navigate = vi.fn()
+vi.mock('react-router-dom', async () => {
+  const real = await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
+  return { ...real, useNavigate: () => navigate }
+})
+
 afterEach(cleanup)
 
 const base: SubAgent = { toolId: 'x', type: 'Explore', description: 'find it', status: 'running' }
+
+function renderList(subAgents: SubAgent[]) {
+  return render(<MemoryRouter><SubAgentList sessionId="s1" subAgents={subAgents} /></MemoryRouter>)
+}
 
 describe('agentDuration', () => {
   it('returns live elapsed (now − start) for a running agent', () => {
@@ -31,10 +42,10 @@ describe('agentDuration', () => {
 })
 
 describe('SubAgentList', () => {
-  afterEach(() => vi.useRealTimers())
+  afterEach(() => { vi.useRealTimers(); navigate.mockReset() })
 
   it('renders a frozen runtime for finished agents', () => {
-    render(<SubAgentList subAgents={[{ ...base, status: 'done', startedAt: 1000, endedAt: 121_000 }]} />)
+    renderList([{ ...base, status: 'done', startedAt: 1000, endedAt: 121_000 }])
     expect(screen.getByText('2m 0s')).toBeInTheDocument()
     expect(screen.getByText('completed')).toBeInTheDocument()
   })
@@ -42,7 +53,7 @@ describe('SubAgentList', () => {
   it('renders the live elapsed for a running agent', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date(31_000))
-    render(<SubAgentList subAgents={[{ ...base, status: 'running', startedAt: 1000 }]} />)
+    renderList([{ ...base, status: 'running', startedAt: 1000 }])
     // Flush the shared useNow catch-up timer (setTimeout 0) so the hook ticks
     // from 0 → Date.now() (31_000) before we assert.
     act(() => { vi.advanceTimersByTime(0) })
@@ -50,12 +61,19 @@ describe('SubAgentList', () => {
   })
 
   it('shows the live activity instead of the description while running', () => {
-    render(<SubAgentList subAgents={[{ ...base, type: 'Explore', description: 'scan', status: 'running', activity: 'Running Bash' }]} />)
+    renderList([{ ...base, type: 'Explore', description: 'scan', status: 'running', activity: 'Running Bash' }])
     expect(screen.getByText('Running Bash')).toBeInTheDocument()
   })
 
   it('renders the stopped status label', () => {
-    render(<SubAgentList subAgents={[{ ...base, status: 'stopped' }]} />)
+    renderList([{ ...base, status: 'stopped' }])
     expect(screen.getByText('stopped')).toBeInTheDocument()
+  })
+
+  it('each row is a link into that sub-agent', () => {
+    renderList([{ ...base, toolId: 'toolu_A', type: 'Explore', description: 'find it' }])
+    const row = screen.getByRole('button', { name: /Open sub-agent Explore: find it/ })
+    fireEvent.click(row)
+    expect(navigate).toHaveBeenCalledWith(expect.stringContaining('/sessions/s1/agents/toolu_A'))
   })
 })

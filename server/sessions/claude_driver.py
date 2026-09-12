@@ -183,7 +183,7 @@ class ClaudeAgentDriver:
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
                  on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
                  on_recoverable_failure=None, on_context_usage=None, clock=None, suggester=None,
-                 assistant_api=None):
+                 assistant_api=None, on_sub_agents_changed=None):
         self.session_id = session_id
         self.account = account
         self.cwd = cwd
@@ -219,6 +219,12 @@ class ClaudeAgentDriver:
         # SessionRecord so the WS bridge can replay it on attach (the live ContextUsage event
         # is otherwise never re-emitted, leaving reloaded sessions on the 0%-pinning fallback).
         self._on_context_usage = on_context_usage
+        # Fired (synchronously, with the session id) when a Task sub-agent starts or
+        # ends, so the orchestrator can refresh the persisted per-session sub-agent
+        # summary the board's cards read. Without it the summary only refreshes on a
+        # status change, and a card stays "no agents" for a whole turn that spawned
+        # four (seen 2026-09-12: header chip said 4 agents, card showed none).
+        self._on_sub_agents_changed = on_sub_agents_changed
         self._clock = clock or time.time
         self._last_progress_at: float = self._clock()
         self._last_rate_reset: int | None = None  # resets_at (epoch s) from a RateLimitEvent
@@ -1108,10 +1114,17 @@ class ClaudeAgentDriver:
                     self._emit(ev.Recovering(
                         turn_id=e.turn_id, message=_RECOVERING_MSG))
                     continue
-            if isinstance(e, ev.SubAgentStarted):
-                self._subagent_tasks[e.parent_tool_use_id] = e.task_id
-            elif isinstance(e, ev.SubAgentEnded):
-                self._subagent_tasks.pop(e.parent_tool_use_id, None)
+            if isinstance(e, (ev.SubAgentStarted, ev.SubAgentEnded)):
+                if isinstance(e, ev.SubAgentStarted):
+                    self._subagent_tasks[e.parent_tool_use_id] = e.task_id
+                else:
+                    self._subagent_tasks.pop(e.parent_tool_use_id, None)
+                if self._on_sub_agents_changed is not None:
+                    try:
+                        self._on_sub_agents_changed(self.session_id)
+                    except Exception:  # noqa: BLE001 - a summary refresh must never break the pump
+                        log.debug("driver.on_sub_agents_changed failed session=%s",
+                                  self.session_id, exc_info=True)
             if isinstance(e, (ev.TextDelta, ev.ToolCall, ev.ToolResult)):
                 self._turn_produced_output = True
             self._note_progress(e)
@@ -1722,6 +1735,7 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             on_sync_back=config.on_sync_back,
             on_status=config.on_status,
             on_context_usage=config.on_context_usage,
+            on_sub_agents_changed=config.on_sub_agents_changed,
             on_record_condense_ms=config.on_record_condense_ms,
             get_condense_estimate=config.get_condense_estimate,
             on_recoverable_failure=config.on_recoverable_failure,

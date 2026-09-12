@@ -1,10 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { SessionMeta } from './SessionMeta'
 import type { SubAgent } from '@/session/selectors'
 import type { UsageWindow } from '@/api/types'
 
 const baseProps = {
+  sessionId: 's1',
   account: 'work-max',
   model: 'claude-sonnet-4-5',
   mode: 'default',
@@ -186,7 +188,8 @@ describe('SessionMeta', () => {
       { toolId: 'a', type: 'Explore', description: 'find it', status: 'running' },
       { toolId: 'b', type: 'Plan', description: 'plan it', status: 'done' },
     ]
-    render(<SessionMeta {...baseProps} subAgents={subAgents} />)
+    // The opened list's rows are links (useNavigate), so this one test needs a router.
+    render(<MemoryRouter><SessionMeta {...baseProps} subAgents={subAgents} /></MemoryRouter>)
     const toggle = screen.getByRole('button', { name: /sub-agent/i })
     expect(toggle).toHaveTextContent('2')
     // collapsed: list not shown
