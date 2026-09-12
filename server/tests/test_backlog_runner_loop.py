@@ -61,6 +61,39 @@ async def _seed_row(automation_id: str = "backlog-runner") -> None:
         db.add(Automation(id=automation_id))
 
 
+async def _seed_product(slug: str = DEFAULT_PRODUCT, repo: str = "o/r") -> None:
+    """The product a batch's outcome row is attributed to (``project_id``), plus a
+    mirror issue so ``record_outcome`` has a body to fingerprint."""
+    from server.db.models import Project, ProjectRepo, WorkItem
+    async with db_session() as db:
+        project = Project(slug=slug, name=slug)
+        db.add(project)
+        await db.flush()
+        db.add(ProjectRepo(project_id=project.id, repo=repo, is_primary=True))
+        db.add(WorkItem(repo=repo, number=1, kind="issue", title="T", body="B"))
+
+
+async def _outcomes(target: str) -> list:
+    """Every dispatch-outcome row for *target*, oldest first."""
+    from sqlalchemy import select
+
+    from server.db.models import DispatchOutcome
+    async with db_session() as db:
+        return list((await db.execute(select(DispatchOutcome).where(
+            DispatchOutcome.target_ref == target)
+            .order_by(DispatchOutcome.created_at))).scalars().all())
+
+
+async def _mark_session_ended(ctx, target: str, *, attempts: int | None = None) -> None:
+    """Flip the claim row to "the session is over" (and optionally park it one
+    attempt below the cap), the way a real ``session_ended`` probe would."""
+    st = await ctx.get_target_state(target)
+    st["_ended"] = True
+    if attempts is not None:
+        st["attempts"] = attempts
+    await ctx.set_target_state(target, st)
+
+
 def build_loop(*, mode="on", config=None, clock=None,
                candidates=None, healthy="a", in_flight_counter=None,
                pr_status=None, pr_doctor_active=True, announce=None,
@@ -69,7 +102,8 @@ def build_loop(*, mode="on", config=None, clock=None,
                policies=None, seed_policies=None,
                refresh_groups=None, spawn=None, close_out_result=None,
                credential_alerts=None, verify_ready=None, queue_tail=None,
-               wall_clock=None, needs_human_raises=False):
+               wall_clock=None, needs_human_raises=False,
+               spawn_result=None, session_ran=None, pr_doctor_attempts=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .announced and
@@ -109,7 +143,10 @@ def build_loop(*, mode="on", config=None, clock=None,
     async def _default_spawn(batch, account, **_kw):
         rec.spawns.append((batch, account))
         rec.in_flight += 1
-        return object()
+        # ``spawn_result`` stands in for the SessionRecord a real spawn returns —
+        # the outcome-history tests need its id/model; every other test is happy
+        # with the opaque default.
+        return spawn_result if spawn_result is not None else object()
 
     spawn = spawn or _default_spawn
 
@@ -145,6 +182,16 @@ def build_loop(*, mode="on", config=None, clock=None,
                 blocked_count, untriaged_count,
                 None if count_read_failed else (per_product or {}))
 
+    async def session_ran_probe(_sid):
+        # Did the session ever run a turn? Wired only when a test says so —
+        # unwired, ``_session_ever_ran`` fails safe to True.
+        return bool(session_ran)
+
+    async def pr_doctor_attempts_for(pr_ref):
+        # {``repo#N``: attempts}; a ref the map does not carry is UNKNOWN (None),
+        # which is exactly what a cleared PR Doctor row reads as.
+        return (pr_doctor_attempts or {}).get(pr_ref)
+
     async def read_policies():
         # The harness's default product, matching production: every batch the
         # queue produces carries the slug of a product whose dispatch is ON, so a
@@ -170,6 +217,9 @@ def build_loop(*, mode="on", config=None, clock=None,
         seed_policies=seed_policies,
         clock=clk,
         needs_human=needs_human,
+        session_ran=session_ran_probe if session_ran is not None else None,
+        pr_doctor_attempts_for=(pr_doctor_attempts_for
+                                if pr_doctor_attempts is not None else None),
         close_out=close_out,
         count_candidates=count_candidates if candidate_count is not None else None,
         refresh_groups=refresh_groups,
@@ -2197,5 +2247,369 @@ def test_no_queue_tail_seam_emits_no_picked_event(tmp_path):
         assert await _picked_events() == []
         assert loop._last_pick is None
         assert getattr(ctx, "backlog_last_pick", None) is None
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# Dispatch outcomes (spec 2026-09-12 product automation policy §6; phase 3)     #
+# --------------------------------------------------------------------------- #
+
+def test_spawn_records_a_running_outcome(tmp_path):
+    """Every dispatch leaves a durable row the moment it starts, so an issue that
+    keeps bouncing is countable even while its session is still in flight."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_spawn.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        loop, rec, _ctx = build_loop(
+            candidates=[batch("o/r#1")],
+            spawn_result=SimpleNamespace(id="sess-1", branch="b1"),
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000,
+                                              default_model="opus")})
+
+        await loop.tick()
+
+        assert len(rec.spawns) == 1
+        rows = await _outcomes("o/r#1")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.outcome == "running" and row.attempt_no == 0
+        assert row.session_id == "sess-1"
+        # The model is the PRODUCT's, from the same policy snapshot that decided
+        # this batch may spawn.
+        assert row.model == "opus"
+        assert row.project_id is not None and row.body_fingerprint is not None
+        assert row.started_at is not None and row.ended_at is None
+
+    asyncio.run(run())
+
+
+def test_the_propose_path_records_no_outcome(tmp_path):
+    """A propose-mode claim is not a dispatch: nothing ran, so there is no
+    outcome to finalise later (the tap that spawns records its own)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_propose.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        loop, rec, _ctx = build_loop(
+            candidates=[batch("o/r#1")],
+            policies={DEFAULT_PRODUCT: policy(dispatch="propose",
+                                              max_in_flight=1000)})
+
+        await loop.tick()
+
+        assert rec.spawns == []
+        assert await _outcomes("o/r#1") == []
+
+    asyncio.run(run())
+
+
+def test_session_ended_without_pr_finalises_no_pr(tmp_path):
+    """The session is over and there is no PR — that attempt is finished, and the
+    row says so (this is the bounce the queue's ``needs_spec`` skip counts)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_nopr.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        loop, _rec, ctx = build_loop(
+            candidates=[batch("o/r#1")], pr_status={},
+            spawn_result=SimpleNamespace(id="sess-1"))
+
+        await loop.tick()                      # spawn → running
+        await _mark_session_ended(ctx, "o/r#1")
+        await loop.tick()                      # sweep charges the attempt
+
+        rows = await _outcomes("o/r#1")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.outcome == "no_pr"
+        assert row.cause == "session ended without a mergeable PR"
+        assert row.ended_at is not None and row.duration_s is not None
+        assert row.pr_number is None and row.first_pass_merge is None
+        # The claim row is still there, one attempt poorer — the outcome row is
+        # history, not the state machine.
+        assert (await ctx.get_target_state("o/r#1"))["attempts"] == 1
+
+    asyncio.run(run())
+
+
+def test_merged_pr_finalises_merged_with_first_pass_from_pr_doctor(tmp_path):
+    """``first_pass_merge`` is PR Doctor's attempt count at the moment the sweep
+    sees the merge: 0 fixes → a first-pass merge, >0 → not, and an UNKNOWN count
+    (a cleared PR Doctor row) stays ``None``. Never guessed (R3-4)."""
+
+    async def one(name: str, attempts: dict, expected):
+        from types import SimpleNamespace
+
+        from server.github.pr_status import PullRequestInfo
+
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / name}")
+        await _seed_row()
+        await _seed_product()
+        merged = PullRequestInfo(number=12, url="https://example/pr/12",
+                                 state="merged", checks="none", title="",
+                                 merged=True)
+        loop, rec, _ctx = build_loop(
+            candidates=[batch("o/r#1")], pr_status={"o/r#1": merged},
+            spawn_result=SimpleNamespace(id="sess-1"),
+            pr_doctor_attempts=attempts)
+
+        await loop.tick()          # spawn, then the same tick's sweep sees the merge
+
+        assert [t for t, _info in rec.close_outs] == ["o/r#1"]
+        rows = await _outcomes("o/r#1")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.outcome == "merged"
+        assert row.pr_number == 12 and row.pr_url == "https://example/pr/12"
+        assert row.first_pass_merge is expected
+        assert row.ended_at is not None
+
+    async def run():
+        await one("oc_m0.db", {"o/r#12": 0}, True)    # PR Doctor never had to act
+        await one("oc_m2.db", {"o/r#12": 2}, False)   # two fixes carried it home
+        await one("oc_mu.db", {}, None)               # unknown — never guessed
+
+    asyncio.run(run())
+
+
+def test_pr_doctor_gave_up_finalises_pr_gave_up(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_prgu.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+
+        from server.db.models import Automation, AutomationEvent
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        async with db_session() as db:
+            db.add(Automation(id="pr-doctor"))
+            db.add(AutomationEvent(
+                automation_id="pr-doctor", level="warn", summary="gave up",
+                kind="gave_up", target="o/r#1", detail={"origin_ref": "o/r#1"}))
+
+        loop, rec, ctx = build_loop(
+            candidates=[batch("o/r#1")], pr_status={},
+            spawn_result=SimpleNamespace(id="sess-1"))
+
+        await loop.tick()
+        await loop.tick()
+
+        assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
+        rows = await _outcomes("o/r#1")
+        assert len(rows) == 1
+        assert rows[0].outcome == "pr_gave_up"
+        assert rows[0].cause == "pr-doctor gave up"
+        assert (await ctx.get_target_state("o/r#1"))["gave_up"] is True
+
+    asyncio.run(run())
+
+
+def test_pr_closed_unmerged_finalises_abandoned(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_closed.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+
+        from server.github.pr_status import PullRequestInfo
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        closed = PullRequestInfo(number=9, url="https://example/pr/9",
+                                 state="closed", checks="none", title="")
+        loop, rec, _ctx = build_loop(
+            candidates=[batch("o/r#1")], pr_status={"o/r#1": closed},
+            spawn_result=SimpleNamespace(id="sess-1"))
+
+        await loop.tick()
+
+        assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
+        rows = await _outcomes("o/r#1")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.outcome == "abandoned" and row.cause == "PR closed unmerged"
+        assert row.pr_number == 9 and row.pr_url == "https://example/pr/9"
+
+    asyncio.run(run())
+
+
+def test_max_attempts_give_up_finalises_needs_human(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_needs_human.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        loop, rec, ctx = build_loop(
+            candidates=[batch("o/r#1")], pr_status={},
+            spawn_result=SimpleNamespace(id="sess-1"),
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000, max_attempts=2)})
+
+        await loop.tick()                                   # spawn → running
+        await _mark_session_ended(ctx, "o/r#1", attempts=1)  # one short of the cap
+        await loop.tick()                                   # → give up
+
+        assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
+        rows = await _outcomes("o/r#1")
+        assert len(rows) == 1
+        assert rows[0].outcome == "needs_human"
+        assert "max attempts" in (rows[0].cause or "")
+        assert (await ctx.get_target_state("o/r#1"))["gave_up"] is True
+
+    asyncio.run(run())
+
+
+def test_release_after_never_ran_finalises_abandoned(tmp_path):
+    """A session that never ran a turn is released rather than escalated (#1100);
+    the dispatch still happened, so its row closes as ``abandoned``, not
+    ``needs_human`` — it is no evidence the issue needs a human."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_never_ran.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        loop, rec, ctx = build_loop(
+            candidates=[batch("o/r#1")], pr_status={},
+            spawn_result=SimpleNamespace(id="sess-1"),
+            session_ran=False,
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000, max_attempts=2)})
+
+        await loop.tick()
+        await _mark_session_ended(ctx, "o/r#1", attempts=1)
+        await loop.tick()
+
+        assert rec.needs_humans == []                 # released, not escalated
+        assert await ctx.get_target_state("o/r#1") == {}
+        rows = await _outcomes("o/r#1")
+        assert len(rows) == 1
+        assert rows[0].outcome == "abandoned"
+        assert rows[0].cause == "session never ran a turn"
+
+    asyncio.run(run())
+
+
+def test_handoff_does_not_finalise(tmp_path):
+    """A handoff is not terminal: PR Doctor now carries the PR, and the merge (or
+    its give-up) is what finalises the row. Closing it at handoff would count a
+    landed PR as a bounce."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_handoff.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+
+        from server.github.pr_status import PullRequestInfo
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        open_auto = PullRequestInfo(number=12, url="https://example/pr/12",
+                                    state="open", checks="pending", title="",
+                                    auto_merge_enabled=True)
+        pr_status = {"o/r#1": open_auto}
+        loop, _rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1")], pr_status=pr_status,
+            pr_doctor_active=True,
+            spawn_result=SimpleNamespace(id="sess-1"),
+            pr_doctor_attempts={"o/r#12": 0})
+
+        await loop.tick()
+        assert (await ctx.get_target_state("o/r#1")).get("handed_off") is True
+        rows = await _outcomes("o/r#1")
+        assert len(rows) == 1 and rows[0].outcome == "running"
+        assert rows[0].ended_at is None
+
+        pr_status["o/r#1"] = PullRequestInfo(
+            number=12, url="https://example/pr/12", state="merged", checks="none",
+            title="", merged=True)
+        await loop.tick()
+
+        rows = await _outcomes("o/r#1")
+        assert len(rows) == 1
+        assert rows[0].outcome == "merged" and rows[0].first_pass_merge is True
+
+    asyncio.run(run())
+
+
+def test_a_failing_outcome_write_never_blocks_the_sweep(tmp_path):
+    """Spec §13: history is best-effort, dispatch is not. A seam that raises must
+    leave the give-up path byte-for-byte what it was before outcomes existed."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_boom.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        loop, rec, ctx = build_loop(
+            candidates=[batch("o/r#1")], pr_status={},
+            spawn_result=SimpleNamespace(id="sess-1"),
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000, max_attempts=2)})
+
+        await loop.tick()
+
+        async def boom(*_a, **_kw):
+            raise RuntimeError("outcome write blew up (injected)")
+
+        ctx.finalize_outcome = boom          # type: ignore[method-assign]
+
+        await _mark_session_ended(ctx, "o/r#1", attempts=1)
+        await loop.tick()                    # must not raise out of the sweep
+
+        assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
+        st = await ctx.get_target_state("o/r#1")
+        assert st["gave_up"] is True and st["needs_human_at"]
+        # The row stayed ``running``: unfinalised history is the acceptable loss.
+        rows = await _outcomes("o/r#1")
+        assert len(rows) == 1 and rows[0].outcome == "running"
+
+    asyncio.run(run())
+
+
+def test_a_failing_outcome_write_never_blocks_a_spawn(tmp_path):
+    """The other half of §13: the record at spawn cannot cost the spawn."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_boom2.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        loop, rec, ctx = build_loop(
+            candidates=[batch("o/r#1")], pr_status={},
+            spawn_result=SimpleNamespace(id="sess-1", branch="b1"))
+
+        async def boom(*_a, **_kw):
+            raise RuntimeError("outcome write blew up (injected)")
+
+        ctx.record_outcome = boom            # type: ignore[method-assign]
+
+        await loop.tick()                    # must not raise out of the refill
+
+        assert len(rec.spawns) == 1
+        assert await _outcomes("o/r#1") == []
+        # The claim row is still finalised with the spawned session id.
+        assert (await ctx.get_target_state("o/r#1"))["session_id"] == "sess-1"
 
     asyncio.run(run())

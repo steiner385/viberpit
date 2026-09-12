@@ -22,6 +22,7 @@ def _orch_with_ctx():
     from server.automations.context import AutomationContext
     orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
     orch._backlog_ctx = AutomationContext("backlog-runner")
+    orch._pr_doctor_ctx = AutomationContext("pr-doctor")
     orch._backlog_last_queue = []
     orch._backlog_last_policies = {}
     orch._backlog_last_repos = {}
@@ -759,5 +760,107 @@ def test_seed_once_normalises_a_legacy_mode_even_after_a_post_flip_config_save(t
             row = (await db.execute(select(Automation).where(
                 Automation.id == "backlog-runner"))).scalar_one()
             assert row.mode == "on"
+
+    asyncio.run(run())
+
+
+def test_pr_doctor_attempts_seam_reads_the_total_off_the_doctors_row(tmp_path):
+    """``first_pass_merge`` hangs off this seam (spec §6, R3-4): it answers how
+    many session fixes PR Doctor injected into a PR, and ``None`` whenever that
+    is UNKNOWN — a target it never tracked, or one whose row it already cleared
+    at terminal. Answering 0 for unknown would brand every late-swept merge a
+    first-pass merge."""
+    async def run():
+        await _init(tmp_path, "prdoc_attempts.db")
+        orch = _orch_with_ctx()
+
+        # The monotonic, re-arm-immune total — not the per-head ``attempts``.
+        await orch._pr_doctor_ctx.set_target_state(
+            "o/r#12", {"total_attempts": 2, "attempts": 1})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#12") == 2
+
+        # A tracked PR PR Doctor never had to act on: a real, known zero.
+        await orch._pr_doctor_ctx.set_target_state(
+            "o/r#13", {"total_attempts": 0, "last_head_sha": "abc"})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#13") == 0
+
+        # No row at all → unknown.
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#404") is None
+
+        # A CLEARED row (``set_target_state(target, {})`` at terminal) → unknown.
+        await orch._pr_doctor_ctx.set_target_state("o/r#14", {})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#14") is None
+
+    asyncio.run(run())
+
+
+def test_both_tap_spawn_paths_record_a_running_outcome(tmp_path):
+    """The propose tap and manual dispatch are dispatches too (spec §6): each
+    leaves the same ``running`` row the loop's auto path writes, carrying the
+    product's model and the claim's attempt count. Only the claim WITHOUT a spawn
+    (the loop's propose branch) records nothing."""
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from server.automations.product_policy import effective_policy
+    from server.db.models import DispatchOutcome
+
+    async def run():
+        await _init(tmp_path, "tap_outcomes.db")
+        await _seed_product("widget", "o/r")
+        await _seed_item("o/r", 1)
+        await _seed_item("o/r", 2)
+        orch = _orch_with_ctx()
+
+        async def read_config():
+            return "on", _config()
+        orch._backlog_read_config = read_config
+
+        async def query_queue(_config, **_kw):
+            return [{"ref": "o/r#1", "repo": "o/r", "title": "one",
+                     "product": "widget"},
+                    {"ref": "o/r#2", "repo": "o/r", "title": "two",
+                     "product": "widget"}]
+        orch._backlog_query_queue = query_queue
+
+        async def load_policies():
+            return {"widget": effective_policy({"dispatch": "auto",
+                                                "default_model": "opus"})}
+        orch._backlog_load_policies = load_policies
+
+        async def announce(_batch):
+            return None
+        orch._backlog_announce = announce
+
+        async def account_for(_ctx, _ref):
+            return "acct"
+        orch._automation_account_for = account_for
+
+        spawned: list = []
+
+        async def spawn(batch, account, *, default_model):
+            spawned.append((batch.primary, account, default_model))
+            return SimpleNamespace(id=f"sess-{len(spawned)}", branch="b")
+        orch._backlog_spawn = spawn
+
+        # The claim the tap spawns for already carries one spent attempt.
+        await orch._backlog_ctx.set_target_state("o/r#1", {
+            "repo": "o/r", "product": "widget", "attempts": 1,
+            "issues": ["o/r#1"], "claimed": True, "proposed": True})
+
+        assert await orch.backlog_runner_implement_core("o/r#1") == "spawned"
+        assert (await orch.backlog_runner_dispatch(["o/r#2"]))["status"] == "spawned"
+
+        async with db_session() as db:
+            rows = {r.target_ref: r for r in (await db.execute(
+                select(DispatchOutcome))).scalars().all()}
+        assert set(rows) == {"o/r#1", "o/r#2"}
+        tapped, dispatched = rows["o/r#1"], rows["o/r#2"]
+        assert tapped.outcome == "running" and tapped.session_id == "sess-1"
+        assert tapped.model == "opus" and tapped.attempt_no == 1
+        assert tapped.project_id is not None and tapped.body_fingerprint is not None
+        assert dispatched.outcome == "running" and dispatched.session_id == "sess-2"
+        assert dispatched.model == "opus" and dispatched.attempt_no == 0
 
     asyncio.run(run())

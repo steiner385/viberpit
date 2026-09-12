@@ -1006,6 +1006,7 @@ class SessionOrchestrator:
             healthy_account=self._backlog_loop_healthy_account,
             pr_status_for=self._backlog_pr_status_for,
             pr_doctor_active=self._backlog_pr_doctor_active,
+            pr_doctor_attempts_for=self._backlog_pr_doctor_attempts_for,
             read_config=self._backlog_read_config,
             read_policies=self._backlog_load_policies,
             seed_policies=self._backlog_seed_policies_once,
@@ -5133,6 +5134,29 @@ class SessionOrchestrator:
             log.debug("backlog_runner.pr_doctor_active_failed", exc_info=True)
             return False
 
+    async def _backlog_pr_doctor_attempts_for(self, pr_ref: str) -> int | None:
+        """How many session fixes PR Doctor injected into *pr_ref* (``repo#N``),
+        or None when that is UNKNOWN.
+
+        Read off PR Doctor's own per-target state — ``total_attempts`` is its
+        monotonic, re-arm-immune counter (``pr_doctor_engine.record_attempt``),
+        which is the one that answers "did this PR merge without help". The runner
+        turns it into ``first_pass_merge``, so UNKNOWN must never collapse to 0: a
+        PR the doctor never tracked, one whose row it already cleared at terminal
+        (``set_target_state(target, {})``), or a failed read all answer None."""
+        try:
+            st = await self._pr_doctor_ctx.get_target_state(pr_ref)
+        except Exception:
+            log.debug("backlog_runner.pr_doctor_attempts_failed", exc_info=True)
+            return None
+        total = st.get("total_attempts")
+        if total is None:
+            return None
+        try:
+            return int(total)
+        except (TypeError, ValueError):
+            return None
+
     async def _backlog_query_queue(self, config: dict, *,
                                    skipped_out: dict | None = None,
                                    products_out: dict | None = None) -> list[dict]:
@@ -5884,9 +5908,8 @@ class SessionOrchestrator:
         account = await self._automation_account_for(self._backlog_ctx, primary)
         if account is None:
             return "no_account"
-        rec = await self._backlog_spawn(
-            batch, account,
-            default_model=await self._backlog_policy_model(batch.product))
+        model = await self._backlog_policy_model(batch.product)
+        rec = await self._backlog_spawn(batch, account, default_model=model)
         if rec is None:
             # REFUSED before anything was created (engine policy, or an
             # engine/permission-mode pair that could not open a PR). Reporting
@@ -5895,6 +5918,15 @@ class SessionOrchestrator:
             # say so; the spawn path already recorded the reason.
             await self._backlog_ctx.delete_target_state(primary)
             return "refused"
+        # A tap IS a dispatch, so it leaves the same ``running`` outcome row the
+        # loop's auto path writes (spec §6) — same place in the sequence: after a
+        # successful spawn, before the claim row is finalised. ``attempt_no`` comes
+        # off the claim this tap is spawning for.
+        await self._backlog_ctx.record_outcome(
+            primary, product_slug=batch.product,
+            session_id=getattr(rec, "id", None),
+            model=getattr(rec, "model", None) or model,
+            attempt_no=st.get("attempts", 0))
         # A de-dup hit returns the existing row without appending to spawns; treat
         # a matching origin_ref that already existed as "exists".
         await self._backlog_ctx.set_target_state(primary, {
@@ -5966,12 +5998,18 @@ class SessionOrchestrator:
         if account is None:
             return {"status": "no_account", "session_id": None,
                     "session_name": None}
-        rec = await self._backlog_spawn(
-            batch, account,
-            default_model=await self._backlog_policy_model(batch.product))
+        model = await self._backlog_policy_model(batch.product)
+        rec = await self._backlog_spawn(batch, account, default_model=model)
         if rec is None:
             await self._backlog_ctx.delete_target_state(primary)
             return {"status": "refused", "session_id": None, "session_name": None}
+        # Manual dispatch is a dispatch too — same ``running`` row, same position
+        # (after the spawn, before the claim row is finalised).
+        await self._backlog_ctx.record_outcome(
+            primary, product_slug=batch.product,
+            session_id=getattr(rec, "id", None),
+            model=getattr(rec, "model", None) or model,
+            attempt_no=st.get("attempts", 0))
         await self._backlog_ctx.set_target_state(primary, {
             "session_id": getattr(rec, "id", None),
             "repo": batch.repo,

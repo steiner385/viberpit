@@ -163,3 +163,35 @@ async def test_bounces_stmt_counts_finalised_rows_for_the_current_body(db_env):
     async with db_session() as db:
         rows = (await db.execute(bounces_stmt(pairs))).all()
     assert rows_to_bounces(rows, pairs) == {"o/r#7": 2, "o/r#8": 0}
+
+
+@pytest.mark.asyncio
+async def test_finalize_breaks_a_created_at_tie_deterministically(db_env):
+    """Two dispatches of one target CAN overlap (a propose tap racing the loop's
+    own spawn, or a double tap), and two rows can land on the same ``created_at``.
+    ``id`` is the tiebreak, so which of them a finalise claims is decided, not
+    dialect-dependent — and the second finalise claims the other one rather than
+    re-stamping the first."""
+    from datetime import datetime, timezone
+
+    await _seed(db_env)
+    ctx = AutomationContext("backlog-runner")
+    await ctx.record_outcome("o/r#7", product_slug="viberpit", session_id=None,
+                             model="sonnet", attempt_no=0)
+    await ctx.record_outcome("o/r#7", product_slug="viberpit", session_id=None,
+                             model="sonnet", attempt_no=1)
+    stamp = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
+    async with db_session() as db:
+        for row in (await db.execute(select(DispatchOutcome))).scalars().all():
+            row.created_at = stamp
+
+    ids = sorted(r.id for r in await _rows())
+    await ctx.finalize_outcome("o/r#7", outcome="no_pr", cause="first")
+    by_id = {r.id: r for r in await _rows()}
+    assert by_id[ids[-1]].outcome == "no_pr"     # the greater id goes first
+    assert by_id[ids[0]].outcome == "running"
+
+    await ctx.finalize_outcome("o/r#7", outcome="abandoned", cause="second")
+    by_id = {r.id: r for r in await _rows()}
+    assert by_id[ids[0]].outcome == "abandoned"
+    assert by_id[ids[-1]].outcome == "no_pr"     # untouched by the second call

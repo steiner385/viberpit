@@ -220,7 +220,13 @@ class AutomationContext:
                         DispatchOutcome.automation_id == self.automation_id,
                         DispatchOutcome.target_ref == target,
                         DispatchOutcome.outcome == "running")
-                    .order_by(DispatchOutcome.created_at.desc()).limit(1))).scalars().first()
+                    # ``id`` breaks a created_at TIE deterministically: two
+                    # dispatches of one target can overlap (a propose tap racing
+                    # the loop's own spawn, or a double tap), and without a
+                    # tiebreak which of two same-stamped rows gets finalised is
+                    # whatever the dialect felt like returning.
+                    .order_by(DispatchOutcome.created_at.desc(),
+                              DispatchOutcome.id.desc()).limit(1))).scalars().first()
                 if row is None:
                     log.info("automation_context.finalize_outcome_no_running_row target=%s",
                              target)

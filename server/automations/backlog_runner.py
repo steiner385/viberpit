@@ -401,6 +401,12 @@ CountCandidates = Callable[[], Awaitable["tuple[int, int, int, dict | None]"]]
 HealthyAccount = Callable[[], Awaitable["str | None"]]
 PrStatusFor = Callable[[str], Awaitable["PullRequestInfo | None"]]
 PrDoctorActive = Callable[[str], Awaitable[bool]]
+# How many session fixes PR Doctor has injected into a PR (``repo#N``), or None
+# when that is UNKNOWN — a PR it never tracked, or one whose per-target row it
+# already cleared at terminal. ``first_pass_merge`` is derived from it and stays
+# None on an unknown count: "PR Doctor never had to act" and "we cannot tell" are
+# different claims, and only the first one may be recorded as a first-pass merge.
+PrDoctorAttemptsFor = Callable[[str], Awaitable["int | None"]]
 ReadConfig = Callable[[], Awaitable["tuple[str, dict]"]]
 # slug → the validated product policy (``effective_policy``). Read once per tick:
 # the loop looks a batch's/claim's product up in it for dispatch (propose vs auto),
@@ -509,6 +515,7 @@ class BacklogRunnerLoop:
         needs_human: NeedsHuman | None = None,
         session_ended: SessionEnded | None = None,
         session_ran: SessionRan | None = None,
+        pr_doctor_attempts_for: PrDoctorAttemptsFor | None = None,
         count_candidates: CountCandidates | None = None,
         close_out: CloseOut | None = None,
         refresh_groups: RefreshGroups | None = None,
@@ -540,6 +547,7 @@ class BacklogRunnerLoop:
         self._needs_human = needs_human or _stub_needs_human  # announce the handoff
         self._session_ended = session_ended         # (session_id) -> bool | None
         self._session_ran = session_ran             # (session_id) -> bool | None
+        self._pr_doctor_attempts_for = pr_doctor_attempts_for  # (repo#N) -> int | None
         self._count_candidates = count_candidates    # -> int (true eligible backlog size)
         self._close_out = close_out                 # (target, info) -> close merged batch issues
         self._refresh_groups = refresh_groups           # grouping optimizer (plan writer)
@@ -1132,6 +1140,17 @@ class BacklogRunnerLoop:
             self._spawns_today.append(self._clock())
             if batch.product:
                 per_product[batch.product] = per_product.get(batch.product, 0) + 1
+            # The dispatch is real now, so it gets its durable ``running`` row
+            # (spec §6). Written HERE — after the spawn succeeded, before the
+            # claim row is finalised — so a refusal/failure above (which costs no
+            # attempt) leaves no history, and a crash below still leaves a row the
+            # sweep can finalise. The model recorded is the one the session will
+            # actually run under: the record's own, else this tick's policy.
+            await self._record_outcome(
+                batch.primary, product_slug=batch.product,
+                session_id=getattr(rec, "id", None),
+                model=getattr(rec, "model", None) or policy["default_model"],
+                attempt_no=st.get("attempts", 0))
             # NB: ``attempts`` is charged when a session ENDS without a mergeable
             # PR (see ``_sweep_one``), never at spawn time — a successful handoff
             # deletes the state row, so success costs no attempt. Update the
@@ -1199,6 +1218,52 @@ class BacklogRunnerLoop:
                 log.warning("backlog_runner.sweep_target_failed target=%s", target,
                             exc_info=True)
 
+    # -- dispatch history (spec §6, §13) ------------------------------------ #
+    #
+    # Every dispatch leaves ONE ``dispatch_outcomes`` row: ``running`` at spawn,
+    # finalised at the terminal branch of the sweep that ends it. Both writers are
+    # the ``AutomationContext`` seams — the loop owns WHEN and WITH WHAT, never the
+    # SQL. History is best-effort and dispatch is not (§13): the context already
+    # swallows its own DB failures, and these wrappers guard the seam itself, so a
+    # broken history writer can never cost a spawn or strand a claim mid-sweep.
+
+    async def _record_outcome(self, target: str, *, product_slug: str | None,
+                              session_id: str | None, model: str | None,
+                              attempt_no: int) -> None:
+        try:
+            await self._ctx.record_outcome(
+                target, product_slug=product_slug, session_id=session_id,
+                model=model, attempt_no=attempt_no)
+        except Exception:
+            log.warning("backlog_runner.record_outcome_failed target=%s", target,
+                        exc_info=True)
+
+    async def _finalize_outcome(self, target: str, *, outcome: str,
+                                cause: str | None = None, pr_number: int | None = None,
+                                pr_url: str | None = None,
+                                first_pass_merge: bool | None = None) -> None:
+        try:
+            await self._ctx.finalize_outcome(
+                target, outcome=outcome, cause=cause, pr_number=pr_number,
+                pr_url=pr_url, first_pass_merge=first_pass_merge)
+        except Exception:
+            log.warning("backlog_runner.finalize_outcome_failed target=%s", target,
+                        exc_info=True)
+
+    async def _pr_doctor_attempts(self, pr_ref: str) -> int | None:
+        """PR Doctor's session-fix count for *pr_ref*, or None when unknown.
+
+        An UNWIRED seam and a failing one both answer "unknown" — never 0, which
+        would record an unknown merge as a first-pass merge."""
+        if self._pr_doctor_attempts_for is None:
+            return None
+        try:
+            return await self._pr_doctor_attempts_for(pr_ref)
+        except Exception:  # pragma: no cover — a history read must not stall the sweep
+            log.warning("backlog_runner.pr_doctor_attempts_failed ref=%s", pr_ref,
+                        exc_info=True)
+            return None
+
     async def _give_up(self, target: str, st: dict, reason: str) -> None:
         """Hand the target to a human: announce it (comment, best-effort) and keep a
         durable ``gave_up`` row stamped ``needs_human_at``. The row is the ONLY carrier
@@ -1258,6 +1323,9 @@ class BacklogRunnerLoop:
                 reason = "human gate: merged PR needs a human close-out"
                 await self._ctx.emit("warn", f"{target}: {reason} — needs human",
                                      kind="gave_up", target=target)
+                await self._finalize_outcome(target, outcome="needs_human",
+                                             cause=reason, pr_number=info.number,
+                                             pr_url=info.url)
                 await self._give_up(target, st, reason)
                 return
             if outcome == "unlinked":
@@ -1279,15 +1347,28 @@ class BacklogRunnerLoop:
                     kind="unlinked_pr", target=target)
                 return
             await self._ctx.emit("info", f"{target} merged", kind="merged", target=target)
+            # ``first_pass_merge`` is only knowable while PR Doctor still has a row
+            # for this PR; an unknown count stays None rather than claiming a clean
+            # first pass (R3-4).
+            attempts = await self._pr_doctor_attempts(f"{repo}#{info.number}")
+            await self._finalize_outcome(
+                target, outcome="merged", pr_number=info.number, pr_url=info.url,
+                first_pass_merge=(attempts == 0) if attempts is not None else None)
             await self._ctx.delete_target_state(target)
             return
 
         # PR-Doctor gave up on this target, or the PR closed unmerged → give up.
         closed_unmerged = info is not None and info.state == "closed"
         if target in gave_up_targets or closed_unmerged:
-            reason = "pr-doctor gave up" if target in gave_up_targets else "PR closed unmerged"
+            doctor_gave_up = target in gave_up_targets
+            reason = "pr-doctor gave up" if doctor_gave_up else "PR closed unmerged"
             await self._ctx.emit("warn", f"{target}: {reason} — needs human",
                                  kind="gave_up", target=target)
+            await self._finalize_outcome(
+                target, outcome="pr_gave_up" if doctor_gave_up else "abandoned",
+                cause=reason,
+                pr_number=info.number if info is not None else None,
+                pr_url=info.url if info is not None else None)
             await self._give_up(target, st, reason)
             return
 
@@ -1331,16 +1412,26 @@ class BacklogRunnerLoop:
                         "info",
                         f"released {target} (session never ran a turn — not escalating)",
                         kind="unclaimed", target=target)
+                    await self._finalize_outcome(
+                        target, outcome="abandoned",
+                        cause="session never ran a turn")
                     await self._ctx.delete_target_state(target)
                     return
                 reason = f"max attempts ({attempts}) reached with no mergeable PR"
                 await self._ctx.emit("warn", f"{target}: {reason} — giving up",
                                      kind="gave_up", target=target)
+                await self._finalize_outcome(target, outcome="needs_human",
+                                             cause=reason)
                 await self._give_up(target, st, reason)
             else:
                 # Charge the attempt and mark this session consumed so we don't
                 # re-count the SAME ended session on every subsequent sweep; a
                 # later re-arm / retry path re-spawns and clears ``_ended``.
+                # THIS dispatch is over either way — the row closes as ``no_pr``
+                # (a bounce), and the next spawn opens a fresh one.
+                await self._finalize_outcome(
+                    target, outcome="no_pr",
+                    cause="session ended without a mergeable PR")
                 new_st = dict(st)
                 new_st["attempts"] = attempts
                 new_st["_ended"] = True
