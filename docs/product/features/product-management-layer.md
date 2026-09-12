@@ -240,8 +240,13 @@ behaviour, not of any one product's board).
 Phase 2 of the design has landed: confidence-tiered triage auto-accept per product
 (`triage_auto_accept`, §8 — the "Triage auto-accept" paragraph below). **Phase 3 has landed**: the
 `dispatch_outcomes` table feeding the bounce-based `needs_spec` skip and roadmap tier reason
-(`give_up_after_bounces`, §6–7 — the "Dispatch outcomes" paragraph below). Phase 4 has not: a
-history-informed floor on the runner's model pick (§7) — see
+(`give_up_after_bounces`, §6–7 — the "Dispatch outcomes" paragraph below). **Phase 4 has landed**:
+a history-informed floor on the runner's model pick (§7, D9) — `outcome_stats`/`tier_floor` in
+`server/pm/outcomes.py`, consumed by `server/automations/model_pick.py:pick_model` at spawn (see
+`docs/product/features/autopilot-backlog-runner.md` § Model pick). This closes #1521's dispatch-
+outcome feedback loop: the same `dispatch_outcomes` rows now feed the queue's bounce skip, the
+roadmap's needs-spec chip, AND the model pick, so a real merge or bounce changes what the runner
+does next on three fronts, not one. See
 `docs/superpowers/specs/2026-09-12-product-automation-policy-design.md` §11 for the phasing.
 
 **Dispatch outcomes (phase 3, spec §6/§7, D5/D8).** Every Backlog Runner dispatch leaves one durable
@@ -299,6 +304,16 @@ budget — but without the `lifetime_*` carry (which the engine never reads, and
 `record_attempt` preserve through every later cycle because both copy the whole state dict) a
 doctor-rescued PR's history would be erased right before the runner's sweep asks whether the merge
 was a first pass, and every doctor-rescued merge would misreport `True`.
+
+**Readers (phase 3–4).** Beyond the bounce rule below, `server/pm/outcomes.py` exposes the SAME
+rows to two more consumers. `outcome_stats(db, project_id, feature_id)` gathers one capability's
+finished dispatch history per model tier — finalised, non-superseded rows whose `model` maps to a
+tier via `model_catalog.model_tier` (an unranked model, e.g. `default`/`best`, is dropped rather
+than guessed), counting each as an outcome and, when `first_pass_merge is True`, also as a first
+pass. `tier_floor(db, project_id, feature_id)` (pure `tier_floor_from_stats` underneath, D9) turns
+that into the phase-4 model-pick floor — see
+`docs/product/features/autopilot-backlog-runner.md` § Model pick for the rule and how
+`_backlog_spawn` consumes it via `tier_floor_for_dispatch`.
 
 **The bounced rule (D8).** `server/pm/outcomes.py:body_fingerprint(title, body)` is the one "same
 issue body" identity, computed both when a dispatch's `running` row is written (from the mirror

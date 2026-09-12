@@ -14,6 +14,7 @@ links:
     - server/automations/backlog_github.py
     - server/automations/product_policy.py
     - server/pm/outcomes.py
+    - server/automations/model_pick.py
     - server/automations/action_providers.py
     - server/automations/consolidation_engine.py
     - server/automations/completion_bar.py
@@ -173,6 +174,31 @@ PR linkage, never on labels alone.
   sweep, which passes the claim's own product/session/model/attempt (`_outcome_fallback`) as
   `finalize_outcome(fallback=…)` so the dispatch is inserted already finalised rather than
   forgotten, at most once per dispatch.
+
+  **Model pick (phase 4, spec §7, D9).** A product's `default_model` policy field of `auto`
+  still asks `assess_model` (one-shot Haiku complexity judgment) for a tier per dispatch; what's
+  new is that the capability's own merge history can now RAISE that assessment. `_backlog_spawn`
+  reads the floor through an injectable seam, `_backlog_tier_floor` (`orchestrator.py`), which
+  opens its own `db_session()` and defers to `server/pm/outcomes.py:tier_floor_for_dispatch` for
+  the primary issue's product/capability; the read is best-effort by spec §13 — a failed lookup
+  (unknown product, an unmirrored or unparseable ref, an issue on no capability, or a DB error) is
+  logged and costs only the floor, never the spawn. `tier_floor_from_stats` is the one D9 rule
+  (pure, ranked by the catalog's single `TIER_ORDER`, never a second list or string compare): the
+  floor is the lowest tier at which that capability's issues merged first-pass in ≥ 2 finalised,
+  non-superseded outcomes, when every cheaper tier with ≥ 2 such outcomes merged first-pass in
+  none of them (and at least one such cheaper tier exists) — a tier with fewer than two outcomes
+  is not evidence in either role. `server/automations/model_pick.py:pick_model` is the one
+  resolver (`resolve_model` is its two-tuple wrapper): the floor only ever RAISES an `auto`
+  assessment, compared by `model_catalog.tier_rank`, never lowers one, and a pinned alias or the
+  account `default` is untouched — the source recorded is `"auto+floor"` when the floor actually
+  raised the pick, `"auto"` otherwise. The spawned `AutomationEvent`'s `detail` carries
+  `assessed`/`floor` only when set (so a pinned spawn's detail is unchanged from before this
+  phase), and every `auto`-policy pick — raised or not — also writes one
+  `backlog_runner.model_pick` audit row (identity `backlog-runner`, `{target, product, assessed,
+  floor, applied, source}`), so "the assessor said sonnet but this capability's history floored it
+  at opus" is recoverable after the fact. Neither the event detail nor the audit surfaces in the
+  UI yet — `AutomationContext.list_events` drops `detail` entirely, so this is data for the
+  history, not the activity feed, until a later phase reads it.
 
   `_backlog_query_queue` threads each ON product's own `give_up_after_bounces` into `rank`
   (`server/pm/queue.py`), which checks the `needs_spec` skip right after the needs-human cooldown

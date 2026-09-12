@@ -59,7 +59,7 @@ Storage: `Project.automation_policy` (JSON, nullable) + `Project.automation_poli
 - **Ranking:** `rank()` is called per product with that product's `queue_min_status`, `respect_dependencies`, `needs_human_retry_days` (kept global for now — **[default]**; it only governs the legacy needs-human cooldown, which D8 supersedes for repeated failures) and, new, the `needs_spec` skip (§7).
 - **Batch:** `select_batch` / `order_live_groups` read `weight` and `max_in_flight` from the policies (`backlog_selection.py:85-95` shape unchanged: a mapping keyed by product slug instead of repo).
 - **Propose vs auto:** the global runner mode becomes `off | on`; per product, `propose` announces the batch (the existing announce path) and records an `AutomationEvent` `proposed`, `auto` spawns. A `propose` product never claims.
-- **Spawn:** `_backlog_spawn` resolves the model from the product's policy with the history floor (§8); records the outcome row `running` (§6).
+- **Spawn:** `_backlog_spawn` resolves the model from the product's policy with the history floor (§7 — corrected from an original "§8" mislabel, fixed in phase 4 task 3); records the outcome row `running` (§6).
 - **Status card:** per-product lines ("kwgt-cairn: auto · 1/1 in flight · 12 eligible · 2 bounced"), replacing the single repo count line.
 - **Retired keys:** `enabled_repos`, `repo_weights`, `repo_caps`, `queue_min_status`, `max_attempts`, `needs_human_retry_days` (**[default]** stays), `default_model`, `respect_dependencies` join `retired_config_keys`; `PATCH /api/automations/backlog-runner` rejects them with the existing retired-key message.
 
