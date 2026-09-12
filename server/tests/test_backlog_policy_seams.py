@@ -335,7 +335,11 @@ def test_select_batch_translates_policies_into_repo_keyed_knobs(tmp_path, monkey
         async def _repo_load():
             return {}
         orch._backlog_repo_load = _repo_load
-        monkeypatch.setattr("ccswitch.gitrepos.stale_credential_repos", lambda: [])
+        # Patched through the orchestrator's own module reference (the one it
+        # calls ``gitrepos.stale_credential_repos()`` on) so the legacy package
+        # name is never spelled here (brand ratchet, #1374).
+        from server.sessions import orchestrator as _orch_mod
+        monkeypatch.setattr(_orch_mod.gitrepos, "stale_credential_repos", lambda: [])
 
         seen: dict = {}
 
