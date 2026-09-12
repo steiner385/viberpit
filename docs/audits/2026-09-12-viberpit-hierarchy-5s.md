@@ -115,6 +115,22 @@ and leaves test sessions intact when that check fails. Acceptance requires a ded
 stable unlimited retention. A client-side settings check cannot eliminate a
 concurrent settings race or make a shared environment disposable. The guard
 is tracked in [#1604](https://github.com/steiner385/viberpit/issues/1604).
+The sibling scan found the same assumption in the broader Codex interactive
+smoke harness; [#1605](https://github.com/steiner385/viberpit/issues/1605) records
+that follow-up with a review hold. It must not run on a shared live database.
+These two new records were assigned existing capability homes and reviewed
+scores through the overlay API, separately from the original 61 score updates:
+
+| Issue | Capability | Reach | Impact | Effort | Confidence | Score | Triage |
+|---|---|---:|---:|---:|---:|---:|---|
+| #1604 | ai-assistant | 2 | 5 | 2 | 5 | 25 | needs_human pending this PR |
+| #1605 | session-engine-terminal | 2 | 5 | 3 | 5 | 16.67 | needs_human: lifecycle review |
+
+The limited reach reflects operational harness use, impact reflects confirmed
+permanent archive loss, and confidence is backed by the observed cleanup path.
+The Codex harness has greater effort because both its normal archive and
+failure cleanup interact with a broader account/session lifecycle. Both records
+were open and on Backlog before application; neither was made eligible for dispatch.
 
 The planning consolidation epic [#997](https://github.com/steiner385/viberpit/issues/997)
 remains open for its actual unfinished children: [#988](https://github.com/steiner385/viberpit/issues/988)
@@ -140,14 +156,20 @@ documentation or hierarchy mutation.
 
 ## Verification
 
-Before the smoke-harness guard, the application code passed the complete local Python gate: Ruff,
-Mypy, 681 core tests, and 9,158 server tests (33 skipped). The full server run
-used parallel file distribution and a clean test environment. Existing focused
-product-map and brand checks passed (60 tests), as did 137 assistant conformance,
-grader, permission, and external-token tests. The brand-ratchet ceilings remain
-unchanged and local documentation links resolve. Independent task and branch
-reviews found no remaining qualifying findings after two stale backlog premises
-were moved to verification holds.
+The final local Python gate passed after the smoke-harness guard and the latest
+backend changes from `master`: Ruff, Mypy, 681 core tests, and 9,243 server tests
+(33 skipped). The full server run used parallel file distribution and a clean
+test environment. The new guard's 24 regression cases passed independently;
+its initially missing test-data type annotation was corrected and full Mypy
+rerun successfully. Existing focused product-map and brand checks passed
+(60 tests), as did 137 assistant conformance, grader, permission, and external-token
+tests. The brand-ratchet ceilings remain unchanged and all 53 checked local
+documentation links resolve. Independent task and whole-branch reviews found no
+remaining qualifying findings in the completed changes.
+
+The real-model benchmark is a separate acceptance result: **102/120 (85%)**,
+below its required 90%. All 18 failures remain recorded in the assistant audit;
+passing unit gates do not override that result or certify deployment acceptance.
 
 The architecture consolidation also passed 92 existing focused tests for the
 journal, mutations, reconciler, queue, shared configuration, and API behavior.
