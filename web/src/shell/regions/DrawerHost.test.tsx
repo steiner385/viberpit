@@ -48,13 +48,13 @@ vi.mock('@/api/assistant', () => ({
     mutateAsync: vi.fn(), isPending: false, isError: false, error: null,
   })),
 }))
-vi.mock('@/components/session/SessionRuntimeProvider', () => ({
+vi.mock('@/features/sessions/SessionRuntimeProvider', () => ({
   SessionRuntimeProvider: ({ children }: { children: ReactNode }) => <div data-testid="runtime">{children}</div>,
   useSessionRuntimeContext: vi.fn(),
 }))
 
 import { useAssistantStatus } from '@/api/assistant'
-import { useSessionRuntimeContext } from '@/components/session/SessionRuntimeProvider'
+import { useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
 import { DrawerHost } from './DrawerHost'
 import { GROUPS } from './HelpSheet'
 

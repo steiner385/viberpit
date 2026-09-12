@@ -91,11 +91,11 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
 
   const isDark = variant === 'dark'
   const iconBtn = cn(
-    'inline-flex items-center justify-center rounded-md min-h-[44px] min-w-[44px]',
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+    'inline-flex items-center justify-center rounded-md min-h-target min-w-target',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
     isDark
-      ? 'text-gray-200 hover:bg-gray-700 active:bg-gray-600'
-      : 'text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700',
+      ? 'text-ink hover:bg-surface-raised active:bg-surface-raised'
+      : 'text-ink-muted hover:bg-surface-raised',
   )
 
   function handleArchive() {
@@ -158,9 +158,9 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
             role="menu"
             aria-label="Session actions"
             className={cn(
-              'absolute right-0 top-full z-10 mt-1 w-44',
-              'rounded-md border border-gray-200 dark:border-gray-700',
-              'bg-white dark:bg-gray-900 shadow-lg py-1',
+              'absolute right-0 top-full z-sticky mt-1 w-44',
+              'rounded-md border border-edge',
+              'bg-surface shadow-lg py-1',
             )}
           >
             {onRename && (
@@ -170,9 +170,9 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
                 onClick={() => { setMenuOpen(false); onRename() }}
                 className={cn(
                   'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
-                  'text-gray-700 dark:text-gray-200',
-                  'hover:bg-gray-100 dark:hover:bg-gray-800',
-                  'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-800',
+                  'text-ink',
+                  'hover:bg-surface-raised',
+                  'focus-visible:outline-none focus-visible:bg-surface-raised',
                 )}
               >
                 <Pencil size={16} aria-hidden="true" />
@@ -186,9 +186,9 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
                 onClick={() => { setMenuOpen(false); onReload() }}
                 className={cn(
                   'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
-                  'text-gray-700 dark:text-gray-200',
-                  'hover:bg-gray-100 dark:hover:bg-gray-800',
-                  'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-800',
+                  'text-ink',
+                  'hover:bg-surface-raised',
+                  'focus-visible:outline-none focus-visible:bg-surface-raised',
                 )}
               >
                 <RefreshCw size={16} aria-hidden="true" />
@@ -202,9 +202,9 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
                 onClick={() => { setMenuOpen(false); onRotate() }}
                 className={cn(
                   'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
-                  'text-gray-700 dark:text-gray-200',
-                  'hover:bg-gray-100 dark:hover:bg-gray-800',
-                  'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-800',
+                  'text-ink',
+                  'hover:bg-surface-raised',
+                  'focus-visible:outline-none focus-visible:bg-surface-raised',
                 )}
               >
                 <Shuffle size={16} aria-hidden="true" />
@@ -217,9 +217,9 @@ export function SessionActions({ sessionId, sessionName, onDone, variant = 'dark
               onClick={() => { setMenuOpen(false); setConfirmOpen(true) }}
               className={cn(
                 'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
-                'text-red-600 dark:text-red-400',
-                'hover:bg-gray-100 dark:hover:bg-gray-800',
-                'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-800',
+                'text-danger',
+                'hover:bg-surface-raised',
+                'focus-visible:outline-none focus-visible:bg-surface-raised',
               )}
             >
               <Trash2 size={16} aria-hidden="true" />

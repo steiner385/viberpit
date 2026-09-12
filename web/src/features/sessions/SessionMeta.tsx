@@ -10,12 +10,14 @@
  * from the server's per-engine capability report rather than inferring here.
  */
 import { Fragment, useState } from 'react'
+import { Pin } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatResetTime } from '@/lib/formatReset'
 import { contextSeverity } from '@/lib/contextWindow'
 import type { SubAgent, SubAgentStatus } from '@/session/selectors'
 import { engineBadge, modelName } from '@/session/modelName'
 import { SubAgentList } from './SubAgentList'
+import { STATUS_TONE } from './subAgentStatus'
 import type { AgentEngine, UsageWindow } from '@/api/types'
 
 /** Compact labels for the strip, which is tight on horizontal space. Falls back
@@ -93,13 +95,6 @@ function summaryDot(subAgents: SubAgent[]): SubAgentStatus {
   return 'done'
 }
 
-const DOT_CLASS: Record<SubAgentStatus, string> = {
-  running: 'bg-blue-500 animate-pulse',
-  done: 'bg-emerald-500',
-  failed: 'bg-red-500',
-  stopped: 'bg-gray-400',
-}
-
 export function SessionMeta({ account, engine = null, host = null, displayMode = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, mode, pendingMode = null, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
   const [open, setOpen] = useState(false)
   const agentCount = subAgentsSupported ? subAgents.length : 0
@@ -110,16 +105,16 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
       <div
         className={cn(
           'flex items-center gap-x-3 gap-y-1 flex-wrap px-3 py-1',
-          'bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700',
-          'text-xs text-gray-600 dark:text-gray-300',
+          'bg-surface-raised border-b border-edge',
+          'text-xs text-ink-muted',
         )}
       >
         {/* Agent (engine). Shown only when it is not the default Claude Code
             engine — `engineBadge` owns that rule for every identity surface. */}
         {agentBadge && (
           <span className="inline-flex items-center gap-1" aria-label="Agent">
-            <span className="text-gray-400 dark:text-gray-500">agent</span>
-            <span className="font-medium text-gray-900 dark:text-gray-100 truncate max-w-[10rem]">
+            <span className="text-ink-muted">agent</span>
+            <span className="font-medium text-ink truncate max-w-[10rem]">
               {agentBadge}
             </span>
           </span>
@@ -127,12 +122,12 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
 
         {/* Account switcher */}
         <span className="inline-flex items-center gap-1">
-          <span className="text-gray-400 dark:text-gray-500">acct</span>
+          <span className="text-ink-muted">acct</span>
           <select
             aria-label="Switch account"
             value={account}
             onChange={(e) => e.target.value && e.target.value !== account && onSelectAccount(e.target.value)}
-            className="bg-transparent font-medium text-gray-900 dark:text-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
+            className="bg-transparent font-medium text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
           >
             {accounts.every((a) => a.name !== account) && <option value={account}>{account}</option>}
             {accounts.map((a) => (
@@ -145,9 +140,9 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
               onClick={onUnpin}
               aria-label="Unpin account"
               title="Pinned — auto-rotation off. Click to unpin."
-              className="text-amber-500 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+              className="text-warning rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             >
-              📌
+              <Pin size={14} role="img" aria-label="pinned" />
             </button>
           )}
         </span>
@@ -160,12 +155,12 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
           const live = liveModel ? modelName(liveModel, engine) : ''
           return (
             <span className="inline-flex items-center gap-1">
-              <span className="text-gray-400 dark:text-gray-500">model</span>
+              <span className="text-ink-muted">model</span>
               <select
                 aria-label="Select model"
                 value={chosen}
                 onChange={(e) => e.target.value && e.target.value !== chosen && onSelectModel(e.target.value)}
-                className="bg-transparent font-medium text-gray-900 dark:text-gray-100 truncate max-w-[14rem] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 rounded"
+                className="bg-transparent font-medium text-ink truncate max-w-[14rem] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
               >
                 {!models.some((m) => m.id === chosen) && (
                   <option value={chosen}>{chosen === 'default' ? 'Default' : chosen}</option>
@@ -178,7 +173,7 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
                 <span
                   aria-label="Model in use"
                   title="Model currently answering (a switch takes effect on the next turn)"
-                  className="text-gray-400 dark:text-gray-500 truncate max-w-[8rem]"
+                  className="text-ink-muted truncate max-w-[8rem]"
                 >
                   {live}
                 </span>
@@ -187,7 +182,7 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
                 <span
                   aria-label="Model switch pending"
                   title="Switching when the current turn finishes"
-                  className="text-amber-600 dark:text-amber-400"
+                  className="text-warning"
                 >
                   · after this turn
                 </span>
@@ -202,8 +197,8 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
             never reports one. */}
         {reasoningEffort && (
           <span className="inline-flex items-center gap-1" aria-label="Reasoning effort">
-            <span className="text-gray-400 dark:text-gray-500">effort</span>
-            <span className="font-medium text-gray-900 dark:text-gray-100 truncate max-w-[8rem]">
+            <span className="text-ink-muted">effort</span>
+            <span className="font-medium text-ink truncate max-w-[8rem]">
               {reasoningEffort}
             </span>
           </span>
@@ -212,8 +207,8 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
         {/* Runner host — which fleet member is actually executing this session. */}
         {host && (
           <span className="inline-flex items-center gap-1" aria-label="Runner host">
-            <span className="text-gray-400 dark:text-gray-500">host</span>
-            <span className="font-medium text-gray-900 dark:text-gray-100 truncate max-w-[10rem]">
+            <span className="text-ink-muted">host</span>
+            <span className="font-medium text-ink truncate max-w-[10rem]">
               {host}
             </span>
           </span>
@@ -221,8 +216,8 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
 
         {displayMode === 'native' && (
           <span className="inline-flex items-center gap-1" aria-label="Display" title="Windows open on the host's desktop">
-            <span className="text-gray-400 dark:text-gray-500">display</span>
-            <span className="font-medium text-gray-900 dark:text-gray-100">desktop</span>
+            <span className="text-ink-muted">display</span>
+            <span className="font-medium text-ink">desktop</span>
           </span>
         )}
 
@@ -230,13 +225,13 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
         {(() => {
           const sev = contextSeverity(contextPct)
           const color = sev === 'danger'
-            ? 'text-red-700 dark:text-red-400'
+            ? 'text-danger'
             : sev === 'warning'
-              ? 'text-amber-700 dark:text-amber-400'
-              : 'text-gray-900 dark:text-gray-100'
+              ? 'text-warning'
+              : 'text-ink'
           return (
             <span className={cn('inline-flex items-center gap-1', color)} aria-label="Remaining context">
-              <span className="text-gray-400 dark:text-gray-500">ctx</span>
+              <span className="text-ink-muted">ctx</span>
               <span className="font-medium tabular-nums">
                 {contextPct != null ? `${contextPct}%` : DASH}
               </span>
@@ -250,12 +245,12 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
             twice under two labels. */}
         {quota && quota.length > 0 && (
           <span className="inline-flex items-center gap-1.5" aria-label="Account quota">
-            <span className="text-gray-400 dark:text-gray-500">quota</span>
+            <span className="text-ink-muted">quota</span>
             {quota.map((w, i) => (
               <Fragment key={w.key}>
-                {i > 0 && <span className="text-gray-300 dark:text-gray-600">/</span>}
+                {i > 0 && <span className="text-ink">/</span>}
                 <span
-                  className="tabular-nums text-gray-900 dark:text-gray-100"
+                  className="tabular-nums text-ink"
                   title={quotaTitle(w.label, w.resetsAt)}
                   aria-label={`${w.label} usage: ${w.pct}% — ${quotaTitle(w.label, w.resetsAt)}`}
                 >
@@ -274,11 +269,11 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
           aria-label="Plan mode"
           onClick={() => onSetMode((pendingMode ?? mode) === 'plan' ? 'default' : 'plan')}
           className={cn(
-            'inline-flex items-center rounded px-2 py-0.5 text-xs font-medium min-h-[28px] border',
+            'inline-flex items-center rounded px-2 py-0.5 text-xs font-medium min-h-7 border',
             mode === 'plan'
-              ? 'bg-blue-100 dark:bg-blue-900/40 border-blue-400 text-blue-700 dark:text-blue-300'
-              : 'bg-transparent border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+              ? 'bg-accent-wash border-accent text-accent'
+              : 'bg-transparent border-edge-strong text-ink-muted',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
           )}
         >
           plan
@@ -301,14 +296,14 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
                 aria-expanded={open}
                 aria-label={`${agentCount} sub-agents`}
                 className={cn(
-                  'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md min-h-[28px]',
-                  'hover:bg-gray-200 dark:hover:bg-gray-700 active:bg-gray-300 dark:active:bg-gray-600',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
+                  'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md min-h-7',
+                  'hover:bg-edge active:bg-edge',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
                 )}
               >
-                <span className={cn('h-2 w-2 rounded-full', DOT_CLASS[summaryDot(subAgents)])} aria-hidden="true" />
-                <span className="tabular-nums text-gray-900 dark:text-gray-100">{agentCount}</span>
-                <span className="text-gray-500 dark:text-gray-400">{agentCount === 1 ? 'agent' : 'agents'}</span>
+                <span className={cn('h-2 w-2 rounded-full', STATUS_TONE[summaryDot(subAgents)])} aria-hidden="true" />
+                <span className="tabular-nums text-ink">{agentCount}</span>
+                <span className="text-ink-muted">{agentCount === 1 ? 'agent' : 'agents'}</span>
               </button>
             )}
           </div>
@@ -319,8 +314,8 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
       {open && agentCount > 0 && (
         <div
           className={cn(
-            'absolute right-2 top-full z-10 mt-1 w-72 max-h-72 overflow-y-auto',
-            'rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg px-2 py-1',
+            'absolute right-2 top-full z-sticky mt-1 w-72 max-h-72 overflow-y-auto',
+            'rounded-md border border-edge bg-surface shadow-lg px-2 py-1',
           )}
         >
           <SubAgentList subAgents={subAgents} />

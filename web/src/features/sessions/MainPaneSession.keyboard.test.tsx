@@ -216,7 +216,7 @@ describe('MainPaneSession keyboard shortcuts (Task 7)', () => {
   // does not move, and the event is left un-`preventDefault`ed so the browser's
   // own reverse-tab still happens. The mode selector in `SessionMeta` is the
   // supported path and keeps its own coverage
-  // (`components/session/__tests__/SessionMeta.test.tsx:134-146`).
+  // (`features/sessions/SessionMeta.test.tsx:135-149`).
 
   it('Shift+Tab does not change the permission mode and does not swallow reverse-tab (D8)', async () => {
     await renderPane()

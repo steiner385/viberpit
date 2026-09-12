@@ -27,10 +27,10 @@ export function ExportMenu({ sessionId }: Props) {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          'inline-flex items-center px-2 py-0.5 rounded-md min-h-[28px] text-xs',
-          'hover:bg-gray-200 dark:hover:bg-gray-700 active:bg-gray-300 dark:active:bg-gray-600',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-          'text-gray-600 dark:text-gray-400',
+          'inline-flex items-center px-2 py-0.5 rounded-md min-h-7 text-xs',
+          'hover:bg-edge active:bg-edge',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+          'text-ink-muted',
         )}
       >
         Export
@@ -41,8 +41,8 @@ export function ExportMenu({ sessionId }: Props) {
           role="menu"
           aria-label="Export transcript"
           className={cn(
-            'absolute right-0 top-full z-10 mt-1 w-36',
-            'rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg py-1',
+            'absolute right-0 top-full z-sticky mt-1 w-36',
+            'rounded-md border border-edge bg-surface shadow-lg py-1',
           )}
         >
           <button
@@ -51,9 +51,9 @@ export function ExportMenu({ sessionId }: Props) {
             onClick={() => pick('md')}
             className={cn(
               'w-full text-left px-3 py-1.5 text-xs',
-              'hover:bg-gray-100 dark:hover:bg-gray-800',
-              'text-gray-700 dark:text-gray-300',
-              'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-800',
+              'hover:bg-surface-raised',
+              'text-ink',
+              'focus-visible:outline-none focus-visible:bg-surface-raised',
             )}
           >
             Markdown
@@ -64,9 +64,9 @@ export function ExportMenu({ sessionId }: Props) {
             onClick={() => pick('jsonl')}
             className={cn(
               'w-full text-left px-3 py-1.5 text-xs',
-              'hover:bg-gray-100 dark:hover:bg-gray-800',
-              'text-gray-700 dark:text-gray-300',
-              'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-800',
+              'hover:bg-surface-raised',
+              'text-ink',
+              'focus-visible:outline-none focus-visible:bg-surface-raised',
             )}
           >
             Raw JSONL

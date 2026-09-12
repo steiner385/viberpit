@@ -1,21 +1,8 @@
 import { cn } from '@/lib/utils'
 import { useNow } from '@/hooks/useNow'
 import { agentDuration } from './subAgentDuration'
-import type { SubAgent, SubAgentStatus } from '@/session/selectors'
-
-const STATUS_DOT: Record<SubAgentStatus, string> = {
-  running: 'bg-blue-500 animate-pulse',
-  done: 'bg-emerald-500',
-  failed: 'bg-red-500',
-  stopped: 'bg-gray-400',
-}
-
-const STATUS_LABEL: Record<SubAgentStatus, string> = {
-  running: 'running',
-  done: 'done',
-  failed: 'failed',
-  stopped: 'stopped',
-}
+import { STATUS_TONE, STATUS_LABEL } from './subAgentStatus'
+import type { SubAgent } from '@/session/selectors'
 
 interface Props {
   subAgents: SubAgent[]
@@ -32,18 +19,18 @@ export function SubAgentList({ subAgents }: Props) {
         return (
           <li key={a.toolId} className="flex items-start gap-2 px-1 text-xs">
             <span
-              className={cn('mt-1 h-2 w-2 flex-shrink-0 rounded-full', STATUS_DOT[a.status])}
+              className={cn('mt-1 h-2 w-2 flex-shrink-0 rounded-full', STATUS_TONE[a.status])}
               aria-hidden="true"
             />
             <span className="flex min-w-0 flex-1 flex-col">
               <span className="flex items-center gap-1.5">
-                <span className="truncate font-medium text-gray-900 dark:text-gray-100">{a.type}</span>
-                <span className="text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                <span className="truncate font-medium text-ink">{a.type}</span>
+                <span className="text-2xs uppercase tracking-wide text-ink-muted">
                   {STATUS_LABEL[a.status]}
                 </span>
                 {duration && (
                   <span
-                    className="ml-auto flex-shrink-0 tabular-nums text-gray-500 dark:text-gray-400"
+                    className="ml-auto flex-shrink-0 tabular-nums text-ink-muted"
                     title={`${a.status === 'running' ? 'Running for' : 'Ran for'} ${duration}`}
                   >
                     {duration}
@@ -51,7 +38,7 @@ export function SubAgentList({ subAgents }: Props) {
                 )}
               </span>
               {(a.activity || a.description) && (
-                <span className="text-gray-500 line-clamp-2 dark:text-gray-400">
+                <span className="text-ink-muted line-clamp-2">
                   {a.status === 'running' && a.activity ? a.activity : a.description}
                 </span>
               )}

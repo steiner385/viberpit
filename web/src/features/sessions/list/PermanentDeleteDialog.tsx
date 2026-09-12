@@ -17,7 +17,7 @@ import { cn } from '@/lib/utils'
 import { Dialog } from '@/ui/Dialog'
 import { Button } from '@/ui/Button'
 import type { BulkDeleteProgress } from '@/api/hooks'
-import { prefersReducedMotion } from '@/components/session/brailleSpinner'
+import { prefersReducedMotion } from '@/features/sessions/brailleSpinner'
 
 interface PermanentDeleteDialogProps {
   /** One name = the single-session copy; more = the counted bulk copy. */

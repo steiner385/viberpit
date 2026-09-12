@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { cn } from '@/lib/utils'
-import { formatElapsed } from '@/components/session/elapsed'
-import { prefersReducedMotion } from '@/components/session/brailleSpinner'
+import { formatElapsed } from '@/features/sessions/elapsed'
+import { prefersReducedMotion } from '@/features/sessions/brailleSpinner'
 
 /**
  * Determinate-looking progress bar for context compaction. There is no real

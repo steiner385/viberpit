@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { SessionMeta } from '../SessionMeta'
+import { SessionMeta } from './SessionMeta'
 import type { SubAgent } from '@/session/selectors'
 import type { UsageWindow } from '@/api/types'
 
@@ -199,14 +199,14 @@ describe('SessionMeta', () => {
   it('marks the ctx readout danger and shows hint when context nearly full', () => {
     render(<SessionMeta {...baseProps} contextPct={5} />)
     const ctx = screen.getByLabelText('Remaining context')
-    expect(ctx.className).toMatch(/red/)
+    expect(ctx.className).toMatch(/danger/)
     expect(screen.getByText(/compacts soon/i)).toBeInTheDocument()
   })
 
   it('stays calm with plenty of context remaining', () => {
     render(<SessionMeta {...baseProps} contextPct={80} />)
     const ctx = screen.getByLabelText('Remaining context')
-    expect(ctx.className).not.toMatch(/red|amber/)
+    expect(ctx.className).not.toMatch(/danger|warning/)
   })
 
   // ── session identity: agent, runner, reasoning effort (Task 5.3) ───────────

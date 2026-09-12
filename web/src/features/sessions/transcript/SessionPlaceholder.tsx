@@ -14,7 +14,7 @@
 import { useState, useEffect } from 'react'
 import { cn } from '@/lib/utils'
 import type { ConnectionState } from '@/ws/client'
-import { useBrailleSpinner } from '@/components/session/brailleSpinner'
+import { useBrailleSpinner } from '@/features/sessions/brailleSpinner'
 
 interface Props {
   connectionState: ConnectionState

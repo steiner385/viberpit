@@ -27,7 +27,7 @@ export function SessionGoalText({ goal, source, title }: Props) {
   return (
     <span
       data-testid="session-goal"
-      className="min-w-0 flex-shrink truncate text-xs text-gray-500 dark:text-gray-400"
+      className="min-w-0 flex-shrink truncate text-xs text-ink-muted"
       title={`Session goal (${label}): ${text}`}
     >
       {text}

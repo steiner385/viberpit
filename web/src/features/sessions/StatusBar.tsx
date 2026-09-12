@@ -26,7 +26,7 @@ export function StatusBar({ status, connectionState, subAgentCount }: Props) {
       aria-atomic="true"
       className={cn(
         'flex items-center gap-2 px-3 py-1 text-xs',
-        tier === 'needs-you' || tier === 'error' ? textClass : 'text-gray-500 dark:text-gray-400',
+        tier === 'needs-you' || tier === 'error' ? textClass : 'text-ink-muted',
       )}
     >
       {tier === 'busy' ? (
@@ -42,7 +42,7 @@ export function StatusBar({ status, connectionState, subAgentCount }: Props) {
         </span>
       )}
       {connectionNote && (
-        <span className="ml-auto text-amber-600 dark:text-amber-400 font-medium">
+        <span className="ml-auto text-warning font-medium">
           {connectionNote}
         </span>
       )}

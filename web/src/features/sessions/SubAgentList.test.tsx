@@ -36,7 +36,7 @@ describe('SubAgentList', () => {
   it('renders a frozen runtime for finished agents', () => {
     render(<SubAgentList subAgents={[{ ...base, status: 'done', startedAt: 1000, endedAt: 121_000 }]} />)
     expect(screen.getByText('2m 0s')).toBeInTheDocument()
-    expect(screen.getByText('done')).toBeInTheDocument()
+    expect(screen.getByText('completed')).toBeInTheDocument()
   })
 
   it('renders the live elapsed for a running agent', () => {

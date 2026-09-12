@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MainPaneSession } from './MainPaneSession'
-import { SessionRuntimeProvider } from '@/components/session/SessionRuntimeProvider'
+import { SessionRuntimeProvider } from '@/features/sessions/SessionRuntimeProvider'
 import { overlayIsOpen, resetOverlayState } from '@/shell/useOverlayState'
 import * as hooks from '@/api/hooks'
 
@@ -42,7 +42,7 @@ vi.mock('@/session/useSessionRuntime', () => ({
 // `actionsSlot`; `MainPaneSession` renders them in its own header row, so the
 // stub takes no slot — the assertions below are unchanged either way, because
 // they query by accessible name rather than by position.)
-vi.mock('@/components/session/SessionBody', () => ({
+vi.mock('@/features/sessions/SessionBody', () => ({
   SessionBody: () => <div data-testid="body" />,
 }))
 vi.mock('@/features/sessions/composer/CommandResultOverlay', () => ({ CommandResultOverlay: () => null }))

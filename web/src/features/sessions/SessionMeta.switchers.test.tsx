@@ -1,4 +1,4 @@
-// web/src/components/session/SessionMeta.test.tsx
+// web/src/features/sessions/SessionMeta.switchers.test.tsx
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { SessionMeta } from './SessionMeta'

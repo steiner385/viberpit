@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
-import { WorkingIndicator } from '../WorkingIndicator'
-import { WORKING_WORDS } from '../workingWords'
+import { WorkingIndicator } from './WorkingIndicator'
+import { WORKING_WORDS } from './workingWords'
 
 /**
  * Helper: install a matchMedia stub on window.
@@ -141,7 +141,7 @@ describe('WorkingIndicator', () => {
     })
 
     it('formats past a minute as "Nm Ss"', async () => {
-      const { formatElapsed } = await import('../elapsed')
+      const { formatElapsed } = await import('./elapsed')
       expect(formatElapsed(0)).toBe('0s')
       expect(formatElapsed(12_000)).toBe('12s')
       expect(formatElapsed(62_000)).toBe('1m 2s')

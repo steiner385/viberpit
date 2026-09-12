@@ -169,8 +169,8 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
                 role="alert"
                 className={cn(
                   'flex-shrink-0 flex items-start gap-2 px-4 py-3 text-sm',
-                  'bg-red-50 dark:bg-red-950/40 text-red-800 dark:text-red-300',
-                  'border-b border-red-200 dark:border-red-800',
+                  'bg-danger-wash text-danger',
+                  'border-b border-danger',
                 )}
               >
                 <div className="flex-1 min-w-0">
@@ -186,7 +186,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
                   aria-label="Dismiss"
                   size="sm"
                   onClick={rt.dismissError}
-                  className="-my-1 shrink-0 text-red-800 dark:text-red-300"
+                  className="-my-1 shrink-0 text-danger"
                 >
                   <X size={14} aria-hidden="true" />
                 </IconButton>
@@ -233,7 +233,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
                   aria-hidden="true"
                   className={cn(
                     'flex-shrink-0 flex items-center px-4 py-2',
-                    'text-xs text-gray-400 dark:text-gray-500',
+                    'text-xs text-ink-muted',
                   )}
                 >
                   <WorkingIndicator count={rt.state.status.count} subAgentCount={runningSubAgents} />

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import { WORKING_WORDS, pickWorkingWord } from '../workingWords'
+import { WORKING_WORDS, pickWorkingWord } from './workingWords'
 
 describe('workingWords', () => {
   it('has a non-empty list', () => {

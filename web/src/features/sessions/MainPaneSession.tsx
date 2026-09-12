@@ -41,10 +41,10 @@
 import type { SessionStatus } from '@/api/types'
 import { useReloadSession, useRotateSession } from '@/api/hooks'
 import { useSessionSocket } from '@/ws/client'
-import { SessionBody } from '@/components/session/SessionBody'
+import { SessionBody } from '@/features/sessions/SessionBody'
 import { CommandResultOverlay } from '@/features/sessions/composer/CommandResultOverlay'
 import { useSessionGestures } from '@/shell/sessionGestures'
-import { useSessionRuntimeContext } from '@/components/session/SessionRuntimeProvider'
+import { useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
 import { SessionHeader } from './SessionHeader'
 
 export interface MainPaneSessionProps {

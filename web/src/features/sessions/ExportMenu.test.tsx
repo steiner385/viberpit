@@ -1,4 +1,4 @@
-// web/src/components/session/ExportMenu.test.tsx
+// web/src/features/sessions/ExportMenu.test.tsx
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { ExportMenu } from './ExportMenu'

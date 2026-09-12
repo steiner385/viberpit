@@ -1,6 +1,6 @@
 import type { Block } from '@/session/reducer'
 import { cn } from '@/lib/utils'
-import { useCardKeyboard } from '@/components/session/useCardKeyboard'
+import { useCardKeyboard } from '@/features/sessions/useCardKeyboard'
 import { toolSummary } from '@/session/toolSummary'
 
 type PermBlock = Extract<Block, { kind: 'permission' }>

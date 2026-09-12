@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils'
 import { type PromptStage, STAGE_LABEL, isInFlight } from '@/session/promptStage'
-import { useBrailleSpinner, prefersReducedMotion } from '@/components/session/brailleSpinner'
+import { useBrailleSpinner, prefersReducedMotion } from '@/features/sessions/brailleSpinner'
 
 interface Props { stage: PromptStage; className?: string }
 

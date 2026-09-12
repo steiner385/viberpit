@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { SessionRuntimeProvider, useSessionRuntimeContext } from '../SessionRuntimeProvider'
+import { SessionRuntimeProvider, useSessionRuntimeContext } from './SessionRuntimeProvider'
 
 // Channels the provider asked `useSessionSocket` for, in mount order.
 const channels: (string | undefined)[] = []

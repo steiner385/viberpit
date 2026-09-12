@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { CheckSquare, Square, Check } from 'lucide-react'
 import type { Block } from '@/session/reducer'
 import { cn } from '@/lib/utils'
-import { useCardKeyboard } from '@/components/session/useCardKeyboard'
+import { useCardKeyboard } from '@/features/sessions/useCardKeyboard'
 
 type QuestionBlock = Extract<Block, { kind: 'question' }>
 

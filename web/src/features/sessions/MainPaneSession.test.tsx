@@ -33,7 +33,7 @@ import { MainPaneSession } from './MainPaneSession'
 import { SessionComposer } from '@/features/sessions/composer/SessionComposer'
 import {
   SessionRuntimeProvider, useSessionRuntimeContext,
-} from '@/components/session/SessionRuntimeProvider'
+} from '@/features/sessions/SessionRuntimeProvider'
 import type { SessionEvent } from '@/session/events'
 
 // ── Stable mock socket shared across all calls to useSessionSocket() ──────────

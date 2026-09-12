@@ -19,7 +19,7 @@
 import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAssistantSession, useAssistantStatus } from '@/api/assistant'
-import { SessionRuntimeProvider, useSessionRuntimeContext } from '@/components/session/SessionRuntimeProvider'
+import { SessionRuntimeProvider, useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
 import { TranscriptView } from '@/features/sessions/transcript/TranscriptView'
 import { SessionComposer } from '@/features/sessions/composer/SessionComposer'
 import { useOpenSessionId } from '@/shell/openSessionId'
