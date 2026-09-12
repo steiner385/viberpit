@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, tuple_
 
-from server.api.sdlc import _capabilities_batch, _epic_progress_batch
+from server.api.sdlc import _capabilities_batch, _progress_rolled_up
 from server.auth.middleware import current_identity
 from server.db import get_db
 from server.db.models import (
@@ -18,7 +18,7 @@ from server.pm.desired_state import ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_
 from server.pm.map_changes import Pointer, open_pointer_rows
 from server.pm.refs import split_ref
 from server.pm.score import rice_score
-from server.pm.tree import CapabilityIn, InitiativeIn, ProductIn, build_product_tree, issue_tier
+from server.pm.tree import CapabilityIn, InitiativeIn, ProductIn, build_product_tree, derived_stage, issue_tier
 
 router = APIRouter(prefix="/api/pm", tags=["pm"])
 
@@ -111,8 +111,13 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
 
     initiatives = (await db.execute(select(Initiative).where(
         Initiative.project_id.in_(pids)).order_by(Initiative.created_at))).scalars().all()
-    epics = await _epic_progress_batch(db, initiatives, include_children=False)
+    epics = await _progress_rolled_up(db, initiatives, include_children=False)
     caps = await _capabilities_batch(db, initiatives)
+    slug_by_id = {i.id: i.slug for i in initiatives}
+    phases_by_parent: dict[str, list[Initiative]] = {}
+    for i in initiatives:
+        if i.parent_initiative_id:
+            phases_by_parent.setdefault(i.parent_initiative_id, []).append(i)
 
     # The open map-changes pointer per product (spec §9) — one batched query
     # through the same lookup the service and the sync loop use (R8b-5).
@@ -162,11 +167,14 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
             if i.project_id != p.id:
                 continue
             cap_list, primary = caps[i.id]
+            phases = phases_by_parent.get(i.id, [])
+            stage = derived_stage([ph.stage for ph in phases]) if phases else i.stage
             ini_inputs.append(InitiativeIn(
-                slug=i.slug or "", title=i.title, stage=i.stage, status=i.status,
+                slug=i.slug or "", title=i.title, stage=stage, status=i.status,
                 primary_slug=primary["slug"] if primary else None,
                 capability_slugs=tuple(c["slug"] for c in cap_list),
-                epic=epics.get(i.id)))
+                epic=epics.get(i.id),
+                parent_slug=slug_by_id.get(i.parent_initiative_id) if i.parent_initiative_id else None))
         my_repos = repos_by_project.get(p.id, [])
         products.append(build_product_tree(ProductIn(
             slug=p.slug or "", name=p.name,

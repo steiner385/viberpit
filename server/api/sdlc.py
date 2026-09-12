@@ -26,6 +26,7 @@ from server.db.models import (
     WorkItem,
 )
 from server.pm.desired_state import STATUS_BLOCKED, STATUS_NEEDS_HUMAN
+from server.pm.tree import derived_stage, rollup_epic_progress
 from server.sdlc import triage_store
 from server.sdlc.engine import (
     ArtifactView,
@@ -97,13 +98,64 @@ async def _capabilities_batch(db, initiatives: list[Initiative]) -> dict[str, tu
     return result
 
 
+async def _nesting_batch(db, initiatives: list[Initiative]) -> tuple[dict[str, str | None], dict[str, list[Initiative]]]:
+    """(id → parent slug, id → direct phases) in two queries."""
+    ids = [i.id for i in initiatives]
+    if not ids:
+        return {}, {}
+    parent_ids = {i.parent_initiative_id for i in initiatives if i.parent_initiative_id}
+    parents = {p.id: p for p in (await db.execute(select(Initiative).where(
+        Initiative.id.in_(parent_ids)))).scalars().all()} if parent_ids else {}
+    kids = (await db.execute(select(Initiative).where(
+        Initiative.parent_initiative_id.in_(ids)).order_by(Initiative.created_at))).scalars().all()
+    by_parent: dict[str, list[Initiative]] = {}
+    for k in kids:
+        by_parent.setdefault(k.parent_initiative_id, []).append(k)
+    parent_slug = {i.id: (parents[i.parent_initiative_id].slug if i.parent_initiative_id in parents else None)
+                   for i in initiatives}
+    return parent_slug, by_parent
+
+
+async def _descendants(db, roots: list[Initiative]) -> list[Initiative]:
+    """Every initiative below *roots*, breadth-first (GitHub nests to 8 levels)."""
+    out: list[Initiative] = []
+    frontier = [r.id for r in roots]
+    seen = set(frontier)
+    while frontier:
+        rows = (await db.execute(select(Initiative).where(
+            Initiative.parent_initiative_id.in_(frontier)))).scalars().all()
+        frontier = [r.id for r in rows if r.id not in seen]
+        seen.update(frontier)
+        out.extend(rows)
+    return out
+
+
+async def _progress_rolled_up(db, initiatives: list[Initiative], *, include_children: bool) -> dict[str, dict | None]:
+    """`_epic_progress_batch` over *initiatives* plus every descendant, rolled
+    up so a program reports its leaf issues (tree.rollup_epic_progress)."""
+    extra = await _descendants(db, initiatives)
+    rows = list({i.id: i for i in [*initiatives, *extra]}.values())
+    entries = await _epic_progress_batch(db, rows, include_children=include_children)
+    parent_of = {i.id: i.parent_initiative_id for i in rows}
+    return rollup_epic_progress(entries, parent_of)
+
+
 async def _decorate(db, initiatives: list[Initiative], dicts: list[dict]) -> None:
-    """Attach projectSlug / primaryCapability / capabilities to already-built dicts."""
+    """Attach projectSlug / primaryCapability / capabilities to already-built
+    dicts, plus nesting (parentInitiativeSlug / hasChildren / children) and a
+    program's derived stage (the earliest non-done phase stage)."""
     slugs = await _project_slugs(db, initiatives)
     caps = await _capabilities_batch(db, initiatives)
+    parent_slug, by_parent = await _nesting_batch(db, initiatives)
     for i, d in zip(initiatives, dicts):
         d["projectSlug"] = slugs.get(i.id)
         d["capabilities"], d["primaryCapability"] = caps[i.id]
+        phases = by_parent.get(i.id, [])
+        d["parentInitiativeSlug"] = parent_slug.get(i.id)
+        d["hasChildren"] = bool(phases)
+        d["children"] = [{"slug": p.slug, "title": p.title, "stage": p.stage, "status": p.status} for p in phases]
+        if phases:
+            d["stage"] = derived_stage([p.stage for p in phases])
 
 
 async def _epic_progress_batch(
@@ -295,7 +347,7 @@ async def list_initiatives(
     by_init: dict[str, list[InitiativeArtifact]] = {}
     for a in artifacts:
         by_init.setdefault(a.initiative_id, []).append(a)
-    epics = await _epic_progress_batch(db, rows, include_children=False)
+    epics = await _progress_rolled_up(db, rows, include_children=False)
     result = []
     for i in rows:
         d = _initiative_to_dict(i)
@@ -415,7 +467,7 @@ async def get_initiative(
     result["artifacts"] = [_artifact_to_dict(a) for a in artifacts]
     result["buildSessions"] = build_sessions
     result["nextAction"] = _action_to_dict(action)
-    result["epic"] = (await _epic_progress_batch(db, [ini]))[ini.id]
+    result["epic"] = (await _progress_rolled_up(db, [ini], include_children=True))[ini.id]
     await _decorate(db, [ini], [result])
     return result
 
@@ -430,6 +482,11 @@ async def advance_initiative(
     blocked — a blocked row is cleared on purpose (``unblock``), never by
     moving the gate over it."""
     ini = await _load_initiative(db, slug)
+    if (await db.execute(select(Initiative.id).where(
+            Initiative.parent_initiative_id == ini.id))).first() is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "has_children",
+            "message": "a program's stage is derived from its phases; advance a phase instead"})
     if ini.stage == "done":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -475,6 +532,11 @@ async def step_back_initiative(
     stage, and 409 while blocked: a block is cleared by ``unblock``, not walked
     around in either direction."""
     ini = await _load_initiative(db, slug)
+    if (await db.execute(select(Initiative.id).where(
+            Initiative.parent_initiative_id == ini.id))).first() is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "has_children",
+            "message": "a program's stage is derived from its phases; advance a phase instead"})
     if ini.status == "blocked":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
             "error": "blocked", "message": "Clear the block first"})

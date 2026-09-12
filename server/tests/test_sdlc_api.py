@@ -1268,6 +1268,66 @@ def test_unblock_allows_an_initiative_below_the_attempt_cap():
             assert r.json()["status"] == "awaiting_human"
 
 
+def test_program_detail_derives_stage_rolls_up_leaves_and_refuses_advance():
+    """A program (initiative with phases) reports the earliest phase stage,
+    the leaf-issue roll-up, its phases as `children`, and cannot be advanced."""
+    from server.db import db_session
+    from server.db.models import Initiative, WorkItem
+
+    async def _seed(db_url: str):
+        from server.db import init_db
+        await init_db(db_url)
+        async with db_session() as db:
+            program = Initiative(slug="audit", repo="o/r", title="UI audit", stage="design",
+                                 status="active", epic_repo="o/r", epic_number=100)
+            db.add(program)
+            await db.flush()
+            p1 = Initiative(slug="audit-01", repo="o/r", title="01", stage="plan", status="active",
+                            epic_repo="o/r", epic_number=101, parent_initiative_id=program.id)
+            p2 = Initiative(slug="audit-02", repo="o/r", title="02", stage="build", status="active",
+                            epic_repo="o/r", epic_number=102, parent_initiative_id=program.id)
+            db.add_all([p1, p2])
+            prog_wi = WorkItem(repo="o/r", number=100, kind="issue", state="open", is_epic=True)
+            db.add(prog_wi)
+            await db.flush()
+            e1 = WorkItem(repo="o/r", number=101, kind="issue", state="open", is_epic=True, parent_work_item_id=prog_wi.id)
+            e2 = WorkItem(repo="o/r", number=102, kind="issue", state="open", is_epic=True, parent_work_item_id=prog_wi.id)
+            db.add_all([e1, e2])
+            await db.flush()
+            db.add_all([
+                WorkItem(repo="o/r", number=1, kind="issue", state="closed", parent_work_item_id=e1.id),
+                WorkItem(repo="o/r", number=2, kind="issue", state="open", parent_work_item_id=e1.id),
+                WorkItem(repo="o/r", number=3, kind="issue", state="open", parent_work_item_id=e2.id),
+            ])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        asyncio.run(_seed(db_url))
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url, "CCSWITCH_DEV": "1",
+                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
+            from server.sessions.orchestrator import SessionOrchestrator
+            from server.tests.fakes.fake_factory import fake_sdk_factory
+            from server.app import create_app
+            from fastapi.testclient import TestClient
+            orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
+            app = create_app(orchestrator=orch)
+            with TestClient(app, raise_server_exceptions=False) as c:
+                body = c.get("/api/sdlc/initiatives/audit", headers=IDENTITY_HEADERS).json()
+                assert body["stage"] == "plan"                       # earliest phase, not the row's "design"
+                assert body["hasChildren"] is True and body["parentInitiativeSlug"] is None
+                assert [ch["slug"] for ch in body["children"]] == ["audit-01", "audit-02"]
+                assert body["epic"]["total"] == 3 and body["epic"]["done"] == 1   # leaf issues, not 2 sub-epics
+                phase = c.get("/api/sdlc/initiatives/audit-01", headers=IDENTITY_HEADERS).json()
+                assert phase["parentInitiativeSlug"] == "audit" and phase["children"] == []
+                assert phase["epic"]["total"] == 2
+                listed = {i["slug"]: i for i in c.get("/api/sdlc/initiatives", headers=IDENTITY_HEADERS).json()}
+                assert listed["audit"]["stage"] == "plan" and listed["audit"]["epic"]["total"] == 3
+                r = c.post("/api/sdlc/initiatives/audit/advance", headers=IDENTITY_HEADERS)
+                assert r.status_code == 409 and r.json()["detail"]["error"] == "has_children"
+                r = c.post("/api/sdlc/initiatives/audit/step-back", headers=IDENTITY_HEADERS)
+                assert r.status_code == 409 and r.json()["detail"]["error"] == "has_children"
+
+
 def test_unblock_ignores_the_attempt_cap_once_an_epic_exists():
     """The refusal is about a plan that never decomposed. An initiative that HAS
     an epic is past that writer — its block came from the failed apply."""
