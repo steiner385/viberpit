@@ -35,6 +35,9 @@ function quotaTitle(window: string, resetsAt: string | null): string {
 }
 
 interface Props {
+  /** The session this strip belongs to; the sub-agent popover's rows link into
+   *  `subAgentPath(sessionId, …)`. */
+  sessionId: string
   account: string
   /** Engine the session runs on. Rendered only when it is not the default one. */
   engine?: AgentEngine | null
@@ -95,7 +98,7 @@ function summaryDot(subAgents: SubAgent[]): SubAgentStatus {
   return 'done'
 }
 
-export function SessionMeta({ account, engine = null, host = null, displayMode = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, mode, pendingMode = null, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
+export function SessionMeta({ sessionId, account, engine = null, host = null, displayMode = null, reasoningEffort = null, subAgentsSupported = true, model, liveModel = null, modelPending = false, mode, pendingMode = null, contextPct, quota, subAgents, statusSlot, exportSlot, actionsSlot, models, accounts, accountPinned, onSelectModel, onSelectAccount, onSetMode, onUnpin }: Props) {
   const [open, setOpen] = useState(false)
   const agentCount = subAgentsSupported ? subAgents.length : 0
   const agentBadge = engineBadge(engine)
@@ -318,7 +321,7 @@ export function SessionMeta({ account, engine = null, host = null, displayMode =
             'rounded-md border border-edge bg-surface shadow-lg px-2 py-1',
           )}
         >
-          <SubAgentList subAgents={subAgents} />
+          <SubAgentList sessionId={sessionId} subAgents={subAgents} />
         </div>
       )}
     </div>

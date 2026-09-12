@@ -82,6 +82,7 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
           pane shows a single status line rather than two stacked bars. */}
       <div className="flex-shrink-0">
         <SessionMeta
+          sessionId={rt.sessionId}
           account={rt.account}
           engine={sessionRecord?.engine}
           host={sessionRecord?.host}

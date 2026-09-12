@@ -1723,6 +1723,7 @@ class SessionOrchestrator:
             on_sync_back=on_sync_back,
             on_status=self._persist_status,
             on_context_usage=self._persist_context_usage,
+            on_sub_agents_changed=self._refresh_sub_agents_summary,
             on_record_condense_ms=self._record_condense_ms,
             get_condense_estimate=self._condense_estimate,
             on_recoverable_failure=self._handle_recoverable_failure,
@@ -9605,6 +9606,12 @@ class SessionOrchestrator:
     async def _record_condense_ms(self, ms: float) -> None:
         from server.sessions import compaction_stats
         await compaction_stats.record_duration(ms)
+
+    def _refresh_sub_agents_summary(self, session_id: str) -> None:
+        """Driver ``on_sub_agents_changed`` callback: a Task sub-agent started or ended,
+        so re-derive the persisted summary the board's cards read. Scheduled, never
+        awaited — the driver fires this from inside its pump."""
+        self._spawn(self._persist_sub_agents(session_id), name="sub-agents-refresh")
 
     async def _persist_sub_agents(self, session_id: str) -> None:
         """Recompute the session's sub-agent summary from the transcript and persist

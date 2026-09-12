@@ -7,6 +7,7 @@ import { SessionMeta } from './SessionMeta'
 // fixture omitted both, so the toggle rendered against `undefined`. 'default' is
 // the same case it was already exercising — `mode === 'plan'` stays false.
 const base = {
+  sessionId: 's1',
   account: 'acct-a', model: 'opus', mode: 'default', contextPct: null, quota: null,
   subAgents: [],
   models: [{ id: 'opus', label: 'Opus' }, { id: 'sonnet', label: 'Sonnet' }],

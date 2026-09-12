@@ -224,6 +224,10 @@ class AgentDriverConfig:
     get_condense_estimate: Callable[[], Awaitable[float]] | None = None
     on_recoverable_failure: Callable[[str, str, float | None], Awaitable[None]] | None = None
     on_context_usage: Callable[[str, int, int], Awaitable[None]] | None = None
+    #: Fired (synchronously, with the session id) when a Task sub-agent starts or ends,
+    #: so the orchestrator can refresh the persisted sub-agent summary mid-turn. Only
+    #: engines with sub-agents (Claude) ever call it; others ignore it.
+    on_sub_agents_changed: Callable[[str], None] | None = None
     clock: Callable[[], float] | None = None
     suggester: SuggestionProvider | None = None
     assistant_api: AsyncCloser | None = None
