@@ -1,7 +1,32 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { useMediaQuery } from '@/lib/useMediaQuery'
 import { CANVAS } from './canvas'
 import { THEME_STORAGE_KEY } from './themeKey'
+
+/**
+ * Subscribe to `(prefers-color-scheme: dark)`. Private to this module: the
+ * theme provider is the one legitimate matchMedia subscriber outside
+ * `shell/useViewport.tsx` (not a layout query — see the guard in
+ * `useViewport.test.tsx`), so this is not shared as a general-purpose hook.
+ */
+function useSystemDark(): boolean {
+  const getMatch = () =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-color-scheme: dark)').matches
+      : false
+
+  const [dark, setDark] = useState<boolean>(getMatch)
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const mql = window.matchMedia('(prefers-color-scheme: dark)')
+    const onChange = () => setDark(mql.matches)
+    onChange()
+    mql.addEventListener('change', onChange)
+    return () => mql.removeEventListener('change', onChange)
+  }, [])
+
+  return dark
+}
 
 export type ThemeChoice = 'system' | 'light' | 'dark'
 
@@ -53,7 +78,7 @@ const ThemeContext = createContext<ThemeContextValue | null>(null)
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [choice, setChoiceState] = useState<ThemeChoice>(readStoredTheme)
-  const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
+  const systemDark = useSystemDark()
 
   useEffect(() => { applyTheme(choice) }, [choice])
 

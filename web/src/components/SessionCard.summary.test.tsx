@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { SessionCard } from './SessionCard'
+import { ViewportProvider } from '@/shell/useViewport'
 import type { Session } from '@/api/types'
 
 function makeSession(over: Partial<Session> = {}): Session {
@@ -13,15 +14,17 @@ function makeSession(over: Partial<Session> = {}): Session {
 
 function renderCard(session: Session) {
   return render(
-    <SessionCard
-      session={session}
-      account={undefined}
-      onOpen={() => {}}
-      onRename={vi.fn()}
-      onClose={vi.fn()}
-      onDelete={vi.fn()}
-      onQuickResume={vi.fn()}
-    />
+    <ViewportProvider kiosk={null}>
+      <SessionCard
+        session={session}
+        account={undefined}
+        onOpen={() => {}}
+        onRename={vi.fn()}
+        onClose={vi.fn()}
+        onDelete={vi.fn()}
+        onQuickResume={vi.fn()}
+      />
+    </ViewportProvider>
   )
 }
 

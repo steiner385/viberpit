@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi } from 'vitest'
 import type { ComponentProps } from 'react'
 import { SessionCard } from '../SessionCard'
+import { ViewportProvider } from '@/shell/useViewport'
 import type { Session } from '@/api/types'
 import { account as accountFixture, anthropicUsage, pullRequest, session } from '@/test/factories'
 
@@ -38,18 +39,20 @@ const noop = () => {}
 
 function renderCard(session: Session, extra: Partial<ComponentProps<typeof SessionCard>> = {}) {
   return render(
-    <MemoryRouter>
-      <SessionCard
-        session={session}
-        account={undefined}
-        onOpen={noop}
-        onRename={noop}
-        onClose={noop}
-        onDelete={noop}
-        onQuickResume={noop}
-        {...extra}
-      />
-    </MemoryRouter>,
+    <ViewportProvider kiosk={null}>
+      <MemoryRouter>
+        <SessionCard
+          session={session}
+          account={undefined}
+          onOpen={noop}
+          onRename={noop}
+          onClose={noop}
+          onDelete={noop}
+          onQuickResume={noop}
+          {...extra}
+        />
+      </MemoryRouter>
+    </ViewportProvider>,
   )
 }
 

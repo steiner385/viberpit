@@ -10,6 +10,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { Session } from '@/api/types'
 import { noteSent, noteStage, __resetFlight } from '@/lib/promptFlight'
 import { SessionCard } from './SessionCard'
+import { ViewportProvider } from '@/shell/useViewport'
 
 vi.mock('@/api/hooks', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/hooks')>()
@@ -25,17 +26,19 @@ function renderCard(s: Session) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter>
-        <SessionCard
-          session={s}
-          account={undefined}
-          onOpen={vi.fn()}
-          onRename={vi.fn()}
-          onClose={vi.fn()}
-          onDelete={vi.fn()}
-          onQuickResume={vi.fn()}
-        />
-      </MemoryRouter>
+      <ViewportProvider kiosk={null}>
+        <MemoryRouter>
+          <SessionCard
+            session={s}
+            account={undefined}
+            onOpen={vi.fn()}
+            onRename={vi.fn()}
+            onClose={vi.fn()}
+            onDelete={vi.fn()}
+            onQuickResume={vi.fn()}
+          />
+        </MemoryRouter>
+      </ViewportProvider>
     </QueryClientProvider>,
   )
 }

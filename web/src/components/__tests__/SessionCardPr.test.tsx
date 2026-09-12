@@ -1,8 +1,14 @@
 // web/src/components/__tests__/SessionCardPr.test.tsx
-import { render, screen } from '@testing-library/react'
+import { render as rtlRender, screen } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
+import type { ReactElement } from 'react'
 import { SessionCard } from '../SessionCard'
+import { ViewportProvider } from '@/shell/useViewport'
 import type { Session } from '@/api/types'
+
+function render(ui: ReactElement) {
+  return rtlRender(<ViewportProvider kiosk={null}>{ui}</ViewportProvider>)
+}
 
 const session: Session = {
   id: 's1', name: 'My session', accountName: 'acct', repo: 'o/r',

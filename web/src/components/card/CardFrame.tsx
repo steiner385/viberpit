@@ -14,7 +14,7 @@
 // property of the frame.
 import { useEffect, useRef, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
-import { useMediaQuery } from '@/lib/useMediaQuery'
+import { useViewport } from '@/shell/useViewport'
 import { useSwipeAction } from '@/lib/useSwipeAction'
 
 export interface CardSwipeAction {
@@ -71,11 +71,11 @@ export function CardFrame({
   const articleRef = useRef<HTMLElement>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
 
-  // lg = the app's desktop breakpoint. jsdom reports false → mobile, so tests
-  // exercise the gesture branch by default.
-  const isWide = useMediaQuery('(min-width: 1024px)')
-  const reduceMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
-  const gestureLive = swipeEnabled && !isWide
+  // lg = the app's desktop breakpoint. jsdom reports false → mobile (width
+  // 'phone'), so tests exercise the gesture branch by default.
+  const { width, reducedMotion } = useViewport()
+  const wide = width === 'desktop' || width === 'wide'
+  const gestureLive = swipeEnabled && !wide
   const swipe = useSwipeAction({
     enabled: gestureLive,
     onCommit: (side) => (side === 'left' ? swipeLeft?.onCommit() : swipeRight?.onCommit()),
@@ -187,7 +187,7 @@ export function CardFrame({
         style={(gestureLive && restX !== 0) ? { transform: `translateX(${restX}px)` } : undefined}
         className={cn(
           gestureLive && 'relative bg-white dark:bg-gray-800 touch-pan-y',
-          gestureLive && !swipe.dragging && !reduceMotion && 'transition-transform duration-200',
+          gestureLive && !swipe.dragging && !reducedMotion && 'transition-transform duration-200',
         )}
       >
         <div data-testid="card-identity" className="flex items-center gap-1.5 min-w-0">

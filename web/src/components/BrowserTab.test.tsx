@@ -1,6 +1,12 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render as rtlRender, screen, fireEvent } from '@testing-library/react'
+import type { ReactElement } from 'react'
 import { BrowserTab } from './BrowserTab'
+import { ViewportProvider } from '@/shell/useViewport'
+
+function render(ui: ReactElement) {
+  return rtlRender(<ViewportProvider kiosk={null}>{ui}</ViewportProvider>)
+}
 
 function setCoarsePointer(coarse: boolean) {
   vi.stubGlobal('matchMedia', (query: string) => ({

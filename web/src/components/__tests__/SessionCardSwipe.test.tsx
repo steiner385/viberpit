@@ -1,7 +1,14 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render as rtlRender, screen, fireEvent } from '@testing-library/react'
+import type { ReactElement } from 'react'
 import { SessionCard } from '../SessionCard'
+import { ViewportProvider } from '@/shell/useViewport'
+import { MEDIA, stubMatchMedia } from '@/test/matchMedia'
 import type { Session } from '@/api/types'
+
+function render(ui: ReactElement) {
+  return rtlRender(<ViewportProvider kiosk={null}>{ui}</ViewportProvider>)
+}
 
 const SESSION = { id: 's1', name: 'Alpha', accountName: 'acct', status: 'ready', updatedAt: null, subAgents: [], latestSuggestions: [], prs: [] } as unknown as Session
 
@@ -19,7 +26,7 @@ function fg() {
   return el
 }
 
-afterEach(() => { vi.restoreAllMocks() })
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('SessionCard — mobile swipe', () => {
   it('full left-swipe commits Delete (onDelete)', () => {
@@ -91,11 +98,7 @@ describe('SessionCard — mobile swipe', () => {
   })
 
   it('does not render the swipe layer at desktop (lg) width', () => {
-    window.matchMedia = vi.fn().mockImplementation((q: string) => ({
-      matches: q.includes('min-width: 1024px'), media: q,
-      addEventListener: vi.fn(), removeEventListener: vi.fn(),
-      addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
-    })) as unknown as typeof window.matchMedia
+    stubMatchMedia([MEDIA.tablet, MEDIA.desktop])
     render(<SessionCard {...props()} />)
     expect(screen.queryByTestId('card-swipe-fg')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Delete Alpha' })).toBeNull()

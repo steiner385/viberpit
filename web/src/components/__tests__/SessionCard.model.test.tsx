@@ -2,6 +2,7 @@ import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect } from 'vitest'
 import { SessionCard } from '../SessionCard'
+import { ViewportProvider } from '@/shell/useViewport'
 import type { Session } from '@/api/types'
 import { session } from '@/test/factories'
 
@@ -23,17 +24,19 @@ const noop = () => {}
 
 function renderCard(s: Session) {
   return render(
-    <MemoryRouter>
-      <SessionCard
-        session={s}
-        account={undefined}
-        onOpen={noop}
-        onRename={noop}
-        onClose={noop}
-        onDelete={noop}
-        onQuickResume={noop}
-      />
-    </MemoryRouter>,
+    <ViewportProvider kiosk={null}>
+      <MemoryRouter>
+        <SessionCard
+          session={s}
+          account={undefined}
+          onOpen={noop}
+          onRename={noop}
+          onClose={noop}
+          onDelete={noop}
+          onQuickResume={noop}
+        />
+      </MemoryRouter>
+    </ViewportProvider>,
   )
 }
 
@@ -169,14 +172,16 @@ describe('SessionCard in a mixed Claude/Codex list', () => {
 
   it('renders each card with its own agent, model and account', () => {
     render(
-      <MemoryRouter>
-        {[claude, codex].map((s) => (
-          <SessionCard
-            key={s.id} session={s} account={undefined}
-            onOpen={noop} onRename={noop} onClose={noop} onDelete={noop} onQuickResume={noop}
-          />
-        ))}
-      </MemoryRouter>,
+      <ViewportProvider kiosk={null}>
+        <MemoryRouter>
+          {[claude, codex].map((s) => (
+            <SessionCard
+              key={s.id} session={s} account={undefined}
+              onOpen={noop} onRename={noop} onClose={noop} onDelete={noop} onQuickResume={noop}
+            />
+          ))}
+        </MemoryRouter>
+      </ViewportProvider>,
     )
     const cards = screen.getAllByTestId('card-meta')
     expect(within(cards[0]).queryByTestId('card-engine')).toBeNull()

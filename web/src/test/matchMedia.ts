@@ -29,6 +29,7 @@ export const MEDIA = {
   wide: '(min-width: 1440px)',
   coarsePointer: '(pointer: coarse)',
   portrait: '(orientation: portrait)',
+  reducedMotion: '(prefers-reduced-motion: reduce)',
 } as const
 
 /**

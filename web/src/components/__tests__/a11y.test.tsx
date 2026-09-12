@@ -17,6 +17,7 @@ import { DispatchBar } from '../DispatchBar'
 import { EmptyState } from '../EmptyState'
 import { SessionList } from '../SessionList'
 import { UsageBadge, StatusPill } from '../UsageBadge'
+import { ViewportProvider } from '@/shell/useViewport'
 import type { AgentCapabilities, EngineOffer, ModelOption, Session, Account } from '@/api/types'
 import { anthropicUsage, account, codexUsage, githubRepo, session } from '@/test/factories'
 
@@ -87,7 +88,11 @@ const SESSIONS: Session[] = [
 
 function qcWrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  return (
+    <QueryClientProvider client={qc}>
+      <ViewportProvider kiosk={null}>{children}</ViewportProvider>
+    </QueryClientProvider>
+  )
 }
 
 // ── AllLimitedBanner ───────────────────────────────────────────────────────

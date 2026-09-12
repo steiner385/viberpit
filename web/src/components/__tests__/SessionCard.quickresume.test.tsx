@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import { SessionCard } from '../SessionCard'
 import { QUICK_REPLIES } from '@/lib/quickReplies'
+import { ViewportProvider } from '@/shell/useViewport'
 import type { Session } from '@/api/types'
 import { session } from '@/test/factories'
 
@@ -26,16 +27,18 @@ function renderCard(props: {
   onGenerateSuggestion?: (id: string) => Promise<string[]>
 }) {
   return render(
-    <SessionCard
-      session={props.session}
-      account={undefined}
-      onOpen={noop}
-      onRename={noop}
-      onClose={noop}
-      onDelete={noop}
-      onQuickResume={props.onQuickResume}
-      onGenerateSuggestion={props.onGenerateSuggestion ?? genOne}
-    />,
+    <ViewportProvider kiosk={null}>
+      <SessionCard
+        session={props.session}
+        account={undefined}
+        onOpen={noop}
+        onRename={noop}
+        onClose={noop}
+        onDelete={noop}
+        onQuickResume={props.onQuickResume}
+        onGenerateSuggestion={props.onGenerateSuggestion ?? genOne}
+      />
+    </ViewportProvider>,
   )
 }
 

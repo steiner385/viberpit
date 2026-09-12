@@ -2,6 +2,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi } from 'vitest'
 import { SessionCard } from '../SessionCard'
+import { ViewportProvider } from '@/shell/useViewport'
 import type { Session } from '@/api/types'
 import { session } from '@/test/factories'
 
@@ -18,11 +19,13 @@ const noop = () => {}
 
 function renderCard(session: Session, onToggleAutopilot: (id: string, paused: boolean) => void = noop) {
   return render(
-    <MemoryRouter>
-      <SessionCard session={session} account={undefined}
-        onOpen={noop} onRename={noop} onClose={noop} onDelete={noop} onQuickResume={noop}
-        onToggleAutopilot={onToggleAutopilot} />
-    </MemoryRouter>,
+    <ViewportProvider kiosk={null}>
+      <MemoryRouter>
+        <SessionCard session={session} account={undefined}
+          onOpen={noop} onRename={noop} onClose={noop} onDelete={noop} onQuickResume={noop}
+          onToggleAutopilot={onToggleAutopilot} />
+      </MemoryRouter>
+    </ViewportProvider>,
   )
 }
 
@@ -67,10 +70,12 @@ describe('SessionCard autopilot toggle', () => {
 
   it('is absent when no toggle handler is provided', () => {
     render(
-      <MemoryRouter>
-        <SessionCard session={{ ...base, autopilotPaused: false }} account={undefined}
-          onOpen={noop} onRename={noop} onClose={noop} onDelete={noop} onQuickResume={noop} />
-      </MemoryRouter>,
+      <ViewportProvider kiosk={null}>
+        <MemoryRouter>
+          <SessionCard session={{ ...base, autopilotPaused: false }} account={undefined}
+            onOpen={noop} onRename={noop} onClose={noop} onDelete={noop} onQuickResume={noop} />
+        </MemoryRouter>
+      </ViewportProvider>,
     )
     openMenu()
     expect(screen.queryByTestId('card-overflow-autopilot')).not.toBeInTheDocument()

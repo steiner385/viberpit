@@ -1,8 +1,14 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render as rtlRender, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ReactElement } from 'react'
 import { ArchivedSessionCard } from '../ArchivedSessionCard'
+import { ViewportProvider } from '@/shell/useViewport'
 import { archivedSession } from '@/test/factories'
+
+function render(ui: ReactElement) {
+  return rtlRender(<ViewportProvider kiosk={null}>{ui}</ViewportProvider>)
+}
 
 function props(over = {}) {
   return {

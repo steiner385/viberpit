@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { SessionCard } from '../SessionCard'
+import { ViewportProvider } from '@/shell/useViewport'
 import type { Session } from '@/api/types'
 import { session } from '@/test/factories'
 
@@ -12,7 +13,11 @@ const base: Session = session({
 describe('SessionCard pending placeholder', () => {
   it('shows a Starting… label and does not fire onOpen when clicked', () => {
     const onOpen = vi.fn()
-    render(<SessionCard session={base} account={undefined} onOpen={onOpen} onRename={vi.fn()} onClose={vi.fn()} onDelete={vi.fn()} onQuickResume={vi.fn()} />)
+    render(
+      <ViewportProvider kiosk={null}>
+        <SessionCard session={base} account={undefined} onOpen={onOpen} onRename={vi.fn()} onClose={vi.fn()} onDelete={vi.fn()} onQuickResume={vi.fn()} />
+      </ViewportProvider>,
+    )
     expect(screen.getByText('My new session')).toBeInTheDocument()
     expect(screen.getByText(/starting/i)).toBeInTheDocument()
     fireEvent.click(screen.getByText('My new session'))

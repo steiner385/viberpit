@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { SessionCard } from './SessionCard'
+import { ViewportProvider } from '@/shell/useViewport'
 import type { Session } from '@/api/types'
 
 function makeSession(over: Partial<Session> = {}): Session {
@@ -14,19 +15,21 @@ function makeSession(over: Partial<Session> = {}): Session {
 
 function renderCard(session: Session, extra: { childSessions?: Session[]; parentName?: string | null; onOpen?: (id: string) => void } = {}) {
   return render(
-    <MemoryRouter>
-      <SessionCard
-        session={session}
-        account={undefined}
-        onOpen={extra.onOpen ?? (() => {})}
-        onRename={vi.fn()}
-        onClose={vi.fn()}
-        onDelete={vi.fn()}
-        onQuickResume={vi.fn()}
-        childSessions={extra.childSessions}
-        parentName={extra.parentName}
-      />
-    </MemoryRouter>
+    <ViewportProvider kiosk={null}>
+      <MemoryRouter>
+        <SessionCard
+          session={session}
+          account={undefined}
+          onOpen={extra.onOpen ?? (() => {})}
+          onRename={vi.fn()}
+          onClose={vi.fn()}
+          onDelete={vi.fn()}
+          onQuickResume={vi.fn()}
+          childSessions={extra.childSessions}
+          parentName={extra.parentName}
+        />
+      </MemoryRouter>
+    </ViewportProvider>
   )
 }
 

@@ -8,6 +8,7 @@ import type { Leaf } from '@/api/roadmap'
 import { MAP, cap, ini, product } from '../__fixtures__/map'
 import { findCapability } from '../lookup'
 import { CapabilityDetail } from './CapabilityDetail'
+import { ViewportProvider } from '@/shell/useViewport'
 
 // The leaves query is per-test state: loading, error and empty are all states
 // this panel has to render.
@@ -71,7 +72,11 @@ function mount(
   path = '/roadmap/kindash/capabilities/tasks',
 ) {
   const props = { product: busyProduct, capability: tasks, onNewInitiative: () => {}, ...over }
-  return render(<MemoryRouter initialEntries={[path]}><CapabilityDetail {...props} /></MemoryRouter>)
+  return render(
+    <ViewportProvider kiosk={null}>
+      <MemoryRouter initialEntries={[path]}><CapabilityDetail {...props} /></MemoryRouter>
+    </ViewportProvider>,
+  )
 }
 
 /** The stat tile for a label, matched on its `dt` — the tab strip repeats the

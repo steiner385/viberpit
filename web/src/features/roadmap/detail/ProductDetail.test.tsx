@@ -6,6 +6,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { MAP } from '../__fixtures__/map'
 import { needsYouCount } from './needsYou'
 import { ProductDetail } from './ProductDetail'
+import { ViewportProvider } from '@/shell/useViewport'
 
 // The project query is per-test state: a failed fetch is one of the states this
 // component has to render, and the map still holds the product either way.
@@ -81,9 +82,11 @@ const product = MAP.products[0]!
 
 const mount = (initial = '/roadmap/kindash') =>
   render(
-    <MemoryRouter initialEntries={[initial]}>
-      <ProductDetail product={product} />
-    </MemoryRouter>,
+    <ViewportProvider kiosk={null}>
+      <MemoryRouter initialEntries={[initial]}>
+        <ProductDetail product={product} />
+      </MemoryRouter>
+    </ViewportProvider>,
   )
 
 /** The stat tile for a label, matched on its `dt` — the tab strip repeats the
