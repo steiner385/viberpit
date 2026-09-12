@@ -146,9 +146,13 @@ Transitions per tick for each `(repo, env)`:
 | none | failing/stalled | create row; `emit("warn", kind="incident")`; `notify_event("deploy_failed", …, repo=, url=, fanout_when_unconfigured=True)`; in `file` mode, file issue |
 | exists | failing/stalled, same `kind` | update `sha`, `streak`, `last_seen_at`; in `file` mode with an open issue, comment at most every `comment_every_h` when `sha` changed since the last comment |
 | exists | failing ⇄ stalled | update `kind`; treated as ongoing (no second alert) |
-| exists | healthy | `emit("info", kind="recovered")`; close issue with a comment naming the recovering sha; delete row |
+| exists | healthy | `emit("info", kind="recovered")`; if the row holds an issue that is not already closed, comment naming the recovering sha and close it — in **any** mode, because the issue exists only because `file` mode or an operator's *File issue* click asked for it; delete row |
 | exists | unknown | untouched |
 | exists, muted | any non-healthy | update measurements only; no comment, no notify |
+
+Issue-state sync (learning that a human closed the issue) runs for a repo whenever one of its rows
+holds an open issue, regardless of mode — it is a read. The row also carries `cap_noted` (the
+daily-cap event was already emitted for this incident, so it is not repeated every tick).
 
 The alert fires **once per incident** (`notified` guards it); `notify_event` uses
 `fanout_when_unconfigured=True` like `pr_broke` **(decision)**: a failing deploy is the class of
@@ -157,7 +161,9 @@ event a user with no rules configured still expects to hear about.
 ### 5.4 Issue filing (mode `file`)
 
 Reuses `issue_filing.decide/apply` with `Linked(number, closed, closed_reason,
-last_commented_at)` and a per-day cap `daily_cap` (default 10):
+last_commented_at)` and a per-day cap `daily_cap` (default 10). The day's count is derived from
+`filed_at` on the live incident rows (a row claimed by a failed create counts too, as in Error
+Triage), so a daemon restart does not re-arm the cap:
 
 - no issue → `file`. Title `[deploy-monitor] <env> deploy failing — <repo> @ <sha10>`
   (`stalled` substitutes the word). Label `deploy-monitor`. Body: table (repo, environment,
@@ -181,8 +187,11 @@ deleted only after a successful close, or immediately in `watch` mode).
 
 ### 5.5 Modes and config
 
-`modes = ("off", "watch", "file")`. `watch` detects, feeds and alerts but never writes to GitHub;
-`file` adds the issue lifecycle. `engine_policy = CLAUDE_ONLY` — it never spawns a session.
+`modes = ("off", "watch", "file")`. `watch` detects, feeds and alerts but never *opens* an issue
+or comments on one; `file` adds the issue lifecycle. An issue that already exists on a row (filed
+earlier in `file` mode, or via the card's *File issue* action, which is offered in `watch` too) is
+still closed on recovery in either mode, so an open `deploy-monitor` issue always means an
+ongoing incident. `engine_policy = CLAUDE_ONLY` — it never spawns a session.
 
 | key | type | default | help |
 |---|---|---|---|
@@ -202,8 +211,8 @@ Loop cadence 120 s (module constant, like every other automation).
 - `actionable()`: one item per incident — title `"<repo> · <env> <kind>"`, subtitle with sha,
   streak and age, `url` = issue URL if filed else log URL. Actions: `file_now` (when no issue
   and mode is not off), `mute` (risky), `unmute`.
-- Feed kinds: `incident`, `recovered`, `filed`, `commented`, `closed`, `file_failed`,
-  `fetch_failed`, `muted`, `unmuted`.
+- Feed kinds: `incident`, `recovered`, `filed`, `regressed`, `commented`, `closed`,
+  `close_failed`, `file_failed`, `cap`, `fetch_failed`, `fetch_recovered`, `muted`, `unmuted`.
 
 ### 5.7 Notification class
 

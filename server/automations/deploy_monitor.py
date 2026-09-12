@@ -174,7 +174,7 @@ def issue_body(repo: str, env: str, state: dict, *, regression_of: int | None) -
         ("Repository", repo),
         ("Environment", env),
         ("Kind", state.get("kind")),
-        ("Newest deployment", f"`{_short(state.get('sha'))}` on {_cell(state.get('ref'))}"),
+        ("Newest deployment", f"`{_short(state.get('sha'))}` on {state.get('ref') or '—'}"),
         ("First failing deployment", f"`{_short(state.get('first_sha'))}`"),
         ("Consecutive failures", int(state.get("streak") or 0)),
         ("First seen", _fmt(state.get("first_seen_at"))),
@@ -255,7 +255,6 @@ class DeployMonitorLoop:
         self._notify = notify
         self._clock = clock
         self._lock = asyncio.Lock()
-        self._filed: list[datetime] = []          # rolling 24 h issue creates (daily cap)
         self._unreadable: set[str] = set()        # repos whose last fetch failed
 
     async def tick(self) -> None:
@@ -271,7 +270,6 @@ class DeployMonitorLoop:
             self._stash_counts(0, 0, {})
             return
         now = self._clock()
-        self._filed = [t for t in self._filed if now - t < _DAY]
         repos = []
         for repo in await self._list_repos(config):
             if ci_issues.valid_repo(str(repo)):
@@ -294,7 +292,15 @@ class DeployMonitorLoop:
                 self._unreadable.discard(repo)
                 await self._ctx.emit("info", f"deployments readable again for {repo}",
                                      kind="fetch_recovered", target=repo)
-            if mode == "file":
+            # A read, not a write: runs whenever any of this repo's rows holds an
+            # open issue — whether the loop opened it in file mode, or an
+            # operator's "File issue" card action opened it while in watch mode —
+            # so a human closing it (e.g. not_planned) is learned regardless of
+            # mode. Only OPENING issues from the loop and recurrence comments
+            # stay file-mode-only (spec §5.4).
+            has_open_issue = any(split_key(k)[0] == repo and s.get("issue_number")
+                                 and not s.get("issue_closed") for k, s in states.items())
+            if mode == "file" or has_open_issue:
                 await self._sync_issue_states(repo, states, now)
             for env, env_deps in by_env(deps).items():
                 if not watched_env(env, config):
@@ -304,12 +310,14 @@ class DeployMonitorLoop:
                                        grace_min=int(config.get("grace_min", 5)),
                                        stall_min=int(config.get("stall_min", 30)))
                 key = incident_key(repo, env)
-                await self._reconcile(repo, env, key, states.get(key), verdict, mode, config, now)
+                await self._reconcile(repo, env, key, states.get(key), verdict, mode, config, now, states)
         self._stash_counts(len(repos), watched, await self._ctx.list_target_states())
 
     # -- issue state sync ------------------------------------------------------
     async def _sync_issue_states(self, repo: str, states: dict[str, dict], now: datetime) -> None:
-        """Learn which of this repo's linked issues a human closed. ``not_planned``
+        """Learn which of this repo's linked issues a human closed. A read, so
+        the caller runs it in watch mode too whenever a row already holds an
+        open issue (e.g. an operator's "File issue" card action). ``not_planned``
         mutes the incident until recovery; any other close is an acknowledgment
         of the CURRENT sha (a later sha regresses — spec §5.4)."""
         keys = [k for k, s in states.items() if split_key(k)[0] == repo
@@ -336,17 +344,18 @@ class DeployMonitorLoop:
 
     # -- per-env reconcile -----------------------------------------------------
     async def _reconcile(self, repo: str, env: str, key: str, state: dict | None,
-                         verdict: EnvVerdict | None, mode: str, config: dict, now: datetime) -> None:
+                         verdict: EnvVerdict | None, mode: str, config: dict, now: datetime,
+                         states: dict[str, dict]) -> None:
         if verdict is None or verdict.kind == "unknown":
             return
         if verdict.kind == "healthy":
             if state:
-                await self._recover(repo, env, key, state, verdict, mode, now)
+                await self._recover(repo, env, key, state, verdict, now)
             return
         if not state:
-            await self._open(repo, env, key, verdict, mode, config, now)
+            await self._open(repo, env, key, verdict, mode, config, now, states)
         else:
-            await self._ongoing(repo, env, key, state, verdict, mode, config, now)
+            await self._ongoing(repo, env, key, state, verdict, mode, config, now, states)
 
     def _measure(self, state: dict, verdict: EnvVerdict, now: datetime) -> dict:
         d = verdict.newest
@@ -356,7 +365,7 @@ class DeployMonitorLoop:
         return state
 
     async def _open(self, repo: str, env: str, key: str, verdict: EnvVerdict,
-                    mode: str, config: dict, now: datetime) -> None:
+                    mode: str, config: dict, now: datetime, states: dict[str, dict]) -> None:
         d = verdict.newest
         state = self._measure({
             "first_sha": d.sha, "first_seen_at": _iso(now), "issue_number": None,
@@ -372,25 +381,29 @@ class DeployMonitorLoop:
                                      "logUrl": d.log_url})
         await self._notify_once(repo, key, state, summary)
         if mode == "file":
-            await self._file(repo, env, key, state, config, now, regression_of=None)
+            await self._file(repo, env, key, state, config, now, regression_of=None, states=states)
 
     async def _ongoing(self, repo: str, env: str, key: str, state: dict, verdict: EnvVerdict,
-                       mode: str, config: dict, now: datetime) -> None:
+                       mode: str, config: dict, now: datetime, states: dict[str, dict]) -> None:
         d = verdict.newest
         self._measure(state, verdict, now)
         await self._ctx.set_target_state(key, state)
-        if not state.get("notified"):
+        # A muted row gets measurements only — no comment, no notify (spec §5.3
+        # last row). Without this guard a row whose first notify failed at
+        # ``_open`` (``notified`` still False) would fire the alert the tick it
+        # gets muted, even though muting exists to silence exactly this.
+        if not state.get("notified") and not state.get("muted"):
             summary = f"{repo} · {env} deploy {verdict.kind} @ {_short(d.sha)}"
             await self._notify_once(repo, key, state, summary)
         if mode != "file" or state.get("muted"):
             return
         if state.get("issue_number") is None:
-            await self._file(repo, env, key, state, config, now, regression_of=None)
+            await self._file(repo, env, key, state, config, now, regression_of=None, states=states)
             return
         if state.get("issue_closed"):
             if d.sha != state.get("closed_sha"):
                 await self._file(repo, env, key, state, config, now,
-                                 regression_of=int(state["issue_number"]))
+                                 regression_of=int(state["issue_number"]), states=states)
             return
         last_sha = state.get("last_commented_sha") or state.get("first_sha")
         if d.sha == last_sha:
@@ -412,10 +425,15 @@ class DeployMonitorLoop:
                              f"@ {_short(d.sha)}", kind="commented", target=key)
 
     async def _recover(self, repo: str, env: str, key: str, state: dict, verdict: EnvVerdict,
-                       mode: str, now: datetime) -> None:
+                       now: datetime) -> None:
+        """Close whatever issue is linked to this row, regardless of mode: the
+        issue may have been opened by the loop in file mode, or filed by an
+        operator's "File issue" card action while in watch mode. Either way an
+        issue that exists is not left open once the environment recovers —
+        only OPENING an issue from the loop is file-mode-only."""
         sha = verdict.newest.sha
         number = state.get("issue_number")
-        if mode == "file" and number and not state.get("issue_closed"):
+        if number and not state.get("issue_closed"):
             if not state.get("recovery_commented"):
                 await asyncio.to_thread(ci_issues.comment_on_issue, repo, int(number),
                                         recovery_comment(env, sha, now), run=self._run)
@@ -447,11 +465,21 @@ class DeployMonitorLoop:
         await self._ctx.set_target_state(key, state)
 
     async def _file(self, repo: str, env: str, key: str, state: dict, config: dict,
-                    now: datetime, *, regression_of: int | None) -> int | None:
+                    now: datetime, *, regression_of: int | None, states: dict[str, dict]) -> int | None:
         """Two-phase like Error Triage: claim the row (``filed_at`` set,
         ``issue_number`` None) before the gh call, write the number after. A
-        failed create leaves the row retryable; the cap counts successes only."""
-        cap_remaining = int(config.get("daily_cap", 10)) - len(self._filed)
+        failed create leaves the row retryable — and, same as a retried Error
+        Triage row, its ``filed_at`` still counts toward today's cap.
+
+        The daily cap is derived from persisted ``filed_at`` on live rows
+        (``states``, this tick's snapshot) rather than an in-memory counter: the
+        daemon restarts on every rollout, and an in-memory counter would re-arm
+        the cap on restart (Error Triage precedent, error_triage.py). ``states``
+        is updated in place once a row is claimed so envs processed later in the
+        SAME tick still see it."""
+        filed_today = sum(1 for s in states.values()
+                          if (ts := parse_iso(s.get("filed_at"))) and now - ts < _DAY)
+        cap_remaining = int(config.get("daily_cap", 10)) - filed_today
         decision = decide(None, cap_remaining=cap_remaining,
                           comment_every=timedelta(hours=1), now=now)
         if decision.kind != "file":
@@ -467,6 +495,7 @@ class DeployMonitorLoop:
                      last_commented_at=None, last_commented_sha=None, recovery_commented=False,
                      cap_noted=False)
         await self._ctx.set_target_state(key, state)
+        states[key] = state
         title = issue_title(repo, env, state)
         applied = await apply(decision, repo=repo, title=title,
                               body=issue_body(repo, env, state, regression_of=regression_of),
@@ -478,7 +507,6 @@ class DeployMonitorLoop:
         state["issue_number"] = applied.issue_number
         state["last_commented_sha"] = state.get("sha")
         await self._ctx.set_target_state(key, state)
-        self._filed.append(now)
         kind = "regressed" if regression_of is not None else "filed"
         await self._ctx.emit("info", f"filed #{applied.issue_number}: {title}", kind=kind, target=key,
                              detail={"url": ci_issues.issue_url(repo, applied.issue_number)})
@@ -539,8 +567,9 @@ class DeployMonitorLoop:
             return "failed", None
         repo, env = split_key(key)
         regression_of = int(state["issue_number"]) if state.get("issue_number") else None
+        states = await self._ctx.list_target_states()
         number = await self._file(repo, env, key, state, {**config, "daily_cap": 10 ** 6}, now,
-                                  regression_of=regression_of)
+                                  regression_of=regression_of, states=states)
         return ("filed", number) if number is not None else ("failed", None)
 
 

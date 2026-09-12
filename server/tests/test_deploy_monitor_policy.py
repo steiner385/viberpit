@@ -118,6 +118,15 @@ def test_issue_body_is_capped():
     assert len(body) <= ci_issues.BODY_MAX_CHARS
 
 
+def test_issue_body_escapes_ref_pipe_once():
+    # Finding 4: the 'Newest deployment' cell used to pre-escape `ref` with an
+    # inline `_cell` call, and the table join then escaped it AGAIN, so a `|`
+    # in a ref rendered double-escaped instead of once.
+    body = dm.issue_body("o/r", "qa", _state(ref="feat|x"), regression_of=None)
+    assert "feat\\|x" in body
+    assert "feat\\\\|x" not in body
+
+
 def test_comments():
     c = dm.recurrence_comment(_state(streak=4))
     assert "4" in c and "aaaaaaaaaa" in c

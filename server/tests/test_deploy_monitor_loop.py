@@ -365,3 +365,72 @@ def test_invalid_repo_is_skipped(bad):
     h.deployments = {bad: [_dep()]}
     h.tick()
     assert not h.ctx.states
+
+
+# -- fix round 1 -------------------------------------------------------------
+
+def test_muted_row_never_notifies_even_after_first_notify_failed():
+    """Finding 1: a muted row gets measurements only — no notify, even when the
+    FIRST notify (at ``_open``) failed and left ``notified`` False."""
+    h = Harness(mode="watch")
+    h.notify_fails = True
+    h.tick()
+    assert h.state()["notified"] is False
+    assert asyncio.run(h.loop.action_result(KEY, "mute")) == ("muted", None)
+    h.notify_fails = False
+    h.tick()
+    assert h.state()["notified"] is False and len(h.notified) == 0
+
+
+def test_operator_filed_issue_closes_on_recovery_in_watch_mode():
+    """Finding 2: an issue that EXISTS on a row — even one filed by the
+    operator's ``file_now`` card action while in watch mode — is still closed
+    with the recovery comment on recovery, regardless of mode."""
+    h = Harness(mode="watch")
+    h.tick()
+    status, number = asyncio.run(h.loop.action_result(KEY, "file_now"))
+    assert status == "filed" and number == 101
+    h.deployments = {REPO: [_dep(state="SUCCESS")]}
+    h.tick()
+    assert h.state() is None
+    assert len(h.gh.comments()) == 1 and len(h.gh.closes()) == 1
+
+
+def test_recovery_in_watch_mode_forgets_without_writing_when_no_issue():
+    """Finding 2 companion: with no issue ever filed, recovery in watch mode
+    still writes nothing to GitHub."""
+    h = Harness(mode="watch")
+    h.tick()
+    h.deployments = {REPO: [_dep(state="SUCCESS")]}
+    h.tick()
+    assert h.state() is None and not h.gh.calls
+
+
+def test_operator_filed_issue_muted_when_closed_not_planned_in_watch_mode():
+    """Finding 2: issue-state sync is a read, so it runs in watch mode too
+    whenever a row holds an open issue — a human closing it not_planned mutes
+    the row even though the loop is in watch mode."""
+    h = Harness(mode="watch")
+    h.tick()
+    status, number = asyncio.run(h.loop.action_result(KEY, "file_now"))
+    assert status == "filed" and number == 101
+    h.gh.closed = {101: "not_planned"}
+    h.now = T0 + timedelta(hours=1)
+    h.tick()
+    assert h.state()["muted"] is True
+    assert "muted" in h.ctx.kinds()
+
+
+def test_daily_cap_persists_across_a_simulated_restart():
+    """Finding 3: the daily cap is derived from persisted ``filed_at`` on live
+    rows, not an in-memory counter — a fresh ``DeployMonitorLoop`` instance
+    (simulating a daemon restart) over the SAME ctx must not re-arm it."""
+    h = Harness(config={"daily_cap": 1})
+    h.deployments = {REPO: [_dep(), _dep(env="kindash / qa", sha="q" * 40)]}
+    h.tick()
+    assert len(h.gh.creates()) == 1
+    restarted = dm.DeployMonitorLoop(h.ctx, read_config=h.loop._read_config,
+                                     list_repos=h.loop._list_repos, fetch_deployments=h.loop._fetch,
+                                     run=h.gh, notify=h.loop._notify, clock=lambda: h.now)
+    asyncio.run(restarted.tick())
+    assert len(h.gh.creates()) == 1
