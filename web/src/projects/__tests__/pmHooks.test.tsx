@@ -29,6 +29,7 @@ vi.mock('@/api/triage', async (importOriginal) => ({
     proposedFeatureSlug: 'sessions', noFitSuggestion: null,
     reach: 3, impact: 2, effort: 1, confidence: 2, rationale: 'fits',
     confidenceLevel: 'high', status: 'pending', createdAt: null,
+    classifiedBy: null, resolvedAt: null,
   }]),
 }))
 

@@ -19,11 +19,15 @@ import { ViewportProvider } from '@/shell/useViewport'
 const accept = vi.fn()
 const reject = vi.fn()
 const bulk = vi.fn()
+const undo = vi.fn()
 vi.mock('@/api/hooks', () => ({
   useAcceptProposal: () => ({ mutate: accept, isPending: false }),
   useRejectProposal: () => ({ mutate: reject, isPending: false }),
   useAcceptBulk: () => ({ mutate: bulk, isPending: false }),
   useTriageLive: () => undefined,
+  // ProposalCard's own undo control (auto-accept chip) — mocked here too since
+  // this file mounts the real ProposalCard rows.
+  useUndoProposal: () => ({ mutate: undo, isPending: false }),
 }))
 const overlayOpen = vi.fn(() => false)
 vi.mock('@/shell/useOverlayState', () => ({ overlayIsOpen: () => overlayOpen() }))
@@ -32,7 +36,7 @@ const p = (over: Partial<TriageProposal> & { id: string }): TriageProposal => ({
   workItemId: `w-${over.id}`, projectSlug: 'kindash', repo: 'cairnea/KinDash', number: 1, kind: 'issue',
   title: over.id, url: null, proposedFeatureId: null, proposedFeatureSlug: 'tasks', noFitSuggestion: null,
   reach: 3, impact: 3, effort: 2, confidence: 80, rationale: null, confidenceLevel: 'high', status: 'pending',
-  createdAt: null, ...over,
+  createdAt: null, classifiedBy: null, resolvedAt: null, ...over,
 })
 /** Ordered (group by product, then id): First, Third | Second. Three rows so
  *  "the selected set" and "the whole queue" are different assertions. */
@@ -63,7 +67,7 @@ const scrollIntoView = vi.fn()
 
 describe('InboxScopeBody', () => {
   beforeEach(() => {
-    accept.mockReset(); reject.mockReset(); bulk.mockReset()
+    accept.mockReset(); reject.mockReset(); bulk.mockReset(); undo.mockReset()
     overlayOpen.mockReturnValue(false)
     localStorage.clear()
     clearInboxOrder()
@@ -116,6 +120,20 @@ describe('InboxScopeBody', () => {
     fireEvent.keyDown(window, { key: 'k' })
     fireEvent.keyDown(window, { key: 'r' })
     expect(reject).toHaveBeenCalledWith({ id: 'First' })
+  })
+
+  it('a/r/e/x do nothing when the cursor sits on a non-pending row', () => {
+    // A fresh auto-accept rides along in the list for the undo window — it has
+    // already had its one decision, so the keys that make a decision or select
+    // for a bulk one must not treat the cursor landing there as a request.
+    mount({ proposals: [p({ id: 'First', status: 'accepted', classifiedBy: 'auto', resolvedAt: '2026-09-12T10:00:00Z' }), p({ id: 'Second' })] })
+    fireEvent.keyDown(window, { key: 'a' })
+    fireEvent.keyDown(window, { key: 'r' })
+    fireEvent.keyDown(window, { key: 'x' })
+    fireEvent.keyDown(window, { key: 'e' })
+    expect(accept).not.toHaveBeenCalled()
+    expect(reject).not.toHaveBeenCalled()
+    expect(screen.queryByRole('region', { name: 'Bulk actions' })).toBeNull()
   })
 
   it('scrolls the cursor row into view — `a` must never accept a row off-screen', () => {

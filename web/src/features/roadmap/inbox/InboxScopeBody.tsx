@@ -109,11 +109,15 @@ export function InboxScopeBody({
   }, [rejectMutate])
   // Cleared on SUCCESS, not on dispatch: a failed sweep rolls the rows back,
   // and a selection cleared ahead of that leaves them restored but unselected.
+  // A selected id can also outlive its row going non-pending under the user's
+  // hands (a live `/ws` nudge lands a fresh auto-accept mid-selection) — the
+  // sweep only ever resends ids the server still calls pending.
   const acceptSelected = useCallback(() => {
-    const sel = [...state.selected]
+    const pendingIds = new Set(ordered.filter((p) => p.status === 'pending').map((p) => p.id))
+    const sel = [...state.selected].filter((id) => pendingIds.has(id))
     if (sel.length === 0) return
     bulkMutate(sel, { onSuccess: () => dispatch({ type: 'clearSelection' }) })
-  }, [bulkMutate, state.selected])
+  }, [bulkMutate, state.selected, ordered])
 
   useEffect(() => {
     function onKey(ev: KeyboardEvent) {
@@ -126,20 +130,23 @@ export function InboxScopeBody({
       switch (ev.key) {
         case 'j': dispatch({ type: 'move', delta: 1, ids }); break
         case 'k': dispatch({ type: 'move', delta: -1, ids }); break
+        // A row past `pending` (a fresh auto-accept, still shown for the undo
+        // window) has already had its one decision — none of these keys have
+        // anything left to act on, so the cursor sitting on it is inert.
         case 'x':
-          if (!current) return
+          if (!current || current.status !== 'pending') return
           dispatch({ type: 'toggleSelect', id: current.id })
           break
         case 'a':
-          if (!current) return
+          if (!current || current.status !== 'pending') return
           acceptOne(current)
           break
         case 'r':
-          if (!current) return
+          if (!current || current.status !== 'pending') return
           rejectOne(current)
           break
         case 'e':
-          if (!current) return
+          if (!current || current.status !== 'pending') return
           onOpen(current, { edit: true })
           break
         case 'A':

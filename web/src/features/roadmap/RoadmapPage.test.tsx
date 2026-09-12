@@ -108,7 +108,8 @@ const proposal = (over: Partial<TriageProposal> & { id: string }): TriageProposa
   workItemId: `w-${over.id}`, projectSlug: 'kindash', repo: 'cairnea/KinDash', number: 7, kind: 'issue',
   title: over.id, url: null, proposedFeatureId: 'f-tasks', proposedFeatureSlug: 'tasks',
   noFitSuggestion: null, reach: 3, impact: 3, effort: 2, confidence: 80, rationale: null,
-  confidenceLevel: 'high', status: 'pending', createdAt: '2026-09-08T10:00:00Z', ...over,
+  confidenceLevel: 'high', status: 'pending', createdAt: '2026-09-08T10:00:00Z',
+  classifiedBy: null, resolvedAt: null, ...over,
 })
 
 const QUEUE: TriageProposal[] = [

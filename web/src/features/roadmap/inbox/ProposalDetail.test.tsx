@@ -26,7 +26,7 @@ const proposal: TriageProposal = {
   title: 'Bulk edit', url: 'https://x/7', proposedFeatureId: 'f-tasks', proposedFeatureSlug: 'tasks',
   noFitSuggestion: null, reach: 3, impact: 3, effort: 2, confidence: 80,
   rationale: 'Touches the task list.', confidenceLevel: 'high', status: 'pending',
-  createdAt: '2026-09-08T10:00:00Z',
+  createdAt: '2026-09-08T10:00:00Z', classifiedBy: null, resolvedAt: null,
 }
 const caps = [
   { id: 'f-tasks', slug: 'tasks', title: 'Tasks', depth: 0 },

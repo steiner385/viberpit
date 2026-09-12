@@ -15,6 +15,7 @@ vi.mock('@/api/hooks', () => ({
   useRejectProposal: () => ({ mutate: vi.fn(), isPending: false }),
   useAcceptBulk: () => ({ mutate: vi.fn(), isPending: false }),
   useTriageLive: () => undefined,
+  useUndoProposal: () => ({ mutate: vi.fn(), isPending: false }),
 }))
 
 const PROPOSALS: TriageProposal[] = [{
@@ -22,6 +23,7 @@ const PROPOSALS: TriageProposal[] = [{
   kind: 'issue', title: 'Recurring chores', url: null, proposedFeatureId: null,
   proposedFeatureSlug: 'tasks', noFitSuggestion: null, reach: 3, impact: 2, effort: 1,
   confidence: 80, rationale: null, confidenceLevel: 'high', status: 'pending', createdAt: null,
+  classifiedBy: null, resolvedAt: null,
 }]
 
 function mount(over: Partial<React.ComponentProps<typeof RoadmapListColumn>> = {}) {

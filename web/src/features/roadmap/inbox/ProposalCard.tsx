@@ -19,6 +19,7 @@ import { Check, Inbox } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { CardFrame } from '@/ui/list/CardFrame'
 import { Badge } from '@/ui/Badge'
+import { useUndoProposal } from '@/api/hooks'
 import type { RoadmapTier } from '@/api/roadmap'
 import type { TriageProposal } from '@/api/triage'
 import { TIER_ACCENT, TIER_TONE } from '../roadmapTier'
@@ -50,6 +51,11 @@ export function ProposalCard({
   const name = p.title ?? p.id
   const tier = CONF_TIER[p.confidenceLevel ?? 'low'] ?? 'idle'
   const scores = [p.reach, p.impact, p.effort, p.confidence].map((v) => v ?? '—')
+  const pending = p.status === 'pending'
+  // The PM Triage loop's own accept, still inside the undo window (spec §8/§9)
+  // — the ONE undo path (`useUndoProposal`) is what puts it back to pending.
+  const autoAccepted = p.status === 'accepted' && p.classifiedBy === 'auto'
+  const undo = useUndoProposal()
 
   // A cursor the user cannot SEE must not be the one a keystroke acts on: `a`
   // is one press from an accept that only an undo toast takes back, and after
@@ -89,11 +95,17 @@ export function ProposalCard({
             type="button"
             aria-label={`Select ${name}`}
             aria-pressed={checked}
+            // A non-pending row (a fresh auto-accept, still in the undo window)
+            // has nothing left to select for a bulk accept — disabled rather
+            // than hidden, so every row in the list keeps the same leading rail.
+            aria-disabled={pending ? undefined : true}
+            disabled={!pending}
             onClick={(e) => { e.stopPropagation(); onToggleSelect() }}
             className={cn(
               'flex size-6 shrink-0 items-center justify-center rounded-sm border border-edge',
               checked ? 'bg-accent text-accent-ink' : 'text-ink-faint hover:bg-surface-raised',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+              'disabled:opacity-50 disabled:pointer-events-none',
             )}
           >
             {checked && <Check size={12} aria-hidden="true" />}
@@ -108,12 +120,29 @@ export function ProposalCard({
                 colour alone; this is the same fact in words, for a screen
                 reader and for anyone who cannot tell the tiers apart. */}
             <span className="sr-only">{p.confidenceLevel ?? 'low'} confidence</span>
+            {autoAccepted && <span className="sr-only">accepted automatically</span>}
           </span>
         }
         trailing={
-          p.proposedFeatureSlug
-            ? <Badge tone={TIER_TONE[tier]}>{p.proposedFeatureSlug}</Badge>
-            : <Badge tone="warning">no fit → {p.noFitSuggestion ?? 'new capability'}</Badge>
+          <span className="flex items-center gap-2">
+            {autoAccepted && (
+              <>
+                <Badge tone="info">auto-accepted</Badge>
+                <button
+                  type="button"
+                  aria-label={`Undo auto-accept of ${name}`}
+                  disabled={undo.isPending}
+                  onClick={(e) => { e.stopPropagation(); undo.mutate(p.id) }}
+                  className="text-xs text-accent underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                >
+                  Undo
+                </button>
+              </>
+            )}
+            {p.proposedFeatureSlug
+              ? <Badge tone={TIER_TONE[tier]}>{p.proposedFeatureSlug}</Badge>
+              : <Badge tone="warning">no fit → {p.noFitSuggestion ?? 'new capability'}</Badge>}
+          </span>
         }
       >
         <span className="block truncate text-xs text-ink-muted">

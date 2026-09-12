@@ -66,6 +66,7 @@ function proposal(over: Partial<TriageProposal> = {}): TriageProposal {
     proposedFeatureId: null, proposedFeatureSlug: null, noFitSuggestion: null,
     reach: null, impact: null, effort: null, confidence: null,
     rationale: null, confidenceLevel: null, status: 'pending', createdAt: null,
+    classifiedBy: null, resolvedAt: null,
     ...over,
   }
 }
