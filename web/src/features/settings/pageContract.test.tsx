@@ -88,6 +88,7 @@ vi.mock('@/api/client', async (importOriginal) => {
             id: 'p', slug: 'kindash', name: 'KinDash', repos: [], edges: [], portfolioTags: [],
             description: null, status: null, onboardingState: 'live',
             createdAt: null, updatedAt: null, featureCount: 0, workItemCount: 0,
+            automationPolicy: null,
           }
         }
         // The two Reader-variant pages' data: the archived list names the

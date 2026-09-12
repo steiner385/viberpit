@@ -35,7 +35,7 @@ vi.mock('@/api/hooks', () => ({
     data: {
       id: 'p', slug: 'kindash', name: 'KinDash', description: 'Family dashboard', status: null,
       portfolioTags: [], onboardingState: 'live', createdAt: null, updatedAt: null, edges: [],
-      featureCount: 3, workItemCount: 40,
+      featureCount: 3, workItemCount: 40, automationPolicy: null,
       repos: [{ id: 'r1', repo: 'cairnea/KinDash', isPrimary: true, backfillDone: true, lastSyncedAt: null }],
     },
     isLoading: false,
@@ -54,6 +54,9 @@ vi.mock('@/api/hooks', () => ({
   // The product Overview's map-changes PR card (Rebase, Abandon).
   useAbandonMapChanges: () => ({ mutate: vi.fn(), isPending: false }),
   useRebaseMapChanges: () => ({ mutate: vi.fn(), isPending: false }),
+  // The product Overview's Automation card.
+  usePolicySchema: () => ({ data: [], isLoading: false }),
+  useUpdateProductPolicy: () => ({ mutate: vi.fn(), isPending: false }),
   useProposeMap: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useClassify: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useAdvanceMap: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
