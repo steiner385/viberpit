@@ -24,14 +24,18 @@ def _capture_spawn(captured):
 # backlog-runner (_backlog_spawn)                                              #
 # --------------------------------------------------------------------------- #
 
-def _build_backlog_orch(config, *, policies=None):
+def _build_backlog_orch(config, *, policies=None, tier_floor=None):
     """A bare orchestrator whose runner config is *config*.
 
     The session model is NOT read here since the fix wave: ``_backlog_spawn``
     takes it as a required ``default_model`` keyword — the loop passes the value
     from the tick's policy snapshot, the tap paths read it through
     ``_backlog_policy_model``. *policies* stubs that read for the few tests that
-    exercise it."""
+    exercise it.
+
+    *tier_floor* stubs the ``_backlog_tier_floor`` seam (phase 4): the spawn asks
+    it for the primary issue's capability floor, and every test here would
+    otherwise reach for a DB."""
     import server.sessions.orchestrator as orch_mod
     from server.automations.context import AutomationContext
     orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
@@ -44,7 +48,17 @@ def _build_backlog_orch(config, *, policies=None):
     async def load_policies():
         return dict(policies or {})
     orch._backlog_load_policies = load_policies  # type: ignore[method-assign]
+
+    async def floor(product_slug, primary_ref):
+        return tier_floor
+    orch._backlog_tier_floor = floor  # type: ignore[method-assign]
     return orch
+
+
+def _assess_returning(tier):
+    async def assess(task_summary, **kw):
+        return tier
+    return assess
 
 
 def _patch_git(monkeypatch, tmp_path):
@@ -174,6 +188,153 @@ def test_backlog_spawn_never_reads_policies_itself():
 
     src = inspect.getsource(orch_mod.SessionOrchestrator._backlog_spawn)
     assert "_backlog_load_policies" not in src and "effective_policy" not in src
+
+
+# --------------------------------------------------------------------------- #
+# backlog-runner tier floor at the spawn (policy phase 4, D9)                  #
+# --------------------------------------------------------------------------- #
+
+async def _audit_model_picks():
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import AuditEvent
+    async with db_session() as db:
+        return list((await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "backlog_runner.model_pick"))).scalars().all())
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_raises_an_auto_pick_to_the_capabilitys_floor(
+        tmp_path, monkeypatch):
+    """D9: this capability's issues merged first-pass only at a higher tier, so
+    the ``auto`` assessment is raised to that floor — evidence over a fresh
+    guess. The spawn record says both what was assessed and what floored it."""
+    import server.automations.model_pick as model_pick
+    monkeypatch.setattr(model_pick, "assess_model", _assess_returning("sonnet"))
+
+    orch = _build_backlog_orch({})
+    seen: dict = {}
+
+    async def floor(product_slug, primary_ref):
+        seen.update(product=product_slug, ref=primary_ref)
+        return "opus"
+    orch._backlog_tier_floor = floor  # type: ignore[method-assign]
+    _patch_git(monkeypatch, tmp_path)
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto")
+
+    # The floor is looked up for the PRIMARY issue's capability, in the batch's product.
+    assert seen == {"product": "widget", "ref": "o/r#7"}
+    assert captured["model"] == "opus"
+    assert captured["detail"] == {
+        "issues": ["o/r#7"], "engine": "claude_code", "model": "opus",
+        "model_source": "auto+floor", "assessed": "sonnet", "floor": "opus"}
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_audits_an_auto_model_pick(isolated_db, tmp_path,
+                                                       monkeypatch):
+    """One durable row per auto pick: the metric for whether the assessor and
+    the capability's own history agree."""
+    import server.automations.model_pick as model_pick
+    monkeypatch.setattr(model_pick, "assess_model", _assess_returning("sonnet"))
+
+    orch = _build_backlog_orch({}, tier_floor="opus")
+    _patch_git(monkeypatch, tmp_path)
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto")
+
+    rows = await _audit_model_picks()
+    assert len(rows) == 1
+    assert rows[0].identity == "backlog-runner"
+    assert rows[0].detail == {
+        "target": "o/r#7", "product": "widget", "assessed": "sonnet",
+        "floor": "opus", "applied": "opus", "source": "auto+floor"}
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_pinned_model_is_untouched_by_a_floor_and_unaudited(
+        isolated_db, tmp_path, monkeypatch):
+    """A pinned model is an operator's decision: no floor raises it, its spawn
+    detail is exactly what it was, and there is no pick to audit."""
+    orch = _build_backlog_orch({}, tier_floor="fable")
+    _patch_git(monkeypatch, tmp_path)
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    await orch._backlog_spawn(_BATCH, "acct", default_model="sonnet")
+
+    assert captured["model"] == "sonnet"
+    assert captured["detail"] == {"issues": ["o/r#7"], "model": "sonnet",
+                                  "model_source": "pinned", "engine": "claude_code"}
+    assert await _audit_model_picks() == []
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_survives_a_failing_floor_lookup(tmp_path, monkeypatch):
+    """§13: the history read is best-effort. A seam that RAISES costs the floor,
+    never the spawn — the assessed model is still applied."""
+    import server.automations.model_pick as model_pick
+    monkeypatch.setattr(model_pick, "assess_model", _assess_returning("sonnet"))
+
+    orch = _build_backlog_orch({})
+
+    async def boom(product_slug, primary_ref):
+        raise RuntimeError("outcome history read down (injected)")
+    orch._backlog_tier_floor = boom  # type: ignore[method-assign]
+    _patch_git(monkeypatch, tmp_path)
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto")
+
+    assert captured["model"] == "sonnet"
+    assert captured["detail"]["model_source"] == "auto"
+    assert "floor" not in captured["detail"]
+
+
+@pytest.mark.asyncio
+async def test_tap_dispatch_applies_the_floor_through_the_one_spawn_path(
+        tmp_path, monkeypatch):
+    """Both taps funnel through ``_backlog_spawn``, so a manual dispatch gets the
+    floor exactly as the loop's own spawn does — there is no second model-pick
+    path to keep in sync."""
+    import server.automations.model_pick as model_pick
+    monkeypatch.setattr(model_pick, "assess_model", _assess_returning("haiku"))
+
+    orch = _build_backlog_orch({}, tier_floor="opus")
+    _patch_git(monkeypatch, tmp_path)
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+
+    async def query_queue(config):
+        return [{"ref": "o/r#7", "repo": "o/r", "title": "fix the frobnicator",
+                 "product": "widget"}]
+
+    async def get_state(ref):
+        return {}
+
+    async def noop(*a, **kw):
+        return None
+
+    async def account_for(ctx, ref):
+        return "acct"
+
+    orch._backlog_query_queue = query_queue  # type: ignore[method-assign]
+    orch._backlog_announce = noop            # type: ignore[method-assign]
+    orch._automation_account_for = account_for  # type: ignore[method-assign]
+    orch._backlog_ctx.get_target_state = get_state  # type: ignore[method-assign]
+    orch._backlog_ctx.set_target_state = noop       # type: ignore[method-assign]
+    orch._backlog_ctx.record_outcome = noop         # type: ignore[method-assign]
+    orch._backlog_ctx.emit = noop                   # type: ignore[method-assign]
+
+    res = await orch.backlog_runner_dispatch(["o/r#7"])
+
+    assert res["status"] == "spawned"
+    assert captured["model"] == "opus"
+    assert captured["detail"]["model_source"] == "auto+floor"
+    assert captured["detail"]["assessed"] == "haiku"
 
 
 # --------------------------------------------------------------------------- #

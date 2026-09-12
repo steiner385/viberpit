@@ -32,11 +32,12 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from server.sessions.account_auth import helper_env
 from server.sessions.claude_bin import cli_path_kwargs
 from server.sessions.helper_call import helper_cwd, pick_helper_config_dir, run_helper_call
-from server.sessions.model_catalog import ALIASES, TIER_ORDER
+from server.sessions.model_catalog import ALIASES, TIER_ORDER, tier_rank
 
 log = logging.getLogger("ccswitch.automations")
 
@@ -164,18 +165,41 @@ async def assess_model(
     return None
 
 
-async def resolve_model(
+@dataclass(frozen=True)
+class ModelPick:
+    """The whole answer of one model pick — what was assessed, what floor the
+    caller supplied, what the spawn applies, and why.
+
+    ``resolve_model``'s two-tuple is ``(applied, source)``; the extra two fields
+    are the provenance the spawn record and its audit row carry, so "the
+    assessor said sonnet but this capability's history floored it at opus" is
+    recoverable after the fact.
+    """
+
+    assessed: str | None   # assess_model's answer (None unless "auto", or it failed)
+    floor: str | None      # the floor handed in (None when not an "auto" pick)
+    applied: str | None    # what create_session gets (None = account default)
+    source: str | None     # "pinned" | "auto" | "auto+floor" | None
+
+
+async def pick_model(
     config: dict,
     task_summary: str,
     *,
+    floor: str | None = None,
     _assess=None,
-) -> tuple[str | None, str | None]:
-    """Map an automation's ``default_model`` config to ``(model, source)``.
+) -> ModelPick:
+    """THE resolver behind ``resolve_model``: map an automation's
+    ``default_model`` config (plus an optional evidence *floor*) to a ModelPick.
 
-    ``model`` is the value to pass to ``create_session`` (``None`` = account
-    default). ``source`` is ``"auto"`` / ``"pinned"`` / ``None`` for the
-    spawned-event detail, so the activity feed shows why a session got its
-    model. ``_assess`` is a test seam replacing ``assess_model``.
+    *floor* is the cheapest tier the caller's evidence says can actually finish
+    this job (the backlog runner passes its capability's D9 tier floor). It only
+    ever RAISES an ``auto`` assessment: a pinned alias is an operator's decision
+    and ``default`` is the account's, so neither is touched, and an assessment
+    already at or above the floor stands. Comparison is by
+    ``model_catalog.tier_rank`` — the one tier ordering — so a floor with no
+    fixed tier (``best``, an unknown id) is ignored rather than compared by
+    name.
     """
     value = config.get("default_model")
     value = value if isinstance(value, str) else "default"
@@ -183,16 +207,45 @@ async def resolve_model(
         # Defensive: a persisted value no longer in the catalog (validate_config
         # rejects writes, but old rows survive alias removals).
         log.warning("resolve_model: unknown default_model %r — using account default", value)
-        return None, None
+        return ModelPick(None, None, None, None)
     if value == "default":
-        return None, None
-    if value == "auto":
-        assess = _assess or assess_model
-        picked = await assess(task_summary)
-        if picked is None:
-            return None, None
-        return picked, "auto"
-    return value, "pinned"
+        return ModelPick(None, None, None, None)
+    if value != "auto":
+        return ModelPick(None, None, value, "pinned")
+    assess = _assess or assess_model
+    assessed = await assess(task_summary)
+    if assessed is None:
+        # Fail-open: the floor alone never picks a model — an assessment that
+        # could not be made leaves the spawn on the account default.
+        return ModelPick(None, floor, None, None)
+    applied, source = assessed, "auto"
+    floor_rank, assessed_rank = tier_rank(floor), tier_rank(assessed)
+    if floor_rank is not None and assessed_rank is not None and floor_rank > assessed_rank:
+        applied, source = floor, "auto+floor"
+    return ModelPick(assessed, floor, applied, source)
+
+
+async def resolve_model(
+    config: dict,
+    task_summary: str,
+    *,
+    floor: str | None = None,
+    _assess=None,
+) -> tuple[str | None, str | None]:
+    """Map an automation's ``default_model`` config to ``(model, source)``.
+
+    ``model`` is the value to pass to ``create_session`` (``None`` = account
+    default). ``source`` is ``"auto"`` / ``"auto+floor"`` / ``"pinned"`` /
+    ``None`` for the spawned-event detail, so the activity feed shows why a
+    session got its model. ``floor`` raises an ``auto`` pick to a tier the
+    caller's evidence requires (see ``pick_model``). ``_assess`` is a test seam
+    replacing ``assess_model``.
+
+    The two-tuple view of ``pick_model``, which holds all the logic — callers
+    that need the assessed/floor provenance call that directly.
+    """
+    pick = await pick_model(config, task_summary, floor=floor, _assess=_assess)
+    return pick.applied, pick.source
 
 
 async def assess_codex_effort(

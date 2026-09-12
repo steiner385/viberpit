@@ -5848,6 +5848,18 @@ class SessionOrchestrator:
         policy = (policies.get(product) if product else None) or effective_policy(None)
         return str(policy["default_model"])
 
+    async def _backlog_tier_floor(self, product_slug: "str | None",
+                                  primary_ref: str) -> str | None:
+        """The model tier this dispatch's capability has actually merged at (D9),
+        or ``None`` when its history says nothing.
+
+        The spawn's one door to ``server/pm/outcomes.py`` — an injectable seam so
+        the spawn tests never need a seeded outcome history, and so the rule
+        itself has exactly one implementation to test."""
+        from server.pm.outcomes import tier_floor_for_dispatch
+        async with db_session() as db:
+            return await tier_floor_for_dispatch(db, product_slug, primary_ref)
+
     async def _backlog_spawn(self, batch, account: str, *, default_model: str):
         """Spawn a de-duped runner session for *batch*, seeded with the implement
         prompt.
@@ -5862,7 +5874,7 @@ class SessionOrchestrator:
         tap paths read it through ``_backlog_policy_model``. Keyword-only and
         required so no spawn site can silently fall back to a different model."""
         from server.automations.backlog_prompt import build_implement_prompt
-        from server.automations.model_pick import resolve_model
+        from server.automations.model_pick import pick_model
         # Engine FIRST, before any network or disk work: the seed prompt states a
         # commit trailer so it has to be built for the engine that will actually
         # run (Phase 7, Task 7.1) — and a refusal must cost nothing, which it did
@@ -5877,7 +5889,7 @@ class SessionOrchestrator:
             gitrepos.ensure_clone, await self._effective_repo_root(), batch.repo, url)
         _mode, config = await self._backlog_read_config()
         # The session model is the PRODUCT's (policy phase 1): overlay the caller's
-        # answer onto the config the resolvers already take, so ``resolve_model`` /
+        # answer onto the config the resolvers already take, so ``pick_model`` /
         # ``_resolve_codex_auto_effort`` keep their one ``default_model`` contract
         # instead of growing a second way to be told which model to use.
         config = {**config, "default_model": default_model}
@@ -5886,12 +5898,43 @@ class SessionOrchestrator:
         summary = "\n".join(
             f"{ref}  {batch.titles.get(ref) or '(no title)'}" for ref in batch.issues)
         if engine is AgentEngine.CLAUDE_CODE:
-            # `resolve_model` is a Claude complexity assessor returning Claude
+            # `pick_model` is a Claude complexity assessor returning Claude
             # catalog aliases. Skipping it for another engine is the audit Task
             # 7.1 asks for: not a wasted Haiku call whose answer is then dropped.
-            model, model_source = await resolve_model(config, summary)
+            #
+            # The capability's own merge history (D9) floors an `auto` pick, so a
+            # capability whose issues only ever landed first-pass at a higher tier
+            # is not re-guessed down to a cheaper one every dispatch. Best-effort
+            # by spec §13: a failed history read costs the FLOOR, never the spawn.
+            try:
+                floor = await self._backlog_tier_floor(batch.product, batch.primary)
+            except Exception:
+                log.warning("backlog_runner.tier_floor_failed target=%s",
+                            batch.primary, exc_info=True)
+                floor = None
+            pick = await pick_model(config, summary, floor=floor)
+            model, model_source = pick.applied, pick.source
             if model is not None:
                 detail.update(model=model, model_source=model_source)
+                # The pick's provenance. Omitted rather than stamped ``None`` for
+                # a pinned model, which has no assessment and no floor.
+                detail.update({k: v for k, v in (("assessed", pick.assessed),
+                                                 ("floor", pick.floor))
+                               if v is not None})
+            if config.get("default_model") == "auto":
+                # One durable row per auto pick: `assessed` vs `applied` is the
+                # metric for whether the assessor and the history agree.
+                try:
+                    async with db_session() as db:
+                        await record_audit(
+                            db=db, type="backlog_runner.model_pick",
+                            identity="backlog-runner",
+                            detail={"target": batch.primary, "product": batch.product,
+                                    "assessed": pick.assessed, "floor": pick.floor,
+                                    "applied": pick.applied, "source": pick.source})
+                except Exception:
+                    log.warning("backlog_runner.model_pick_audit_failed target=%s",
+                                batch.primary, exc_info=True)
         elif engine is AgentEngine.CODEX:
             # Codex-aware counterpart (issue #1289): the same complexity
             # judgment, mapped onto the account's live model/effort catalog
