@@ -115,7 +115,7 @@ function mount(
 /** The stat tile for a label, matched on its `dt` — the tab strip repeats the
  *  same words, and a plain text match would find the tab instead. */
 const tile = (label: string) =>
-  screen.getAllByText(label).find((el) => el.tagName === 'DT')?.closest('div')
+  screen.getAllByText(label).find((el) => el.closest('dt'))?.closest('div')
 
 beforeEach(() => {
   Object.assign(leavesQuery, { data: LEAVES, isLoading: false, isError: false })
@@ -202,8 +202,8 @@ describe('CapabilityDetail', () => {
     expect(tile('In flight')).toHaveTextContent('2')
     expect(screen.getByRole('tab', { name: 'In flight (2)' })).toBeInTheDocument()
     expect(tile('Blocked')).toHaveTextContent('2')
-    expect(tile('Needs you')).toHaveTextContent('1')
-    expect(screen.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toBeInTheDocument()
+    expect(tile('Needs you')).toHaveTextContent('2')
+    expect(screen.getByRole('tab', { name: 'Needs you (2, needs attention)' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Sub-capabilities (1)' })).toBeInTheDocument()
   })
 
@@ -278,9 +278,10 @@ describe('CapabilityDetail', () => {
     // section-header rows, which all share the listitem role but are not leaf rows.
     const items = screen.getAllByRole('listitem')
       .filter((el) => el.closest('[aria-label="Blocked by"]') === null && el.querySelector('h3') === null)
-    expect(items[0]).toHaveTextContent('Bulk edit')
-    expect(items[0]).toHaveTextContent('session')
-    expect(items[0]).toHaveTextContent('6.5')
+    expect(items[0]).toHaveTextContent('Blocked one')
+    expect(items[1]).toHaveTextContent('Bulk edit')
+    expect(items[1]).toHaveTextContent('session')
+    expect(items[1]).toHaveTextContent('6.5')
     expect(screen.getByRole('link', { name: /#7 Bulk edit/ })).toHaveAttribute('href', 'https://x/7')
     expect(screen.getByLabelText('1 blocker')).toBeInTheDocument()
     // Closed leaves are kept, but below a heading that says what they are.
@@ -342,4 +343,30 @@ describe('CapabilityDetail', () => {
     // capability that scoped them in would double-count them on every page.
     expect(screen.queryByText(/awaiting triage/)).toBeNull()
   })
+})
+
+it('explains issue-only attention on Overview and links directly to the issue list', () => {
+  const capability = cap({ slug: 'reauth', title: 'Re-authentication', tier: 'needs-you', counts: { openIssues: 1, needsYou: 1, blocked: 0, inFlight: 0 } })
+  mount({ product: product({ slug: 'p', capabilities: [capability] }), capability })
+  expect(tile('Needs you')).toHaveTextContent('1')
+  expect(screen.getByText(/1 issue waiting for your input/)).toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Review issues in Re-authentication' }))
+    .toHaveAttribute('href', '/roadmap/p/capabilities/reauth?tab=issues')
+  fireEvent.click(screen.getByRole('button', { name: 'Needs you: 1' }))
+  expect(screen.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toHaveAttribute('aria-selected', 'true')
+  expect(screen.queryByText('Nothing needs you')).toBeNull()
+})
+
+it('routes descendant-only issue attention to the child and retains a blocked initiative', () => {
+  const child = cap({ slug: 'child', title: 'Child', counts: { openIssues: 1, needsYou: 1, blocked: 0, inFlight: 0 } })
+  const capability = cap({ slug: 'parent', children: [child], counts: { openIssues: 1, needsYou: 1, blocked: 1, inFlight: 0 } })
+  const p = product({ slug: 'p', capabilities: [capability], initiatives: [
+    ini({ slug: 'stalled', title: 'Stalled work', projectSlug: 'p', primaryCapability: 'parent', tier: 'blocked', reason: 'blocked' }),
+    ini({ slug: 'other', title: 'Other work', projectSlug: 'p', primaryCapability: 'elsewhere', tier: 'blocked' }),
+  ] })
+  mount({ product: p, capability }, '/roadmap/p/capabilities/parent?tab=needs-you')
+  expect(screen.getByRole('link', { name: 'Review issues in Child' })).toHaveAttribute('href', '/roadmap/p/capabilities/child?tab=issues')
+  expect(screen.getByRole('link', { name: 'Review blocker' })).toHaveAttribute('href', '/initiatives/stalled')
+  expect(screen.queryByText('Other work')).toBeNull()
+  expect(tile('Needs you')).toHaveTextContent('2')
 })

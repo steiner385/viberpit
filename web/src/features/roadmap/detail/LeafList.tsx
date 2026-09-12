@@ -13,6 +13,7 @@ import { Banner } from '@/ui/Banner'
 import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
 import { ISSUE, bouncedLabel, reasonLabel } from '@/features/products/vocab'
+import { SESSIONS_PATH } from '@/session/sessionNavState'
 import { issueUrl } from '@/lib/githubUrl'
 import { tierLabel } from '../roadmapTier'
 import { TierDot } from '../rows/TierDot'
@@ -97,6 +98,27 @@ function LeafRow({ leaf, capabilities }: { leaf: Leaf; capabilities: { node: Cap
         <LeafCapabilityChip leaf={leaf} capabilities={capabilities} />
         <LeafScoreButton leaf={leaf} />
       </div>
+      {(leaf.tier === 'needs-you' || leaf.tier === 'blocked') && (
+        <div className="flex flex-col gap-1 pl-6 text-xs text-ink-muted">
+          <p>
+            {leaf.reason === 'needs_spec'
+              ? 'Repeated attempts have not merged. Update the issue description with clearer requirements and acceptance criteria before another attempt.'
+              : leaf.tier === 'blocked'
+                ? blockers > 0
+                  ? 'Resolve the blocking issues below, or remove a dependency if it no longer applies.'
+                  : 'This issue is marked blocked. Review its discussion and status on GitHub to identify what must change.'
+                : 'A decision or input is needed. Review the issue discussion for the request; if a session is waiting, respond in Sessions.'}
+          </p>
+          {leaf.tier === 'needs-you' && leaf.sessionStatus && leaf.reason !== 'needs_spec' && (
+            <a href={SESSIONS_PATH} className="text-accent hover:underline">View sessions</a>
+          )}
+          {leaf.url
+            ? <a href={leaf.url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                {leaf.reason === 'needs_spec' ? 'Edit issue description on GitHub' : 'Review issue on GitHub'}
+              </a>
+            : <span>Issue link unavailable; find {leaf.ref} in its repository.</span>}
+        </div>
+      )}
       {blockers > 0 && (
         // GitHub owns the edge, but removing it is the one disposition a blocked
         // leaf has, so the row offers it instead of pointing at a blocker count.

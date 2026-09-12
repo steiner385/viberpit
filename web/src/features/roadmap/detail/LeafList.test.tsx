@@ -68,3 +68,22 @@ describe('LeafList', () => {
     expect(row(2).queryByTestId('leaf-reason')).toBeNull()
   })
 })
+
+it('explains bounced and human-wait issues and offers an explicit GitHub action', () => {
+  h.leaves = [
+    leaf(1, 'open', { reason: 'needs_spec', bounces: 2, tier: 'needs-you', url: 'https://github.com/o/r/issues/1' }),
+    leaf(2, 'open', { tier: 'needs-you', sessionStatus: 'awaiting_human', url: 'https://github.com/o/r/issues/2' }),
+  ]
+  render(<div data-page-scroll=""><LeafList scope={{ capability: 'f1' }} product={null} /></div>)
+  expect(screen.getByText(/Update the issue description/)).toBeInTheDocument()
+  expect(screen.getByText(/A decision or input is needed/)).toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Edit issue description on GitHub' })).toHaveAttribute('href', 'https://github.com/o/r/issues/1')
+  expect(screen.getByRole('link', { name: 'Review issue on GitHub' })).toHaveAttribute('href', 'https://github.com/o/r/issues/2')
+})
+
+it.each(['active', 'in_progress'])('does not describe an %s session as waiting when triage needs input', (sessionStatus) => {
+  h.leaves = [leaf(1, 'open', { tier: 'needs-you', triageState: 'needs_human', sessionStatus })]
+  render(<div data-page-scroll=""><LeafList scope={{ capability: 'f1' }} product={null} /></div>)
+  expect(screen.getByRole('link', { name: 'View sessions' })).toHaveAttribute('href', '/sessions')
+  expect(screen.queryByRole('link', { name: /waiting session/ })).toBeNull()
+})

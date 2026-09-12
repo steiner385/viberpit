@@ -76,18 +76,7 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
     if (program) shownPrograms.add(program.slug)
     return program ? [program, f] : [f]
   })
-  // The product, narrowed to this capability: the Needs-you panel below reads
-  // its rows from this, and the tile and badge count the same object, so the
-  // number above the list can never disagree with the list.
-  // The proposal counts are zeroed deliberately — awaiting triage and "needs a
-  // home" are product-wide decisions, and a capability that claimed them would
-  // repeat the same work on every capability page of the product.
-  const scoped: ProductNode = {
-    ...product,
-    initiatives: mine.filter((i) => i.tier === 'needs-you'),
-    counts: { ...product.counts, awaitingTriage: 0, needsHome: 0 },
-  }
-  const needsYou = needsYouCount([scoped])
+  const needsYou = needsYouCount([product], capability)
   const c = capability.counts
   // The issues on THIS capability, not on the branch under it: the Issues panel
   // lists direct children only, so the rollup would badge issues it cannot show.
@@ -109,12 +98,12 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
     <div className="flex flex-col gap-4">
       <StatTiles
         tiles={[
-          { label: `Open ${ISSUE.plural.toLowerCase()}`, value: openIssues },
+          { label: `Open ${ISSUE.plural.toLowerCase()}`, value: openIssues, onClick: () => setTab('issues') },
           // The initiatives the In-flight tab LISTS, the same reading as the
           // product level (`counts.inFlight` also rolls up issue tiers).
-          { label: TIER_LABEL['in-flight'], value: inFlight.length, tone: 'success' },
-          { label: TIER_LABEL.blocked, value: c.blocked, tone: 'danger' },
-          { label: TIER_LABEL['needs-you'], value: needsYou, tone: 'warning' },
+          { label: TIER_LABEL['in-flight'], value: inFlight.length, tone: 'success', onClick: () => setTab('in-flight') },
+          { label: TIER_LABEL.blocked, value: c.blocked, tone: 'danger', onClick: () => setTab('needs-you') },
+          { label: TIER_LABEL['needs-you'], value: needsYou, tone: 'warning', onClick: () => setTab('needs-you') },
         ]}
       />
       <Tabs
@@ -133,6 +122,7 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
       <div role="tabpanel" id={panelId(tab)} aria-labelledby={`tab-${tab}`} className="flex flex-col gap-4">
         {tab === 'overview' && (
           <section className="flex flex-col gap-2 text-sm">
+            <NeedsYouList products={[product]} capability={capability} overview />
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone={capability.state === 'live' ? 'success' : 'info'}>
                 {capabilityStateLabel(capability.state)}
@@ -212,7 +202,7 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
         {/* `repos={[]}` is a real, empty scope: incidents are filed against a
             repository, which belongs to the product, so a capability shows none
             rather than repeating its product's whole incident queue. */}
-        {tab === 'needs-you' && <NeedsYouList products={[scoped]} repos={[]} />}
+        {tab === 'needs-you' && <NeedsYouList products={[product]} capability={capability} repos={[]} />}
       </div>
       {/* Mounted only while open (the RoadmapPage idiom): both forms seed from
           the capability once, so one left mounted would re-open on an abandoned

@@ -1,33 +1,41 @@
-// What "needs you" means, in one place: the rows `NeedsYouList` renders and the
-// number a Needs-you badge shows. Its own module so the badge on a detail header
-// and the list in the panel below it cannot drift apart (and so `NeedsYouList`
-// stays a component-only file for fast refresh).
-import type { InitiativeNode, ProductNode, RoadmapTier } from '@/api/roadmap'
+// Canonical population for the attention list, overview and badge. Counts are
+// groups of decisions: an initiative, a capability's issues, or product triage.
+import type { CapabilityNode, InitiativeNode, ProductNode, RoadmapTier } from '@/api/roadmap'
+import { flattenCapabilities } from '../lookup'
 
 export interface NeedsYouRows {
-  /** Initiatives the server tiered `needs-you` or `blocked`, each with the product it is in. */
   initiatives: { product: ProductNode; initiative: InitiativeNode }[]
-  /** One row per product that has proposals awaiting a human decision. */
+  issues: { product: ProductNode; capability: CapabilityNode; needsYou: number; blocked: number }[]
   pseudo: ProductNode[]
 }
 
-/** Needs-you first (a decision), then blocked (a stall a human can clear) —
- *  the design spec's item 17 puts both in this pile, in tier order. */
 const NEEDS_YOU_TIERS: readonly RoadmapTier[] = ['needs-you', 'blocked']
 
-export function needsYouRows(products: readonly ProductNode[]): NeedsYouRows {
+export function needsYouRows(products: readonly ProductNode[], scope?: CapabilityNode): NeedsYouRows {
+  const scopedCaps = scope ? flattenCapabilities([scope]).map(({ node }) => node) : null
   return {
-    initiatives: NEEDS_YOU_TIERS.flatMap((tier) =>
-      products.flatMap((p) =>
-        p.initiatives.filter((i) => i.tier === tier).map((i) => ({ product: p, initiative: i })))),
-    pseudo: products.filter((p) => p.counts.awaitingTriage > 0 || p.counts.needsHome > 0),
+    initiatives: NEEDS_YOU_TIERS.flatMap((tier) => products.flatMap((product) =>
+      product.initiatives.filter((i) => i.tier === tier && (!scopedCaps || scopedCaps.some((c) =>
+        i.primaryCapability === c.slug || c.initiatives.includes(i.slug),
+      ))).map((initiative) => ({ product, initiative })))),
+    issues: products.flatMap((product) =>
+      (scopedCaps ?? flattenCapabilities(product.capabilities).map(({ node }) => node)).flatMap((capability) => {
+        // Server counts include child rollups AND primary leaf initiatives.
+        // Touching initiatives and programs contribute no count here.
+        const primary = product.initiatives.filter((i) => i.primaryCapability === capability.slug && !i.hasChildren)
+        const direct = (key: 'needsYou' | 'blocked', tier: RoadmapTier) => Math.max(0,
+          capability.counts[key] - capability.children.reduce((n, child) => n + child.counts[key], 0)
+          - primary.filter((i) => i.tier === tier).length)
+        const needsYou = direct('needsYou', 'needs-you')
+        const blocked = direct('blocked', 'blocked')
+        return needsYou + blocked > 0 ? [{ product, capability, needsYou, blocked }] : []
+      })),
+    pseudo: scope ? [] : products.filter((p) => p.counts.awaitingTriage > 0 || p.counts.needsHome > 0),
   }
 }
 
-/** The number a "Needs you" badge shows: the rows the list renders that the map
- *  can count. Incidents are deliberately excluded — they come from a different
- *  query, and `IncidentQueue` badges its own live count in its own header. */
-export function needsYouCount(products: readonly ProductNode[]): number {
-  const { initiatives, pseudo } = needsYouRows(products)
-  return initiatives.length + pseudo.length
+/** Incidents have their own live count and query, and are excluded here. */
+export function needsYouCount(products: readonly ProductNode[], scope?: CapabilityNode): number {
+  const { initiatives, issues, pseudo } = needsYouRows(products, scope)
+  return initiatives.length + issues.length + pseudo.length
 }

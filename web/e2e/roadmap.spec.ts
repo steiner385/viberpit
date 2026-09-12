@@ -392,3 +392,52 @@ test.describe('Roadmap — phone', () => {
     await shot(page, 'phone-product')
   })
 })
+
+// A capability can need a human solely because of an issue, with no initiative.
+// Keep this flow at both sizes: the screenshot's attention must lead somewhere
+// useful even when the map column is hidden on a phone.
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+  test.describe(`Roadmap issue attention — ${viewport.width}px`, () => {
+    test.use({ viewport })
+
+    test('leads from attention to the issue that can be resolved', async ({ page }) => {
+      await interceptApi(page)
+      await page.route('**/api/pm/map', (route) => route.fulfill({ json: {
+        generatedAt: MAP.generatedAt,
+        products: [product({
+          slug: 'kindash', name: 'KinDash', tier: 'needs-you',
+          counts: { inFlight: 0, blocked: 0, needsYou: 1, capabilities: 1, awaitingTriage: 0, needsHome: 0 },
+          capabilities: [cap({
+            slug: 'account-reauthentication', title: 'Account Re-Authentication', tier: 'needs-you',
+            summary: 'Restore an expired account to service.',
+            counts: { openIssues: 1, inFlight: 0, blocked: 0, needsYou: 1 },
+          })],
+        })],
+      } }))
+      await page.route('**/api/pm/leaves?*', (route) => route.fulfill({ json: { items: [{
+        id: 'w42', ref: 'steiner385/kindash#42', repo: 'steiner385/kindash', number: 42,
+        kind: 'issue', title: 'Clarify remote login recovery',
+        url: 'https://github.com/steiner385/kindash/issues/42', state: 'open',
+        triageState: 'accepted', score: null, reach: null, impact: null, effort: null,
+        confidence: null, tier: 'needs-you', blockedBy: [], parentRef: null,
+        featureId: 'f-account-reauthentication', sessionStatus: null, ghCreatedAt: null,
+        reason: 'needs_spec', bounces: 2,
+      }] } }))
+      await page.goto('/roadmap/kindash/capabilities/account-reauthentication')
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText('Account Re-Authentication')
+      await expect(page.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toBeVisible()
+      await page.getByRole('button', { name: 'Needs you: 1', exact: true }).click()
+      await expect(page.getByText('Nothing needs you', { exact: true })).toHaveCount(0)
+      const issueLink = page.getByRole('tabpanel').getByRole('link', { name: 'Review issues in Account Re-Authentication' })
+      await expect(issueLink).toBeVisible()
+      await issueLink.click()
+      await expect(page.getByRole('tab', { name: 'Issues (1)' })).toHaveAttribute('aria-selected', 'true')
+      await expect(page.getByRole('link', { name: '#42 Clarify remote login recovery' })).toHaveAttribute(
+        'href', 'https://github.com/steiner385/kindash/issues/42',
+      )
+      await expect(page.getByText(/needs spec/)).toBeVisible()
+      if (SHOTS) await page.screenshot({ path: `/tmp/roadmap-attention-${viewport.width}.png` })
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    })
+  })
+}
