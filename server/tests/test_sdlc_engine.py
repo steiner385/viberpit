@@ -224,3 +224,12 @@ def test_stage_artifact_map_matches_sequence():
         assert stage in STAGE_SEQUENCE
     assert STAGE_SEQUENCE.index("intake") < STAGE_SEQUENCE.index("design") < \
         STAGE_SEQUENCE.index("plan") < STAGE_SEQUENCE.index("build")
+
+
+def test_step_back_stage_walks_the_sequence_backwards():
+    from server.sdlc.engine import step_back_stage
+    assert step_back_stage("design") == "intake"
+    assert step_back_stage("done") == "maintain"
+    assert step_back_stage("intake") is None
+    with pytest.raises(ValueError):
+        step_back_stage("nope")

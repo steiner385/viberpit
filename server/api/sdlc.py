@@ -37,6 +37,7 @@ from server.sdlc.engine import (
     Propose,
     advance_stage,
     next_action,
+    step_back_stage,
 )
 from server.sdlc.slug import slugify
 
@@ -409,18 +410,23 @@ async def advance_initiative(
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
-    """Advance the initiative to the next stage. Returns 409 when already done."""
-    ini = (
-        await db.execute(select(Initiative).where(Initiative.slug == slug))
-    ).scalar_one_or_none()
-    if ini is None:
-        raise HTTPException(status_code=404, detail={"error": "not_found"})
+    """Advance the initiative to the next stage. 409 when already done or
+    blocked — a blocked row is cleared on purpose (``unblock``), never by
+    moving the gate over it."""
+    ini = await _load_initiative(db, slug)
     if ini.stage == "done":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"error": "already_done", "message": "Initiative is already done"},
         )
-    ini.stage = advance_stage(ini.stage)
+    if ini.status == "blocked":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "blocked",
+                    "message": "Clear the block first (unblock, or accept/reject "
+                               "the pending materialization)"},
+        )
+    ini.stage = advance_stage(str(ini.stage or "intake"))
     ini.status = "active"
     await db.flush()
     await record_audit(
@@ -429,6 +435,81 @@ async def advance_initiative(
         identity=identity,
         detail={"slug": slug, "stage": ini.stage},
     )
+    d = _initiative_to_dict(ini)
+    await _decorate(db, [ini], [d])
+    return d
+
+
+async def _load_initiative(db, slug: str) -> Initiative:
+    ini = (await db.execute(select(Initiative).where(Initiative.slug == slug))).scalar_one_or_none()
+    if ini is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found"})
+    return ini
+
+
+@router.post("/initiatives/{slug}/step-back")
+async def step_back_initiative(
+    slug: str,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Move the human gate BACK one stage (roadmap spec §8, §10): the undo for a
+    mis-tapped Advance. Status becomes ``active`` exactly as advance does, so the
+    stage engine re-enters the earlier stage on its next tick. 409 at the first
+    stage, and 409 while blocked: a block is cleared by ``unblock``, not walked
+    around in either direction."""
+    ini = await _load_initiative(db, slug)
+    if ini.status == "blocked":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "blocked", "message": "Clear the block first"})
+    prev = step_back_stage(str(ini.stage or "intake"))
+    if prev is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "at_first_stage", "message": "Initiative is already at the first stage"})
+    ini.stage = prev
+    ini.status = "active"
+    await db.flush()
+    await record_audit(db=db, type="sdlc.initiative.step_back", identity=identity,
+                       detail={"slug": slug, "stage": prev})
+    d = _initiative_to_dict(ini)
+    await _decorate(db, [ini], [d])
+    return d
+
+
+@router.post("/initiatives/{slug}/unblock")
+async def unblock_initiative(
+    slug: str,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Clear a ``blocked`` initiative back to ``awaiting_human`` — the parked
+    state the plan stage already uses (see ``reject_materialization``) — without
+    touching the stage. Today the only writer of ``blocked`` is a failed
+    materialize apply; after a partial apply is REJECTED the row was a dead end
+    (``next_action`` answers NeedsHuman for it and nothing offered a way out).
+
+    409 ``proposal_pending``: a pending proposal already carries its own two
+    dispositions (accept resumes the apply, reject abandons it) and the card for
+    them stays up; clearing the row underneath would tell the loop to decompose
+    again while a human is still deciding. The web confirm says out loud that a
+    re-decomposition creates a second epic if the failed apply's issues are still
+    open on GitHub — closing those is the human's call, and this route does not
+    touch GitHub."""
+    ini = await _load_initiative(db, slug)
+    if ini.status != "blocked":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "not_blocked", "message": f"Initiative is {ini.status!r}, not blocked"})
+    pending = (await db.execute(select(MaterializationProposal.id).where(
+        MaterializationProposal.initiative_id == ini.id,
+        MaterializationProposal.status == "pending"))).scalars().first()
+    if pending is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "proposal_pending",
+            "message": "Accept or reject the pending materialization first"})
+    ini.status = "awaiting_human"
+    await db.flush()
+    await record_audit(db=db, type="sdlc.initiative.unblock", identity=identity,
+                       detail={"slug": slug})
     d = _initiative_to_dict(ini)
     await _decorate(db, [ini], [d])
     return d

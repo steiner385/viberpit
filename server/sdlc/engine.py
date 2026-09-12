@@ -149,6 +149,18 @@ def advance_stage(stage: str) -> str:
     return nxt if nxt is not None else "done"
 
 
+def step_back_stage(stage: str) -> str | None:
+    """Predecessor stage for the human step-back tap; None at the first stage.
+
+    ``done`` steps back to ``maintain`` — nothing is absorbing in this direction,
+    a human undoing a mis-tap is the whole point. Raises ``ValueError`` on an
+    unknown stage, as ``advance_stage`` does."""
+    if stage not in STAGE_SEQUENCE:
+        raise ValueError(f"unknown stage {stage!r}")
+    idx = STAGE_SEQUENCE.index(stage)
+    return STAGE_SEQUENCE[idx - 1] if idx > 0 else None
+
+
 def _enter_stage(stage: str, initiative: InitiativeView) -> StageAction:
     """The action to take on *first entering* ``stage`` with no artifact yet.
     Used both for the current stage and (auto-advance) for the next one."""

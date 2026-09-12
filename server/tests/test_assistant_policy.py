@@ -157,6 +157,11 @@ _UUID = "3f2a9c1e-7b4d-4e0a-9c7d-1a2b3c4d5e6f"
     # edit — those are a human's decisions to make.
     ("POST", "/api/pm/triage/accept-bulk", False),
     ("PATCH", "/api/pm/work-items/w1/overlay", False),
+    # Blocked-row dispositions (finish-line row 8, #1472) are a human's calls:
+    # stage step-back, clearing a block, and deleting a GitHub dependency.
+    ("POST", "/api/sdlc/initiatives/dark-mode/step-back", False),
+    ("POST", "/api/sdlc/initiatives/dark-mode/unblock", False),
+    ("DELETE", "/api/pm/work-items/w1/deps?blocker=o/r%2312", False),
     # Task 8.3 — watches are the one `/api/assistant/*` exception: a watch belongs
     # to the thread that created it.
     ("GET", "/api/assistant/watches", True),
