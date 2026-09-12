@@ -1429,6 +1429,13 @@ class Project(Base):
         DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+    # The Backlog Runner's per-product policy (server/automations/product_policy.py):
+    # dispatch mode, queue reach, in-flight cap/weight, attempt cap, session model. The
+    # RAW validated blob or null ("never opted in" — effective_policy reads null as the
+    # off-by-default schema). Nullable: not every product has one.
+    automation_policy: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    automation_policy_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
 
 
 class ProjectRepo(Base):

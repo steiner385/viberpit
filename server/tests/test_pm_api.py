@@ -106,6 +106,38 @@ def test_project_lifecycle():
         assert resp.status_code == 404
 
 
+def test_policy_schema_and_project_policy_round_trip():
+    with _client() as c:
+        schema = c.get("/api/pm/policy-schema", headers=IDENTITY_HEADERS)
+        assert schema.status_code == 200
+        assert [f["key"] for f in schema.json()][:2] == ["dispatch", "queue_min_status"]
+
+        r = c.post("/api/pm/projects", json={"name": "KinDash", "slug": "kindash",
+                                             "repos": [{"repo": "cairnea/KinDash", "isPrimary": True}]},
+                   headers=IDENTITY_HEADERS)
+        assert r.status_code == 201, r.text
+        assert r.json()["automationPolicy"] is None
+
+        r = c.patch("/api/pm/projects/kindash/policy",
+                    json={"policy": {"dispatch": "auto", "max_in_flight": 2}}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        pol = r.json()["automationPolicy"]
+        assert pol["dispatch"] == "auto" and pol["max_in_flight"] == 2
+        assert pol["queue_min_status"] == "Ready"          # defaults are stored, not implied
+        assert c.get("/api/pm/projects/kindash", headers=IDENTITY_HEADERS).json()["automationPolicy"] == pol
+
+        r = c.patch("/api/pm/projects/kindash/policy", json={"policy": {"dispatch": "turbo"}},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 422 and r.json()["detail"]["error"] == "bad_policy"
+        r = c.patch("/api/pm/projects/kindash/policy", json={"policy": {"nope": 1}}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 422
+
+        r = c.patch("/api/pm/projects/kindash/policy", json={"policy": None}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 200 and r.json()["automationPolicy"] is None
+        assert c.patch("/api/pm/projects/nope/policy", json={"policy": {}},
+                       headers=IDENTITY_HEADERS).status_code == 404
+
+
 def test_edges():
     """Create two projects, link with an edge, verify bad-kind/bad-dst 422/404, delete."""
     with _client() as c:
