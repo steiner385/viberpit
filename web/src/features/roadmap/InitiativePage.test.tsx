@@ -14,6 +14,7 @@ const h = vi.hoisted(() => {
   const advanceMutate = vi.fn()
   const stepBackMutate = vi.fn()
   const unblockMutate = vi.fn()
+  const updateMutate = vi.fn()
   const initiative = {
     slug: 'views', repo: 'cairnea/KinDash', title: 'Use-case-first task views',
     stage: 'build', status: 'active', origin: 'human', originRef: null,
@@ -44,7 +45,12 @@ const h = vi.hoisted(() => {
     products: [{
       slug: 'kindash', name: 'KinDash', tier: 'needs-you',
       counts: { inFlight: 0, blocked: 0, needsYou: 1, capabilities: 1, awaitingTriage: 0, needsHome: 0 },
-      capabilities: [],
+      capabilities: [{
+        id: 'f1', slug: 'task-views', title: 'Task views', state: 'live', summary: null, docPath: null,
+        commitSha: null, prNumber: null, parentSlug: null, tier: 'idle',
+        counts: { openIssues: 0, inFlight: 0, blocked: 0, needsYou: 0 },
+        links: [], initiatives: [], children: [],
+      }],
       initiatives: [{
         slug: 'views', title: 'Use-case-first task views', stage: 'build', status: 'active',
         projectSlug: 'kindash', primaryCapability: 'task-views', capabilities: ['task-views'],
@@ -62,7 +68,7 @@ const h = vi.hoisted(() => {
     leaves: [] as unknown[],
     proposal: null as unknown,
   }
-  return { advanceMutate, stepBackMutate, unblockMutate, initiative, map, state }
+  return { advanceMutate, stepBackMutate, unblockMutate, updateMutate, initiative, map, state }
 })
 
 vi.mock('@/api/hooks', () => ({
@@ -89,6 +95,7 @@ vi.mock('@/api/hooks', () => ({
   useRemoveDependency: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useStepBackInitiative: () => ({ mutate: h.stepBackMutate, isPending: false, isError: false, error: null }),
   useUnblockInitiative: () => ({ mutate: h.unblockMutate, isPending: false, isError: false, error: null }),
+  useUpdateInitiative: () => ({ mutate: h.updateMutate, isPending: false, isError: false, error: null }),
 }))
 
 function mount(initial = '/initiatives/views') {
@@ -104,6 +111,7 @@ describe('InitiativePage', () => {
     h.advanceMutate.mockClear()
     h.stepBackMutate.mockClear()
     h.unblockMutate.mockClear()
+    h.updateMutate.mockClear()
     h.state.data = h.initiative
     h.state.isLoading = false
     h.state.isError = false
@@ -200,6 +208,16 @@ describe('InitiativePage', () => {
   it('an unblocked initiative has no Unblock button', () => {
     mount()
     expect(screen.queryByRole('button', { name: 'Unblock' })).not.toBeInTheDocument()
+  })
+
+  it('Edit opens the dialog seeded with the title; Save sends the changed title', () => {
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    const title = screen.getByLabelText('Title', { exact: false })
+    expect(title).toHaveValue('Use-case-first task views')
+    fireEvent.change(title, { target: { value: 'Views' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(h.updateMutate).toHaveBeenCalledWith({ slug: 'views', input: { title: 'Views' } }, expect.anything())
   })
 
   it('links the latest commit, not the first one committed', () => {

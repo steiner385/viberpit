@@ -120,6 +120,18 @@ export function createInitiative(input: CreateInitiativeInput): Promise<Initiati
   return api.post<Initiative>('/sdlc/initiatives', input)
 }
 
+/** What a human may change inline on an initiative (spec §8). `capabilityIds`
+ *  replaces the touched set; the primary always joins it. Send only what changed. */
+export interface UpdateInitiativeInput {
+  title?: string
+  primaryCapabilityId?: string
+  capabilityIds?: string[]
+}
+
+export function updateInitiative(slug: string, input: UpdateInitiativeInput): Promise<Initiative> {
+  return api.patch<Initiative>(`/sdlc/initiatives/${encodeURIComponent(slug)}`, input)
+}
+
 /** The human-gate tap: walk the initiative's stage forward one step. */
 export function advanceInitiative(slug: string): Promise<Initiative> {
   return api.post<Initiative>(`/sdlc/initiatives/${encodeURIComponent(slug)}/advance`)

@@ -22,9 +22,10 @@ import type {
 import { fetchDeployStatus, startDeploy } from './deploy'
 import {
   fetchInitiative, advanceInitiative, stepBackInitiative, unblockInitiative, createInitiative,
+  updateInitiative,
   fetchMaterialization, acceptMaterialization, rejectMaterialization,
   fetchIncidents, actOnIncident,
-  type Initiative, type CreateInitiativeInput,
+  type Initiative, type CreateInitiativeInput, type UpdateInitiativeInput,
   type MaterializationProposal, type MaterializationApplied,
   type Incident, type IncidentActionInput,
 } from './sdlc'
@@ -1590,6 +1591,22 @@ export function useCreateInitiative() {
   return useMutation<Initiative, ApiRequestError, CreateInitiativeInput>({
     mutationFn: (input) => createInitiative(input),
     onSuccess: () => void qc.invalidateQueries({ queryKey: QK.roadmapMap }),
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** Inline edit of an initiative's title / capabilities. The detail and the map
+ *  both carry the capability links (the map places the ◆ row under its primary),
+ *  so both are invalidated. */
+export function useUpdateInitiative() {
+  const qc = useQueryClient()
+  return useMutation<Initiative, ApiRequestError, { slug: string; input: UpdateInitiativeInput }>({
+    mutationFn: ({ slug, input }) => updateInitiative(slug, input),
+    onSuccess: (_result, { slug }) => {
+      void qc.invalidateQueries({ queryKey: QK.initiative(slug) })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+    },
+    onError: (e) => toast.error(extractMutationErrorMessage(e, 'Could not update the initiative')),
     meta: PM_MUTATION_META,
   })
 }

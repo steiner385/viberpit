@@ -36,6 +36,7 @@ import { TIER_TONE } from './roadmapTier'
 import { useTabParam } from './useTabParam'
 import { StatTiles } from './detail/StatTiles'
 import { LeafList } from './detail/LeafList'
+import { EditInitiativeDialog } from './detail/EditInitiativeDialog'
 
 const TABS = ['track', 'epic', 'sessions', 'capabilities'] as const
 type Tab = (typeof TABS)[number]
@@ -288,27 +289,38 @@ function SessionsTab({ initiative }: { initiative: Initiative }) {
   )
 }
 
-function CapabilitiesTab({ initiative }: { initiative: Initiative }) {
+function CapabilitiesTab({ initiative, onEdit }: { initiative: Initiative; onEdit: () => void }) {
   const { projectSlug } = initiative
+  // "Edit capabilities" surfaces from this tab too, not just the header — the
+  // empty state is exactly where a human wants to fix a missing home.
+  const editButton = (
+    <Button size="sm" variant="ghost" onClick={onEdit}>Edit {CAPABILITY.plural.toLowerCase()}</Button>
+  )
   if (!projectSlug || initiative.capabilities.length === 0) {
     return (
-      <EmptyState
-        title={`No ${CAPABILITY.plural.toLowerCase()} linked`}
-        description={`Triage gives an ${INITIATIVE.singular.toLowerCase()} its home on the map.`}
-      />
+      <div className="flex flex-col gap-3">
+        <EmptyState
+          title={`No ${CAPABILITY.plural.toLowerCase()} linked`}
+          description={`Triage gives an ${INITIATIVE.singular.toLowerCase()} its home on the map.`}
+        />
+        {editButton}
+      </div>
     )
   }
   return (
-    <ul className="flex flex-col gap-1" aria-label={CAPABILITY.plural}>
-      {initiative.capabilities.map((c) => (
-        <li key={c.id} className="rounded-md border border-edge bg-surface p-2 text-sm">
-          <Link to={capabilityPath(projectSlug, c.slug)} className="text-ink hover:underline">
-            {c.title ?? c.slug}
-          </Link>
-          {c.isPrimary && <Badge tone="accent" className="ml-2">primary</Badge>}
-        </li>
-      ))}
-    </ul>
+    <div className="flex flex-col gap-2">
+      {editButton}
+      <ul className="flex flex-col gap-1" aria-label={CAPABILITY.plural}>
+        {initiative.capabilities.map((c) => (
+          <li key={c.id} className="rounded-md border border-edge bg-surface p-2 text-sm">
+            <Link to={capabilityPath(projectSlug, c.slug)} className="text-ink hover:underline">
+              {c.title ?? c.slug}
+            </Link>
+            {c.isPrimary && <Badge tone="accent" className="ml-2">primary</Badge>}
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
 
@@ -330,6 +342,7 @@ export function InitiativePage() {
   const [confirming, setConfirming] = useState(false)
   const [confirmingBack, setConfirmingBack] = useState(false)
   const [confirmingUnblock, setConfirmingUnblock] = useState(false)
+  const [editing, setEditing] = useState(false)
 
   // The slug is the fallback title, so a deep link names something rather than
   // rendering a blank heading while the detail is in flight.
@@ -386,6 +399,9 @@ export function InitiativePage() {
         }
         actions={initiative && (
           <div className="flex items-center gap-2">
+            {/* The one place an initiative's own facts are edited; the gate
+                controls beside it move it, this names it. */}
+            <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>Edit</Button>
             {/* The undo for a mis-tapped Advance. Disabled, not absent, at intake
                 for the same reason Advance is at done: the row of controls must
                 not change shape as the initiative moves. */}
@@ -462,7 +478,7 @@ export function InitiativePage() {
               {tab === 'track' && <TrackTab initiative={initiative} />}
               {tab === 'epic' && <EpicTab initiative={initiative} />}
               {tab === 'sessions' && <SessionsTab initiative={initiative} />}
-              {tab === 'capabilities' && <CapabilitiesTab initiative={initiative} />}
+              {tab === 'capabilities' && <CapabilitiesTab initiative={initiative} onEdit={() => setEditing(true)} />}
             </div>
           </div>
         )}
@@ -560,6 +576,14 @@ export function InitiativePage() {
             </Button>
           </div>
         </Dialog>
+      )}
+      {initiative && map && (
+        <EditInitiativeDialog
+          initiative={initiative}
+          products={map.products}
+          open={editing}
+          onClose={() => setEditing(false)}
+        />
       )}
     </div>
   )
