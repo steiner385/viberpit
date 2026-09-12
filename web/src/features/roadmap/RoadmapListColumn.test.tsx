@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { TriageProposal } from '@/api/triage'
-import { MAP } from './__fixtures__/map'
+import type { RoadmapMap } from '@/api/roadmap'
+import { MAP, cap } from './__fixtures__/map'
 import { RoadmapListColumn } from './RoadmapListColumn'
 import { capabilityKey, productKey } from './treeRows'
 import { ViewportProvider } from '@/shell/useViewport'
@@ -118,6 +119,20 @@ describe('RoadmapListColumn', () => {
   it('states: loading, error, empty', () => {
     mount({ map: undefined, isLoading: true })
     expect(screen.getByRole('status', { name: 'Loading roadmap' })).toBeInTheDocument()
+  })
+
+  it('badges a capability row with its open map-changes PR number', () => {
+    const map: RoadmapMap = {
+      ...MAP,
+      products: [
+        { ...MAP.products[0], capabilities: [cap({ slug: 'billing', title: 'Billing', prNumber: 12 })] },
+        MAP.products[1],
+      ],
+    }
+    mount({ map })
+    const row = screen.getByTestId(`row-${capabilityKey('kindash', 'billing')}`)
+    expect(within(row).getByText('PR #12')).toBeInTheDocument()
+    expect(within(row).getByText('proposed in pull request 12')).toBeInTheDocument()
   })
 })
 

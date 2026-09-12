@@ -276,6 +276,45 @@ test.describe('Roadmap — desktop', () => {
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('Roadmap')
   })
 
+  test('a capability under an open map-changes PR badges its row and the product page shows the PR card', async ({ page }) => {
+    // Overrides the `beforeEach` intercept for this one route — Playwright tries
+    // the most-recently-registered matching handler first, so this wins over
+    // `interceptApi`'s `/api/pm/map` branch without touching the shared fixture.
+    const kindash = MAP.products[0]
+    await page.route('**/api/pm/map', (route) => {
+      route.fulfill({
+        json: {
+          ...MAP,
+          products: [
+            {
+              ...kindash,
+              mapChanges: {
+                branch: 'pm/map-changes-kindash', prNumber: 31,
+                prUrl: 'https://github.com/steiner385/kindash/pull/31', status: 'open',
+                openedAt: '2026-09-10T00:00:00Z', headSha: 'abc123', behind: false, conflicting: false,
+              },
+              capabilities: [
+                cap({ slug: 'billing', title: 'Billing', prNumber: 31 }),
+                ...kindash.capabilities.slice(1),
+              ],
+            },
+            MAP.products[1],
+          ],
+        },
+      })
+    })
+
+    await page.goto('/roadmap')
+    await expect(page.getByRole('button', { name: 'Open capability Billing' })).toBeVisible()
+    await expect(page.getByText('PR #31')).toBeVisible()
+
+    await page.goto('/roadmap/kindash')
+    // Scoped past `getByRole('status')`: the page also carries a "Loading
+    // roadmap" status region and an sr-only global loading announcer.
+    await expect(page.getByRole('status').filter({ hasText: 'Capability map changes open in' })).toBeVisible()
+    await expect(page.getByRole('link', { name: 'PR #31' })).toBeVisible()
+  })
+
   test('/projects redirects to /roadmap', async ({ page }) => {
     await page.goto('/projects')
     await expect.poll(() => pathOf(page)).toBe('/roadmap')
