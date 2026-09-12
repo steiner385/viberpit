@@ -87,7 +87,11 @@ function mount(
   const props = { product: busyProduct, capability: tasks, onNewInitiative: () => {}, ...over }
   return render(
     <ViewportProvider kiosk={null}>
-      <MemoryRouter initialEntries={[path]}><CapabilityDetail {...props} /></MemoryRouter>
+      {/* Real mount point is inside PageContent, whose scroll div carries
+          data-page-scroll — LeafList's virtualizer measures against it. */}
+      <div data-page-scroll="">
+        <MemoryRouter initialEntries={[path]}><CapabilityDetail {...props} /></MemoryRouter>
+      </div>
     </ViewportProvider>,
   )
 }
@@ -187,9 +191,10 @@ describe('CapabilityDetail', () => {
 
   it('Issues: open work first, with its blockers, score and live session', () => {
     mount({}, '/roadmap/kindash/capabilities/tasks?tab=issues')
-    // Excludes the "Blocked by" sub-list's own <li> refs, which share the
-    // listitem role but are not leaf rows.
-    const items = screen.getAllByRole('listitem').filter((el) => el.closest('[aria-label="Blocked by"]') === null)
+    // Excludes the "Blocked by" sub-list's own <li> refs and the virtualizer's
+    // section-header rows, which all share the listitem role but are not leaf rows.
+    const items = screen.getAllByRole('listitem')
+      .filter((el) => el.closest('[aria-label="Blocked by"]') === null && el.querySelector('h3') === null)
     expect(items[0]).toHaveTextContent('Bulk edit')
     expect(items[0]).toHaveTextContent('session')
     expect(items[0]).toHaveTextContent('6.5')
