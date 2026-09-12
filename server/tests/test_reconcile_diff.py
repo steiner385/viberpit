@@ -57,6 +57,17 @@ def test_compile_edges_prose_without_native_twin():
     assert compile_edges(deps, nodes, already={muts[0].key()}) == []
 
 
+def test_compile_edges_never_re_adds_an_edge_a_human_removed_from_the_app():
+    """A prose dep whose native twin was deleted through DELETE …/deps must stay
+    deleted: the applied removal key is in `already`, and it outranks the body."""
+    from server.pm.reconcile_diff import DepView, compile_edges, remove_blocked_by_mutation
+    deps = [DepView("o/r#5", "o/r#3", "prose", True)]
+    nodes = {"o/r#5": "N5", "o/r#3": "N3"}
+    assert len(compile_edges(deps, nodes, already=set())) == 1
+    removed = remove_blocked_by_mutation("N5", "N3", initiated_by="x").key()
+    assert compile_edges(deps, nodes, already={removed}) == []
+
+
 def test_initial_fill_pushes_even_when_item_updated_after_decision():
     assert should_push(T1, T2, None) is True
 
