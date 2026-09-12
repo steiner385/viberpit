@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 import pytest
 
 from server.automations.pm_sync import PmSyncLoop, RepoSyncView
+from server.pm.feature_index import FeatureDocsRead
+from server.pm.map_changes import Pointer
 
 
 class Ctx:
@@ -49,8 +51,15 @@ def _named(page, name):
     return page
 
 
-def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None):
-    """Wire a loop over canned data. `pages` is a list popped per fetch call."""
+def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None,
+          read_feature_docs=None, read_map_changes=None):
+    """Wire a loop over canned data. `pages` is a list popped per fetch call.
+
+    ``read_feature_docs``/``read_map_changes`` let a test fully replace the
+    default-branch-only fake below (e.g. to answer differently per ``ref`` or
+    to serve a map-changes pointer) while every caller that only passes
+    ``feature_docs`` keeps getting a plain single-branch ``FeatureDocsRead``.
+    """
     saved = []
     upserted = []
     applied = []
@@ -70,8 +79,8 @@ def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None
     async def save(view, **updates):
         saved.append((view.repo, updates))
 
-    async def read_docs(repo):
-        return list(feature_docs or [])
+    async def read_docs(repo, ref=None):
+        return FeatureDocsRead(sha="sha-fake", docs=list(feature_docs or []))
 
     async def list_rows(project_id):
         return []
@@ -81,10 +90,11 @@ def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None
 
     loop = PmSyncLoop(
         ctx, read_config=read_config, list_repos=list_repos, fetch=fetch,
-        upsert_items=upsert, save_sync_state=save, read_feature_docs=read_docs,
+        upsert_items=upsert, save_sync_state=save,
+        read_feature_docs=read_feature_docs or read_docs,
         list_feature_rows=list_rows, apply_feature_plan=apply_plan,
         now_utc=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
-        rename_repo=rename_repo)
+        rename_repo=rename_repo, read_map_changes=read_map_changes)
     return loop, saved, upserted, applied
 
 
@@ -272,3 +282,112 @@ async def test_interval_gate_skips_recent_unless_requested():
                                            config={"min_sync_interval_s": 300})
     await loop.tick()
     assert saved == []  # skipped — nothing fetched, nothing saved
+
+
+# --- map-changes branch merge (R8b-4) -----------------------------------------
+
+
+def _fdoc(slug: str, title: str) -> str:
+    return f"---\nslug: {slug}\ntitle: {title}\nstate: proposed\n---\n# {title}\n"
+
+
+def _open_pointer(branch="pm/map-changes-proj", pr_number=12,
+                   pr_url="https://github.com/o/r/pull/12"):
+    return Pointer(branch=branch, pr_number=pr_number, pr_url=pr_url, status="open",
+                   opened_at=None, head_sha="sha-branch", behind=False, conflicting=False)
+
+
+@pytest.mark.asyncio
+async def test_branch_docs_override_default_by_slug_and_stamp_pr_fields():
+    """Branch docs win by slug; a doc only on the branch is proposed (PR fields,
+    no commit_sha); a doc only on the default branch is stamped with the
+    default-branch read SHA; a doc present on BOTH keeps the branch content and
+    gets the PR fields (R8b-4)."""
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    main = FeatureDocsRead("sha-main", [
+        ("docs/product/features/a.md", _fdoc("a", "A")),
+        ("docs/product/features/b.md", _fdoc("b", "B")),
+    ])
+    branch = FeatureDocsRead("sha-branch", [
+        ("docs/product/features/b.md", _fdoc("b", "B Proposed")),
+        ("docs/product/features/c.md", _fdoc("c", "C")),
+    ])
+
+    async def read_docs(repo, ref=None):
+        return branch if ref == "pm/map-changes-proj" else main
+
+    async def read_map_changes(project_id):
+        return _open_pointer()
+
+    loop, saved, upserted, applied = _loop(
+        ctx, [view], pages, read_feature_docs=read_docs,
+        read_map_changes=read_map_changes)
+    await loop.tick()
+
+    assert len(applied) == 1
+    _, plan = applied[0]
+    by_slug = {u.slug: u for u in plan.upserts}
+    assert by_slug["a"].commit_sha == "sha-main"
+    assert by_slug["a"].pr_number is None
+    assert by_slug["b"].title == "B Proposed"
+    assert by_slug["b"].commit_sha is None
+    assert by_slug["b"].pr_number == 12
+    assert by_slug["b"].pr_url == "https://github.com/o/r/pull/12"
+    assert by_slug["c"].commit_sha is None
+    assert by_slug["c"].pr_number == 12
+
+
+@pytest.mark.asyncio
+async def test_no_open_map_changes_pointer_skips_the_branch_read():
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    calls = []
+
+    async def read_docs(repo, ref=None):
+        calls.append(ref)
+        return FeatureDocsRead("sha-main", [])
+
+    async def read_map_changes(project_id):
+        return None
+
+    loop, saved, upserted, applied = _loop(
+        ctx, [view], pages, read_feature_docs=read_docs,
+        read_map_changes=read_map_changes)
+    await loop.tick()
+    assert calls == [None]  # only the default-branch read happened
+
+
+@pytest.mark.asyncio
+async def test_branch_read_error_is_best_effort_default_plan_still_applied():
+    """The branch read is best-effort (R8b-4): a raise there must not poison
+    the default-branch plan, unlike the atomic-or-raise default-branch read."""
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    main = FeatureDocsRead("sha-main", [("docs/product/features/a.md", _fdoc("a", "A"))])
+
+    async def read_docs(repo, ref=None):
+        if ref is None:
+            return main
+        raise RuntimeError("branch does not exist on the remote")
+
+    async def read_map_changes(project_id):
+        return _open_pointer()
+
+    loop, saved, upserted, applied = _loop(
+        ctx, [view], pages, read_feature_docs=read_docs,
+        read_map_changes=read_map_changes)
+    await loop.tick()
+
+    assert len(applied) == 1
+    _, plan = applied[0]
+    assert plan.upserts[0].commit_sha == "sha-main"
+    assert any("watermark" in u for _, u in saved)  # work-item sync still completed
+    assert any(kw.get("kind") == "map_changes_read_error" for _, _, kw in ctx.events)
+    assert any(level == "warn" for level, _, _ in ctx.events)
