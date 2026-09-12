@@ -165,3 +165,33 @@ def test_map_node_carries_reason():
     assert node["reason"] == "advance"
     assert tree["capabilities"][0]["tier"] == "needs-you"
     assert tree["counts"]["needsYou"] == 1
+
+
+def test_initiative_blocked_reason_names_the_cause():
+    from server.pm.tree import initiative_blocked_reason
+    assert initiative_blocked_reason("blocked", 0) == "blocked"
+    # The row's own status wins over the epic count: the human clears the row first.
+    assert initiative_blocked_reason("blocked", 3) == "blocked"
+    assert initiative_blocked_reason("active", 2) == "epic_blocked"
+    assert initiative_blocked_reason("active", 0) is None
+    assert initiative_blocked_reason(None, 0) is None
+
+
+def test_blocked_initiative_node_carries_its_reason():
+    """The map row is the only place the reason is computed (constitution VI):
+    a blocked row says why, and a needs-you row keeps the advance reason it had."""
+    from server.pm.tree import InitiativeIn, _initiative_node
+    epic = {"ref": "o/r#1", "url": "u", "total": 3, "done": 1, "blocked": 2, "needsHuman": 0}
+    node = _initiative_node(InitiativeIn("x", "X", "build", "active", None, (), epic), "p")
+    assert node["tier"] == "blocked"
+    assert node["reason"] == "epic_blocked"
+    own = _initiative_node(InitiativeIn("y", "Y", "plan", "blocked", None, (), None), "p")
+    assert (own["tier"], own["reason"]) == ("blocked", "blocked")
+    # Needs-you outranks blocked and keeps its own reason.
+    ready = {"ref": "o/r#1", "url": "u", "total": 3, "done": 3, "blocked": 0, "needsHuman": 0}
+    adv = _initiative_node(InitiativeIn("z", "Z", "build", "active", None, (), ready), "p")
+    assert (adv["tier"], adv["reason"]) == ("needs-you", "advance")
+    # An awaiting_human row with a blocked sub-issue is needs-you with NO reason:
+    # the reason field says why it needs a human beyond its status, and it does not.
+    park = _initiative_node(InitiativeIn("w", "W", "build", "awaiting_human", None, (), epic), "p")
+    assert (park["tier"], park["reason"]) == ("needs-you", None)

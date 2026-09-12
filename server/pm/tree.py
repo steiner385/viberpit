@@ -42,6 +42,21 @@ def initiative_reason(status: str | None, stage: str | None,
     return None
 
 
+def initiative_blocked_reason(status: str | None, epic_blocked: int) -> str | None:
+    """Why a `blocked`-tier initiative is blocked — the disposition differs.
+
+    ``"blocked"`` is the row's OWN status (today only a failed materialize apply
+    writes it; `server/pm/materialize_apply.py:fail`), cleared by the unblock
+    route. ``"epic_blocked"`` means ≥1 sub-issue of its epic carries an open
+    blocked-by dependency, cleared by removing the dependency or closing the
+    blocker. The row's own status wins: the human clears the row first."""
+    if status == "blocked":
+        return "blocked"
+    if epic_blocked > 0:
+        return "epic_blocked"
+    return None
+
+
 def initiative_tier(status: str | None, stage: str | None,
                     epic_blocked: int, epic_needs_human: int, *,
                     epic_total: int = 0, epic_done: int = 0) -> str:
@@ -135,14 +150,18 @@ def _initiative_node(ini: InitiativeIn, project_slug: str) -> dict:
     # slug-keyed), whereas server/api/sdlc.py's initiative payload serializes
     # `primaryCapability` as `{id, slug, title}`. Both shapes are intended —
     # Phase 3 consumes each from its own endpoint — not a drift to reconcile.
+    epic_blocked, epic_needs = int(epic.get("blocked", 0)), int(epic.get("needsHuman", 0))
+    tier = initiative_tier(ini.status, ini.stage, epic_blocked, epic_needs,
+                           epic_total=total, epic_done=done)
+    reason = initiative_reason(ini.status, ini.stage, total, done)
+    if reason is None and tier == "blocked":
+        reason = initiative_blocked_reason(ini.status, epic_blocked)
     return {
         "slug": ini.slug, "title": ini.title, "stage": ini.stage, "status": ini.status,
         "projectSlug": project_slug, "primaryCapability": ini.primary_slug,
         "capabilities": list(ini.capability_slugs),
-        "tier": initiative_tier(ini.status, ini.stage,
-                                int(epic.get("blocked", 0)), int(epic.get("needsHuman", 0)),
-                                epic_total=total, epic_done=done),
-        "reason": initiative_reason(ini.status, ini.stage, total, done),
+        "tier": tier,
+        "reason": reason,
         "epic": ini.epic,
     }
 
