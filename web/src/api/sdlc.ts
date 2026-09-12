@@ -51,8 +51,10 @@ export interface InitiativeEpicChild {
  *  query is re-run on every websocket status frame, so `children` is optional
  *  here rather than a second, list-only type. */
 export interface InitiativeEpic {
-  ref: string
-  url: string
+  /** Null for a program initiative's roll-up epic when the program has no epic
+   *  pointer of its own — the numbers are still a real roll-up of its phases. */
+  ref: string | null
+  url: string | null
   total: number
   done: number
   blocked: number
@@ -97,6 +99,13 @@ export interface Initiative {
   projectSlug: string | null
   primaryCapability: InitiativeCapabilityRef | null
   capabilities: InitiativeCapabilityRef[]
+  /** Slug of the program initiative this is a phase of, or null for a root
+   *  initiative (initiative nesting). */
+  parentInitiativeSlug: string | null
+  /** Whether this initiative has phases nested under it (a "program"). */
+  hasChildren: boolean
+  /** The program's phases, in order — empty for a plain (non-program) initiative. */
+  children: { slug: string; title: string | null; stage: string | null; status: string | null }[]
   /** Detail endpoint only. */
   buildSessions?: { id: string; status: string | null; branch: string | null }[]
   nextAction?: InitiativeNextAction

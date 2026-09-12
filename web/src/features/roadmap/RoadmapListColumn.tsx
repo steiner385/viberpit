@@ -293,6 +293,10 @@ function InitiativesScopeBody({ entries, isLoading, selectedKey, onOpen }: Initi
               selected={selectedKey === key}
               onOpen={() => onOpen({
                 kind: 'initiative', key, depth: 0, product: e.product, initiative: e.initiative,
+                // A flat list, not the tree: there is no fold state here, and
+                // `hasChildren` is a fact about the initiative the row already
+                // carries — not something this scope renders nested itself.
+                expanded: false, hasChildren: e.initiative.hasChildren,
               })}
             />
           )

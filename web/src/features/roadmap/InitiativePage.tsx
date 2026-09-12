@@ -260,9 +260,15 @@ function EpicTab({ initiative, product }: { initiative: Initiative; product: Pro
   }
   return (
     <div className="flex flex-col gap-3">
-      <a href={epic.url} target="_blank" rel="noreferrer" className="text-sm text-accent hover:underline">
-        {epic.ref} ↗
-      </a>
+      {/* A program's roll-up epic can report real sub-issue counts with no
+          pointer of its own (`ref`/`url: null`) — Task 13's job to give that
+          case its own presentation; this minimal guard just keeps the type
+          change from breaking the page. */}
+      {epic.url && (
+        <a href={epic.url} target="_blank" rel="noreferrer" className="text-sm text-accent hover:underline">
+          {epic.ref ?? 'Epic'} ↗
+        </a>
+      )}
       <StatTiles
         tiles={[
           { label: 'Done', value: epic.done, tone: 'success' },

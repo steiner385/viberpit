@@ -10,7 +10,7 @@ export type PseudoKind = 'awaiting-triage' | 'needs-home'
 export type TreeRow =
   | { kind: 'product'; key: string; depth: 0; product: ProductNode; expanded: boolean; hasChildren: boolean }
   | { kind: 'capability'; key: string; depth: number; product: ProductNode; capability: CapabilityNode; expanded: boolean; hasChildren: boolean }
-  | { kind: 'initiative'; key: string; depth: number; product: ProductNode; initiative: InitiativeNode }
+  | { kind: 'initiative'; key: string; depth: number; product: ProductNode; initiative: InitiativeNode; expanded: boolean; hasChildren: boolean }
   | { kind: 'pseudo'; key: string; depth: 1; product: ProductNode; pseudo: PseudoKind; count: number }
 
 export interface TreeState {
@@ -60,12 +60,28 @@ export function rowMatches(row: TreeRow, query: string): boolean {
  */
 function flattenProduct(product: ProductNode, state: TreeState, query: string): TreeRow[] {
   const searching = query.trim() !== ''
-  const byPrimary = new Map<string, InitiativeNode[]>()
-  const orphans: InitiativeNode[] = []
   const known = new Set<string>()
   const collect = (c: CapabilityNode) => { known.add(c.slug); c.children.forEach(collect) }
   product.capabilities.forEach(collect)
+
+  // A phase nests under its program (`byParent`); everything else — a root
+  // initiative, or a phase whose parent names an initiative the product does
+  // not have — is bucketed by primary capability like before. Membership is
+  // decided ONCE, up front, from the product's own initiative slugs: a
+  // dangling `parentInitiative` never hides a node, it just makes it a root.
+  const initiativeSlugs = new Set(product.initiatives.map((i) => i.slug))
+  const isRoot = (i: InitiativeNode) => i.parentInitiative === null || !initiativeSlugs.has(i.parentInitiative)
+
+  const byParent = new Map<string, InitiativeNode[]>()
+  const byPrimary = new Map<string, InitiativeNode[]>()
+  const orphans: InitiativeNode[] = []
   for (const i of product.initiatives) {
+    if (!isRoot(i)) {
+      const list = byParent.get(i.parentInitiative!) ?? []
+      list.push(i)
+      byParent.set(i.parentInitiative!, list)
+      continue
+    }
     if (i.primaryCapability && known.has(i.primaryCapability)) {
       const list = byPrimary.get(i.primaryCapability) ?? []
       list.push(i)
@@ -75,20 +91,37 @@ function flattenProduct(product: ProductNode, state: TreeState, query: string): 
     }
   }
 
+  // Recursive: a program's phases follow it at `depth + 1`, folding with the
+  // program's own key. While searching, a program is kept when IT matches or
+  // any phase does (the same "keep it when a descendant matched" rule a
+  // capability row already follows) — never filtered a second time by the
+  // caller, which is what used to strand a matching phase under a
+  // non-matching program title.
   const initiativeRows = (list: InitiativeNode[], depth: number): TreeRow[] =>
-    list.map((initiative) => ({ kind: 'initiative', key: initiativeKey(initiative.slug), depth, product, initiative }))
+    list.flatMap((initiative) => {
+      const key = initiativeKey(initiative.slug)
+      const phases = byParent.get(initiative.slug) ?? []
+      const kids = initiativeRows(phases, depth + 1)
+      const shown = searching ? kids.filter((r) => rowMatches(r, query) || (r.kind === 'initiative' && r.hasChildren)) : kids
+      const self: TreeRow = {
+        kind: 'initiative', key, depth, product, initiative,
+        expanded: searching ? shown.length > 0 : !state.collapsed.has(key),
+        hasChildren: searching ? shown.length > 0 : phases.length > 0,
+      }
+      if (searching) return rowMatches(self, query) || shown.length > 0 ? [self, ...shown] : []
+      return self.expanded ? [self, ...kids] : [self]
+    })
 
   const capRows = (c: CapabilityNode, depth: number): TreeRow[] => {
     const key = capabilityKey(product.slug, c.slug)
-    const kids: TreeRow[] = searching
-      ? [
-          ...c.children.flatMap((k) => capRows(k, depth + 1)),
-          ...initiativeRows(byPrimary.get(c.slug) ?? [], depth + 1).filter((r) => rowMatches(r, query)),
-        ]
-      : [
-          ...c.children.flatMap((k) => capRows(k, depth + 1)),
-          ...initiativeRows(byPrimary.get(c.slug) ?? [], depth + 1),
-        ]
+    // `initiativeRows` already self-filters while searching (a program row is
+    // kept for a matching phase even when its own title does not match), so —
+    // same as the nested-capability branch just above it — nothing here
+    // filters the result a second time.
+    const kids: TreeRow[] = [
+      ...c.children.flatMap((k) => capRows(k, depth + 1)),
+      ...initiativeRows(byPrimary.get(c.slug) ?? [], depth + 1),
+    ]
     // While searching the fold is ignored — `kids` are emitted whatever the
     // collapse state — so the row reports what it ACTUALLY renders. Reporting
     // the stored fold instead would give a visibly expanded row an
@@ -121,9 +154,13 @@ function flattenProduct(product: ProductNode, state: TreeState, query: string): 
       : []),
   ]
   const key = productKey(product.slug)
-  // Leaf rows (initiatives, pseudo) were not filtered by capRows; filter here.
+  // Pseudo rows were not filtered above; filter here. Capability AND initiative
+  // rows are already self-filtered by their own recursive builders (a program
+  // row is kept for a matching phase the same way a capability is kept for a
+  // matching child), so re-checking `rowMatches` on them here would drop a
+  // program whose own title does not match but whose phase does.
   const kept = searching
-    ? children.filter((r) => r.kind === 'capability' || rowMatches(r, query))
+    ? children.filter((r) => r.kind === 'capability' || r.kind === 'initiative' || rowMatches(r, query))
     : children
   const self: TreeRow = {
     kind: 'product',

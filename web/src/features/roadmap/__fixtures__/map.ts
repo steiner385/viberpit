@@ -12,7 +12,8 @@ export function cap(over: Partial<CapabilityNode> & { slug: string }): Capabilit
 export function ini(over: Partial<InitiativeNode> & { slug: string; projectSlug: string }): InitiativeNode {
   return {
     title: over.slug, stage: 'build', status: 'active', primaryCapability: null,
-    capabilities: [], tier: 'in-flight', reason: null, epic: null, ...over,
+    capabilities: [], tier: 'in-flight', reason: null, epic: null,
+    parentInitiative: null, hasChildren: false, ...over,
   }
 }
 
@@ -47,6 +48,10 @@ export const MAP: RoadmapMap = {
       initiatives: [
         ini({ slug: 'views', title: 'Use-case-first task views', projectSlug: 'kindash', primaryCapability: 'task-views', capabilities: ['task-views'] }),
         ini({ slug: 'orphan', title: 'No home yet', projectSlug: 'kindash', tier: 'needs-you', reason: 'advance' }),
+        // A program: `hasChildren` and its phase (`audit-01`, nested via
+        // `parentInitiative`) exercise treeRows' phase-nesting.
+        ini({ slug: 'audit', title: 'UI audit', projectSlug: 'kindash', primaryCapability: 'tasks', hasChildren: true }),
+        ini({ slug: 'audit-01', title: '01 Restore', projectSlug: 'kindash', primaryCapability: 'tasks', parentInitiative: 'audit' }),
       ],
     }),
     product({ slug: 'viberpit', name: 'ViberPit', capabilities: [cap({ slug: 'sessions', title: 'Sessions' })] }),

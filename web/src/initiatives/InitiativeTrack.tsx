@@ -89,7 +89,10 @@ export function InitiativeTrack(
               <span className="c" aria-hidden="true">{GLYPH[n.status] ?? i + 1}</span>
               {isBuild
                 ? (
-                  <a className="node-label" href={epic.url} target="_blank" rel="noreferrer"
+                  // `epic.url` is nullable for a program's roll-up epic with no
+                  // pointer of its own; this task only keeps the type honest —
+                  // giving that case its own presentation is Task 13's.
+                  <a className="node-label" href={epic.url ?? undefined} target="_blank" rel="noreferrer"
                      aria-label={`${label} — view epic on GitHub`}>
                     {label}
                   </a>

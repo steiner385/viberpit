@@ -14,6 +14,8 @@ describe('flattenMap', () => {
       capabilityKey('kindash', 'tasks'),
       capabilityKey('kindash', 'task-views'),
       initiativeKey('views'),
+      initiativeKey('audit'),
+      initiativeKey('audit-01'),
       initiativeKey('orphan'),
       'pseudo:kindash:awaiting-triage',
       productKey('viberpit'),
@@ -28,6 +30,10 @@ describe('flattenMap', () => {
     expect(byKey[capabilityKey('kindash', 'tasks')]).toMatchObject({ depth: 1, hasChildren: true })
     expect(byKey[capabilityKey('kindash', 'task-views')]).toMatchObject({ depth: 2, hasChildren: true })
     expect(byKey[initiativeKey('views')]).toMatchObject({ kind: 'initiative', depth: 3 })
+    // A program sits beside its capability's other rows (same depth as
+    // `task-views`); its phase is nested one level deeper under it.
+    expect(byKey[initiativeKey('audit')]).toMatchObject({ kind: 'initiative', depth: 2, hasChildren: true, expanded: true })
+    expect(byKey[initiativeKey('audit-01')]).toMatchObject({ kind: 'initiative', depth: 3, hasChildren: false })
     expect(byKey[initiativeKey('orphan')]).toMatchObject({ kind: 'initiative', depth: 1 })
     expect(byKey['pseudo:kindash:awaiting-triage']).toMatchObject({ kind: 'pseudo', count: 2 })
     expect(byKey[capabilityKey('kindash', 'billing')]).toMatchObject({ hasChildren: false })
@@ -73,5 +79,29 @@ describe('flattenMap', () => {
     expect(flattenMap(MAP, EXPANDED, 'billing')).toContainEqual(
       expect.objectContaining({ key: capabilityKey('kindash', 'billing'), hasChildren: false }),
     )
+  })
+})
+
+describe('flattenMap — program nesting', () => {
+  it('emits a phase directly under its program at depth + 1', () => {
+    const rows = flattenMap(MAP, EXPANDED, '')
+    const k = keys(rows)
+    expect(k.indexOf(initiativeKey('audit-01'))).toBe(k.indexOf(initiativeKey('audit')) + 1)
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r]))
+    expect(byKey[initiativeKey('audit')]).toMatchObject({ kind: 'initiative', hasChildren: true, expanded: true })
+    expect(byKey[initiativeKey('audit-01')].depth).toBe(byKey[initiativeKey('audit')].depth + 1)
+  })
+
+  it('collapsing a program hides its phases only', () => {
+    const state = toggleKey(EXPANDED, initiativeKey('audit'))
+    const k = keys(flattenMap(MAP, state, ''))
+    expect(k).toContain(initiativeKey('audit'))
+    expect(k).not.toContain(initiativeKey('audit-01'))
+    expect(k).toContain(initiativeKey('views'))
+  })
+
+  it('a search that hits a phase keeps its program row', () => {
+    const k = keys(flattenMap(MAP, EXPANDED, 'restore'))
+    expect(k).toEqual(expect.arrayContaining([initiativeKey('audit'), initiativeKey('audit-01')]))
   })
 })

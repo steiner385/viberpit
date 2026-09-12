@@ -64,10 +64,11 @@ describe('PortfolioDetail', () => {
     mount()
     // In flight = the INITIATIVES that are moving or stuck (`inFlight.ts`), the
     // same population the product and capability levels count under that word:
-    // KinDash's `views` (in-flight) and `orphan` (needs-you). The server's
+    // KinDash's `views` (in-flight), `orphan` (needs-you), and the `audit`
+    // program with its `audit-01` phase (both default in-flight). The server's
     // `counts.inFlight` rolls up issue tiers too, so summing it here made one
     // label mean two different things one level apart.
-    expect(tile('In flight')).toHaveTextContent('2')
+    expect(tile('In flight')).toHaveTextContent('4')
     expect(tile('Blocked')).toHaveTextContent('0')
     expect(tile('Products')).toHaveTextContent('2')
   })
