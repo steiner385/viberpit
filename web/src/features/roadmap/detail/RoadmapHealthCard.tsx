@@ -34,8 +34,11 @@ export function RoadmapHealthCard({ productSlug }: { productSlug: string }) {
 
   const capPath = (slug: string) => capabilityPath(productSlug, slug)
 
+  // No explicit `role`: `Banner`'s `warning` tone already defaults to `status`
+  // (its own docs say pass `'none'` only for a changing list, which this is
+  // not) — leave the default rather than repeating it.
   return (
-    <Banner tone="warning" role="status" title="Roadmap hygiene">
+    <Banner tone="warning" title="Roadmap hygiene">
       <ul className="flex flex-col gap-0.5">
         {unparentedCapabilities.length > 0 && (
           <li>

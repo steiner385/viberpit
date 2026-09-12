@@ -292,8 +292,12 @@ function InitiativesScopeBody({ entries, isLoading, selectedKey, onOpen }: Initi
         ariaLabel={ROADMAP.initiatives}
         renderRow={(e) => {
           const key = initiativeKey(e.initiative.slug)
+          // A titleless program still has to yield a chip — fall back to its
+          // slug (the parent's own record) rather than the parent lookup's
+          // `null`, same as `InitiativePage`'s "Part of" link already does.
           const programTitle = e.initiative.parentInitiative
-            ? (e.product.initiatives.find((p) => p.slug === e.initiative.parentInitiative)?.title ?? null)
+            ? (e.product.initiatives.find((p) => p.slug === e.initiative.parentInitiative)?.title
+              ?? e.initiative.parentInitiative)
             : null
           return (
             <InitiativeCard

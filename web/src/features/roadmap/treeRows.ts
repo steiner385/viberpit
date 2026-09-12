@@ -102,7 +102,11 @@ function flattenProduct(product: ProductNode, state: TreeState, query: string): 
       const key = initiativeKey(initiative.slug)
       const phases = byParent.get(initiative.slug) ?? []
       const kids = initiativeRows(phases, depth + 1)
-      const shown = searching ? kids.filter((r) => rowMatches(r, query) || (r.kind === 'initiative' && r.hasChildren)) : kids
+      // `kids` is already self-filtered by the recursive call above (each
+      // returned row survived because IT or a descendant matched, or because
+      // we are not searching at all) — re-checking `rowMatches` here was a
+      // proven no-op.
+      const shown = kids
       const self: TreeRow = {
         kind: 'initiative', key, depth, product, initiative,
         expanded: searching ? shown.length > 0 : !state.collapsed.has(key),

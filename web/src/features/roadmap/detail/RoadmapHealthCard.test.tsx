@@ -7,7 +7,7 @@ import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { RoadmapHealthCard } from './RoadmapHealthCard'
 
-const health = vi.hoisted(() => ({ data: undefined as unknown }))
+const health = vi.hoisted(() => ({ data: undefined as unknown, isLoading: false }))
 
 vi.mock('@/api/hooks', () => ({
   useProjectHealth: () => health,
@@ -61,7 +61,7 @@ describe('RoadmapHealthCard', () => {
   })
 
   it('renders nothing while loading', () => {
-    Object.assign(health, { data: undefined })
+    Object.assign(health, { data: undefined, isLoading: true })
     const { container } = mount()
     expect(container.firstChild).toBeNull()
   })

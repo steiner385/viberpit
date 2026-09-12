@@ -3,7 +3,7 @@
  * what the URL names without a second fetch (the map is one query, shared by
  * the list column and every detail level).
  */
-import type { CapabilityNode, MapChangesPointer, ProductNode, RoadmapMap } from '@/api/roadmap'
+import type { CapabilityNode, InitiativeNode, MapChangesPointer, ProductNode, RoadmapMap } from '@/api/roadmap'
 
 export function findProduct(map: RoadmapMap | undefined, slug: string): ProductNode | null {
   return map?.products.find((p) => p.slug === slug) ?? null
@@ -24,6 +24,22 @@ export function findProduct(map: RoadmapMap | undefined, slug: string): ProductN
 export function openMapChanges(product: ProductNode | null | undefined): MapChangesPointer | null {
   const pointer = product?.mapChanges
   return pointer && pointer.status === 'open' ? pointer : null
+}
+
+/**
+ * A phase's program title, by parent slug — built once per product so a list
+ * of initiatives (`ProductDetail`'s overview and In-flight tab, and any other
+ * caller of `InitiativeList`) can label each phase with the program it
+ * belongs to without re-walking `product.initiatives` on every row. Falls
+ * back to the parent's own slug so a titleless program still yields a label
+ * — the same fallback `RoadmapListColumn`'s Initiatives-scope chip uses.
+ */
+export function programTitleOf(product: ProductNode): (initiative: InitiativeNode) => string | null {
+  const byslug = new Map(product.initiatives.map((i) => [i.slug, i.title]))
+  return (initiative) => {
+    if (!initiative.parentInitiative) return null
+    return byslug.get(initiative.parentInitiative) ?? initiative.parentInitiative
+  }
 }
 
 export function findCapability(product: ProductNode, slug: string): CapabilityNode | null {

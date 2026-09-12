@@ -206,6 +206,34 @@ describe('InitiativePage', () => {
     expect(screen.queryByRole('button', { name: /Advance|Complete/ })).not.toBeInTheDocument()
   })
 
+  it('a program\'s Phases tab also shows the roll-up epic tiles and the leaves underneath', () => {
+    // The leaves endpoint rolls a program up to its leaf descendants' issues —
+    // this is what lets the Phases tab show real work, not just links to the
+    // phases themselves (same StatTiles + LeafList the Epic tab renders, just
+    // scoped to the program's own slug).
+    h.state.data = {
+      ...h.initiative,
+      hasChildren: true,
+      children: [{ slug: 'audit-01', title: '01', stage: 'plan', status: 'active' }],
+    }
+    h.state.leaves = [{
+      id: 'w1', ref: 'cairnea/KinDash#1', repo: 'cairnea/KinDash', number: 1, kind: 'issue',
+      title: 'Child one', url: 'https://x/1', state: 'open', triageState: 'classified', score: 3,
+      reach: null, impact: null, effort: null, confidence: null, tier: 'idle',
+      blockedBy: [], parentRef: 'cairnea/KinDash#15727', featureId: null,
+      sessionStatus: null, ghCreatedAt: null,
+    }]
+    mount('/initiatives/views?tab=phases')
+    // The program's own roll-up epic (`h.initiative.epic`: done 2, total 2,
+    // blocked 0, needs human 0) — the same tiles `EpicTab` renders.
+    expect(screen.getByText('Done')).toBeInTheDocument()
+    expect(screen.getByText('Total')).toBeInTheDocument()
+    expect(screen.getByText('Blocked')).toBeInTheDocument()
+    expect(screen.getByText('Needs human')).toBeInTheDocument()
+    // The leaves scoped to this program render below the tiles.
+    expect(screen.getByRole('link', { name: '#1 Child one' })).toBeInTheDocument()
+  })
+
   it('a phase names the program it is part of, in the header', () => {
     h.state.data = { ...h.initiative, parentInitiativeSlug: 'audit' }
     mount()

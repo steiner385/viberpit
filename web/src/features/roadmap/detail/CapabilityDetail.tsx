@@ -63,10 +63,19 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
   // is just never part of the count above. `InitiativeList` nests purely
   // structurally, so passing the program alongside the one phase that
   // qualifies is enough; it does not need the rest of that program's phases.
-  const inFlightWithProgramContext = [
-    ...mine.filter((i) => i.hasChildren && inFlight.some((f) => f.parentInitiative === i.slug)),
-    ...inFlight,
-  ]
+  //
+  // INTERLEAVED, not prepended: a program is inserted immediately before its
+  // first in-flight phase, keeping `inFlight`'s own map order for everything
+  // else — prepending every qualifying program ahead of the whole list would
+  // jump it above leaves that precede it in map order.
+  const shownPrograms = new Set<string>()
+  const inFlightWithProgramContext = inFlight.flatMap((f) => {
+    const program = f.parentInitiative && !shownPrograms.has(f.parentInitiative)
+      ? mine.find((i) => i.hasChildren && i.slug === f.parentInitiative)
+      : undefined
+    if (program) shownPrograms.add(program.slug)
+    return program ? [program, f] : [f]
+  })
   // The product, narrowed to this capability: the Needs-you panel below reads
   // its rows from this, and the tile and badge count the same object, so the
   // number above the list can never disagree with the list.

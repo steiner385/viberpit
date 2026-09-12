@@ -242,6 +242,35 @@ describe('CapabilityDetail', () => {
     expect(screen.getByRole('tab', { name: 'In flight (1)' })).toBeInTheDocument()
   })
 
+  it('In flight: a program interleaves before its first phase, not ahead of a leaf that precedes it in map order', () => {
+    // A leaf (`leaf-a`) that has no program at all comes BEFORE the program
+    // (`prog`) in `product.initiatives` (map order). The old code prepended
+    // every qualifying program ahead of the whole in-flight list, which would
+    // have put `prog` above `leaf-a` even though `leaf-a` comes first on the
+    // map; the fix keeps map order and only inserts `prog` right before its
+    // own first phase.
+    const workProduct = product({
+      slug: 'work-product', name: 'Work',
+      capabilities: [cap({ slug: 'work', title: 'Work' })],
+      initiatives: [
+        ini({ slug: 'leaf-a', title: 'Leaf A', projectSlug: 'work-product', primaryCapability: 'work', tier: 'in-flight' }),
+        ini({ slug: 'prog', title: 'Program', projectSlug: 'work-product', primaryCapability: 'work', hasChildren: true }),
+        ini({ slug: 'phase-a', title: 'Phase A', projectSlug: 'work-product', primaryCapability: 'work', parentInitiative: 'prog', tier: 'in-flight' }),
+      ],
+    })
+    const { container } = mount(
+      { product: workProduct, capability: findCapability(workProduct, 'work')! },
+      '/roadmap/work-product/capabilities/work?tab=in-flight',
+    )
+    const rowIds = [...container.querySelectorAll('[data-testid^="row-initiative:"]')]
+      .map((el) => el.getAttribute('data-testid'))
+    expect(rowIds).toEqual([
+      `row-${initiativeKey('leaf-a')}`,
+      `row-${initiativeKey('prog')}`,
+      `row-${initiativeKey('phase-a')}`,
+    ])
+  })
+
   it('Issues: open work first, with its blockers, score and live session', () => {
     mount({}, '/roadmap/kindash/capabilities/tasks?tab=issues')
     // Excludes the "Blocked by" sub-list's own <li> refs and the virtualizer's

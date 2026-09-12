@@ -130,6 +130,24 @@ describe('RoadmapListColumn', () => {
     expect(within(phase).getByText('UI audit')).toBeInTheDocument()
   })
 
+  it('a titleless program still yields a chip on the Initiatives scope, falling back to its slug', () => {
+    const map: RoadmapMap = {
+      ...MAP,
+      products: [
+        {
+          ...MAP.products[0],
+          initiatives: MAP.products[0].initiatives.map((i) => (i.slug === 'audit' ? { ...i, title: null } : i)),
+        },
+        MAP.products[1],
+      ],
+    }
+    mount({ scope: 'initiatives', map })
+    const phase = screen.getByTestId(`row-${initiativeKey('audit-01')}`)
+    // The parent lookup resolves the program but finds no title on it — the
+    // chip falls back to the program's own slug rather than disappearing.
+    expect(within(phase).getByText('audit')).toBeInTheDocument()
+  })
+
   it('badges a capability row with its open map-changes PR number', () => {
     const map: RoadmapMap = {
       ...MAP,

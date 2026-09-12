@@ -1,11 +1,12 @@
 // `/roadmap/:productSlug` — one product, answered the same way the portfolio is:
 // the tiles say how big it is, and the tabs answer what it is, what is moving,
 // what needs me, what is next, and what it waits on (finish-line spec §7).
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { ProductNode } from '@/api/roadmap'
 import { useProject } from '@/api/hooks'
 import { Banner } from '@/ui/Banner'
+import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
 import { Tabs } from '@/ui/Tabs'
 import { Skeleton } from '@/ui/Skeleton'
@@ -15,6 +16,7 @@ import { DependencyPanel } from '@/projects/DependencyPanel'
 import { CAPABILITY, INITIATIVE, ISSUE, PRODUCT, TIER_LABEL } from '@/features/products/vocab'
 import { useTabParam } from '../useTabParam'
 import { initiativePath } from '../roadmapNavState'
+import { programTitleOf } from '../lookup'
 import { StatTiles } from './StatTiles'
 import { NeedsYouList } from './NeedsYouList'
 import { needsYouCount } from './needsYou'
@@ -48,6 +50,10 @@ export function ProductDetail({ product }: { product: ProductNode }) {
   // unscoped queue is worse than none.
   const incidentScope: readonly string[] | null = repos ?? (isError ? [] : null)
   const inFlight = inFlightInitiatives([product])
+  // A phase's program title, computed once per product — `inFlightInitiatives`
+  // is leaf-only, so a phase here has no program row of its own to nest under
+  // structurally; this is how it still names the program it belongs to.
+  const programTitleFor = useMemo(() => programTitleOf(product), [product])
   // Same number as the portfolio's row for this product: `counts.needsYou`
   // excludes the proposal rows (awaiting triage / needs a home) that this list
   // renders, so it cannot be the badge.
@@ -132,18 +138,32 @@ export function ProductDetail({ product }: { product: ProductNode }) {
             <section aria-label={`${INITIATIVE.plural} in flight`} className="flex flex-col gap-3">
               {inFlight.length === 0
                 ? <p className="text-sm text-ink-muted">Nothing in flight.</p>
-                : inFlight.map((i) => (
-                  <div key={i.slug} className="rounded-md border border-edge bg-surface p-3">
-                    <Link to={initiativePath(i.slug)} className="font-medium text-ink hover:underline">
-                      {i.title ?? i.slug}
-                    </Link>
-                    <InitiativeTrack stage={i.stage} status={i.status} epic={i.epic} />
-                  </div>
-                ))}
+                : inFlight.map((i) => {
+                  const programTitle = programTitleFor(i)
+                  return (
+                    <div key={i.slug} className="rounded-md border border-edge bg-surface p-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Link to={initiativePath(i.slug)} className="font-medium text-ink hover:underline">
+                          {i.title ?? i.slug}
+                        </Link>
+                        {programTitle && (
+                          <Badge
+                            tone="neutral"
+                            title={`Part of ${programTitle}`}
+                            aria-label={`Part of ${programTitle}`}
+                          >
+                            {programTitle}
+                          </Badge>
+                        )}
+                      </div>
+                      <InitiativeTrack stage={i.stage} status={i.status} epic={i.epic} />
+                    </div>
+                  )
+                })}
             </section>
           </>
         )}
-        {tab === 'in-flight' && <InitiativeList initiatives={inFlight} />}
+        {tab === 'in-flight' && <InitiativeList initiatives={inFlight} programTitleFor={programTitleFor} />}
         {tab === 'needs-you' && (incidentScope
           ? <NeedsYouList products={[product]} repos={incidentScope} />
           : <Skeleton lines={3} />)}

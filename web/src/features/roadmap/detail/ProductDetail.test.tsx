@@ -206,6 +206,17 @@ describe('ProductDetail', () => {
     expect(screen.getByRole('button', { name: 'Open initiative No home yet' })).toBeInTheDocument()
   })
 
+  it('a phase in flight names the program it belongs to, in the overview and the In-flight tab', () => {
+    // `inFlightInitiatives` is leaf-only, so `audit-01` (parented under the
+    // `audit` program) has no program row of its own to nest under at product
+    // level — the badge is how it still says which program it is part of.
+    mount()
+    expect(screen.getByText('01 Restore')).toBeInTheDocument()
+    expect(screen.getByTitle('Part of UI audit')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: /In flight/ }))
+    expect(screen.getByTitle('Part of UI audit')).toBeInTheDocument()
+  })
+
   it('Ranked: only this product', () => {
     mount('/roadmap/kindash?tab=ranked')
     expect(screen.getByText(/Top/)).toBeInTheDocument()

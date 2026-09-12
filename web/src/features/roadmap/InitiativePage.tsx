@@ -289,21 +289,40 @@ function EpicTab({ initiative, product }: { initiative: Initiative; product: Pro
 }
 
 // A program's phases (replaces the Epic tab — see the `TABS` comment above).
-function PhasesTab({ initiative }: { initiative: Initiative }) {
-  if (initiative.children.length === 0) {
-    return <EmptyState title="No phases yet" />
-  }
+// The server's `GET /api/pm/leaves?initiative=<program>` rolls a program up to
+// its leaf descendants' issues precisely so a program page can show them —
+// same tiles, same list `EpicTab` renders from its own `epic`, just scoped to
+// the program's slug instead of one leaf's.
+function PhasesTab({ initiative, product }: { initiative: Initiative; product: ProductNode | null }) {
+  const epic = initiative.epic
   return (
-    <ul className="flex flex-col gap-1" aria-label="Phases">
-      {initiative.children.map((c) => (
-        <li key={c.slug} className="flex items-center gap-2 rounded-md border border-edge bg-surface p-2 text-sm">
-          <Link to={initiativePath(c.slug)} className="text-ink hover:underline">
-            {c.title ?? c.slug}
-          </Link>
-          <Badge tone="neutral">{stageLabel(c.stage)}</Badge>
-        </li>
-      ))}
-    </ul>
+    <div className="flex flex-col gap-3">
+      {initiative.children.length === 0
+        ? <EmptyState title="No phases yet" />
+        : (
+          <ul className="flex flex-col gap-1" aria-label="Phases">
+            {initiative.children.map((c) => (
+              <li key={c.slug} className="flex items-center gap-2 rounded-md border border-edge bg-surface p-2 text-sm">
+                <Link to={initiativePath(c.slug)} className="text-ink hover:underline">
+                  {c.title ?? c.slug}
+                </Link>
+                <Badge tone="neutral">{stageLabel(c.stage)}</Badge>
+              </li>
+            ))}
+          </ul>
+        )}
+      {epic && (
+        <StatTiles
+          tiles={[
+            { label: 'Done', value: epic.done, tone: 'success' },
+            { label: 'Total', value: epic.total },
+            { label: 'Blocked', value: epic.blocked, tone: 'danger' },
+            { label: 'Needs human', value: epic.needsHuman, tone: 'warning' },
+          ]}
+        />
+      )}
+      <LeafList scope={{ initiative: initiative.slug }} product={product} />
+    </div>
   )
 }
 
@@ -561,7 +580,7 @@ export function InitiativePage() {
             <div role="tabpanel" id={panelId(tab)} aria-labelledby={`tab-${tab}`} className="flex flex-col gap-4">
               {tab === 'track' && <TrackTab initiative={initiative} />}
               {tab === 'epic' && !initiative.hasChildren && <EpicTab initiative={initiative} product={productNode} />}
-              {tab === 'phases' && initiative.hasChildren && <PhasesTab initiative={initiative} />}
+              {tab === 'phases' && initiative.hasChildren && <PhasesTab initiative={initiative} product={productNode} />}
               {tab === 'sessions' && <SessionsTab initiative={initiative} />}
               {tab === 'capabilities' && (
                 <CapabilitiesTab initiative={initiative} onEdit={map ? () => setEditing(true) : null} />

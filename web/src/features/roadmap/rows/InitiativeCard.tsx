@@ -5,8 +5,7 @@
 // Map scope's `role="tree"` (a `treeitem`, with its level) and under the
 // Initiatives scope's `GroupedList` panels, which are `role="list"` and whose
 // children must be `listitem` (`aria-required-children`).
-import { ChevronDown, ChevronRight, Diamond } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { Diamond } from 'lucide-react'
 import { CardFrame } from '@/ui/list/CardFrame'
 import { Badge } from '@/ui/Badge'
 import type { InitiativeNode } from '@/api/roadmap'
@@ -14,6 +13,7 @@ import { INITIATIVE, nextStage, reasonLabel, stageLabel } from '@/features/produ
 import { TIER_ACCENT, TIER_TEXT, TIER_TONE, tierLabel } from '../roadmapTier'
 import { indentClass } from './indent'
 import { TierDot } from './TierDot'
+import { FoldChevron } from './FoldChevron'
 
 export interface InitiativeCardProps {
   initiative: InitiativeNode
@@ -75,23 +75,7 @@ export function InitiativeCard({
         onOpen={onOpen}
         leading={
           hasChildren ? (
-            <button
-              type="button"
-              // Same roving tab stop as the open control beside it (`TreeRowCard`'s
-              // chevron, copied verbatim): one Tab enters the tree, `←`/`→` fold
-              // and unfold from there.
-              tabIndex={focusable ? 0 : -1}
-              aria-label={`${expanded ? 'Collapse' : 'Expand'} ${title}`}
-              onClick={(e) => { e.stopPropagation(); onToggle?.() }}
-              className={cn(
-                'flex size-6 shrink-0 items-center justify-center rounded-sm text-ink-muted',
-                'hover:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
-              )}
-            >
-              {expanded
-                ? <ChevronDown size={14} aria-hidden="true" />
-                : <ChevronRight size={14} aria-hidden="true" />}
-            </button>
+            <FoldChevron expanded={expanded} label={title} focusable={focusable} onToggle={() => onToggle?.()} />
           ) : (
             <span aria-hidden="true" className="size-6 shrink-0" />
           )
@@ -105,7 +89,15 @@ export function InitiativeCard({
         }
         trailing={
           <>
-            {programTitle && <Badge tone="neutral">{programTitle}</Badge>}
+            {programTitle && (
+              // `title` + `aria-label` so assistive tech and a hover both read
+              // this as "part of the program", not just its bare name — which
+              // would otherwise be indistinguishable from the stage badge
+              // beside it.
+              <Badge tone="neutral" title={`Part of ${programTitle}`} aria-label={`Part of ${programTitle}`}>
+                {programTitle}
+              </Badge>
+            )}
             <Badge tone={TIER_TONE[initiative.tier]}>{stageLabel(initiative.stage)}</Badge>
           </>
         }
