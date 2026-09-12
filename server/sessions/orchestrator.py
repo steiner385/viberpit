@@ -6280,10 +6280,11 @@ class SessionOrchestrator:
         than failing the apply. Plan warnings (unknown parent, cycle) are
         logged the same way.
 
-        After upserting, if the project is in ``map_proposed`` and now has ≥1
-        non-orphaned Feature, advance it to ``map_merged``.  This ties the
-        transition to the observable "map merged & indexed" state — no PR
-        webhook needed.  No other states are touched."""
+        After upserting, if the project is in ``map_proposed``, ``registered``,
+        or ``syncing`` and now has ≥1 non-orphaned Feature, advance it to
+        ``map_merged``.  Indexed docs from the default branch ARE a merged map
+        regardless of onboarding route.  ``map_merged``, ``classifying``, and
+        ``live`` are left alone."""
         from sqlalchemy import delete, func, select
         from server.db.models import Feature, FeatureLink, Project
         for warning in plan.warnings:
@@ -6350,12 +6351,12 @@ class SessionOrchestrator:
                         continue
                     db.add(FeatureLink(src_feature_id=src.id, dst_feature_id=dst_id, kind=link.kind))
 
-            # Advance map_proposed → map_merged when ≥1 non-orphaned feature
-            # exists after this upsert.  Other states are intentionally left alone.
+            # Advance map_proposed/registered/syncing → map_merged when ≥1 non-orphaned
+            # feature exists after this upsert. Indexed docs ARE a merged map.
             proj = (await db.execute(
                 select(Project).where(Project.id == project_id)
             )).scalar_one_or_none()
-            if proj is not None and proj.onboarding_state == "map_proposed":
+            if proj is not None and proj.onboarding_state in ("map_proposed", "registered", "syncing"):
                 live_count = (await db.execute(
                     select(func.count(Feature.id)).where(
                         Feature.project_id == project_id,
