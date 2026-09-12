@@ -256,6 +256,26 @@ async def test_backlog_spawn_audits_an_auto_model_pick(isolated_db, tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_backlog_spawn_that_produces_no_session_is_unaudited(
+        isolated_db, tmp_path, monkeypatch):
+    """The audit is written AFTER the spawn, guarded on a real record: a refused
+    or de-duplicated spawn (``spawn_session`` → ``None``) made no pick that was
+    ever applied, and an orphan row would bias the ``assessed`` vs ``applied``
+    metric the audit exists to carry."""
+    import server.automations.model_pick as model_pick
+    monkeypatch.setattr(model_pick, "assess_model", _assess_returning("sonnet"))
+
+    orch = _build_backlog_orch({}, tier_floor="opus")
+    _patch_git(monkeypatch, tmp_path)
+
+    async def refuse(**kw):
+        return None
+    orch._backlog_ctx.spawn_session = refuse  # type: ignore[method-assign]
+    assert await orch._backlog_spawn(_BATCH, "acct", default_model="auto") is None
+    assert await _audit_model_picks() == []
+
+
+@pytest.mark.asyncio
 async def test_backlog_spawn_pinned_model_is_untouched_by_a_floor_and_unaudited(
         isolated_db, tmp_path, monkeypatch):
     """A pinned model is an operator's decision: no floor raises it, its spawn

@@ -5895,6 +5895,7 @@ class SessionOrchestrator:
         config = {**config, "default_model": default_model}
         detail: dict = {"issues": batch.issues, "engine": engine.value}
         model = model_source = reasoning_effort = None
+        audit_pick = None      # set for an `auto` Claude pick — audited after the spawn
         summary = "\n".join(
             f"{ref}  {batch.titles.get(ref) or '(no title)'}" for ref in batch.issues)
         if engine is AgentEngine.CLAUDE_CODE:
@@ -5921,20 +5922,7 @@ class SessionOrchestrator:
                 detail.update({k: v for k, v in (("assessed", pick.assessed),
                                                  ("floor", pick.floor))
                                if v is not None})
-            if config.get("default_model") == "auto":
-                # One durable row per auto pick: `assessed` vs `applied` is the
-                # metric for whether the assessor and the history agree.
-                try:
-                    async with db_session() as db:
-                        await record_audit(
-                            db=db, type="backlog_runner.model_pick",
-                            identity="backlog-runner",
-                            detail={"target": batch.primary, "product": batch.product,
-                                    "assessed": pick.assessed, "floor": pick.floor,
-                                    "applied": pick.applied, "source": pick.source})
-                except Exception:
-                    log.warning("backlog_runner.model_pick_audit_failed target=%s",
-                                batch.primary, exc_info=True)
+            audit_pick = pick if config.get("default_model") == "auto" else None
         elif engine is AgentEngine.CODEX:
             # Codex-aware counterpart (issue #1289): the same complexity
             # judgment, mapped onto the account's live model/effort catalog
@@ -5943,7 +5931,7 @@ class SessionOrchestrator:
                 account, config, summary)
             if reasoning_effort is not None:
                 detail.update(reasoning_effort=reasoning_effort, model_source=model_source)
-        return await self._backlog_ctx.spawn_session(
+        rec = await self._backlog_ctx.spawn_session(
             origin_ref=batch.primary,
             dedupe_key=batch.primary,
             repo=batch.repo,
@@ -5956,6 +5944,27 @@ class SessionOrchestrator:
             reasoning_effort=reasoning_effort,
             detail=detail,
         )
+        if audit_pick is not None and rec is not None:
+            # One durable row per auto pick that actually ran: `assessed` vs
+            # `applied` is the metric for whether the assessor and the history
+            # agree, so a spawn the context refused or de-duped onto an existing
+            # session must leave no row — that pick was never applied. Written
+            # after the spawn, best-effort in its own session: an audit failure
+            # costs the row, never the session that is already running.
+            try:
+                async with db_session() as db:
+                    await record_audit(
+                        db=db, type="backlog_runner.model_pick",
+                        identity="backlog-runner",
+                        detail={"target": batch.primary, "product": batch.product,
+                                "assessed": audit_pick.assessed,
+                                "floor": audit_pick.floor,
+                                "applied": audit_pick.applied,
+                                "source": audit_pick.source})
+            except Exception:
+                log.warning("backlog_runner.model_pick_audit_failed target=%s",
+                            batch.primary, exc_info=True)
+        return rec
 
     async def backlog_runner_implement_core(self, primary: str) -> str:
         """Propose-tap: claim (if needed) + spawn the batch for *primary*.

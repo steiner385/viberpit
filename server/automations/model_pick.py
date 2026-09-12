@@ -206,7 +206,7 @@ async def pick_model(
     if value not in AUTOMATION_MODEL_CHOICES:
         # Defensive: a persisted value no longer in the catalog (validate_config
         # rejects writes, but old rows survive alias removals).
-        log.warning("resolve_model: unknown default_model %r — using account default", value)
+        log.warning("pick_model: unknown default_model %r — using account default", value)
         return ModelPick(None, None, None, None)
     if value == "default":
         return ModelPick(None, None, None, None)

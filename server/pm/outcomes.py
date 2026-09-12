@@ -18,16 +18,17 @@ from server.sessions.model_catalog import TIER_ORDER, model_tier
 
 log = logging.getLogger(__name__)
 
-# Outcomes that say nothing about how a dispatch went: ``running`` has not ended and
-# ``superseded`` was replaced before it could answer. Everything else is evidence.
-_UNFINISHED_OUTCOMES: tuple[str, ...] = ("running", "superseded")
+# THE unfinished set: outcomes that say nothing about how a dispatch went, because
+# ``running`` has not ended and ``superseded`` was replaced before it could answer.
+# Everything else is evidence. Both readers below derive from this one definition, so
+# a new unfinished outcome cannot land in one and be missed by the other.
+UNFINISHED_OUTCOMES: frozenset[str] = frozenset({"running", "superseded"})
 
-# A bounce is a dispatch that ENDED without a merge: ``running`` has not ended,
-# ``merged`` did not bounce, and ``superseded`` was replaced before it could answer
-# — a double tap must not read as the issue being unworkable (R3-9). Derived from
-# the vocabulary so a new outcome counts as a bounce unless it is named here.
+# A bounce is a dispatch that ENDED without a merge — a double tap must not read as
+# the issue being unworkable (R3-9). Derived from the vocabulary so a new outcome
+# counts as a bounce unless it is unfinished or a merge.
 FINALISED_BOUNCE_OUTCOMES: frozenset[str] = (
-    frozenset(DISPATCH_OUTCOMES) - {"running", "merged", "superseded"})
+    frozenset(DISPATCH_OUTCOMES) - UNFINISHED_OUTCOMES - {"merged"})
 
 
 def body_fingerprint(title: str | None, body: str | None) -> str:
@@ -96,8 +97,10 @@ class TierStats:
     """One capability's finished dispatch history at one model tier.
 
     ``outcomes`` counts finalised, non-superseded dispatches; ``first_pass`` is the
-    subset that merged on the first pass. A row whose ``first_pass_merge`` is NULL
-    is an outcome but not a first pass — unknown is never counted as success.
+    subset that merged on the first pass. A row with ``outcome == "merged"`` and
+    ``first_pass_merge is None`` is excluded from BOTH counts — unknown is neither
+    evidence of success nor of failure. Every other finalised row keeps counting as
+    an outcome, and only ``first_pass_merge is True`` counts as a first pass.
     """
 
     tier: str          # a member of TIER_ORDER
@@ -138,8 +141,11 @@ async def outcome_stats(db, project_id: str, feature_id: str) -> list[TierStats]
     ``DispatchOutcome.target_ref`` carries the same string. Rows still ``running``
     or ``superseded`` are excluded (neither reached a verdict), as are rows whose
     model maps to no tier — ``default``/``best``/an unknown pinned id cannot be
-    ranked, and guessing a rank for them would put the floor on invented evidence.
-    Emitted one entry per tier present, in ``TIER_ORDER``.
+    ranked, and guessing a rank for them would put the floor on invented evidence —
+    and so are ``merged`` rows whose ``first_pass_merge`` is NULL: the merge
+    happened but nothing knows whether it was first pass, and counting it as an
+    outcome with no first pass would read a tier that DID merge as one that cannot
+    do the work. Emitted one entry per tier present, in ``TIER_ORDER``.
     """
     refs = [f"{repo}#{number}" for repo, number in (await db.execute(
         select(WorkItem.repo, WorkItem.number).where(
@@ -148,15 +154,18 @@ async def outcome_stats(db, project_id: str, feature_id: str) -> list[TierStats]
     if not refs:
         return []
     rows = (await db.execute(
-        select(DispatchOutcome.model, DispatchOutcome.first_pass_merge).where(
+        select(DispatchOutcome.model, DispatchOutcome.first_pass_merge,
+               DispatchOutcome.outcome).where(
             DispatchOutcome.project_id == project_id,
             DispatchOutcome.target_ref.in_(refs),
-            DispatchOutcome.outcome.not_in(_UNFINISHED_OUTCOMES)))).all()
+            DispatchOutcome.outcome.not_in(UNFINISHED_OUTCOMES)))).all()
     counts: dict[str, list[int]] = {}
-    for model, first_pass in rows:
+    for model, first_pass, outcome in rows:
         tier = model_tier(model)
         if tier is None:
             continue
+        if outcome == "merged" and first_pass is None:
+            continue           # merged, first-pass status unknown — not evidence
         tally = counts.setdefault(tier, [0, 0])
         tally[0] += 1
         tally[1] += 1 if first_pass is True else 0

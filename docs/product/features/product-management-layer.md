@@ -310,7 +310,10 @@ rows to two more consumers. `outcome_stats(db, project_id, feature_id)` gathers 
 finished dispatch history per model tier — finalised, non-superseded rows whose `model` maps to a
 tier via `model_catalog.model_tier` (an unranked model, e.g. `default`/`best`, is dropped rather
 than guessed), counting each as an outcome and, when `first_pass_merge is True`, also as a first
-pass. `tier_floor(db, project_id, feature_id)` (pure `tier_floor_from_stats` underneath, D9) turns
+pass. A `merged` row whose `first_pass_merge` is NULL (the attempt read answered UNKNOWN) counts in
+NEITHER — unknown is evidence of neither success nor failure, and counting it as an outcome with no
+first pass would read a tier that did merge as one that cannot do the work; every other finalised
+row is a genuine failure and keeps counting. `tier_floor(db, project_id, feature_id)` (pure `tier_floor_from_stats` underneath, D9) turns
 that into the phase-4 model-pick floor — see
 `docs/product/features/autopilot-backlog-runner.md` § Model pick for the rule and how
 `_backlog_spawn` consumes it via `tier_floor_for_dispatch`.

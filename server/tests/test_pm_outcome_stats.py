@@ -90,6 +90,58 @@ async def test_outcome_stats_groups_finalised_rows_by_tier_for_one_capability(db
     assert stats == [TierStats("sonnet", 2, 0), TierStats("opus", 2, 2)]
 
 
+async def _seed_rows(db_url: str,
+                     rows: list[tuple[str | None, str, bool | None]]) -> tuple[str, str]:
+    """One product, one capability, one mirrored issue, and *rows* as
+    ``(model, outcome, first_pass_merge)`` dispatches against it."""
+    await init_db(db_url=db_url)
+    async with db_session() as db:
+        project = Project(slug="viberpit", name="viberpit")
+        db.add(project)
+        await db.flush()
+        cap = Feature(project_id=project.id, slug="cap", title="Capability")
+        db.add(cap)
+        await db.flush()
+        db.add(WorkItem(repo=REPO, number=1, kind="issue", title="issue 1", body="b",
+                        feature_id=cap.id))
+        db.add_all([
+            DispatchOutcome(automation_id="backlog-runner", project_id=project.id,
+                            target_ref=f"{REPO}#1", model=model, outcome=outcome,
+                            first_pass_merge=first_pass)
+            for model, outcome, first_pass in rows])
+        await db.flush()
+        return project.id, cap.id
+
+
+@pytest.mark.asyncio
+async def test_outcome_stats_drops_a_merged_row_whose_first_pass_is_unknown(db_env):
+    """A ``merged`` row with ``first_pass_merge IS NULL`` (the PR-Doctor attempt
+    read answered UNKNOWN) is evidence of NEITHER success nor failure, so it is
+    excluded from both counts — counting it as an outcome with no first pass read
+    a tier that actually merged as one that cannot do the work, and floored the
+    pick above what the capability needs."""
+    project_id, feature_id = await _seed_rows(db_env, [
+        ("sonnet", "merged", None), ("sonnet", "merged", None),
+        ("opus", "merged", True), ("opus", "merged", True)])
+    async with db_session() as db:
+        # sonnet contributes no entry at all — not TierStats("sonnet", 2, 0).
+        assert await outcome_stats(db, project_id, feature_id) == [
+            TierStats("opus", 2, 2)]
+        # …so no cheaper tier is shown to fail and there is no floor to raise to.
+        assert await tier_floor(db, project_id, feature_id) is None
+
+
+@pytest.mark.asyncio
+async def test_outcome_stats_counts_a_finalised_non_merge_with_no_first_pass_flag(db_env):
+    """The other side of the rule: a finalised row that did NOT merge is a genuine
+    failure whatever ``first_pass_merge`` holds, and keeps counting as an outcome
+    with zero first passes."""
+    project_id, feature_id = await _seed_rows(db_env, [("sonnet", "no_pr", None)])
+    async with db_session() as db:
+        assert await outcome_stats(db, project_id, feature_id) == [
+            TierStats("sonnet", 1, 0)]
+
+
 @pytest.mark.asyncio
 async def test_outcome_stats_is_empty_for_a_capability_with_no_issues(db_env):
     project_id, _ = await _seed(db_env)

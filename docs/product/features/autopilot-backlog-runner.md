@@ -191,7 +191,11 @@ PR linkage, never on labels alone.
   resolver (`resolve_model` is its two-tuple wrapper): the floor only ever RAISES an `auto`
   assessment, compared by `model_catalog.tier_rank`, never lowers one, and a pinned alias or the
   account `default` is untouched — the source recorded is `"auto+floor"` when the floor actually
-  raised the pick, `"auto"` otherwise. The spawned `AutomationEvent`'s `detail` carries
+  raised the pick, `"auto"` otherwise. A failed assessment means no floor either: with no tier to
+  raise, the spawn drops to the account default rather than being pinned to the floor alone (the
+  floor raises evidence over a guess, it never picks a model by itself). `POST /api/dispatch/assess`
+  is deliberately unfloored — it carries only a free-form prompt, with no issue ref or capability
+  whose history there would be to read. The spawned `AutomationEvent`'s `detail` carries
   `assessed`/`floor` only when set (so a pinned spawn's detail is unchanged from before this
   phase), and every `auto`-policy pick — raised or not — also writes one
   `backlog_runner.model_pick` audit row (identity `backlog-runner`, `{target, product, assessed,
