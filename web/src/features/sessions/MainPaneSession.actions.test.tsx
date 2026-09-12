@@ -45,7 +45,7 @@ vi.mock('@/session/useSessionRuntime', () => ({
 vi.mock('@/components/session/SessionBody', () => ({
   SessionBody: () => <div data-testid="body" />,
 }))
-vi.mock('@/components/session/CommandResultOverlay', () => ({ CommandResultOverlay: () => null }))
+vi.mock('@/features/sessions/composer/CommandResultOverlay', () => ({ CommandResultOverlay: () => null }))
 
 vi.mock('@/api/hooks', () => ({
   // "Reload session" (MainPaneSession → SessionHeader → SessionActions).

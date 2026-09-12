@@ -15,7 +15,7 @@ vi.mock('@/api/hooks', () => ({
   useAssessDispatch: () => ({ assess: mockAssess }),
 }))
 
-vi.mock('@/components/session/useImageAttachments', () => ({
+vi.mock('@/features/sessions/composer/useImageAttachments', () => ({
   useImageAttachments: () => ({
     attachments: [],
     addFiles: vi.fn(),
@@ -25,11 +25,11 @@ vi.mock('@/components/session/useImageAttachments', () => ({
   }),
 }))
 
-vi.mock('@/components/session/AttachmentChips', () => ({
+vi.mock('@/features/sessions/composer/AttachmentChips', () => ({
   AttachmentChips: () => null,
 }))
 
-vi.mock('@/components/session/MicButton', () => ({
+vi.mock('@/features/sessions/composer/MicButton', () => ({
   MicButton: () => null,
 }))
 

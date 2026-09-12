@@ -9,12 +9,12 @@ import { UserBubble } from './UserBubble'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCallCard } from './ToolCallCard'
 import { ToolGroup } from './ToolGroup'
-import { QuestionCard } from '@/components/session/QuestionCard'
+import { QuestionCard } from '@/features/sessions/panels/QuestionCard'
 import { ErrorCard } from './ErrorCard'
 import { RecoveringCard } from './RecoveringCard'
 import { NoticeCard } from './NoticeCard'
 import { BlockRow } from './BlockRow'
-import { PendingPromptNote } from '@/components/session/PendingPromptNote'
+import { PendingPromptNote } from '@/features/sessions/panels/PendingPromptNote'
 
 interface Props {
   turn: TurnType
