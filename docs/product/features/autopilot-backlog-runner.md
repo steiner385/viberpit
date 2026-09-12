@@ -96,29 +96,50 @@ PR linkage, never on labels alone.
   with ITS OWN `queue_min_status` (`Ready`, the safe default, or `Backlog` to reach untriaged
   items) and `respect_dependencies` (dependency-gated from the compiled graph: native
   blocked-by edges, `Depends on #N` body references and epic list order), merging the
-  per-product rankings into one pool by score. `max_in_flight` and `weight` likewise come from
-  each ON product's policy, applied to every repo it owns and handed to the selection
-  strategies below as per-repo weights/caps/order. The runner's own `mode` is just `off | on`
-  now — whether it runs at all; dispatch mode (`propose` announces a batch without spawning,
-  `auto` spawns) is a PER-PRODUCT decision (`policy["dispatch"]`), so one enabled runner can
-  announce for a product still being trusted and spawn for one that's earned auto, on the same
-  tick. `max_attempts` and `default_model` are read the same way, off the target's recorded
-  product (falling back to the pure defaults with `dispatch: auto` for a claim written before
-  the flip, or a product the policy map has lost — the queue is the real off-gate, so anything
-  that reached the loop this far was already decided to run). The runner's OWN config schema
-  keeps only fleet-wide knobs: `max_concurrent`, `max_spawns_per_day`, `max_issues_per_pr`,
-  `grouping_interval_minutes`, `needs_human_retry_days`. `retired_config_keys`
-  (`eligible_label`, `enabled_repos`, `repo_weights`, `repo_caps`, `queue_min_status`,
-  `max_attempts`, `default_model`, `respect_dependencies`) still lists the retired ones so a
-  row that still carries them keeps the rest of its settings, and a row's stored `propose` or
-  `auto` mode (written before the flip) folds to `on` on read — the flip's one-shot seed
+  per-product rankings into one pool by the queue's own `rank_key` (score, then age, then issue
+  ref) — never a hand-copied tie-break — so a cross-product tie between two unscored issues breaks
+  by age, not by product slug. `weight` comes from each ON product's policy, applied to every repo
+  it owns and handed to the selection strategies below as a per-repo weight/order (never a cap).
+  `max_in_flight` is enforced directly per PRODUCT in the loop's `_refill`, counted once per tick
+  from the runner's durable target-state rows and kept in step with every claim taken that tick: a
+  `proposed` (announce-only) claim holds its product's slot exactly like a spawned one, while a
+  `gave_up` or `handed_off` row does not — it is never translated into a per-repo cap, so a
+  product owning several repos cannot run more than its own cap across all of them combined. The
+  runner's own `mode` is just `off | on` now — whether it runs at all; dispatch mode (`propose`
+  announces a batch without spawning, `auto` spawns) is a PER-PRODUCT decision
+  (`policy["dispatch"]`), so one enabled runner can announce for a product still being trusted and
+  spawn for one that's earned auto, on the same tick. `max_attempts` and `default_model` are read
+  the same way, off the target's recorded product (falling back to the pure defaults with
+  `dispatch: auto` for a claim written before the flip, or a product the policy map has lost — the
+  queue is the real off-gate, so anything that reached the loop this far was already decided to
+  run). A policy read that fails outright (the injected `read_policies` seam,
+  `_backlog_load_policies`, raises) keeps the LAST
+  good snapshot for that tick's refill if there is one, or skips refill entirely with no snapshot
+  yet — either way the sweep (handoffs, give-ups, reconciliation) still runs, since stalling that
+  on the same DB blip would be its own outage. The runner's OWN config schema keeps only
+  fleet-wide knobs: `selection_strategy`, `max_concurrent`, `max_spawns_per_day`,
+  `max_issues_per_pr`, `grouping_interval_minutes`, `needs_human_retry_days`.
+  `retired_config_keys` (`eligible_label`, `enabled_repos`, `repo_weights`, `repo_caps`,
+  `queue_min_status`, `max_attempts`, `default_model`, `respect_dependencies`) still lists the
+  retired ones so a row that still carries them keeps the rest of its settings; on read, a stored
+  `off` mode survives verbatim (an operator who parked the runner is never silently restarted), a
+  stored `propose` or `auto` mode (written before the flip) folds to `on`, and an unset (`NULL`)
+  mode on an otherwise-enabled row also reads as `on` (the two-mode UI hides the mode select, so
+  its toggle alone must be enough to start the row) — the flip's one-shot seed
   (`server/sessions/orchestrator.py`'s `_backlog_seed_policies`, run once per daemon process on
-  the loop's first tick) is what turns that old value, and the old `enabled_repos` /
-  `repo_weights` / `repo_caps` / the rest, into each owning product's policy instead, so no
-  product's behaviour changed at the flip; the seed is a no-op the moment any product already
-  has a policy. The status card gains one line per product whose dispatch is on ("slug:
-  dispatch · in_flight/cap in flight · eligible eligible"), or reports "idle — no product has
-  dispatch on" when every product's is off.
+  the loop's first tick, but only for an ENABLED row carrying a stored mode — a never-configured or
+  disabled row has nothing to migrate) is what turns that old value, and the old `enabled_repos` /
+  `repo_weights` / `repo_caps` / the rest, into each owning product's policy instead — a product's
+  primary repo's entry in `repo_caps` / `repo_weights` becomes its `max_in_flight` / `weight`, or
+  its lowest-named repo's when none is flagged primary, and only the keys the legacy config
+  actually set are written, the rest left at the schema default — so no product's behaviour
+  changed at the flip; the seed is a no-op the moment any product already has a policy. The status
+  card appends one ` · `-joined segment per product whose dispatch is on, onto the SAME status-card
+  line ("slug: dispatch · in_flight/cap in flight · eligible eligible") rather than a separate line
+  each (the web renders `AutomationStatus.text` without honouring newlines); it reports "idle — no
+  product has dispatch on" when every product's is off, or, when the per-product count read itself
+  failed, "N implementing · product counts unavailable (the queue read failed)" rather than either
+  — "we don't know" and "no product is opted in" are different sentences on the card.
 
   The top pick is re-verified against live GitHub immediately before the
   claim — that check **fails closed** (§10), so a mirror lagging reality costs a tick, never

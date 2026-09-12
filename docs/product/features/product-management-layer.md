@@ -4,7 +4,7 @@ parent: planning-and-automation
 title: Product-Management Layer
 state: delivering
 links:
-  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/tree.py, server/automations/pm_triage.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts]
+  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/tree.py, server/automations/pm_triage.py, server/automations/product_policy.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/detail/AutomationPolicyCard.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts]
   prs: ['#866', '#879', '#893', '#897', '#899', '#1327']
 ---
 
@@ -167,7 +167,10 @@ config row governing every onboarded product alike. The schema — `PRODUCT_POLI
 (`off | propose | auto`, default `off` — whether the runner works this product's board at all, and
 whether a claimed batch is only announced or actually spawned), `queue_min_status` (default `Ready`,
 or `Backlog` to reach untriaged items — how far down the board the runner reaches), `max_in_flight`
-(default 1 — this product's concurrent runner sessions), `weight` (default 1 — its share when a
+(default 1 — this product's concurrent runner sessions, enforced per PRODUCT in the runner's
+refill loop rather than translated into a per-repo cap, so a product owning several repos still
+runs at most this many sessions total; a `proposed` announce-only claim holds the slot exactly like
+a spawned one, a `gave_up` or `handed_off` claim does not), `weight` (default 1 — its share when a
 freed slot is contested under the `weighted` selection strategy), `max_attempts` (default 2 —
 attempts per issue before the runner gives up), `default_model` (default `auto` — the session
 model; `auto` assesses each job), and `respect_dependencies` (default `true`). `effective_policy`
@@ -175,7 +178,7 @@ never raises: a `None` row (never opted in) and an unparseable one both read as 
 i.e. `dispatch: off`. `give_up_after_bounces` (bounce-based retry) and `triage_auto_accept`
 (confidence-tiered triage auto-accept) are in the design
 (`docs/superpowers/specs/2026-09-12-product-automation-policy-design.md` §4) but arrive with phases
-2 and 3, not this schema.
+3 and 2 respectively, not this schema.
 
 It is edited from the product's Overview page (`web/src/features/roadmap/detail/AutomationPolicyCard.tsx`),
 an **Automation** card that renders every schema field through the same `ConfigInput` component the
@@ -193,21 +196,26 @@ At the flip, the Backlog Runner's global `enabled_repos` / `repo_weights` / `rep
 `queue_min_status` / `max_attempts` / `default_model` / `respect_dependencies` knobs retired
 (`server/automations/backlog_runner.py`'s `retired_config_keys`); a one-shot seed
 (`server/sessions/orchestrator.py`'s `_backlog_seed_policies`, run once per daemon process on the
-runner loop's first tick) carries the old settings onto the products that owned them so the flip
-changed no behaviour: the prior global mode becomes each seeded product's `dispatch` (`auto` stayed
-`auto`, anything else became `propose`), a product's primary repo's entry in the old `repo_caps` /
-`repo_weights` becomes its `max_in_flight` / `weight`, and the remaining globals are copied onto
-every seeded product. A non-empty `enabled_repos` seeded exactly the products owning those repos;
-the empty list — which meant "every onboarded product" — seeded every product with a linked board.
-The seed is a no-op the moment any product already carries a policy, which is also what makes it
-safe to run on every process start rather than exactly once in history: a human-set policy is never
-overwritten by a re-seed.
+runner loop's first tick, gated on the runner row being ENABLED and carrying a stored mode — a
+never-configured or currently-disabled row has nothing to migrate) carries the old settings onto
+the products that owned them so the flip changed no behaviour: the prior global mode becomes each
+seeded product's `dispatch` (`auto` stayed `auto`, anything else became `propose`), a product's
+primary repo's entry in the old `repo_caps` / `repo_weights` becomes its `max_in_flight` / `weight`
+— or, for a product with no repo flagged primary, its lowest-named repo's entry — and the remaining
+globals are copied onto every seeded product, but only the keys the legacy config actually set: a
+key it left unset is left at the schema default rather than pinned to a made-up value. A non-empty
+`enabled_repos` seeded exactly the products owning those repos; the empty list — which meant "every
+onboarded product" — seeded every product with a linked board. The seed is a no-op the moment any
+product already carries a policy, which is also what makes it safe to run on every process start
+rather than exactly once in history: a human-set policy is never overwritten by a re-seed.
 
 What stays global on the runner: whether it runs at all (`off | on` — one row-level toggle;
-propose-vs-auto is now the per-product `dispatch` value, not a runner mode), `max_concurrent`
-(sessions in flight across every product combined), `max_spawns_per_day`, `max_issues_per_pr`,
-`grouping_interval_minutes`, and `needs_human_retry_days` (the runner's own give-up cooldown — a
-property of the runner's retry behaviour, not of any one product's board).
+propose-vs-auto is now the per-product `dispatch` value, not a runner mode), `selection_strategy`
+(how a freed slot chooses among the ON products' repos — balanced / priority / weighted /
+concurrency-cap), `max_concurrent` (sessions in flight across every product combined),
+`max_spawns_per_day`, `max_issues_per_pr`, `grouping_interval_minutes`, and
+`needs_human_retry_days` (the runner's own give-up cooldown — a property of the runner's retry
+behaviour, not of any one product's board).
 
 Phases 2–4 of the design add, respectively: confidence-tiered triage auto-accept per product
 (`triage_auto_accept`, §8), a `dispatch_outcomes` table feeding a bounce-based `needs_spec` skip and
