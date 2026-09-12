@@ -156,3 +156,27 @@ def test_commit_message_names_the_verb_for_every_op():
     # A multi-word product name is slugified into the scope.
     assert commit_message(MapOp(op="rename", slug="x"), "Example Product").startswith(
         "map(example-product): ")
+
+
+LABELLED_DOC = """---
+slug: flaky-test-triage
+title: Flaky test triage
+state: live
+labels: [flaky, ci-failure]
+---
+# Flaky test triage
+
+A flaky-labeled issue means a live, unfixed flake.
+"""
+
+
+def test_edits_preserve_route_labels():
+    """A rename/summary edit round-trips through FeatureDoc; regression for
+    fix round 1 (Task 7) where rebuilding FeatureDoc(...) by hand in each
+    branch of apply_op dropped the `labels:` field the doc came in with."""
+    _, text = apply_op(MapOp(op="rename", slug="flaky-test-triage",
+                             title="Flaky test triage v2"), LABELLED_DOC)
+    _, text = apply_op(MapOp(op="summary", slug="flaky-test-triage",
+                             summary="Still a live, unfixed flake."), text)
+    assert "labels:" in text
+    assert parse_feature_doc(text).labels == ("flaky", "ci-failure")
