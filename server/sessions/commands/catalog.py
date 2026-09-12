@@ -32,7 +32,7 @@ from server.sessions.engine import AgentCapabilities
 
 # Split a raw prompt into (command-name, args) IFF it is a single-line
 # slash command. Mirrors the Composer's runCommandFromText regex exactly
-# (web/src/components/session/Composer.tsx) so a slash command typed as an
+# (web/src/features/sessions/composer/Composer.tsx) so a slash command typed as an
 # initial prompt is recognized identically to one typed mid-session.
 _CMD_LINE = re.compile(r"^(\S+)\s*(.*)$")
 
