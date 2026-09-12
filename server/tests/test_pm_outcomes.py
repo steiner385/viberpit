@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from server.db.models import DISPATCH_OUTCOMES
 from server.pm.outcomes import (
-    FINALISED_BOUNCE_OUTCOMES, body_fingerprint, bounced_out, bounces_stmt, rows_to_bounces)
+    FINALISED_BOUNCE_OUTCOMES, TierStats, body_fingerprint, bounced_out, bounces_stmt,
+    rows_to_bounces, tier_floor_from_stats)
 
 
 def test_fingerprint_is_stable_and_body_sensitive():
@@ -45,3 +46,51 @@ def test_rows_to_bounces_matches_only_the_current_fingerprint():
 def test_bounces_stmt_filters_on_finalised_outcomes():
     sql = str(bounces_stmt([("o/r#1", "fp")]))
     assert "dispatch_outcomes" in sql and "outcome" in sql and "count" in sql.lower()
+
+
+# --- D9 tier floor (phase 4) -------------------------------------------------
+#
+# ``tier_floor_from_stats`` is the ONE model-pick floor rule: "the lowest tier at
+# which that capability's issues merged first-pass in >= 2 outcomes, when the lower
+# tiers' first-pass rate was 0 across >= 2 outcomes". The >= 2 thresholds live
+# nowhere else, and the walk order is the catalog's ``TIER_ORDER`` — never the
+# caller's input order and never a string compare.
+
+
+def _s(tier, outcomes, first_pass):
+    return TierStats(tier=tier, outcomes=outcomes, first_pass=first_pass)
+
+
+def test_floor_is_the_lowest_tier_that_merged_first_pass_when_cheaper_tiers_failed():
+    assert tier_floor_from_stats([_s("sonnet", 3, 0), _s("opus", 2, 2)]) == "opus"
+
+
+def test_no_floor_without_two_failed_outcomes_below():
+    """One cheap failure is not evidence the cheap tier cannot do the work."""
+    assert tier_floor_from_stats([_s("sonnet", 1, 0), _s("opus", 2, 2)]) is None
+    assert tier_floor_from_stats([_s("opus", 2, 2)]) is None
+
+
+def test_no_floor_when_a_cheaper_tier_ever_merged_first_pass():
+    """A cheaper tier that does the work at all keeps the floor off — the runner's
+    auto pick is only ever raised on evidence the cheap tier cannot deliver."""
+    assert tier_floor_from_stats([_s("sonnet", 4, 1), _s("opus", 2, 2)]) is None
+
+
+def test_floor_needs_two_first_pass_merges_at_the_higher_tier():
+    assert tier_floor_from_stats([_s("sonnet", 2, 0), _s("opus", 3, 1)]) is None
+
+
+def test_floor_skips_a_middle_tier_with_too_little_evidence():
+    """A tier with < 2 outcomes is evidence in NEITHER role: it cannot establish
+    that the cheap tiers fail, and it cannot be the floor."""
+    assert tier_floor_from_stats(
+        [_s("haiku", 2, 0), _s("sonnet", 1, 0), _s("opus", 2, 2)]) == "opus"
+
+
+def test_floor_orders_by_the_catalog_not_by_input_order():
+    assert tier_floor_from_stats([_s("opus", 2, 2), _s("sonnet", 2, 0)]) == "opus"
+
+
+def test_empty_stats_have_no_floor():
+    assert tier_floor_from_stats([]) is None
