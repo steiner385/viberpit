@@ -67,6 +67,23 @@ export interface ProductCounts {
   needsHome: number
 }
 
+/**
+ * The product's ccswitch-owned map-changes branch/PR (spec §9,
+ * `server/pm/map_changes.py:Pointer`). Capability edits from the map commit to
+ * it and show as proposed until it merges; `behind` is what offers Rebase and
+ * `conflicting` what raises the conflict banner.
+ */
+export interface MapChangesPointer {
+  branch: string
+  prNumber: number | null
+  prUrl: string | null
+  status: 'open' | 'merged' | 'abandoned' | string
+  openedAt: string | null
+  headSha: string | null
+  behind: boolean
+  conflicting: boolean
+}
+
 export interface ProductNode {
   slug: string
   name: string | null
@@ -75,6 +92,8 @@ export interface ProductNode {
   capabilities: CapabilityNode[]
   /** Every initiative of the product, flat; nesting is the web's job. */
   initiatives: InitiativeNode[]
+  /** The OPEN map-changes PR, or null when the product has none. */
+  mapChanges: MapChangesPointer | null
 }
 
 export interface RoadmapMap {

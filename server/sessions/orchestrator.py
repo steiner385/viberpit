@@ -1046,6 +1046,7 @@ class SessionOrchestrator:
             apply_feature_plan=self._pm_sync_apply_feature_plan,
             now_utc=self._pm_sync_now_utc,
             read_map_changes=self._pm_sync_read_map_changes,
+            refresh_map_changes=self._pm_sync_refresh_map_changes,
             # Projects v2 + relations mirror seams (003 Phase A). Discovery rides
             # the owner-aware fetch (App token, has read:project); relations reuse
             # the ambient-credential fetch seam above.
@@ -6224,19 +6225,28 @@ class SessionOrchestrator:
 
     async def _pm_sync_read_map_changes(self, project_id: str) -> "Pointer | None":
         """The product's open map-changes pointer, if any (R8b-4/5) — what
-        ``_feature_index`` reads the branch head at. A simple indexed lookup,
-        the same "at most one open row" rule as ``MapChangesService.open_pointer``
-        (that one takes a ``Project``; the sync loop's view only carries the
-        project id)."""
-        from sqlalchemy import select
-        from server.db.models import FeatureMapChange
-        from server.pm.map_changes import MAP_CHANGES_STATUS_OPEN, Pointer
+        ``_feature_index`` reads the branch head at. The lookup itself lives in
+        ``server/pm/map_changes.py`` so the service, this seam and the map
+        payload cannot disagree about which row is "the open one"."""
+        from server.pm.map_changes import Pointer, open_pointer_row
         async with db_session() as db:
-            row = (await db.execute(select(FeatureMapChange).where(
-                FeatureMapChange.project_id == project_id,
-                FeatureMapChange.status == MAP_CHANGES_STATUS_OPEN,
-            ).order_by(FeatureMapChange.opened_at.desc()))).scalars().first()
-        return Pointer.from_row(row) if row is not None else None
+            row = await open_pointer_row(db, project_id)
+            return Pointer.from_row(row) if row is not None else None
+
+    async def _pm_sync_refresh_map_changes(self, project_id: str) -> None:
+        """One PR-lifecycle pass over the product's open map-changes pointer
+        (R8b-6): reads ``GET pulls/{n}`` and moves the row through
+        ``open → merged | abandoned``, recording behind/conflicting. Raises on a
+        GitHub failure only through the service's own ``last_error`` path — the
+        sync loop treats this seam as best-effort either way."""
+        from sqlalchemy import select
+        from server.db.models import Project
+        async with db_session() as db:
+            proj = (await db.execute(select(Project).where(
+                Project.id == project_id))).scalar_one_or_none()
+            if proj is None:
+                return
+            await self.pm_map_changes().refresh(db, proj)
 
     async def _pm_sync_list_feature_rows(self, project_id: str) -> list:
         """Return FeatureRowView for every Feature belonging to *project_id*."""
@@ -6873,13 +6883,22 @@ class SessionOrchestrator:
                 WorkItem.repo == resolved_repo,
                 WorkItem.state != "open"))).scalar_one()
             project_id = proj.id
+            # R8b-9 / spec §9: while a map-changes PR is open, the drift
+            # session commits to THAT branch, so the UI's inline capability
+            # edits and the AI's proposal ride one reviewable PR.
+            map_branch: str | None = None
+            if scope == "diff":
+                from server.pm.map_changes import open_pointer_row
+                pointer = await open_pointer_row(db, proj.id)
+                map_branch = (pointer.branch or None) if pointer is not None else None
         repo = resolved_repo
         if scope == "diff":
             origin_ref = f"{slug}:map-diff:{suggestion}"
             name = f"pm map-diff {slug}"
             detail: dict = {"slug": slug, "kind": "feature-map-diff",
                             "suggestion": suggestion,
-                            "itemNumbers": list(item_numbers)}
+                            "itemNumbers": list(item_numbers),
+                            "branch": map_branch}
         else:
             origin_ref = f"{slug}:feature-map"
             name = f"pm map {slug}"
@@ -6905,7 +6924,7 @@ class SessionOrchestrator:
             slug=slug, repo=repo, default_branch=default_branch,
             open_count=int(open_count), closed_count=int(closed_count),
             scope=scope, suggestion=suggestion, item_numbers=item_numbers,
-            engine=engine)
+            engine=engine, branch=map_branch)
         detail["engine"] = engine.value
         rec = await self._pm_onboard_ctx.spawn_session(
             origin_ref=origin_ref,

@@ -67,6 +67,15 @@ def _pr(*, number: int = 12, mergeable_state: str = "clean"):
     return (json.dumps(_pr_json(number=number, mergeable_state=mergeable_state)), 0, "")
 
 
+def _pr_closed(*, merged: bool, number: int = 12):
+    """What ``GET pulls/{n}`` answers once the PR is closed — merged or not."""
+    d = _pr_json(number=number)
+    d.update(state="closed", merged=merged,
+             merged_at="2026-09-11T10:00:00Z" if merged else None,
+             mergeable_state=None)
+    return (json.dumps(d), 0, "")
+
+
 def _pr_list(*, number: int = 12):
     """What ``find_open_pr`` sees: the list endpoint, not the single-PR one."""
     return (json.dumps([_pr_json(number=number)]), 0, "")
@@ -219,6 +228,96 @@ def _set_behind(c, value: bool) -> None:
             await db.commit()
 
     c.portal.call(_write)
+
+
+def _pointer_row(c) -> dict:
+    """The single pointer row's lifecycle columns."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import FeatureMapChange
+
+    async def _read():
+        async with db_session() as db:
+            r = (await db.execute(select(FeatureMapChange))).scalars().one()
+            return {"status": r.status, "merged_at": r.merged_at,
+                    "closed_at": r.closed_at, "behind": r.behind,
+                    "conflicting": r.conflicting, "last_error": r.last_error,
+                    "head_sha": r.head_sha}
+
+    return c.portal.call(_read)
+
+
+def _features(c) -> dict[str, tuple]:
+    """``slug -> (orphaned, pr_number, commit_sha)`` for the product."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Feature
+
+    async def _read():
+        async with db_session() as db:
+            return {f.slug: (bool(f.orphaned), f.pr_number, f.commit_sha)
+                    for f in (await db.execute(select(Feature))).scalars().all()}
+
+    return c.portal.call(_read)
+
+
+def _seed_proposed_capabilities(c) -> None:
+    """Two capabilities indexed from the branch head (pr_number set, no
+    commit_sha): ``payments`` referenced by nothing, ``billing`` referenced by a
+    classified work item. Plus a merged capability (``sessions``) that abandon
+    must never touch."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Feature, FeatureLink, Project, WorkItem
+
+    async def _write():
+        async with db_session() as db:
+            p = (await db.execute(select(Project).where(
+                Project.slug == SLUG))).scalars().one()
+            sessions = (await db.execute(select(Feature).where(
+                Feature.slug == "sessions"))).scalars().one()
+            sessions.commit_sha = "merged-sha"
+            payments = Feature(project_id=p.id, slug="payments", title="Payments",
+                               state="proposed", pr_number=12)
+            billing = Feature(project_id=p.id, slug="billing", title="Billing",
+                              state="proposed", pr_number=12)
+            db.add_all([payments, billing])
+            await db.flush()
+            # A link out of a deleted row must not dangle (the FK is real on
+            # Postgres) — and an incoming one from a surviving row neither.
+            db.add(FeatureLink(src_feature_id=payments.id,
+                               dst_feature_id=sessions.id, kind="powered_by"))
+            db.add(FeatureLink(src_feature_id=sessions.id,
+                               dst_feature_id=payments.id, kind="integrates_with"))
+            db.add(WorkItem(repo=REPO, number=7, kind="issue", state="open",
+                            title="Billing bug", feature_id=billing.id,
+                            triage_state="classified"))
+            await db.commit()
+
+    c.portal.call(_write)
+
+
+def _refresh(c) -> None:
+    """One PR-lifecycle refresh, driven exactly as the sync loop drives it."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Project
+
+    # `app.state.sessions` is the facade adapter, which forwards only the public
+    # surface; the sync loop calls this seam on the orchestrator itself.
+    orch = getattr(c.app.state.sessions, "_orch", c.app.state.sessions)
+
+    async def _go():
+        async with db_session() as db:
+            pid = (await db.execute(select(Project).where(
+                Project.slug == SLUG))).scalars().one().id
+        await orch._pm_sync_refresh_map_changes(pid)
+
+    c.portal.call(_go)
 
 
 async def _loop_thread() -> threading.Thread:
@@ -603,3 +702,128 @@ def test_rebase_without_a_pointer_is_404():
         r = c.post(f"/api/pm/projects/{SLUG}/map-changes/rebase", headers=IDENTITY_HEADERS)
         assert r.status_code == 404, r.text
         assert r.json()["detail"]["error"] == "no_open_map_changes"
+
+
+# -- PR lifecycle refresh (R8b-6) and abandon cleanup (R8b-7) -----------------
+
+
+def test_refresh_reads_the_pr_and_records_behind_and_conflicting():
+    gh = FakeGh([*_first_create_answers(),
+                 _pr(mergeable_state="behind"), _pr(mergeable_state="dirty")])
+    with _seeded(gh) as c:
+        assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
+        first = len(gh.calls)
+
+        _refresh(c)
+        assert _argv(gh)[first] == ["api", f"repos/{REPO}/pulls/12"]
+        row = _pointer_row(c)
+        assert (row["status"], row["behind"], row["conflicting"]) == ("open", True, False)
+
+        _refresh(c)
+        row = _pointer_row(c)
+        assert (row["status"], row["behind"], row["conflicting"]) == ("open", False, True)
+        assert row["last_error"] is None
+
+
+def test_refresh_marks_a_merged_pr_merged():
+    gh = FakeGh([*_first_create_answers(), _pr_closed(merged=True)])
+    with _seeded(gh) as c:
+        assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
+        _seed_proposed_capabilities(c)
+        _refresh(c)
+
+        row = _pointer_row(c)
+        assert row["status"] == "merged"
+        assert row["merged_at"] is not None
+        # A merge is NOT an abandon: the docs are on the default branch now and
+        # the next index pass stamps commit_sha over the PR columns.
+        assert set(_features(c)) == {"sessions", "dictation", "payments", "billing"}
+
+        # …and the pointer is closed, so the next pass reads nothing.
+        before = len(gh.calls)
+        _refresh(c)
+        assert len(gh.calls) == before
+
+
+def test_refresh_abandons_a_closed_unmerged_pr_and_cleans_up():
+    """A PR closed on GitHub rather than through the UI reaches the same end
+    state (R8b-7): the never-merged proposals must not linger forever."""
+    gh = FakeGh([*_first_create_answers(), _pr_closed(merged=False)])
+    with _seeded(gh) as c:
+        assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
+        _seed_proposed_capabilities(c)
+        _refresh(c)
+
+        row = _pointer_row(c)
+        assert row["status"] == "abandoned"
+        assert row["closed_at"] is not None and row["merged_at"] is None
+        feats = _features(c)
+        assert "payments" not in feats          # proposed-only, unreferenced
+        assert feats["billing"][0] is True      # referenced ⇒ orphaned, not deleted
+        assert feats["sessions"] == (False, None, "merged-sha")
+
+
+def test_a_failed_pr_read_records_last_error_and_leaves_the_status():
+    gh = FakeGh([*_first_create_answers(), ("", 1, "HTTP 502: Bad Gateway")])
+    with _seeded(gh) as c:
+        assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
+        _refresh(c)
+        row = _pointer_row(c)
+        assert row["status"] == "open"
+        assert "502" in (row["last_error"] or "")
+
+        # …and the next clean read clears it.
+        gh.answers.append(_pr())
+        _refresh(c)
+        assert _pointer_row(c)["last_error"] is None
+
+
+def test_a_hung_gh_during_a_pr_read_does_not_abandon_the_pr():
+    """`subprocess.TimeoutExpired` escapes `_run_gh` rather than becoming a
+    GhWriteError — it must land in ``last_error`` like any other failure, never
+    take the PR out of ``open``."""
+    class _HangAfter:
+        def __init__(self, answers):
+            self.inner = FakeGh(answers)
+            self.calls = self.inner.calls
+
+        def __call__(self, args, token=None, *, input=None, timeout=None):
+            if self.inner.answers:
+                return self.inner(args, token, input=input, timeout=timeout)
+            self.calls.append((list(args), token, input))
+            raise subprocess.TimeoutExpired(["gh", *args], timeout or 60)
+
+    gh = _HangAfter(_first_create_answers())
+    with _seeded(gh) as c:
+        assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
+        _refresh(c)
+        row = _pointer_row(c)
+        assert row["status"] == "open"
+        assert "timed out" in (row["last_error"] or "")
+
+
+def test_refresh_without_an_open_pointer_makes_no_github_call():
+    gh = FakeGh([])
+    with _seeded(gh) as c:
+        _refresh(c)
+        assert gh.calls == []
+
+
+def test_delete_deletes_unreferenced_proposals_and_orphans_referenced_ones():
+    """R8b-7: abandoning drops the branch, so a capability that only ever lived
+    on it is deleted — unless something references it, which is orphaned instead
+    so no FK (a work item's ``feature_id``) is left dangling."""
+    gh = FakeGh([*_first_create_answers(), _OK, _OK])
+    with _seeded(gh) as c:
+        assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
+        _seed_proposed_capabilities(c)
+
+        r = c.delete(f"/api/pm/projects/{SLUG}/map-changes", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["cleanup"] == {"deleted": 1, "orphaned": 1}
+
+        feats = _features(c)
+        assert "payments" not in feats
+        assert feats["billing"] == (True, 12, None)
+        assert feats["sessions"] == (False, None, "merged-sha")   # merged: untouched
+        assert feats["dictation"][0] is False

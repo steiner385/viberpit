@@ -116,6 +116,9 @@ ApplyFeaturePlan = Callable[[str, FeatureIndexPlan], Awaitable[None]]
 # read — every pre-existing PmSyncLoop caller keeps today's default-branch-only
 # behaviour.
 ReadMapChanges = Callable[[str], Awaitable[Pointer | None]]
+# Move that pointer through its PR's lifecycle (R8b-6): one PR read per open
+# pointer per incremental pass. None ⇒ no lifecycle pass.
+RefreshMapChanges = Callable[[str], Awaitable[object]]
 
 # --- Projects v2 + relations mirror seams (003 Phase A) ---------------------
 # All default to None so the mirror pass is a no-op unless the orchestrator
@@ -155,6 +158,7 @@ class PmSyncLoop:
         apply_feature_plan: ApplyFeaturePlan,
         now_utc: NowUtc,
         read_map_changes: ReadMapChanges | None = None,
+        refresh_map_changes: RefreshMapChanges | None = None,
         list_products: ListProducts | None = None,
         fetch_gh_projects: FetchGhProjects | None = None,
         save_gh_project: SaveGhProject | None = None,
@@ -176,6 +180,8 @@ class PmSyncLoop:
         self._now_utc = now_utc
         # None ⇒ the feature index only ever reads the default branch (R8b-4).
         self._read_map_changes = read_map_changes
+        # None ⇒ no PR-lifecycle pass over the open pointer (R8b-6).
+        self._refresh_map_changes = refresh_map_changes
         # Projects v2 + relations mirror seams (003 Phase A); None ⇒ skip pass.
         self._list_products = list_products
         self._fetch_gh_projects = fetch_gh_projects
@@ -522,9 +528,28 @@ class PmSyncLoop:
             if not more or len(fresh) < len(items):
                 break
         await self._feature_index(view)
+        await self._map_changes_lifecycle(view)
         await self._save_sync_state(
             view, watermark=max_seen or now, last_synced_at=now,
             sync_requested_at=None)
+
+    async def _map_changes_lifecycle(self, view: RepoSyncView) -> None:
+        """Move the product's open map-changes PR through its lifecycle (R8b-6).
+
+        Once per incremental pass over the product's PRIMARY repo — the pointer
+        is per product and its branch lives in that repo. Best-effort: GitHub
+        being down must never stall the work-item mirror, so a failure warns and
+        the pass completes (the next tick retries)."""
+        if not view.is_primary or self._refresh_map_changes is None:
+            return
+        try:
+            await self._refresh_map_changes(view.project_id)
+        except Exception:
+            log.warning("pm_sync.map_changes_refresh_failed repo=%s",
+                        view.repo, exc_info=True)
+            await self._ctx.emit(
+                "warn", f"map-changes PR refresh failed for {view.repo}",
+                kind="map_changes_refresh_error", target=view.repo)
 
     async def _feature_index(self, view: RepoSyncView) -> None:
         if not view.is_primary:
@@ -546,7 +571,6 @@ class PmSyncLoop:
 
         docs_by_slug: dict[str, tuple[str, FeatureDoc]] = {}
         skipped: list[str] = []
-        total_read = len(main.docs)
         for path, text in main.docs:
             try:
                 doc = parse_feature_doc(text)
@@ -569,7 +593,6 @@ class PmSyncLoop:
                 pointer = await self._read_map_changes(view.project_id)
                 if pointer is not None and pointer.status == MAP_CHANGES_STATUS_OPEN and pointer.branch:
                     branch = await self._read_feature_docs(view.repo, pointer.branch)
-                    total_read += len(branch.docs)
                     for path, text in branch.docs:
                         try:
                             doc = parse_feature_doc(text)
@@ -586,6 +609,11 @@ class PmSyncLoop:
                     kind="map_changes_read_error", target=view.repo)
 
         if skipped:
+            # The denominator is CAPABILITIES, not doc rows: a doc present on
+            # both the default branch and the map-changes branch is one
+            # capability read twice (R8b-4 merges them by slug), and counting
+            # both would report "1 of 4" where three capabilities exist.
+            total_read = len(docs_by_slug) + len(skipped)
             # A skipped doc is invisible everywhere else: the capability simply
             # never appears on the map, and the pm-triage drift branch keeps
             # re-proposing it because an unindexed capability cannot latch. The

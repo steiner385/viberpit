@@ -776,15 +776,18 @@ async def map_changes_abandon(
     db=Depends(get_db),
 ) -> dict:
     """Abandon the open map-changes PR: close it, delete the branch, mark the
-    pointer ``abandoned`` (R8b-7)."""
+    pointer ``abandoned``, then drop the capabilities that only ever lived on
+    that branch (R8b-7) — nothing will ever read their docs again, so no index
+    pass could retire them."""
     p = await _load_project(db, slug)
     svc = request.app.state.sessions.pm_map_changes()
     try:
         pointer = await svc.abandon(db, p, identity)
+        cleanup = await svc.cleanup_after_abandon(db, p, pointer.pr_number)
     except (NoOpenMapChanges, NoPrimaryRepo, GhWriteError,
             subprocess.TimeoutExpired) as e:
         raise _map_changes_http(e) from e
-    return {"pointer": pointer.to_dict()}
+    return {"pointer": pointer.to_dict(), "cleanup": cleanup}
 
 
 @router.post("/projects/{slug}/map-changes/rebase", status_code=status.HTTP_200_OK)

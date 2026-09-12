@@ -52,7 +52,7 @@ def _named(page, name):
 
 
 def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None,
-          read_feature_docs=None, read_map_changes=None):
+          read_feature_docs=None, read_map_changes=None, refresh_map_changes=None):
     """Wire a loop over canned data. `pages` is a list popped per fetch call.
 
     ``read_feature_docs``/``read_map_changes`` let a test fully replace the
@@ -94,7 +94,8 @@ def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None
         read_feature_docs=read_feature_docs or read_docs,
         list_feature_rows=list_rows, apply_feature_plan=apply_plan,
         now_utc=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
-        rename_repo=rename_repo, read_map_changes=read_map_changes)
+        rename_repo=rename_repo, read_map_changes=read_map_changes,
+        refresh_map_changes=refresh_map_changes)
     return loop, saved, upserted, applied
 
 
@@ -391,3 +392,96 @@ async def test_branch_read_error_is_best_effort_default_plan_still_applied():
     assert any("watermark" in u for _, u in saved)  # work-item sync still completed
     assert any(kw.get("kind") == "map_changes_read_error" for _, _, kw in ctx.events)
     assert any(level == "warn" for level, _, _ in ctx.events)
+
+
+@pytest.mark.asyncio
+async def test_the_skipped_doc_denominator_counts_deduplicated_slugs():
+    """A doc on BOTH the default branch and the map-changes branch is ONE
+    capability: "N of M could not be parsed" must count de-duplicated slugs plus
+    the skipped docs, not raw doc rows (a 1-of-3 truth read as 1-of-4)."""
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    main = FeatureDocsRead("sha-main", [
+        ("docs/product/features/a.md", _fdoc("a", "A")),
+        ("docs/product/features/b.md", _fdoc("b", "B")),
+        ("docs/product/features/bad.md", "no frontmatter at all\n"),
+    ])
+    branch = FeatureDocsRead("sha-branch", [
+        ("docs/product/features/b.md", _fdoc("b", "B Proposed"))])
+
+    async def read_docs(repo, ref=None):
+        return branch if ref == "pm/map-changes-proj" else main
+
+    async def read_map_changes(project_id):
+        return _open_pointer()
+
+    loop, _saved, _upserted, _applied = _loop(
+        ctx, [view], pages, read_feature_docs=read_docs,
+        read_map_changes=read_map_changes)
+    await loop.tick()
+
+    (text,) = [t for _, t, kw in ctx.events if kw.get("kind") == "feature_doc_skipped"]
+    assert "1 of 3 feature docs" in text
+
+
+# --- map-changes PR lifecycle refresh (R8b-6) ---------------------------------
+
+
+def _incremental_view():
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    return _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+
+
+@pytest.mark.asyncio
+async def test_incremental_refreshes_the_map_changes_pr_after_the_index():
+    """R8b-6: one PR read per open pointer per incremental pass, driven by the
+    loop rather than the session PR poller (which watches session branches)."""
+    ctx = Ctx()
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    refreshed = []
+
+    async def refresh(project_id):
+        refreshed.append(project_id)
+
+    loop, saved, _upserted, applied = _loop(
+        ctx, [_incremental_view()], pages, refresh_map_changes=refresh)
+    await loop.tick()
+    assert refreshed == ["p1"]
+    assert len(applied) == 1          # …and the feature index still ran
+
+
+@pytest.mark.asyncio
+async def test_a_non_primary_repo_never_refreshes_map_changes():
+    ctx = Ctx()
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    refreshed = []
+
+    async def refresh(project_id):
+        refreshed.append(project_id)
+
+    view = _view(backfill_done=True, is_primary=False,
+                 watermark=datetime(2026, 1, 15, tzinfo=timezone.utc),
+                 sync_requested_at=datetime(2026, 1, 15, tzinfo=timezone.utc))
+    loop, *_ = _loop(ctx, [view], pages, refresh_map_changes=refresh)
+    await loop.tick()
+    assert refreshed == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_map_changes_refresh_is_best_effort():
+    """GitHub being down must not stall the work-item mirror: the refresh warns
+    and the pass still saves its watermark."""
+    ctx = Ctx()
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+
+    async def refresh(project_id):
+        raise RuntimeError("GET pulls/12 failed")
+
+    loop, saved, _upserted, applied = _loop(
+        ctx, [_incremental_view()], pages, refresh_map_changes=refresh)
+    await loop.tick()
+    assert any("watermark" in u for _, u in saved)
+    assert any(kw.get("kind") == "map_changes_refresh_error" for _, _, kw in ctx.events)
+    assert not any(kw.get("kind") == "sync_error" for _, _, kw in ctx.events)

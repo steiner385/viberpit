@@ -16,20 +16,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import subprocess
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select, update
 
 from ccswitch import gitrepos
 from server.audit import record_audit
 from server.db.models import (
     FEATURE_MAP_CHANGE_STATUSES,
     Feature,
+    FeatureLink,
     FeatureMapChange,
+    InitiativeFeature,
     Project,
     ProjectRepo,
+    TriageProposal,
+    WorkItem,
 )
 
 from .classification import FEATURE_DOCS_DIR, feature_doc_path
@@ -101,6 +106,35 @@ repository makes them bot-authored.
 """
 
 
+async def open_pointer_rows(
+    db, project_ids: Sequence[str],
+) -> dict[str, FeatureMapChange]:
+    """THE query for "a product's open map-changes pointer", batched by project.
+
+    It is what enforces "at most one open map-changes PR per product" (R8b-5):
+    there is no partial unique index (SQLite's reconcile path cannot add one),
+    so every reader must agree on which row wins. Rows come back oldest-first
+    and the dict keeps the last write, i.e. the NEWEST open row per project.
+
+    Batched because the map payload needs one pointer per product in a single
+    round trip (``server/api/pm_tree.py`` renders every product per request);
+    :func:`open_pointer_row` is the one-project spelling over the same query.
+    """
+    ids = [pid for pid in project_ids if pid]
+    if not ids:
+        return {}
+    rows = (await db.execute(select(FeatureMapChange).where(
+        FeatureMapChange.project_id.in_(ids),
+        FeatureMapChange.status == MAP_CHANGES_STATUS_OPEN,
+    ).order_by(FeatureMapChange.opened_at))).scalars().all()
+    return {row.project_id: row for row in rows}
+
+
+async def open_pointer_row(db, project_id: str) -> FeatureMapChange | None:
+    """The product's open pointer row, if any — see :func:`open_pointer_rows`."""
+    return (await open_pointer_rows(db, [project_id])).get(project_id)
+
+
 class NoPrimaryRepo(RuntimeError):
     """The product has no primary repo, so there is nowhere to write docs."""
 
@@ -130,6 +164,19 @@ def _aware(dt: datetime | None) -> datetime | None:
     if dt is None or dt.tzinfo is not None:
         return dt
     return dt.replace(tzinfo=timezone.utc)
+
+
+def _parse_gh_time(value: str | None) -> datetime | None:
+    """GitHub's ``2026-09-11T10:00:00Z`` as an aware UTC datetime, or ``None``.
+    Never raises: an unparseable timestamp falls back to the caller's clock
+    rather than failing a polling pass."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        log.info("map_changes: unparseable GitHub timestamp %r", value)
+        return None
 
 
 @dataclass(frozen=True)
@@ -191,12 +238,10 @@ class MapChangesService:
     # -- reads ----------------------------------------------------------------
 
     async def open_pointer(self, db, project: Project) -> FeatureMapChange | None:
-        """The product's open pointer row, if any. This lookup is what enforces
-        "at most one open map-changes PR per product" (R8b-5)."""
-        return (await db.execute(select(FeatureMapChange).where(
-            FeatureMapChange.project_id == project.id,
-            FeatureMapChange.status == MAP_CHANGES_STATUS_OPEN,
-        ).order_by(FeatureMapChange.opened_at.desc()))).scalars().first()
+        """The product's open pointer row, if any — :func:`open_pointer_row` is
+        the one definition of that lookup, shared with the sync-loop seam and
+        the map payload."""
+        return await open_pointer_row(db, project.id)
 
     async def _primary_repo(self, db, project: Project) -> str:
         row = (await db.execute(select(ProjectRepo).where(
@@ -344,9 +389,132 @@ class MapChangesService:
                     "path": path, "commitSha": sha, "prNumber": pointer.pr_number})
         return Pointer.from_row(pointer), path, sha
 
+    async def refresh(
+        self, db, project: Project, gh: GhWrite | None = None,
+    ) -> Pointer | None:
+        """Move the open pointer through the PR's lifecycle (R8b-6).
+
+        ONE ``GET /repos/{r}/pulls/{n}`` per open pointer per pass, read
+        directly rather than through the session PR poller (which watches
+        session branches, not this one). ``mergeable_state`` supplies the two
+        facts the UI acts on: ``behind`` offers Rebase, ``dirty`` raises the
+        conflict banner.
+
+        Terminal states: merged ⇒ the docs are on the default branch and the
+        next index pass stamps ``commit_sha`` over the PR columns; closed
+        unmerged ⇒ the same end state as the UI's Abandon, so the never-merged
+        proposals are cleaned up here too (R8b-7) — a PR closed on GitHub would
+        otherwise leave them proposed forever.
+
+        A GitHub failure is recorded in ``last_error`` and leaves the status
+        alone: the caller is a polling loop, and a transient 502 must not
+        abandon a live PR. Returns ``None`` when there is no open pointer.
+        """
+        pointer = await open_pointer_row(db, project.id)
+        if pointer is None:
+            return None
+        if not pointer.pr_number:
+            return Pointer.from_row(pointer)
+        repo = pointer.repo or await self._primary_repo(db, project)
+        if gh is None:   # the token mint blocks — never on the loop
+            gh = await asyncio.to_thread(self._gh_factory, repo)
+        try:
+            pr = await asyncio.to_thread(gh.read_pr, pointer.pr_number)
+        except GhWriteError as e:
+            return await self._refresh_failed(db, pointer, f"{e.step}: {e.detail}")
+        except subprocess.TimeoutExpired as e:
+            # A hung `gh` escapes `_run_gh` rather than becoming a GhWriteError,
+            # and it is the same kind of upstream failure: record it and leave
+            # the status alone.
+            return await self._refresh_failed(db, pointer, f"pr_read: {e}")
+
+        now = self._now()
+        pointer.last_error = None
+        if pr.head_sha:
+            pointer.head_sha = pr.head_sha
+        pointer.behind = pr.behind
+        pointer.conflicting = pr.conflicting
+        if pr.merged:
+            pointer.status = MAP_CHANGES_STATUS_MERGED
+            pointer.merged_at = _parse_gh_time(pr.merged_at) or now
+            pointer.closed_at = pointer.merged_at
+            pointer.behind = pointer.conflicting = False
+        elif pr.state == "closed":
+            pointer.status = MAP_CHANGES_STATUS_ABANDONED
+            pointer.closed_at = now
+            pointer.behind = pointer.conflicting = False
+            await self.cleanup_after_abandon(db, project, pointer.pr_number)
+        await db.flush()
+        return Pointer.from_row(pointer)
+
+    @staticmethod
+    async def _refresh_failed(db, pointer: FeatureMapChange, detail: str) -> Pointer:
+        """Record why the PR read failed WITHOUT touching the status: the caller
+        is a polling loop and a transient failure must not abandon a live PR."""
+        pointer.last_error = detail[:300]
+        await db.flush()
+        return Pointer.from_row(pointer)
+
+    async def cleanup_after_abandon(
+        self, db, project: Project, pr_number: int | None,
+    ) -> dict[str, int]:
+        """Drop the capabilities that only ever existed on the abandoned branch
+        (R8b-7). Returns ``{"deleted": n, "orphaned": m}``.
+
+        A proposed-only row is one the index wrote from the branch head:
+        ``pr_number`` is this PR's and ``commit_sha`` is NULL (a merged doc has
+        the default-branch SHA — R8b-4). The branch is gone, so its doc will
+        never be read again and no index pass can retire the row; without this
+        it stays on the map as a proposal forever.
+
+        Rows something else points at are ORPHANED instead of deleted, so no
+        reference is left dangling: a classified ``work_items.feature_id`` and
+        an ``initiative_features`` membership are decisions a human made against
+        that capability. The remaining incoming FKs are not decisions and are
+        cleared so the delete is legal on Postgres: ``feature_links`` rows are
+        rewritten wholesale by every index pass, a child's ``parent_feature_id``
+        is re-resolved by the same pass, and a triage proposal's
+        ``proposed_feature_id`` pointed at a capability that never existed."""
+        if not pr_number:
+            return {"deleted": 0, "orphaned": 0}
+        rows = (await db.execute(select(Feature).where(
+            Feature.project_id == project.id,
+            Feature.pr_number == pr_number,
+            Feature.commit_sha.is_(None)))).scalars().all()
+        if not rows:
+            return {"deleted": 0, "orphaned": 0}
+        ids = [r.id for r in rows]
+        referenced = {
+            fid for (fid,) in (await db.execute(select(WorkItem.feature_id).where(
+                WorkItem.feature_id.in_(ids)))).all() if fid}
+        referenced |= {
+            fid for (fid,) in (await db.execute(select(InitiativeFeature.feature_id).where(
+                InitiativeFeature.feature_id.in_(ids)))).all() if fid}
+        doomed = [r for r in rows if r.id not in referenced]
+        for row in rows:
+            if row.id in referenced:
+                row.orphaned = True
+        if doomed:
+            dead = [r.id for r in doomed]
+            await db.execute(update(Feature).where(
+                Feature.parent_feature_id.in_(dead)).values(parent_feature_id=None))
+            await db.execute(delete(FeatureLink).where(
+                or_(FeatureLink.src_feature_id.in_(dead),
+                    FeatureLink.dst_feature_id.in_(dead))))
+            await db.execute(update(TriageProposal).where(
+                TriageProposal.proposed_feature_id.in_(dead)).values(
+                    proposed_feature_id=None))
+            await db.execute(delete(Feature).where(Feature.id.in_(dead)))
+        await db.flush()
+        counts = {"deleted": len(doomed), "orphaned": len(rows) - len(doomed)}
+        log.info("map_changes: abandon cleanup project=%s pr=%s %s",
+                 project.slug, pr_number, counts)
+        return counts
+
     async def abandon(self, db, project: Project, identity: str) -> Pointer:
         """Close the PR, delete the branch and mark the row abandoned (R8b-7).
-        Feature-row cleanup for never-merged proposals is the sync loop's."""
+        The never-merged proposals it leaves behind are dropped by
+        :meth:`cleanup_after_abandon`, which the route calls next."""
         pointer = await self.open_pointer(db, project)
         if pointer is None:
             raise NoOpenMapChanges(f"product '{project.slug}' has no open map-changes PR")

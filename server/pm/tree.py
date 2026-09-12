@@ -144,6 +144,10 @@ class ProductIn:
     awaiting_triage: int
     needs_home: int
     incident_statuses: tuple[str, ...] = field(default_factory=tuple)
+    # The product's OPEN map-changes pointer as `Pointer.to_dict()` (spec §9),
+    # or None. Carried through verbatim: the shape is the service's, and the
+    # product header renders it (open PR, its age, Rebase while behind).
+    map_changes: dict | None = None
 
 
 def _initiative_node(ini: InitiativeIn, project_slug: str) -> dict:
@@ -259,4 +263,5 @@ def build_product_tree(product: ProductIn) -> dict:
     tier = max_tier(pseudo, *(r["tier"] for r in roots), *(i["tier"] for i in initiative_nodes),
                     *(incident_tier(s) for s in product.incident_statuses))
     return {"slug": product.slug, "name": product.name, "tier": tier, "counts": counts,
-            "capabilities": roots, "initiatives": initiative_nodes}
+            "capabilities": roots, "initiatives": initiative_nodes,
+            "mapChanges": product.map_changes}

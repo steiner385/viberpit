@@ -408,14 +408,15 @@ async def test_read_feature_docs_returns_all_docs_from_pinned_snapshot(db_env):
     with tempfile.TemporaryDirectory() as root:
         clone = _make_feature_repo(root, ["alpha", "beta", "gamma"])
         with patch("ccswitch.gitrepos.ensure_clone", return_value=clone):
-            docs = await orch._pm_sync_read_feature_docs("o/r")
-    paths = sorted(p for p, _ in docs)
+            read = await orch._pm_sync_read_feature_docs("o/r")
+    paths = sorted(p for p, _ in read.docs)
     assert paths == [
         "docs/product/features/alpha.md",
         "docs/product/features/beta.md",
         "docs/product/features/gamma.md",
     ]
-    assert all("body" in text for _, text in docs)
+    assert all("body" in text for _, text in read.docs)
+    assert read.sha  # the pinned snapshot the docs were read at (R8b-4)
 
 
 @pytest.mark.asyncio
@@ -568,6 +569,53 @@ async def test_diff_map_spawn_does_not_schedule_critic(db_env):
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
         await orch.pm_onboard_spawn_map("ccswitch", scope="diff", suggestion="x")
     assert scheduled == []   # drift path never chains a critic
+
+
+async def _diff_prompt(db_env, *, pointer_status: str | None) -> str:
+    """Spawn one ``scope="diff"`` session and return the prompt it was seeded
+    with; *pointer_status* seeds a ``feature_map_changes`` row in that status
+    (None seeds none)."""
+    from server.db.models import FeatureMapChange
+    pid = await _seed_project_for_map(db_env)
+    if pointer_status is not None:
+        async with db_session() as db:
+            db.add(FeatureMapChange(
+                project_id=pid, repo="steiner385/cc-account-switcher",
+                branch="pm/map-changes-ccswitch", pr_number=12,
+                status=pointer_status))
+    orch = _bare_orch()
+    orch._backlog_healthy_account = _mk_async("acct1")
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    orch._sdlc_default_branch = _mk_async("master")
+    rec = FakeAutomationContext()
+    orch._pm_onboard_ctx = rec
+    orch._spawn = lambda coro, name=None: coro.close()
+    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+        await orch.pm_onboard_spawn_map("ccswitch", scope="diff", suggestion="x")
+    return rec.calls[0]["initial_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_diff_map_spawn_targets_the_open_map_changes_branch(db_env):
+    """R8b-9: with a map-changes PR open, the drift session is told to commit to
+    that branch — the same PR the roadmap UI's inline edits ride."""
+    prompt = await _diff_prompt(db_env, pointer_status="open")
+    assert "pm/map-changes-ccswitch" in prompt
+    assert "pm/feature-map-ccswitch" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_diff_map_spawn_ignores_a_closed_pointer_and_uses_the_map_branch(db_env):
+    """An abandoned/merged pointer is not a target: only an ``open`` row is."""
+    prompt = await _diff_prompt(db_env, pointer_status="abandoned")
+    assert "pm/map-changes-ccswitch" not in prompt
+    assert "pm/feature-map-ccswitch" in prompt
+
+
+@pytest.mark.asyncio
+async def test_diff_map_spawn_without_a_pointer_uses_the_map_branch(db_env):
+    prompt = await _diff_prompt(db_env, pointer_status=None)
+    assert "pm/feature-map-ccswitch" in prompt
 
 
 @pytest.mark.asyncio

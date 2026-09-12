@@ -142,6 +142,59 @@ def test_map_is_empty_without_products():
         assert r.json()["products"] == []
 
 
+def test_map_carries_the_open_map_changes_pointer_per_product():
+    """Spec §9: the product header shows the open map-changes PR, its age and
+    whether it is behind — so the map payload carries the pointer per product,
+    and ``null`` for a product without one. Only an ``open`` row counts (R8b-5),
+    and the newest one wins."""
+    import asyncio
+    from datetime import datetime, timezone
+
+    from server.db import db_session, init_db
+    from server.db.models import FeatureMapChange, Project, ProjectRepo
+
+    async def _seed(db_url: str) -> None:
+        await init_db(db_url)
+        async with db_session() as db:
+            prod = Project(slug="example-product", name="Example product")
+            other = Project(slug="example-infra", name="Infra")
+            db.add_all([prod, other])
+            await db.flush()
+            db.add(ProjectRepo(project_id=prod.id, repo="o/r", is_primary=True))
+            db.add(FeatureMapChange(
+                project_id=prod.id, repo="o/r", branch="pm/map-changes-example-product",
+                pr_number=12, pr_url="https://github.com/o/r/pull/12", status="open",
+                head_sha="c0", behind=True, conflicting=False,
+                opened_at=datetime(2026, 9, 10, tzinfo=timezone.utc)))
+            # An older abandoned row on the same product must not be picked up…
+            db.add(FeatureMapChange(
+                project_id=prod.id, repo="o/r", branch="pm/map-changes-example-product",
+                pr_number=9, status="abandoned",
+                opened_at=datetime(2026, 9, 1, tzinfo=timezone.utc)))
+            # …and a product with no row at all reports null.
+            await db.commit()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        asyncio.run(_seed(db_url))
+
+        with _client(db_url) as c:
+            r = c.get("/api/pm/map", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            products = {p["slug"]: p for p in r.json()["products"]}
+            assert products["example-product"]["mapChanges"] == {
+                "branch": "pm/map-changes-example-product",
+                "prNumber": 12,
+                "prUrl": "https://github.com/o/r/pull/12",
+                "status": "open",
+                "openedAt": "2026-09-10T00:00:00+00:00",
+                "headSha": "c0",
+                "behind": True,
+                "conflicting": False,
+            }
+            assert products["example-infra"]["mapChanges"] is None
+
+
 def test_board_status_blocked_tiers_the_issue_on_leaves_and_map():
     """Spec §11 board-Status tier row: an otherwise-idle open issue mirrored onto
     a GhProject board with Status="Blocked" gets tier "blocked" — via /leaves for
