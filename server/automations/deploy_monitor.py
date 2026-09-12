@@ -9,20 +9,20 @@ rule is server/automations/issue_filing.py.
 """
 from __future__ import annotations
 
-import asyncio  # noqa: F401  (the loop half uses it)
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable  # noqa: F401
+from typing import Any, Awaitable, Callable
 
-from ccswitch import brand, gitrepos  # noqa: F401
+from ccswitch import brand, gitrepos
 from server.github import ci_issues
 from server.github.deploy_envs import classify_env
-from server.github.deployments import Deployment, by_env, parse_iso  # noqa: F401
+from server.github.deployments import Deployment, by_env, parse_iso
 
-from .base import ActionableItem, ActionSpec, AutomationStatus, ConfigField, TriggerResult  # noqa: F401
+from .base import ActionableItem, ActionSpec, AutomationStatus, ConfigField, TriggerResult
 from .engine_policy import EnginePolicy
-from .issue_filing import Decision, Linked, apply, decide, neutralize_markers  # noqa: F401
+from .issue_filing import Decision, Linked, apply, decide, neutralize_markers
 
 log = logging.getLogger(__name__)
 
@@ -216,3 +216,367 @@ async def notify_deploy_failed(title: str, body: str, *, repo: str, url: str | N
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# The tick
+# ---------------------------------------------------------------------------
+
+ReadConfig = Callable[[], Awaitable[tuple[str, dict]]]
+ListRepos = Callable[[dict], Awaitable[list[str]]]
+FetchDeployments = Callable[[list[str]], Awaitable[dict[str, list[Deployment] | None]]]
+Notify = Callable[..., Awaitable[None]]
+
+_DAY = timedelta(days=1)
+
+
+def _iso(dt: datetime) -> str:
+    return dt.isoformat()
+
+
+class DeployMonitorLoop:
+    """Restart-safe, non-reentrant tick. Every I/O seam is injected: ``run`` is
+    the gh runner (``gitrepos._run_gh``), ``notify`` the ``deploy_failed`` push,
+    ``clock`` an aware-UTC now. Incident state lives in the ctx's target-state
+    rows keyed ``repo#env`` (spec §5.3)."""
+
+    def __init__(self, ctx: Any, *,
+                 read_config: ReadConfig,
+                 list_repos: ListRepos,
+                 fetch_deployments: FetchDeployments,
+                 run: Callable[..., Any] = gitrepos._run_gh,
+                 notify: Notify = notify_deploy_failed,
+                 clock: Callable[[], datetime] = _utcnow) -> None:
+        self._ctx = ctx
+        self._read_config = read_config
+        self._list_repos = list_repos
+        self._fetch = fetch_deployments
+        self._run = run
+        self._notify = notify
+        self._clock = clock
+        self._lock = asyncio.Lock()
+        self._filed: list[datetime] = []          # rolling 24 h issue creates (daily cap)
+        self._unreadable: set[str] = set()        # repos whose last fetch failed
+
+    async def tick(self) -> None:
+        async with self._lock:
+            try:
+                await self._run_once()
+            except Exception:  # noqa: BLE001 — a tick must never crash the loop
+                log.warning("deploy_monitor.tick_failed", exc_info=True)
+
+    async def _run_once(self) -> None:
+        mode, config = await self._read_config()
+        if mode == "off":
+            self._stash_counts(0, 0, {})
+            return
+        now = self._clock()
+        self._filed = [t for t in self._filed if now - t < _DAY]
+        repos = []
+        for repo in await self._list_repos(config):
+            if ci_issues.valid_repo(str(repo)):
+                repos.append(str(repo))
+            else:
+                log.warning("deploy_monitor.invalid_repo repo=%r", repo)
+        fetched = await self._fetch(repos) if repos else {}
+        states = await self._ctx.list_target_states()
+        watched = 0
+        for repo in repos:
+            deps = fetched.get(repo)
+            if deps is None:
+                if repo not in self._unreadable:
+                    self._unreadable.add(repo)
+                    await self._ctx.emit("warn", f"could not read deployments for {repo}; "
+                                         "leaving its incidents untouched",
+                                         kind="fetch_failed", target=repo)
+                continue
+            if repo in self._unreadable:
+                self._unreadable.discard(repo)
+                await self._ctx.emit("info", f"deployments readable again for {repo}",
+                                     kind="fetch_recovered", target=repo)
+            if mode == "file":
+                await self._sync_issue_states(repo, states, now)
+            for env, env_deps in by_env(deps).items():
+                if not watched_env(env, config):
+                    continue
+                watched += 1
+                verdict = evaluate_env(env, env_deps, now=now,
+                                       grace_min=int(config.get("grace_min", 5)),
+                                       stall_min=int(config.get("stall_min", 30)))
+                key = incident_key(repo, env)
+                await self._reconcile(repo, env, key, states.get(key), verdict, mode, config, now)
+        self._stash_counts(len(repos), watched, await self._ctx.list_target_states())
+
+    # -- issue state sync ------------------------------------------------------
+    async def _sync_issue_states(self, repo: str, states: dict[str, dict], now: datetime) -> None:
+        """Learn which of this repo's linked issues a human closed. ``not_planned``
+        mutes the incident until recovery; any other close is an acknowledgment
+        of the CURRENT sha (a later sha regresses — spec §5.4)."""
+        keys = [k for k, s in states.items() if split_key(k)[0] == repo
+                and s.get("issue_number") and not s.get("issue_closed") and not s.get("muted")]
+        if not keys:
+            return
+        numbers = [int(states[k]["issue_number"]) for k in keys]
+        closed = await asyncio.to_thread(ci_issues.issue_states, repo, numbers, run=self._run)
+        for key in keys:
+            state = states[key]
+            info = closed.get(int(state["issue_number"]))
+            if not info or not info[0]:
+                continue
+            _, reason = info
+            if reason == "not_planned":
+                state["muted"] = True
+                state["issue_closed"] = True
+                await self._ctx.emit("info", f"#{state['issue_number']} closed as not planned — "
+                                     f"{key} muted until it recovers", kind="muted", target=key)
+            else:
+                state["issue_closed"] = True
+                state["closed_sha"] = state.get("sha")
+            await self._ctx.set_target_state(key, state)
+
+    # -- per-env reconcile -----------------------------------------------------
+    async def _reconcile(self, repo: str, env: str, key: str, state: dict | None,
+                         verdict: EnvVerdict | None, mode: str, config: dict, now: datetime) -> None:
+        if verdict is None or verdict.kind == "unknown":
+            return
+        if verdict.kind == "healthy":
+            if state:
+                await self._recover(repo, env, key, state, verdict, mode, now)
+            return
+        if not state:
+            await self._open(repo, env, key, verdict, mode, config, now)
+        else:
+            await self._ongoing(repo, env, key, state, verdict, mode, config, now)
+
+    def _measure(self, state: dict, verdict: EnvVerdict, now: datetime) -> dict:
+        d = verdict.newest
+        state.update(kind=verdict.kind, sha=d.sha, ref=d.ref, creator=d.creator,
+                     streak=max(int(verdict.streak), 1), last_seen_at=_iso(now),
+                     log_url=d.log_url, env_url=d.env_url)
+        return state
+
+    async def _open(self, repo: str, env: str, key: str, verdict: EnvVerdict,
+                    mode: str, config: dict, now: datetime) -> None:
+        d = verdict.newest
+        state = self._measure({
+            "first_sha": d.sha, "first_seen_at": _iso(now), "issue_number": None,
+            "filed_at": None, "last_commented_at": None, "last_commented_sha": None,
+            "issue_closed": False, "closed_sha": None, "recovery_commented": False,
+            "notified": False, "muted": False,
+        }, verdict, now)
+        await self._ctx.set_target_state(key, state)
+        streak = f" ({verdict.streak} in a row)" if verdict.streak > 1 else ""
+        summary = f"{repo} · {env} deploy {verdict.kind} @ {_short(d.sha)}{streak}"
+        await self._ctx.emit("warn", summary, kind="incident", target=key,
+                             detail={"sha": d.sha, "kind": verdict.kind, "streak": verdict.streak,
+                                     "logUrl": d.log_url})
+        await self._notify_once(repo, key, state, summary)
+        if mode == "file":
+            await self._file(repo, env, key, state, config, now, regression_of=None)
+
+    async def _ongoing(self, repo: str, env: str, key: str, state: dict, verdict: EnvVerdict,
+                       mode: str, config: dict, now: datetime) -> None:
+        d = verdict.newest
+        self._measure(state, verdict, now)
+        await self._ctx.set_target_state(key, state)
+        if not state.get("notified"):
+            summary = f"{repo} · {env} deploy {verdict.kind} @ {_short(d.sha)}"
+            await self._notify_once(repo, key, state, summary)
+        if mode != "file" or state.get("muted"):
+            return
+        if state.get("issue_number") is None:
+            await self._file(repo, env, key, state, config, now, regression_of=None)
+            return
+        if state.get("issue_closed"):
+            if d.sha != state.get("closed_sha"):
+                await self._file(repo, env, key, state, config, now,
+                                 regression_of=int(state["issue_number"]))
+            return
+        last_sha = state.get("last_commented_sha") or state.get("first_sha")
+        if d.sha == last_sha:
+            return
+        since = parse_iso(state.get("last_commented_at")) or parse_iso(state.get("filed_at"))
+        linked = Linked(number=int(state["issue_number"]), closed=False, last_commented_at=since)
+        decision = decide(linked, cap_remaining=1,
+                          comment_every=timedelta(hours=int(config.get("comment_every_h", 6))), now=now)
+        if decision.kind != "comment":
+            return
+        applied = await apply(decision, repo=repo, title="", body=recurrence_comment(state),
+                              labels=(), linked=linked, run=self._run)
+        if not applied.commented:
+            return  # retried next tick; last_commented_* only move on success
+        state["last_commented_at"] = _iso(now)
+        state["last_commented_sha"] = d.sha
+        await self._ctx.set_target_state(key, state)
+        await self._ctx.emit("info", f"commented on #{linked.number}: {env} still {verdict.kind} "
+                             f"@ {_short(d.sha)}", kind="commented", target=key)
+
+    async def _recover(self, repo: str, env: str, key: str, state: dict, verdict: EnvVerdict,
+                       mode: str, now: datetime) -> None:
+        sha = verdict.newest.sha
+        number = state.get("issue_number")
+        if mode == "file" and number and not state.get("issue_closed"):
+            if not state.get("recovery_commented"):
+                await asyncio.to_thread(ci_issues.comment_on_issue, repo, int(number),
+                                        recovery_comment(env, sha, now), run=self._run)
+                state["recovery_commented"] = True
+                await self._ctx.set_target_state(key, state)
+            ok = await asyncio.to_thread(ci_issues.close_issue, repo, int(number), run=self._run)
+            if not ok:
+                await self._ctx.emit("warn", f"could not close #{number} for {key}; will retry",
+                                     kind="close_failed", target=key)
+                return
+            await self._ctx.emit("info", f"closed #{number}: {env} recovered @ {_short(sha)}",
+                                 kind="closed", target=key,
+                                 detail={"url": ci_issues.issue_url(repo, int(number))})
+        await self._ctx.delete_target_state(key)
+        await self._ctx.emit("info", f"{repo} · {env} recovered @ {_short(sha)}",
+                             kind="recovered", target=key, detail={"sha": sha})
+
+    # -- side effects ----------------------------------------------------------
+    async def _notify_once(self, repo: str, key: str, state: dict, summary: str) -> None:
+        if state.get("notified"):
+            return
+        try:
+            await self._notify(f"{brand.NAME} — deploy {state.get('kind', 'failing')}", summary,
+                               repo=repo, url=state.get("log_url"))
+        except Exception:
+            log.debug("deploy_monitor.notify_failed key=%s", key, exc_info=True)
+            return
+        state["notified"] = True
+        await self._ctx.set_target_state(key, state)
+
+    async def _file(self, repo: str, env: str, key: str, state: dict, config: dict,
+                    now: datetime, *, regression_of: int | None) -> int | None:
+        """Two-phase like Error Triage: claim the row (``filed_at`` set,
+        ``issue_number`` None) before the gh call, write the number after. A
+        failed create leaves the row retryable; the cap counts successes only."""
+        cap_remaining = int(config.get("daily_cap", 10)) - len(self._filed)
+        decision = decide(None, cap_remaining=cap_remaining,
+                          comment_every=timedelta(hours=1), now=now)
+        if decision.kind != "file":
+            if not state.get("cap_noted"):
+                state["cap_noted"] = True
+                await self._ctx.set_target_state(key, state)
+                await self._ctx.emit("info", f"daily issue cap reached; {key} not filed",
+                                     kind="cap", target=key)
+            return None
+        if regression_of is not None:
+            decision = Decision("regress", "closed")
+        state.update(filed_at=_iso(now), issue_number=None, issue_closed=False, closed_sha=None,
+                     last_commented_at=None, last_commented_sha=None, recovery_commented=False,
+                     cap_noted=False)
+        await self._ctx.set_target_state(key, state)
+        title = issue_title(repo, env, state)
+        applied = await apply(decision, repo=repo, title=title,
+                              body=issue_body(repo, env, state, regression_of=regression_of),
+                              labels=[LABEL], linked=None, run=self._run)
+        if applied.issue_number is None:
+            await self._ctx.emit("warn", f"issue create failed — will retry: {title}",
+                                 kind="file_failed", target=key)
+            return None
+        state["issue_number"] = applied.issue_number
+        state["last_commented_sha"] = state.get("sha")
+        await self._ctx.set_target_state(key, state)
+        self._filed.append(now)
+        kind = "regressed" if regression_of is not None else "filed"
+        await self._ctx.emit("info", f"filed #{applied.issue_number}: {title}", kind=kind, target=key,
+                             detail={"url": ci_issues.issue_url(repo, applied.issue_number)})
+        return applied.issue_number
+
+    def _stash_counts(self, repos: int, envs: int, states: dict[str, dict]) -> None:
+        failing = sum(1 for s in states.values() if s.get("kind") == "failing")
+        stalled = sum(1 for s in states.values() if s.get("kind") == "stalled")
+        self._ctx.deploy_monitor_counts = {"repos": repos, "envs": envs, "failing": failing,
+                                           "stalled": stalled, "incidents": failing + stalled}
+
+    # -- card actions ----------------------------------------------------------
+    async def actionable_items(self, limit: int = 50) -> list[ActionableItem]:
+        mode, _ = await self._read_config()
+        states = await self._ctx.list_target_states()
+        items: list[ActionableItem] = []
+        for key, s in sorted(states.items(), key=lambda kv: str(kv[1].get("first_seen_at") or "")):
+            repo, env = split_key(key)
+            number = s.get("issue_number")
+            open_issue = bool(number) and not s.get("issue_closed")
+            url = ci_issues.issue_url(repo, int(number)) if open_issue else s.get("log_url")
+            subtitle = (f"@ {_short(s.get('sha'))} · {int(s.get('streak') or 0)}× · "
+                        f"since {_fmt(s.get('first_seen_at'))}")
+            if s.get("muted"):
+                actions = [ActionSpec(kind="unmute", label="Unmute")]
+            else:
+                actions = [ActionSpec(kind="mute", label="Mute", style="risky")]
+                if not open_issue and mode != "off":
+                    actions.insert(0, ActionSpec(kind="file_now", label="File issue"))
+            items.append(ActionableItem(id=key, title=f"{repo} · {env} {s.get('kind', 'failing')}",
+                                        subtitle=subtitle, url=url, actions=actions))
+            if len(items) >= limit:
+                break
+        return items
+
+    async def action_result(self, key: str, kind: str) -> tuple[str, int | None]:
+        """Returns ``(status, issue_number_filed_by_this_call)``."""
+        mode, config = await self._read_config()
+        state = await self._ctx.get_target_state(key)
+        if not state:
+            return "not_found", None
+        now = self._clock()
+        if kind == "mute":
+            state["muted"] = True
+            await self._ctx.set_target_state(key, state)
+            await self._ctx.emit("info", f"{key} muted by operator", kind="muted", target=key)
+            return "muted", None
+        if kind == "unmute":
+            state["muted"] = False
+            await self._ctx.set_target_state(key, state)
+            await self._ctx.emit("info", f"{key} unmuted", kind="unmuted", target=key)
+            return "unmuted", None
+        if kind != "file_now":
+            return "failed", None
+        if mode == "off":
+            return "off", None
+        if state.get("issue_number") and not state.get("issue_closed"):
+            return "failed", None
+        repo, env = split_key(key)
+        regression_of = int(state["issue_number"]) if state.get("issue_number") else None
+        number = await self._file(repo, env, key, state, {**config, "daily_cap": 10 ** 6}, now,
+                                  regression_of=regression_of)
+        return ("filed", number) if number is not None else ("failed", None)
+
+
+# ---------------------------------------------------------------------------
+# The action provider
+# ---------------------------------------------------------------------------
+
+_ACTION_STATUS = {
+    "filed": ("ok", "Issue filed"),
+    "muted": ("ok", "Muted — no comments or alerts until it recovers"),
+    "unmuted": ("ok", "Unmuted"),
+    "not_found": ("warn", "That incident no longer exists"),
+    "off": ("warn", "Deploy Monitor is off — enable it first"),
+    "failed": ("error", "Action failed — see the feed"),
+}
+
+
+class DeployMonitorActionProvider:
+    """Card actions for deploy-monitor. Reads the loop off the orchestrator lazily —
+    the providers dict is built before the loops are (orchestrator.__init__ order)."""
+
+    valid_kinds = frozenset({"file_now", "mute", "unmute"})
+
+    def __init__(self, orch: Any) -> None:
+        self._orch = orch
+
+    @property
+    def _loop(self) -> "DeployMonitorLoop":
+        return self._orch._deploy_monitor_loop
+
+    async def actionable(self) -> list[ActionableItem]:
+        return await self._loop.actionable_items()
+
+    async def trigger(self, item_id: str, kind: str) -> TriggerResult:
+        status, number = await self._loop.action_result(item_id, kind)
+        level, message = _ACTION_STATUS.get(status, ("error", "Action failed — see the feed"))
+        if status == "filed" and number is not None:
+            message = f"Issue filed: #{number}"
+        return TriggerResult(status=status, level=level, message=message)
