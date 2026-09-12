@@ -17,6 +17,6 @@ the standing product area; each child retains its own maturity and delivery evid
 - [Push & Web Notifications](push-notifications.md)
 - [Session & CI Insights](session-insights.md)
 - [AI Assistant (drawer)](ai-assistant.md)
-- [ViberPit Rebrand (ccswitch → ViberPit, outside-in, zero-downtime)](viberpit-rebrand.md)
+- [ViberPit rebrand](viberpit-rebrand.md)
 
 See the [product hierarchy and maintenance rules](../README.md).
