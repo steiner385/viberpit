@@ -26,7 +26,13 @@ from ccswitch import gitrepos
 log = logging.getLogger(__name__)
 
 _INTEGRATION_DENIED = "Resource not accessible by integration"
-_STALE_HEAD = "Expected branch to point to"
+# GitHub's wording, verified live 2026-09-12 against createCommitOnBranch: a
+# stale-but-real expectedHeadOid answers type STALE_DATA / "Expected branch to
+# point to "<sha>" but it did not.  Pull and try again."; a nonexistent one
+# answers type NOT_FOUND / "No commit exists with specified expectedHeadOid".
+# Both mean "re-read the head": the caller retries once, then reports 409.
+_STALE_TYPES = ("STALE_DATA",)
+_STALE_HEAD = ("Expected branch to point to", "expectedHeadOid")
 
 _COMMIT_MUTATION = """
 mutation($input: CreateCommitOnBranchInput!) {
@@ -101,7 +107,7 @@ class GhWrite:
             proc = self._run(args, self._pat, input=input, timeout=60)
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "").strip()
-            if allow_404 and "404" in err:
+            if allow_404 and "HTTP 404" in err:
                 return ""
             raise GhWriteError(step, err[:300])
         return proc.stdout or ""
@@ -131,6 +137,23 @@ class GhWrite:
         self._gh(["api", "-X", "DELETE", f"repos/{self.repo}/git/refs/heads/{branch}"], "delete_branch", allow_404=True)
 
     # -- content --------------------------------------------------------------
+    def list_dir(self, path: str, ref: str) -> list[str]:
+        """Paths of the Markdown files directly under *path* at *ref*.
+
+        Empty when the directory does not exist on the ref (a branch opened
+        before any doc landed). The contents API answers a directory with an
+        array of stubs — no ``content`` — so each doc still needs
+        :meth:`read_file`."""
+        out = self._gh(["api", f"repos/{self.repo}/contents/{path}?ref={ref}"], "list", allow_404=True)
+        if not out.strip():
+            return []
+        entries = json.loads(out)
+        if not isinstance(entries, list):
+            return []
+        return [str(e.get("path") or "") for e in entries
+                if isinstance(e, dict) and e.get("type") == "file"
+                and str(e.get("name") or "").endswith(".md")]
+
     def read_file(self, path: str, ref: str) -> tuple[str | None, str | None]:
         out = self._gh(["api", f"repos/{self.repo}/contents/{path}?ref={ref}"], "read", allow_404=True)
         if not out.strip():
@@ -150,8 +173,10 @@ class GhWrite:
         d = self._json(self._gh(["api", "graphql", "--input", "-"], "commit", input=json.dumps(payload)))
         errors = d.get("errors") or []
         if errors:
-            msg = str((errors[0] or {}).get("message") or errors)
-            raise GhWriteError("commit", msg[:300], conflict=_STALE_HEAD in msg)
+            first = errors[0] if isinstance(errors[0], dict) else {}
+            msg = str(first.get("message") or errors)
+            stale = str(first.get("type") or "") in _STALE_TYPES or any(k in msg for k in _STALE_HEAD)
+            raise GhWriteError("commit", msg[:300], conflict=stale)
         oid = str((((d.get("data") or {}).get("createCommitOnBranch") or {}).get("commit") or {}).get("oid") or "")
         if not oid:
             raise GhWriteError("commit", f"no commit oid in {json.dumps(d)[:200]}")

@@ -97,8 +97,11 @@ def validate_op(op: MapOp, ctx: MapContext) -> None:
 
 
 def _replace_summary(body: str, summary: str) -> str:
-    """Replace the first non-heading paragraph (what the index reads as the
-    summary); insert one after the leading H1 when there is none."""
+    """Replace the first non-heading LINE — exactly what the index reads as the
+    summary (``feature_index._summary``) — and nothing after it; insert one
+    after the leading H1 when the body has no prose. Replacing the whole
+    paragraph deleted every wrapped line of a multi-line first paragraph, which
+    most real docs have (8b Task 2 review)."""
     lines = body.splitlines()
     start = None
     for i, line in enumerate(lines):
@@ -111,10 +114,7 @@ def _replace_summary(body: str, summary: str) -> str:
         return "\n".join(
             [*head, "", summary.strip(), *(([""] if rest[0].strip() else []) if rest else []), *rest]
         ).rstrip("\n") + "\n"
-    end = start
-    while end < len(lines) and lines[end].strip():
-        end += 1
-    return "\n".join([*lines[:start], summary.strip(), *lines[end:]]).rstrip("\n") + "\n"
+    return "\n".join([*lines[:start], summary.strip(), *lines[start + 1:]]).rstrip("\n") + "\n"
 
 
 def apply_op(op: MapOp, current: str | None) -> tuple[str, str]:

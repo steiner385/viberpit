@@ -82,8 +82,17 @@ def test_commit_file_uses_create_commit_on_branch_with_expected_head():
                                               "contents": base64.b64encode(b"# X\n").decode()}]
 
 
+def test_commit_file_reports_a_nonexistent_expected_head_as_a_conflict_too():
+    # Verified live: a sha that no longer exists answers type NOT_FOUND with this
+    # wording; the caller's remedy is the same re-read of the head.
+    gh, _ = _gh([(json.dumps({"errors": [{"type": "NOT_FOUND", "message": "No commit exists with specified expectedHeadOid 'abc'."}]}), 0, "")])
+    with pytest.raises(GhWriteError) as e:
+        gh.commit_file("b", "abc", "p", "t", "m")
+    assert e.value.conflict is True
+
+
 def test_commit_file_reports_a_moved_head_as_a_conflict():
-    gh, _ = _gh([(json.dumps({"errors": [{"message": "Expected branch to point to \"abc\" but it did not"}]}), 0, "")])
+    gh, _ = _gh([(json.dumps({"errors": [{"type": "STALE_DATA", "message": "Expected branch to point to \"abc\" but it did not.  Pull and try again."}]}), 0, "")])
     with pytest.raises(GhWriteError) as e:
         gh.commit_file("b", "abc", "p", "t", "m")
     assert e.value.step == "commit" and e.value.conflict is True

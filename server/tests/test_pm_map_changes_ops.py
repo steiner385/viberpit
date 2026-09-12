@@ -98,6 +98,17 @@ def test_summary_replaces_the_first_paragraph_and_inserts_one_when_missing():
     assert e.value.code == "bad_summary"
 
 
+def test_summary_replaces_only_the_first_line_of_a_wrapped_paragraph():
+    # The index reads ONE line (`feature_index._summary`); the rest of a wrapped
+    # first paragraph is prose that must survive the edit.
+    wrapped = DOC.replace("Speak instead of typing.\n", "Speak instead of typing.\nAcross two lines in one paragraph.\n")
+    _, text = apply_op(MapOp(op="summary", slug="dictation", summary="Talk, and it types."), wrapped)
+    body = parse_feature_doc(text).body
+    assert "Talk, and it types.\nAcross two lines in one paragraph." in body
+    assert "Speak instead of typing." not in body
+    assert "More prose that must survive." in body
+
+
 def test_links_replace_all_and_targets_must_exist():
     op = MapOp(op="links", slug="dictation", links=(
         FeatureLinkRef(kind="powered_by", project="web", feature="auth"),))

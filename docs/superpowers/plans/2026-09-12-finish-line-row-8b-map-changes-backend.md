@@ -22,7 +22,7 @@
 - **R8b-8 Rebase = `PUT /repos/{r}/pulls/{n}/update-branch`** (the pr-doctor Mechanical idiom), offered only while `behind`; the UI never force-pushes.
 - **R8b-9 The AI map-diff session targets the open map-changes branch** when one exists (spec §9): `pm_onboard_spawn_map(scope="diff")` passes the pointer's branch to the prompt builder; otherwise the historical `pm/feature-map-<slug>`.
 - **R8b-10 Slug and structure validation is server-side and pure**: slug `^[a-z0-9][a-z0-9-]{0,63}$`, unique among the product's non-orphaned features and the branch's docs; a parent must exist (indexed or on the branch) and must not create a cycle; link targets are `(project slug, feature slug)` pairs that exist in the index; `state` on create is `proposed`.
-- **R8b-11 `summary` edits replace the doc's first non-heading paragraph** (what `_summary` reads), inserting one after the leading H1 when the body has none. The body's remaining prose is untouched.
+- **R8b-11 `summary` edits replace the doc's first non-heading LINE** (exactly what `feature_index._summary` reads), inserting one after the leading H1 when the body has no prose. Every other line — including the rest of a wrapped first paragraph — is untouched (amended after the Task 2 review: replacing the whole paragraph deleted wrapped lines).
 - **R8b-12 First machine write of an archaeology-dialect doc canonicalises its frontmatter** (`serialize_feature_doc` writes `slug/title/state/parent/links` only). The PR body generated for the map-changes PR says so.
 
 ## Global Constraints
