@@ -88,16 +88,33 @@ verification and precise remaining exit criteria. In particular, a merged
 implementation or closed GitHub tracker is not evidence of deployment acceptance.
 Observation periods remain open until the required time and measurements exist.
 
-The previously missing #1056 live smoke passed against the existing edge, daemon,
-and database using only newly created disposable sessions. A real read tool
-produced a fresh successful audit event; an archive permission request was denied,
-the target remained idle, and both test sessions were then archived through the
-normal API. Independent review supported exactly one `build` → `deploy` advance,
-which was applied and verified. A separate deployed browser check rendered the
-assistant model picker, starter prompts, successful read tool, and answer; its
-temporary assistant and browser tab were also cleaned up. These observations do
-not establish external CLI access, every tool/browser interaction, or long-term
-metrics.
+The #1056 live read and permission-denial assertions passed against the existing
+edge, daemon, and database, and a deployed browser check rendered the drawer and
+a successful read. However, cleanup of the newly created sessions triggered the
+global 100-archive retention policy: five older archive database records were
+permanently deleted, including one worktree. Cleanup HTTP 204 responses did not
+establish isolation. The earlier clean-smoke acceptance recommendation was
+withdrawn, and further live test mutations stopped. The one `build` → `deploy`
+advance was reversed through the supported step-back API, with a verified
+return to `build`. Independent inspection of the deployed code confirmed that
+this metadata correction does not dispatch work. These observations do not establish safe
+end-to-end acceptance or justify additional stage advances.
+
+Native conversation files survived for all five affected sessions. A private
+local recovery package preserves 279 files (47,967,827 bytes), each verified
+against its source with SHA-256. A known committed snapshot from the removed
+worktree was also preserved from a surviving Git object. This is partial
+recovery: no exact backup of the five application records has been found, and
+uncommitted worktree contents have not been established. The recovery materials
+contain private conversation data and are not included in this repository.
+
+The existing assistant smoke harness now fails closed before creating or
+resuming sessions unless retention is explicitly unlimited and the operator
+acknowledges a disposable environment. It rechecks retention before cleanup
+and leaves test sessions intact when that check fails. Acceptance requires a dedicated isolated edge, daemon, and database with
+stable unlimited retention. A client-side settings check cannot eliminate a
+concurrent settings race or make a shared environment disposable. The guard
+is tracked in [#1604](https://github.com/steiner385/viberpit/issues/1604).
 
 The planning consolidation epic [#997](https://github.com/steiner385/viberpit/issues/997)
 remains open for its actual unfinished children: [#988](https://github.com/steiner385/viberpit/issues/988)
@@ -123,7 +140,7 @@ documentation or hierarchy mutation.
 
 ## Verification
 
-The unchanged application code passed the complete local Python gate: Ruff,
+Before the smoke-harness guard, the application code passed the complete local Python gate: Ruff,
 Mypy, 681 core tests, and 9,158 server tests (33 skipped). The full server run
 used parallel file distribution and a clean test environment. Existing focused
 product-map and brand checks passed (60 tests), as did 137 assistant conformance,
