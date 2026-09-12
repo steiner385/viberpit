@@ -19,7 +19,7 @@ import { SubAgentRows } from './SubAgentRows'
 import { ChildSessionRows } from './ChildSessionRows'
 import { CardFrame } from './card/CardFrame'
 import { CardMenu, Sep, actionBtn, menuItem } from './card/CardMenu'
-import { useMediaQuery } from '@/lib/useMediaQuery'
+import { useViewport } from '@/shell/useViewport'
 import { useNow } from '@/hooks/useNow'
 import type { Session, Account } from '@/api/types'
 
@@ -163,7 +163,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   // The dot pulse and the autopilot marker degrade to static glyphs under
   // reduced-motion. (CardFrame reads the same query for the swipe transition;
   // a second call to one media query is free.)
-  const reduceMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
+  const reduceMotion = useViewport().reducedMotion
 
   function handleKeyDown(e: React.KeyboardEvent) {
     // The registry's key→action table for a focused ROW, through the one

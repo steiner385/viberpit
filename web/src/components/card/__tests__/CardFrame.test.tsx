@@ -1,6 +1,16 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render as rtlRender, screen, fireEvent } from '@testing-library/react'
+import type { ReactElement } from 'react'
 import { CardFrame } from '../CardFrame'
+import { ViewportProvider } from '@/shell/useViewport'
+
+function render(ui: ReactElement) {
+  const result = rtlRender(<ViewportProvider kiosk={null}>{ui}</ViewportProvider>)
+  return {
+    ...result,
+    rerender: (nextUi: ReactElement) => result.rerender(<ViewportProvider kiosk={null}>{nextUi}</ViewportProvider>),
+  }
+}
 
 function props(over = {}) {
   return {

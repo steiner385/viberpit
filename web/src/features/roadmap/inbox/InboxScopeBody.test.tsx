@@ -14,6 +14,7 @@ import { MemoryRouter } from 'react-router-dom'
 import type { TriageProposal } from '@/api/triage'
 import { InboxScopeBody } from './InboxScopeBody'
 import { clearInboxOrder, getInboxOrder } from './inboxOrderStore'
+import { ViewportProvider } from '@/shell/useViewport'
 
 const accept = vi.fn()
 const reject = vi.fn()
@@ -45,10 +46,12 @@ function mount(over: Partial<React.ComponentProps<typeof InboxScopeBody>> = {}) 
   const onOpen = vi.fn()
   const onClearProduct = vi.fn()
   const { unmount } = render(
-    <MemoryRouter>
-      <InboxScopeBody proposals={ROWS} isLoading={false} isError={false} product={null}
-        selectedKey={null} onOpen={onOpen} onClearProduct={onClearProduct} {...over} />
-    </MemoryRouter>,
+    <ViewportProvider kiosk={null}>
+      <MemoryRouter>
+        <InboxScopeBody proposals={ROWS} isLoading={false} isError={false} product={null}
+          selectedKey={null} onOpen={onOpen} onClearProduct={onClearProduct} {...over} />
+      </MemoryRouter>
+    </ViewportProvider>,
   )
   return { onOpen, onClearProduct, unmount }
 }

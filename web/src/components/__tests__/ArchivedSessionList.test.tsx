@@ -22,6 +22,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import * as React from 'react'
 import { ArchivedScopeBody } from '@/features/sessions/ArchivedScopeBody'
+import { ViewportProvider } from '@/shell/useViewport'
 import * as hooks from '@/api/hooks'
 import type { ArchivedSession } from '@/api/types'
 import { archivedSession } from '@/test/factories'
@@ -75,7 +76,11 @@ const makeArchived = (overrides: Partial<ArchivedSession> = {}): ArchivedSession
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  return (
+    <QueryClientProvider client={qc}>
+      <ViewportProvider kiosk={null}>{children}</ViewportProvider>
+    </QueryClientProvider>
+  )
 }
 
 function setupMocks(sessions: ArchivedSession[]) {

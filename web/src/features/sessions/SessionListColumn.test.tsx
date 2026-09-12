@@ -48,6 +48,7 @@ vi.mock('@/api/hooks', async (importOriginal) => {
 
 import { SessionListColumn, type SessionListColumnProps } from './SessionListColumn'
 import { useSessionListState } from './useSessionListState'
+import { ViewportProvider } from '@/shell/useViewport'
 
 // ── typed factories (R10: real values, never `as unknown as T`) ───────────────
 // `session` and `account` come from @/test/factories — one definition each.
@@ -118,10 +119,12 @@ function renderColumn({ archived = [], ...props }: RenderProps) {
     : props.scope === 'background' ? '/sessions/background' : '/sessions'
   return render(
     <QueryClientProvider client={qc}>
-      {/* The scope segment navigates, so the column needs a router. */}
-      <MemoryRouter initialEntries={[at]}>
-        <Harness {...props} />
-      </MemoryRouter>
+      <ViewportProvider kiosk={null}>
+        {/* The scope segment navigates, so the column needs a router. */}
+        <MemoryRouter initialEntries={[at]}>
+          <Harness {...props} />
+        </MemoryRouter>
+      </ViewportProvider>
     </QueryClientProvider>,
   )
 }

@@ -4,6 +4,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import { MAP, product } from '../__fixtures__/map'
 import { PortfolioDetail } from './PortfolioDetail'
 import { needsYouCount } from './needsYou'
+import { ViewportProvider } from '@/shell/useViewport'
 
 // Every hook the tree under test reaches: `RankedList` calls `useQueue`, and
 // `NeedsYouList` mounts `IncidentQueue`, which calls the two incident hooks.
@@ -31,10 +32,12 @@ function Here() {
 
 function mount(initial = '/roadmap') {
   render(
-    <MemoryRouter initialEntries={[initial]}>
-      <PortfolioDetail map={MAP} />
-      <Here />
-    </MemoryRouter>,
+    <ViewportProvider kiosk={null}>
+      <MemoryRouter initialEntries={[initial]}>
+        <PortfolioDetail map={MAP} />
+        <Here />
+      </MemoryRouter>
+    </ViewportProvider>,
   )
 }
 

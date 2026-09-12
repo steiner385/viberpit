@@ -3,8 +3,34 @@
    tables it is built from. Same convention as shell/theme.tsx and
    shell/InteractionContext.tsx. */
 import * as React from 'react'
-import { useMediaQuery } from '@/lib/useMediaQuery'
 import type { NavId } from './navDefs'
+
+/**
+ * Subscribe to a CSS media query. Returns false when matchMedia is unavailable
+ * (e.g. jsdom in tests) so consumers default to the narrow/mobile branch.
+ *
+ * Module-private: this is the one permitted layout matchMedia reader (see the
+ * guard in useViewport.test.tsx), so nothing outside this file may import it.
+ */
+function useMediaQuery(query: string): boolean {
+  const getMatch = () =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia(query).matches
+      : false
+
+  const [matches, setMatches] = React.useState<boolean>(getMatch)
+
+  React.useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const mql = window.matchMedia(query)
+    const onChange = () => setMatches(mql.matches)
+    onChange()
+    mql.addEventListener('change', onChange)
+    return () => mql.removeEventListener('change', onChange)
+  }, [query])
+
+  return matches
+}
 
 /**
  * Every layout mode, as a value — `AppShell`'s region-visibility matrix has to
@@ -53,6 +79,9 @@ export interface Viewport {
   coarsePointer: boolean
   /** `(orientation: portrait)`. Settings uses it: tablet-portrait drills like phone (spec §6.1). */
   portrait: boolean
+  /** `(prefers-reduced-motion: reduce)`. SessionCard/CardFrame degrade pulses and the
+   *  swipe transition to static under this rather than each reading the query itself. */
+  reducedMotion: boolean
   kiosk: ViewportKiosk | null
 }
 
@@ -61,11 +90,11 @@ const ViewportContext = React.createContext<Viewport | null>(null)
 /**
  * The ONLY module that reads matchMedia for layout (umbrella §4.1).
  *
- * Deliberately exempt, because they are not layout queries and two of them are
- * plain functions that cannot consume a React context:
- *   - session/brailleSpinner.ts, pipeline/motion.ts  (prefers-reduced-motion)
- *   - components/BrowserTab.tsx                      (pointer: coarse, for touch UI)
- *   - shell/theme.tsx                                (prefers-color-scheme)
+ * Deliberately exempt, because they are not layout queries:
+ *   - shell/theme.tsx                                 (prefers-color-scheme; the theme
+ *     provider is the one legitimate other matchMedia subscriber)
+ *   - session/brailleSpinner.ts, pipeline/motion.ts    (prefers-reduced-motion, but as
+ *     plain functions that cannot consume a React context)
  */
 export function ViewportProvider({
   kiosk,
@@ -80,6 +109,7 @@ export function ViewportProvider({
   const atWide = useMediaQuery('(min-width: 1440px)')
   const coarsePointer = useMediaQuery('(pointer: coarse)')
   const portrait = useMediaQuery('(orientation: portrait)')
+  const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
 
   const value = React.useMemo<Viewport>(() => {
     const width: WidthTier = atWide ? 'wide' : atDesktop ? 'desktop' : atTablet ? 'tablet' : 'phone'
@@ -92,9 +122,10 @@ export function ViewportProvider({
       drawerPushes: atDrawerPush,
       coarsePointer,
       portrait,
+      reducedMotion,
       kiosk: kiosk ?? null,
     }
-  }, [atTablet, atDesktop, atDrawerPush, atWide, coarsePointer, portrait, kiosk])
+  }, [atTablet, atDesktop, atDrawerPush, atWide, coarsePointer, portrait, reducedMotion, kiosk])
 
   return <ViewportContext.Provider value={value}>{children}</ViewportContext.Provider>
 }

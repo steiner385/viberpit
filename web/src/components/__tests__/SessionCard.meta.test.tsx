@@ -2,6 +2,7 @@ import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect } from 'vitest'
 import { SessionCard } from '../SessionCard'
+import { ViewportProvider } from '@/shell/useViewport'
 import type { Session, SubAgentSummary } from '@/api/types'
 import { session } from '@/test/factories'
 
@@ -21,17 +22,19 @@ const noop = () => {}
 
 function renderCard(session: Session) {
   return render(
-    <MemoryRouter>
-      <SessionCard
-        session={session}
-        account={undefined}
-        onOpen={noop}
-        onRename={noop}
-        onClose={noop}
-        onDelete={noop}
-        onQuickResume={noop}
-      />
-    </MemoryRouter>,
+    <ViewportProvider kiosk={null}>
+      <MemoryRouter>
+        <SessionCard
+          session={session}
+          account={undefined}
+          onOpen={noop}
+          onRename={noop}
+          onClose={noop}
+          onDelete={noop}
+          onQuickResume={noop}
+        />
+      </MemoryRouter>
+    </ViewportProvider>,
   )
 }
 

@@ -1,6 +1,12 @@
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { render as rtlRender, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
+import type { ReactElement } from 'react'
 import { BrowserTab } from '../BrowserTab'
+import { ViewportProvider } from '@/shell/useViewport'
+
+function render(ui: ReactElement) {
+  return rtlRender(<ViewportProvider kiosk={null}>{ui}</ViewportProvider>)
+}
 
 const refitSpy = vi.fn()
 

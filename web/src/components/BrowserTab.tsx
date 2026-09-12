@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils'
 import { VncClient, type VncState } from '../vnc/vncClient'
 import { useZoom } from '../vnc/useZoom'
 import { statusTier } from '../session/statusTier'
-import { useMediaQuery } from '@/lib/useMediaQuery'
+import { useViewport } from '@/shell/useViewport'
 import { relayInput, relayKeydown } from '../vnc/keyRelay'
 import { pasteClipboardToSession } from '../vnc/clipboardPaste'
 
@@ -40,7 +40,7 @@ export function BrowserTab({ sessionId, statusState, initialState, displayMode, 
   const [emptyDismissed, setEmptyDismissed] = useState(false)
   const [openError, setOpenError] = useState<string | null>(null)
   const clientRef = useRef<VncClient | null>(null)
-  const isTouch = useMediaQuery('(pointer: coarse)')
+  const isTouch = useViewport().coarsePointer
   const [keyboardOpen, setKeyboardOpen] = useState(false)
   const hiddenInputRef = useRef<HTMLInputElement>(null)
 

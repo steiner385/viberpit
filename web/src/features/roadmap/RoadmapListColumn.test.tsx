@@ -5,6 +5,7 @@ import type { TriageProposal } from '@/api/triage'
 import { MAP } from './__fixtures__/map'
 import { RoadmapListColumn } from './RoadmapListColumn'
 import { capabilityKey, productKey } from './treeRows'
+import { ViewportProvider } from '@/shell/useViewport'
 
 // The Inbox scope's rows call the real triage mutations; the column's job here
 // is only to mount that scope, so the hooks are stubbed rather than served.
@@ -32,10 +33,12 @@ function mount(over: Partial<React.ComponentProps<typeof RoadmapListColumn>> = {
     onOpenProposal, onClearProduct,
   }
   const { unmount } = render(
-    <MemoryRouter>
-      <RoadmapListColumn scope="map" map={MAP} isLoading={false} isError={false}
-        selectedKey={null} onOpen={onOpen} onOpenInbox={onOpenInbox} inbox={inbox} {...over} />
-    </MemoryRouter>,
+    <ViewportProvider kiosk={null}>
+      <MemoryRouter>
+        <RoadmapListColumn scope="map" map={MAP} isLoading={false} isError={false}
+          selectedKey={null} onOpen={onOpen} onOpenInbox={onOpenInbox} inbox={inbox} {...over} />
+      </MemoryRouter>
+    </ViewportProvider>,
   )
   return { onOpen, onOpenInbox, onOpenProposal, onClearProduct, unmount }
 }

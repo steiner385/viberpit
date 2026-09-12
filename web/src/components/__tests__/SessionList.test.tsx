@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { ViewportProvider } from '@/shell/useViewport'
 import type { Session, Account } from '@/api/types'
 import { anthropicUsage, account, session } from '@/test/factories'
 
@@ -50,7 +51,11 @@ const ACCOUNTS: Account[] = [
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  return (
+    <QueryClientProvider client={qc}>
+      <ViewportProvider kiosk={null}>{children}</ViewportProvider>
+    </QueryClientProvider>
+  )
 }
 
 const baseProps = {

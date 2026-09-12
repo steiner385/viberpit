@@ -59,6 +59,18 @@ describe('useViewport', () => {
     expect(renderAt([COARSE])).toBe('phone/phone/true')
   })
 
+  it('reports reduced motion from the prefers-reduced-motion query', () => {
+    stubMatchMedia([MEDIA.reducedMotion])
+    const { result } = renderHook(() => useViewport(), { wrapper: ({ children }) => <ViewportProvider kiosk={null}>{children}</ViewportProvider> })
+    expect(result.current.reducedMotion).toBe(true)
+  })
+
+  it('defaults reducedMotion to false when the query does not match', () => {
+    stubMatchMedia([])
+    const { result } = renderHook(() => useViewport(), { wrapper: ({ children }) => <ViewportProvider kiosk={null}>{children}</ViewportProvider> })
+    expect(result.current.reducedMotion).toBe(false)
+  })
+
   it('kiosk overrides the mode at any width but keeps the width tier', () => {
     expect(renderAt([W768, W1024, W1440], { enabled: true, cycleSeconds: 30, pages: ['pipeline'] }))
       .toBe('kiosk/wide/false')
@@ -123,19 +135,13 @@ import { fileURLToPath } from 'node:url'
 const LAYOUT_QUERY = /(?:matchMedia|useMediaQuery)\(\s*['"`]\((?:(?:min|max)-width|orientation)/
 const EXEMPT = new Set<string>([
   'src/shell/useViewport.tsx',
-  // Takes `query` as a parameter, not a literal, so this never matches the
-  // regex above — kept here defensively as the generic subscription primitive.
-  'src/lib/useMediaQuery.ts',
-  // CardFrame's swipe-overflow clipping reads 1024px directly (extracted
-  // verbatim out of SessionCard, Task 6). Not part of this PR's scope;
-  // outlives it until a later PR migrates it to useViewport. SessionCard
-  // itself is NOT exempt here: after the extraction its only remaining
-  // `useMediaQuery` is '(prefers-reduced-motion: reduce)', which this guard
-  // does not match — an exemption for it would be dead and would silently
-  // pre-authorise a future min-width read in the largest component in the
-  // tree.
-  'src/components/card/CardFrame.tsx',
 ])
+
+// `useMediaQuery` itself no longer exists outside useViewport.tsx — the module-private
+// subscription helper that used to live at src/lib/useMediaQuery.ts was inlined here
+// (this task). A bare `useMediaQuery(` anywhere else is therefore always a regression:
+// either a stale import of the deleted module, or a new copy of the primitive.
+const MEDIA_QUERY_CALL = /\buseMediaQuery\(/
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const e of readdirSync(dir)) {
@@ -151,6 +157,18 @@ it('no module outside useViewport reads a layout media query', () => {
   const srcRoot = dirname(here) // .../web/src
   const offenders = walk(srcRoot)
     .filter((p) => LAYOUT_QUERY.test(readFileSync(p, 'utf8')))
+    .map((p) => p.slice(dirname(srcRoot).length + 1))
+    .filter((rel) => !EXEMPT.has(rel))
+  expect(offenders, offenders.join('\n')).toEqual([])
+})
+
+it('no module outside useViewport re-imports or redefines useMediaQuery', () => {
+  // The primitive is gone from src/lib — a hit here means either a stale import
+  // of the deleted module or a new copy of the subscription helper.
+  const here = dirname(fileURLToPath(import.meta.url))
+  const srcRoot = dirname(here)
+  const offenders = walk(srcRoot)
+    .filter((p) => MEDIA_QUERY_CALL.test(readFileSync(p, 'utf8')))
     .map((p) => p.slice(dirname(srcRoot).length + 1))
     .filter((rel) => !EXEMPT.has(rel))
   expect(offenders, offenders.join('\n')).toEqual([])

@@ -7,6 +7,7 @@ import { render, screen, fireEvent, within } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 import { SessionCard } from '../SessionCard'
 import { overlayIsOpen, resetOverlayState } from '@/shell/useOverlayState'
+import { ViewportProvider } from '@/shell/useViewport'
 import type { Session } from '@/api/types'
 import { session } from '@/test/factories'
 
@@ -33,16 +34,18 @@ function renderCard(
   } = {},
 ) {
   return render(
-    <SessionCard
-      session={mkSession(overrides)}
-      account={undefined}
-      onOpen={noop}
-      onRename={handlers.onRename ?? noop}
-      onClose={handlers.onClose ?? noop}
-      onDelete={handlers.onDelete ?? noop}
-      onQuickResume={noop}
-      onToggleAutopilot={handlers.onToggleAutopilot}
-    />,
+    <ViewportProvider kiosk={null}>
+      <SessionCard
+        session={mkSession(overrides)}
+        account={undefined}
+        onOpen={noop}
+        onRename={handlers.onRename ?? noop}
+        onClose={handlers.onClose ?? noop}
+        onDelete={handlers.onDelete ?? noop}
+        onQuickResume={noop}
+        onToggleAutopilot={handlers.onToggleAutopilot}
+      />
+    </ViewportProvider>,
   )
 }
 

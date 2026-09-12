@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { AUTOMATIONS } from './__fixtures__/automations'
 import { DeliveryListColumn } from './DeliveryListColumn'
 import { automationKey, ciRepoKey } from './deliveryNavState'
+import { ViewportProvider } from '@/shell/useViewport'
 
 vi.mock('@/api/hooks', () => ({
   useAutomationActionableCounts: () => ({ 'pr-doctor': 0, 'backlog-runner': 2, 'pm-classify': 0 }),
@@ -20,11 +21,13 @@ vi.mock('@/api/hooks', () => ({
 function mount(over: Partial<React.ComponentProps<typeof DeliveryListColumn>> = {}) {
   const onOpenAutomation = vi.fn(); const onOpenRepo = vi.fn()
   render(
-    <MemoryRouter>
-      <DeliveryListColumn scope="automations" automations={AUTOMATIONS} automationsLoading={false} automationsError={false}
-        repos={['o/r', 'a/b']} reposLoading={false} reposError={false} selectedKey={null}
-        onOpenAutomation={onOpenAutomation} onOpenRepo={onOpenRepo} {...over} />
-    </MemoryRouter>,
+    <ViewportProvider kiosk={null}>
+      <MemoryRouter>
+        <DeliveryListColumn scope="automations" automations={AUTOMATIONS} automationsLoading={false} automationsError={false}
+          repos={['o/r', 'a/b']} reposLoading={false} reposError={false} selectedKey={null}
+          onOpenAutomation={onOpenAutomation} onOpenRepo={onOpenRepo} {...over} />
+      </MemoryRouter>
+    </ViewportProvider>,
   )
   return { onOpenAutomation, onOpenRepo }
 }
