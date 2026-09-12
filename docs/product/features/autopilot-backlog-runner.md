@@ -13,6 +13,7 @@ links:
     - server/automations/backlog_grouping.py
     - server/automations/backlog_github.py
     - server/automations/product_policy.py
+    - server/pm/outcomes.py
     - server/automations/action_providers.py
     - server/automations/consolidation_engine.py
     - server/automations/completion_bar.py
@@ -151,6 +152,39 @@ PR linkage, never on labels alone.
   product has dispatch on" when every product's is off, or, when the per-product count read itself
   failed, "N implementing · product counts unavailable (the queue read failed)" rather than either
   — "we don't know" and "no product is opted in" are different sentences on the card.
+
+  **Dispatch outcomes (phase 3, spec §6/§7).** Every dispatch leaves one durable
+  `dispatch_outcomes` row: the loop's own spawn in `_refill`, and the two manual taps
+  (`SessionOrchestrator.backlog_runner_implement_core`, `.backlog_runner_dispatch`), each record
+  a `running` row (`AutomationContext.record_outcome`) right after the spawn succeeds, with the
+  attempt number and model the session actually got. `BacklogRunnerLoop._sweep_one` finalises it
+  (`AutomationContext.finalize_outcome`) at whichever terminal branch closes the target: `merged`
+  (carrying `first_pass_merge`), `needs_human` (a merged PR still needing a human close-out, or
+  the attempt cap reached with a real attempt behind it), `pr_gave_up` (PR Doctor gave up),
+  `abandoned` (the PR closed unmerged, or the cap was reached by a session that never ran a
+  turn), or `no_pr` (the session ended with no mergeable PR and attempts still left — a bounce).
+  Both attempt-cap branches finalise with `upgrade_from=("no_pr",)`: the cap is discovered a
+  sweep after the bounce that carried the dispatch to it, so the row that closes is the earlier
+  `no_pr` row, re-finalised in place, not a second row for the same session. A second dispatch
+  over a still-`running` row (a double tap racing the loop) closes the earlier row `superseded`
+  instead of `abandoned` — it never got to answer, so it is not counted as a bounce. Both writers
+  are best-effort (`server/pm/outcomes.py`, spec §13): a write failure is logged and never blocks
+  a spawn or strands a claim mid-sweep.
+
+  `_backlog_query_queue` threads each ON product's own `give_up_after_bounces` into `rank`
+  (`server/pm/queue.py`), which checks the `needs_spec` skip right after the needs-human cooldown
+  and before the board-status gate: a row whose body (by `server/pm/outcomes.py:body_fingerprint`)
+  has bounced `give_up_after_bounces` times or more (`bounced_out`) is skipped `needs_spec`
+  rather than ranked — the SAME predicate the roadmap's leaf chip reads (see
+  `docs/product/features/product-management-layer.md` § Dispatch outcomes). The status card's
+  per-product segment appends ` · N bounced` when `N` is nonzero (`BacklogRunner.status`), and the
+  SAME per-product rows also ride structured on `AutomationStatus.products` (a new field beside
+  `text`, never a sibling top-level key — `GET /api/automations` serializes it once, inside each
+  row's `status`): `[]` when the runner has products but none has dispatch on, `None` for an
+  automation with no concept of products (PR Doctor) or while the read has failed. The runner's
+  detail pane renders it as a table on the Status tab whenever it is a non-empty array
+  (`AutomationDetail.tsx`, via the shared `CheckTable` primitive): Product (linked to
+  `/roadmap/:slug`), Dispatch, In flight (`inFlight/cap`), Eligible, Bounced.
 
   The top pick is re-verified against live GitHub immediately before the
   claim — that check **fails closed** (§10), so a mirror lagging reality costs a tick, never
