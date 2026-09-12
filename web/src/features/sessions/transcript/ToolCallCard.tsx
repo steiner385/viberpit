@@ -96,7 +96,7 @@ export function ToolCallCard({ block, density = 'card', defaultResultOpen = fals
       <div className="text-sm">
         <button
           type="button"
-          aria-label={`Toggle tool details — ${ok ? 'succeeded' : 'failed'}`}
+          aria-label={`Toggle tool details${block.result ? ` — ${ok ? 'succeeded' : 'failed'}` : ''}`}
           aria-expanded={resultOpen}
           aria-controls={detailRegionId}
           onClick={() => setResultOpen((v) => !v)}

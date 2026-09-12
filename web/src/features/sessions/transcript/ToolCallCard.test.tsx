@@ -282,12 +282,14 @@ describe('ToolCallCard', () => {
 
     it('dims a completed tool name and keeps a running one prominent', () => {
       const { rerender } = render(<ToolCallCard block={bashBlockWithResult} density="line" />)
-      // Completed → muted name color
+      // Completed → muted name color; the toggle's name carries the outcome
       expect(screen.getByText('Bash').className).toMatch(/text-ink-muted/)
+      expect(screen.getByRole('button', { name: /tool details/i })).toHaveAccessibleName(/succeeded/i)
       rerender(<ToolCallCard block={bashBlock} density="line" />)
-      // Running (no result) → prominent name color
+      // Running (no result) → prominent name color; no outcome announced yet
       expect(screen.getByText('Bash')).toHaveClass('text-ink')
       expect(screen.getByText('Bash')).not.toHaveClass('text-ink-muted')
+      expect(screen.getByRole('button', { name: /tool details/i })).not.toHaveAccessibleName(/succeeded|failed/i)
     })
   })
 
