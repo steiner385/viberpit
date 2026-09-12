@@ -19,8 +19,8 @@
 // `SessionListColumn` because it is the unit the archived tests mount: the
 // controls strip and the list are one composition, and a test that rebuilt that
 // composition by hand would be a second copy of it.
-import { SessionListControls } from '@/components/SessionListControls'
-import { ArchivedSessionList } from '@/components/ArchivedSessionList'
+import { SessionListControls } from '@/features/sessions/list/SessionListControls'
+import { ArchivedSessionList } from '@/features/sessions/list/ArchivedSessionList'
 import { ARCHIVED_GROUP_OPTIONS, ARCHIVED_SORT_OPTIONS } from '@/session/archivedOrdering'
 import { ScopeBody } from './ScopeBody'
 import { useArchivedListState } from './useArchivedListState'

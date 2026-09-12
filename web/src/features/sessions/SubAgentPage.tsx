@@ -23,6 +23,7 @@ import { useStopSubAgent } from '@/api/hooks'
 import { useSessionRuntime } from '@/session/useSessionRuntime'
 import { listScopeForPath, sessionPath } from '@/session/sessionNavState'
 import type { SubAgentStatus } from '@/session/selectors'
+import { STATUS_TONE, STATUS_LABEL } from '@/features/sessions/subAgentStatus'
 import { agentDuration } from '@/components/session/subAgentDuration'
 import { TranscriptView } from '@/components/session/TranscriptView'
 import { PendingPermissionPanel } from '@/components/session/PendingPermissionPanel'
@@ -32,17 +33,6 @@ import { PageContent } from '@/ui/PageContent'
 import { EmptyState } from '@/ui/EmptyState'
 import { Breadcrumb } from '@/ui/Breadcrumb'
 import { Button } from '@/ui/Button'
-
-/** Status → dot tone. The one place a sub-agent status becomes a colour. */
-const STATUS_TONE: Record<SubAgentStatus, string> = {
-  running: 'bg-info animate-pulse motion-reduce:animate-none',
-  done: 'bg-success',
-  failed: 'bg-danger',
-  stopped: 'bg-neutral',
-}
-const STATUS_LABEL: Record<SubAgentStatus, string> = {
-  running: 'running', done: 'completed', failed: 'failed', stopped: 'stopped',
-}
 
 export function SubAgentReaderPage({ sessionId, agentId }: { sessionId: string; agentId: string }) {
   // Back and the breadcrumb return to the parent INSIDE the list scope it is open in.

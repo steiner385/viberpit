@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 
 // BrowserTab opens a real WebSocket; stub it so the panel renders in jsdom.
-vi.mock('@/components/BrowserTab', () => ({
+vi.mock('@/features/sessions/browser/BrowserTab', () => ({
   BrowserTab: ({ sessionId }: { sessionId: string }) => <div data-testid="browser-tab">{sessionId}</div>,
 }))
 

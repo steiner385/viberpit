@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useLocation } from 'react-router-dom'
 import { cn } from '@/lib/utils'
-import { SidebarResizer } from '@/components/SidebarResizer'
+import { SidebarResizer } from '@/features/sessions/list/SidebarResizer'
 import { useSidebarWidth } from '@/lib/useSidebarWidth'
 import { navDefForPath } from '@/shell/navDefs'
 import { useViewport } from '@/shell/useViewport'

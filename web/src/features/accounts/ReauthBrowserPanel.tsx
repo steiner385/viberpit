@@ -1,4 +1,4 @@
-import { BrowserTab } from '@/components/BrowserTab'
+import { BrowserTab } from '@/features/sessions/browser/BrowserTab'
 
 /** In-page VNC viewer for the reauth browser, pointed at the backend-reported session key.
  *
