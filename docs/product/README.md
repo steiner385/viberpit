@@ -40,10 +40,10 @@ the parents rather than maintaining a second membership registry.
 [Child sessions](guides/child-sessions.md) is supporting documentation linked from
 [Session tools](features/session-tools.md), not a separate indexed capability.
 
-The [ViberPit rebrand](features/viberpit-rebrand.md) is a finite migration retained
-under Operator experience while its initiative and issue links are rehomed. Retire
-its indexed node only after every reference has a valid replacement, and preserve
-its design and delivery evidence outside the indexed capability directory.
+The ViberPit rebrand is a finite [initiative (#1365)](https://github.com/steiner385/viberpit/issues/1365)
+under Operator experience. Its [migration guide](guides/viberpit-rebrand.md) preserves
+design and delivery evidence outside the indexed capability directory. Remaining
+engineering issues stay with the initiative and their durable capability homes.
 
 ## Maintaining the hierarchy
 
