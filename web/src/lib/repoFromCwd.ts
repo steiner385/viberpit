@@ -3,7 +3,7 @@
  * archived list (archived rows carry `cwd`, not the live `repo` field). Feed the
  * result into formatRepoLabel(), which renders null/empty as the "Scratch" bucket.
  *
- * ccswitch worktrees live at `.ccswitch/worktrees/<repo>/<hash>`, so both the
+ * ViberPit worktrees live at `.ccswitch/worktrees/<repo>/<hash>`, so both the
  * basename (a meaningless hash) and the segment above `.ccswitch` (a shared
  * parent dir like `GitHub`) are wrong — we take the segment right after
  * `worktrees/`. Clones live at `.ccswitch/clones/<owner>/<repo>` and plain repo

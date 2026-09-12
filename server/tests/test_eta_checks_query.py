@@ -2,7 +2,7 @@ from server.github.pr_status import build_eta_checks_query, parse_eta_checks_res
 
 
 def test_build_eta_query_embeds_number_in_both_places():
-    q = build_eta_checks_query([("steiner385/cc-account-switcher", 293)])
+    q = build_eta_checks_query([("steiner385/viberpit", 293)])
     assert "pullRequest(number: 293)" in q
     assert "isRequired(pullRequestNumber: 293)" in q
     assert "startedAt" in q and "status" in q

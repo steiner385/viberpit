@@ -9,7 +9,7 @@ from server.db.models import (Automation, AutomationTargetState, Base, GhProject
 from server.pm.mirror_store import list_product_views
 from server.pm.reconcile_inputs import load_product_facts
 
-REPO = "steiner385/cc-account-switcher"
+REPO = "steiner385/viberpit"
 T = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
 
 
@@ -18,9 +18,9 @@ def _db():
 
 
 def _seed(db):
-    p = Project(slug="ccswitch", name="ccswitch"); db.add(p); db.flush()
+    p = Project(slug="viberpit", name="viberpit"); db.add(p); db.flush()
     db.add(ProjectRepo(project_id=p.id, repo=REPO))
-    gp = GhProject(project_id=p.id, gh_node_id="PVT_1", gh_project_number=26, title="ccswitch",
+    gp = GhProject(project_id=p.id, gh_node_id="PVT_1", gh_project_number=26, title="viberpit",
                    field_cache={"Status": {"field_id": "F", "options": {}}}, last_synced_at=T)
     db.add(gp); db.flush()
     i5 = WorkItem(repo=REPO, number=5, kind="issue", state="open", gh_node_id="I_5", triage_state="classified",
@@ -141,7 +141,7 @@ def test_session_row_writes_do_not_hold_the_gate_permanently_stale():
 
 
 def test_deps_are_scoped_to_the_products_repos_in_sql():
-    """The dep filter is a SQL predicate, not a Python scan of every dep ccswitch has
+    """The dep filter is a SQL predicate, not a Python scan of every dep ViberPit has
     ever observed — and it must not match a repo whose name merely shares a prefix."""
     db = _db(); p = _seed(db)
     other = WorkItem(repo="steiner385/other", number=1, kind="issue", state="open",
@@ -157,4 +157,4 @@ def test_deps_are_scoped_to_the_products_repos_in_sql():
     db.commit()
     facts = load_product_facts(db, list_product_views(db)[0], now=T)
     assert [d.src_ref for d in facts.deps] == [f"{REPO}#5"]
-    assert p.slug == "ccswitch"
+    assert p.slug == "viberpit"

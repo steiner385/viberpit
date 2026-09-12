@@ -13,7 +13,7 @@ links:
 
 # Git Worktree Isolation
 
-**Problem** — Many `ccswitch` sessions can be working the same repository at the same time. If
+**Problem** — Many ViberPit sessions can be working the same repository at the same time. If
 they all shared one working tree, each session's branch checkout would clobber the others' —
 Session A on `feature-x` and Session B on `feature-y` cannot coexist in one `~/GitHub/<repo>`
 checkout, and concurrent `worktree add` / `fetch` calls race on `.git/config` and lose all-but-one
@@ -37,7 +37,7 @@ closed by the janitor (#630); no `config.lock` race across concurrent per-clone 
 (#656); byte-and-inode preflight rejects creation before the host runs dry (#625, #621); dirty
 worktrees are max-age evicted (stashing first) rather than kept forever (#678).
 
-**Non-goals** — Not a general git GUI or a replacement for the user's own checkouts — `ccswitch`
+**Non-goals** — Not a general git GUI or a replacement for the user's own checkouts — ViberPit
 worktrees live under a managed namespace (`<repo_root>/.ccswitch/worktrees/…`, clones under
 `.ccswitch/clones/<owner>/<name>`) and never mutate the user's `~/GitHub/<repo>` HEAD or branch.
 Not a credential manager beyond what git/gh operations need (tokens are injected per-op via env,

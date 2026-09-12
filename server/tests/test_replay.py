@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+from ccswitch import brand
 from server.sessions.replay import replay_events, replay_window, _parse
 from server.sessions.events import ToolCall, ToolResult, TextDelta, ThinkingDelta
 
@@ -331,6 +332,6 @@ def test_replay_strips_the_context_header_and_recovers_the_chip(tmp_path):
     # Neither spelling may survive into what the user sees: the header is emitted
     # as `viberpit-context` now, and pre-rebrand JSONL still carries the old one.
     assert not any(f"{slug}-context" in user_evs[0].text
-                   for slug in ("viberpit", "ccswitch"))
+                   for slug in (brand.SLUG, brand.LEGACY_SLUG))
     assert user_evs[0].to_wire()["context"] == ctx
     assert user_evs[1].to_wire()["context"] is None

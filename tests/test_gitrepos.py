@@ -440,7 +440,7 @@ class InstallationReposTests(unittest.TestCase):
     def test_app_path_maps_rest_objects_to_chooser_dicts(self) -> None:
         gitrepos.set_installations_provider(lambda: [
             self._rest_repo("cairnea/KinDash", pushed_at="2026-06-19T00:00:00Z"),
-            self._rest_repo("steiner385/ccswitch", private=False,
+            self._rest_repo("steiner385/viberpit", private=False,
                             pushed_at="2026-06-20T00:00:00Z"),
         ])
         # The provider path must NOT shell out to gh at all — a subprocess here is a bug.
@@ -449,10 +449,10 @@ class InstallationReposTests(unittest.TestCase):
             repos = gitrepos.list_accessible_repos()
         # PUSHED_AT-desc, mapped to the chooser wire shape.
         self.assertEqual([r["nameWithOwner"] for r in repos],
-                         ["steiner385/ccswitch", "cairnea/KinDash"])
+                         ["steiner385/viberpit", "cairnea/KinDash"])
         self.assertEqual(repos[0]["owner"], "steiner385")
         self.assertFalse(repos[0]["isPrivate"])
-        self.assertEqual(repos[0]["url"], "https://github.com/steiner385/ccswitch")
+        self.assertEqual(repos[0]["url"], "https://github.com/steiner385/viberpit")
         self.assertEqual(repos[0]["defaultBranch"], "main")
         self.assertTrue(repos[1]["isPrivate"])
 

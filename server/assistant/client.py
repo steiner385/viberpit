@@ -1,4 +1,4 @@
-"""Loopback HTTP client the assistant's tools use to call ccswitch's own API as the user
+"""Loopback HTTP client the assistant's tools use to call ViberPit's own API as the user
 (spec §4.3). Every request carries the assistant bearer token and attribution headers."""
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 
+from ccswitch import brand
 from server.api.ratelimit import TokenBucketRateLimiter
 from server.sessions.types import SYSTEM_IDENTITY
 
@@ -58,7 +59,7 @@ class AssistantApi:
         try:
             r = await self._client.request(method, path, **kw)
         except httpx.HTTPError as exc:
-            raise AssistantApiError(0, f"ccswitch API unreachable: {exc.__class__.__name__}") from exc
+            raise AssistantApiError(0, f"{brand.NAME} API unreachable: {exc.__class__.__name__}") from exc
         if r.status_code >= 400:
             try:
                 err = r.json().get("error", {})

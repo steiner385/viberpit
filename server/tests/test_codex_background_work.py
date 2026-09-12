@@ -68,7 +68,7 @@ def test_the_list_method_is_pinned_and_supported():
 
 
 def test_terminate_and_clean_stay_unpinned():
-    """ccswitch never ends a background terminal itself — daemon shutdown and the boot
+    """ViberPit never ends a background terminal itself — daemon shutdown and the boot
     sweep already do, by process tree. Pinning a method with no caller is dead surface."""
     curated = " ".join(schema.CURATED_SCHEMA_FILES)
     assert "BackgroundTerminalsTerminate" not in curated
@@ -81,7 +81,7 @@ def test_the_vendor_declares_no_way_to_start_one():
     The app-server's whole background-terminal surface is list/terminate/clean —
     three ways to observe or end one, none to start one. Read off the generated
     envelope inventory rather than asserted from memory, so a future release that
-    adds a relaunch primitive fails this test instead of silently leaving ccswitch
+    adds a relaunch primitive fails this test instead of silently leaving ViberPit
     reporting a limitation that no longer exists.
     """
     index = json.loads((FIXTURES / "method_index.json").read_text())

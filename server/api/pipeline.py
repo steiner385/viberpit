@@ -1,7 +1,7 @@
 """Pipeline REST API — the full PR population for the board view.
 
 GET /api/prs → every open + recently-merged PR across watched repos, each
-joined to its authoring ccswitch session (or session=null). Requires a verified
+joined to its authoring ViberPit session (or session=null). Requires a verified
 identity. Reads the in-memory population cache (cheap); no GitHub call per request.
 
 GET /api/pipeline/repos → per-repo StageModel (ordered nodes derived from

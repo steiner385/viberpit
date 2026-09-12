@@ -4,7 +4,7 @@ binary's `/model` picker.
 The claude-agent-sdk exposes no model catalog (set_model is an opaque pass-through
 to the `claude` binary). The stable contract is the binary's `/model` aliases, which
 auto-resolve to the latest and survive binary version bumps (pinned ids churn every
-release). This module surfaces EVERY alias the picker offers so ccswitch exposes
+release). This module surfaces EVERY alias the picker offers so ViberPit exposes
 exactly what the binary does — no more, no less.
 
 **How the list is built (in order of preference):**

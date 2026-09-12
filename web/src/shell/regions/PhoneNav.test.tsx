@@ -176,7 +176,7 @@ describe('NavBar', () => {
     renderPhoneNav()
     // The mechanism the rest of the mobile chrome uses (App.tsx header,
     // Composer, DispatchBar): an inline env() padding, not a class — an
-    // arbitrary-value class is banned in shell/** by ccswitch/no-raw-palette.
+    // arbitrary-value class is banned in shell/** by viberpit/no-raw-palette.
     expect(bar().style.paddingBottom).toContain('env(safe-area-inset-bottom)')
   })
 

@@ -9,7 +9,7 @@ from server.pm.gh_projects import GhProjectItemView, GhProjectView, IssueRelView
 from server.pm import journal, mirror_store
 from server.pm.reconcile_diff import remove_blocked_by_mutation
 
-REPO = "steiner385/cc-account-switcher"
+REPO = "steiner385/viberpit"
 
 
 def _db():
@@ -19,7 +19,7 @@ def _db():
 
 
 def _seed(db):
-    project = Project(slug="ccswitch", name="cc-account-switcher")
+    project = Project(slug="viberpit", name="viberpit")
     db.add(project)
     db.flush()
     db.add(ProjectRepo(project_id=project.id, repo=REPO))
@@ -33,7 +33,7 @@ def _seed(db):
 def test_upsert_gh_project_links_and_is_idempotent():
     db = _db()
     project = _seed(db)
-    view = GhProjectView(node_id="PVT_1", number=7, title="cc-account-switcher",
+    view = GhProjectView(node_id="PVT_1", number=7, title="viberpit",
                          updated_at="2026-09-01T10:00:00Z")
     gid1 = mirror_store.upsert_gh_project(db, project.id, view)
     gid2 = mirror_store.upsert_gh_project(db, project.id, view)
@@ -95,7 +95,7 @@ def test_upsert_relations_sets_parents_and_plans_deps():
 
 # --- rename_repo: alias → GitHub's canonical nameWithOwner (issue #999) --------
 
-CANON = "steiner385/ccswitch"
+CANON = "steiner385/viberpit-renamed"
 
 
 def test_rename_repo_rewrites_every_alias_key_and_resolves_fks():
@@ -317,7 +317,7 @@ def _seed_board_epic(db, project, *, number=945, title="Epic Alpha",
                      state="open", on_board=True, stage=None):
     """A GhProject board with one epic-flagged WorkItem, optionally linked onto
     the board via a GhProjectItem row (whose mirrored ``stage`` defaults to
-    unset, matching a board column ccswitch has no Stage vocabulary for)."""
+    unset, matching a board column ViberPit has no Stage vocabulary for)."""
     gid = mirror_store.upsert_gh_project(db, project.id, GhProjectView(
         node_id="PVT_1", number=7, title="x", updated_at=None))
     epic = db.query(WorkItem).filter_by(number=number).one()
@@ -411,7 +411,7 @@ def test_adopt_epics_seeds_stage_from_board_stage():
 
 
 def test_adopt_epics_falls_back_to_build_for_unknown_board_stage():
-    """A board Stage outside ccswitch's INITIATIVE_STAGES vocabulary (or a
+    """A board Stage outside ViberPit's INITIATIVE_STAGES vocabulary (or a
     board that never mirrored a Stage at all) still adopts at "build" —
     today's behavior, preserved as the fallback."""
     db = _db()

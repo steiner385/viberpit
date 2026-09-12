@@ -52,9 +52,9 @@ def test_build_query_empty_is_blank():
 
 
 def test_build_query_aliases_each_pair():
-    q = build_pr_query([("steiner385/cc-account-switcher", "ccswitch/foo-abc")])
+    q = build_pr_query([("steiner385/viberpit", "ccswitch/foo-abc")])
     assert "r0: repository(" in q
-    assert '"steiner385"' in q and '"cc-account-switcher"' in q
+    assert '"steiner385"' in q and '"viberpit"' in q
     assert '"ccswitch/foo-abc"' in q
     assert "statusCheckRollup" in q
 
@@ -350,8 +350,8 @@ from server.github.pr_status import build_population_query, parse_population_res
 
 
 def test_build_population_query_scopes_to_repo_and_date():
-    q = build_population_query("steiner385/cc-account-switcher", "2026-06-18")
-    assert 'repository(owner: "steiner385", name: "cc-account-switcher")' in q
+    q = build_population_query("steiner385/viberpit", "2026-06-18")
+    assert 'repository(owner: "steiner385", name: "viberpit")' in q
     assert "pullRequests(states: OPEN" in q
     assert 'is:pr is:merged merged:>=2026-06-18' in q
     assert "statusCheckRollup" in q  # shared node fields are present

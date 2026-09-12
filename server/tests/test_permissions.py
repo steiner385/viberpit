@@ -212,7 +212,7 @@ def test_account_memory_write_auto_allowed_in_allowlist_mode(tmp_path, monkeypat
 def test_account_memory_edit_auto_allowed_in_auto_mode(tmp_path, monkeypatch):
     monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path))
     reg = PermissionRegistry()
-    pid = _request(reg, "Edit", _mem_path(tmp_path, name="ccswitch-x.md"), "auto")
+    pid = _request(reg, "Edit", _mem_path(tmp_path, name="viberpit-x.md"), "auto")
     assert pid is None, "Edit to account memory dir must auto-allow in auto mode"
 
 
@@ -331,9 +331,9 @@ def test_bypass_permissions_allows_bash_without_prompt():
 
 
 # ---------------------------------------------------------------------------
-# to_sdk_permission_mode: the single source of truth mapping ccswitch modes to
+# to_sdk_permission_mode: the single source of truth mapping ViberPit modes to
 # the SDK's permission_mode.  SDK-vocabulary names pass through; everything else
-# collapses to "default" (ccswitch's registry is the authority for those).
+# collapses to "default" (ViberPit's registry is the authority for those).
 # ---------------------------------------------------------------------------
 
 def test_to_sdk_permission_mode_passes_through_sdk_names():
@@ -342,7 +342,7 @@ def test_to_sdk_permission_mode_passes_through_sdk_names():
     assert to_sdk_permission_mode("bypassPermissions") == "bypassPermissions"
 
 
-def test_to_sdk_permission_mode_collapses_ccswitch_modes_to_default():
+def test_to_sdk_permission_mode_collapses_viberpit_modes_to_default():
     for mode in ("interactive", "auto", "allowlist", "full-auto", "", "nonsense"):
         assert to_sdk_permission_mode(mode) == "default", mode
 

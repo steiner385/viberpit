@@ -22,7 +22,7 @@ _ACK = "Owner acknowledgment: I approve the provider-neutral changes."
 def _doc(version: str, amended: str, report: str = "") -> str:
     return (
         f"<!--\nSYNC IMPACT REPORT\n{report}\n-->\n\n"
-        "# ccswitch Constitution\n\nBody.\n\n"
+        "# ViberPit Constitution\n\nBody.\n\n"
         f"**Version**: {version} | **Ratified**: 2026-06-19 | **Last Amended**: {amended}"
     )
 

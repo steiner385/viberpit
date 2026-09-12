@@ -42,7 +42,7 @@ def _record(sid: str = SID, **kw) -> SessionRecord:
     fields = dict(
         id=sid, name="rebrand", account="acct-a", engine=AgentEngine.CLAUDE_CODE,
         engine_session_id="f9eaab62-4465-4651-8425-f42645b92ef7",
-        cols=80, rows=24, cwd="/tmp/ccswitch-lease-test", status="idle",
+        cols=80, rows=24, cwd="/tmp/viberpit-lease-test", status="idle",
     )
     fields.update(kw)
     return SessionRecord(**fields)
@@ -171,7 +171,7 @@ async def test_spawn_over_a_leased_session_raises(tmp_path, monkeypatch):
         orch = _new_orch()
         with pytest.raises(SessionLeaseHeld) as excinfo:
             await orch._spawn_session(
-                SID, name="twin", account="acct-a", cwd="/tmp/ccswitch-lease-test",
+                SID, name="twin", account="acct-a", cwd="/tmp/viberpit-lease-test",
                 initial_prompt=None, cols=80, rows=24, branch=None, repo=None,
                 identity="system", permission_mode="interactive", attachment_ids=None,
                 name_is_auto=False, origin=None, origin_ref=None, model=None)

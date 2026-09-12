@@ -69,7 +69,7 @@ def test_state_constants_are_ordered():
 
 @pytest.mark.asyncio
 async def test_feature_is_an_index_row(db_session):
-    p = Project(slug="ccswitch", name="ccswitch")
+    p = Project(slug="viberpit", name="viberpit")
     db_session.add(p)
     await db_session.flush()
     f = Feature(project_id=p.id, slug="sessions", title="Session manager",
@@ -83,7 +83,7 @@ async def test_feature_is_an_index_row(db_session):
 
 @pytest.mark.asyncio
 async def test_work_item_overlay_and_proposal(db_session):
-    w = WorkItem(repo="steiner385/ccswitch", number=42, kind="issue",
+    w = WorkItem(repo="steiner385/viberpit", number=42, kind="issue",
                  title="Fix the thing", state="open")
     db_session.add(w)
     await db_session.flush()

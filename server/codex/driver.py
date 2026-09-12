@@ -1,4 +1,4 @@
-"""One ccswitch session driven as one Codex thread.
+"""One ViberPit session driven as one Codex thread.
 
 This is the Codex arm of the provider-neutral :class:`~server.sessions.engine.AgentDriver`
 contract, and the Codex sibling of ``server/sessions/claude_driver.py``. It owns
@@ -34,7 +34,7 @@ the next turn under a sandbox nobody chose.
 **One status vocabulary.** Status is always derived through
 ``server/sessions/status.py``. The translator's `thread/status/changed` mapping
 is consumed as a *signal* and never forwarded: it speaks working/idle, while
-ccswitch's dashboard speaks in_progress/waiting_input/needs_attention/…, and two
+ViberPit's dashboard speaks in_progress/waiting_input/needs_attention/…, and two
 sources writing one pill is how a session ends up "Ready" mid-turn.
 
 Ordering. Everything the app-server says — notifications and supervision notices
@@ -289,7 +289,7 @@ class _QueuedPrompt:
 
 
 class CodexAgentDriver:
-    """Drives one Codex thread, exposing the normalized ccswitch event stream."""
+    """Drives one Codex thread, exposing the normalized ViberPit event stream."""
 
     engine = AgentEngine.CODEX
     #: Bound, not restated. ``server/codex/capabilities.py`` already declares this
@@ -348,7 +348,7 @@ class CodexAgentDriver:
         self._assistant = assistant_overlay
         #: Set for a CODING session when the session-tools flag is on
         #: (server/sessions/tools/codex.py). Unlike ``_assistant`` it changes exactly
-        #: ONE thing about this driver: a fresh `thread/start` declares the ccswitch
+        #: ONE thing about this driver: a fresh `thread/start` declares the ViberPit
         #: tools. The profile, the resume path and every approval card stay whatever
         #: the session's own mode says — a coding session that gained two tools is
         #: still a coding session.
@@ -543,7 +543,7 @@ class CodexAgentDriver:
                 signalling_tools=self.capabilities.durable_tool_surface,
                 self_model_switch=self.capabilities.self_model_switch,
             ),
-            # The coding session's ccswitch tool surface, or nothing at
+            # The coding session's ViberPit tool surface, or nothing at
             # all: an empty tuple emits no `dynamicTools` field, so a
             # session with the flag off looks exactly as it did before.
             dynamic_tools=(
@@ -588,9 +588,9 @@ class CodexAgentDriver:
             # An assistant thread is ALWAYS started, never resumed, even when the
             # row carries an engine_session_id: `thread/resume` has no
             # `dynamicTools` field on the pinned contract, so resuming would hand
-            # the drawer back with the built-ins still declared and every ccswitch
+            # the drawer back with the built-ins still declared and every ViberPit
             # tool gone. Losing the model's context is the recoverable half of that
-            # trade; the ccswitch transcript is stored by ccswitch, not replayed
+            # trade; the ViberPit transcript is stored by ViberPit, not replayed
             # from the thread.
             if self.resume:
                 log_event(
@@ -607,7 +607,7 @@ class CodexAgentDriver:
                 # gap rather than a warning: `thread/resume` has no `dynamicTools`
                 # field on the pinned contract (and an unknown one is ignored, not
                 # refused — see the 2026-09-06 spike), so this thread comes back
-                # without the ccswitch tools. A coding session cannot answer that
+                # without the ViberPit tools. A coding session cannot answer that
                 # the way the assistant does — by restarting — because its thread
                 # carries the work.
                 log_event(
@@ -985,7 +985,7 @@ class CodexAgentDriver:
         value — and against the REAL path, so a symlink planted inside the
         workspace cannot smuggle a file from outside it into the model's context.
         An attachment resolving OUTSIDE the workspace is accepted only when it
-        resolves inside the ccswitch-managed content-addressed attachments store
+        resolves inside the ViberPit-managed content-addressed attachments store
         (the normal upload path — see `server/sessions/attachments.py`); anything
         else outside cwd is refused. Never widen this to "any external path":
         that is exactly the containment bypass this check exists to prevent.
@@ -1080,7 +1080,7 @@ class CodexAgentDriver:
             )
 
     async def set_permission_mode(self, mode: str) -> None:
-        """Apply a ccswitch permission mode, or refuse it.
+        """Apply a ViberPit permission mode, or refuse it.
 
         This entry point is unvalidated end to end — the web plan toggle sends
         ``plan``/``default`` directly, and the REST route does not check the
@@ -1192,7 +1192,7 @@ class CodexAgentDriver:
     async def _on_approval(
         self, method: str, params: schema.ApprovalParams
     ) -> schema.ApprovalResponse:
-        """Turn one app-server approval request into a ccswitch permission card.
+        """Turn one app-server approval request into a ViberPit permission card.
 
         Every refusal path answers ``decline``: this coroutine is the app-server's
         JSON-RPC reply, and the one outcome that must be unreachable by accident
@@ -1283,7 +1283,7 @@ class CodexAgentDriver:
         self._emit(ev.PermissionResolved(perm_id, params.turn_id, allowed))
         await self._emit_status()
         if decision == "always":
-            # The engine's OWN session-scoped accept — never a ccswitch grant
+            # The engine's OWN session-scoped accept — never a ViberPit grant
             # (``request_external`` writes none) and never a persisted global
             # exception.
             return _response(method, "acceptForSession")
@@ -1304,7 +1304,7 @@ class CodexAgentDriver:
     async def _on_dynamic_tool(
         self, params: schema.DynamicToolCallParams
     ) -> schema.DynamicToolCallResponse:
-        """Run one ccswitch tool this thread declared as a `dynamicTool`.
+        """Run one ViberPit tool this thread declared as a `dynamicTool`.
 
         Serves BOTH surfaces — the assistant drawer's tools and a coding session's
         (``server/sessions/tools/codex.py``) — with no branch between them: they are
@@ -1412,7 +1412,7 @@ class CodexAgentDriver:
                 reason="generation_changed",
             )
             return tool_error(
-                "ccswitch tool error: the session was replaced before this tool ran"
+                f"{brand.NAME} tool error: the session was replaced before this tool ran"
             )
         return await overlay.run_tool(params.tool, arguments)
 
@@ -1421,7 +1421,7 @@ class CodexAgentDriver:
     async def _on_user_input(
         self, params: schema.ToolRequestUserInputParams
     ) -> schema.ToolRequestUserInputResponse:
-        """Turn one `item/tool/requestUserInput` call into ccswitch question
+        """Turn one `item/tool/requestUserInput` call into ViberPit question
         card(s) and await the human's answer(s) — Codex's `AskUserQuestion`
         equivalent, reusing the SAME ``QuestionRegistry``/``ev.Question`` the
         Claude driver uses rather than a parallel question stack.
@@ -1673,7 +1673,7 @@ class CodexAgentDriver:
             self.counters.dropped_user_echoes += 1
             return
         if isinstance(event, ev.Status):
-            # `thread/status/changed` is a SIGNAL, not a status: ccswitch's
+            # `thread/status/changed` is a SIGNAL, not a status: ViberPit's
             # vocabulary is richer (waiting_input / needs_attention / …) and is
             # derived in one place. Re-deriving keeps a single writer for the pill.
             await self._emit_status()
@@ -1995,7 +1995,7 @@ class CodexAgentDriver:
         ``server/sessions/commands/catalog.py`` normalizes; the Claude driver
         answers it from the CLI's `get_server_info`, and this one answers it from
         `skills/list`. It used to return None, which left a Codex palette holding
-        only ccswitch's own commands and no way to tell "this engine publishes
+        only ViberPit's own commands and no way to tell "this engine publishes
         nothing" from "we never asked" (#1286).
 
         Nothing here is synthesized: every entry is a skill the app-server just

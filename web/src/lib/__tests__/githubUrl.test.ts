@@ -4,8 +4,8 @@ import { fileUrl, commitUrl, prUrl } from '../githubUrl'
 
 describe('githubUrl', () => {
   it('pins a file blob at a ref, keeping tree slashes but encoding segments', () => {
-    expect(fileUrl('steiner385/ccswitch', 'abc123', 'docs/sdlc/x/intent.md'))
-      .toBe('https://github.com/steiner385/ccswitch/blob/abc123/docs/sdlc/x/intent.md')
+    expect(fileUrl('steiner385/viberpit', 'abc123', 'docs/sdlc/x/intent.md'))
+      .toBe('https://github.com/steiner385/viberpit/blob/abc123/docs/sdlc/x/intent.md')
   })
 
   it('encodes reserved characters within a path segment', () => {

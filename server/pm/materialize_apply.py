@@ -293,7 +293,7 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
     if failures:
         return await fail("edges", "; ".join(failures)[:500])
 
-    # --- ccswitch-side overlay ---------------------------------------------- #
+    # --- ViberPit-side overlay ---------------------------------------------- #
     ini.epic_repo, ini.epic_number = repo, epic.get("number")
     # Materialize is the plan stage's TERMINAL action (spec §7b), so the confirmed
     # accept IS the human gate for it: the stage moves here rather than parking the

@@ -225,10 +225,10 @@ assistant_gap_reports_total = Counter(
 # Session tool surface (session tools spec §3, §4). Same shape as the assistant's
 # counters so one Grafana row can compare the two surfaces.
 session_tool_calls_total = Counter(
-    "session_tool_calls_total", "Coding-session ccswitch tool calls",
+    "session_tool_calls_total", f"Coding-session {brand.NAME} tool calls",
     labelnames=("tool", "class", "outcome"))
 session_feedback_total = Counter(
-    "session_feedback_total", "Feedback reports coding sessions made about ccswitch",
+    "session_feedback_total", f"Feedback reports coding sessions made about {brand.NAME}",
     labelnames=("category",))
 error_sink_dropped_total = Counter(
     "error_sink_dropped_total",
@@ -242,7 +242,7 @@ error_sink_dropped_total = Counter(
 # commands, patches, and model output. The plan says "hash native ids"; the label
 # sets below go further and never collect one, because a hashed thread id is still
 # unbounded cardinality and no series here needs per-thread resolution. `account`
-# is a ccswitch alias — public in the account manifest and already in the audit
+# is a ViberPit alias — public in the account manifest and already in the audit
 # trail — and every other label is a closed vocabulary (a supported method name, a
 # fixed outcome, a typed reason).
 #

@@ -75,7 +75,7 @@ def _run(argv: list[str], environment: dict[str, str]) -> str:
 
 def generate_contract(codex_bin: str) -> tuple[str, schema.Contract]:
     """Generate the schema in an isolated temp home and extract the contract."""
-    with tempfile.TemporaryDirectory(prefix="ccswitch-codex-contract-") as temp:
+    with tempfile.TemporaryDirectory(prefix="viberpit-codex-contract-") as temp:
         root = Path(temp)
         codex_home = root / "home"
         codex_home.mkdir(mode=0o700)
@@ -129,7 +129,7 @@ def build_manifest(version: str, contract: schema.Contract) -> dict[str, Any]:
             "stream: the hash is invariant to upstream formatting but sensitive to "
             "every key, type, enum member, and required entry. Envelope bodies are "
             "recorded by digest only, so upstream churn in the 150+ methods "
-            "ccswitch never calls does not break the pin."
+            "ViberPit never calls does not break the pin."
         ),
         "documents": list(contract.documents),
         "envelopes": {

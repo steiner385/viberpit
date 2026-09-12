@@ -237,11 +237,11 @@ async def test_empty_tool_catalog_preflight_uses_runner_local_fake_provider(
     ]
     request = json.loads(captured["stdin"])
     assert request["thread"] == spike.build_model_thread_params(
-        Path("/tmp/ccswitch-codex-tool-preflight.placeholder"),
+        Path("/tmp/viberpit-codex-tool-preflight.placeholder"),
         model_turn_enabled=True,
     )
     assert request["turn"] == spike.build_model_turn_params(
-        "ccswitch-tool-preflight-placeholder",
+        "viberpit-tool-preflight-placeholder",
         model_turn_enabled=True,
     )
     assert captured["timeout"] == spike.TOOL_CATALOG_PREFLIGHT_TIMEOUT_S
@@ -288,7 +288,7 @@ async def test_empty_tool_catalog_preflight_failure_is_fixed_and_sanitized(
 
 def test_remote_runner_process_quotes_shell_and_app_server_argv_without_injection():
     target = spike.RunnerTarget(name="runner-one", ssh_host="runner.example")
-    home = Path("/tmp/ccswitch-codex-spike." + "a" * 32)
+    home = Path("/tmp/viberpit-codex-spike." + "a" * 32)
     hostile_codex_path = "/opt/Codex CLI/codex; printf command-injected"
 
     command, environment = spike.build_runner_process(
@@ -300,7 +300,7 @@ def test_remote_runner_process_quotes_shell_and_app_server_argv_without_injectio
     remote_argv = shlex.split(command[-1])
     assert remote_argv[:2] == ["sh", "-c"]
     assert remote_argv[3:] == [
-        "ccswitch-codex-spike",
+        "viberpit-codex-spike",
         str(home),
         hostile_codex_path,
     ]
@@ -365,7 +365,7 @@ async def test_remote_scan_secrets_use_only_authenticated_ssh_stdin(monkeypatch)
 
     monkeypatch.setattr(spike, "_run_command", capture_command)
     target = spike.RunnerTarget("runner.example", "runner.example")
-    home = Path("/tmp/ccswitch-codex-spike." + "a" * 32)
+    home = Path("/tmp/viberpit-codex-spike." + "a" * 32)
 
     result = await spike.scan_remote_home(
         target,
@@ -713,7 +713,7 @@ async def test_callback_spike_failure_has_fixed_context_and_no_arbitrary_detail(
     assert replies == [
         {
             "id": 11,
-            "error": {"code": -32603, "message": "ccswitch spike rejected request"},
+            "error": {"code": -32603, "message": "ViberPit spike rejected request"},
         }
     ]
     with pytest.raises(spike.ProtocolError) as raised:
@@ -2145,7 +2145,7 @@ async def test_runner_home_is_registered_before_remote_creation_can_be_cancelled
         )
 
     assert len(runtimes) == 1
-    assert str(runtimes[0].home) == "/tmp/ccswitch-codex-spike." + "a" * 32
+    assert str(runtimes[0].home) == "/tmp/viberpit-codex-spike." + "a" * 32
     assert runtimes[0].is_remote is True
 
     async def successful_cleanup(command, **_kwargs):
@@ -2159,7 +2159,7 @@ async def test_runner_home_is_registered_before_remote_creation_can_be_cancelled
 
 @pytest.mark.asyncio
 async def test_cleanup_treats_uncreated_local_home_as_complete():
-    home = Path("/tmp/ccswitch-codex-spike." + "c" * 32)
+    home = Path("/tmp/viberpit-codex-spike." + "c" * 32)
     assert not home.exists()
     runtime = spike.RunnerRuntime(
         spike.RunnerTarget("local-runner", None),
@@ -2193,7 +2193,7 @@ async def test_finalize_cleans_every_home_even_when_process_close_fails(monkeypa
         ),
         spike.RunnerRuntime(
             spike.RunnerTarget("remote-runner", "remote-runner"),
-            Path("/tmp/ccswitch-codex-spike.safe"),
+            Path("/tmp/viberpit-codex-spike.safe"),
             CleanProcess(),
             True,
         ),
@@ -2239,7 +2239,7 @@ async def test_body_failure_remains_primary_when_finalization_also_fails(monkeyp
 
     assert raised.value is body_failure
     notes = getattr(raised.value, "__notes__", [])
-    assert notes == ["ccswitch spike cleanup also failed; details suppressed"]
+    assert notes == ["ViberPit spike cleanup also failed; details suppressed"]
     assert "cleanup detail" not in " ".join(notes)
 
 

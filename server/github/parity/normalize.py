@@ -1,4 +1,4 @@
-"""Adapter: Plotroom GET /api/state -> comparable snapshot in ccswitch vocabulary.
+"""Adapter: Plotroom GET /api/state -> comparable snapshot in ViberPit vocabulary.
 
 This is the ONE place that encodes Plotroom's JSON shape. A Plotroom schema change
 touches only this file. Tolerances are documented here, not scattered in the harness.
@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 # Timestamps (when later phases compare them) are matched at second granularity:
 TIMESTAMP_GRANULARITY_SECS = 1
 
-# Plotroom stage → ccswitch state vocabulary
+# Plotroom stage → ViberPit state vocabulary
 _STAGE_MAP = {
     "merged": "merged",
     "closed": "closed",
@@ -32,7 +32,7 @@ _STAGE_MAP = {
     "running": "open",
 }
 
-# Plotroom open stages that map cleanly to ccswitch open-stage vocabulary.
+# Plotroom open stages that map cleanly to ViberPit open-stage vocabulary.
 # Only these are emitted into oracle fields for 1a parity; queue/deploy/etc.
 # stages are out of scope and are silently excluded (the harness skips fields absent
 # from orc.fields, so non-covered PRs just don't participate in the stage comparison).
@@ -69,7 +69,7 @@ class OraclePr:
 
 
 def _map_state_from_stage(stage_obj: dict | None, is_draft: bool) -> str:
-    """Map Plotroom's stage object to ccswitch state vocabulary."""
+    """Map Plotroom's stage object to ViberPit state vocabulary."""
     if stage_obj is None:
         return "open"
     stage = (stage_obj.get("stage") or "").lower()

@@ -56,7 +56,7 @@ class AgentCapabilities:
     account_switch_new_thread: bool = False
     #: The engine publishes its own catalog of invocable actions (custom
     #: commands, skills) that ``server_info()`` reports and that the command
-    #: palette offers alongside ccswitch's own app-owned commands. False means
+    #: palette offers alongside ViberPit's own app-owned commands. False means
     #: this engine has no vendor catalog at all — NOT that one failed to load —
     #: so the palette can say so instead of looking empty.
     vendor_commands: bool = False
@@ -76,7 +76,7 @@ class AgentCapabilities:
     #: nor `dynamicTools`); this flips to True on its own the moment the vendor
     #: contract gains them.
     durable_tool_surface: bool = False
-    #: ccswitch's Library surface (``server/library/scan.py`` and ``mutate.py``)
+    #: ViberPit's Library surface (``server/library/scan.py`` and ``mutate.py``)
     #: can browse and edit this engine's plugins, skills, commands and MCP
     #: servers. This is a SHARED, filesystem-scannable config directory, not a
     #: single session's live catalog (that's ``vendor_commands``/``vendor_skills``

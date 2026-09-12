@@ -611,7 +611,7 @@ def _build_reauth_facade(*, remote_mode: bool, x11_getter, timeout_s: float,
                          reauth_manager=None):
     """Build the reauth facade. Always in-process — reauth runs on the MASTER.
 
-    dobby is the master: ccswitch core, configuration and operations live there;
+    dobby is the master: ViberPit core, configuration and operations live there;
     workers execute sessions. Reauth is an OPERATION — it mints a credential — so
     it belongs on the master even though it needs a browser on a display.
 

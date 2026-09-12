@@ -18,7 +18,7 @@ import re
 from ccswitch import brand
 
 # Matches: <!-- viberpit:model=<alias-or-id> [reason="..."] --> and its pre-rebrand
-# `ccswitch:` spelling, permanently (stored transcripts are re-parsed on replay).
+# `ccswitch:model=` spelling, permanently (stored transcripts are re-parsed on replay).
 # The model token excludes whitespace and '-->' so a malformed marker cannot swallow
 # the rest of the message; the reason is a non-greedy run inside double quotes.
 MODEL_REQUEST_RE = re.compile(

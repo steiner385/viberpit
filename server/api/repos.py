@@ -1,8 +1,8 @@
 """GitHub repos API — list repos the user's gh creds can access, list branches.
 
-These replace the old local-scan ``/api/repos`` endpoints.  ccswitch no longer
+These replace the old local-scan ``/api/repos`` endpoints.  ViberPit no longer
 scans the user's local ``~/GitHub`` checkouts; it lists the GitHub repos the
-user's ``gh`` credentials can access and clones-on-select into a ccswitch-owned
+user's ``gh`` credentials can access and clones-on-select into a ViberPit-owned
 namespace under ``<repo_root>/.ccswitch/clones``.
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ async def list_github_repos(
 ) -> list[dict]:
     """List GitHub repos accessible to the user's gh creds (pushedAt-desc).
 
-    Each repo is annotated with ``cloned`` — whether a ccswitch-owned clone
+    Each repo is annotated with ``cloned`` — whether a ViberPit-owned clone
     already exists under ``<repo_root>/.ccswitch/clones/<owner>/<name>``.
 
     On a GitHub failure, falls back to the last-good list (within

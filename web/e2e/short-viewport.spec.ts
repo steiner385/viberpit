@@ -22,7 +22,7 @@ const MOCK_SESSIONS = Array.from({ length: 13 }, (_, i) => ({
   id: `sess-${i}`,
   name: `Session ${i}`,
   accountName: 'alice',
-  repo: 'steiner385/ccswitch',
+  repo: 'steiner385/viberpit',
   status: 'working',
   createdAt: '2026-06-19T10:00:00Z',
   updatedAt: '2026-06-19T10:00:00Z',
@@ -41,7 +41,7 @@ async function interceptApi(page: Page) {
     } else if (path === '/api/config') route.fulfill({ json: { repoRoot: '', adoptionEnabled: false } })
     else if (path === '/api/daemon/health') route.fulfill({ json: { status: 'ok' } })
     else if (path === '/api/github/repos') {
-      route.fulfill({ json: [{ nameWithOwner: 'steiner385/ccswitch', defaultBranch: 'master' }] })
+      route.fulfill({ json: [{ nameWithOwner: 'steiner385/viberpit', defaultBranch: 'master' }] })
     } else route.fulfill({ json: [] })
   })
   await page.routeWebSocket('**/ws', (ws) => { ws.onMessage(() => {}) })

@@ -170,7 +170,7 @@ class ReauthManager:
 
             # Locate the launcher script (shipped with the package)
             launcher = (
-                Path(__file__).parent.parent / "scripts" / "ccswitch-reauth-browser"
+                Path(__file__).parent.parent / "scripts" / "viberpit-reauth-browser"
             )
             launcher_real = os.path.realpath(str(launcher))
 

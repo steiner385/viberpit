@@ -60,7 +60,7 @@ function ariaLabel(nodes: TrackNode[], epic?: InitiativeEpic | null): string {
 /** Applied at render time only (never inside `trackState`, which stays a pure
  *  (stage, status) mapper — see #991): the Build node's label picks up the
  *  epic's sub-issue count ("Build 3/10") and becomes a deep link to the GitHub
- *  epic, per spec §7c ("ccswitch deep-links to the GitHub Project, ccswitch
+ *  epic, per spec §7c ("ViberPit deep-links to the GitHub Project, ViberPit
  *  does not rebuild a board"). Every other node stays exactly as before,
  *  including its `aria-hidden="true"` wrapper (the container's `aria-label`
  *  is the accessible summary for those). The Build node's wrapper drops

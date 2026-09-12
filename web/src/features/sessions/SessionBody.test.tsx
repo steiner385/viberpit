@@ -245,10 +245,10 @@ describe('SessionBody — capability-gated surfaces', () => {
     // Claude one — tool "Bash" with {command, cwd}
     // (server/codex/driver.py `_approval_shape`) — so it must render in the
     // pinned panel with no Codex-specific card. The decisions offered are the
-    // ccswitch triple allow / deny / always, which the Codex driver relays as
+    // ViberPit triple allow / deny / always, which the Codex driver relays as
     // the app-server's own `accept` / `decline` / `acceptForSession`
     // (server/codex/schema.py COMMAND_APPROVAL_DECISIONS). `cancel` is in that
-    // wire vocabulary but is never offered: ccswitch only ever relays a human
+    // wire vocabulary but is never offered: ViberPit only ever relays a human
     // decision, and the driver has no path that emits it.
     setSession({ engine: 'codex' })
     const rt = makeRuntime([{

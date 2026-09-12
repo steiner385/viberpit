@@ -203,7 +203,7 @@ def test_helper_cwd_default_lives_under_the_cache_not_a_checkout(tmp_path, monke
     monkeypatch.delenv("CCSWITCH_HELPER_CWD", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     got = Path(helper_call.helper_cwd())
-    assert got == tmp_path / ".cache" / "ccswitch" / "helper-cwd"
+    assert got == tmp_path / ".cache/ccswitch/helper-cwd"
     assert got.is_dir()
     assert not (got / "CLAUDE.md").exists() and not (got / ".git").exists()
 

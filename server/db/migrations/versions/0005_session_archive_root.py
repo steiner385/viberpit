@@ -12,7 +12,7 @@ unarchive silently recreated an empty cwd instead of restoring the work.
 
 archive_session now records the root it used and unarchive resolves through it, falling
 back to the current archive home only for legacy rows where this column is NULL. Backfill
-those rows with scripts/ccswitch-backfill-archive-root.py.
+those rows with scripts/viberpit-backfill-archive-root.py.
 
 SQLite dev relies on init_db()/create_all + the ALTER-TABLE backfill in
 server/db/__init__.py; this migration is the Postgres/prod path.

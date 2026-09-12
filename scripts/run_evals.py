@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the ccswitch eval suite and gate on the pass-rate (AI-Native SDLC §7, #805).
+"""Run the ViberPit eval suite and gate on the pass-rate (AI-Native SDLC §7, #805).
 
 Loads YAML cases from ``evals/cases`` (+ ``evals/regressions``), executes each
 selected case's acceptance check, then scores them with the pure aggregator

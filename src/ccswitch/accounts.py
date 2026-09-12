@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from . import account_registry, copilot, ledger, oauth, paths
+from . import account_registry, brand, copilot, ledger, oauth, paths
 from .account_names import aliases_store_root
 from .config import Config, load_config
 from .creds import merge_keep_later, read_credentials, read_json, split_credentials, write_credentials, write_json_secure
@@ -81,7 +81,7 @@ def _refresh_guard(name: str):
 
     ``_account_lock`` only spans one process, but token refresh happens in three
     that can run concurrently against the same account — the web daemon (usage
-    poller), the edge (in-process mode), and the standalone ``ccswitch`` CLI.
+    poller), the edge (in-process mode), and the standalone `ccswitch` CLI.
     Because refresh tokens are single-use, a cross-process race makes one process
     consume the token while another, holding the now-stale copy, gets
     ``invalid_grant`` and falsely flips the account to needs-reauth.
@@ -696,7 +696,7 @@ def codex_cli_launch_gate(cfg: Config, prog: str) -> int:
         return 2
     print(
         f"{prog}: engine 'codex' has no supported launch surface here yet — "
-        "run Codex sessions through the ccswitch daemon/web UI instead",
+        f"run Codex sessions through the {brand.NAME} daemon/web UI instead",
         file=sys.stderr,
     )
     return 3
@@ -709,7 +709,7 @@ def sync_back(name: str) -> None:
     race between the driver's sync_back (called via asyncio.to_thread after each
     turn) and the poller's sync_back (called via usage_for(allow_refresh=False)
     in a threadpool) — and, because the guard is cross-process, between the web
-    daemon, the edge, and the ccswitch CLI.  Without it a sync_back that read a
+    daemon, the edge, and the `ccswitch` CLI.  Without it a sync_back that read a
     STALE config dir could overwrite the slot with an older (consumed) token
     *after* another writer had already persisted the fresh rotated one —
     recreating the needs-reauth bug the caller was trying to fix.

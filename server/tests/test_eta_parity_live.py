@@ -1,4 +1,4 @@
-"""Live parity gate: ccswitch ETA matches oracle within tolerance.
+"""Live parity gate: ViberPit ETA matches oracle within tolerance.
 
 This test fetches the live Plotroom oracle state (http://127.0.0.1:4400/api/state),
 then for each PR the oracle classifies as stage=ci with a non-null etaSeconds it

@@ -1,7 +1,7 @@
 """``bands.yaml`` schema + loader — the version-controlled control-band policy.
 
 Phase 2 of the AI-Native SDLC design (issue #804). ``server/sdlc/bands.yaml`` is
-the *policy* half of the Maintain loop: which metrics ccswitch watches, and what
+the *policy* half of the Maintain loop: which metrics ViberPit watches, and what
 it is allowed to do at each σ of breach. It is committed, reviewed and diffable
 for the same reason the constitution is — a change to what an unattended agent may
 do in response to a production signal is a governance change, not a setting.
@@ -18,11 +18,11 @@ A note on how ``tools`` is enforced
 ``permission_mode`` is the real enforcement; ``tools`` describes what that mode
 lets through, and the loader keeps the two consistent.
 
-ccswitch has no *arbitrary* per-session tool allowlist. The SDK's
+ViberPit has no *arbitrary* per-session tool allowlist. The SDK's
 ``allowed_tools`` is only reachable on the one-shot query path
 (``nudge_composer``, ``autopilot_decider``), which cannot host a repo
 investigation, and ``Session.tool_allowlist`` is a dormant column with no readers
-(``server/api/sessions.py`` says so at its only writer). What ccswitch *does*
+(``server/api/sessions.py`` says so at its only writer). What ViberPit *does*
 enforce is the permission mode, and one mode — ``allowlist`` — is exactly a
 read-only gate: ``PermissionRegistry.READ_ONLY`` auto-approves, everything else
 prompts, and an unattended session has nobody to answer a prompt. So a tier on
@@ -79,7 +79,7 @@ class BandsConfigError(ValueError):
 @dataclass(frozen=True)
 class BandTier:
     """One response tier. ``sigma`` is the zone that selects it; ``response`` is
-    what ccswitch does; ``tools`` is the prompt-level allowlist for the session
+    what ViberPit does; ``tools`` is the prompt-level allowlist for the session
     that response spawns (empty for ``log``, which spawns nothing)."""
     name: str
     sigma: int

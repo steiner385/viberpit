@@ -89,9 +89,9 @@ _CANCEL_RE = re.compile(
 # THE source: this literal was copy-pasted into four seed prompts
 # (backlog_prompt, sdlc/prompts, and twice in pm/classification), so a Codex
 # automation would have instructed its session to co-author every commit as
-# Claude. These are ccswitch's OWN attribution strings — the Claude line matches
+# Claude. These are ViberPit's OWN attribution strings — the Claude line matches
 # the trailer the Claude Code harness already asks for; the Codex line is a plain
-# git trailer ccswitch chose, not a claim about an OpenAI convention.
+# git trailer ViberPit chose, not a claim about an OpenAI convention.
 _COMMIT_TRAILERS: dict[str, str] = {
     "claude_code": "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
     "codex": "Co-Authored-By: Codex <noreply@openai.com>",

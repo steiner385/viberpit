@@ -2,7 +2,7 @@
 
 Sibling of PrStatusPoller, but keyed by repo (not (repo, branch)): it sweeps
 every open + recently-merged PR in each watched repo so the Pipeline board can
-show PRs that have no ccswitch session. Stage/checks/state come from the shared
+show PRs that have no ViberPit session. Stage/checks/state come from the shared
 classifier (parse_population_response → _to_info); this module adds no PR logic.
 """
 from __future__ import annotations

@@ -35,7 +35,7 @@ def deps_in_repos(repos: Collection[str]):
 
     THE one definition of "this product's dep edges" (issue #973): the deps API and
     the reconciler's facts loader both scope by it, and a Python-side scan of the
-    whole table instead grows with every product ccswitch has ever onboarded, not
+    whole table instead grows with every product ViberPit has ever onboarded, not
     with the one being converged. ``startswith`` auto-escapes each repo string so a
     LIKE wildcard in a repo name (``_`` is legal in a GitHub repo name) can't widen
     the match. No repos ⇒ ``false()``, never an empty ``or_()`` (which is a no-op
@@ -282,7 +282,7 @@ def upsert_relations(db: Session, repo: str, rels: list[IssueRelView]) -> None:
         DepRowView(id=d.id, src_ref=d.src_ref or "", dst_ref=d.dst_ref or "",
                    source=d.source or "", active=bool(d.active)) for d in existing])
     rows_by_id = {d.id: d for d in existing}
-    # THE one place a removed dependency is kept removed on the ccswitch side
+    # THE one place a removed dependency is kept removed on the ViberPit side
     # (#1472). ``dep_remove`` deletes the edge on GitHub and deactivates the local
     # rows, but the mirror re-derives ``order``/``prose`` edges from the epic's
     # sibling order and the issue body on every pass, so without this the row is

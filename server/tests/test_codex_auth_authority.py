@@ -1,6 +1,6 @@
 """CredentialAuthority, CredentialStore and InstanceLock.
 
-The credential authority is the one ccswitch process that holds a ChatGPT refresh
+The credential authority is the one ViberPit process that holds a ChatGPT refresh
 token, so its tests are written against the *real* artefacts rather than stubs of
 them: a real-shaped ``auth.json`` from a 0.153.2 install, a real (unsigned) JWT so
 ``decode_claims`` is exercised for real, real ``flock`` semantics, and real

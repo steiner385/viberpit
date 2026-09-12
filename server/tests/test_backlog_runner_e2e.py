@@ -76,7 +76,7 @@ def make_config(**over) -> dict:
 def _queue_row(repo: str, number: int, title: str, *, claimed: bool) -> QueueRow:
     """A mirrored, board-linked, Ready issue — what ``load_queue_rows`` yields."""
     return QueueRow(
-        ref=f"{repo}#{number}", repo=repo, number=number, product="ccswitch",
+        ref=f"{repo}#{number}", repo=repo, number=number, product="viberpit",
         title=title, body="", url=f"https://github.com/{repo}/issues/{number}",
         status=STATUS_READY, score=float(1000 - number),
         gh_created_at=NOW, gh_updated_at=NOW, assignees=(), author="steiner385",

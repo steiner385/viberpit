@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 # --------------------------------------------------------------------------- #
-# Production isolation — redirect ALL ccswitch state to a per-session temp dir #
+# Production isolation — redirect ALL ViberPit state to a per-session temp dir #
 # BEFORE any test module is collected.                                         #
 #                                                                              #
 # `paths.root()` reads CCSWITCH_HOME and `server.config.Settings` reads        #
@@ -102,7 +102,7 @@ def _redirect_state_off_production():
     if not home_is_prod and not db_is_prod and not archive_is_prod and not unsafe_repo_vars:
         return  # caller already isolated everything — respect it
 
-    session_home = Path(tempfile.mkdtemp(prefix="ccswitch-tests-"))
+    session_home = Path(tempfile.mkdtemp(prefix="viberpit-tests-"))
     atexit.register(shutil.rmtree, session_home, ignore_errors=True)
     if unsafe_repo_vars:
         # Preserve an explicitly isolated harness root, including new-prefix-only
@@ -141,7 +141,7 @@ _redirect_state_off_production()
 # monkeypatches its own per-test value on top.                                #
 # --------------------------------------------------------------------------- #
 if not os.environ.get("CCSWITCH_HELPER_SCRATCH_ROOT"):
-    _scratch_root = Path(tempfile.mkdtemp(prefix="ccswitch-tests-scratch-"))
+    _scratch_root = Path(tempfile.mkdtemp(prefix="viberpit-tests-scratch-"))
     atexit.register(shutil.rmtree, _scratch_root, ignore_errors=True)
     os.environ["CCSWITCH_HELPER_SCRATCH_ROOT"] = str(_scratch_root)
 
@@ -198,7 +198,7 @@ _starlette_testclient.TestClient.__init__ = (  # type: ignore[method-assign]
 # A live session daemon on the dev box must not leak into tests.              #
 #                                                                             #
 # create_app() (when a test doesn't inject an orchestrator) probes the        #
-# DEFAULT_SOCKET_PATH. On a machine actually running ccswitch, that socket    #
+# DEFAULT_SOCKET_PATH. On a machine actually running ViberPit, that socket    #
 # exists → create_app either flips to remote mode or hard-fails with          #
 # "refusing in-process fallback" (the split-brain guard). CI has no daemon,   #
 # so those tests pass there but fail locally. Point the default socket at a   #
@@ -232,7 +232,7 @@ def _no_ambient_session_daemon(request, monkeypatch):
         return
     import server.ipc.paths as _paths
     monkeypatch.setattr(
-        _paths, "DEFAULT_SOCKET_PATH", "/nonexistent/ccswitch-tests-no-daemon.sock",
+        _paths, "DEFAULT_SOCKET_PATH", "/nonexistent/viberpit-tests-no-daemon.sock",
         raising=False,
     )
 
@@ -317,7 +317,8 @@ def _install_real_store_write_guard():
         if resolved == _REAL_STORE or _REAL_STORE in resolved.parents:
             raise RuntimeError(
                 f"Test attempted to write {resolved} under the REAL account store "
-                f"{_REAL_STORE}.\nCCSWITCH_HOME is unset or not pointed at a temp dir, "
+                f"{_REAL_STORE}.\n"
+                "CCSWITCH_HOME is unset or not pointed at a temp dir, "
                 "so this write would leak a phantom account into ~/.claude-accounts "
                 "(see PR #98 / the test-store-leak trap).\nMove the seeding INSIDE the "
                 "`with patch.dict(os.environ, {'CCSWITCH_HOME': tmp}):` block (or use "
@@ -408,7 +409,7 @@ def _install_durable_inmemory_db():
 
     def _durable_make_engine(db_url: str, *, poolclass=None):
         if db_url.startswith("sqlite") and ":memory:" in db_url:
-            fd, path = tempfile.mkstemp(prefix="ccswitch-test-db-", suffix=".sqlite")
+            fd, path = tempfile.mkstemp(prefix="viberpit-test-db-", suffix=".sqlite")
             os.close(fd)
             atexit.register(_cleanup_sqlite_file, path)
             db_url = f"sqlite+aiosqlite:///{path}"

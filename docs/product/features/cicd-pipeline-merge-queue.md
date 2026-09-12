@@ -33,7 +33,7 @@ links:
 
 # CI/CD Pipeline & Merge Queue
 
-**Problem** — When ccswitch runs autonomous development loops on itself, dozens of PRs
+**Problem** — When ViberPit runs autonomous development loops on itself, dozens of PRs
 are in flight at once across several repos. A human (or an automation) cannot tell at a
 glance which PRs are green, which are stuck in CI, how long until the next merge lands,
 what is blocking the merge queue, or whether a merge has actually reached prod. GitHub's
@@ -60,9 +60,9 @@ PR Doctor.
 - GitHub API request budget stays within limit while polling the tracked (repo, branch) set.
 - False deploy-status readings (e.g. replaying a merged train, mis-classified env) — target 0.
 
-**Non-goals** — Not a replacement for GitHub Actions itself; ccswitch reads CI, it does not
+**Non-goals** — Not a replacement for GitHub Actions itself; ViberPit reads CI, it does not
 run it (constitution I: never fork/patch upstream tooling). Merge-queue enrollment and the
-merge itself are GitHub's; ccswitch observes the queue and arms auto-merge, it does not
+merge itself are GitHub's; ViberPit observes the queue and arms auto-merge, it does not
 re-implement the merge algorithm. CI/CD Doctor is propose-only in v1 — it files issues for
 flaky-test / advisory-check findings but does not autonomously rewrite workflows.
 

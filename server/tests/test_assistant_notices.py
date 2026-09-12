@@ -80,14 +80,14 @@ def test_notify_event_routes_to_assistant_channel_and_disables_once_rule(tmp_pat
 
             from server.sessions import push as push_mod
             await push_mod.notify_event(
-                "needs_input", "ccswitch needs you", "session x needs input",
+                "needs_input", "ViberPit needs you", "session x needs input",
                 orch=fake_orch)
 
             assert len(fake_orch.calls) == 1
             identity, notice = fake_orch.calls[0]
             assert identity == "u@x"
             assert notice["kind"] == "needs_input"
-            assert notice["title"] == "ccswitch needs you"
+            assert notice["title"] == "ViberPit needs you"
             assert notice["body"] == "session x needs input"
             assert notice["watchId"] == rule_id
 

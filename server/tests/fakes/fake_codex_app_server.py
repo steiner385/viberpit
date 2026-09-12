@@ -151,7 +151,7 @@ class FakeCodexAppServer:
     @staticmethod
     def default_initialize_response() -> dict[str, Any]:
         return {
-            "codexHome": "/tmp/ccswitch-fake-codex-home",
+            "codexHome": "/tmp/viberpit-fake-codex-home",
             "platformFamily": "unix",
             "platformOs": "linux",
             "userAgent": "codex_cli_rs/0.153.2 (fake)",

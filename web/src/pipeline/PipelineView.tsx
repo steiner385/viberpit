@@ -1,6 +1,6 @@
 // Ported from plotroom@5166b52 frontend/src/sections/pipeline/PipelineView.tsx; edits:
 // import repoints (../../types → ./types, ../../PrRow → ./PrRow, ../../QueueTrain → ./QueueTrain,
-// ../../StatusStrip → ./StatusStrip; ./ordering + ./queueFront unchanged); ccswitch blend (spec §6) —
+// ../../StatusStrip → ./StatusStrip; ./ordering + ./queueFront unchanged); ViberPit blend (spec §6) —
 // optional onFixPr? prop threaded to PrRow in the row() helper.
 //
 // Phase-2 blend edits (declared): (1) CONTROLLED FILTER — optional activeFilter?/onFilter?

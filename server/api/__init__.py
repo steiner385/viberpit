@@ -1,1 +1,1 @@
-"""REST API routers for ccswitch-web (T036–T038)."""
+"""REST API routers for ViberPit web (T036–T038)."""

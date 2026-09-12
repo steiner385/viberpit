@@ -30,7 +30,7 @@ _POLICY = textwrap.dedent("""
     metrics:
       - id: cycle-time
         source: pr_cycle_time_hours
-        repo: steiner385/ccswitch
+        repo: steiner385/viberpit
         unit: hours
         min_baseline: 10
 """)
@@ -292,7 +292,7 @@ async def test_a_breach_above_every_declared_tier_still_gets_the_highest_one():
         metrics:
           - id: cycle-time
             source: pr_cycle_time_hours
-            repo: steiner385/ccswitch
+            repo: steiner385/viberpit
             min_baseline: 10
     """)
     loop, ctx, calls = build_loop(values=_THREE_SIGMA, policy=policy)
@@ -310,7 +310,7 @@ async def test_a_breach_below_every_declared_tier_warns_instead_of_guessing():
         metrics:
           - id: cycle-time
             source: pr_cycle_time_hours
-            repo: steiner385/ccswitch
+            repo: steiner385/viberpit
             min_baseline: 10
     """)
     loop, ctx, calls = build_loop(values=_ONE_SIGMA, policy=policy)

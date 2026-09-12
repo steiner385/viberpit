@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
+from ccswitch import brand
 from server.codex import redaction, schema
 from server.sessions.engine import AgentCapabilities, AgentEngine, capabilities_to_wire
 
@@ -93,10 +94,10 @@ CODEX_ENGINE: Final = AgentEngine.CODEX
 #: methods — `thread/list`, `thread/search`, `thread/resume`
 #: (`server/tests/fixtures/codex_app_server/0.153.2/method_index.json`,
 #: `server/codex/schema.py`). None of `thread/list`/`thread/search` are in
-#: `SUPPORTED_CLIENT_REQUESTS`, and even if ccswitch called them, the answer would
+#: `SUPPORTED_CLIENT_REQUESTS`, and even if ViberPit called them, the answer would
 #: still be empty across the boundary that matters: `ensure_codex_home`
 #: (server/codex/process.py) forces every account's `codex app-server` into its
-#: own ccswitch-private `CODEX_HOME`, so a runner's own app-server process only
+#: own ViberPit-private `CODEX_HOME`, so a runner's own app-server process only
 #: ever enumerates threads it started itself — never a user's independently
 #: launched `codex` CLI (default `~/.codex`, a disjoint database) or another
 #: account's runner. There is no cross-boundary orphan to discover, so
@@ -105,7 +106,7 @@ CODEX_ENGINE: Final = AgentEngine.CODEX
 #: a gap to close later, same as ``account_rotation`` below — verified against the
 #: pinned protocol fixture, not assumed.
 #:
-#: The remaining ``False`` entries (ccswitch's fork and self-directed model switching
+#: The remaining ``False`` entries (ViberPit's fork and self-directed model switching
 #: surfaces) are equally deliberate: they are implemented against the Claude CLI's
 #: private state and have no app-server equivalent in v1.
 #: ``account_rotation`` is False because rotation composes the target account's
@@ -157,7 +158,7 @@ CODEX_CAPABILITIES: Final[AgentCapabilities] = AgentCapabilities(
     # integration-design.md §11.2), not merely unimplemented: each Codex
     # account's configuration lives under a credential-authority-owned
     # CODEX_HOME (server/codex/process.py), never a shared directory the way
-    # CLAUDE_CONFIG_DIR is, so ccswitch's Library surface has nothing analogous
+    # CLAUDE_CONFIG_DIR is, so ViberPit's Library surface has nothing analogous
     # to scan or mutate there. See CODEX_LIBRARY_UNSUPPORTED_DETAIL (#1285).
     library_management=False,
 )
@@ -170,7 +171,7 @@ CODEX_LIBRARY_UNSUPPORTED_DETAIL: Final = (
     "docs/superpowers/specs/2026-09-04-native-openai-codex-integration-design.md "
     "§ 11.2). Each Codex account's configuration lives under a "
     "credential-authority-owned CODEX_HOME rather than a shared, scannable "
-    "directory, so ccswitch's Library surface neither reads nor writes it."
+    f"directory, so {brand.NAME}'s Library surface neither reads nor writes it."
 )
 
 #: What an unavailable engine advertises. Not "unknown" — *nothing*.

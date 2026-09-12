@@ -1,7 +1,7 @@
 """Plotroom DashboardState mapping — pure-function unit tests.
 
 Field vocabulary mirrors plotroom@5166b52 frontend/src/types.ts (PrView,
-StageResult, CheckView). Phase-1 fields ccswitch can't populate yet are
+StageResult, CheckView). Phase-1 fields ViberPit can't populate yet are
 emitted as honest nulls/False — never fabricated.
 """
 from server.github.merge_queue import QueueEntry

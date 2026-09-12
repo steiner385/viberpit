@@ -1261,7 +1261,7 @@ async def patch_overlay(
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
-    """Manual classify / inline score edit on the ccswitch-owned overlay. All
+    """Manual classify / inline score edit on the ViberPit-owned overlay. All
     fields optional; any write marks the item human-classified (spec §7). A body
     that sets NO field is a read-through no-op — stamping ``classified_by=human``
     for an empty PATCH would flip an AI-classified item to human-classified with

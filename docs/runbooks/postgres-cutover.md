@@ -1,6 +1,6 @@
 # Postgres cutover runbook
 
-Cuts ccswitch's production database over from SQLite (`/home/tony/.claude-accounts/ccswitch.db`)
+Cuts ViberPit's production database over from SQLite (`/home/tony/.claude-accounts/ccswitch.db`)
 to Postgres. This document is a runbook, not a script — every command is meant to be read and
 run by a human, in order, with the go/no-go checklist (below) gating the point of no return.
 
@@ -8,7 +8,7 @@ run by a human, in order, with the go/no-go checklist (below) gating the point o
 
 `scripts/viberpit-sqlite-to-pg.py --apply` copies rows with
 `INSERT ... ON CONFLICT DO NOTHING`. That means it only ever **inserts** — it never updates a row
-that already exists in the Postgres target. If any ccswitch writer (edge, deploy-controller,
+that already exists in the Postgres target. If any ViberPit writer (edge, deploy-controller,
 daemon) is still running while `--apply` executes, any row copied early keeps its **old** value
 forever: a re-run's `INSERT` for that row's primary key is a no-op conflict, not a refresh. Columns
 that mutate in place under normal operation — `sessions.updated_at`, `ci_finding.last_seen_at`,
@@ -56,7 +56,7 @@ are smaller than SQLite's total.
 PYTHONPATH=. .venv/bin/python scripts/viberpit-sqlite-to-pg.py --apply --pg-url "$PG_URL"
 ```
 
-This is safe to run repeatedly while ccswitch is live — it only ever adds rows, never mutates
+This is safe to run repeatedly while ViberPit is live — it only ever adds rows, never mutates
 existing ones — but per the precondition above, it does **not** replace the authoritative run.
 
 ## Cutover
@@ -232,7 +232,7 @@ is called, the more real user data a rollback discards. Decide quickly.
   `viberpit-deploy-controller.service`) and trips the split-brain guard at `server/app.py:350`.
   Harmless for the real services on restart (the daemon recreates and rebinds it), but if you run
   `pytest` on this host while services are stopped, set
-  `CCSWITCH_SESSIOND_SOCKET=/nonexistent/ccswitch-test.sock` first or the test process will refuse
+  `CCSWITCH_SESSIOND_SOCKET=/nonexistent/viberpit-test.sock` first or the test process will refuse
   to start in-process, mistaking the stale socket for a live daemon.
 - **`init_db`/`create_all` is a safe no-op on Postgres once tables exist.** Every service start
   runs `create_all`; on Postgres this is additive-only (`CREATE TABLE IF NOT EXISTS`-equivalent)

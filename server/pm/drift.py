@@ -1,5 +1,5 @@
 """Drift audit for the 003 mirror: where GitHub's declared planning state and the
-conventions ccswitch consumes disagree (spec 003 Phase A deliverable)."""
+conventions ViberPit consumes disagree (spec 003 Phase A deliverable)."""
 from __future__ import annotations
 
 from collections.abc import Mapping, Set

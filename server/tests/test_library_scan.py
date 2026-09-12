@@ -10,7 +10,7 @@ from server.library import scan
 
 @pytest.fixture()
 def shared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Isolated shared base + ccswitch home. NEVER touch the real ~/.claude."""
+    """Isolated shared base + ViberPit home. NEVER touch the real ~/.claude."""
     base = tmp_path / "shared"
     base.mkdir()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(base))

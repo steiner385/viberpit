@@ -1,4 +1,4 @@
-"""ccswitch web backend configuration.
+"""ViberPit web backend configuration.
 
 Reads settings from environment variables. Copy .env.example → .env and fill in values.
 """
@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from ccswitch import brand
 from ccswitch.env_compat import mirror_legacy_env
 from server import hostpaths
 
@@ -108,7 +109,7 @@ try:
         reauth_display: str = Field(default=":0", alias="CCSWITCH_REAUTH_DISPLAY")
         reauth_virtual_display: bool = Field(default=True, alias="CCSWITCH_REAUTH_VIRTUAL_DISPLAY")
         # Source profile the reauth flow copies from. Defaults to a dedicated,
-        # ccswitch-owned profile — pointing this at the operator's everyday
+        # ViberPit-owned profile — pointing this at the operator's everyday
         # ~/.config/google-chrome/Default is opt-in, because everything under it is
         # one missed cleanup away from sitting in reauth-tmp (#1105).
         chrome_profile: str = Field(
@@ -653,4 +654,4 @@ PUSH_WEBHOOK_URL: str | None = (os.environ.get("CCSWITCH_PUSH_WEBHOOK_URL") or "
 
 VAPID_PRIVATE_KEY: str | None = (os.environ.get("CCSWITCH_VAPID_PRIVATE_KEY") or "").strip() or None
 VAPID_PUBLIC_KEY: str | None = (os.environ.get("CCSWITCH_VAPID_PUBLIC_KEY") or "").strip() or None
-VAPID_SUBJECT: str = (os.environ.get("CCSWITCH_VAPID_SUBJECT") or "").strip() or "mailto:ccswitch@localhost"
+VAPID_SUBJECT: str = (os.environ.get("CCSWITCH_VAPID_SUBJECT") or "").strip() or f"mailto:{brand.SLUG}@localhost"

@@ -26,7 +26,7 @@ describe('AboutSection', () => {
     const row = screen.getByRole('row', { name: /CCSWITCH_ENABLE_COPILOT/ })
     expect(row).toHaveTextContent('off')
     expect(row).toHaveTextContent('Enable GitHub Copilot accounts')
-    expect(screen.getByText(/\/etc\/ccswitch\/ccswitch\.env/)).toBeInTheDocument()
+    expect(screen.getByText('/etc/ccswitch/ccswitch.env')).toBeInTheDocument()
     expect(await axe(container)).toHaveNoViolations()
   })
 

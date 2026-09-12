@@ -29,7 +29,7 @@ six named, machine-readable verdicts, which is what `deploy/README.md`'s
 **Nothing credential-shaped may reach the journal.** ``redaction.scrub_text``
 replaces arbitrary native text *wholesale*, so it cannot be used on the doctor's
 own prose without erasing it. The contract here is instead the one the rest of
-``server/codex/`` already follows: typed, ccswitch-authored fields are carried
+``server/codex/`` already follows: typed, ViberPit-authored fields are carried
 raw, free text is an authored constant or a fixed
 :func:`~server.codex.redaction.scrub_exception` category, and
 :class:`DoctorResult` runs every string it is given past

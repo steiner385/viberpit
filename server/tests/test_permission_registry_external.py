@@ -1,7 +1,7 @@
 """`PermissionRegistry.request_external` — the engine-enforced approval path.
 
 Codex decides for itself when a human is needed (its sandbox/approval policy is
-derived from the same ccswitch mode, see `server/codex/permissions.py`), so its
+derived from the same ViberPit mode, see `server/codex/permissions.py`), so its
 prompts enter the SAME registry every Claude prompt uses rather than a parallel
 one. These tests pin the two behaviours that differ, and the two that must not.
 """
@@ -20,7 +20,7 @@ async def test_external_request_never_auto_approves():
 
     `request` would return an immediately-resolved future for a dangerous tool in
     `full-auto`. Re-deriving that here would auto-ALLOW the very prompts Codex
-    only raises in the modes where ccswitch asked for a human.
+    only raises in the modes where ViberPit asked for a human.
     """
     registry = PermissionRegistry()
     perm_id, future = await registry.request_external(

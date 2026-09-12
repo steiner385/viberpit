@@ -38,7 +38,7 @@ def _build_append_string() -> str:
 
 # Inline flag-settings payload (--settings layer, highest priority).  Auto-approves any
 # project-scoped `.mcp.json` MCP server so the CLI's trust gate (LX1 → "pending" → prompt)
-# never fires.  We inject it here rather than via a settings *file* because ccswitch does not
+# never fires.  We inject it here rather than via a settings *file* because ViberPit does not
 # pass `setting_sources`, so the binary loads no filesystem settings — only this inline layer.
 _MCP_TRUST_SETTINGS = json.dumps({"enableAllProjectMcpServers": True})
 

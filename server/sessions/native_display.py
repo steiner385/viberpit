@@ -2,7 +2,7 @@
 
 Counterpart of X11Manager (pooled Xvfb displays): this one never starts an X
 server — it only checks that the operator's desktop is there, hands out the env
-that points at it, and supervises the Chromium windows ccswitch itself opens on
+that points at it, and supervises the Chromium windows ViberPit itself opens on
 it so they can be closed with the session. No XAUTHORITY is set: the daemon
 runs as the desktop's user and the X server grants SI:localuser access (verified
 on dobby; the reauth fallback has relied on the same posture since #331).
@@ -78,8 +78,8 @@ class NativeDisplay:
             argv.append("--no-sandbox")
         # Chromium enforces one process per --user-data-dir: a launch on the default
         # profile would hand off to the operator's own running Chrome and exit. A
-        # throwaway profile per launch keeps ccswitch's windows ccswitch's.
-        profile = tempfile.mkdtemp(prefix=f"ccswitch-native-{session_id}-", dir=self._run_dir)
+        # throwaway profile per launch keeps ViberPit's windows ViberPit's.
+        profile = tempfile.mkdtemp(prefix=f"viberpit-native-{session_id}-", dir=self._run_dir)
         argv.append(f"--user-data-dir={profile}")
         if url:
             argv.append(url)

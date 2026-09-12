@@ -223,7 +223,7 @@ def prune_backups(cfg_dir: Path, retain_s: float | None = None) -> None:
     between readdir and unlink. A vanished entry is the desired end-state — ignore it. Letting
     this cleanup raise strands EVERY driver launch / resume / titling pass on the mounted host
     (the "session stuck, re-send does nothing" incident, #895). We do NOT extend that swallow
-    to reconcile_links(): those unlinks manage ccswitch's own symlinks and must still surface.
+    to reconcile_links(): those unlinks manage ViberPit's own symlinks and must still surface.
     """
     if retain_s is None:
         try:

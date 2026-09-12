@@ -30,7 +30,7 @@ from server.db.models import (
     Feature, Project, ProjectRepo, Session as DbSession, TriageProposal, WorkItem)
 from server.tests.fakes.fake_automation_ctx import FakeAutomationContext
 
-REPO = "steiner385/ccswitch"
+REPO = "steiner385/viberpit"
 OTHER_REPO = "steiner385/kindash"
 
 
@@ -63,7 +63,7 @@ async def _seed(db_url: str) -> None:
     scoping (unique per project only) has something to get wrong."""
     await init_db(db_url)
     async with db_session() as db:
-        p = Project(slug="ccswitch", name="ccswitch", onboarding_state="map_merged")
+        p = Project(slug="viberpit", name="viberpit", onboarding_state="map_merged")
         other = Project(slug="kindash", name="kindash", onboarding_state="map_merged")
         db.add_all([p, other])
         await db.flush()
@@ -128,7 +128,7 @@ async def test_latches_suggestion_whose_feature_already_exists(db_env):
     async with db_session() as db:
         from sqlalchemy import select
         pid = (await db.execute(select(Project.id).where(
-            Project.slug == "ccswitch"))).scalars().one()
+            Project.slug == "viberpit"))).scalars().one()
         db.add(Feature(project_id=pid, slug="offline-mode", title="Offline",
                        state="live"))
     orch = _triage_orch()
@@ -160,9 +160,9 @@ async def test_latches_suggestion_with_a_live_map_diff_session(db_env):
     await _seed(db_env)
     await _add_cluster(suggestion="offline-mode", numbers=[1, 2, 3, 4, 5])
     async with db_session() as db:
-        db.add(DbSession(name="pm map-diff ccswitch", account_name="a1",
+        db.add(DbSession(name="pm map-diff viberpit", account_name="a1",
                          cwd="/tmp/x", status="working", origin="pm-onboard",
-                         origin_ref="ccswitch:map-diff:offline-mode"))
+                         origin_ref="viberpit:map-diff:offline-mode"))
     orch = _triage_orch()
     state, _ = await _clusters(orch)
     assert state.open_map_diff_suggestions == ("offline-mode",)
@@ -176,9 +176,9 @@ async def test_terminal_map_diff_session_does_not_latch(db_env):
     await _seed(db_env)
     await _add_cluster(suggestion="offline-mode", numbers=[1, 2, 3, 4, 5])
     async with db_session() as db:
-        db.add(DbSession(name="pm map-diff ccswitch", account_name="a1",
+        db.add(DbSession(name="pm map-diff viberpit", account_name="a1",
                          cwd="/tmp/x", status="ended", origin="pm-onboard",
-                         origin_ref="ccswitch:map-diff:offline-mode"))
+                         origin_ref="viberpit:map-diff:offline-mode"))
     orch = _triage_orch()
     state, _ = await _clusters(orch)
     assert state.open_map_diff_suggestions == ()
@@ -212,7 +212,7 @@ async def test_latched_cluster_is_not_re_proposed(db_env):
     async with db_session() as db:
         from sqlalchemy import select
         pid = (await db.execute(select(Project.id).where(
-            Project.slug == "ccswitch"))).scalars().one()
+            Project.slug == "viberpit"))).scalars().one()
         db.add(Feature(project_id=pid, slug="offline-mode", title="Offline",
                        state="live"))
     orch = _triage_orch()
@@ -333,7 +333,7 @@ async def test_auto_link_inherits_the_closed_issues_feature(db_env):
     async with db_session() as db:
         from sqlalchemy import select
         pid = (await db.execute(select(Project.id).where(
-            Project.slug == "ccswitch"))).scalars().one()
+            Project.slug == "viberpit"))).scalars().one()
         f = Feature(project_id=pid, slug="sessions", title="Sessions",
                     state="live")
         db.add(f)
@@ -398,8 +398,8 @@ async def test_classify_routes_to_pm_classify_run_scoped_to_one_project(db_env):
                         body="", labels=(), linked_issue_numbers=()),
     ]
     assert await orch._pm_triage_classify(batch, 2) == 1
-    assert seen["slug"] == "ccswitch"
-    # The other project's item is NOT classified against ccswitch's feature map.
+    assert seen["slug"] == "viberpit"
+    # The other project's item is NOT classified against ViberPit's feature map.
     assert seen["items"] == [(REPO, 1, "issue")]
 
 
@@ -431,8 +431,8 @@ async def test_propose_map_diff_reuses_the_phase2_map_seam(db_env):
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
         out = await orch._pm_triage_propose_map_diff("offline-mode", (1, 2), REPO)
     assert out is not None
-    assert rec.calls[0]["origin_ref"] == "ccswitch:map-diff:offline-mode"
-    assert rec.calls[0]["dedupe_key"] == "ccswitch:map-diff:offline-mode"
+    assert rec.calls[0]["origin_ref"] == "viberpit:map-diff:offline-mode"
+    assert rec.calls[0]["dedupe_key"] == "viberpit:map-diff:offline-mode"
     assert rec.calls[0]["repo"] == REPO
     # scope="diff" must NOT advance onboarding_state (pinned in the phase-2
     # seam's own tests; asserted here because this caller is the reason it is
@@ -440,7 +440,7 @@ async def test_propose_map_diff_reuses_the_phase2_map_seam(db_env):
     async with db_session() as db:
         from sqlalchemy import select
         p = (await db.execute(select(Project).where(
-            Project.slug == "ccswitch"))).scalars().one()
+            Project.slug == "viberpit"))).scalars().one()
         assert p.onboarding_state == "map_merged"
 
 

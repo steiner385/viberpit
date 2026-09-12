@@ -39,7 +39,7 @@ def test_create_and_list_initiative():
     """POST 201 → slug derived from title; GET list shows stage=intake status=proposed."""
     with _client() as c:
         r = c.post("/api/sdlc/initiatives",
-                   json={"title": "Dark mode", "repo": "steiner385/ccswitch"},
+                   json={"title": "Dark mode", "repo": "steiner385/viberpit"},
                    headers=IDENTITY_HEADERS)
         assert r.status_code == 201, r.text
         body = r.json()
@@ -68,7 +68,7 @@ def test_list_includes_artifact_chain():
         async with db_session() as db:
             ini = Initiative(
                 slug="dark-mode",
-                repo="steiner385/ccswitch",
+                repo="steiner385/viberpit",
                 title="Dark mode",
                 stage="design",
                 status="active",
@@ -111,12 +111,12 @@ def test_create_conflicting_slug_409():
     """Second POST with same slug → 409."""
     with _client() as c:
         r1 = c.post("/api/sdlc/initiatives",
-                    json={"title": "Dark mode", "repo": "steiner385/ccswitch"},
+                    json={"title": "Dark mode", "repo": "steiner385/viberpit"},
                     headers=IDENTITY_HEADERS)
         assert r1.status_code == 201, r1.text
 
         r2 = c.post("/api/sdlc/initiatives",
-                    json={"title": "Dark mode", "repo": "steiner385/ccswitch"},
+                    json={"title": "Dark mode", "repo": "steiner385/viberpit"},
                     headers=IDENTITY_HEADERS)
         assert r2.status_code == 409, r2.text
 
@@ -133,7 +133,7 @@ def test_get_detail_includes_chain_and_action():
         async with db_session() as db:
             ini = Initiative(
                 slug="dark-mode",
-                repo="steiner385/ccswitch",
+                repo="steiner385/viberpit",
                 title="Dark mode",
                 stage="intake",
                 status="proposed",
@@ -173,7 +173,7 @@ def test_advance_moves_stage_and_activates():
     """POST advance: intake→design, status=='active'; advancing a done initiative → 409."""
     with _client() as c:
         c.post("/api/sdlc/initiatives",
-               json={"title": "Dark mode", "repo": "steiner385/ccswitch"},
+               json={"title": "Dark mode", "repo": "steiner385/viberpit"},
                headers=IDENTITY_HEADERS)
 
         r = c.post("/api/sdlc/initiatives/dark-mode/advance", headers=IDENTITY_HEADERS)
@@ -408,7 +408,7 @@ def test_get_detail_no_epic_is_null():
     """Initiative with no epic_repo/epic_number → detail's epic field is null."""
     with _client() as c:
         c.post("/api/sdlc/initiatives",
-               json={"title": "Dark mode", "repo": "steiner385/ccswitch"},
+               json={"title": "Dark mode", "repo": "steiner385/viberpit"},
                headers=IDENTITY_HEADERS)
         r = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text

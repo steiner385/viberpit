@@ -9,7 +9,7 @@ links:
 
 # Config Library & Snapshots
 
-**Problem** — A ccswitch operator runs many `claude` sessions across several accounts, all sharing
+**Problem** — A ViberPit operator runs many `claude` sessions across several accounts, all sharing
 one config base (`CLAUDE_CONFIG_DIR`). The reusable configuration that shapes those sessions —
 installed plugins, skills, slash commands, MCP servers, lifecycle hooks, permission profiles, and
 spawn presets — was opaque and hand-edited across scattered JSON/markdown files. There was no way to

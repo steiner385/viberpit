@@ -28,7 +28,7 @@ from ccswitch import brand
 SEEN_TOOL_CALLS: list[tuple[str, dict]] = []
 
 
-@tool("list_sessions", "List ccswitch sessions (spike: returns a fixed list).", {},
+@tool("list_sessions", "List ViberPit sessions (spike: returns a fixed list).", {},
       annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
 async def list_sessions(args: dict) -> dict:
     return {"content": [{"type": "text", "text": json.dumps(
@@ -82,7 +82,7 @@ async def main() -> int:
         cwd=os.getcwd(),
         env=dict(os.environ, CLAUDE_CONFIG_DIR=cfg),
         cli_path=cli_path,
-        system_prompt="You are the ccswitch assistant. You may only use the ccswitch tools. "
+        system_prompt="You are the ViberPit assistant. You may only use the ViberPit tools. "
                       "If asked to do something no tool can do, say so.",
         tools=[],
         disallowed_tools=["Bash", "Edit", "Write", "NotebookEdit", "Read",

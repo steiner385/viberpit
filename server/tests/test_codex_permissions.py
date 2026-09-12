@@ -1,4 +1,4 @@
-"""ccswitch permission mode -> Codex sandbox/approval profile (plan Phase 4).
+"""ViberPit permission mode -> Codex sandbox/approval profile (plan Phase 4).
 
 The mapping in ``server.codex.permissions`` is a *security* boundary: it decides
 how much authority a Codex thread gets for a mode the operator chose while
@@ -44,7 +44,7 @@ _APPROVAL_RANK = {
 
 
 def _auto_approved(mode: str) -> frozenset[str]:
-    """The probe tools ccswitch runs with NO human prompt in *mode*.
+    """The probe tools ViberPit runs with NO human prompt in *mode*.
 
     Asks the real registry rather than reading its source, so this tracks any
     future change to what a mode auto-approves.
@@ -69,7 +69,7 @@ def _auto_approved(mode: str) -> frozenset[str]:
 
 # ---------------------------------------------------------------------------
 # Vocabulary: the enums must be the app-server's, and the table must cover the
-# modes ccswitch can actually hand a driver.
+# modes ViberPit can actually hand a driver.
 # ---------------------------------------------------------------------------
 
 def test_enums_are_the_app_server_vocabulary():
@@ -81,9 +81,9 @@ def test_enums_are_the_app_server_vocabulary():
         "untrusted", "on-request", "never"}
 
 
-def test_every_ccswitch_session_mode_is_mapped():
+def test_every_viberpit_session_mode_is_mapped():
     missing = VALID_SESSION_MODES - set(PROFILES)
-    assert not missing, f"unmapped ccswitch session modes: {sorted(missing)}"
+    assert not missing, f"unmapped ViberPit session modes: {sorted(missing)}"
 
 
 def test_transient_driver_modes_are_mapped():
@@ -150,9 +150,9 @@ def test_unknown_mode_error_is_raised_for_empty_and_cased_variants():
 
 @pytest.mark.parametrize("mode", sorted(PROFILES))
 def test_a_mode_that_prompts_a_human_never_gets_an_unattended_profile(mode):
-    """Rule (a): the Codex profile may not be MORE permissive than the ccswitch mode.
+    """Rule (a): the Codex profile may not be MORE permissive than the ViberPit mode.
 
-    If ccswitch would stop and ask a human for ANY probe tool in this mode, the
+    If ViberPit would stop and ask a human for ANY probe tool in this mode, the
     Codex thread must keep an approval channel (``approval_policy != never``) and
     must not run outside a sandbox — otherwise switching engine silently removes
     the human from the loop the operator asked for.
@@ -162,7 +162,7 @@ def test_a_mode_that_prompts_a_human_never_gets_an_unattended_profile(mode):
         pytest.skip(f"{mode} auto-approves every probe tool; nothing to constrain")
     profile = profile_for_mode(mode)
     assert profile.approval_policy is not CodexApprovalPolicy.NEVER, (
-        f"ccswitch prompts for {sorted(prompts_for)} in {mode!r}, "
+        f"ViberPit prompts for {sorted(prompts_for)} in {mode!r}, "
         "so Codex must still be able to ask")
     assert profile.sandbox_mode is not CodexSandboxMode.DANGER_FULL_ACCESS
 
@@ -217,8 +217,8 @@ def test_plan_is_the_least_permissive_profile():
         assert _APPROVAL_RANK[plan.approval_policy] <= _APPROVAL_RANK[other.approval_policy]
 
 
-def test_profile_permissiveness_is_monotone_in_ccswitch_permissiveness():
-    """A strictly stricter ccswitch mode may never get a laxer Codex profile.
+def test_profile_permissiveness_is_monotone_in_viberpit_permissiveness():
+    """A strictly stricter ViberPit mode may never get a laxer Codex profile.
 
     "Stricter" is measured against the registry: mode A is stricter than B when
     the set of tools A auto-approves is a proper subset of B's.
@@ -230,10 +230,10 @@ def test_profile_permissiveness_is_monotone_in_ccswitch_permissiveness():
                 continue
             a, b = profile_for_mode(stricter), profile_for_mode(laxer)
             assert _SANDBOX_RANK[a.sandbox_mode] <= _SANDBOX_RANK[b.sandbox_mode], (
-                f"{stricter} is stricter than {laxer} in ccswitch but gets a "
+                f"{stricter} is stricter than {laxer} in ViberPit but gets a "
                 "wider Codex sandbox")
             assert _APPROVAL_RANK[a.approval_policy] <= _APPROVAL_RANK[b.approval_policy], (
-                f"{stricter} is stricter than {laxer} in ccswitch but asks for "
+                f"{stricter} is stricter than {laxer} in ViberPit but asks for "
                 "fewer Codex approvals")
 
 

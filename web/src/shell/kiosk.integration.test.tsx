@@ -61,10 +61,10 @@ const SESSIONS: Session[] = [session({ id: 'a', name: 'First' }), session({ id: 
  *  disabled one). `stage: 'ci'` buckets to `running` via `bucketPr`. */
 const PRS: PrView[] = [
   {
-    repo: 'steiner385/cc-account-switcher',
+    repo: 'steiner385/viberpit',
     number: 1234,
     title: 'feat(shell): kiosk',
-    url: 'https://github.com/steiner385/cc-account-switcher/pull/1234',
+    url: 'https://github.com/steiner385/viberpit/pull/1234',
     stage: {
       stage: 'ci', substate: null, percent: 40, etaSeconds: 120,
       etaRangeSeconds: null, overdue: false,

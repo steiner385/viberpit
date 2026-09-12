@@ -2,7 +2,7 @@
 set -euo pipefail
 url="${1:?url required}"
 prof="${CCSWITCH_REAUTH_PROFILE:?CCSWITCH_REAUTH_PROFILE required}"
-# the profile MUST be under the ccswitch reauth-tmp dir.
+# the profile MUST be under the ViberPit reauth-tmp dir.
 # Derive the root identically to paths.root(): CCSWITCH_HOME or ~/.claude-accounts.
 reauth_root="${CCSWITCH_HOME:-$HOME/.claude-accounts}/reauth-tmp/"
 case "$prof" in

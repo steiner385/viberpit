@@ -1,4 +1,4 @@
-"""Build the in-process `ccswitch` MCP server for one assistant session."""
+"""Build the in-process `viberpit` MCP server for one assistant session."""
 from __future__ import annotations
 
 from claude_agent_sdk import create_sdk_mcp_server
@@ -13,7 +13,7 @@ from .tools import TOOL_SPECS, ToolClass, build_tools
 
 def build_server(api: AssistantApi, *, operator: bool = False,
                  read_only: bool = False) -> McpSdkServerConfig:
-    """The `ccswitch` MCP server over `build_tools()`.
+    """The `viberpit` MCP server over `build_tools()`.
 
     ``read_only`` serves only ``ToolClass.READ`` tools. The drawer never needs it —
     its mutations are gated by the permission layer — but `ccswitch mcp`

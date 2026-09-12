@@ -20,7 +20,7 @@ links:
 # Transcript, Replay & Archive
 
 **Problem** — A session's transcript is the record of everything it did, but the `claude` binary
-owns the JSONL on disk and `ccswitch` may not patch it. That creates hard edges: when a user
+owns the JSONL on disk and ViberPit may not patch it. That creates hard edges: when a user
 navigates away and back, or the daemon restarts, the browser must rebuild a complete,
 correctly-ordered transcript — without duplicating turns, blanking the pane, truncating a
 completed turn, or amputating an in-progress one. Turns interrupted mid tool-use leave orphaned
@@ -47,7 +47,7 @@ only transcripts (#482, #507, #487, #122); heals catch-up from the ring instead 
 inode/space exhaustion before a cross-device copy and surfaces 507 (#621); no resumed turn
 dead-ends on an orphaned tool_use (#223).
 
-**Non-goals** — Not a rewrite of the `claude`-owned JSONL format — `ccswitch` reads it, dedupes
+**Non-goals** — Not a rewrite of the `claude`-owned JSONL format — ViberPit reads it, dedupes
 recovery-resend duplicates at read time, and appends only byte-compatible synthetic repairs; it
 does not fork the binary. Archive is not a backup product: purge-at-cap permanently deletes the
 oldest archived sessions once a configurable ceiling is exceeded.

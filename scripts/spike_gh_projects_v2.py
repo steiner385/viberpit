@@ -307,7 +307,7 @@ def probe_phaseb() -> None:  # noqa: C901 - spike probe, deliberate length
     # each batch with separate `query { rateLimit { ... } }` calls and diff `remaining`
     # to get the batch's cost instead.
     rl_query = 'query { rateLimit { cost remaining resetAt } }'
-    issues = g('query { repository(owner: "%s", name: "cc-account-switcher") { issues(first: 10, states: OPEN) '
+    issues = g('query { repository(owner: "%s", name: "viberpit") { issues(first: 10, states: OPEN) '
                '{ nodes { id number } } } }' % OWNER)["data"]["repository"]["issues"]["nodes"]
     adds = " ".join('a%d: addProjectV2ItemById(input: {projectId: "%s", contentId: "%s"}) { item { id } }'
                     % (i, pid, n["id"]) for i, n in enumerate(issues))
@@ -363,7 +363,7 @@ def probe_optionids() -> None:  # noqa: C901 - spike probe, deliberate length
     g = lambda q: gh_graphql(q, token=tok)  # noqa: E731
     uid = g('query { user(login: "%s") { id } }' % OWNER)["data"]["user"]["id"]
     # One issue to park on a preserved column, so we can see whether the assignment survives.
-    issue = g('query { repository(owner: "%s", name: "cc-account-switcher") '
+    issue = g('query { repository(owner: "%s", name: "viberpit") '
               "{ issues(first: 1, states: OPEN) { nodes { id number } } } }"
               % OWNER)["data"]["repository"]["issues"]["nodes"][0]
     spec_vocab = ("Backlog", "Ready", "In progress", "Blocked", "Needs human", "Done")

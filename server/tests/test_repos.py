@@ -282,7 +282,7 @@ def test_get_config_returns_repo_root():
 
 
 def test_create_session_with_repo_clones(tmp_path):
-    """POST /api/sessions with repo= clones into the ccswitch namespace and runs there."""
+    """POST /api/sessions with repo= clones into the ViberPit namespace and runs there."""
     from ccswitch import paths
     import time as _time
 

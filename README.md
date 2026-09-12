@@ -62,7 +62,7 @@ Notes:
   is long-lived and manages many sessions, so pin it with `ccswitch use` and re-pin a new view
   to a fresher account when `ccswitch list` shows the current one running low.
 
-## ccswitch web
+## ViberPit web
 
 A browser-based multi-account Claude session manager. It pairs the CLI core above with a FastAPI
 backend and a React/TypeScript web UI so you can launch and monitor Claude sessions from any device
@@ -125,11 +125,11 @@ sudo tailscale cert \
     --cert-file /etc/ccswitch/dobby.tail0dd570.ts.net.crt \
     --key-file  /etc/ccswitch/dobby.tail0dd570.ts.net.key \
     dobby.tail0dd570.ts.net
-sudo cp deploy/ccswitch-tailnet.nginx /etc/nginx/sites-available/ccswitch-tailnet
+sudo cp deploy/viberpit-tailnet.nginx /etc/nginx/sites-available/ccswitch-tailnet
 sudo ln -sf /etc/nginx/sites-available/ccswitch-tailnet /etc/nginx/sites-enabled/
 sudo nginx -t && sudo nginx -s reload
-sudo cp deploy/ccswitch-cert-renew.{service,timer} /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now ccswitch-cert-renew.timer
+sudo cp deploy/viberpit-cert-renew.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now viberpit-cert-renew.timer
 ```
 
 Open `https://dobby.tail0dd570.ts.net/` on your phone. The server never binds to a public interface.
@@ -168,7 +168,7 @@ or CIDR ranges for the case where the proxy is not on the same host. Both header
 share this one boundary: a proxy is trusted for both or for neither.
 
 This is **only safe when uvicorn is bound to `127.0.0.1`** (the default) and fronted by a
-reverse proxy (nginx, as configured in `deploy/ccswitch-tailnet.nginx`). Binding to
+reverse proxy (nginx, as configured in `deploy/viberpit-tailnet.nginx`). Binding to
 `0.0.0.0` without a proxy bypasses both guards.
 
 - **Set `CCSWITCH_TAILNET_ALLOWLIST`** to your own tailnet identity (e.g. `you@gmail.com`). An

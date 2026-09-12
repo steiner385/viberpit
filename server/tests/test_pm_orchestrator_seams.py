@@ -26,15 +26,15 @@ def _bare_orch():
 async def _seed(db_url: str) -> str:
     await init_db(db_url)
     async with db_session() as db:
-        p = Project(slug="ccswitch", name="ccswitch", onboarding_state="map_merged")
+        p = Project(slug="viberpit", name="viberpit", onboarding_state="map_merged")
         db.add(p)
         await db.flush()
-        db.add(ProjectRepo(project_id=p.id, repo="steiner385/ccswitch",
+        db.add(ProjectRepo(project_id=p.id, repo="steiner385/viberpit",
                            is_primary=True, backfill_done=True))
         db.add(Feature(project_id=p.id, slug="sessions", title="Sessions",
                        state="live", summary="Session manager."))
         for n in range(3):
-            db.add(WorkItem(repo="steiner385/ccswitch", number=100 + n,
+            db.add(WorkItem(repo="steiner385/viberpit", number=100 + n,
                             kind="issue", title=f"Bug {n}", state="open",
                             triage_state="unclassified"))
         return p.id
@@ -59,14 +59,14 @@ async def test_spawn_map_sets_state_and_dedup(db_env):
     orch._effective_repo_root = _mk_async("/tmp/root")
     orch._sdlc_default_branch = _mk_async("master")
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
-        out = await orch.pm_onboard_spawn_map("ccswitch")
+        out = await orch.pm_onboard_spawn_map("viberpit")
     assert out is not None
-    assert rec.calls[0]["origin_ref"] == "ccswitch:feature-map"
-    assert rec.calls[0]["dedupe_key"] == "ccswitch:feature-map"
+    assert rec.calls[0]["origin_ref"] == "viberpit:feature-map"
+    assert rec.calls[0]["dedupe_key"] == "viberpit:feature-map"
     async with db_session() as db:
         from sqlalchemy import select
         p = (await db.execute(select(Project).where(
-            Project.slug == "ccswitch"))).scalar_one()
+            Project.slug == "viberpit"))).scalar_one()
         assert p.onboarding_state == "map_proposed"
 
 
@@ -79,7 +79,7 @@ async def test_spawn_map_no_account_returns_none(db_env):
     orch._effective_repo_root = _mk_async("/tmp/root")
     orch._sdlc_default_branch = _mk_async("master")
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
-        assert await orch.pm_onboard_spawn_map("ccswitch") is None
+        assert await orch.pm_onboard_spawn_map("viberpit") is None
 
 
 @pytest.mark.asyncio
@@ -91,13 +91,13 @@ async def test_classify_run_dispatches_open_items(db_env):
     orch._backlog_healthy_account = _mk_async("acct1")
     orch._effective_repo_root = _mk_async("/tmp/root")
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
-        n = await orch.pm_classify_run("ccswitch")
+        n = await orch.pm_classify_run("viberpit")
     assert n == 3
-    assert rec.calls[0]["origin_ref"].startswith("ccswitch:classify")
+    assert rec.calls[0]["origin_ref"].startswith("viberpit:classify")
     async with db_session() as db:
         from sqlalchemy import select
         p = (await db.execute(select(Project).where(
-            Project.slug == "ccswitch"))).scalar_one()
+            Project.slug == "viberpit"))).scalar_one()
         assert p.onboarding_state == "classifying"
 
 
@@ -114,14 +114,14 @@ async def test_spawn_map_diff_scope_dedup_and_no_state_change(db_env):
     orch._sdlc_default_branch = _mk_async("master")
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
         out = await orch.pm_onboard_spawn_map(
-            "ccswitch", scope="diff", suggestion="billing",
-            item_numbers=(100, 101), repo="steiner385/ccswitch")
+            "viberpit", scope="diff", suggestion="billing",
+            item_numbers=(100, 101), repo="steiner385/viberpit")
     assert out is not None
-    assert rec.calls[0]["dedupe_key"] == "ccswitch:map-diff:billing"
+    assert rec.calls[0]["dedupe_key"] == "viberpit:map-diff:billing"
     async with db_session() as db:
         from sqlalchemy import select
         p = (await db.execute(select(Project).where(
-            Project.slug == "ccswitch"))).scalar_one()
+            Project.slug == "viberpit"))).scalar_one()
         assert p.onboarding_state == "map_merged"  # unchanged by diff scope
 
 
@@ -136,9 +136,9 @@ async def test_classify_run_accepts_injected_batch(db_env):
     orch._effective_repo_root = _mk_async("/tmp/root")
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
         n = await orch.pm_classify_run(
-            "ccswitch",
-            items=[("steiner385/ccswitch", 100, "issue"),
-                   ("steiner385/ccswitch", 101, "issue")])
+            "viberpit",
+            items=[("steiner385/viberpit", 100, "issue"),
+                   ("steiner385/viberpit", 101, "issue")])
     assert n == 2  # exactly the injected set, not the full open chunk
 
 
@@ -154,7 +154,7 @@ async def test_classify_ingest_writes_pending_proposals(db_env):
       "no_fit_suggestion": "billing", "rationale": "no fit",
       "confidence_level": "low"}]
     ```"""
-    n = await orch._pm_classify_ingest("sess-1", "ccswitch", output)
+    n = await orch._pm_classify_ingest("sess-1", "viberpit", output)
     assert n == 2
     async with db_session() as db:
         from sqlalchemy import select
@@ -171,17 +171,17 @@ async def test_classify_ingest_writes_pending_proposals(db_env):
         # Fix 1: _pm_classify_ingest sets triage_state="proposed" as a scheduling
         # marker on every written WorkItem, but NEVER touches the SCORE overlay.
         wi_100 = (await db.execute(select(WorkItem).where(
-            WorkItem.repo == "steiner385/ccswitch",
+            WorkItem.repo == "steiner385/viberpit",
             WorkItem.number == 100))).scalar_one()
         wi_101 = (await db.execute(select(WorkItem).where(
-            WorkItem.repo == "steiner385/ccswitch",
+            WorkItem.repo == "steiner385/viberpit",
             WorkItem.number == 101))).scalar_one()
         # Both touched items advance to "proposed"
         assert wi_100.triage_state == "proposed"
         assert wi_101.triage_state == "proposed"
         # Un-touched item (102) stays "unclassified"
         wi_102 = (await db.execute(select(WorkItem).where(
-            WorkItem.repo == "steiner385/ccswitch",
+            WorkItem.repo == "steiner385/viberpit",
             WorkItem.number == 102))).scalar_one()
         assert wi_102.triage_state == "unclassified"
         # Score-overlay columns are all still None (human-gate intact)
@@ -200,8 +200,8 @@ async def test_classify_ingest_is_idempotent(db_env):
     orch = _bare_orch()
     output = ('[{"number": 100, "kind": "issue", "feature_slug": "sessions",'
               ' "rationale": "x", "confidence_level": "medium"}]')
-    first = await orch._pm_classify_ingest("sess-1", "ccswitch", output)
-    second = await orch._pm_classify_ingest("sess-1", "ccswitch", output)
+    first = await orch._pm_classify_ingest("sess-1", "viberpit", output)
+    second = await orch._pm_classify_ingest("sess-1", "viberpit", output)
     assert (first, second) == (1, 0)  # second pass writes nothing (pending exists)
 
 
@@ -382,10 +382,10 @@ async def test_classify_chain_ingest_waits_for_settled_then_ingests_once(db_env,
     orch._pm_classify_ingest = fake_ingest
     import asyncio as _a
     monkeypatch.setattr(_a, "sleep", _mk_async(None))
-    written = await orch._pm_classify_chain_ingest("sess-1", "ccswitch",
+    written = await orch._pm_classify_chain_ingest("sess-1", "viberpit",
                                                   attempts=10, delay=0.0)
     assert written == 1
-    assert ingested == [("sess-1", "ccswitch", '```json\n[{"number": 1}]\n```')]
+    assert ingested == [("sess-1", "viberpit", '```json\n[{"number": 1}]\n```')]
 
 
 @pytest.mark.asyncio
@@ -398,7 +398,7 @@ async def test_classify_chain_ingest_stops_when_session_vanishes(db_env, monkeyp
     orch._pm_classify_ingest = fake_ingest
     import asyncio as _a
     monkeypatch.setattr(_a, "sleep", _mk_async(None))
-    written = await orch._pm_classify_chain_ingest("gone", "ccswitch",
+    written = await orch._pm_classify_chain_ingest("gone", "viberpit",
                                                   attempts=3, delay=0.0)
     assert written == 0
     assert ingested == []
@@ -420,11 +420,11 @@ async def test_classify_run_schedules_ingest_chain(db_env):
     scheduled = []
     orch._spawn = lambda coro, name=None: scheduled.append(coro)
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
-        n = await orch.pm_classify_run("ccswitch")
+        n = await orch.pm_classify_run("viberpit")
     assert n > 0
     assert len(scheduled) == 1
     await scheduled[0]
-    assert chained == [("sess-1", "ccswitch")]
+    assert chained == [("sess-1", "viberpit")]
 
 
 def _git(*args, cwd):
@@ -520,14 +520,14 @@ async def test_spawn_critic_dedupes_and_builds_prompt(db_env):
     orch._pm_onboard_ctx = rec
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
         out = await orch._pm_onboard_spawn_critic(
-            "ccswitch", "steiner385/cc-account-switcher", "pm/feature-map-ccswitch")
+            "viberpit", "steiner385/viberpit", "pm/feature-map-viberpit")
     assert out is not None
     assert len(rec.calls) == 1
     call = rec.calls[0]
-    assert call["origin_ref"] == "ccswitch:feature-map-critic"
-    assert call["dedupe_key"] == "ccswitch:feature-map-critic"
+    assert call["origin_ref"] == "viberpit:feature-map-critic"
+    assert call["dedupe_key"] == "viberpit:feature-map-critic"
     assert call["detail"]["kind"] == "feature-map-critic"
-    assert "pm/feature-map-ccswitch" in call["initial_prompt"]
+    assert "pm/feature-map-viberpit" in call["initial_prompt"]
 
 
 @pytest.mark.asyncio
@@ -538,7 +538,7 @@ async def test_spawn_critic_returns_none_without_account(db_env):
     orch._sdlc_default_branch = _mk_async("master")
     orch._pm_onboard_ctx = FakeAutomationContext()
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
-        out = await orch._pm_onboard_spawn_critic("ccswitch", "o/r", "pm/feature-map-ccswitch")
+        out = await orch._pm_onboard_spawn_critic("viberpit", "o/r", "pm/feature-map-viberpit")
     assert out is None
 
 
@@ -556,9 +556,9 @@ async def test_chain_critic_waits_for_pr_then_spawns_once(db_env, monkeypatch):
     import asyncio as _a
     monkeypatch.setattr(_a, "sleep", _mk_async(None))   # no real waiting
     out = await orch._pm_onboard_chain_critic(
-        "ccswitch", "o/r", "pm/feature-map-ccswitch", attempts=5, delay=0.0)
+        "viberpit", "o/r", "pm/feature-map-viberpit", attempts=5, delay=0.0)
     assert out is not None
-    assert spawned == [("ccswitch", "o/r", "pm/feature-map-ccswitch")]  # exactly once
+    assert spawned == [("viberpit", "o/r", "pm/feature-map-viberpit")]  # exactly once
 
 
 @pytest.mark.asyncio
@@ -576,15 +576,15 @@ async def test_chain_critic_times_out_without_spawning(db_env, monkeypatch):
 
 
 async def _seed_project_for_map(db_url: str) -> str:
-    """Project with slug 'ccswitch', primary repo 'steiner385/cc-account-switcher',
+    """Project with slug 'viberpit', primary repo 'steiner385/viberpit',
     state 'syncing' — ready for pm_onboard_spawn_map(scope='initial')."""
     await init_db(db_url)
     async with db_session() as db:
-        p = Project(slug="ccswitch", name="ccswitch", onboarding_state="syncing")
+        p = Project(slug="viberpit", name="viberpit", onboarding_state="syncing")
         db.add(p)
         await db.flush()
         db.add(ProjectRepo(project_id=p.id,
-                           repo="steiner385/cc-account-switcher",
+                           repo="steiner385/viberpit",
                            is_primary=True, backfill_done=True))
         return p.id
 
@@ -605,12 +605,12 @@ async def test_initial_map_spawn_schedules_critic_chain(db_env):
     scheduled = []
     orch._spawn = lambda coro, name=None: scheduled.append(coro)
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
-        rec = await orch.pm_onboard_spawn_map("ccswitch", scope="initial")
+        rec = await orch.pm_onboard_spawn_map("viberpit", scope="initial")
     assert rec is not None
     assert len(scheduled) == 1          # exactly one chain task scheduled
     await scheduled[0]                  # run it
-    assert chained == [("ccswitch", "steiner385/cc-account-switcher",
-                        "pm/feature-map-ccswitch")]
+    assert chained == [("viberpit", "steiner385/viberpit",
+                        "pm/feature-map-viberpit")]
 
 
 @pytest.mark.asyncio
@@ -624,7 +624,7 @@ async def test_diff_map_spawn_does_not_schedule_critic(db_env):
     scheduled = []
     orch._spawn = lambda coro, name=None: scheduled.append(coro)
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
-        await orch.pm_onboard_spawn_map("ccswitch", scope="diff", suggestion="x")
+        await orch.pm_onboard_spawn_map("viberpit", scope="diff", suggestion="x")
     assert scheduled == []   # drift path never chains a critic
 
 
@@ -637,8 +637,8 @@ async def _diff_prompt(db_env, *, pointer_status: str | None) -> str:
     if pointer_status is not None:
         async with db_session() as db:
             db.add(FeatureMapChange(
-                project_id=pid, repo="steiner385/cc-account-switcher",
-                branch="pm/map-changes-ccswitch", pr_number=12,
+                project_id=pid, repo="steiner385/viberpit",
+                branch="pm/map-changes-viberpit", pr_number=12,
                 status=pointer_status))
     orch = _bare_orch()
     orch._backlog_healthy_account = _mk_async("acct1")
@@ -648,7 +648,7 @@ async def _diff_prompt(db_env, *, pointer_status: str | None) -> str:
     orch._pm_onboard_ctx = rec
     orch._spawn = lambda coro, name=None: coro.close()
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
-        await orch.pm_onboard_spawn_map("ccswitch", scope="diff", suggestion="x")
+        await orch.pm_onboard_spawn_map("viberpit", scope="diff", suggestion="x")
     return rec.calls[0]["initial_prompt"]
 
 
@@ -657,22 +657,22 @@ async def test_diff_map_spawn_targets_the_open_map_changes_branch(db_env):
     """R8b-9: with a map-changes PR open, the drift session is told to commit to
     that branch — the same PR the roadmap UI's inline edits ride."""
     prompt = await _diff_prompt(db_env, pointer_status="open")
-    assert "pm/map-changes-ccswitch" in prompt
-    assert "pm/feature-map-ccswitch" not in prompt
+    assert "pm/map-changes-viberpit" in prompt
+    assert "pm/feature-map-viberpit" not in prompt
 
 
 @pytest.mark.asyncio
 async def test_diff_map_spawn_ignores_a_closed_pointer_and_uses_the_map_branch(db_env):
     """An abandoned/merged pointer is not a target: only an ``open`` row is."""
     prompt = await _diff_prompt(db_env, pointer_status="abandoned")
-    assert "pm/map-changes-ccswitch" not in prompt
-    assert "pm/feature-map-ccswitch" in prompt
+    assert "pm/map-changes-viberpit" not in prompt
+    assert "pm/feature-map-viberpit" in prompt
 
 
 @pytest.mark.asyncio
 async def test_diff_map_spawn_without_a_pointer_uses_the_map_branch(db_env):
     prompt = await _diff_prompt(db_env, pointer_status=None)
-    assert "pm/feature-map-ccswitch" in prompt
+    assert "pm/feature-map-viberpit" in prompt
 
 
 @pytest.mark.asyncio

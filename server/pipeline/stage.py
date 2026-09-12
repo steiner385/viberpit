@@ -1,4 +1,4 @@
-"""Open-stage classifier: maps ccswitch's PR fields to the Plotroom stage vocabulary.
+"""Open-stage classifier: maps ViberPit's PR fields to the Plotroom stage vocabulary.
 
 This is a first-cut approximation using the rollup-based checks field (not per-check
 required-prefix machinery). It covers open-stage PRs only (merged/queue/deploy are
@@ -39,7 +39,7 @@ def derive_open_stage(
     """Return the open-stage string for a non-merged, non-queue PR.
 
     Args:
-        checks: ccswitch rollup — one of 'passing' | 'failing' | 'pending' | 'none'
+        checks: ViberPit rollup — one of 'passing' | 'failing' | 'pending' | 'none'
         merge_state_status: GitHub mergeStateStatus string or None
         is_draft: True when the PR is in draft state
 

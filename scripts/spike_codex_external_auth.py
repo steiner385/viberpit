@@ -63,7 +63,7 @@ MODEL_TURN_DEVELOPER_INSTRUCTIONS = (
 MODEL_TURN_PROMPT = (
     f"Reply with exactly {MODEL_TURN_EXPECTED_TEXT} and no other text. Do not use tools."
 )
-_CLEANUP_FAILED_NOTE = "ccswitch spike cleanup also failed; details suppressed"
+_CLEANUP_FAILED_NOTE = "ViberPit spike cleanup also failed; details suppressed"
 
 ProtocolMethod = Literal[
     "initialize",
@@ -116,7 +116,7 @@ _SECRET_KEYS = frozenset(
         "turn_id",
     }
 )
-_REMOTE_HOME_RE = re.compile(r"^/tmp/ccswitch-codex-spike\.[A-Za-z0-9]+$")
+_REMOTE_HOME_RE = re.compile(r"^/tmp/viberpit-codex-spike\.[A-Za-z0-9]+$")
 _RELEVANT_SCHEMA_FILES = (
     "v1/InitializeParams.json",
     "v2/LoginAccountParams.json",
@@ -259,7 +259,7 @@ def main():
         model = thread_params.get("model")
         if not isinstance(model, str) or not model:
             raise ValueError
-        with tempfile.TemporaryDirectory(prefix="ccswitch-codex-tool-preflight.") as root:
+        with tempfile.TemporaryDirectory(prefix="viberpit-codex-tool-preflight.") as root:
             thread_params["cwd"] = root
             server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), CaptureHandler)
             server_thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -279,7 +279,7 @@ def main():
                 "--strict-config",
                 "-c", f'model_provider="{provider}"',
                 "-c", "model=" + json.dumps(model),
-                "-c", f'model_providers.{provider}.name="ccswitch tool preflight"',
+                "-c", f'model_providers.{provider}.name="ViberPit tool preflight"',
                 "-c", f'model_providers.{provider}.base_url="http://127.0.0.1:{port}/v1"',
                 "-c", f'model_providers.{provider}.wire_api="responses"',
                 "-c", f'model_providers.{provider}.experimental_bearer_token="preflight"',
@@ -300,8 +300,8 @@ def main():
                 "initialize",
                 {
                     "clientInfo": {
-                        "name": "ccswitch-tool-catalog-preflight",
-                        "title": "ccswitch tool catalog preflight",
+                        "name": "viberpit-tool-catalog-preflight",
+                        "title": "ViberPit tool catalog preflight",
                         "version": "1",
                     },
                     "capabilities": {"experimentalApi": True},
@@ -707,7 +707,7 @@ def validate_topology(
         raise SpikeConfigurationError("the two runner aliases resolve to the same machine")
     if not authority_on_runner:
         raise SpikeConfigurationError("the local authority must also be exactly one runner")
-    topology_payload = "ccswitch-codex-topology-v1\0" + "\0".join(sorted(runner_identities))
+    topology_payload = "viberpit-codex-topology-v1\0" + "\0".join(sorted(runner_identities))
     topology_sha256 = hashlib.sha256(topology_payload.encode("ascii")).hexdigest()
     return TopologyEvidence(True, True, topology_sha256)
 
@@ -716,7 +716,7 @@ def _hash_machine_identity(raw: bytes) -> str:
     value = raw.strip()
     if len(value) < 16:
         raise SpikeConfigurationError("stable local machine identity is unavailable")
-    return hashlib.sha256(b"ccswitch-codex-host-v1\0" + value).hexdigest()
+    return hashlib.sha256(b"viberpit-codex-host-v1\0" + value).hexdigest()
 
 
 def local_machine_identity() -> str:
@@ -772,7 +772,7 @@ def build_runner_process(
                 'exec env -i HOME="$HOME" PATH="$PATH" LANG="${LANG:-C.UTF-8}" '
                 'CODEX_HOME="$1" "$2" app-server --stdio'
             ),
-            "ccswitch-codex-spike",
+            "viberpit-codex-spike",
             str(home),
             codex_bin,
         ],
@@ -986,7 +986,7 @@ def inspect_schema(codex_bin: str) -> SchemaEvidence:
     if not cli_version or "\n" in cli_version:
         raise SpikeError("Codex CLI returned an invalid version string")
 
-    with tempfile.TemporaryDirectory(prefix="ccswitch-codex-schema-") as temp:
+    with tempfile.TemporaryDirectory(prefix="viberpit-codex-schema-") as temp:
         root = Path(temp)
         subprocess.run(
             [
@@ -1268,8 +1268,8 @@ class JsonRpcProcess:
             "initialize",
             {
                 "clientInfo": {
-                    "name": "ccswitch-external-auth-spike",
-                    "title": "ccswitch external auth spike",
+                    "name": "viberpit-external-auth-spike",
+                    "title": "ViberPit external auth spike",
                     "version": "1",
                 },
                 "capabilities": {"experimentalApi": experimental_api},
@@ -1456,7 +1456,7 @@ class JsonRpcProcess:
                         "id": frame.get("id"),
                         "error": {
                             "code": -32603,
-                            "message": "ccswitch spike rejected request",
+                            "message": "ViberPit spike rejected request",
                         },
                     }
                 )
@@ -1942,7 +1942,7 @@ async def _terminate_and_reap(process: asyncio.subprocess.Process) -> None:
 
 def plan_runner_home(target: RunnerTarget) -> tuple[Path, bool]:
     """Choose a unique path locally so cleanup can be registered before creation."""
-    path = Path(f"/tmp/ccswitch-codex-spike.{secrets.token_hex(16)}")
+    path = Path(f"/tmp/viberpit-codex-spike.{secrets.token_hex(16)}")
     if not _REMOTE_HOME_RE.fullmatch(str(path)):
         raise SpikeConfigurationError("planned runner home failed path validation")
     return path, target.ssh_host is not None
@@ -1995,7 +1995,7 @@ import pathlib
 raw = pathlib.Path('/etc/machine-id').read_bytes().strip()
 if len(raw) < 16:
     raise SystemExit(2)
-print(hashlib.sha256(b'ccswitch-codex-host-v1\0' + raw).hexdigest())
+print(hashlib.sha256(b'viberpit-codex-host-v1\0' + raw).hexdigest())
 """.strip()
 
 
@@ -2043,7 +2043,7 @@ async def verify_runner_version(
                 "sh",
                 "-c",
                 'exec env -i HOME="$HOME" PATH="$PATH" "$1" --version',
-                "ccswitch-codex-spike",
+                "viberpit-codex-spike",
                 codex_bin,
             ],
         )
@@ -2062,11 +2062,11 @@ async def verify_empty_tool_catalog(
     payload = json.dumps(
         {
             "thread": build_model_thread_params(
-                Path("/tmp/ccswitch-codex-tool-preflight.placeholder"),
+                Path("/tmp/viberpit-codex-tool-preflight.placeholder"),
                 model_turn_enabled=True,
             ),
             "turn": build_model_turn_params(
-                "ccswitch-tool-preflight-placeholder",
+                "viberpit-tool-preflight-placeholder",
                 model_turn_enabled=True,
             ),
         },
@@ -2164,7 +2164,7 @@ async def cleanup_runner(runtime: RunnerRuntime) -> bool:
                     "sh",
                     "-c",
                     'if test ! -e "$1"; then exit 0; fi; find "$1" -depth -delete',
-                    "ccswitch-codex-spike",
+                    "viberpit-codex-spike",
                     str(runtime.home),
                 ],
             )

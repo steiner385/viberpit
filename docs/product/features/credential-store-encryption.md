@@ -4,18 +4,18 @@ title: Credential Store & Encryption
 state: live
 links:
   - kind: powered_by
-    project: ccswitch
+    project: viberpit
     feature: config-dir-isolation
   - kind: integrates_with
-    project: ccswitch
+    project: viberpit
     feature: account-reauthentication
 ---
 
 # Credential Store & Encryption
 
-**Problem** — ccswitch holds the credentials for every managed Claude (and Copilot) account. On a self-hosted, network-reachable server, storing those secrets as plaintext on disk is an unacceptable exposure: anyone with filesystem read (a stray backup, a misconfigured mount, a compromised process) would harvest every account's auth. The credential store needs encryption at rest with a key that is not itself sitting next to the ciphertext.
+**Problem** — ViberPit holds the credentials for every managed Claude (and Copilot) account. On a self-hosted, network-reachable server, storing those secrets as plaintext on disk is an unacceptable exposure: anyone with filesystem read (a stray backup, a misconfigured mount, a compromised process) would harvest every account's auth. The credential store needs encryption at rest with a key that is not itself sitting next to the ciphertext.
 
-**Target users** — the operator running ccswitch (their accounts' secrets), and every capability that reads credentials to launch or re-auth a session.
+**Target users** — the operator running ViberPit (their accounts' secrets), and every capability that reads credentials to launch or re-auth a session.
 
 **Desired outcome** — account credentials are encrypted at rest via envelope encryption; the master key lives in the OS keyring (not in the store); migrating an existing plaintext store to encrypted is a safe, idempotent operation; day-to-day reads/writes transparently decrypt/encrypt.
 

@@ -5,7 +5,7 @@ Throwaway verification harness (constitution III). Never imported by ``server/``
 The Claude twin is ``scripts/spike_assistant_sdk.py``; this one asks the same five
 questions of the *other* engine:
 
-* Q1 can a ccswitch tool surface be mounted (in-process MCP equivalent)?
+* Q1 can a ViberPit tool surface be mounted (in-process MCP equivalent)?
 * Q2 can the built-in tools be dropped, so the assistant cannot shell out?
 * Q3 is there a ``can_use_tool``-equivalent gate the host controls?
 * Q4 what does a cold start cost?
@@ -13,8 +13,8 @@ questions of the *other* engine:
 
 Unlike Claude's ``claude-agent-sdk`` there is no Python SDK to lean on, so this
 speaks the ``codex app-server`` JSON-RPC contract directly over stdio. That is
-deliberate: the findings must describe the *binary's* boundary, not ccswitch's
-wrapper around it (``server/codex/schema.py`` pins only the knobs ccswitch
+deliberate: the findings must describe the *binary's* boundary, not ViberPit's
+wrapper around it (``server/codex/schema.py`` pins only the knobs ViberPit
 already sets, which would beg the question this spike is asking).
 
 Usage::
@@ -38,7 +38,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
-CLIENT_NAME = "ccswitch-assistant-spike"
+CLIENT_NAME = "viberpit-assistant-spike"
 CLIENT_VERSION = "0.0.0"
 
 #: `model/list` on a ChatGPT-backed account rejects the `*-codex` ids the CLI
@@ -47,18 +47,18 @@ CLIENT_VERSION = "0.0.0"
 #: operator override it rather than inheriting whatever the config default is.
 SPIKE_MODEL = os.environ.get("CCSWITCH_CODEX_SPIKE_MODEL", "gpt-5.6-sol")
 
-#: The two fake ccswitch tools, in the app-server's `DynamicToolSpec` shape.
+#: The two fake ViberPit tools, in the app-server's `DynamicToolSpec` shape.
 DYNAMIC_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "list_sessions",
-        "description": "List ccswitch sessions (spike: returns a fixed list).",
+        "description": "List ViberPit sessions (spike: returns a fixed list).",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
         "type": "function",
         "name": "archive_session",
-        "description": "Archive a ccswitch session (spike: no-op).",
+        "description": "Archive a ViberPit session (spike: no-op).",
         "inputSchema": {
             "type": "object",
             "properties": {"id": {"type": "string"}},
@@ -80,7 +80,7 @@ DECLINE_RESULTS: dict[str, dict[str, Any]] = {
 }
 
 BASE_INSTRUCTIONS = (
-    "You are the ccswitch assistant. You may only use the ccswitch tools. "
+    "You are the ViberPit assistant. You may only use the ViberPit tools. "
     "If asked to do something no tool can do, say so."
 )
 
@@ -278,7 +278,7 @@ async def run_arm(codex_bin: str, home: str, *, arm: str) -> Spike:
 
     ``restricted`` is the shape the assistant would actually ship in;
     ``control`` keeps everything except the prompt that tells the model to stay
-    inside the ccswitch tools. Running both is the only way to tell a *gate*
+    inside the ViberPit tools. Running both is the only way to tell a *gate*
     (built-ins genuinely absent) from a *persuaded model* (built-ins present,
     politely declined) — the difference decides whether an engine-neutral
     assistant can be trusted on Codex at all.

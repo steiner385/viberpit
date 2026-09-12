@@ -2,7 +2,7 @@
 
 Background (production incident): the session daemon runs on a different host
 (rocky) from the web edge (dobby). ``server/api/sessions.py`` used to resolve
-``repo=`` into a ccswitch-owned clone path (``gitrepos.ensure_clone``) itself,
+``repo=`` into a ViberPit-owned clone path (``gitrepos.ensure_clone``) itself,
 in the EDGE process, then pass the resulting ``cwd`` to the daemon over RPC.
 Cross-host, the clone landed on the edge host's filesystem — the daemon then
 rejected the session with "cwd does not exist" because it has no such

@@ -22,7 +22,7 @@ links:
 
 # Autopilot & Backlog Runner
 
-**Problem** — Running autonomous development on ccswitch means two distinct, tedious jobs
+**Problem** — Running autonomous development on ViberPit means two distinct, tedious jobs
 that a human would otherwise babysit around the clock: (1) *keeping live sessions moving* —
 a session stalls waiting for a permission prompt, gets stuck in a nudge loop, opens a PR but
 never arms auto-merge, or declares itself "done" with no PR to show for it; and (2) *feeding

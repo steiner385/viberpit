@@ -150,7 +150,7 @@ async def _set_config(config: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def test_actionable_counts_population_only_failing_pr(tmp_path):
-    """A red PR that NO ccswitch session authored (absent from ``_pr_pairs`` and
+    """A red PR that NO ViberPit session authored (absent from ``_pr_pairs`` and
     the per-branch cache) is still counted: PR Doctor scans every open PR in the
     population cache. An UNSTABLE-failing PR stays excluded (classify unchanged)."""
 
@@ -389,15 +389,15 @@ def test_stale_per_branch_cache_not_actionable_when_population_says_merged(tmp_p
         # Per-branch cache: stale entry still shows the PR as open+failing.
         # Population cache: correctly shows the PR as merged.
         orch = _build_orch(
-            cache={("steiner385/ccswitch", "feat/automations-tab"): stale_open},
-            pairs=[("steiner385/ccswitch", "feat/automations-tab")],
+            cache={("steiner385/viberpit", "feat/automations-tab"): stale_open},
+            pairs=[("steiner385/viberpit", "feat/automations-tab")],
             records={},
-            population={"steiner385/ccswitch": (merged_pop,)},
+            population={"steiner385/viberpit": (merged_pop,)},
         )
 
         actionable = await orch.automation_actionable("pr-doctor")
         ids = {a["id"] for a in actionable}
-        assert "steiner385/ccswitch#578" not in ids  # merged PR must not surface
+        assert "steiner385/viberpit#578" not in ids  # merged PR must not surface
 
     asyncio.run(run())
 

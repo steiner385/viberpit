@@ -29,7 +29,7 @@ EDGE_PID = 991000
 
 
 def _daemon(pid: int = DAEMON_PID, ppid: int = 1) -> ProcInfo:
-    """A live ccswitch process that owns CLIs — this daemon, or a co-located edge."""
+    """A live ViberPit process that owns CLIs — this daemon, or a co-located edge."""
     return ProcInfo(pid=pid, cmdline=["python", "-m", "server.ipc"], environ={},
                     cwd="/srv", ppid=ppid)
 
@@ -40,7 +40,7 @@ def _account_cfg(name: str) -> str:
 
 def _sdk(pid: int, ppid: int, *, cfg: str = CFG_A, resume: str | None = CONV,
          cwd: str = "/wt/79dc2220") -> ProcInfo:
-    """An SDK-protocol claude — the shape ccswitch's own driver runs as."""
+    """An SDK-protocol claude — the shape ViberPit's own driver runs as."""
     argv = ["claude", "--input-format", "stream-json", "--output-format", "stream-json"]
     if resume:
         argv += ["--resume", resume]
@@ -77,7 +77,7 @@ def test_a_co_located_live_process_keeps_its_own_clis():
     a daemon restart must not machine-gun them."""
     procs = [
         _daemon(),                                   # us
-        _daemon(pid=EDGE_PID),                       # a co-located ccswitch process
+        _daemon(pid=EDGE_PID),                       # a co-located ViberPit process
         _sdk(991001, ppid=EDGE_PID),                 # its live CLI — hands off
         _sdk(4041937, ppid=1),                       # a genuine orphan
     ]
@@ -151,7 +151,7 @@ def test_reap_terminates_only_the_orphans(monkeypatch):
         _daemon(),
         _sdk(4041937, ppid=1),                     # orphan
         _sdk(3026491, ppid=DAEMON_PID),            # ours
-        _sdk(910, ppid=1, cfg="/home/someone/.claude"),  # not ccswitch's
+        _sdk(910, ppid=1, cfg="/home/someone/.claude"),  # not ViberPit's
     ]
     reaped = orphan_cli.reap_orphans(
         KNOWN, self_pid=DAEMON_PID, proc_lister=lambda: procs,

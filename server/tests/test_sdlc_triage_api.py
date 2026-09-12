@@ -42,7 +42,7 @@ def _client():
 
 _BREACH = dict(
     key="pr_cycle_time_hours:we1:high", metric="ccswitch-pr-cycle-time",
-    source="pr_cycle_time_hours", repo="steiner385/ccswitch", rule="we1", sigma=3,
+    source="pr_cycle_time_hours", repo="steiner385/viberpit", rule="we1", sigma=3,
     side="high", tier="propose", response="propose", value=50.0,
     baseline_mean=10.0, baseline_stddev=0.5, baseline_n=30,
     observed_at="2026-01-38", summary="cycle time above 3σ",
@@ -277,7 +277,7 @@ def test_queued_incidents_become_intake_triggers_carrying_the_breach_evidence():
         (trigger,) = c.portal.call(read)
 
         assert trigger.slug == "incident-cycle-time"
-        assert trigger.repo == "steiner385/ccswitch"
+        assert trigger.repo == "steiner385/viberpit"
         assert trigger.origin == "control-band"
         # origin_ref stays None: InitiativeView.issue is built from it, and a
         # breach key is not an issue ref.
@@ -304,7 +304,7 @@ def test_every_declared_metric_source_has_a_reader_that_returns_a_series(source)
     from server.sdlc.bands import MetricBand
     with _client() as c:
         orch = c.orch
-        band = MetricBand(id="x", source=source, repo="steiner385/ccswitch")
+        band = MetricBand(id="x", source=source, repo="steiner385/viberpit")
 
         async def read():
             return await orch._control_band_read_series(band)

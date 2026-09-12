@@ -27,7 +27,7 @@ links:
 
 # Native OpenAI / Codex Integration
 
-**Problem** — ccswitch is meant to be a central hub for coding agents across accounts, models, and
+**Problem** — ViberPit is meant to be a central hub for coding agents across accounts, models, and
 projects, but its native session engine is currently Claude-specific. GitHub Copilot adds a billing
 source through a translating proxy; it does not run Codex. Users with ChatGPT or OpenAI access
 cannot add those accounts, discover Codex models, run native Codex threads, respond to Codex
@@ -38,7 +38,7 @@ sessions in one dashboard; ChatGPT subscribers with one or more named accounts; 
 customers who accept usage-based billing semantics.
 
 **Desired outcome** — “Codex” is a first-class agent choice. A user adds an OpenAI account through
-ChatGPT device login, launches a Codex session in a ccswitch-managed worktree, watches normalized
+ChatGPT device login, launches a Codex session in a ViberPit-managed worktree, watches normalized
 messages/commands/file changes/searches stream into the existing terminal, handles approvals,
 interrupts or steers a turn, reconnects without losing history, and sees account-specific models,
 reasoning choices, and quota. The refresh credential remains canonical on dobby; a credential
@@ -66,7 +66,7 @@ compatibility audit; API-key authentication in v1.
   `thread/resume` — `server/tests/fixtures/codex_app_server/0.153.2/method_index.json`), unlike
   Claude's CLI, which has no such RPC at all. Adoption stays a non-goal anyway: `ensure_codex_home`
   (`server/codex/process.py`) forces every account's `codex app-server` into its own
-  ccswitch-private `CODEX_HOME`, so a runner's own process only ever enumerates threads it started
+  ViberPit-private `CODEX_HOME`, so a runner's own process only ever enumerates threads it started
   itself — never a user's independently launched `codex` CLI (default `~/.codex`, a disjoint
   database) or another account's runner. There is no cross-boundary orphan to discover, so this is
   an architectural boundary, not an unimplemented feature; see the capability rationale in
@@ -93,7 +93,7 @@ compatibility audit; API-key authentication in v1.
   limits successfully without persisting runner credentials or starting a model turn. The owner
   explicitly accepted this dependency for v1 with those safeguards required.
 - Browser and fleet transports remain provider-neutral. A new Codex driver translates app-server
-  threads, turns, items, approvals, and history into the shared ccswitch session/event contracts.
+  threads, turns, items, approvals, and history into the shared ViberPit session/event contracts.
 - Models and reasoning efforts are runtime-discovered per account. The product does not hard-code
   whatever models happened to exist during development.
 - Shared usage becomes a list of typed quota windows. OpenAI's multiple/model-specific buckets are
@@ -223,7 +223,7 @@ compatibility audit; API-key authentication in v1.
   permission profile. The data model supports multiple named OpenAI accounts immediately, while
   automatic OpenAI-account rotation is deferred.
 - **Command palette (#1286).** A session's palette has two halves, and which half an entry belongs
-  to is on the wire (`source`). *App-owned* commands are ccswitch's own orchestrator operations
+  to is on the wire (`source`). *App-owned* commands are ViberPit's own orchestrator operations
   (`/help`, `/context`, `/clear`, `/model`, `/account`), declared once in
   `server/sessions/commands/catalog.py` with the engine capability each needs, so they render on any
   engine that can actually perform them. *Vendor* commands are whatever the engine publishes about
@@ -248,7 +248,7 @@ compatibility audit; API-key authentication in v1.
   app-server publishes `list`, `terminate` and `clean` for them — three ways to observe or end one,
   none to start one (asserted against the generated method inventory in
   `server/tests/test_codex_background_work.py`, so a future release that adds one fails the test
-  rather than leaving this note stale). ccswitch therefore snapshots lost terminals at drain with
+  rather than leaving this note stale). ViberPit therefore snapshots lost terminals at drain with
   `replayable=False` and, after the restart, **names them to the session and stops** — the command
   lines are the agent's own, and re-issuing one unasked is how a deploy runs a push, a migration, or
   an install a second time. Claude's snapshot still carries the relaunch instruction it always did;

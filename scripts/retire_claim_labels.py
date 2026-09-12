@@ -61,7 +61,7 @@ TOKEN_ENV = "CCSWITCH_GH_PROJECT_TOKEN"
 # --------------------------------------------------------------------------- #
 
 def _gh_env(token: str | None = None) -> dict[str, str]:
-    """The child's env: ambient GitHub tokens stripped (ccswitch shells ``gh`` as
+    """The child's env: ambient GitHub tokens stripped (ViberPit shells ``gh`` as
     its own identity), unless a token is passed for the Projects write."""
     env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GH_TOKEN")}
     if token:

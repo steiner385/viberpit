@@ -25,7 +25,7 @@ def test_eta_query_grouped_by_owner_merges_with_global_aliases(monkeypatch):
         class R: returncode = 0; stdout = out; stderr = ""
         return R()
     monkeypatch.setattr(P.gitrepos, "_run_gh", fake_run)
-    keys = [("cairnea/KinDash", 1), ("steiner385/cc-account-switcher", 2)]
+    keys = [("cairnea/KinDash", 1), ("steiner385/viberpit", 2)]
     resp = P._default_eta_query(keys)
     # one call per owner, each with that owner's token
     assert set(seen) == {"tok-cairnea", "tok-steiner385"}
@@ -132,7 +132,7 @@ def test_default_query_tolerates_forbidden_deploys(monkeypatch):
         return R()
 
     monkeypatch.setattr(P.gitrepos, "_run_gh", fake_run)
-    resp = P._default_query("steiner385/cc-account-switcher", retention_days=7)
+    resp = P._default_query("steiner385/viberpit", retention_days=7)
     from server.github.pr_status import parse_population_response
-    out = parse_population_response(resp, "steiner385/cc-account-switcher")
+    out = parse_population_response(resp, "steiner385/viberpit")
     assert [p.number for p in out] == [811]

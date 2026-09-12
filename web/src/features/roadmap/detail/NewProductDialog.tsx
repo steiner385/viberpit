@@ -35,7 +35,7 @@ export function NewProductDialog({ open, onClose }: { open: boolean; onClose: ()
   const repoValid = REPO_RE.test(trimmedRepo)
   // Only complain about what has been typed: an untouched field is not an error.
   const repoError = trimmedRepo !== '' && !repoValid
-    ? 'Use owner/repo, e.g. steiner385/ccswitch'
+    ? 'Use owner/repo, e.g. steiner385/viberpit'
     : undefined
   const canSubmit = name.trim() !== '' && repoValid && !create.isPending
 

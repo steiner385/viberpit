@@ -10,7 +10,7 @@ credential.
 Two orderings live here, and getting them backwards is the whole risk:
 
 * **Enabling** is manifest-first, then sync. If the sync fails, the account is
-  enabled in ccswitch but not yet issuable — visible as degraded, retryable, and
+  enabled in ViberPit but not yet issuable — visible as degraded, retryable, and
   safe.
 * **Disabling and removing** are revoke-first, then fan out manager
   invalidation, then write the manifest. If any step fails, the account's

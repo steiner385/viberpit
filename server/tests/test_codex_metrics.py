@@ -221,7 +221,7 @@ def _manager():
         availability=CodexAvailability.ready(
             binary_path="/usr/bin/codex", cli_version="codex-cli 0.153.2"
         ),
-        codex_home_base="/tmp/ccswitch-codex-metrics-test",
+        codex_home_base="/tmp/viberpit-codex-metrics-test",
         credential_supplier=credentials,
         home_factory=lambda base, account: base / account,
         external_auth_enabled=True,

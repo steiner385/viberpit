@@ -1,4 +1,4 @@
-"""Single source of truth for *which* `claude` executable ccswitch runs.
+"""Single source of truth for *which* `claude` executable ViberPit runs.
 
 Used by BOTH the model picker (``model_catalog`` probes it for the alias list)
 and the SDK session factory (``sdk_factory`` pins it as the client's ``cli_path``),

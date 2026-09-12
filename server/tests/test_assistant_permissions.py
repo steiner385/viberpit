@@ -49,10 +49,10 @@ def _run(coro):
 
 
 # ---------------------------------------------------------------------------
-# READ ccswitch tools: auto-allowed, no card, in every mode.
+# READ ViberPit tools: auto-allowed, no card, in every mode.
 # ---------------------------------------------------------------------------
 
-def test_read_ccswitch_tool_auto_allowed_no_card_in_interactive():
+def test_read_viberpit_tool_auto_allowed_no_card_in_interactive():
     reg = PermissionRegistry()
 
     async def run():
@@ -62,16 +62,16 @@ def test_read_ccswitch_tool_auto_allowed_no_card_in_interactive():
             allowlist=True, identity="me")
 
     pid, fut, always_allowed = _run(run())
-    assert pid is None, "a READ ccswitch tool must never surface a card"
+    assert pid is None, "a READ ViberPit tool must never surface a card"
     assert fut.result() is True
 
 
 # ---------------------------------------------------------------------------
-# MUTATION ccswitch tools: card first time; grant cache then honoured even in
+# MUTATION ViberPit tools: card first time; grant cache then honoured even in
 # "interactive" mode (deliberately different from ordinary tools).
 # ---------------------------------------------------------------------------
 
-def test_mutation_ccswitch_tool_prompts_then_grant_is_honoured_in_interactive(fake_specs):
+def test_mutation_viberpit_tool_prompts_then_grant_is_honoured_in_interactive(fake_specs):
     reg = PermissionRegistry()
 
     async def run():
@@ -88,7 +88,7 @@ def test_mutation_ccswitch_tool_prompts_then_grant_is_honoured_in_interactive(fa
             "s1", "t2", MCP_PREFIX + "archive_session", {"id": "s9"},
             mode="interactive", denylist=PermissionRegistry.DANGEROUS,
             allowlist=True, identity="me")
-        assert pid2 is None, ("a granted ccswitch mutation tool must auto-allow even in "
+        assert pid2 is None, ("a granted ViberPit mutation tool must auto-allow even in "
                                "interactive mode — the grant cache is deliberately honoured "
                                "here, unlike ordinary tools")
         assert await fut2 is True
@@ -97,11 +97,11 @@ def test_mutation_ccswitch_tool_prompts_then_grant_is_honoured_in_interactive(fa
 
 
 # ---------------------------------------------------------------------------
-# DESTRUCTIVE ccswitch tools: ALWAYS a card (even full-auto); "always" allows
+# DESTRUCTIVE ViberPit tools: ALWAYS a card (even full-auto); "always" allows
 # once but never grants.
 # ---------------------------------------------------------------------------
 
-def test_destructive_ccswitch_tool_always_prompts_even_in_full_auto(fake_specs):
+def test_destructive_viberpit_tool_always_prompts_even_in_full_auto(fake_specs):
     reg = PermissionRegistry()
 
     async def run():
@@ -111,11 +111,11 @@ def test_destructive_ccswitch_tool_always_prompts_even_in_full_auto(fake_specs):
             allowlist=True, identity="me")
 
     pid, fut, always_allowed = _run(run())
-    assert pid is not None, "a DESTRUCTIVE ccswitch tool must prompt even in full-auto"
+    assert pid is not None, "a DESTRUCTIVE ViberPit tool must prompt even in full-auto"
     assert always_allowed is False
 
 
-def test_destructive_ccswitch_tool_always_decision_does_not_grant(fake_specs):
+def test_destructive_viberpit_tool_always_decision_does_not_grant(fake_specs):
     reg = PermissionRegistry()
 
     async def run():
@@ -159,12 +159,12 @@ def test_automation_fan_out_tools_prompt_in_full_auto_with_the_real_specs(name):
 
 
 # ---------------------------------------------------------------------------
-# An unknown / not-yet-registered ccswitch tool (annotation_for returns None,
+# An unknown / not-yet-registered ViberPit tool (annotation_for returns None,
 # e.g. a Task-3.3 tool not added yet) must be treated conservatively as
 # mutation-like — never raise, and still gate on the grant cache.
 # ---------------------------------------------------------------------------
 
-def test_unknown_ccswitch_tool_treated_as_mutation_like():
+def test_unknown_viberpit_tool_treated_as_mutation_like():
     reg = PermissionRegistry()
 
     async def run():
@@ -174,7 +174,7 @@ def test_unknown_ccswitch_tool_treated_as_mutation_like():
             allowlist=True, identity="me")
 
     pid, fut, always_allowed = _run(run())
-    assert pid is not None, "an unrecognized ccswitch tool must prompt, not crash or auto-allow"
+    assert pid is not None, "an unrecognized ViberPit tool must prompt, not crash or auto-allow"
     assert always_allowed is True
 
 
@@ -199,7 +199,7 @@ def test_third_party_mcp_tool_still_auto_allowed_everywhere():
 
 # ---------------------------------------------------------------------------
 # Driver-level: an assistant-kind session is hard-denied for any tool outside
-# the ccswitch MCP server, without ever touching the registry or emitting a
+# the `viberpit` MCP server, without ever touching the registry or emitting a
 # PermissionRequest card.
 # ---------------------------------------------------------------------------
 
@@ -232,7 +232,7 @@ def test_non_assistant_driver_kind_is_none():
     assert d.kind is None
 
 
-def test_assistant_session_denies_non_ccswitch_tool_without_touching_registry():
+def test_assistant_session_denies_non_viberpit_tool_without_touching_registry():
     d = _assistant_driver()
     out_q: asyncio.Queue = asyncio.Queue()
     d._subscribers.add(out_q)
@@ -262,8 +262,8 @@ def test_assistant_session_denies_third_party_mcp_tool():
     assert isinstance(result, PermissionResultDeny)
 
 
-def test_assistant_session_allows_ccswitch_mcp_tool_through_to_registry():
-    """A ccswitch tool must NOT be hard-denied — it reaches the (real) registry,
+def test_assistant_session_allows_viberpit_mcp_tool_through_to_registry():
+    """A ViberPit tool must NOT be hard-denied — it reaches the (real) registry,
     which auto-allows a READ tool."""
     d = ClaudeAgentDriver(
         "sa2", "primary", "/tmp/r", "/tmp/cfg", mode="full-auto",
@@ -279,7 +279,7 @@ def test_assistant_session_allows_ccswitch_mcp_tool_through_to_registry():
 
 
 def test_batch_tool_card_carries_items():
-    """A batch ccswitch tool's card enumerates its targets (spec v2 B4): the driver
+    """A batch ViberPit tool's card enumerates its targets (spec v2 B4): the driver
     computes `items` from the tool input BEFORE calling registry.request, and the
     emitted PermissionRequest carries them through. Uses the real (registered)
     archive_sessions spec — no monkeypatching needed."""

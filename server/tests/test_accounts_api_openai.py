@@ -378,7 +378,7 @@ def test_disable_revokes_and_invalidates_before_writing_the_flag(authority):
     """The ORDER is the safety property, so the order is what is asserted.
 
     Writing "disabled" first and revoking second leaves a window in which
-    ccswitch reports the account off while runners still hold live envelopes.
+    ViberPit reports the account off while runners still hold live envelopes.
     """
     from ccswitch import account_registry
 

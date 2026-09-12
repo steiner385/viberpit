@@ -1453,7 +1453,7 @@ async def test_github_write_tools_reject_bad_args_locally(name, args):
 
 
 def test_github_write_tools_are_mutation_class():
-    """Not READ (they leave ccswitch) and not DESTRUCTIVE (nothing is lost); MUTATION is
+    """Not READ (they leave ViberPit) and not DESTRUCTIVE (nothing is lost); MUTATION is
     what puts a confirmation card in front of a public post."""
     for name in ("comment_on_pr", "create_issue"):
         assert TOOL_SPECS[name].tool_class is ToolClass.MUTATION

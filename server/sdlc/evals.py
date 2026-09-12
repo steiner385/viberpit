@@ -1,7 +1,7 @@
 """Pure SDLC eval aggregation core — the pass-rate gate for agent-config changes.
 
 Phase 3 of the AI-Native SDLC design (§7). The eval *suite* is a corpus of real
-ccswitch tasks with acceptance checks (``evals/`` in the repo); this module is the
+ViberPit tasks with acceptance checks (``evals/`` in the repo); this module is the
 **pure** scoring core that turns per-case results into a merge gate — no file I/O,
 no subprocess, so it is exhaustively unit-testable the way ``server.sdlc.engine``
 is. The runner (``scripts/run_evals.py``) does the I/O: load specs, execute each

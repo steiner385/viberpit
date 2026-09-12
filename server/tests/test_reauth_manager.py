@@ -30,7 +30,7 @@ class _FakeSpec:
 
 class _FakeX11:
     """Records start/stop and hands back a fixed display spec."""
-    def __init__(self, spec=_FakeSpec(105, "/tmp/ccswitch-__reauth__.Xauthority")):
+    def __init__(self, spec=_FakeSpec(105, "/tmp/viberpit-__reauth__.Xauthority")):
         self.spec = spec
         self.started = []
         self.stopped = []
@@ -104,7 +104,7 @@ async def test_runner_allocates_virtual_display_and_releases(monkeypatch):
     assert fake.started == [REAUTH_DISPLAY_KEY]
     assert fake.stopped == [REAUTH_DISPLAY_KEY]      # released in finally
     assert captured["DISPLAY"] == ":105"
-    assert captured["XAUTHORITY"] == "/tmp/ccswitch-__reauth__.Xauthority"
+    assert captured["XAUTHORITY"] == "/tmp/viberpit-__reauth__.Xauthority"
 
 
 @pytest.mark.asyncio

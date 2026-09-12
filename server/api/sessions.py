@@ -703,7 +703,7 @@ async def create_session(
                 },
             )
 
-    # repo (nameWithOwner) is resolved into a ccswitch-owned clone path — cloning
+    # repo (nameWithOwner) is resolved into a ViberPit-owned clone path — cloning
     # on first use — by the orchestrator itself (server/sessions/orchestrator.py
     # create_session), NOT here.  gitrepos.ensure_clone owns the on-disk clone
     # registry, and in a dual-host deployment the orchestrator may be running in
@@ -898,7 +898,7 @@ async def list_adoptable(
     request: Request,
     _identity: str = Depends(current_identity),
 ) -> dict:
-    """Discover live claude sessions running outside ccswitch.
+    """Discover live claude sessions running outside ViberPit.
 
     Returns ALL session candidates (mapped, unmapped, already-tracked), each
     flagged with a skipReason where applicable — the dashboard renders adoptable
@@ -1874,7 +1874,7 @@ async def export_session_jsonl(
       byte for byte, exactly as before — the user's own data over an
       already-authenticated connection (deliberate exception to the redaction rule).
     * A session without one (Codex keeps its history inside the app-server) gets
-      ccswitch's normalized replay events as NDJSON, led by a header record naming
+      ViberPit's normalized replay events as NDJSON, led by a header record naming
       the format. It is NOT relabelled as Claude-native JSONL: the two schemas share
       no field names, so a consumer that assumed otherwise would silently read
       garbage instead of failing. See ``export.normalized_ndjson``.

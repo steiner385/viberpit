@@ -56,9 +56,9 @@ def test_dynamic_oat_names_are_covered():
 
 
 def test_unrelated_and_bare_prefix_names_are_untouched():
-    env = {"HOME": "/home/tony", "CCSWITCH_": "x", "MYCCSWITCH_A": "y"}
+    env = {"HOME": "/home/tony", "CCSWITCH_": "x", "MYVIBERPIT_A": "y"}
     assert mirror_legacy_env(env) == {}
-    assert env == {"HOME": "/home/tony", "CCSWITCH_": "x", "MYCCSWITCH_A": "y"}
+    assert env == {"HOME": "/home/tony", "CCSWITCH_": "x", "MYVIBERPIT_A": "y"}
 
 
 def test_is_idempotent_on_a_mapping():

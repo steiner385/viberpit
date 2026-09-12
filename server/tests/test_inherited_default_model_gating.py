@@ -1,6 +1,6 @@
 """A session that names no model must be gated on the model it will ACTUALLY run on.
 
-ccswitch never hands the `claude` binary a model for a "default" launch, so the
+ViberPit never hands the `claude` binary a model for a "default" launch, so the
 binary picks one from the same sources it uses interactively — `ANTHROPIC_MODEL`
 in its env, then the `model` key of settings.local.json / settings.json. Every
 account's config dir symlinks those two files from `paths.shared_base()`, so one

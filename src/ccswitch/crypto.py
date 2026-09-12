@@ -1,4 +1,4 @@
-"""Envelope encryption for the ccswitch credential store.
+"""Envelope encryption for the ViberPit credential store.
 
 Design constraints:
 - Import MUST NOT raise even if `cryptography` is missing or no key is configured.
@@ -14,6 +14,8 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+from . import brand
 
 
 class CryptoError(Exception):
@@ -236,7 +238,7 @@ def _warn_no_key_once() -> None:
     if not _warned_no_key:
         _warned_no_key = True
         print(
-            "ccswitch: WARNING: No CCSWITCH_MASTER_KEY configured — "
+            f"{brand.CLI_NAME}: WARNING: No CCSWITCH_MASTER_KEY configured — "
             "credentials stored as plaintext. Run `ccswitch crypto init` to enable encryption.",
             file=sys.stderr,
         )

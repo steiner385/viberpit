@@ -6,7 +6,7 @@ Edit or Bash — a Backlog Runner needs git/gh/pytest, so an unattended run stal
 forever waiting for a human who was not watching.
 
 The fix resolves the mode the way the human path does, but falls back to "full-auto"
-instead of "interactive". The vocabulary is ccswitch's OWN — already implemented in
+instead of "interactive". The vocabulary is ViberPit's OWN — already implemented in
 `PermissionRegistry.request` and offered in the UI's canonical mode list — so no new
 mode is introduced.
 

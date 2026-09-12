@@ -8,11 +8,11 @@ honest null the frontend renders as "CI change, inspect manually".
 
 Rollup-job-id decision
 -----------------------
-ccswitch's migrated ciGraph meta (``history.py:ci_graph``) stores only
+ViberPit's migrated ciGraph meta (``history.py:ci_graph``) stores only
 ``{prefixes, workflowName}`` — NOT the rollup job id or the per-job node/timeout
 detail that plotroom keeps in-memory. deriveCiGraph needs a rollup job id to
 root the BFS. Plotroom defaults ``rollupJobId = 'ci'`` (required-checks.ts:258)
-and the ccswitch repos this targets gate merges on a ``ci`` rollup job (see
+and the ViberPit repos this targets gate merges on a ``ci`` rollup job (see
 required.py's module docstring). We therefore default the rollup job id to
 ``'ci'``; both base and head graphs are derived with the same id, so the diff is
 symmetric even if a given repo used a differently-named rollup (the base would

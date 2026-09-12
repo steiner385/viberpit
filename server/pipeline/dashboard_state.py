@@ -1,7 +1,7 @@
 """Assemble plotroom-shaped DashboardState JSON from ccswitch pipeline data.
 
 Vocabulary contract: plotroom@5166b52 frontend/src/types.ts. Keys are
-camelCase (this is a wire format, not internal state). Fields ccswitch
+camelCase (this is a wire format, not internal state). Fields ViberPit
 cannot populate yet (flake, regression, runner-wait, cost, timeline,
 mergeEtaSim, workflow-impact) are emitted as honest nulls/False; later
 phases fill them in — never fabricate.
@@ -164,7 +164,7 @@ def pr_view(
         "groupChecks": [check_view(c) for c in merge.checks] if (merge and pr.in_merge_queue) else None,
         "mergeEtaSim": merge_eta_sim,
         "costMinutes": None, "costDollars": None, "costDollarsPartial": False,
-        # ccswitch extension (spec §6): the authoring session + Fix eligibility.
+        # ViberPit extension (spec §6): the authoring session + Fix eligibility.
         "session": (
             {"id": p.session_id, "name": p.session_name, "fixable": fixable}
             if p.session_id else None

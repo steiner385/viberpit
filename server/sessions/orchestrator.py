@@ -1170,7 +1170,7 @@ class SessionOrchestrator:
         #: (C4-R17). Lazily created at its use site for the same reason.
         self._materialize_apply_locks: dict[str, asyncio.Lock] = {}
         # Control-Band Monitor control loop (#804): the BACK of the SDLC loop.
-        # Deterministic Western-Electric detection over ccswitch's own delivery
+        # Deterministic Western-Electric detection over ViberPit's own delivery
         # metrics against the committed `server/sdlc/bands.yaml` policy; a breach
         # files a triage item and, by tier, spawns a read-only diagnosis (2σ) or
         # queues an incident for SDLC Intake (3σ) — which is what closes the loop
@@ -1402,7 +1402,7 @@ class SessionOrchestrator:
                                        engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
                                        ) -> "AssistantApi":
         """Everything that makes one session an ASSISTANT rather than a coding agent:
-        mint its loopback bearer token, build the in-process ``ccswitch`` MCP server on
+        mint its loopback bearer token, build the in-process ``viberpit`` MCP server on
         top of it, and register the resulting ``ClaudeAgentOptions`` overlay. Returns
         the ``AssistantApi`` to hand to ``_create_driver(assistant_api=...)``, which the
         built ``AgentDriver`` then owns closing.
@@ -2179,13 +2179,13 @@ class SessionOrchestrator:
         can't starve *token* refresh. Skips accounts that are already needs-reauth
         (a dead single-use token can't be refreshed — don't hammer the endpoint)
         and accounts with a live session (the SDK owns that token family and
-        ccswitch must not refresh it out from under the running process).
+        ViberPit must not refresh it out from under the running process).
 
         Refreshes via ``acquire_valid_token``, NOT ``ensure_valid_token``: only the
         former recovers a rotation the SDK already performed (on AuthError it runs
         sync_back to pull the live cfg dir's token into the slot, then retries). This
         sweep runs against accounts whose session just ENDED, which is precisely when
-        ccswitch's store slot holds a token the SDK has already superseded — so
+        ViberPit's store slot holds a token the SDK has already superseded — so
         refreshing straight from the slot got 400 invalid_grant, which
         ``oauth.refresh_access_token`` treats as proof the grant is dead, and flipped
         healthy accounts to needs-reauth (2026-09-04: two accounts lost OAuth this
@@ -2355,7 +2355,7 @@ class SessionOrchestrator:
             ValueError: when cwd is given but does not exist.
             BranchSwitchError: when branch checkout fails.
             gitrepos.CloneError / gitrepos.GhError: when repo is given (no cwd)
-                and resolving it into a ccswitch-owned clone fails.
+                and resolving it into a ViberPit-owned clone fails.
         """
         # Validate engine availability before filesystem, database, queue, account,
         # or model-policy work. The default preserves existing in-process callers
@@ -2369,7 +2369,7 @@ class SessionOrchestrator:
                 raise ValueError(f"cwd does not exist: {cwd}")
         elif repo is not None:
             # No explicit cwd — resolve the repo (nameWithOwner) into a
-            # ccswitch-owned clone path, cloning on first use.  This MUST run
+            # ViberPit-owned clone path, cloning on first use.  This MUST run
             # in this process: gitrepos.ensure_clone owns the on-disk clone
             # registry, and in a dual-host deployment (edge on one host, this
             # orchestrator running in the session daemon on another) only the
@@ -3441,7 +3441,7 @@ class SessionOrchestrator:
         # out (child-branch fallback if it's busy elsewhere); without a branch, it's a
         # detached worktree off HEAD. Either way two sessions on one repo never collide,
         # and the user's real checkout is untouched. (No-repo sessions get a scratch dir
-        # below; this branch only applies when cwd is an actual git repo — the ccswitch
+        # below; this branch only applies when cwd is an actual git repo — the ViberPit
         # clone resolved by the API.)
         worktree_info: worktrees.WorktreeInfo | None = None
         if cwd is not None and worktrees.is_git_repo(cwd):
@@ -3458,7 +3458,7 @@ class SessionOrchestrator:
         # Resolve final cwd: an explicit cwd was already validated above; a
         # branch-selected session already has cwd=worktree path.  For a no-repo
         # session (no explicit cwd, no worktree) we create an isolated scratch dir
-        # under the ccswitch base so the agent never runs in the server's own
+        # under the ViberPit base so the agent never runs in the server's own
         # checkout.  This is the safety guarantee stated in the New Session dialog:
         # "your real checkouts are never touched."
         if cwd is None:
@@ -3573,8 +3573,8 @@ class SessionOrchestrator:
         row_persisted = False
         try:
             # Every session gets its options overlay registered BEFORE the driver is
-            # built — an assistant's full overlay (system prompt, in-process `ccswitch`
-            # MCP server, no builtin tools) or a coding session's `ccswitch` MCP
+            # built — an assistant's full overlay (system prompt, in-process `viberpit`
+            # MCP server, no builtin tools) or a coding session's `viberpit` MCP
             # surface: _session_factory picks it up from self._overlays the moment the
             # SDK factory closure runs inside driver.start() below.
             assistant_api = await self._setup_overlay_for_kind(
@@ -4402,7 +4402,7 @@ class SessionOrchestrator:
         self._spawn(self._persist_sub_agents(session_id))
         # Live-push the change to every connected dashboard so the session LIST updates
         # immediately, instead of waiting for the 5s poll (which the browser suspends
-        # while the ccswitch tab is backgrounded — the cause of cards getting stuck on
+        # while the ViberPit tab is backgrounded — the cause of cards getting stuck on
         # "Working…" until the session is opened). Mirrors the "rotated" broadcast; the
         # WS bridge forwards lifecycle frames top-level so the client's status handler
         # (_patchSessionStatus) patches the cached session record.
@@ -5346,7 +5346,7 @@ class SessionOrchestrator:
         """Spawn a de-duped runner session for *batch*, seeded with the implement
         prompt.
 
-        Resolves the repo's ccswitch-owned clone ``cwd`` off the event loop
+        Resolves the repo's ViberPit-owned clone ``cwd`` off the event loop
         (mirrors PR Doctor's spawn), then spawns via the de-dup-safe context
         spawner (stamps origin/origin_ref, enforces one session per primary, and
         emits ``spawned`` with ``detail.issues``). Returns the SessionRecord."""
@@ -8012,7 +8012,7 @@ class SessionOrchestrator:
             log_key="cicd_doctor")
 
     async def _cicd_list_repos(self, config: dict) -> list[str]:
-        """enabled_repos config, or every distinct repo ccswitch manages."""
+        """enabled_repos config, or every distinct repo ViberPit manages."""
         from sqlalchemy import select
         pinned = config.get("enabled_repos") or []
         if pinned:
@@ -9048,7 +9048,7 @@ class SessionOrchestrator:
         ``Propose`` (observable intent event, no side effect), and ``SessionFix``.
         ``SessionFix`` injects the kind-appropriate first prompt into a LIVE
         driver when the owning session is still running; otherwise it resolves the
-        repo's ccswitch clone ``cwd`` (via ``gitrepos.ensure_clone``, exactly like
+        repo's ViberPit clone ``cwd`` (via ``gitrepos.ensure_clone``, exactly like
         the New-Session API) and spawns a fresh, de-duped session seeded with that
         prompt against a real repo checkout + the PR branch. A clone or spawn
         failure emits an error, notifies, and does NOT consume an attempt (the
@@ -9169,7 +9169,7 @@ class SessionOrchestrator:
         driver it injects via the same send-prompt path (``request_pr_fix`` for
         failing_ci to preserve the old re-resolve+gate behaviour, direct
         ``send_prompt`` of the conflict prompt for merge_conflict), otherwise it
-        resolves the ccswitch clone ``cwd`` and spawns a fresh, de-duped session
+        resolves the ViberPit clone ``cwd`` and spawns a fresh, de-duped session
         seeded with that prompt. Emits the same ``attempted`` / ``spawn_failed``
         events as before. Returns ``(status, session_id)`` where status is
         ``"sent"`` | ``"spawned"`` (real injection) | ``"transient"`` |
@@ -9246,7 +9246,7 @@ class SessionOrchestrator:
         else:  # "failing_ci"
             prompt = build_pr_fix_prompt(repo, info, engine=eng)
 
-        # Resolve the ccswitch-owned clone `cwd` first (mirrors the New-Session
+        # Resolve the ViberPit-owned clone `cwd` first (mirrors the New-Session
         # API): create_session's worktree block only runs when `cwd` is a real git
         # repo, so without it the spawn falls to an empty scratch dir with
         # branch=None and the seeded `gh pr checkout` can't work. The user's real
@@ -10702,7 +10702,7 @@ class SessionOrchestrator:
 
         The population poller caches every open PR per repo (keyed by repo only);
         each PR carries its ``head_ref`` so PR Doctor can resolve one that no
-        ccswitch session authored — i.e. is absent from the per-branch cache."""
+        ViberPit session authored — i.e. is absent from the per-branch cache."""
         for info in self._pr_population.cached(repo):
             if info.head_ref == branch:
                 return info
@@ -12165,7 +12165,7 @@ class SessionOrchestrator:
 
             # A session's options overlay is rebuilt for EVERY driver build here, not
             # just at spawn: for an assistant it is what makes the session an assistant,
-            # for a coding session it is its `ccswitch` MCP surface — and every teardown
+            # for a coding session it is its `viberpit` MCP surface — and every teardown
             # (close, archive, idle reap) drops it along with the driver. See
             # _setup_assistant_overlay for why it must be rebuilt rather than preserved
             # (the old one holds a closed loopback client and a token that may already
@@ -12574,7 +12574,7 @@ class SessionOrchestrator:
 
         # The FOURTH driver-build site (see the fix-pattern doc named on
         # _setup_overlay_for_kind). An adopted process is always a coding session —
-        # never an assistant — so this arms its `ccswitch` MCP surface, which the
+        # never an assistant — so this arms its `viberpit` MCP surface, which the
         # system-prompt append tells every Claude session it has. Re-armed for the
         # fresh-start rebuild below, like ensure_driver's `_build`.
         await self._setup_overlay_for_kind(
@@ -14895,7 +14895,7 @@ class SessionOrchestrator:
             # raise against a dead connection unless a FRESH AssistantApi is minted
             # here and re-registered under record.id before the new AgentDriver is
             # built — the same _setup_overlay_for_kind the spawn and the resume use
-            # (#1125). A coding session's `ccswitch` surface is rebuilt for the same
+            # (#1125). A coding session's `viberpit` surface is rebuilt for the same
             # reason: the rotation drops the driver the overlay belonged to.
             assistant_api = await self._setup_overlay_for_kind(
                 record.id, kind=getattr(record, "kind", None), identity=identity,
@@ -15566,7 +15566,7 @@ class SessionOrchestrator:
 
         This is where archived-session disk is actually reclaimed (archiving
         itself is a pure status flip). New-style rows (archive_root NULL) have
-        their worktree deleted at ``cwd`` — guarded to ccswitch-managed paths —
+        their worktree deleted at ``cwd`` — guarded to ViberPit-managed paths —
         and its git worktree registration cleared. Legacy rows (non-NULL
         archive_root) have their moved-away archive folder deleted instead.
 
@@ -15634,7 +15634,7 @@ class SessionOrchestrator:
         directory could not be removed and the row must be KEPT so a later sweep retries
         (e.g. a stale sshfs handle that recovers on remount — #825).
 
-        Containment guard: sessions only ever run in ccswitch-created worktrees or
+        Containment guard: sessions only ever run in ViberPit-created worktrees or
         scratch dirs (both under a ``.ccswitch`` segment — see the create-session
         isolation guarantee), so anything else is a misconfigured row and is left
         in place rather than risk deleting a user's real directory. Guarded by
@@ -15643,7 +15643,7 @@ class SessionOrchestrator:
         """
         if ".ccswitch" not in cwd_path.parts:
             log.warning(
-                "session.permanent_delete id=%s cwd=%s is not a ccswitch-managed "
+                "session.permanent_delete id=%s cwd=%s is not a managed worktree "
                 "directory — leaving it in place, deleting the row only",
                 session_id, cwd_path,
             )

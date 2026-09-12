@@ -1,6 +1,6 @@
-"""GitHub repo discovery + ccswitch-owned clones.
+"""GitHub repo discovery + ViberPit-owned clones.
 
-ccswitch must NEVER touch the user's real ``~/GitHub`` checkouts.  All git
+ViberPit must NEVER touch the user's real ``~/GitHub`` checkouts.  All git
 activity it performs — clones AND worktrees — lives under
 ``<repo_root>/.ccswitch/``:
 
@@ -10,7 +10,7 @@ activity it performs — clones AND worktrees — lives under
 
 The "New session" repo picker lists the GitHub repos the user's ``gh``
 credentials can access (via the GraphQL API), and clones-on-select into the
-ccswitch clone namespace.  A fresh clone is left on a DETACHED head so that
+ViberPit clone namespace.  A fresh clone is left on a DETACHED head so that
 selecting a branch later yields a worktree literally on that branch (rather
 than a child branch off whatever the clone happened to check out).
 
@@ -21,7 +21,7 @@ otherwise use, and the daemon shares one global gh config with every session —
 KinDash bot login into that config hijacks the active identity and makes the
 user's own private repos vanish (``NOT_FOUND``).  EVERY ``gh`` subprocess therefore
 runs with those tokens stripped and, when ``CCSWITCH_GH_CONFIG_DIR`` is set, pinned
-to a dedicated config dir authed only as the ccswitch identity (see :func:`_gh_env`).
+to a dedicated config dir authed only as the ViberPit identity (see :func:`_gh_env`).
 """
 from __future__ import annotations
 
@@ -296,7 +296,7 @@ def clear_stale_credentials(name_with_owner: str) -> bool:
 
 
 def clones_base(repo_root: str) -> Path:
-    """ccswitch-owned root for all clones, under the user's repo root."""
+    """ViberPit-owned root for all clones, under the user's repo root."""
     return Path(repo_root).expanduser() / ".ccswitch" / "clones"
 
 
@@ -375,7 +375,7 @@ def _gh_env() -> dict[str, str]:
     * Strip both ``GITHUB_TOKEN`` and ``GH_TOKEN`` — either env var overrides the
       pinned account (a per-owner App token is re-set explicitly by :func:`_run_gh`).
     * When ``CCSWITCH_GH_CONFIG_DIR`` is set, point gh at a dedicated config dir authed
-      only as the ccswitch identity, so mutations to the default ``~/.config/gh`` can
+      only as the ViberPit identity, so mutations to the default ``~/.config/gh`` can
       never leak in.
     """
     env = {
@@ -600,7 +600,7 @@ def find_local_reference(repo_root: str, clone_url: str) -> str | None:
 
 
 def ensure_clone(repo_root: str, name_with_owner: str, clone_url: str) -> str:
-    """Ensure a ccswitch-owned clone of ``<owner>/<name>`` exists; return its path.
+    """Ensure a ViberPit-owned clone of ``<owner>/<name>`` exists; return its path.
 
     If the clone already exists (``<clone_path>/.git``), best-effort
     ``git fetch --prune origin`` and return it.  Otherwise create the parent
@@ -877,7 +877,7 @@ def _list_viewer_orgs() -> list[str]:
 
 
 def list_accessible_repos() -> list[dict]:
-    """List repos ccswitch can clone/branch/PR against, most-recently-pushed first.
+    """List repos ViberPit can clone/branch/PR against, most-recently-pushed first.
 
     Two paths, selected by whether an installations provider is registered:
 

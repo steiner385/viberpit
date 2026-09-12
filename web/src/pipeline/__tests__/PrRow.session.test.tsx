@@ -1,4 +1,4 @@
-// ccswitch blend test (spec §6): PrRow session label + Fix action. Not a plotroom port.
+// ViberPit blend test (spec §6): PrRow session label + Fix action. Not a plotroom port.
 import { render, screen, fireEvent } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
@@ -18,7 +18,7 @@ const pr = (over: Partial<PrView> = {}): PrView => ({
 const wrap = (ui: React.ReactNode) => render(
   <MemoryRouter><ApiBaseProvider base="/api/pipeline">{ui}</ApiBaseProvider></MemoryRouter>)
 
-describe('PrRow ccswitch extras', () => {
+describe('PrRow ViberPit extras', () => {
   it('shows the session label linking to the session', () => {
     wrap(<PrRow pr={pr()} hasDeploy={false} queueCulprit={null} />)
     const link = screen.getByRole('link', { name: /fix-auth/ })

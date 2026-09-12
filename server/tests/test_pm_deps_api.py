@@ -61,31 +61,31 @@ def test_deps_endpoint_returns_edges_and_drift(tmp_path):  # noqa: ARG001
 
         async def _seed_async() -> None:
             async with db_session() as db:
-                proj = Project(slug="ccswitch", name="ccswitch")
+                proj = Project(slug="viberpit", name="viberpit")
                 db.add(proj)
                 await db.flush()
 
                 db.add(ProjectRepo(project_id=proj.id,
-                                   repo="steiner385/cc-account-switcher",
+                                   repo="steiner385/viberpit",
                                    is_primary=True))
 
-                wi945 = WorkItem(repo="steiner385/cc-account-switcher", number=945,
+                wi945 = WorkItem(repo="steiner385/viberpit", number=945,
                                  kind="issue", title="i945", state="open")
-                wi949 = WorkItem(repo="steiner385/cc-account-switcher", number=949,
+                wi949 = WorkItem(repo="steiner385/viberpit", number=949,
                                  kind="issue", title="i949", state="open")
-                wi950 = WorkItem(repo="steiner385/cc-account-switcher", number=950,
+                wi950 = WorkItem(repo="steiner385/viberpit", number=950,
                                  kind="issue", title="i950", state="open")
-                wi960 = WorkItem(repo="steiner385/cc-account-switcher", number=960,
+                wi960 = WorkItem(repo="steiner385/viberpit", number=960,
                                  kind="issue", title="i960", state="open")
                 # Cross-product mirrored target: a different onboarded product's
-                # issue, mirrored (kind issue, state open) but NOT in ccswitch's repos.
+                # issue, mirrored (kind issue, state open) but NOT in ViberPit's repos.
                 wi_kd12 = WorkItem(repo="steiner385/KinDash", number=12,
                                    kind="issue", title="kd12", state="open")
                 db.add_all([wi945, wi949, wi950, wi960, wi_kd12])
                 await db.flush()
 
                 ghp = GhProject(project_id=proj.id, gh_project_number=7,
-                                title="cc-account-switcher")
+                                title="viberpit")
                 db.add(ghp)
                 await db.flush()
 
@@ -95,22 +95,22 @@ def test_deps_endpoint_returns_edges_and_drift(tmp_path):  # noqa: ARG001
                 # native dep: 950 → KinDash#12 (cross-product but MIRRORED →
                 # resolves to dstState "open", NOT unresolved)
                 db.add(WorkItemDep(
-                    src_ref="steiner385/cc-account-switcher#950",
+                    src_ref="steiner385/viberpit#950",
                     dst_ref="steiner385/KinDash#12",
                     source="native",
                     active=True,
                 ))
                 # native dep: 950 → KinDash#99 (truly unmirrored → unresolvedTargets)
                 db.add(WorkItemDep(
-                    src_ref="steiner385/cc-account-switcher#950",
+                    src_ref="steiner385/viberpit#950",
                     dst_ref="steiner385/KinDash#99",
                     source="native",
                     active=True,
                 ))
                 # prose dep: 950 → 949 (prose-only, no native counterpart)
                 db.add(WorkItemDep(
-                    src_ref="steiner385/cc-account-switcher#950",
-                    dst_ref="steiner385/cc-account-switcher#949",
+                    src_ref="steiner385/viberpit#950",
+                    dst_ref="steiner385/viberpit#949",
                     source="prose",
                     active=True,
                 ))
@@ -121,17 +121,17 @@ def test_deps_endpoint_returns_edges_and_drift(tmp_path):  # noqa: ARG001
         assert c.portal is not None
         c.portal.call(_seed_async)
 
-        resp = c.get("/api/pm/projects/ccswitch/deps", headers=IDENTITY_HEADERS)
+        resp = c.get("/api/pm/projects/viberpit/deps", headers=IDENTITY_HEADERS)
         assert resp.status_code == 200, resp.text
         body = resp.json()
 
         assert body["project"]["number"] == 7
         srcs = {e["src"] for e in body["edges"]}
-        assert "steiner385/cc-account-switcher#950" in srcs
+        assert "steiner385/viberpit#950" in srcs
 
         assert body["drift"]["proseOnly"] == [
-            {"src": "steiner385/cc-account-switcher#950",
-             "dst": "steiner385/cc-account-switcher#949"}]
+            {"src": "steiner385/viberpit#950",
+             "dst": "steiner385/viberpit#949"}]
 
         edge_by_dst = {e["dst"]: e for e in body["edges"]}
         # Cross-product MIRRORED target resolves: dstState "open", not unresolved.
@@ -142,7 +142,7 @@ def test_deps_endpoint_returns_edges_and_drift(tmp_path):  # noqa: ARG001
         assert edge_by_dst["steiner385/KinDash#99"]["dstState"] is None
         assert "steiner385/KinDash#99" in unresolved_dsts
 
-        assert "steiner385/cc-account-switcher#960" in body["drift"]["missingFromProject"]
+        assert "steiner385/viberpit#960" in body["drift"]["missingFromProject"]
 
 
 def test_deps_endpoint_404_on_unknown_slug():
@@ -242,19 +242,19 @@ def test_deps_endpoint_null_project_when_no_gh_project():
 
         async def _seed_async() -> None:
             async with db_session() as db:
-                proj = Project(slug="ccswitch", name="ccswitch")
+                proj = Project(slug="viberpit", name="viberpit")
                 db.add(proj)
                 await db.flush()
                 db.add(ProjectRepo(project_id=proj.id,
-                                   repo="steiner385/cc-account-switcher",
+                                   repo="steiner385/viberpit",
                                    is_primary=True))
-                wi950 = WorkItem(repo="steiner385/cc-account-switcher", number=950,
+                wi950 = WorkItem(repo="steiner385/viberpit", number=950,
                                  kind="issue", title="i950", state="open")
                 db.add(wi950)
                 await db.flush()
                 db.add(WorkItemDep(
-                    src_ref="steiner385/cc-account-switcher#950",
-                    dst_ref="steiner385/cc-account-switcher#949",
+                    src_ref="steiner385/viberpit#950",
+                    dst_ref="steiner385/viberpit#949",
                     source="prose",
                     active=True,
                 ))
@@ -263,7 +263,7 @@ def test_deps_endpoint_null_project_when_no_gh_project():
         assert c.portal is not None
         c.portal.call(_seed_async)  # the app's own loop — see the note above
 
-        resp = c.get("/api/pm/projects/ccswitch/deps", headers=IDENTITY_HEADERS)
+        resp = c.get("/api/pm/projects/viberpit/deps", headers=IDENTITY_HEADERS)
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["project"] is None

@@ -1,7 +1,7 @@
 """No-repo sessions run in an isolated scratch dir, not the server cwd.
 
 Regression test for issue #6: create_session with no repo/branch selected must
-place the session cwd inside <ccswitch-base>/scratch/<session-id>/, never in
+place the session cwd inside <viberpit-base>/scratch/<session-id>/, never in
 the server process cwd.
 """
 from __future__ import annotations
@@ -85,7 +85,7 @@ def test_no_repo_session_cwd_is_scratch_dir_not_server_cwd(tmp_path):
         "it must be an isolated scratch directory"
     )
 
-    # Must be inside the ccswitch scratch base (under the repo_root .ccswitch/scratch/)
+    # Must be inside the ViberPit scratch base (under the repo_root .ccswitch/scratch/)
     scratch_base = worktrees_base(str(repo_root)).parent / "scratch"
     assert rec.cwd.startswith(str(scratch_base)), (
         f"session cwd {rec.cwd!r} is not under the scratch base {scratch_base!r}"
@@ -105,7 +105,7 @@ def test_close_session_removes_scratch_dir(tmp_path):
     (shared_base / "projects").mkdir()
     cfg_dir = tmp_path / "cfg" / "alpha"; cfg_dir.mkdir(parents=True)
     repo_root = tmp_path / "reporoot"; repo_root.mkdir()
-    db_path = tmp_path / "ccswitch2.db"
+    db_path = tmp_path / "viberpit2.db"
     db_url = f"sqlite+aiosqlite:///{db_path}"
 
     env_patch = patch.dict(os.environ, {
@@ -160,7 +160,7 @@ def test_close_session_never_removes_paths_outside_scratch_base(tmp_path):
     cfg_dir = tmp_path / "cfg" / "alpha"; cfg_dir.mkdir(parents=True)
     repo_root = tmp_path / "reporoot"; repo_root.mkdir()
     external_dir = tmp_path / "external_project"; external_dir.mkdir()
-    db_path = tmp_path / "ccswitch3.db"
+    db_path = tmp_path / "viberpit3.db"
     db_url = f"sqlite+aiosqlite:///{db_path}"
 
     env_patch = patch.dict(os.environ, {

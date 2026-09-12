@@ -1,6 +1,6 @@
 """The authority's wire surface: JSONL over mutual TLS, with per-route ACLs.
 
-Why not FastAPI, when the rest of ccswitch's RPC is FastAPI
+Why not FastAPI, when the rest of ViberPit's RPC is FastAPI
 -----------------------------------------------------------
 Because the ACL this service needs cannot be built on it. The plan requires that
 "edge may administer login; runners may only request envelope/refresh", which
@@ -413,7 +413,7 @@ class AuthorityServer:
         """One audit line per call: alias, caller, action, outcome, generation, timing.
 
         Note what is absent: no native ChatGPT account id, no token, no device
-        code, no envelope. ``account`` here is ccswitch's own alias, which is
+        code, no envelope. ``account`` here is ViberPit's own alias, which is
         already public in the manifest, and ``generation`` is a counter — it says
         that a credential was issued or rotated, never which one.
         """

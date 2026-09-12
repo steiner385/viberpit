@@ -5,7 +5,7 @@ request, so every path here is really a question about a *pending native
 request*: who may answer it, whether the answer is still valid when it arrives,
 and what happens to it when the session, the turn, or the app-server goes away.
 Every one of those paths must be able to end in `decline` and none of them may
-end in `accept` by default — an approval ccswitch cannot service must never be
+end in `accept` by default — an approval ViberPit cannot service must never be
 granted.
 
 The requests are driven through the real transport (the fake writes a JSON-RPC
@@ -109,7 +109,7 @@ async def test_allow_answers_accept_once(harness):
 @pytest.mark.asyncio
 async def test_always_answers_the_engine_s_session_scoped_accept(harness):
     """"Always" is honoured by Codex for this session only. It must never write a
-    ccswitch grant (that cache is not consulted for an engine that enforces
+    ViberPit grant (that cache is not consulted for an engine that enforces
     approvals itself) and never a persisted global exception."""
     driver = await harness.boot()
     await harness.run_turn("build it")
@@ -212,7 +212,7 @@ async def test_an_allow_decided_after_the_runner_was_replaced_is_declined(harnes
 @pytest.mark.asyncio
 async def test_the_permissions_approval_surface_stays_unsupported(harness):
     """`item/permissions/requestApproval` hands back a permissions GRANT, which
-    ccswitch has no vocabulary for. It must keep taking the fail-closed
+    ViberPit has no vocabulary for. It must keep taking the fail-closed
     `-32601` path rather than being answered by this driver."""
     await harness.boot()
     request_id = harness.server.request(

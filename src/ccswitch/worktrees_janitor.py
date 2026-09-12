@@ -1,4 +1,4 @@
-"""Orphaned-worktree janitor — sweeps stale ccswitch worktrees.
+"""Orphaned-worktree janitor — sweeps stale ViberPit worktrees.
 
 Called by the orchestrator's ``_worktree_janitor_loop`` once at startup then
 every 24 h.  All git calls are synchronous subprocess calls; run inside

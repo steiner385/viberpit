@@ -41,7 +41,7 @@ function wrap() {
 
 describe('pm hooks', () => {
   it('useOnboarding returns the engine view', async () => {
-    const { result } = renderHook(() => useOnboarding('ccswitch'), { wrapper: wrap() })
+    const { result } = renderHook(() => useOnboarding('viberpit'), { wrapper: wrap() })
     await waitFor(() => expect(result.current.data?.action.type).toBe('classify'))
     expect(result.current.data?.counts.openUnclassifiedCount).toBe(30)
   })
@@ -57,9 +57,9 @@ describe('pm hooks', () => {
     vi.mocked(pm.advanceMap).mockResolvedValueOnce({ onboardingState: 'map_merged' })
     const { useAdvanceMap } = await import('@/api/hooks')
     const { result } = renderHook(() => useAdvanceMap(), { wrapper: wrap() })
-    result.current.mutate('ccswitch')
+    result.current.mutate('viberpit')
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(pm.advanceMap).toHaveBeenCalledWith('ccswitch')
+    expect(pm.advanceMap).toHaveBeenCalledWith('viberpit')
   })
 
   it('useAdvanceLive posts advance-live', async () => {
@@ -67,9 +67,9 @@ describe('pm hooks', () => {
     vi.mocked(pm.advanceLive).mockResolvedValueOnce({ onboardingState: 'live' })
     const { useAdvanceLive } = await import('@/api/hooks')
     const { result } = renderHook(() => useAdvanceLive(), { wrapper: wrap() })
-    result.current.mutate('ccswitch')
+    result.current.mutate('viberpit')
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(pm.advanceLive).toHaveBeenCalledWith('ccswitch')
+    expect(pm.advanceLive).toHaveBeenCalledWith('viberpit')
   })
 
   it('useSyncProject toasts on success — a 202 with no feedback read as "nothing happened"', async () => {
@@ -78,8 +78,8 @@ describe('pm hooks', () => {
     const { toast } = await import('sonner')
     const { useSyncProject } = await import('@/api/hooks')
     const { result } = renderHook(() => useSyncProject(), { wrapper: wrap() })
-    result.current.mutate('ccswitch')
+    result.current.mutate('viberpit')
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(toast.success).toHaveBeenCalledWith('Sync requested for ccswitch')
+    expect(toast.success).toHaveBeenCalledWith('Sync requested for viberpit')
   })
 })

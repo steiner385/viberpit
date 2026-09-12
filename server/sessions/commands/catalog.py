@@ -8,7 +8,7 @@ exactly two halves, and keeping them distinct is the whole point of this module:
   the Claude SDK already enumerates built-ins + custom commands + skills, and the
   Codex app-server answers `skills/list`. Whether an engine has this half at all
   is ``AgentCapabilities.vendor_commands``.
-* **App-owned commands** — what CCSWITCH implements on top of any engine
+* **App-owned commands** — what ViberPit implements on top of any engine
   (`/account`, `/model`, …). These are not the engine's; they are orchestrator
   operations that happen to be typed with a slash. Each one declares the engine
   capability it needs, so a session is offered `/model` only where a model can
@@ -62,7 +62,7 @@ EXCLUDED = {
     "release-notes", "status", "cost", "export", "add-dir",
 }
 
-#: Who owns a command — the engine, or ccswitch. On the wire so the palette can
+#: Who owns a command — the engine, or ViberPit. On the wire so the palette can
 #: label an entry honestly instead of implying every command is the engine's.
 VENDOR = "vendor"
 APP = "app"
@@ -88,7 +88,7 @@ class Command:
 
 @dataclass(frozen=True)
 class AppCommand:
-    """One ccswitch-owned command plus the engine capability it needs.
+    """One ViberPit-owned command plus the engine capability it needs.
 
     The gate is a predicate over the whole capability set rather than a single
     field name because the honest condition is sometimes a disjunction:
@@ -106,7 +106,7 @@ def _always(_caps: AgentCapabilities) -> bool:
     return True
 
 
-#: ccswitch-invented commands, present on no engine's own list.
+#: ViberPit-invented commands, present on no engine's own list.
 #:
 #: `/help` and `/context` render client-side from data every driver publishes
 #: (the catalog itself; `context_usage()`), and `/clear` is `driver.reconnect()`
@@ -188,7 +188,7 @@ def _coerce(entry, *, vendor_skills: bool) -> Command | None:
 def build_catalog(
     server_info: dict | None, capabilities: AgentCapabilities
 ) -> list[Command]:
-    """The commands *this* session accepts: the engine's, then ccswitch's own.
+    """The commands *this* session accepts: the engine's, then ViberPit's own.
 
     Vendor entries come first and win a name collision, because when an engine
     publishes a command of its own that name means whatever the engine says it

@@ -4,7 +4,7 @@ One rule, and this module exists to enforce it: **the credential cache is read
 here or nowhere.** ``codex login`` / ``codex logout`` write ``auth.json`` inside a
 managed ``CODEX_HOME``; the authority reads it back, validates it, and forms an
 in-memory :class:`~server.codex.auth_types.CredentialEnvelope`. Nothing else in
-ccswitch opens that file, and the envelope is never written anywhere.
+ViberPit opens that file, and the envelope is never written anywhere.
 
 Layout. Each OpenAI account gets ``<state_dir>/accounts/<name>/`` — an
 authority-only ``CODEX_HOME`` (0700, files 0600) created through

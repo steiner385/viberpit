@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 
+from ccswitch import brand
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "deploy" / "bin-viberpit-mounts.sh"
 UNIT = ROOT / "deploy" / "viberpit-mounts.service"
@@ -262,7 +264,7 @@ def test_canonical_units_keep_legacy_aliases_without_duplicate_templates():
     units += list((ROOT / "deploy").glob("viberpit*.timer"))
     assert len(units) == 12
     for canonical in units:
-        legacy = canonical.with_name(canonical.name.replace("viberpit", "ccswitch", 1))
+        legacy = canonical.with_name(canonical.name.replace(brand.SLUG, brand.LEGACY_SLUG, 1))
         assert legacy.is_symlink(), legacy
         assert legacy.resolve() == canonical
         # Remote template is installed as viberpit-daemon.service on the runner.

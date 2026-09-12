@@ -15,7 +15,7 @@ links:
 
 # Tailnet Identity Auth
 
-**Problem** — ccswitch runs live `claude` sessions across several Max/Copilot accounts and exposes
+**Problem** — ViberPit runs live `claude` sessions across several Max/Copilot accounts and exposes
 them to a browser over the network. Anyone who can reach the server can drive those sessions and
 read their transcripts, which contain secrets and account credentials. The v1 deployment is a
 personal, Tailscale-fronted host, so the auth layer must lean on the tailnet's verified identity
@@ -23,7 +23,7 @@ without shipping a password system, while still being safe to open to a LAN or (
 internet. This is constitution Principle IV (security-first, exposure-conditional auth) made
 concrete.
 
-**Target users** — the operator running their own ccswitch instance behind `tailscale serve`, plus
+**Target users** — the operator running their own ViberPit instance behind `tailscale serve`, plus
 any tailnet peers on the allowlist who are permitted to drive sessions from a phone or laptop.
 
 **Desired outcome** — every HTTP route and WebSocket upgrade is gated on a verified identity;

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""One-shot SQLite -> Postgres copy for ccswitch. Idempotent and resumable.
+"""One-shot SQLite -> Postgres copy for ViberPit. Idempotent and resumable.
 
 *** CUTOVER PRECONDITION -- READ BEFORE RUNNING THE AUTHORITATIVE --apply ***
 `ON CONFLICT DO NOTHING` means this script only ever INSERTs; it never UPDATEs a
-row that already exists in Postgres. If ccswitch writers are still running, a row
+row that already exists in Postgres. If ViberPit writers are still running, a row
 copied on an early --apply (e.g. `sessions.updated_at`, `ci_finding.last_seen_at`,
 `automation.last_fired_at`, `app_sessions.revoked_at`) will silently keep its OLD
 value forever, even though the live app has since mutated it in SQLite -- the
 re-run's INSERT for that row's PK is a no-op conflict, not a refresh. The
-AUTHORITATIVE run that Postgres cutover depends on MUST happen after ccswitch
+AUTHORITATIVE run that Postgres cutover depends on MUST happen after ViberPit
 writers are stopped. Any --apply run before that point is only a throughput
 pre-warm (see below) -- its rows must be treated as potentially stale, not as
 a completed migration.

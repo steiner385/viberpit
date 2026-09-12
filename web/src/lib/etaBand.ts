@@ -38,7 +38,7 @@ export function isOverrun(liveDeltaS: number, remHighS: number | null): boolean 
 export interface GanttRow { elapsed: number; expLow: number | null; expNominal: number | null; expHigh: number | null }
 export interface GanttSegments { fillPct: number; bandLeftPct: number | null; bandWidthPct: number | null; tickPct: number | null }
 
-// ccswitch stores REMAINING estimates; plotroom uses TOTAL expected. total = snapshot elapsed + remaining.
+// ViberPit stores REMAINING estimates; plotroom uses TOTAL expected. total = snapshot elapsed + remaining.
 export function expectedTotals(row: {
   duration_seconds: number | null
   rem_low_seconds?: number | null

@@ -14,7 +14,7 @@
 
 ## Web app smoke
 
-A quick end-to-end check of the ccswitch web UI. Full scenario coverage is in
+A quick end-to-end check of the ViberPit web UI. Full scenario coverage is in
 `specs/001-ccswitch-web/quickstart.md`.
 
 ### Prerequisites
@@ -50,10 +50,10 @@ the full scenario matrix.
 
 ## Accounts that sign in with Google ("Continue with Google")
 
-ccswitch works unchanged with Google-federated Claude accounts. Google is only the
+ViberPit works unchanged with Google-federated Claude accounts. Google is only the
 identity provider for claude.ai at login time; after `claude auth login` completes,
 Claude Code holds a normal **Anthropic** OAuth token (`claudeAiOauth` with a
-`refreshToken`). ccswitch stores and refreshes *that* token via
+`refreshToken`). ViberPit stores and refreshes *that* token via
 `platform.claude.com/v1/oauth/token` — it never stores or refreshes a Google token.
 
 The only practical care is the browser's Google session when capturing several

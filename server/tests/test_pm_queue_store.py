@@ -47,29 +47,29 @@ def _item(db, repo, number, *, status, score=None, is_epic=False, state="open"):
 
 def test_load_queue_rows_joins_board_status_blockers_sessions_and_children():
     db = _db()
-    _seed_product(db, "ccswitch", "steiner385/ccswitch", board=True)
-    a = _item(db, "steiner385/ccswitch", 1, status="Ready", score=8.0)
-    _item(db, "steiner385/ccswitch", 2, status="Ready")
-    c = _item(db, "steiner385/ccswitch", 3, status="Ready")  # blocked by open #1
-    epic = _item(db, "steiner385/ccswitch", 4, status="Backlog", is_epic=True)
-    child = _item(db, "steiner385/ccswitch", 5, status="Ready")
+    _seed_product(db, "viberpit", "steiner385/viberpit", board=True)
+    a = _item(db, "steiner385/viberpit", 1, status="Ready", score=8.0)
+    _item(db, "steiner385/viberpit", 2, status="Ready")
+    c = _item(db, "steiner385/viberpit", 3, status="Ready")  # blocked by open #1
+    epic = _item(db, "steiner385/viberpit", 4, status="Backlog", is_epic=True)
+    child = _item(db, "steiner385/viberpit", 5, status="Ready")
     child.parent_work_item_id = epic.id
-    db.add(WorkItemDep(src_ref="steiner385/ccswitch#3", dst_ref="steiner385/ccswitch#1", source="native",
+    db.add(WorkItemDep(src_ref="steiner385/viberpit#3", dst_ref="steiner385/viberpit#1", source="native",
                        active=True, src_work_item_id=c.id, dst_work_item_id=a.id))
-    db.add(WorkItemDep(src_ref="steiner385/ccswitch#2", dst_ref="cairnea/KinDash#7", source="prose",
+    db.add(WorkItemDep(src_ref="steiner385/viberpit#2", dst_ref="cairnea/KinDash#7", source="prose",
                        active=True))  # unmirrored cross-repo dst
     db.add(DbSession(id="s1", name="s", account_name="a", cwd="/tmp", origin="backlog-runner",
-                     origin_ref="steiner385/ccswitch#2", status="in_progress"))
+                     origin_ref="steiner385/viberpit#2", status="in_progress"))
     db.commit()
 
-    rows = {r.ref: r for r in load_queue_rows(db, now=NOW, claimed_refs={"steiner385/ccswitch#5"})}
+    rows = {r.ref: r for r in load_queue_rows(db, now=NOW, claimed_refs={"steiner385/viberpit#5"})}
 
-    assert rows["steiner385/ccswitch#3"].open_blockers == ("steiner385/ccswitch#1",)
-    assert rows["steiner385/ccswitch#2"].open_blockers == ("cairnea/KinDash#7",)  # unknown state fails closed
-    assert rows["steiner385/ccswitch#2"].live_session is True
-    assert rows["steiner385/ccswitch#4"].open_children == 1
-    assert rows["steiner385/ccswitch#5"].claimed is True
-    assert rows["steiner385/ccswitch#1"].product == "ccswitch" and rows["steiner385/ccswitch#1"].score == 8.0
+    assert rows["steiner385/viberpit#3"].open_blockers == ("steiner385/viberpit#1",)
+    assert rows["steiner385/viberpit#2"].open_blockers == ("cairnea/KinDash#7",)  # unknown state fails closed
+    assert rows["steiner385/viberpit#2"].live_session is True
+    assert rows["steiner385/viberpit#4"].open_children == 1
+    assert rows["steiner385/viberpit#5"].claimed is True
+    assert rows["steiner385/viberpit#1"].product == "viberpit" and rows["steiner385/viberpit#1"].score == 8.0
 
 
 def test_open_blocker_resolves_dst_across_products_and_closed_releases_it():
@@ -78,22 +78,22 @@ def test_open_blocker_resolves_dst_across_products_and_closed_releases_it():
     WorkItem is the dst of two deps from the first product: one to a CLOSED issue
     (releases the blocker) and one to an OPEN issue (still blocks)."""
     db = _db()
-    _seed_product(db, "ccswitch", "steiner385/ccswitch", board=True)
+    _seed_product(db, "viberpit", "steiner385/viberpit", board=True)
     _seed_product(db, "kindash", "cairnea/KinDash", board=False)  # dst-only product, no board
-    src_closed_dst = _item(db, "steiner385/ccswitch", 10, status="Ready")
-    src_open_dst = _item(db, "steiner385/ccswitch", 11, status="Ready")
+    src_closed_dst = _item(db, "steiner385/viberpit", 10, status="Ready")
+    src_open_dst = _item(db, "steiner385/viberpit", 11, status="Ready")
     _item(db, "cairnea/KinDash", 20, status="Ready", state="closed")  # closed blocker
     _item(db, "cairnea/KinDash", 21, status="Ready", state="open")  # open blocker
-    db.add(WorkItemDep(src_ref="steiner385/ccswitch#10", dst_ref="cairnea/KinDash#20", source="native",
+    db.add(WorkItemDep(src_ref="steiner385/viberpit#10", dst_ref="cairnea/KinDash#20", source="native",
                        active=True, src_work_item_id=src_closed_dst.id))
-    db.add(WorkItemDep(src_ref="steiner385/ccswitch#11", dst_ref="cairnea/KinDash#21", source="native",
+    db.add(WorkItemDep(src_ref="steiner385/viberpit#11", dst_ref="cairnea/KinDash#21", source="native",
                        active=True, src_work_item_id=src_open_dst.id))
     db.commit()
 
     rows = {r.ref: r for r in load_queue_rows(db, now=NOW)}
 
-    assert rows["steiner385/ccswitch#10"].open_blockers == ()  # closed dst releases the blocker
-    assert rows["steiner385/ccswitch#11"].open_blockers == ("cairnea/KinDash#21",)  # open dst still blocks
+    assert rows["steiner385/viberpit#10"].open_blockers == ()  # closed dst releases the blocker
+    assert rows["steiner385/viberpit#11"].open_blockers == ("cairnea/KinDash#21",)  # open dst still blocks
 
 
 def test_parse_iso_utc_is_the_one_row_timestamp_parser():
@@ -149,30 +149,30 @@ def test_load_queue_rows_threads_needs_human_at():
     """Phase D: the runner's durable give-up stamps ride onto the rows the pure
     core cools down from — the loader only threads the map, it never reads a label."""
     db = _db()
-    _seed_product(db, "ccswitch", "steiner385/ccswitch", board=True)
-    _item(db, "steiner385/ccswitch", 5, status="Ready")
-    _item(db, "steiner385/ccswitch", 6, status="Ready")
+    _seed_product(db, "viberpit", "steiner385/viberpit", board=True)
+    _item(db, "steiner385/viberpit", 5, status="Ready")
+    _item(db, "steiner385/viberpit", 6, status="Ready")
     db.commit()
     at = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
     rows = load_queue_rows(db, now=NOW,
-                           needs_human_at={"steiner385/ccswitch#5": at})
+                           needs_human_at={"steiner385/viberpit#5": at})
 
     by_ref = {r.ref: r for r in rows}
-    assert by_ref["steiner385/ccswitch#5"].needs_human_at == at
+    assert by_ref["steiner385/viberpit#5"].needs_human_at == at
     assert all(r.needs_human_at is None for ref, r in by_ref.items()
-               if ref != "steiner385/ccswitch#5")
+               if ref != "steiner385/viberpit#5")
 
 
 def test_load_queue_rows_skips_products_without_a_board_and_closed_items():
     db = _db()
-    _seed_product(db, "ccswitch", "steiner385/ccswitch", board=True)
+    _seed_product(db, "viberpit", "steiner385/viberpit", board=True)
     _seed_product(db, "kindash", "cairnea/KinDash", board=False)
-    _item(db, "steiner385/ccswitch", 1, status="Ready", score=5.0)
-    _item(db, "steiner385/ccswitch", 2, status="Ready", state="closed")
+    _item(db, "steiner385/viberpit", 1, status="Ready", score=5.0)
+    _item(db, "steiner385/viberpit", 2, status="Ready", state="closed")
     _item(db, "cairnea/KinDash", 3, status="Ready", score=9.0)
     db.commit()
 
     rows = {r.ref: r for r in load_queue_rows(db, now=NOW)}
 
-    assert set(rows) == {"steiner385/ccswitch#1"}
+    assert set(rows) == {"steiner385/viberpit#1"}

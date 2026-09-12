@@ -10,7 +10,7 @@ class _FakeOrch:
     async def list_sessions(self): self.calls.append("list_sessions"); return [self.name]
     async def usage(self, acct, *, timeout=None):  # mirrors a @rpc_deadline method
         self.calls.append(("usage", acct, timeout)); return {"acct": acct}
-    setattr(usage, "__ccswitch_rpc_deadline__", True)
+    setattr(usage, "__viberpit_rpc_deadline__", True)
     def daemon_sha(self): return "abc1234"
     async def list_archived(self):
         self.calls.append("list_archived"); return [("archived", self.name)]

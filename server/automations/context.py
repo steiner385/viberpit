@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 # Bash blocks forever on a prompt nobody will answer — a Backlog Runner needs git,
 # gh and pytest, so unattended runs stalled indefinitely (#750).
 #
-# "full-auto" is ccswitch's OWN existing mode (PermissionRegistry.request, and the
+# "full-auto" is ViberPit's OWN existing mode (PermissionRegistry.request, and the
 # canonical list in web/src/session/permissionModes.ts). It approves every tool
 # without prompting, INCLUDING shell. That is a deliberate, owner-approved trade:
 # there is no middle tier that permits edits and shell while gating anything else —

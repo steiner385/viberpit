@@ -1775,7 +1775,7 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 # Skipped for a `ccas2:` (via="cli") socket: `verify_identity` only ever
                 # reads the Tailscale proxy header, which a bearer-token connection
                 # never carries — re-running it every frame would close a valid
-                # ccswitch-ask socket on its very first message. The token's validity
+                # `ccswitch ask` socket on its very first message. The token's validity
                 # (signature + DB revocation + expiry) was already fully checked once
                 # at the handshake in `require_ws_identity`, and unlike a Tailscale
                 # header behind a proxy, the Authorization header cannot drift mid-

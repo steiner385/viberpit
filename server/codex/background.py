@@ -16,7 +16,7 @@ by process *tree* (`sweep_orphans` → `terminate_process_tree`). Either way eve
 background terminal is gone before the new daemon reads its snapshot, and the pinned
 contract publishes no method that would put one back: the app-server exposes exactly
 `list`, `terminate` and `clean` for them — three ways to observe or end a terminal,
-none to start one. So ccswitch does the only honest thing with a snapshot of them:
+none to start one. So ViberPit does the only honest thing with a snapshot of them:
 it **names them to the session and stops there**. The alternative — replaying a
 captured shell command line because it appeared in a list — is how a deploy restart
 silently runs a push, a migration, or an install a second time. That refusal is what

@@ -6,7 +6,7 @@ import { IconButton } from '@/ui/IconButton'
 import { useCredentialAlerts, useDismissCredentialAlert } from '@/hooks/useCredentialAlerts'
 
 /**
- * App-level banner: when a ccswitch clone can no longer fetch because its git
+ * App-level banner: when a ViberPit clone can no longer fetch because its git
  * credentials are stale (issue #670), surface a prominent, actionable warning
  * linking to the page that actually fixes it. Renders nothing until at least one
  * repo is flagged. Backlog Runner pauses those repos server-side until a fetch

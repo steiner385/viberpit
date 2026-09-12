@@ -22,7 +22,7 @@
 // a second opinion about the same fact.
 //
 // Tokens only — this file is under `src/features/`, where
-// `ccswitch/no-raw-palette` is enforced.
+// `viberpit/no-raw-palette` is enforced.
 import { Link } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/ui/Badge'

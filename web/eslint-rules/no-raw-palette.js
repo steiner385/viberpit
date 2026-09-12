@@ -1,4 +1,4 @@
-// ccswitch/no-raw-palette — bans Tailwind palette literals, dark: variants, hex
+// viberpit/no-raw-palette — bans Tailwind palette literals, dark: variants, hex
 // colors, z-index literals and arbitrary pixel sizes inside class strings.
 // Scope is `src/**` minus the chart allowlist (row 7f, 2026-09), applied in
 // eslint.config.js. Rationale: docs/superpowers/specs/2026-09-02-ui-foundation-tokens-primitives-design.md §2.5.

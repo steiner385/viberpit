@@ -90,7 +90,7 @@ def test_filesystem_type_follows_a_symlinked_path_component(tmp_path):
     link = tmp_path / "state"
     link.symlink_to(share)
     mounts = (("/", "ext4"), (str(share), "fuse.sshfs"))
-    assert proc.filesystem_type_for(link / "ccswitch" / "codex", mounts=mounts) == "fuse.sshfs"
+    assert proc.filesystem_type_for(link / "viberpit" / "codex", mounts=mounts) == "fuse.sshfs"
 
 
 def test_filesystem_type_resolves_a_path_that_does_not_exist_yet(tmp_path):
@@ -99,7 +99,7 @@ def test_filesystem_type_resolves_a_path_that_does_not_exist_yet(tmp_path):
     share.mkdir()
     (tmp_path / "state").symlink_to(share)
     mounts = (("/", "ext4"), (str(share), "nfs4"))
-    candidate = tmp_path / "state" / "ccswitch" / "codex" / "openai-main"
+    candidate = tmp_path / "state" / "viberpit" / "codex" / "openai-main"
     assert not candidate.exists()
     assert proc.filesystem_type_for(candidate, mounts=mounts) == "nfs4"
     with pytest.raises(proc.CodexHomeRefused):

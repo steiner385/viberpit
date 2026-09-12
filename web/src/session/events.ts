@@ -22,7 +22,7 @@ export interface EvToolCall      { type: 'toolCall';      turnId: string; toolId
 export interface EvToolResult    { type: 'toolResult';    toolId: string; ok: boolean; payload: Record<string, unknown>; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }
 // `alwaysAllowed` is false only for destructive `mcp__viberpit__*` tools (spec §4.4);
 // mirrors PermissionRequest.always_allowed (server/sessions/events.py), default true.
-// `items` is set only for a BATCH ccswitch tool (archive_sessions, delete_sessions…):
+// `items` is set only for a BATCH ViberPit tool (archive_sessions, delete_sessions…):
 // the titles of every session it would act on (spec v2 B4) — mirrors
 // PermissionRequest.items.
 export interface EvPermissionRequest { type: 'permissionRequest'; permId: string; turnId: string; tool: string; toolKind: ToolKind; input: Record<string, unknown>; plan: boolean; alwaysAllowed?: boolean; items?: string[] | null; parentToolUseId?: string | null; ts?: number }
@@ -82,7 +82,7 @@ export interface Command {
    */
   kind: 'client' | 'control' | 'passthrough' | 'skill'
   /**
-   * Who owns the command: the engine's own catalog, or ccswitch's. Optional
+   * Who owns the command: the engine's own catalog, or ViberPit's. Optional
    * because a DETACHED session replays the catalog persisted on its record
    * (SessionRecord.command_catalog), and a row written before #1286 has no
    * `source` — it gains one the next time the session is live. Nothing may

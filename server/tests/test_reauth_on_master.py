@@ -1,6 +1,6 @@
 """Reauth runs on the MASTER (edge), never proxied to a worker daemon.
 
-dobby is the master: ccswitch core, configuration and operations live there.
+dobby is the master: ViberPit core, configuration and operations live there.
 rocky is a worker that executes sessions. Reauth is an OPERATION — it mints a
 credential — so it belongs on the master even though it needs a browser.
 

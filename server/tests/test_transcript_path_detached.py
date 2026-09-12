@@ -81,7 +81,7 @@ def test_transcript_path_found_under_nonmatching_project_dir(tmp_path):
     A cwd/project mismatch (session recorded a different cwd than it ran in) is also
     handled, since the UUID is globally unique across project dirs."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
-    cwd = "/mnt/ssk-ssd/tony/GitHub/cc-account-switcher"
+    cwd = "/mnt/ssk-ssd/tony/GitHub/viberpit"
     claude_sid = "uuid-unique-regression"
     session_id = "sess-leading-dash"
 
@@ -112,13 +112,13 @@ def test_transcript_path_resolves_via_shared_base_when_account_symlink_broken(tm
     when the per-account symlink is broken.
     """
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
-    cwd = "/mnt/ssk-ssd/tony/GitHub/cc-account-switcher"
+    cwd = "/mnt/ssk-ssd/tony/GitHub/viberpit"
     claude_sid = "uuid-shared-base-regression"
     session_id = "sess-broken-symlink"
 
     # The transcript physically lives in the shared base's projects tree.
     shared = tmp_path / "shared-claude"
-    shared_projects = shared / "projects" / "-mnt-ssk-ssd-tony-GitHub-cc-account-switcher"
+    shared_projects = shared / "projects" / "-mnt-ssk-ssd-tony-GitHub-viberpit"
     shared_projects.mkdir(parents=True)
     transcript_file = shared_projects / f"{claude_sid}.jsonl"
     transcript_file.write_text('{"type":"text"}\n')

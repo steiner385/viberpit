@@ -1,4 +1,4 @@
-"""Unit tests for the pure helpers in scripts/ccswitch-sqlite-to-pg.py.
+"""Unit tests for the pure helpers in scripts/viberpit-sqlite-to-pg.py.
 
 _combine_where and _row_coercers are the entire fix for two migration defects
 (the SQL OR-precedence hazard in the retention predicate, and the JSON/DateTime
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "ccswitch-sqlite-to-pg.py"
+_SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "viberpit-sqlite-to-pg.py"
 
 
 def _load_migration_module():

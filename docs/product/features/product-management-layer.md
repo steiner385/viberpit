@@ -9,7 +9,7 @@ links:
 
 # Product-Management Layer
 
-**Problem** — ccswitch's autonomous SDLC can *build* work, but it had no product-management
+**Problem** — ViberPit's autonomous SDLC can *build* work, but it had no product-management
 brain to decide *what the work is*. There was no durable model of what a product actually is
 (its capabilities), no place to record outcome-driven feature intent, and no principled way to
 route an open backlog into capability areas. For an existing project with hundreds of open and
@@ -100,7 +100,7 @@ Inbox's "Needs a home" Reclassify control (phase 6).
 
 **Map-changes PRs (spec §9) — backend and UI landed (row 8c).** A capability edit made through
 `POST /api/pm/projects/{slug}/map-changes` (`create` | `rename` | `reparent` | `summary` | `links`)
-is committed by the server itself — no agent session — onto one long-lived ccswitch-owned branch
+is committed by the server itself — no agent session — onto one long-lived ViberPit-owned branch
 per product, `pm/map-changes-<slug>`, through GitHub's `createCommitOnBranch` (atomic, so the
 shared clone is never mutated); the first edit opens the PR, `DELETE` abandons it (close + delete
 the branch + drop the capabilities that only ever lived on it) and `POST …/map-changes/rebase`

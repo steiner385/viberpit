@@ -68,7 +68,7 @@ export interface ProductCounts {
 }
 
 /**
- * The product's ccswitch-owned map-changes branch/PR (spec §9,
+ * The product's ViberPit-owned map-changes branch/PR (spec §9,
  * `server/pm/map_changes.py:Pointer`). Capability edits from the map commit to
  * it and show as proposed until it merges; `behind` is what offers Rebase and
  * `conflicting` what raises the conflict banner.

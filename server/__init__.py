@@ -1,4 +1,4 @@
-# ccswitch web backend
+# ViberPit web backend
 #
 # The env-prefix mirror (VIBERPIT_* <-> CCSWITCH_*) runs here rather than in
 # server/app.py because `app = create_app()` executes at *import* time and many

@@ -1,4 +1,4 @@
-"""Alembic env.py for ccswitch-web.
+"""Alembic env.py for ViberPit web.
 
 Offline mode: generates SQL without connecting.
 Online mode: connects to the target DB and runs migrations.

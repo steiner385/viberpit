@@ -1,4 +1,4 @@
-"""feature_map_changes: pointer to a product's ccswitch-owned map-changes PR
+"""feature_map_changes: pointer to a product's ViberPit-owned map-changes PR
 
 Revision ID: 0040_feature_map_changes
 Revises: 0039_child_sessions

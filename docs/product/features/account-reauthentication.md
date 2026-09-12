@@ -47,7 +47,7 @@ Running re-auth on a worker — it must run on the master and stream the display
   plus `awaiting_code`/`submit_code` for the setup-token path) with a startup stale-sweep and
   cancel. `reauth_remote.py` + `server/ipc/reauth_rpc.py` project it across the daemon RPC boundary.
 - Setup-token generation moved from headless PTY scraping of `claude setup-token` to an in-process
-  OAuth2 PKCE flow (`setup_token_oauth.py`, #366): the user pastes the code, ccswitch exchanges it
+  OAuth2 PKCE flow (`setup_token_oauth.py`, #366): the user pastes the code, ViberPit exchanges it
   for a ~1-year `sk-ant-oat01-…` setup-token, stored encrypted. `account_auth.py` turns that stored
   token into `CLAUDE_CODE_OAUTH_TOKEN` for every launch and helper call site — so an account with a
   dead browser-OAuth refresh token but a live setup-token authenticates everywhere.

@@ -36,7 +36,7 @@ function renderWizard() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter><OnboardingWizard slug="ccswitch" /></MemoryRouter>
+      <MemoryRouter><OnboardingWizard slug="viberpit" /></MemoryRouter>
     </QueryClientProvider>,
   )
 }
@@ -54,7 +54,7 @@ describe('OnboardingWizard', () => {
         .toBeInTheDocument())
     expect(screen.getByText(/30 open items/i)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /classify backlog/i }))
-    await waitFor(() => expect(classify).toHaveBeenCalledWith('ccswitch'))
+    await waitFor(() => expect(classify).toHaveBeenCalledWith('viberpit'))
   })
 
   it('offers the Propose capability map button for a propose_map action', async () => {
@@ -68,7 +68,7 @@ describe('OnboardingWizard', () => {
       expect(screen.getByRole('button', { name: /propose capability map/i }))
         .toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: /propose capability map/i }))
-    await waitFor(() => expect(proposeMap).toHaveBeenCalledWith('ccswitch'))
+    await waitFor(() => expect(proposeMap).toHaveBeenCalledWith('viberpit'))
   })
 
   it('renders the server error inline under Propose capability map when it fails', async () => {
@@ -110,9 +110,9 @@ describe('OnboardingWizard', () => {
     const link = await screen.findByRole('link', { name: /open the capability-map pr/i })
     expect(link).toHaveAttribute('href', MAP_PR.url)
     fireEvent.click(screen.getByRole('button', { name: /map merged/i }))
-    await waitFor(() => expect(advanceMap).toHaveBeenCalledWith('ccswitch'))
+    await waitFor(() => expect(advanceMap).toHaveBeenCalledWith('viberpit'))
     fireEvent.click(screen.getByRole('button', { name: /propose again/i }))
-    await waitFor(() => expect(proposeMap).toHaveBeenCalledWith('ccswitch'))
+    await waitFor(() => expect(proposeMap).toHaveBeenCalledWith('viberpit'))
   })
 
   it('await_map_pr without a primary repo still offers the advance, without a link', async () => {
@@ -132,9 +132,9 @@ describe('OnboardingWizard', () => {
     })
     renderWizard()
     const link = await screen.findByRole('link', { name: /review 4 proposals in the inbox/i })
-    expect(link).toHaveAttribute('href', '/roadmap?scope=inbox&product=ccswitch')
+    expect(link).toHaveAttribute('href', '/roadmap?scope=inbox&product=viberpit')
     fireEvent.click(screen.getByRole('button', { name: /go live/i }))
-    await waitFor(() => expect(advanceLive).toHaveBeenCalledWith('ccswitch'))
+    await waitFor(() => expect(advanceLive).toHaveBeenCalledWith('viberpit'))
   })
 
   it('register: says plainly that no repository is attached', async () => {

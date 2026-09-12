@@ -114,8 +114,8 @@ def test_plan_mode_can_never_write_on_codex():
     assert not profile.sandbox_mode.write_capable
 
 
-def test_no_mode_is_more_permissive_on_codex_than_it_is_on_ccswitch():
-    """Every mode that would still ask a human on the ccswitch side keeps an
+def test_no_mode_is_more_permissive_on_codex_than_it_is_on_viberpit():
+    """Every mode that would still ask a human on the ViberPit side keeps an
     approval channel on the Codex side."""
     for mode in ("interactive", "allowlist", "auto", "acceptEdits", "plan"):
         assert profile_for_mode(mode).approval_policy.prompts_human

@@ -231,9 +231,9 @@ async def test_replay_on_a_host_without_codex_reports_no_history_not_an_empty_on
 
 
 @pytest.mark.asyncio
-async def test_archive_releases_ccswitch_ownership_without_touching_the_thread(
+async def test_archive_releases_viberpit_ownership_without_touching_the_thread(
         tmp_path: Path, isolated_db) -> None:
-    """Archiving is reversible in ccswitch (unarchive exists), so it must not
+    """Archiving is reversible in ViberPit (unarchive exists), so it must not
     archive or delete the native thread — that would destroy the resumability
     unarchive depends on. It releases the runner claim and closes the driver."""
     class _StrictClient(_FakeThreadClient):

@@ -313,7 +313,7 @@ _DEADLINE_CAPABLE_RPCS = frozenset({
 def _marked() -> set[str]:
     import inspect as _inspect
     return {name for name, fn in _inspect.getmembers(RemoteOrchestrator, _inspect.isfunction)
-            if getattr(fn, "__ccswitch_rpc_deadline__", False)}
+            if getattr(fn, "__viberpit_rpc_deadline__", False)}
 
 
 def test_marked_rpcs_match_the_allowlist():
@@ -329,7 +329,7 @@ def test_no_rpc_takes_a_timeout_without_being_marked():
 
     unmarked = set()
     for name, fn in _inspect.getmembers(RemoteOrchestrator, _inspect.isfunction):
-        if getattr(fn, "__ccswitch_rpc_deadline__", False):
+        if getattr(fn, "__viberpit_rpc_deadline__", False):
             continue
         try:
             params = _inspect.signature(fn).parameters

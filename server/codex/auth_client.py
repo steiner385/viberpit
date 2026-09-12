@@ -3,7 +3,7 @@
 One connection per call, deliberately
 -------------------------------------
 There is no connection pool here. The plan warns against an outer
-``asyncio.wait_for`` stranding a pooled connection — the failure ccswitch already
+``asyncio.wait_for`` stranding a pooled connection — the failure ViberPit already
 lived through on the edge→daemon HTTP path (issue #734, see
 ``server/sessions/facade.py:call_with_deadline``). A pool plus a cancellation is
 what turns one slow call into a permanently unusable transport.

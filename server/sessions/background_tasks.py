@@ -52,7 +52,7 @@ _GUARD = ("This task was interrupted by a server restart and may have partially 
           "restarting blindly.")
 
 # The non-replayable half. Deliberately phrased as a notification with no imperative:
-# ccswitch is telling the session what it lost, not handing it a script to re-run.
+# ViberPit is telling the session what it lost, not handing it a script to re-run.
 _LOST_HEADER = ("The daemon was restarted (deploy). These background processes you "
                 "had left running were stopped with it and were NOT restarted:")
 _LOST_GUARD = ("They cannot be restored automatically — the command lines and agent "

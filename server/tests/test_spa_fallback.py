@@ -11,7 +11,7 @@ from server.spa import mount_spa
 def _make_dist(tmp_path: Path) -> Path:
     dist = tmp_path / "dist"
     dist.mkdir()
-    (dist / "index.html").write_text("<!doctype html><title>ccswitch</title>")
+    (dist / "index.html").write_text("<!doctype html><title>viberpit</title>")
     assets = dist / "assets"
     assets.mkdir()
     (assets / "app.js").write_text("console.log('hi')")
@@ -25,7 +25,7 @@ async def test_spa_serves_index_for_client_route(tmp_path):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/session/abc123")
     assert resp.status_code == 200
-    assert "ccswitch" in resp.text
+    assert "viberpit" in resp.text
 
 
 @pytest.mark.asyncio

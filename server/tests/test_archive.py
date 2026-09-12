@@ -464,7 +464,7 @@ def test_permanent_delete_live_session_archives_then_deletes(tmp_path):
     driver; the worktree stays at cwd) and then remove the worktree + DB row.
     """
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ccswitch.db'}"
-    # Real sessions always run in ccswitch-created worktrees/scratch dirs —
+    # Real sessions always run in ViberPit-created worktrees/scratch dirs —
     # the purge's containment guard requires the .ccswitch path segment.
     cwd = tmp_path / ".ccswitch" / "worktrees" / "live_cwd"
 
@@ -546,7 +546,7 @@ def test_permanent_delete_new_style_removes_worktree(tmp_path):
     assert not cwd_exists
 
 
-def test_permanent_delete_leaves_non_ccswitch_cwd_in_place(tmp_path):
+def test_permanent_delete_leaves_non_viberpit_cwd_in_place(tmp_path):
     """Containment guard: a cwd outside any .ccswitch segment is never deleted —
     the row is purged but the directory is left alone (misconfigured row must
     not cost the user a real directory)."""

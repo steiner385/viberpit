@@ -1,1 +1,1 @@
-# ccswitch auth package
+# ViberPit auth package

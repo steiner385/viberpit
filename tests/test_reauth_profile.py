@@ -137,7 +137,7 @@ def test_prepare_missing_source_raises_when_cookies_requested(tmp_path, monkeypa
 
 
 def test_prepare_missing_source_is_fine_when_no_cookies_requested(tmp_path, monkeypatch):
-    """The dedicated ccswitch profile does not exist until Chrome first writes it;
+    """The dedicated ViberPit profile does not exist until Chrome first writes it;
     with nothing to copy out of it that is not an error, just an empty profile."""
     monkeypatch.setenv("CCSWITCH_HOME", str(tmp_path / "home"))
     temp = auth_login.prepare_reauth_profile(str(tmp_path / "nope"))

@@ -16,7 +16,7 @@ function renderPanel() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <DependencyPanel slug="ccswitch" />
+      <DependencyPanel slug="viberpit" />
     </QueryClientProvider>,
   )
 }
@@ -24,7 +24,7 @@ function renderPanel() {
 it('renders blocked-by edges grouped by source item and drift counts', async () => {
   mockUseProjectDeps.mockReturnValue({
     data: {
-      project: { number: 7, title: 'cc-account-switcher', lastSyncedAt: null },
+      project: { number: 7, title: 'viberpit', lastSyncedAt: null },
       edges: [
         { src: 'o/r#950', dst: 'o/r#12', source: 'native', active: true, dstState: 'open' },
         { src: 'o/r#950', dst: 'o/r#949', source: 'prose', active: true, dstState: 'closed' },

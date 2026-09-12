@@ -164,7 +164,7 @@ class X11Manager:
             except PoolExhausted:
                 log.warning("x11: pool exhausted, session %s gets no display", session_id)
                 return None
-            xauth = os.path.join(self._run_dir, f"ccswitch-{session_id}.Xauthority")
+            xauth = os.path.join(self._run_dir, f"viberpit-{session_id}.Xauthority")
             try:
                 cookie = secrets.token_hex(16)
                 # MIT-MAGIC-COOKIE-1; xauth add tolerates a fresh file
@@ -333,7 +333,7 @@ class X11Manager:
         # default "Open a browser" path mints a throwaway dir cleaned up on teardown.
         auto_profile: str | None = None
         if profile_dir is None:
-            auto_profile = tempfile.mkdtemp(prefix=f"ccswitch-prof-{session_id}-", dir=self._run_dir)
+            auto_profile = tempfile.mkdtemp(prefix=f"viberpit-prof-{session_id}-", dir=self._run_dir)
             profile_dir = auto_profile
         argv.append(f"--user-data-dir={profile_dir}")
         if url:

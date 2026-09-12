@@ -22,7 +22,7 @@ def test_queries_select_the_canonical_repo_name():
 
 def test_canonical_repo_name_reads_the_root_and_tolerates_absence():
     assert canonical_repo_name({"data": {"repository": {
-        "nameWithOwner": "steiner385/ccswitch", "issues": {}}}}) == "steiner385/ccswitch"
+        "nameWithOwner": "steiner385/viberpit", "issues": {}}}}) == "steiner385/viberpit"
     assert canonical_repo_name(_issue_payload()) is None   # canned payloads without it
     assert canonical_repo_name({}) is None
     assert canonical_repo_name({"data": {"repository": None}}) is None

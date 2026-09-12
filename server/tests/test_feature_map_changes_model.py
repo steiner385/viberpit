@@ -1,4 +1,4 @@
-"""feature_map_changes: the per-product pointer to the ccswitch-owned map-changes PR (roadmap spec §9)."""
+"""feature_map_changes: the per-product pointer to the ViberPit-owned map-changes PR (roadmap spec §9)."""
 from __future__ import annotations
 
 import asyncio

@@ -134,7 +134,7 @@ async def test_unsupported_client_request_methods_are_refused() -> None:
     async with FakeCodexAppServer() as fake:
         client = await _ready(fake)
         try:
-            # A real, declared client request that ccswitch does not support.
+            # A real, declared client request that ViberPit does not support.
             with pytest.raises(schema.CodexSchemaError):
                 await client.call("thread/fork", {})
             assert len(fake.client_frames) == 2  # initialize + initialized only
@@ -194,7 +194,7 @@ async def test_raw_initialize_cannot_enable_external_auth_on_a_disabled_client()
                 await client.call(
                     "initialize",
                     {
-                        "clientInfo": {"name": "ccswitch", "version": "1"},
+                        "clientInfo": {"name": "viberpit", "version": "1"},
                         "capabilities": {
                             "experimentalApi": True,
                             "requestAttestation": False,
@@ -804,7 +804,7 @@ async def test_invalid_refresh_params_return_invalid_params_not_a_refresh() -> N
     "method",
     [
         # The permissions approval asks the client to hand back a permissions
-        # grant, which ccswitch has no vocabulary for, so it stays unsupported
+        # grant, which ViberPit has no vocabulary for, so it stays unsupported
         # even though the other two approval callbacks are now answerable.
         "item/permissions/requestApproval",
         # A DIFFERENT surface from `item/tool/requestUserInput` (#1271): a
@@ -954,7 +954,7 @@ async def test_no_secret_shaped_value_reaches_the_logs(
                 # supported with the assistant overlay (#1321), and
                 # `item/permissions/requestApproval` is the one that stays
                 # unsupported by design (its response would hand the app-server a
-                # permissions grant ccswitch has no vocabulary for).
+                # permissions grant ViberPit has no vocabulary for).
                 fake.request(
                     "item/permissions/requestApproval",
                     {"command": ["rm", "-rf", "/"]},

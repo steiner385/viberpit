@@ -48,7 +48,7 @@ async def remove(db: AsyncSession, *, src: WorkItem, blocker_ref: str,
     Crash window: a crash between ``mark_applied`` and the caller's commit leaves
     the journal row ``interrupted`` and the local rows still active. GitHub's
     state is the truth there (the edge is gone) and a second Remove tap repairs
-    ccswitch's view — there is deliberately no resume path, unlike
+    ViberPit's view — there is deliberately no resume path, unlike
     ``materialize_apply``, because re-issuing the removal is idempotent and costs
     nothing, while a half-applied issue creation is not."""
     src_ref = f"{src.repo}#{src.number}"

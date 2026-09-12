@@ -1,7 +1,7 @@
 """Discovery + classification of live `claude` processes for adoption.
 
 Linux /proc only (the deploy target). A "session" candidate is an interactive
-claude process NOT owned by ccswitch (it does not speak the SDK stream-json
+claude process NOT owned by ViberPit (it does not speak the SDK stream-json
 protocol) and not an internal helper (pty-host / spare / daemon / auth login).
 
 The discovery functions are pure-ish: process enumeration and the account-dir
@@ -38,7 +38,7 @@ class ProcInfo:
 @dataclass(frozen=True)
 class AdoptionCandidate:
     pid: int | None
-    account: str | None          # resolved ccswitch account, or None if unmapped
+    account: str | None          # resolved ViberPit account, or None if unmapped
     cwd: str
     claude_session_id: str
     transcript_path: str
@@ -61,7 +61,7 @@ class AdoptionCandidate:
 def classify(cmdline: list[str]) -> str:
     """Bucket a process by argv: 'sdk' | 'helper' | 'session' | 'other'.
 
-    - 'sdk':     ccswitch's own SDK driver (speaks --input-format stream-json) → already tracked
+    - 'sdk':     ViberPit's own SDK driver (speaks --input-format stream-json) → already tracked
     - 'helper':  internal claude helper (pty-host / spare / daemon run / auth login)
     - 'session': an interactive claude process eligible for adoption
     - 'other':   not a claude process
@@ -71,7 +71,7 @@ def classify(cmdline: list[str]) -> str:
     is_claude = any("claude" in part for part in cmdline)
     if not is_claude:
         return "other"
-    # ccswitch's own SDK driver speaks stream-json on stdin — already tracked.
+    # ViberPit's own SDK driver speaks stream-json on stdin — already tracked.
     if "--input-format" in cmdline and "stream-json" in cmdline:
         return "sdk"
     if any(flag in cmdline for flag in _HELPER_FLAGS):

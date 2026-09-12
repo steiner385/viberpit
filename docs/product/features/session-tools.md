@@ -22,8 +22,8 @@ links:
 
 # Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, request_model)
 
-**Problem** — A coding session run by ccswitch has no way to ask "what am I, and why was I
-dispatched" or to tell ccswitch itself (not the repo it's working in) that something about the
+**Problem** — A coding session run by ViberPit has no way to ask "what am I, and why was I
+dispatched" or to tell ViberPit itself (not the repo it's working in) that something about the
 harness is broken — a wrong dispatch prompt, a contradictory instruction, a mistimed model switch.
 Today that only reaches a human as a stuck session or a bad PR, well after the fact. Separately,
 until the 2026-09-07 marker-to-tool migration, a session's completion, no-PR resolution and
@@ -31,16 +31,16 @@ mid-session model request were all encoded as HTML-comment markers in its own cl
 viberpit:complete -->` and friends) — prose a regex had to recover exactly, rather than a
 declaration the session made on purpose.
 
-**Target users** — every coding session ccswitch runs (Claude and, on fresh threads, Codex), and
+**Target users** — every coding session ViberPit runs (Claude and, on fresh threads, Codex), and
 the operators who triage `session_feedback` rows into the backlog.
 
-**Desired outcome** — every coding session mounts an in-process `ccswitch` MCP server with up to
+**Desired outcome** — every coding session mounts an in-process `viberpit` MCP server with up to
 seven tools:
 
 | Tool | Class | Args | What it does |
 |---|---|---|---|
 | `session_context` | READ | none | id, name, repo, branch, cwd, host, engine, model, account, dispatch origin/ref, effective goal, permission mode |
-| `report_feedback` | READ | category, impact, title, body, evidence? | Reports a problem with ccswitch itself (not the project). One call per distinct problem, at most `session_feedback_cap` per session. |
+| `report_feedback` | READ | category, impact, title, body, evidence? | Reports a problem with ViberPit itself (not the project). One call per distinct problem, at most `session_feedback_cap` per session. |
 | `mark_complete` | SIGNAL | none | Declares the session's objective is fully done. |
 | `mark_no_pr` | SIGNAL | resolution (`not-needed` \| `cancelled`), note? | Declares the work is finished but no PR is appropriate. |
 | `hand_back` | SIGNAL | reason | Declares the session needs the user (a decision, review, approval or information) before the objective can be finished; lands at `waiting_question` ("Answer needed"). |
@@ -60,7 +60,7 @@ surface works identically on any fleet host, including rocky.
 **Success metrics** — a session can answer "how was I dispatched" and file a feedback row without
 leaving its own turn; `server/tests/test_session_tools_real_binary.py` (gated on
 `CCSWITCH_TEST_CLAUDE_MCP=1`) verifies against the real `claude` binary, per Constitution III, that
-a project's own `.mcp.json` servers and `ccswitch` coexist and `report_feedback` raises no prompt.
+a project's own `.mcp.json` servers and `viberpit` coexist and `report_feedback` raises no prompt.
 
 **Non-goals (Phase 1)** — filing to GitHub (Phase 2's automation), an API/UI/assistant view of
 `session_feedback`, and `session_url` in the context snapshot (needs the edge's public URL, known

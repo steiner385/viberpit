@@ -15,7 +15,7 @@ function renderPanel() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <DependencyPanel slug="ccswitch" />
+      <DependencyPanel slug="viberpit" />
     </QueryClientProvider>,
   )
 }
@@ -28,7 +28,7 @@ it('drives the real hook: fetches the slug-scoped deps endpoint and renders edge
   })
   renderPanel()
   await waitFor(() => expect(screen.getByText('o/r#1')).toBeInTheDocument())
-  expect(get).toHaveBeenCalledWith('/pm/projects/ccswitch/deps')
+  expect(get).toHaveBeenCalledWith('/pm/projects/viberpit/deps')
 })
 
 it('renders an error state when the deps query fails, instead of null-ing forever', async () => {

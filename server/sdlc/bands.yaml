@@ -14,7 +14,7 @@ version: 1
 
 # Response tiers: 1σ log · 2σ diagnose (read-only) · 3σ propose.
 #
-# `permission_mode` is what ccswitch actually ENFORCES; `tools` describes what
+# `permission_mode` is what ViberPit actually ENFORCES; `tools` describes what
 # that mode lets through, and the loader refuses a policy where the two disagree.
 # See server/sdlc/bands.py's module docstring for exactly how far each reaches.
 tiers:
@@ -72,22 +72,22 @@ metrics:
   # one flaky check.
   - id: ccswitch-pr-cycle-time
     source: pr_cycle_time_hours
-    repo: steiner385/ccswitch
+    repo: steiner385/viberpit
     title: PR cycle time
     unit: hours
     direction: higher_is_worse
     baseline_points: 30
     min_baseline: 10
 
-  # Merge-group CI failure rate. Shipped DISABLED: ccswitch is a user-owned repo
+  # Merge-group CI failure rate. Shipped DISABLED: ViberPit is a user-owned repo
   # with no merge queue available (see .agents/instructions/core.md), so
   # `group_runs`/`group_failures` stay empty here and an enabled band would sit
   # permanently below `min_baseline`. It is declared rather than deleted so the
   # source stays exercised and a repo that does run a merge queue enables it with
   # a one-line diff.
-  - id: ccswitch-ci-failure-rate
+  - id: viberpit-ci-failure-rate
     source: ci_failure_rate
-    repo: steiner385/ccswitch
+    repo: steiner385/viberpit
     title: Merge-group CI failure rate
     unit: fraction
     direction: higher_is_worse

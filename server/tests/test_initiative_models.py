@@ -19,7 +19,7 @@ def test_initiative_row_roundtrips_with_defaults(tmp_path):
     async def run():
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'sdlc.db'}")
         async with db_session() as db:
-            db.add(Initiative(slug="ai-native-sdlc", repo="steiner385/ccswitch",
+            db.add(Initiative(slug="ai-native-sdlc", repo="steiner385/viberpit",
                               title="AI-native SDLC", origin="backlog-runner"))
         async with db_session() as db:
             return (await db.execute(
