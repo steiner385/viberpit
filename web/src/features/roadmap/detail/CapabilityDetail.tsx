@@ -8,6 +8,7 @@ import type { CapabilityNode, ProductNode } from '@/api/roadmap'
 import { Tabs } from '@/ui/Tabs'
 import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
+import { Banner } from '@/ui/Banner'
 import { EmptyState } from '@/ui/EmptyState'
 import { fileUrl } from '@/lib/githubUrl'
 import { CAPABILITY, INITIATIVE, ISSUE, PRODUCT, TIER_LABEL, capabilityStateLabel } from '@/features/products/vocab'
@@ -76,6 +77,12 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
     if (program) shownPrograms.add(program.slug)
     return program ? [program, f] : [f]
   })
+  const revealTab = (next: (typeof TABS)[number]) => {
+    // The Overview action disappears after activation. Keep keyboard focus on
+    // the destination tab instead of dropping it onto the document body.
+    document.getElementById(`tab-${next}`)?.focus()
+    setTab(next)
+  }
   const needsYou = needsYouCount([product], capability)
   const c = capability.counts
   // The issues on THIS capability, not on the branch under it: the Issues panel
@@ -122,7 +129,26 @@ export function CapabilityDetail({ product, capability, onNewInitiative, primary
       <div role="tabpanel" id={panelId(tab)} aria-labelledby={`tab-${tab}`} className="flex flex-col gap-4">
         {tab === 'overview' && (
           <section className="flex flex-col gap-2 text-sm">
-            <NeedsYouList products={[product]} capability={capability} overview />
+            {(needsYou > 0 || openIssues > 0) && (
+              <Banner tone={needsYou > 0 ? 'warning' : 'info'} role="none">
+                <h3 className="text-sm font-semibold text-ink">Next actions</h3>
+                <p>
+                  {needsYou > 0
+                    ? `${needsYou} ${needsYou === 1 ? 'item needs' : 'items need'} attention on this capability or its sub-capabilities. Review the issues and decisions to choose the next step.`
+                    : `${openIssues} open ${openIssues === 1 ? 'issue is' : 'issues are'} linked to this capability. Open the list to review the work.`}
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {needsYou > 0 && (
+                    <Button size="lg" onClick={() => revealTab('needs-you')}>Review what needs you</Button>
+                  )}
+                  {openIssues > 0 && (
+                    <Button size="lg" variant={needsYou > 0 ? 'secondary' : 'primary'} onClick={() => revealTab('issues')}>
+                      Review issues
+                    </Button>
+                  )}
+                </div>
+              </Banner>
+            )}
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone={capability.state === 'live' ? 'success' : 'info'}>
                 {capabilityStateLabel(capability.state)}

@@ -1,5 +1,5 @@
 // Canonical population for the attention list, overview and badge. Counts are
-// groups of decisions: an initiative, a capability's issues, or product triage.
+// individual attention issues, initiative decisions, and product triage rows.
 import type { CapabilityNode, InitiativeNode, ProductNode, RoadmapTier } from '@/api/roadmap'
 import { flattenCapabilities } from '../lookup'
 
@@ -37,5 +37,5 @@ export function needsYouRows(products: readonly ProductNode[], scope?: Capabilit
 /** Incidents have their own live count and query, and are excluded here. */
 export function needsYouCount(products: readonly ProductNode[], scope?: CapabilityNode): number {
   const { initiatives, issues, pseudo } = needsYouRows(products, scope)
-  return initiatives.length + issues.length + pseudo.length
+  return initiatives.length + issues.reduce((n, issue) => n + issue.needsYou + issue.blocked, 0) + pseudo.length
 }

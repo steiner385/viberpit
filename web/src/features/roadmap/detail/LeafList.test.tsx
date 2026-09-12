@@ -67,6 +67,55 @@ describe('LeafList', () => {
     // which any text query happily reports as "no chip".
     expect(row(2).queryByTestId('leaf-reason')).toBeNull()
   })
+  it('explains missing requirements and links directly to reviewing the issue', () => {
+    h.leaves = [leaf(1, 'open', { tier: 'needs-you', reason: 'needs_spec', url: 'https://github.com/o/r/issues/1' })]
+    render(<div data-page-scroll=""><LeafList scope={{ capability: 'f1' }} product={null} /></div>)
+    expect(screen.getByText('Repeated attempts have not merged. Update the issue description with clearer requirements and acceptance criteria before another attempt.')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Edit issue description on GitHub' })).toHaveAttribute('href', 'https://github.com/o/r/issues/1')
+  })
+
+  it('gives generic guidance without inventing a session link or missing issue URL', () => {
+    h.leaves = [leaf(1, 'open', { tier: 'needs-you', sessionStatus: 'waiting' })]
+    render(<div data-page-scroll=""><LeafList scope={{ capability: 'f1' }} product={null} /></div>)
+    expect(screen.getByText('A decision or input is needed. Review the issue discussion for the request; if a session is waiting, respond in Sessions.')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Review issue on GitHub' })).not.toBeInTheDocument()
+  })
+
+  it('explains blockers and preserves their review and removal controls', () => {
+    h.leaves = [leaf(1, 'open', { tier: 'blocked', blockedBy: ['o/r#2'], url: 'https://github.com/o/r/issues/1' })]
+    render(<div data-page-scroll=""><LeafList scope={{ capability: 'f1' }} product={null} /></div>)
+    expect(screen.getByText('Resolve the blocking issues below, or remove a dependency if it no longer applies.')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '#2' })).toHaveAttribute('href', 'https://github.com/o/r/issues/2')
+    expect(screen.getByRole('button', { name: 'Remove blocker o/r#2' })).toBeInTheDocument()
+  })
+
+  it('filters attention to open needs-you and blocked issues', () => {
+    h.leaves = [
+      leaf(1, 'open', { tier: 'needs-you' }), leaf(2, 'open', { tier: 'blocked' }),
+      leaf(3, 'open'), leaf(4, 'closed', { tier: 'needs-you' }),
+    ]
+    render(<div data-page-scroll=""><LeafList scope={{ capability: 'f1' }} product={null} attentionOnly /></div>)
+    expect(screen.getByText('Open · 2')).toBeInTheDocument()
+    expect(screen.getByText('#1 Issue 1')).toBeInTheDocument()
+    expect(screen.getByText('#2 Issue 2')).toBeInTheDocument()
+    expect(screen.queryByText('#3 Issue 3')).not.toBeInTheDocument()
+    expect(screen.queryByText('#4 Issue 4')).not.toBeInTheDocument()
+  })
+
+  it('explains an empty attention list independently of ordinary open issues', () => {
+    h.leaves = [leaf(1, 'open')]
+    render(<LeafList scope={{ capability: 'f1' }} product={null} attentionOnly />)
+    expect(screen.getByText('No issues need your attention')).toBeInTheDocument()
+  })
+
+  it('does not offer attention guidance or blocker removal on closed issues', () => {
+    h.leaves = [leaf(1, 'closed', { tier: 'needs-you', reason: 'needs_spec', blockedBy: ['o/r#2'], url: 'https://github.com/o/r/issues/1' })]
+    render(<div data-page-scroll=""><LeafList scope={{ capability: 'f1' }} product={null} /></div>)
+    expect(screen.queryByRole('link', { name: 'Review issue on GitHub' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Clarify the requirements/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Remove blocker o/r#2' })).not.toBeInTheDocument()
+  })
+
 })
 
 it('explains bounced and human-wait issues and offers an explicit GitHub action', () => {

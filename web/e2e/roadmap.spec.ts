@@ -400,7 +400,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
   test.describe(`Roadmap issue attention — ${viewport.width}px`, () => {
     test.use({ viewport })
 
-    test('leads from attention to the issue that can be resolved', async ({ page }) => {
+    test('leads from attention to the issue that can be resolved', async ({ page }, testInfo) => {
       await interceptApi(page)
       await page.route('**/api/pm/map', (route) => route.fulfill({ json: {
         generatedAt: MAP.generatedAt,
@@ -426,17 +426,24 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       await page.goto('/roadmap/kindash/capabilities/account-reauthentication')
       await expect(page.getByRole('heading', { level: 1 })).toHaveText('Account Re-Authentication')
       await expect(page.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toBeVisible()
+      await expect(page.getByRole('heading', { name: 'Next actions' })).toBeVisible()
+      await page.screenshot({ path: testInfo.outputPath('overview.png') })
       await page.getByRole('button', { name: 'Needs you: 1', exact: true }).click()
       await expect(page.getByText('Nothing needs you', { exact: true })).toHaveCount(0)
-      const issueLink = page.getByRole('tabpanel').getByRole('link', { name: 'Review issues in Account Re-Authentication' })
-      await expect(issueLink).toBeVisible()
-      await issueLink.click()
-      await expect(page.getByRole('tab', { name: 'Issues (1)' })).toHaveAttribute('aria-selected', 'true')
+      await expect(page.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toHaveAttribute('aria-selected', 'true')
+      // The issue action is available directly here, without another Issues tab hop.
+      const action = page.getByRole('link', { name: 'Edit issue description on GitHub' })
+      await expect(action).toBeVisible()
+      await expect(action).toHaveAttribute('href', 'https://github.com/steiner385/kindash/issues/42')
       await expect(page.getByRole('link', { name: '#42 Clarify remote login recovery' })).toHaveAttribute(
         'href', 'https://github.com/steiner385/kindash/issues/42',
       )
       await expect(page.getByText(/needs spec/)).toBeVisible()
-      if (SHOTS) await page.screenshot({ path: `/tmp/roadmap-attention-${viewport.width}.png` })
+      await page.getByRole('tab', { name: 'Overview', exact: true }).click()
+      await page.getByRole('button', { name: 'Review what needs you', exact: true }).click()
+      await expect(page.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toBeFocused()
+      await expect(action).toBeVisible()
+      await page.screenshot({ path: testInfo.outputPath('issue-action.png') })
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
     })
   })

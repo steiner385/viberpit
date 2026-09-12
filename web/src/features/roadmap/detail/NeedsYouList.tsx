@@ -1,5 +1,5 @@
-// Everything in scope that is waiting on a human: initiatives the server tiered
-// `needs-you`, the per-product proposal counts (which are decisions, not work),
+// Everything in scope waiting on a human: attention issues, needs-you or blocked
+// initiatives, per-product proposal counts (which are decisions, not work),
 // and the control-band incidents. One list so "what needs me" is answered in one
 // place rather than by three panels a human has to remember to visit.
 import { Link } from 'react-router-dom'
@@ -10,6 +10,7 @@ import { initiativeStatusLabel, reasonLabel } from '@/features/products/vocab'
 import { capabilityPath, inboxPath, initiativePath } from '../roadmapNavState'
 import { TIER_TEXT } from '../roadmapTier'
 import { needsYouRows } from './needsYou'
+import { LeafList } from './LeafList'
 
 export function NeedsYouList({ products, repos, capability, overview = false }: {
   products: ProductNode[]; repos?: readonly string[]; capability?: CapabilityNode; overview?: boolean
@@ -21,9 +22,9 @@ export function NeedsYouList({ products, repos, capability, overview = false }: 
   return (
     <section aria-label="Next actions" className="flex flex-col gap-3">
       {!empty && <h3 className="text-sm font-semibold text-ink">Next actions</h3>}
-      {!empty && <p className="text-sm text-ink-muted">Review the items below to decide what happens next. Counts group issues by capability.</p>}
+      {!empty && <p className="text-sm text-ink-muted">Review the items below to decide what happens next. Issue counts include each issue waiting for attention.</p>}
       {empty && (
-        <EmptyState title="Nothing needs you" description="No initiatives, issue groups or proposals need a decision in this scope. Incidents are checked separately below." />
+        <EmptyState title="Nothing needs you" description="No issues, initiatives or proposals need a decision in this scope. Incidents are checked separately below." />
       )}
       {initiatives.length > 0 && (
         <ul className="flex flex-col gap-1" aria-label="Initiatives that need you">
@@ -48,18 +49,20 @@ export function NeedsYouList({ products, repos, capability, overview = false }: 
       )}
       {issues.length > 0 && (
         <ul className="flex flex-col gap-1" aria-label="Issues that need you">
-          {issues.map(({ product, capability, needsYou, blocked }) => (
-            <li key={`${product.slug}:${capability.id}`} className="rounded-md border border-edge bg-surface p-3 text-sm">
-              <p className="font-medium text-ink">{capability.title ?? capability.slug}</p>
+          {issues.map(({ product, capability: issueCapability, needsYou, blocked }) => (
+            <li key={`${product.slug}:${issueCapability.id}`} className="rounded-md border border-edge bg-surface p-3 text-sm">
+              <p className="font-medium text-ink">{issueCapability.title ?? issueCapability.slug}</p>
               <p className="text-ink-muted">
                 {product.name ?? product.slug}{' · '}
                 {needsYou > 0 && `${needsYou} ${needsYou === 1 ? 'issue waiting' : 'issues waiting'} for your input`}
                 {needsYou > 0 && blocked > 0 && ' · '}
                 {blocked > 0 && `${blocked} blocked ${blocked === 1 ? 'issue' : 'issues'}`}
               </p>
-              <Link to={`${capabilityPath(product.slug, capability.slug)}?tab=issues`} className="text-accent hover:underline">
-                Review issues in {capability.title ?? capability.slug}
-              </Link>
+              {capability?.id === issueCapability.id && !overview ? (
+                <LeafList scope={{ capability: issueCapability.id }} product={product} attentionOnly />
+              ) : <Link to={`${capabilityPath(product.slug, issueCapability.slug)}?tab=needs-you`} className="text-accent hover:underline">
+                Review issues in {issueCapability.title ?? issueCapability.slug}
+              </Link>}
             </li>
           ))}
         </ul>
