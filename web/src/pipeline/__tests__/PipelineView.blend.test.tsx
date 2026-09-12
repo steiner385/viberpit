@@ -3,8 +3,11 @@ import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { InteractionProvider } from '@/shell/InteractionContext'
+import { storageKey } from '@/lib/storageKey'
 import { PipelineView } from '../PipelineView'
 import type { DashboardState } from '../types'
+
+const LEGACY_COLLAPSED_KEY = 'prdash.collapsed'
 
 const state: DashboardState = {
   generatedAt: 'now', staleSince: null,
@@ -30,10 +33,16 @@ describe('PipelineView blend edits', () => {
     // A count/label div still renders for the running bucket.
     expect(screen.getByText('CI running')).toBeInTheDocument()
   })
-  it('persists repo collapse to localStorage (prdash.collapsed)', () => {
+  it('persists repo collapse to localStorage (pipeline.collapsed)', () => {
     wrap(<PipelineView state={state} focusedRepo={null} />)
     fireEvent.click(screen.getByRole('button', { name: /o\/r/ }))
-    expect(JSON.parse(localStorage.getItem('prdash.collapsed')!)).toContain('o/r')
+    expect(JSON.parse(localStorage.getItem(storageKey('pipeline.collapsed'))!)).toContain('o/r')
+  })
+  it('migrates the legacy prdash.collapsed key once', () => {
+    localStorage.setItem(LEGACY_COLLAPSED_KEY, JSON.stringify(['o/r']))
+    wrap(<PipelineView state={state} focusedRepo={null} />)
+    expect(JSON.parse(localStorage.getItem(storageKey('pipeline.collapsed'))!)).toContain('o/r')
+    expect(localStorage.getItem(LEGACY_COLLAPSED_KEY)).toBeNull()
   })
   it('controlled filter: uses activeFilter prop and reports via onFilter', () => {
     const onFilter = vi.fn()

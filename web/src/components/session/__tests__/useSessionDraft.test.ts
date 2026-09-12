@@ -1,8 +1,10 @@
 import { renderHook, act } from '@testing-library/react'
 import { describe, it, expect, beforeEach } from 'vitest'
+import { storageKey } from '@/lib/storageKey'
 import { useSessionDraft } from '../useSessionDraft'
 
-const KEY = 'ccswitch:draft:s1'
+const KEY = storageKey('draft.s1')
+const LEGACY_KEY = 'ccswitch:draft:s1'
 
 beforeEach(() => localStorage.clear())
 
@@ -34,5 +36,13 @@ describe('useSessionDraft', () => {
     expect(result.current.initial).toEqual({ text: '', attachments: [] })
     act(() => result.current.save({ text: 'x', attachments: [] }))
     expect(localStorage.length).toBe(0)
+  })
+
+  it('migrates the legacy ccswitch:draft:<id> key once, per session id', () => {
+    localStorage.setItem(LEGACY_KEY, JSON.stringify({ text: 'legacy draft', attachments: [] }))
+    const { result } = renderHook(() => useSessionDraft('s1'))
+    expect(result.current.initial.text).toBe('legacy draft')
+    expect(JSON.parse(localStorage.getItem(KEY)!).text).toBe('legacy draft')
+    expect(localStorage.getItem(LEGACY_KEY)).toBeNull()
   })
 })

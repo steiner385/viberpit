@@ -1,9 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useMediaQuery } from '@/lib/useMediaQuery'
 import { CANVAS } from './canvas'
+import { THEME_STORAGE_KEY } from './themeKey'
 
 export type ThemeChoice = 'system' | 'light' | 'dark'
-export const THEME_STORAGE_KEY = 'ccswitch.theme'
 
 // CANVAS (./canvas.ts) is the single source of truth for these colours; it
 // must match the two <meta name="theme-color"> entries in index.html, the

@@ -1,20 +1,14 @@
 import { useSyncExternalStore } from 'react'
+import { storageKey, migrateStorageKey } from '@/lib/storageKey'
 
-export const NOTIFY_PREF_KEY = 'ccswitch.pipelineNotifications'
+export const NOTIFY_PREF_KEY = storageKey('pipelineNotifications')
 export const LEGACY_NOTIFY_PREF_KEY = 'prdash.notifications'
 const listeners = new Set<() => void>()
 
 export function readNotifyPref(): boolean {
   try {
-    const v = localStorage.getItem(NOTIFY_PREF_KEY)
-    if (v !== null) return v === 'true'
-    const legacy = localStorage.getItem(LEGACY_NOTIFY_PREF_KEY)
-    if (legacy !== null) {
-      localStorage.setItem(NOTIFY_PREF_KEY, legacy)
-      localStorage.removeItem(LEGACY_NOTIFY_PREF_KEY)
-      return legacy === 'true'
-    }
-    return false
+    migrateStorageKey(localStorage, LEGACY_NOTIFY_PREF_KEY, NOTIFY_PREF_KEY)
+    return localStorage.getItem(NOTIFY_PREF_KEY) === 'true'
   } catch { return false }
 }
 

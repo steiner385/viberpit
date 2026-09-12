@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react'
+import { storageKey } from '@/lib/storageKey'
 
-export const RAIL_EXPANDED_KEY = 'ccswitch.railExpanded'
+export const RAIL_EXPANDED_KEY = storageKey('railExpanded')
 const listeners = new Set<() => void>()
 
 export function readRailExpanded(): boolean {

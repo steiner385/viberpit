@@ -6,9 +6,9 @@
 // Phase-2 blend edits (declared): (1) CONTROLLED FILTER — optional activeFilter?/onFilter?
 // props let the host (PipelineTab) drive the status filter (e.g. HealthHeader lane-jump);
 // internal state is used only when uncontrolled (activeFilter === undefined). (2) COLLAPSE
-// PERSISTENCE — the collapsed-repo set persists to localStorage under 'prdash.collapsed'
-// via the private-mode-safe readCollapsedSet/writeCollapsedSet helpers copied verbatim from
-// $PLOT/App.tsx:33-55. (3) KIOSK — no longer a prop here: StatusStrip and PrRow each read
+// PERSISTENCE — the collapsed-repo set persists to localStorage under storageKey('pipeline.collapsed')
+// (migrated forward from the legacy 'prdash.collapsed' key, row 7b) via the private-mode-safe
+// readCollapsedSet/writeCollapsedSet helpers copied verbatim from $PLOT/App.tsx:33-55. (3) KIOSK — no longer a prop here: StatusStrip and PrRow each read
 // read-only-ness from shell/InteractionContext directly (the host wraps its tree in
 // <InteractionProvider interactive={!kiosk}>), replacing the old kiosk?/interactive?/
 // expandable? prop chain (the $PLOT/App.tsx:348,403 pattern).
@@ -26,13 +26,17 @@ import { QueueTrain } from '@/features/pipeline/charts/QueueTrain';
 import { StatusStrip, bucketPr, isActivePr, isFailedPr, type Bucket } from './StatusStrip';
 import { splitCohort, deployBreakdown } from './ordering';
 import { nextToMerge } from './queueFront';
+import { storageKey, migrateStorageKey } from '@/lib/storageKey';
 
 // ---- localStorage helpers (private-mode safe) — copied verbatim from $PLOT/App.tsx:33-55 ----
 
-const LS_KEY = 'prdash.collapsed';
+const LS_KEY = storageKey('pipeline.collapsed');
+/** Pre-namespace key. Migrated forward on first read (row 7b). */
+const LEGACY_LS_KEY = 'prdash.collapsed';
 
 function readCollapsedSet(): Set<string> {
   try {
+    migrateStorageKey(localStorage, LEGACY_LS_KEY, LS_KEY);
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return new Set();
     const parsed = JSON.parse(raw) as unknown;

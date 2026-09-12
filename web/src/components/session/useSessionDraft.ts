@@ -1,14 +1,18 @@
 import { useCallback, useMemo, useState } from 'react'
+import { storageKey, migrateStorageKey } from '@/lib/storageKey'
 
 export interface DraftAttachment { id: string; mime: string; name: string }
 export interface SessionDraft { text: string; attachments: DraftAttachment[] }
 
 const EMPTY: SessionDraft = { text: '', attachments: [] }
-const keyFor = (sessionId: string) => `ccswitch:draft:${sessionId}`
+const keyFor = (sessionId: string) => storageKey(`draft.${sessionId}`)
+/** Pre-namespace key (colon-separated). Migrated forward per session id on first read (row 7b). */
+const legacyKeyFor = (sessionId: string) => `ccswitch:draft:${sessionId}`
 
 function read(sessionId?: string): SessionDraft {
   if (!sessionId) return { ...EMPTY }
   try {
+    migrateStorageKey(localStorage, legacyKeyFor(sessionId), keyFor(sessionId))
     const raw = localStorage.getItem(keyFor(sessionId))
     if (!raw) return { ...EMPTY }
     const parsed = JSON.parse(raw)

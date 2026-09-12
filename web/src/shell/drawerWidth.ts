@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { storageKey } from '@/lib/storageKey'
 
 /**
  * Persisted width for the shell's drawer column (`app.drawer`), sub-spec B §4.2.
@@ -9,9 +10,10 @@ import { useSyncExternalStore } from 'react'
  * `Sheet` primitive's own default, so an unresized drawer looks exactly like
  * every other right-hand sheet in the app.
  *
- * `web/src/lib/` has four bespoke persisted values and no generic
- * persisted-value helper to route through, so this module keeps its own pair
- * and mirrors `lib/sidebarWidth.ts` clause for clause, the two reading alike.
+ * The key goes through `lib/storageKey.ts` like every persisted key (row 7b),
+ * but the read/write pair stays bespoke: it parses and clamps the value, which
+ * a raw key helper cannot do. It mirrors `lib/sidebarWidth.ts` clause for
+ * clause, the two reading alike.
  * All access is wrapped: a blocked or unavailable localStorage degrades to the
  * default, never a crash.
  *
@@ -21,7 +23,7 @@ import { useSyncExternalStore } from 'react'
 export const DRAWER_MIN = 320
 export const DRAWER_MAX = 640
 export const DRAWER_DEFAULT = 448
-export const DRAWER_STORAGE_KEY = 'ccswitch.drawerWidth'
+export const DRAWER_STORAGE_KEY = storageKey('drawerWidth')
 
 /** Clamp to [MIN, MAX] and round; non-finite input falls back to the default. */
 export function clampDrawerWidth(px: number): number {

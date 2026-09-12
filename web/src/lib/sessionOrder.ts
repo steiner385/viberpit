@@ -15,9 +15,10 @@ import {
   coerceFilters, sanitizeFilters,
   type FilterOptions, type ListFilters,
 } from '@/session/listFilters'
+import { storageKey } from '@/lib/storageKey'
 
 const keyFor = (ns: string): string =>
-  ns === 'live' ? 'ccswitch.sessionOrder' : `ccswitch.sessionOrder.${ns}`
+  ns === 'live' ? storageKey('sessionOrder') : storageKey(`sessionOrder.${ns}`)
 
 /** The stored object, read as unknown keys — every field is validated on the
  *  way out, so a hand-edited or stale entry can never widen the app's state. */

@@ -4,7 +4,9 @@
  * value before. All access is wrapped so a blocked / unavailable localStorage
  * (private mode, quota, SSR) degrades to "no remembered repo" instead of crashing.
  */
-const KEY = 'ccswitch.lastRepo'
+import { storageKey } from '@/lib/storageKey'
+
+const KEY = storageKey('lastRepo')
 
 export function getLastRepo(): string | null {
   try {

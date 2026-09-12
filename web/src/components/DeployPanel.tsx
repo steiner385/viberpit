@@ -5,6 +5,7 @@ import { Button } from '@/ui/Button'
 import { useDeployState } from '@/lib/deployState'
 import { useDeployController } from '@/lib/deployController'
 import { DeployFailureNotice } from './DeployFailureNotice'
+import { storageKey } from '@/lib/storageKey'
 
 // The failure notice is dismissed by CONTENT, not as a boolean: `gaveUp` is the daemon's
 // live set and only changes when a human retries/archives, so a bare "hidden" flag would
@@ -13,7 +14,7 @@ import { DeployFailureNotice } from './DeployFailureNotice'
 // failure stays gone across reloads while any new session id or error text brings the
 // notice back on its own. Guarded like `lib/lastRepo.ts`: a blocked localStorage degrades
 // to "not dismissed", never a crash.
-const DISMISSED_KEY = 'ccswitch.deployFailureDismissed'
+const DISMISSED_KEY = storageKey('deployFailureDismissed')
 
 function failureSignature(error: string | null, failed: string[], gaveUp: string[]): string {
   return JSON.stringify({ error, failed: [...failed].sort(), gaveUp: [...gaveUp].sort() })

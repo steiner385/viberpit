@@ -14,8 +14,9 @@
  * this module only remembers).
  */
 import { isAgentEngine, type AgentEngine } from '@/api/types'
+import { storageKey } from '@/lib/storageKey'
 
-export const ENGINE_PREFERENCE_KEY = 'ccswitch.engine'
+export const ENGINE_PREFERENCE_KEY = storageKey('engine')
 
 /** The user's explicit Agent choice, or null when they have never made one
  *  (or stored something this build no longer recognises). */
