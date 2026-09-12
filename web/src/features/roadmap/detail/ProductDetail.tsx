@@ -10,7 +10,7 @@ import { Skeleton } from '@/ui/Skeleton'
 import { InitiativeTrack } from '@/initiatives/InitiativeTrack'
 import { OnboardingWizard } from '@/projects/OnboardingWizard'
 import { DependencyPanel } from '@/projects/DependencyPanel'
-import { CAPABILITY, INITIATIVE, ISSUE, TIER_LABEL } from '@/features/products/vocab'
+import { CAPABILITY, INITIATIVE, ISSUE, PRODUCT, TIER_LABEL } from '@/features/products/vocab'
 import { useTabParam } from '../useTabParam'
 import { initiativePath } from '../roadmapNavState'
 import { StatTiles } from './StatTiles'
@@ -19,6 +19,7 @@ import { needsYouCount } from './needsYou'
 import { inFlightInitiatives } from './inFlight'
 import { RankedList } from './RankedList'
 import { InitiativeList } from './InitiativeList'
+import { ProductEdgesEditor } from './ProductEdgesEditor'
 
 const TABS = ['overview', 'in-flight', 'needs-you', 'ranked', 'dependencies'] as const
 
@@ -124,7 +125,18 @@ export function ProductDetail({ product }: { product: ProductNode }) {
           ? <NeedsYouList products={[product]} repos={incidentScope} />
           : <Skeleton lines={3} />)}
         {tab === 'ranked' && <RankedList productSlug={product.slug} />}
-        {tab === 'dependencies' && <DependencyPanel slug={product.slug} />}
+        {tab === 'dependencies' && (
+          <div className="flex flex-col gap-4">
+            <section aria-labelledby="deps-products">
+              <h3 id="deps-products" className="mb-2 text-xs font-medium uppercase text-ink-muted">Between {PRODUCT.plural.toLowerCase()}</h3>
+              <ProductEdgesEditor product={product} />
+            </section>
+            <section aria-labelledby="deps-issues">
+              <h3 id="deps-issues" className="mb-2 text-xs font-medium uppercase text-ink-muted">Between {ISSUE.plural.toLowerCase()}</h3>
+              <DependencyPanel slug={product.slug} />
+            </section>
+          </div>
+        )}
       </div>
     </div>
   )

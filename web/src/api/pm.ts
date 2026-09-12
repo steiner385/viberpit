@@ -158,6 +158,17 @@ export function useProjectDeps(slug: string, enabled = true) {
   })
 }
 
+export interface CreateEdgeInput { dstSlug: string; kind: EdgeKind; note?: string }
+
+/** A product-level edge (`depends_on` / `deploys_via` / `integrates_with`), ccswitch-owned. */
+export function createEdge(slug: string, input: CreateEdgeInput): Promise<ProjectEdgeInfo> {
+  return api.post<ProjectEdgeInfo>(`/pm/projects/${encodeURIComponent(slug)}/edges`, input)
+}
+
+export function deleteEdge(slug: string, edgeId: string): Promise<void> {
+  return api.del<void>(`/pm/projects/${encodeURIComponent(slug)}/edges/${encodeURIComponent(edgeId)}`)
+}
+
 export interface RemoveDependencyInput { workItemId: string; blocker: string }
 export interface RemoveDependencyResult { ok: boolean; src: string; blocker: string }
 

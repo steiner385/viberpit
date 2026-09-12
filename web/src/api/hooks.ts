@@ -31,9 +31,10 @@ import {
 import {
   createProject, requestProjectSync,
   fetchOnboarding, proposeMap, runClassify, advanceMap, advanceLive,
-  removeDependency,
+  removeDependency, createEdge, deleteEdge,
   type Project, type CreateProjectInput, type OnboardingView,
   type RemoveDependencyInput, type RemoveDependencyResult,
+  type CreateEdgeInput, type ProjectEdgeInfo,
 } from './pm'
 import {
   fetchRoadmapMap, fetchLeaves, fetchQueue, fetchProject,
@@ -1764,6 +1765,37 @@ export function useProject(slug: string | null) {
     enabled: slug !== null && slug !== '',
     staleTime: 5_000,
     refetchInterval: 15_000,
+  })
+}
+
+/** Product dependency chips (spec §8 "Product dependency"). The project payload
+ *  carries the edges; the map's product tiers read them; the deps panel below
+ *  the chips polls its own key. */
+export function useCreateEdge(slug: string) {
+  const qc = useQueryClient()
+  return useMutation<ProjectEdgeInfo, ApiRequestError, CreateEdgeInput>({
+    mutationFn: (input) => createEdge(slug, input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.project(slug) })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      void qc.invalidateQueries({ queryKey: ['pm', 'deps', slug] })
+    },
+    onError: (e) => toast.error(extractMutationErrorMessage(e, 'Could not add the dependency')),
+    meta: PM_MUTATION_META,
+  })
+}
+
+export function useDeleteEdge(slug: string) {
+  const qc = useQueryClient()
+  return useMutation<void, ApiRequestError, string>({
+    mutationFn: (edgeId) => deleteEdge(slug, edgeId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.project(slug) })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      void qc.invalidateQueries({ queryKey: ['pm', 'deps', slug] })
+    },
+    onError: (e) => toast.error(extractMutationErrorMessage(e, 'Could not remove the dependency')),
+    meta: PM_MUTATION_META,
   })
 }
 

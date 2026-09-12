@@ -49,6 +49,9 @@ vi.mock('@/api/hooks', () => ({
     isError: false,
   }),
   useIncidentAction: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  useRoadmapMap: () => ({ data: MAP }),
+  useCreateEdge: () => ({ mutate: vi.fn(), isPending: false }),
+  useDeleteEdge: () => ({ mutate: vi.fn(), isPending: false }),
 }))
 
 vi.mock('@/api/pm', async (orig) => ({
@@ -172,6 +175,7 @@ describe('ProductDetail', () => {
   it('Dependencies tab renders the panel', () => {
     mount()
     fireEvent.click(screen.getByRole('tab', { name: /Dependencies/ }))
+    expect(screen.getByText('Between products')).toBeInTheDocument()
     expect(screen.getByRole('tabpanel')).toHaveTextContent('No mirrored dependencies.')
   })
 
