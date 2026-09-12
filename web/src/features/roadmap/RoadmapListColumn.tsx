@@ -21,6 +21,7 @@ import { useItemOrdering, type OrderingSpec } from '@/session/useSessionOrdering
 import { INITIATIVE, PRODUCT, ROADMAP, stageLabel } from '@/features/products/vocab'
 import { ScopeBody } from '@/features/sessions/ScopeBody'
 import { InboxScopeBody, type InboxScopeBodyProps } from './inbox/InboxScopeBody'
+import { programTitleOf } from './lookup'
 import { TIER_RANK } from './roadmapTier'
 import { RoadmapScopeSegment } from './RoadmapScopeSegment'
 import { InitiativeCard } from './rows/InitiativeCard'
@@ -247,6 +248,16 @@ function InitiativesScopeBody({ entries, isLoading, selectedKey, onOpen }: Initi
   // phases do — so this scope lists LEAF initiatives only. A phase wears its
   // program as a chip instead (`programTitle`, below) so the context is not lost.
   const leaves = useMemo(() => entries.filter((e) => !e.initiative.hasChildren), [entries])
+  // One `programTitleOf` lookup per PRODUCT among the visible leaves, not one
+  // per row: a product's `Map` build is the same on every phase that belongs
+  // to it, and this scope can list phases from several products at once.
+  const programTitleFns = useMemo(() => {
+    const fns = new Map<string, (initiative: InitiativeNode) => string | null>()
+    for (const e of leaves) {
+      if (!fns.has(e.product.slug)) fns.set(e.product.slug, programTitleOf(e.product))
+    }
+    return fns
+  }, [leaves])
   const visible = useMemo(
     () => (q
       ? leaves.filter((e) => `${e.initiative.title ?? ''} ${e.initiative.slug}`.toLowerCase().includes(q))
@@ -292,13 +303,10 @@ function InitiativesScopeBody({ entries, isLoading, selectedKey, onOpen }: Initi
         ariaLabel={ROADMAP.initiatives}
         renderRow={(e) => {
           const key = initiativeKey(e.initiative.slug)
-          // A titleless program still has to yield a chip — fall back to its
-          // slug (the parent's own record) rather than the parent lookup's
-          // `null`, same as `InitiativePage`'s "Part of" link already does.
-          const programTitle = e.initiative.parentInitiative
-            ? (e.product.initiatives.find((p) => p.slug === e.initiative.parentInitiative)?.title
-              ?? e.initiative.parentInitiative)
-            : null
+          // `lookup.ts:programTitleOf` — a titleless program still has to
+          // yield a chip, so it falls back to its own slug rather than the
+          // lookup's `null`, same as `InitiativePage`'s "Part of" link.
+          const programTitle = programTitleFns.get(e.product.slug)?.(e.initiative) ?? null
           return (
             <InitiativeCard
               key={key}

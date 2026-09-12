@@ -4,7 +4,7 @@
 // what its epic is doing, which sessions built it, and which capabilities it
 // touches — and it carries the three gate controls (Advance, Step back and
 // Unblock), each a two-step so a mis-tap never moves the stage.
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   useAcceptMaterialization, useAdvanceInitiative, useInitiative,
@@ -33,7 +33,7 @@ import {
   initiativeStatusLabel, nextActionLabel, nextStage, prevStage, reasonLabel, stageLabel,
 } from '@/features/products/vocab'
 import { capabilityPath, initiativePath, productPath, roadmapPath } from './roadmapNavState'
-import { findProduct } from './lookup'
+import { findProduct, programTitleOf } from './lookup'
 import { TIER_TONE } from './roadmapTier'
 import { useTabParam } from './useTabParam'
 import { StatTiles } from './detail/StatTiles'
@@ -437,11 +437,11 @@ export function InitiativePage() {
   // A phase names the program it belongs to (`parentInitiativeSlug`); the map
   // is the only place a display TITLE lives for that slug — same reasoning as
   // `productName` above, read from the same query rather than a second fetch.
+  // `lookup.ts:programTitleOf`'s map-wide form: the detail payload carries only
+  // the parent's slug, not which product's tree it lives in.
   const programSlug = initiative?.parentInitiativeSlug ?? null
-  const programNode = programSlug
-    ? map?.products.flatMap((p) => p.initiatives).find((i) => i.slug === programSlug)
-    : undefined
-  const programTitle = programSlug ? (programNode?.title ?? programSlug) : null
+  const programTitleFor = useMemo(() => (map ? programTitleOf(map) : null), [map])
+  const programTitle = programTitleFor ? programTitleFor(programSlug) : programSlug
 
   const crumbs: BreadcrumbItem[] = [
     { label: ROADMAP.label, to: roadmapPath('initiatives') },
