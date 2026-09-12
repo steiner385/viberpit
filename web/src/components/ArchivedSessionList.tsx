@@ -27,12 +27,12 @@ import {
 } from '@/api/hooks'
 import type { ArchivedSession, BatchResult } from '@/api/types'
 import type { ArchivedListState } from '@/features/sessions/useArchivedListState'
-import { GroupedList } from '@/components/GroupedList'
+import { GroupedList } from '@/ui/list/GroupedList'
 import { PermanentDeleteDialog } from './PermanentDeleteDialog'
-import { BulkActionBar } from './list/BulkActionBar'
-import { NoMatchState } from './list/NoMatchState'
-import { SelectableRow, SELECT_CHECKBOX_CLS } from './list/SelectableRow'
-import { useBulkSelection } from './list/useBulkSelection'
+import { BulkActionBar } from '@/ui/list/BulkActionBar'
+import { NoMatchState } from '@/ui/list/NoMatchState'
+import { SelectableRow, SELECT_CHECKBOX_CLS } from '@/ui/list/SelectableRow'
+import { useBulkSelection } from '@/ui/list/useBulkSelection'
 import { ArchivedSessionCard, displayNameOf } from './ArchivedSessionCard'
 
 function summarize(verb: string, res: BatchResult): string {

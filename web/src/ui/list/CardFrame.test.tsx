@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render as rtlRender, screen, fireEvent } from '@testing-library/react'
 import type { ReactElement } from 'react'
-import { CardFrame } from '../CardFrame'
+import { CardFrame } from './CardFrame'
 import { ViewportProvider } from '@/shell/useViewport'
 
 function render(ui: ReactElement) {

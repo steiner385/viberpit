@@ -225,8 +225,10 @@ describe('SessionList', () => {
     expect(screen.getByText(/no sessions/i)).toBeInTheDocument()
     // The zero state is copy, not a call to action: `SessionListColumn` pins a
     // New Session button to the foot of this same column, and the two sat a few
-    // pixels apart firing the same handler.
-    expect(screen.queryByRole('button', { name: /new session/i })).not.toBeInTheDocument()
+    // pixels apart firing the same handler. Ported from the deleted
+    // `components/EmptyState.tsx` wrapper's own test — this render IS that
+    // wrapper's content now, inlined here with an explicit title.
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
   it('shows loading skeletons when isLoading is true', () => {

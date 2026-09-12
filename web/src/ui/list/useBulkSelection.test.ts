@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
-import { useBulkSelection } from '../useBulkSelection'
+import { useBulkSelection } from './useBulkSelection'
 
 const IDS = ['a', 'b', 'c', 'd']
 

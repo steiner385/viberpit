@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils'
-import { ListSearchInput } from './ListSearchInput'
-import { listControlClass } from './listControlStyles'
+import { ListSearchInput } from '@/ui/list/ListSearchInput'
+import { listControlClass } from '@/ui/list/listControlStyles'
 import type { GroupBy, SortBy } from '@/session/ordering'
 import {
   NO_FILTERS, isFiltered,

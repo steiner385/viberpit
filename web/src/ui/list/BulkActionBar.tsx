@@ -23,13 +23,13 @@ export function BulkActionBar({ label, clearLabel = 'Clear', onClear, children }
       aria-label="Bulk actions"
       className={cn(
         'flex flex-wrap items-center gap-2 rounded-lg px-3 py-2',
-        'bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700',
+        'bg-canvas border border-edge',
       )}
     >
-      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{label}</span>
+      <span className="text-sm font-medium text-ink">{label}</span>
       <div className="flex items-center gap-2 ml-auto flex-wrap">
         {children}
-        <Button type="button" variant="secondary" onClick={onClear} className="min-h-[44px]">
+        <Button type="button" variant="secondary" onClick={onClear} className="min-h-target">
           {clearLabel}
         </Button>
       </div>

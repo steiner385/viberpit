@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { BulkActionBar } from '../BulkActionBar'
+import { BulkActionBar } from './BulkActionBar'
 
 describe('BulkActionBar', () => {
   it('is a labelled region carrying the count text and its actions', () => {

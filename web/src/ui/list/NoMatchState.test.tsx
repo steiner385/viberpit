@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { NoMatchState } from '../NoMatchState'
+import { NoMatchState } from './NoMatchState'
 
 describe('NoMatchState', () => {
   it('announces the reason as a status and offers the caller-named reset', async () => {

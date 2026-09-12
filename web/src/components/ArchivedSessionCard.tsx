@@ -16,8 +16,8 @@ import { repoFromCwd } from '@/lib/repoFromCwd'
 import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { useNow } from '@/hooks/useNow'
 import type { ArchivedSession } from '@/api/types'
-import { CardFrame } from './card/CardFrame'
-import { CardMenu, Sep, menuItem } from './card/CardMenu'
+import { CardFrame } from '@/ui/list/CardFrame'
+import { CardMenu, Sep, menuItem } from '@/ui/list/CardMenu'
 
 /** An archived row's display name: its name, or a short id for the unnamed.
  *  Exported alongside the component (not split into a separate module) because

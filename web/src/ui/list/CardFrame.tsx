@@ -138,7 +138,7 @@ export function CardFrame({
         tabIndex={revealed ? 0 : -1}
         onClick={() => { swipe.reset(); action.onCommit() }}
         className={cn(
-          'absolute inset-y-0 flex w-[88px] items-center justify-center',
+          'absolute inset-y-0 flex w-22 items-center justify-center',
           side === 'right' ? 'left-0' : 'right-0',
           action.className,
           revealed ? 'pointer-events-auto' : 'pointer-events-none',
@@ -158,10 +158,10 @@ export function CardFrame({
         // layout responds to the CARD's width (the drag-resizable sidebar), not
         // the viewport. Gated variants must stay ≤ @md — the content box tops
         // out near 503px, so @lg can never match inside the sidebar.
-        'group @container relative flex flex-col rounded-lg border border-gray-200 dark:border-gray-700',
-        'bg-white dark:bg-gray-800 px-3 py-2 min-h-[44px] cursor-pointer',
-        'focus-within:ring-2 focus-within:ring-blue-500',
-        selected && 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-950/30',
+        'group @container relative flex flex-col rounded-lg border border-edge',
+        'bg-surface px-3 py-2 min-h-target cursor-pointer',
+        'focus-within:ring-2 focus-within:ring-accent',
+        selected && 'ring-2 ring-accent bg-accent-wash',
         // Clip the edge panels only while they are mounted. A permanent
         // overflow-hidden also clipped the ⋯ menu on wide touch devices.
         panelsMounted && 'overflow-hidden',
@@ -172,7 +172,7 @@ export function CardFrame({
       <span
         data-testid="card-status-rail"
         aria-hidden="true"
-        className={cn('absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full', railClass)}
+        className={cn('absolute left-0 top-1.5 bottom-1.5 w-0.75 rounded-r-full', railClass)}
       />
 
       {panelsMounted && (
@@ -186,7 +186,7 @@ export function CardFrame({
         {...(gestureLive ? { 'data-testid': 'card-swipe-fg', onPointerDown: swipe.onPointerDown } : {})}
         style={(gestureLive && restX !== 0) ? { transform: `translateX(${restX}px)` } : undefined}
         className={cn(
-          gestureLive && 'relative bg-white dark:bg-gray-800 touch-pan-y',
+          gestureLive && 'relative bg-surface touch-pan-y',
           gestureLive && !swipe.dragging && !reducedMotion && 'transition-transform duration-200',
         )}
       >
@@ -204,7 +204,7 @@ export function CardFrame({
             data-selected={selected}
             className={cn(
               'flex-1 min-w-0 flex items-center gap-1.5 text-left py-0.5',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded',
             )}
             onClick={(e) => {
               // The article handler skips clicks on buttons — this IS the open

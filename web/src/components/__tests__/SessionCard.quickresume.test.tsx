@@ -130,14 +130,14 @@ describe('SessionCard — quick-resume sparkle button', () => {
   })
 
   // Regression: the menu shares the sessions-list stacking context with the
-  // sticky group headers (GroupHeader uses `sticky top-0 z-10`). At an equal
-  // z-index a later group's header would paint over an open menu from a card
-  // above it. The menu must out-rank the header (z-20 > z-10).
-  it('renders the ⋯ menu above the sticky group headers (z-20)', () => {
+  // sticky group headers (GroupHeader uses `sticky top-0 z-raised`). At an
+  // equal z-index a later group's header would paint over an open menu from a
+  // card above it. The menu must out-rank the header (z-sticky > z-raised).
+  it('renders the ⋯ menu above the sticky group headers (z-sticky)', () => {
     renderCard({ session: mkSession({ status: 'done', detached: false, latestSuggestions: ['First step', 'Second step'] }), onQuickResume: noop })
     fireEvent.click(screen.getByRole('button', { name: /more actions/i }))
     const menu = screen.getByRole('menu')
-    expect(menu.className).toMatch(/\bz-20\b/)
-    expect(menu.className).not.toMatch(/\bz-10\b/)
+    expect(menu.className).toMatch(/\bz-sticky\b/)
+    expect(menu.className).not.toMatch(/\bz-raised\b/)
   })
 })

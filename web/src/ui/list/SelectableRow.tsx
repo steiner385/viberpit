@@ -10,9 +10,9 @@ import { cn } from '@/lib/utils'
 
 // eslint-disable-next-line react-refresh/only-export-components -- SELECT_CHECKBOX_CLS is a cn() call, which allowConstantExport does not exempt
 export const SELECT_CHECKBOX_CLS = cn(
-  'h-4 w-4 flex-shrink-0 rounded border-gray-300 text-blue-600',
-  'focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700',
-  'dark:checked:bg-blue-500 cursor-pointer',
+  'h-4 w-4 flex-shrink-0 rounded border-edge-strong text-accent',
+  'focus:ring-accent bg-surface-raised',
+  'checked:bg-accent cursor-pointer',
 )
 
 interface SelectableRowProps {

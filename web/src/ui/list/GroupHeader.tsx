@@ -61,17 +61,17 @@ export function GroupHeader({
       aria-expanded={!collapsed}
       aria-controls={collapsed ? undefined : panelId}
       className={cn(
-        'sticky top-0 z-10 flex w-full items-center gap-2 px-1 py-1',
-        'bg-gray-50/95 dark:bg-gray-900/95 backdrop-blur',
-        'text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400',
-        'hover:text-gray-700 dark:hover:text-gray-200',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded',
-        selected && 'ring-2 ring-blue-500 text-gray-700 dark:text-gray-200',
+        'sticky top-0 z-raised flex w-full items-center gap-2 px-1 py-1',
+        'bg-canvas/95 backdrop-blur',
+        'text-xs font-medium uppercase tracking-wide text-ink-muted',
+        'hover:text-ink',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded',
+        selected && 'ring-2 ring-accent text-ink',
       )}
     >
       {collapsed ? <ChevronRight size={14} aria-hidden /> : <ChevronDown size={14} aria-hidden />}
       <span>{label}</span>
-      <span className="tabular-nums text-gray-400 dark:text-gray-500">{count}</span>
+      <span className="tabular-nums text-ink-muted">{count}</span>
     </button>
   )
 }

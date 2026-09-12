@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { GroupedList } from '../GroupedList'
+import { GroupedList } from './GroupedList'
 import type { SessionGroup } from '@/session/ordering'
 
 interface Row { id: string }

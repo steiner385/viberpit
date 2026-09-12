@@ -3,7 +3,7 @@
 // bar), sorted by repo name rather than tier — CI health carries no tier of
 // its own, just each repo's 7-day check meta line (`CiRepoRow`).
 import { useMemo, useState } from 'react'
-import { ListSearchInput } from '@/components/ListSearchInput'
+import { ListSearchInput } from '@/ui/list/ListSearchInput'
 import { Banner } from '@/ui/Banner'
 import { EmptyState } from '@/ui/EmptyState'
 import { Skeleton } from '@/ui/Skeleton'

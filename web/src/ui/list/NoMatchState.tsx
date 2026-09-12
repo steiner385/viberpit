@@ -17,16 +17,16 @@ interface NoMatchStateProps {
 export function NoMatchState({ message, actionLabel, onClear }: NoMatchStateProps) {
   return (
     <div
-      className="rounded-lg border border-dashed border-gray-200 dark:border-gray-700 p-6 text-center"
+      className="rounded-lg border border-dashed border-edge p-6 text-center"
       role="status"
     >
-      <p className="text-sm text-gray-500 dark:text-gray-400">{message}</p>
+      <p className="text-sm text-ink-muted">{message}</p>
       <button
         type="button"
         onClick={onClear}
         className={cn(
-          'mt-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded',
+          'mt-2 text-sm font-medium text-accent hover:underline',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded',
         )}
       >
         {actionLabel}

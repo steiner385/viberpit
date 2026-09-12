@@ -14,7 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AddAccountDialog } from '@/features/accounts/AddAccountDialog'
 import { AllLimitedBanner } from '@/shell/AllLimitedBanner'
 import { DispatchBar } from '../DispatchBar'
-import { EmptyState } from '../EmptyState'
+import { EmptyState } from '@/ui/EmptyState'
 import { SessionList } from '../SessionList'
 import { UsageBadge, StatusPill } from '@/features/accounts/UsageBadge'
 import { ViewportProvider } from '@/shell/useViewport'
@@ -119,7 +119,7 @@ describe('a11y: AllLimitedBanner', () => {
 
 describe('a11y: EmptyState', () => {
   it('has no axe violations', async () => {
-    const { container } = render(<EmptyState />)
+    const { container } = render(<EmptyState title="No sessions yet" />)
     const results = await axe(container)
     expect(results).toHaveNoViolations()
   })

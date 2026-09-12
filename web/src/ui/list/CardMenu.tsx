@@ -47,13 +47,13 @@ export const actionBtn = cn(
 // eslint-disable-next-line react-refresh/only-export-components
 export const menuItem = cn(
   'flex w-full items-center gap-2 px-3 py-2 text-sm text-left',
-  'hover:bg-gray-100 dark:hover:bg-gray-700',
-  'focus-visible:outline-none focus-visible:bg-gray-100 dark:focus-visible:bg-gray-700',
+  'hover:bg-surface-raised',
+  'focus-visible:outline-none focus-visible:bg-surface-raised',
 )
 
 /** Passive `·` divider between line-2 segments. */
 export function Sep() {
-  return <span aria-hidden="true" className="flex-shrink-0 text-gray-300 dark:text-gray-600">·</span>
+  return <span aria-hidden="true" className="flex-shrink-0 text-ink">·</span>
 }
 
 export interface CardMenuProps {
@@ -105,9 +105,9 @@ export function CardMenu({ label, children }: CardMenuProps) {
       <button
         type="button"
         ref={triggerRef}
-        className={cn(actionBtn, 'text-gray-500 dark:text-gray-400',
-          'hover:bg-gray-100 dark:hover:bg-gray-700 focus-visible:ring-blue-500',
-          'active:bg-gray-200 dark:active:bg-gray-600')}
+        className={cn(actionBtn, 'text-ink-muted',
+          'hover:bg-surface-raised focus-visible:ring-accent',
+          'active:bg-surface-raised')}
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -123,9 +123,9 @@ export function CardMenu({ label, children }: CardMenuProps) {
             // z-20 keeps the open menu above the sticky group headers
             // (GroupHeader: `sticky top-0 z-10`); at an equal z-index a later
             // group's header would paint over a menu opened from a card above.
-            'absolute top-full right-0 mt-1 min-w-[12rem] max-w-xs z-20',
-            'rounded-md border border-gray-200 dark:border-gray-700',
-            'bg-white dark:bg-gray-800 shadow-lg py-1',
+            'absolute top-full right-0 mt-1 min-w-[12rem] max-w-xs z-sticky',
+            'rounded-md border border-edge',
+            'bg-surface shadow-lg py-1',
           )}
         >
           {children(close)}

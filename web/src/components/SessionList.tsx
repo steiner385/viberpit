@@ -3,13 +3,13 @@ import { Archive, RotateCcw, Shuffle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAutomations, useFixPr, useGenerateSuggestions, useSetAutopilotPaused, useBulkArchiveSessions, useResumeInterrupted, useRotateStalled } from '@/api/hooks'
 import { SessionCard } from './SessionCard'
-import { GroupedList } from './GroupedList'
-import { EmptyState } from './EmptyState'
-import { BulkActionBar } from './list/BulkActionBar'
-import { NoMatchState } from './list/NoMatchState'
-import { SelectableRow } from './list/SelectableRow'
-import { SkeletonCard } from './list/SkeletonCard'
-import { useBulkSelection } from './list/useBulkSelection'
+import { GroupedList } from '@/ui/list/GroupedList'
+import { EmptyState } from '@/ui/EmptyState'
+import { BulkActionBar } from '@/ui/list/BulkActionBar'
+import { NoMatchState } from '@/ui/list/NoMatchState'
+import { SelectableRow } from '@/ui/list/SelectableRow'
+import { SkeletonCard } from '@/ui/list/SkeletonCard'
+import { useBulkSelection } from '@/ui/list/useBulkSelection'
 import { Button } from '@/ui/Button'
 import { ARCHIVABLE_STATUSES, type Session, type Account } from '@/api/types'
 import type { SessionGroup } from '@/session/ordering'
@@ -153,7 +153,7 @@ export function SessionList({
         />
       )
     }
-    return <EmptyState />
+    return <EmptyState title="No sessions yet" />
   }
 
   const accountMap = new Map(accounts.map((a) => [a.name, a]))

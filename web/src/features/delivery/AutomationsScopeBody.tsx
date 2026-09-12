@@ -6,7 +6,7 @@
 import { useMemo, useState } from 'react'
 import type { Automation } from '@/api/automations'
 import { useAutomationActionableCounts } from '@/api/hooks'
-import { ListSearchInput } from '@/components/ListSearchInput'
+import { ListSearchInput } from '@/ui/list/ListSearchInput'
 import { Banner } from '@/ui/Banner'
 import { EmptyState } from '@/ui/EmptyState'
 import { Skeleton } from '@/ui/Skeleton'
