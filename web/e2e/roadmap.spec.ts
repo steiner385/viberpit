@@ -145,6 +145,18 @@ const DEPS = {
   drift: { proseOnly: [], unresolvedTargets: [], missingFromProject: [], checklistEpics: [] },
 }
 
+/** `GET /pm/projects/:slug/health` — the product overview's hygiene notice
+ *  (`RoadmapHealthCard`). A CLEAN product: the card renders nothing when there
+ *  is nothing to say, so the smoke tests below see the same page they always
+ *  did. The card's own rendering is covered by `RoadmapHealthCard.test.tsx`. */
+const HEALTH = {
+  unparentedCapabilities: [],
+  unlinkedInitiatives: [],
+  staleProposed: [],
+  staleInbox: 0,
+  generatedAt: '2026-09-08T00:00:00Z',
+}
+
 const INITIATIVE = {
   slug: 'views',
   repo: 'steiner385/kindash',
@@ -194,7 +206,9 @@ const SETTINGS = {
  * pattern. Object-shaped endpoints are matched explicitly; the `[]` fallback is
  * only safe for collections, so anything the roadmap reads as an object gets its
  * own branch (and the `/projects/:slug` sub-resources are matched BEFORE the
- * project itself, since `/deps` and `/onboarding` are suffixes of that path).
+ * project itself, since `/deps`, `/onboarding` and `/health` are suffixes of
+ * that path — fall through to the project fixture and the caller gets an object
+ * of the wrong shape, which is a render crash, not a soft failure).
  */
 async function interceptApi(page: Page) {
   await page.route('**/api/**', (route) => {
@@ -210,6 +224,12 @@ async function interceptApi(page: Page) {
       route.fulfill({ json: ONBOARDING })
     } else if (path.endsWith('/deps')) {
       route.fulfill({ json: DEPS })
+      // Scoped to the `/api/pm/projects/` prefix, NOT a bare `endsWith('/health')`:
+      // `/api/daemon/health` is matched further down this same chain, so an
+      // unscoped branch here would hijack it and hand the daemon poller a
+      // `ProjectHealth` object.
+    } else if (path.startsWith('/api/pm/projects/') && path.endsWith('/health')) {
+      route.fulfill({ json: HEALTH })
     } else if (path.startsWith('/api/pm/projects/')) {
       route.fulfill({ json: PROJECT })
     } else if (path === '/api/sdlc/triage') {
