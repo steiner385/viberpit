@@ -2,8 +2,7 @@
  * Automated WCAG 2.1 AA accessibility audit for management surfaces.
  *
  * Uses jest-axe (axe-core) to catch labelling, role, focus, and contrast-attribute
- * violations. The xterm.js Terminal component is intentionally excluded — it carries
- * a documented partial-conformance note (see docs/ACCESSIBILITY.md).
+ * violations.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'

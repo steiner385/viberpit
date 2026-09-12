@@ -42,8 +42,8 @@ hat is asking rather than around a per-user account
   Inbox scope for proposals).
 - **Project manager** — "What is in flight, blocked, or waiting on a human? Is delivery
   healthy?" Primary surfaces: Roadmap's Needs-you tabs and Delivery (automations, CI health).
-- **Operator / admin** — "Accounts, hosts, deploy, config." Primary surface: Settings (16
-  sections, split variant).
+- **Operator / admin** — "Accounts, hosts, deploy, config." Primary surface: Settings (17
+  sections across 5 groups — `web/src/features/settings/settingsDefs.ts` — split variant).
 
 These are information-architecture groupings, not accounts or permission levels — every mode
 is reachable from the same five-entry nav rail at all times.
@@ -59,9 +59,15 @@ bar is "verified read-only", not "looks glanceable" (see `docs/ACCESSIBILITY.md`
 full region/mode table). Kiosk is orthogonal to the four persona modes above: today only
 Pipeline is kiosk-safe.
 
-Independently of both, `useViewport()` also reports a width tier (phone/tablet/desktop/wide)
-that the layout uses for master-detail vs. single-band rendering and touch-target sizing — see
-`docs/ACCESSIBILITY.md` §2 and `web/README.md` for the region/breakpoint detail.
+Independently of both, `useViewport()` also reports a width tier (`WIDTH_TIERS`:
+phone/tablet/desktop/wide). It is a *finer* axis than `LayoutMode` and gates far less: master-detail
+vs. single-band rendering is the `LayoutMode`'s call, made by `REGION_VISIBILITY` in `AppShell.tsx`
+(`app.list` stays mounted beside an open item on `desktop`, and gives up the one band to it on
+phone/tablet), and touch targets are the unconditional `min-h-target` token rather than anything
+width-dependent. The only non-test readers of the tier itself are
+`shell/regions/NavRail.tsx` (the rail may expand only at `wide`) and `ui/list/CardFrame.tsx` (swipe
+gestures are live only below `desktop`). See `docs/ACCESSIBILITY.md` §2 for the full region/mode
+table.
 
 **Success metrics** — (unknown — needs owner input). Observable proxies in code: session
 cards reflect live status without sticking on "Working…"; layout adapts across widths via
@@ -88,13 +94,16 @@ raw PTY dump — there is no terminal emulator in the tree.
 
 **Evidence** —
 - Shell and layout: `web/src/shell/AppShell.tsx` (regions + mode matrix), `web/src/shell/useViewport.tsx`
-  (the one layout `matchMedia` reader), `web/src/App.tsx` (route table).
+  (the one layout `matchMedia` reader), `web/src/shell/routes.tsx` (the one route table —
+  `web/src/App.tsx` is a 40-line entry point that mounts it).
 - Session UI: `web/src/features/sessions/list/SessionCard.tsx`,
   `web/src/features/sessions/SessionBody.tsx` (transcript host),
   `web/src/features/sessions/composer/Composer.tsx`, `web/src/features/sessions/list/DispatchBar.tsx`.
 - Responsiveness: `web/src/shell/useViewport.tsx`; swipe test
   `web/src/features/sessions/list/SessionCardSwipe.test.tsx`.
-- README `## ccswitch web` section (Tailscale-served, phone/tablet access) — `web/README.md`.
+- The repo-root `README.md`'s `## ccswitch web` section (Tailscale-served, phone/tablet access).
+  `web/README.md` is the frontend developer guide — folders, gates, conventions — with no Tailscale
+  prose.
 - PRs: #423 (mobile/desktop single-source invariant), #461 (mobile-reachable tab strip),
   #776/#778 (mobile-responsive session/account controls), #313/#316 (swipe-to-archive),
   #330/#339 (Android keyboard/soft-keyboard), #524 (safe-area insets), #498 (mobile "more"

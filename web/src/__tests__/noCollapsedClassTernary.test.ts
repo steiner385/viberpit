@@ -55,10 +55,15 @@ function sourceFiles(dir: string): string[] {
 
 // One pattern per quote style; a backreference (`\1`) requires the closing
 // leg to be byte-for-byte identical to the opening one — not just similar.
+// The separators are `\s*`, not ` *`: prettier wraps a long class ternary onto
+// three lines (`cond`, `? '…'`, `: '…'`), and a literal-space class cannot
+// cross that newline — the collapsed shape would slip through unseen. `\s*`
+// also covers tab indentation. Verified against all of `web/src`: 0 hits, so
+// the wider form costs no false positives.
 const COLLAPSED_TERNARY_PATTERNS = [
-  /\? *'([^']+)' *: *'\1'/g,
-  /\? *"([^"]+)" *: *"\1"/g,
-  /\? *`([^`]+)` *: *`\1`/g,
+  /\?\s*'([^']+)'\s*:\s*'\1'/g,
+  /\?\s*"([^"]+)"\s*:\s*"\1"/g,
+  /\?\s*`([^`]+)`\s*:\s*`\1`/g,
 ]
 
 /** `{ line, leg }` for every collapsed ternary found in `text`. */

@@ -21,7 +21,7 @@ reaches every page that uses it.
 |---|---|---|
 | `app.banners` | `BannerStack` (`web/src/ui/BannerStack.tsx`) | container for `Banner`s, each its own `role="status"` (polite) or `role="alert"` (assertive) live region |
 | `app.rail` | `NavRail` (desktop/tablet) or `NavBar`+`TopBar` (phone) (`web/src/shell/regions/`) | `<nav role="navigation" aria-label="Sections">` |
-| `app.list` | `ContextList` (`web/src/shell/regions/ContextList.tsx`) | `aria-labelledby` a heading; holds the section's list (Sessions renders it as a composite `#session-listbox` that the dock drives via `aria-controls`/`aria-activedescendant`) |
+| `app.list` | `ContextList` (`web/src/shell/regions/ContextList.tsx`) | `<aside aria-labelledby>` a heading; holds the section's list (Sessions puts a deliberately **role-less** `<div id="session-listbox" aria-label="Sessions">` inside it — the dock's textarea `aria-controls` that id and owns `aria-activedescendant` itself, because that attribute is not allowed on a role-less element) |
 | `app.main` | `PageHost` (`web/src/shell/regions/PageHost.tsx`) | the **one** `<main>` on the page |
 | `app.dock` | `PromptDock` (`web/src/shell/regions/PromptDock.tsx`) | the session composer, mounted inside `app.main` so it shares the session runtime |
 | `app.drawer` | `DrawerHost` (`web/src/shell/regions/DrawerHost.tsx`) | `<aside aria-label={title}>` |
@@ -43,19 +43,22 @@ Which regions exist in which mode is a table, not nested conditionals: `REGION_V
 
 ## 3. The page contract
 
-Every migrated page (`features/settings/pageContract.test.tsx`'s `PAGES` table) makes four claims,
-true in every layout mode it is reachable in:
+Every migrated page (`features/settings/pageContract.test.tsx`'s `PAGES` table) is asserted on
+exactly four things, in every layout mode it is reachable in:
 
-- exactly one `<h1>`, rendered by `ui/PageHeader.tsx` (Zone 1 of a page) — the only place a page may
-  put a heading;
-- `document.title` synced to it (`shell/documentTitle.ts`'s base-title stack), formatted
-  `"<title> — ViberPit"`, and distinct from the `h1` where the two must differ (Settings: one page,
-  many sections — see `PageHeader`'s `documentTitle` prop);
-- `ui/PageContent.tsx` (Zone 3) carries `aria-busy` while loading and a `role="status"
-  aria-live="polite"` span that announces "Loading" / "Loaded" for screen-reader users who cannot see
-  the (aria-hidden) `Skeleton`;
-- a declared layout variant (`standard` / `split` / `reader` / `workspace`), stamped as
-  `data-page-variant="<variant>"` by the page itself, and no horizontal scroll on `#root`.
+- **exactly one `<h1>`** — found by its accessible name (`hidden: true`, since on phone/tablet a
+  section that owns a list column renders its page behind the list), then counted: one. It is
+  rendered by `ui/PageHeader.tsx` (Zone 1 of a page), the only place a page may put a heading.
+- **`document.title` matches `/<title> — ViberPit$/`** — the suffix comes from
+  `shell/documentTitle.ts`'s base-title stack. The title may differ from the `h1` where the two must
+  (Settings: one page, many sections — see `PageHeader`'s `documentTitle` prop).
+- **the declared layout variant is in the DOM** — `[data-page-variant="<variant>"]` (`standard` /
+  `split` / `reader` / `workspace`), stamped by the page itself, not by the shell.
+- **no horizontal scroll** — `#root`'s `scrollWidth` never exceeds its `clientWidth`.
+
+Behaviours of the Zone 1/Zone 3 primitives themselves (the `PageContent` busy announcer, for
+instance) are §4's contract, not this table's — `PAGES` asserts the four bullets above and nothing
+more.
 
 ## 4. Primitives
 
@@ -68,6 +71,10 @@ true in every layout mode it is reachable in:
   with `shell/useOverlayState` so the app's one global keydown listener knows an overlay is open.
 - **`Tabs`** (`ui/Tabs.tsx`) — `role="tablist"`/`"tab"`, roving `tabIndex`, arrow-key movement
   (horizontal or vertical), optional `aria-controls` linking a tab to its panel.
+- **`PageContent`** (`ui/PageContent.tsx`) — Zone 3 of every page. Owns scrolling (or clips, with
+  `scroll={false}`, for a workspace layout whose inner panes scroll themselves), carries `aria-busy`
+  while `busy`, and renders an `sr-only` `role="status" aria-live="polite"` span announcing
+  "Loading" / "Loaded" for screen-reader users who cannot see the (aria-hidden) `Skeleton`.
 - **`Banner`** (`ui/Banner.tsx`) — tone-derived live-region role: `alert` (assertive) for `danger`,
   `status` (polite) otherwise, or `role="none"` (rendered as no `role` attribute) for content that is
   not safe as a live region (e.g. `DeployPanel`'s changing commit/phase list).
@@ -82,9 +89,14 @@ true in every layout mode it is reachable in:
 
 ## 5. Tokens and contrast
 
-Colour lives in exactly one place, `web/src/index.css`'s `@theme` tokens (`--t-*` in `:root`, a
-`prefers-color-scheme` block, and a `:root[data-theme="dark"]` block for the explicit theme toggle).
-`web/src/__tests__/contrast.test.ts` parses those three blocks straight out of the CSS source and
+Colour lives in exactly one place, `web/src/index.css`, in two layers (documented at `index.css:23`).
+The values are raw `--t-*` custom properties in three blocks: `:root` (light), a
+`@media (prefers-color-scheme: dark)` block, and a `:root[data-theme="dark"]` block for the explicit
+theme toggle. A separate `@theme inline` block (from `index.css:135`) then bridges those variables
+onto Tailwind's namespaces — `--color-*` → `bg-`/`text-`/`border-`, `--z-index-*` → `z-*`,
+`--spacing-*` → `min-h-target` and friends — so a utility reads the raw variable directly and a theme
+switch never needs a class change. The `--t-*` tokens are not themselves inside `@theme`.
+`web/src/__tests__/contrast.test.ts` parses those three value blocks straight out of the CSS source and
 applies the WCAG 2.x relative-luminance formula to every text/background pair the UI renders (each
 tone's text on its own wash, banner body copy on every wash, body text on `surface`), asserting
 ≥4.5:1 in all three blocks — plus that the two dark blocks never drift from each other. This exists
@@ -99,9 +111,16 @@ is `text-accent-ink` (`bg-accent` itself flips per theme, so plain white text on
 guaranteed AA). `eslint-rules/no-raw-palette.js`'s `whiteOnFill` check reports a bare `text-white`
 beside either kind of fill rather than silently accepting it.
 
-`prefers-reduced-motion` has one reader: `useViewport().reducedMotion`
+`prefers-reduced-motion` has one **layout media-query subscriber**: `useViewport().reducedMotion`
 (`web/src/shell/useViewport.tsx`). `SessionCard`/`CardFrame` degrade their pulse animation and swipe
-transition to static under it rather than each subscribing to the media query themselves.
+transition to static by reading that, rather than each subscribing to the media query themselves.
+Two modules that cannot consume a React context read the query directly and are the documented
+exceptions — `features/sessions/brailleSpinner.ts`'s `prefersReducedMotion()` (swaps the cycling
+spinner for a static glyph, consumed by `WorkingIndicator.tsx`) and `pipeline/motion.ts`'s
+`scrollBehavior()` (`'auto'` instead of `'smooth'`). CSS covers the rest without any JS reader at
+all: the `motion-reduce:` utility variant, plus the `@media (prefers-reduced-motion: reduce)` block
+at `index.css:266` that stops the working-shimmer animation. This matches `web/README.md`'s
+"one media-query reader" convention and its two stated exceptions.
 
 ## 6. Tests
 
@@ -111,12 +130,19 @@ transition to static under it rather than each subscribing to the media query th
   included. `PageHost` is the app's single `<main>` landmark specifically so that rule can stay on.
 - **Page contract**: `web/src/features/settings/pageContract.test.tsx`'s `PAGES` table (§3) exercises
   every migrated page, in every layout mode it is reachable in.
-- **Playwright**: each `web/e2e/*.spec.ts` exercises its page across the widths that matter to it —
-  phone (390×844), tablet (820×1180), desktop (1440×900) — either via `test.use({ viewport })` per
-  `describe` block or, where a spec already loops several widths itself
-  (`delivery.spec.ts`, `pipeline.spec.ts`, `archived-reader.spec.ts`), via that loop. There are no
-  global Playwright viewport projects (`playwright.config.ts`) — the per-spec widths already cover
-  what a project matrix would, without tripling specs that loop on their own.
+- **Playwright**: each `web/e2e/*.spec.ts` picks the widths that matter to *it*, in one of two
+  styles. Per-`describe` `test.use({ viewport })` blocks: `delivery.spec.ts` (desktop 1440×900 +
+  phone 390×844) and `roadmap.spec.ts` (the same pair). A loop over a width list:
+  `pipeline.spec.ts` (phone 390×844 + tablet 820×1180, with desktop and kiosk as separate
+  `test.use` describes) and `archived-reader.spec.ts` (phone + desktop). The rest are deliberately
+  narrower — `dashboard.spec.ts` is single-viewport at 375×812 and says so in its header,
+  `transcript-virtualization.spec.ts` is phone-only, `short-viewport.spec.ts` uses 393×480 and
+  393×852 to reproduce the Android keyboard squeeze, and `rotation-reconnect.spec.ts` sets no
+  viewport at all. So phone is near-universal and **820×1180 appears in exactly one spec**; there is
+  no "every spec covers three widths" guarantee to rely on.
+  `playwright.config.ts:17-22` defines one project — `chromium` on `devices['Desktop Chrome']`,
+  whose viewport is what a spec that sets none inherits. What does not exist is a viewport *matrix*:
+  the per-spec widths cover what one would, without multiplying specs that already loop on their own.
 
 ## 7. Retired
 
