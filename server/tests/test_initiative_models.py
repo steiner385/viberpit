@@ -107,9 +107,17 @@ def test_feature_route_labels_roundtrip_as_a_list(tmp_path):
             await db.flush()
             db.add(Feature(project_id=p.id, slug="flaky-test-triage", title="Flaky test triage",
                            state="live", route_labels=["flaky"]))
-            db.add(Feature(project_id=p.id, slug="task-views", title="Task views", state="live"))
+            db.add(Feature(project_id=p.id, slug="task-views", title="Task views", state="live",
+                           route_labels=None))
         async with db_session() as db:
             rows = (await db.execute(sa_select(Feature).order_by(Feature.slug))).scalars().all()
-            return [(r.slug, r.route_labels) for r in rows]
+            routed = (await db.execute(sa_select(Feature.slug).where(
+                Feature.route_labels.isnot(None)))).scalars().all()
+            return [(r.slug, r.route_labels) for r in rows], routed
 
-    assert asyncio.run(run()) == [("flaky-test-triage", ["flaky"]), ("task-views", None)]
+    pairs, routed = asyncio.run(run())
+    assert pairs == [("flaky-test-triage", ["flaky"]), ("task-views", None)]
+    assert routed == ["flaky-test-triage"], (
+        "explicit None must persist as SQL NULL, not the JSON literal 'null', so "
+        "route_labels IS NOT NULL excludes unrouted features"
+    )

@@ -1522,7 +1522,10 @@ class Feature(Base):
     # capability mechanically (pm-triage's auto-link pass), so bot-filed issues
     # (`flaky`, `forced-deploy-audit`, …) never reach the classifier and never
     # cluster into a proposed capability. The doc owns the rule; this mirrors it.
-    route_labels: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
+    # none_as_null so an explicit None is SQL NULL and `route_labels IS NOT NULL`
+    # means "routes something."
+    route_labels: Mapped[list | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None)
     repo_path: Mapped[str | None] = mapped_column(String, nullable=True)
     commit_sha: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
