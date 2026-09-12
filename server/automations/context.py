@@ -40,9 +40,10 @@ _AUTOMATION_FALLBACK_PERMISSION_MODE = "full-auto"
 
 def _elapsed_s(started_at: datetime | None, now: datetime) -> float | None:
     """Seconds between a dispatch's start and *now*, or None when it never
-    recorded a start. Every ``dispatch_outcomes`` datetime column is naive UTC, so
-    a stored value is re-stamped UTC before the subtraction rather than compared
-    against an aware ``now`` (that raises)."""
+    recorded a start. The ``dispatch_outcomes`` datetime columns are
+    ``DateTime(timezone=True)``: Postgres hands back aware values, SQLite hands
+    back naive ones, so a naive value is re-stamped UTC before the subtraction
+    rather than compared against an aware ``now`` (that raises)."""
     if started_at is None:
         return None
     started = (started_at if started_at.tzinfo
