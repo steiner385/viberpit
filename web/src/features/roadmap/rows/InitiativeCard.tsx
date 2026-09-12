@@ -70,7 +70,7 @@ export function InitiativeCard({
       >
         <span className="block truncate text-xs text-ink-muted">
           {reason
-            ? <span className="text-warning">{reason}{next ? ` → ${stageLabel(next)}` : ''}</span>
+            ? <span className={initiative.tier === 'blocked' ? 'text-danger' : 'text-warning'}>{reason}{next ? ` → ${stageLabel(next)}` : ''}</span>
             : tierLabel(initiative.tier)}
           {epic ? ` · ${epic.done}/${epic.total} done` : ''}
         </span>

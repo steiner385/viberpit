@@ -101,6 +101,8 @@ export const TIER_LABEL: Record<RoadmapTier, string> = {
 /** Why a row needs a human beyond its tier (server `reason`). */
 export const REASON_LABEL: Record<string, string> = {
   advance: 'Ready to advance',
+  blocked: 'Blocked after a failed materialize',
+  epic_blocked: 'Blocked by open dependencies',
 }
 
 export const reasonLabel = (reason: string | null | undefined): string =>

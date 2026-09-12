@@ -29,7 +29,7 @@ export function NeedsYouList({ products, repos }: { products: ProductNode[]; rep
               <div className="text-xs text-ink-muted">
                 {product.name ?? product.slug}
                 {' · '}
-                <span className="text-warning">
+                <span className={initiative.tier === 'blocked' ? 'text-danger' : 'text-warning'}>
                   {reasonLabel(initiative.reason) || initiativeStatusLabel(initiative.status)}
                 </span>
               </div>
