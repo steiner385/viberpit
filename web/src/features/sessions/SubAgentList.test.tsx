@@ -1,0 +1,61 @@
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { render, screen, cleanup, act } from '@testing-library/react'
+import { SubAgentList } from './SubAgentList'
+import { agentDuration } from './subAgentDuration'
+import type { SubAgent } from '@/session/selectors'
+
+afterEach(cleanup)
+
+const base: SubAgent = { toolId: 'x', type: 'Explore', description: 'find it', status: 'running' }
+
+describe('agentDuration', () => {
+  it('returns live elapsed (now − start) for a running agent', () => {
+    expect(agentDuration({ ...base, status: 'running', startedAt: 1000 }, 91_000)).toBe('1m 30s')
+  })
+
+  it('returns frozen total runtime for a finished agent', () => {
+    expect(agentDuration({ ...base, status: 'done', startedAt: 1000, endedAt: 73_000 }, 999_999)).toBe('1m 12s')
+  })
+
+  it('returns null when start ts is missing', () => {
+    expect(agentDuration({ ...base, status: 'running' }, 5000)).toBeNull()
+  })
+
+  it('returns null for a finished agent with no end ts', () => {
+    expect(agentDuration({ ...base, status: 'done', startedAt: 1000 }, 5000)).toBeNull()
+  })
+
+  it('never shows a negative duration if start is slightly ahead of now', () => {
+    expect(agentDuration({ ...base, status: 'running', startedAt: 5000 }, 4000)).toBe('0s')
+  })
+})
+
+describe('SubAgentList', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('renders a frozen runtime for finished agents', () => {
+    render(<SubAgentList subAgents={[{ ...base, status: 'done', startedAt: 1000, endedAt: 121_000 }]} />)
+    expect(screen.getByText('2m 0s')).toBeInTheDocument()
+    expect(screen.getByText('completed')).toBeInTheDocument()
+  })
+
+  it('renders the live elapsed for a running agent', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(31_000))
+    render(<SubAgentList subAgents={[{ ...base, status: 'running', startedAt: 1000 }]} />)
+    // Flush the shared useNow catch-up timer (setTimeout 0) so the hook ticks
+    // from 0 → Date.now() (31_000) before we assert.
+    act(() => { vi.advanceTimersByTime(0) })
+    expect(screen.getByText('30s')).toBeInTheDocument()
+  })
+
+  it('shows the live activity instead of the description while running', () => {
+    render(<SubAgentList subAgents={[{ ...base, type: 'Explore', description: 'scan', status: 'running', activity: 'Running Bash' }]} />)
+    expect(screen.getByText('Running Bash')).toBeInTheDocument()
+  })
+
+  it('renders the stopped status label', () => {
+    render(<SubAgentList subAgents={[{ ...base, status: 'stopped' }]} />)
+    expect(screen.getByText('stopped')).toBeInTheDocument()
+  })
+})

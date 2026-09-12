@@ -48,7 +48,7 @@ function SessionsBadge({ counts }: { counts?: LiveSessionCounts | null }) {
     <span
       className={cn(
         'text-xs whitespace-nowrap',
-        active === 0 && idle === 0 ? 'text-ink-muted' : 'text-ink-muted',
+        active === 0 && idle === 0 ? 'text-ink-faint' : 'text-ink-muted',
       )}
       aria-label="Live sessions using this account"
     >

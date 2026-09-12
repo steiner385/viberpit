@@ -3,7 +3,7 @@ import { Outlet, useLocation } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import { useSessions } from '@/api/hooks'
 import { useNeedsYouTitle } from '@/hooks/useNeedsYouTitle'
-import { SessionRuntimeProvider } from '@/components/session/SessionRuntimeProvider'
+import { SessionRuntimeProvider } from '@/features/sessions/SessionRuntimeProvider'
 import { useOpenSessionId } from '@/shell/openSessionId'
 import { readInitialPrompt } from '@/session/sessionNavState'
 

@@ -16,13 +16,13 @@ vi.mock('@/api/assistant', () => ({
 // wiring). Mocked as a dumb wrapper, alongside the context hook its descendants
 // read, so `AssistantSheetBody` gets a fully-formed (fake) SessionRuntime without
 // a real socket.
-vi.mock('@/components/session/SessionRuntimeProvider', () => ({
+vi.mock('@/features/sessions/SessionRuntimeProvider', () => ({
   SessionRuntimeProvider: ({ children }: { children: ReactNode }) => <div data-testid="runtime">{children}</div>,
   useSessionRuntimeContext: vi.fn(),
 }))
 
 import { useAssistantStatus } from '@/api/assistant'
-import { useSessionRuntimeContext } from '@/components/session/SessionRuntimeProvider'
+import { useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
 // `renderApp` (web/src/test/renderApp.tsx) mounts the real shell at a path in a
 // layout mode; opening `?drawer=assistant` on desktop renders the sheet through
 // DrawerHost — the same route the user takes, so the test also proves the

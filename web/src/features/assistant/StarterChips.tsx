@@ -4,7 +4,7 @@
  * (or the user has sent anything), the starters would just be clutter above real
  * conversation.
  */
-import { useSessionRuntimeContext } from '@/components/session/SessionRuntimeProvider'
+import { useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
 
 export function StarterChips({ starters }: { starters: readonly string[] }) {
   const rt = useSessionRuntimeContext()

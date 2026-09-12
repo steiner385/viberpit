@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MainPaneSession } from './MainPaneSession'
-import { SessionRuntimeProvider } from '@/components/session/SessionRuntimeProvider'
+import { SessionRuntimeProvider } from '@/features/sessions/SessionRuntimeProvider'
 import type { SessionEvent } from '@/session/events'
 import { anthropicUsage } from '@/test/factories'
 

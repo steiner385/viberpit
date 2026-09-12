@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MainPaneSession } from './MainPaneSession'
-import { SessionRuntimeProvider } from '@/components/session/SessionRuntimeProvider'
+import { SessionRuntimeProvider } from '@/features/sessions/SessionRuntimeProvider'
 
 const stableMockSocket = {
   attach: vi.fn(), detach: vi.fn(), interrupt: vi.fn(), prompt: vi.fn(),

@@ -72,7 +72,7 @@ vi.mock('@/ws/client', async (importOriginal) => {
   }
 })
 
-import { useSessionRuntimeContext } from '@/components/session/SessionRuntimeProvider'
+import { useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
 import { resetDocumentTitle, setBaseTitle } from '@/shell/documentTitle'
 import { buildRoutes } from '@/shell/routes'
 import { PageHost } from './PageHost'

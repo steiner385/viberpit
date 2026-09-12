@@ -39,7 +39,7 @@ import type { DeployProgress, PendingDeploy } from '@/api/types'
 import type { Command } from '@/session/events'
 import { DeployControllerProvider } from '@/lib/deployController'
 import { getOverlayRoot } from '@/ui/portal'
-import { CommandResultOverlay } from '@/components/session/CommandResultOverlay'
+import { CommandResultOverlay } from '@/features/sessions/composer/CommandResultOverlay'
 import { Overlays, OVERLAY_REGION } from './Overlays'
 
 expect.extend(toHaveNoViolations)
