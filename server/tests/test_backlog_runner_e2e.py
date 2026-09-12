@@ -26,10 +26,14 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from server.automations import backlog_github
-from server.automations.backlog_runner import BacklogRunnerLoop, select_batch
+from server.automations.backlog_runner import (
+    CLAIM_GRACE_S,
+    BacklogRunnerLoop,
+    select_batch,
+)
 from server.automations.context import AutomationContext
 from server.db import db_session, init_db
 from server.db.models import Session as DbSession
@@ -584,6 +588,52 @@ def test_reconcile_leaves_live_claim_alone(tmp_path):
             "session_id": "sess-live", "attempts": 0})
         await h.loop._reconcile_dangling()
         assert (await h.ctx.get_target_state("o/r#9")).get("session_id") == "sess-live"
+
+    run(go())
+
+
+def test_reconcile_leaves_in_flight_claim_alone(tmp_path):
+    """A claim stamped seconds ago is IN FLIGHT, not leaked.
+
+    ``backlog_runner_dispatch`` claims, awaits a spawn, then records the
+    session id — a separate task from the tick, so a concurrent
+    ``_reconcile_dangling`` could otherwise reap a claim whose spawn is still
+    running (the dispatch's own UPDATE then finds 0 rows → StaleDataError 500,
+    or the issue is released and double-spawned)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'recf.db'}"
+
+    async def go():
+        await init_db(db_url=db_url)
+        await _seed_rows()
+        h = Harness(config=make_config(max_concurrent=1), clock=FakeClock(),
+                    candidate_refs=[("o/r", 1, "one")])
+        await h.ctx.set_target_state("o/r#5", {
+            "repo": "o/r", "issues": ["o/r#5"], "claimed": True, "attempts": 0,
+            "claimed_at": datetime.now(timezone.utc).isoformat()})
+        await h.loop._reconcile_dangling()
+        assert (await h.ctx.get_target_state("o/r#5")).get("claimed") is True, \
+            "a claim inside the grace window is mid-spawn and must survive"
+
+    run(go())
+
+
+def test_reconcile_reaps_claim_past_grace(tmp_path):
+    """Past the grace window the same row is a real crash-between-claim-and-spawn
+    leak, and deleting it is still what returns the issue to the pool."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'recg.db'}"
+
+    async def go():
+        await init_db(db_url=db_url)
+        await _seed_rows()
+        h = Harness(config=make_config(max_concurrent=1), clock=FakeClock(),
+                    candidate_refs=[("o/r", 1, "one")])
+        stale = datetime.now(timezone.utc) - timedelta(seconds=CLAIM_GRACE_S + 60)
+        await h.ctx.set_target_state("o/r#5", {
+            "repo": "o/r", "issues": ["o/r#5"], "claimed": True, "attempts": 0,
+            "claimed_at": stale.isoformat()})
+        await h.loop._reconcile_dangling()
+        assert await h.ctx.get_target_state("o/r#5") == {}, \
+            "a claim older than the grace window is a dangler"
 
     run(go())
 

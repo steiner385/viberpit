@@ -41,6 +41,17 @@ SPAWN_CIRCUIT_COOLDOWN_S = 1800.0   # breaker-open duration before a half-open p
 # ``propose_groups`` call has its own per-account helper-layer circuit breaker,
 # so a short cadence can't cause runaway model spend during a sustained outage.
 GROUP_REFRESH_BACKOFF_S = 120.0
+# How long a freshly written claim is trusted to be MID-SPAWN rather than leaked.
+# ``_reconcile_dangling`` reads "claimed, no session_id" as the
+# crash-between-claim-and-spawn leak, which is sound for this loop (claim and
+# spawn happen in one tick that cannot interleave with itself) but NOT for
+# ``backlog_runner_dispatch``: a manual dispatch is a separate task, so a tick
+# firing during its spawn would reap a live claim — the dispatch's own state
+# UPDATE then matches 0 rows (``StaleDataError`` → 500) or, worse, the issue
+# returns to the pool and a later tick double-spawns it. The window only has to
+# cover one spawn (account health check + worktree setup), and its whole cost is
+# that a genuinely crashed claim holds its concurrency slot this much longer.
+CLAIM_GRACE_S = 120.0
 
 
 def _max_spawn_backoff_s() -> float:
@@ -564,7 +575,13 @@ class BacklogRunnerLoop:
         the attempt counting. A ``handed_off`` row is likewise sweep-owned — its
         session is gone by design (PR Doctor carries the PR), so it must never
         read as a dangler; nor may a propose-mode ``proposed`` row, which is an
-        intentional pending-tap claim."""
+        intentional pending-tap claim.
+
+        Nor, finally, may a claim written within ``CLAIM_GRACE_S``: that one is
+        mid-spawn, and the spawn racing it may belong to another task entirely
+        (``backlog_runner_dispatch``). A MISSING or unreadable ``claimed_at`` is
+        reaped exactly as before — rows predating the stamp must stay
+        collectable, or a single legacy leak would hold its slot forever."""
         try:
             states = await self._ctx.list_target_states()
         except Exception:  # pragma: no cover — a state read must not stall the tick
@@ -574,6 +591,11 @@ class BacklogRunnerLoop:
                 continue
             if (st.get("session_id") is not None or st.get("handed_off")
                     or st.get("proposed")):
+                continue
+            claimed_at = parse_iso_utc(st.get("claimed_at"))
+            if (claimed_at is not None
+                    and self._wall_clock() - claimed_at
+                    < timedelta(seconds=CLAIM_GRACE_S)):
                 continue
             # A leaked row holds a concurrency slot forever (count_in_flight
             # counts active rows), so dropping it is the whole release.
@@ -784,6 +806,7 @@ class BacklogRunnerLoop:
                 "attempts": st.get("attempts", 0),
                 "issues": batch.issues,
                 "claimed": True,
+                "claimed_at": self._wall_clock().isoformat(),
             })
             await self._announce_claim(batch)
             await self._ctx.emit("info", f"claimed {batch.primary}",
