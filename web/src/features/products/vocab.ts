@@ -101,7 +101,9 @@ export const TIER_LABEL: Record<RoadmapTier, string> = {
 /** Why a row needs a human beyond its tier (server `reason`). */
 export const REASON_LABEL: Record<string, string> = {
   advance: 'Ready to advance',
-  blocked: 'Blocked after a failed materialize',
+  // Cause-neutral on purpose: `blocked` has two writers (a failed materialize
+  // apply and the synthesizer giving up on a plan), and the row does not say which.
+  blocked: 'Blocked, needs clearing',
   epic_blocked: 'Blocked by open dependencies',
 }
 

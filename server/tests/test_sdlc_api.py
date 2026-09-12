@@ -968,3 +968,67 @@ def test_unblock_refuses_while_a_materialization_is_pending():
             r = c.post("/api/sdlc/initiatives/dark-mode/unblock", headers=IDENTITY_HEADERS)
             assert r.status_code == 409, r.text
             assert r.json()["detail"]["error"] == "proposal_pending"
+
+
+def _seed_exhausted(db_url: str, *, proposals: int, epic_number: int | None = None):
+    """A plan-stage initiative the synthesizer blocked after N failed decompositions."""
+    from server.db import db_session, init_db
+    from server.db.models import Initiative, MaterializationProposal
+
+    async def _run():
+        await init_db(db_url)
+        async with db_session() as db:
+            ini = Initiative(slug="dark-mode", repo="o/r", title="Dark mode",
+                             stage="plan", status="blocked", epic_repo="o/r" if epic_number else None,
+                             epic_number=epic_number)
+            db.add(ini)
+            await db.flush()
+            for _ in range(proposals):
+                db.add(MaterializationProposal(initiative_id=ini.id, status="rejected",
+                                               session_id="s", payload={"tasks": []}))
+
+    asyncio.run(_run())
+
+
+def test_unblock_refuses_an_initiative_the_synthesizer_gave_up_on():
+    """The second writer of ``blocked`` is the synthesizer's exhaustion path, and
+    clearing that block only re-blocks the row on the next tick."""
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_exhausted(db_url, proposals=MATERIALIZE_MAX_ATTEMPTS)
+        with _client(db_url) as c:
+            r = c.post("/api/sdlc/initiatives/dark-mode/unblock", headers=IDENTITY_HEADERS)
+            assert r.status_code == 409, r.text
+            assert r.json()["detail"]["error"] == "materialize_exhausted"
+            assert str(MATERIALIZE_MAX_ATTEMPTS) in r.json()["detail"]["message"]
+            got = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
+            assert got["status"] == "blocked"
+
+
+def test_unblock_allows_an_initiative_below_the_attempt_cap():
+    """Under the cap the loop will decompose again, so the block IS clearable."""
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_exhausted(db_url, proposals=MATERIALIZE_MAX_ATTEMPTS - 1)
+        with _client(db_url) as c:
+            r = c.post("/api/sdlc/initiatives/dark-mode/unblock", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            assert r.json()["status"] == "awaiting_human"
+
+
+def test_unblock_ignores_the_attempt_cap_once_an_epic_exists():
+    """The refusal is about a plan that never decomposed. An initiative that HAS
+    an epic is past that writer — its block came from the failed apply."""
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_exhausted(db_url, proposals=MATERIALIZE_MAX_ATTEMPTS, epic_number=101)
+        with _client(db_url) as c:
+            r = c.post("/api/sdlc/initiatives/dark-mode/unblock", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            assert r.json()["status"] == "awaiting_human"

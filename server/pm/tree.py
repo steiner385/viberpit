@@ -45,9 +45,12 @@ def initiative_reason(status: str | None, stage: str | None,
 def initiative_blocked_reason(status: str | None, epic_blocked: int) -> str | None:
     """Why a `blocked`-tier initiative is blocked — the disposition differs.
 
-    ``"blocked"`` is the row's OWN status (today only a failed materialize apply
-    writes it; `server/pm/materialize_apply.py:fail`), cleared by the unblock
-    route. ``"epic_blocked"`` means ≥1 sub-issue of its epic carries an open
+    ``"blocked"`` is the row's OWN status, written by a failed materialize apply
+    (`server/pm/materialize_apply.py:fail`) or by the synthesizer giving up on a
+    plan after `MATERIALIZE_MAX_ATTEMPTS` decompositions
+    (`server/automations/sdlc_synthesizer.py:_materialize`) — the unblock route
+    clears the first and refuses the second. ``"epic_blocked"`` means ≥1
+    sub-issue of its epic carries an open
     blocked-by dependency, cleared by removing the dependency or closing the
     blocker. The row's own status wins: the human clears the row first."""
     if status == "blocked":

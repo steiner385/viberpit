@@ -484,17 +484,29 @@ async def unblock_initiative(
 ) -> dict:
     """Clear a ``blocked`` initiative back to ``awaiting_human`` — the parked
     state the plan stage already uses (see ``reject_materialization``) — without
-    touching the stage. Today the only writer of ``blocked`` is a failed
-    materialize apply; after a partial apply is REJECTED the row was a dead end
+    touching the stage. Before this route a blocked row was a dead end
     (``next_action`` answers NeedsHuman for it and nothing offered a way out).
+
+    ``blocked`` has TWO writers, and only one of them is clearable here:
+    a failed materialize apply (``server/pm/materialize_apply.py:fail``), and the
+    synthesizer's exhaustion path (``sdlc_synthesizer._materialize``), which
+    blocks a plan whose decomposition has failed ``MATERIALIZE_MAX_ATTEMPTS``
+    times.
 
     409 ``proposal_pending``: a pending proposal already carries its own two
     dispositions (accept resumes the apply, reject abandons it) and the card for
     them stays up; clearing the row underneath would tell the loop to decompose
-    again while a human is still deciding. The web confirm says out loud that a
-    re-decomposition creates a second epic if the failed apply's issues are still
-    open on GitHub — closing those is the human's call, and this route does not
-    touch GitHub."""
+    again while a human is still deciding.
+
+    409 ``materialize_exhausted``: the synthesizer wrote this block and its
+    warn is latched in-process, so clearing it would send the row back to
+    ``awaiting_human`` only for the next tick to re-block it silently. Resetting
+    the attempt count (removing the stale proposals) is the way out; a retry path
+    for that is a follow-up.
+
+    The web confirm says out loud that a re-decomposition creates a second epic if
+    a failed apply's issues are still open on GitHub — closing those is the
+    human's call, and this route does not touch GitHub."""
     ini = await _load_initiative(db, slug)
     if ini.status != "blocked":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
@@ -506,6 +518,19 @@ async def unblock_initiative(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
             "error": "proposal_pending",
             "message": "Accept or reject the pending materialization first"})
+    if ini.stage == "plan" and ini.epic_number is None:
+        # Imported inside the handler: the orchestrator module pulls in the whole
+        # session stack, which a router must not do at import time. The count
+        # itself is the loop's own — one implementation of "attempts spent".
+        from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+        from server.sessions.orchestrator import SessionOrchestrator
+        attempts = await SessionOrchestrator._sdlc_materialization_attempts(db, ini.id)
+        if attempts >= MATERIALIZE_MAX_ATTEMPTS:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+                "error": "materialize_exhausted",
+                "message": f"Decomposition was attempted {attempts} times and gave "
+                           "up; clearing the block would only re-block it on the "
+                           "next tick. Reject or remove the stale proposals first."})
     ini.status = "awaiting_human"
     await db.flush()
     await record_audit(db=db, type="sdlc.initiative.unblock", identity=identity,
