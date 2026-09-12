@@ -716,6 +716,45 @@ def test_overlay_patch_manual_classify():
         assert bad_feat.json()["detail"]["error"] == "feature_not_found"
 
 
+def test_work_item_outcomes_endpoint():
+    """`GET /api/pm/work-items/{id}/outcomes` — every dispatch this issue has had,
+    newest first, camelCase keys (spec §6/§7); a 404 shape for an unknown item."""
+    from datetime import datetime, timezone
+
+    from server.db import db_session
+    from server.db.models import DispatchOutcome
+
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+
+        async def _seed_outcomes():
+            async with db_session() as db:
+                db.add(DispatchOutcome(
+                    target_ref="o/r#1", outcome="no_pr", cause="tests_failed",
+                    attempt_no=1, body_fingerprint="fp1",
+                    created_at=datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)))
+                db.add(DispatchOutcome(
+                    target_ref="o/r#1", outcome="merged", pr_number=42,
+                    attempt_no=2, body_fingerprint="fp1", first_pass_merge=True,
+                    created_at=datetime(2026, 9, 10, 12, 5, 0, tzinfo=timezone.utc)))
+        c.portal.call(_seed_outcomes)
+
+        r = c.get(f"/api/pm/work-items/{wid}/outcomes", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        assert [i["outcome"] for i in items] == ["merged", "no_pr"]   # newest first
+        assert items[0]["prNumber"] == 42
+        assert items[0]["firstPassMerge"] is True
+        assert items[0]["attemptNo"] == 2
+        assert items[1]["cause"] == "tests_failed"
+        assert items[1]["attemptNo"] == 1
+
+        missing = c.get("/api/pm/work-items/nope/outcomes", headers=IDENTITY_HEADERS)
+        assert missing.status_code == 404
+        assert missing.json()["detail"]["error"] == "not_found"
+
+
 def test_drift_accept_reproposes_orphaned_siblings():
     """Two no_fit items share a suggestion; the drift map merged a matching
     Feature. Accepting one links it AND re-proposes the sibling against the new

@@ -17,6 +17,7 @@ from server.pm.desired_state import (
     STATUS_IN_PROGRESS,
     STATUS_NEEDS_HUMAN,
 )
+from server.pm.outcomes import bounced_out
 
 TIERS: tuple[str, ...] = ("needs-you", "blocked", "in-flight", "proposed", "live", "idle")
 _RANK = {t: i for i, t in enumerate(TIERS)}
@@ -94,11 +95,20 @@ def capability_own_tier(state: str | None) -> str:
     return "idle"
 
 
+def issue_reason(*, bounces: int = 0, give_up_after_bounces: int = 0) -> str | None:
+    """Why an issue needs a human beyond its tier — the ``InitiativeIn.reason``
+    shape. ``needs_spec`` when D8's rule fires (ONE rule: ``bounced_out``)."""
+    return "needs_spec" if bounced_out(bounces, give_up_after_bounces) else None
+
+
 def issue_tier(state: str | None, triage_state: str | None,
                has_open_blocker: bool, session_status: str | None,
-               board_status: str | None = None) -> str:
+               board_status: str | None = None, *,
+               reason: str | None = None) -> str:
     if state in ("closed", "merged"):
         return "live"
+    if reason is not None:
+        return "needs-you"
     if (triage_state == "needs_human" or session_status in HUMAN_WAIT_SESSION_STATUSES
             or board_status == STATUS_NEEDS_HUMAN):
         return "needs-you"

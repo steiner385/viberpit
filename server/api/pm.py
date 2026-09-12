@@ -42,6 +42,7 @@ from server.pm.map_changes import NoOpenMapChanges, NoPrimaryRepo, NotBehind
 from server.pm.map_changes_gh import GhWriteError
 from server.pm.map_changes_ops import MapOp, MapOpError
 from server.pm.mirror_store import deps_in_repos
+from server.pm.outcomes import list_outcomes_stmt, outcome_to_dict
 from server.pm.queue import MIN_STATUS_OPTIONS, rank
 from server.pm.queue_store import load_queue_rows, runner_row_maps
 from server.pm.repo_project import owning_projects_by_repo
@@ -1353,6 +1354,23 @@ async def patch_overlay(
     await record_audit(db=db, type="pm.workitem.overlay", identity=identity,
                        detail={"workItemId": item_id})
     return _work_item_to_dict(wi)
+
+
+@router.get("/work-items/{item_id}/outcomes")
+async def get_work_item_outcomes(
+    item_id: str,
+    _identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Every Backlog Runner dispatch this issue has had, newest first (spec §6/§7)
+    — the history behind the roadmap's ``needs_spec`` bounce chip."""
+    wi = (await db.execute(
+        select(WorkItem).where(WorkItem.id == item_id))).scalar_one_or_none()
+    if wi is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found"})
+    target_ref = f"{wi.repo}#{wi.number}"
+    rows = (await db.execute(list_outcomes_stmt(target_ref))).scalars().all()
+    return {"items": [outcome_to_dict(r) for r in rows]}
 
 
 _REF_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#\d+$")

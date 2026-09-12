@@ -2,7 +2,7 @@
 from server.pm.tree import (
     TIERS, CapabilityIn, InitiativeIn, ProductIn, build_product_tree,
     capability_own_tier, derived_stage, incident_tier, initiative_tier,
-    issue_tier, max_tier, rollup_epic_progress,
+    issue_reason, issue_tier, max_tier, rollup_epic_progress,
 )
 
 
@@ -43,6 +43,24 @@ def test_issue_and_capability_and_incident_tiers():
     assert capability_own_tier("live") == "live"
     assert capability_own_tier("proposed") == "proposed"
     assert capability_own_tier("delivering") == "idle"
+
+
+def test_issue_reason_needs_spec_from_bounces():
+    """D8: ONE rule (`bounced_out`) decides `needs_spec`; `issue_tier` never
+    re-compares the count itself, only checks whether a reason was handed in."""
+    assert issue_reason(bounces=2, give_up_after_bounces=2) == "needs_spec"
+    assert issue_reason(bounces=1, give_up_after_bounces=2) is None
+    assert issue_reason(bounces=5, give_up_after_bounces=0) is None   # 0 = never give up
+    assert issue_reason() is None                                    # defaults: no bounces
+
+
+def test_issue_tier_honours_reason():
+    assert issue_tier("open", "classified", False, None, reason="needs_spec") == "needs-you"
+    # A reason never overrides a resolved issue: closed/merged wins first.
+    assert issue_tier("closed", "classified", False, None, reason="needs_spec") == "live"
+    assert issue_tier("merged", "classified", False, None, reason="needs_spec") == "live"
+    # No reason: the existing chain is unaffected.
+    assert issue_tier("open", "classified", False, None) == "idle"
     assert incident_tier("open") == "needs-you"
     assert incident_tier("scheduled") == "needs-you"
     assert incident_tier("diagnosing") == "in-flight"
