@@ -23,6 +23,7 @@ import { RankedList } from './RankedList'
 import { InitiativeList } from './InitiativeList'
 import { ProductEdgesEditor } from './ProductEdgesEditor'
 import { NewCapabilityDialog } from './NewCapabilityDialog'
+import { MapChangesCard } from './MapChangesCard'
 
 const TABS = ['overview', 'in-flight', 'needs-you', 'ranked', 'dependencies'] as const
 
@@ -116,6 +117,8 @@ export function ProductDetail({ product }: { product: ProductNode }) {
                 + {CAPABILITY.singular}
               </Button>
             </div>
+            {/* Renders nothing unless the product has an open map-changes PR (R8c-3). */}
+            <MapChangesCard product={product} />
             {/* Renders nothing once the product is live. */}
             <OnboardingWizard slug={product.slug} />
             <section aria-label={`${INITIATIVE.plural} in flight`} className="flex flex-col gap-3">

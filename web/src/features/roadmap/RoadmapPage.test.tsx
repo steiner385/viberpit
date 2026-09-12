@@ -51,6 +51,9 @@ vi.mock('@/api/hooks', () => ({
   // The capability Overview's edits (Edit, + Sub-capability, the links editor).
   useEditMapChanges: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null }),
   mapChangesErrorMessage: (_e: unknown, fallback: string) => fallback,
+  // The product Overview's map-changes PR card (Rebase, Abandon).
+  useAbandonMapChanges: () => ({ mutate: vi.fn(), isPending: false }),
+  useRebaseMapChanges: () => ({ mutate: vi.fn(), isPending: false }),
   useProposeMap: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useClassify: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useAdvanceMap: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
