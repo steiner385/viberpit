@@ -1,5 +1,6 @@
 ---
 slug: git-worktree-isolation
+parent: session-workspaces
 title: Git Worktree Isolation
 state: live
 links:
@@ -12,6 +13,8 @@ links:
 ---
 
 # Git Worktree Isolation
+
+Run concurrent coding sessions on independent branches without disturbing the operator’s checkout or another session’s work.
 
 **Problem** — Many ViberPit sessions can be working the same repository at the same time. If
 they all shared one working tree, each session's branch checkout would clobber the others' —

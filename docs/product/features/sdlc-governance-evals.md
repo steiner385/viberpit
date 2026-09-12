@@ -1,5 +1,6 @@
 ---
 slug: sdlc-governance-evals
+parent: planning-and-automation
 title: SDLC Engine, Governance & Evals
 state: delivering
 links:
@@ -25,6 +26,8 @@ links:
 ---
 
 # SDLC Engine, Governance & Evals
+
+Move initiatives through explicit evidence and approval gates while checking the quality of agent decisions.
 
 **Problem** — An autonomous development loop that can select work, write code, and land PRs
 is only safe if something keeps it honest: it must move an initiative through real

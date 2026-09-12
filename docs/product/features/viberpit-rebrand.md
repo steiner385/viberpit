@@ -1,5 +1,6 @@
 ---
 slug: viberpit-rebrand
+parent: operator-experience
 title: ViberPit Rebrand (ccswitch → ViberPit, outside-in, zero-downtime)
 state: delivering
 links:
@@ -24,6 +25,8 @@ links:
 ---
 
 # ViberPit Rebrand (ccswitch → ViberPit, outside-in, zero-downtime)
+
+Make ViberPit’s identity consistent across user-facing surfaces while preserving compatibility with existing installations.
 
 **Problem** — The product shipped for months as `ccswitch` / `cc-account-switcher`, and that
 name is baked into far more than a wordmark: it is the MCP tool prefix in five copies, the auth

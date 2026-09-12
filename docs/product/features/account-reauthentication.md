@@ -1,5 +1,6 @@
 ---
 slug: account-reauthentication
+parent: accounts-and-engines
 title: Account Re-Authentication
 state: live
 links:
@@ -16,6 +17,8 @@ links:
 ---
 
 # Account Re-Authentication
+
+Restore an expired account to service through an observable login flow that can be completed remotely.
 
 **Problem** — OAuth refresh tokens expire or get revoked, and accounts log out. When that happens an
 account silently starts failing usage fetches and session launches, and the user has no headless way

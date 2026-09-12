@@ -1,5 +1,6 @@
 ---
 slug: remote-desktop-vnc-x11
+parent: operator-experience
 title: Remote Desktop (VNC / X11 Browser Bridge)
 state: live
 links:
@@ -17,6 +18,8 @@ links:
 ---
 
 # Remote Desktop (VNC / X11 Browser Bridge)
+
+Watch and interact with a session’s browser remotely, including login flows, from the desktop or mobile interface.
 
 **Problem** — Some session work needs a real GUI: a browser the agent drives, or a login
 flow (account re-auth) that only completes in a graphical browser. On a headless server,

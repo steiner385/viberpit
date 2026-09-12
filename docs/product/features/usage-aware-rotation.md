@@ -1,5 +1,6 @@
 ---
 slug: usage-aware-rotation
+parent: accounts-and-engines
 title: Usage-Aware Account Rotation
 state: live
 links:
@@ -15,6 +16,8 @@ links:
 ---
 
 # Usage-Aware Account Rotation
+
+Keep coding work moving by choosing accounts with usable quota and rotating when an account reaches its limit.
 
 **Problem** — Even with several accounts registered, a user still has to watch each account's 5-hour
 and weekly usage windows, guess which one has the most headroom, and manually switch when one hits a

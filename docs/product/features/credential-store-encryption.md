@@ -1,5 +1,6 @@
 ---
 slug: credential-store-encryption
+parent: security-and-isolation
 title: Credential Store & Encryption
 state: live
 links:
@@ -12,6 +13,8 @@ links:
 ---
 
 # Credential Store & Encryption
+
+Protect stored account credentials with encryption and make migration and encryption status inspectable.
 
 **Problem** — ViberPit holds the credentials for every managed Claude (and Copilot) account. On a self-hosted, network-reachable server, storing those secrets as plaintext on disk is an unacceptable exposure: anyone with filesystem read (a stray backup, a misconfigured mount, a compromised process) would harvest every account's auth. The credential store needs encryption at rest with a key that is not itself sitting next to the ciphertext.
 

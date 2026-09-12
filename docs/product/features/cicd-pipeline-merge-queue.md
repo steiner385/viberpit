@@ -1,5 +1,6 @@
 ---
 slug: cicd-pipeline-merge-queue
+parent: fleet-and-delivery-operations
 title: CI/CD Pipeline & Merge Queue
 state: live
 links:
@@ -32,6 +33,8 @@ links:
 ---
 
 # CI/CD Pipeline & Merge Queue
+
+See where changes stand from CI through merge and delivery, including blockers, progress, and timing confidence.
 
 **Problem** — When ViberPit runs autonomous development loops on itself, dozens of PRs
 are in flight at once across several repos. A human (or an automation) cannot tell at a

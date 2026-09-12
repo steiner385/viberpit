@@ -1,5 +1,6 @@
 ---
 slug: openai-codex-integration
+parent: accounts-and-engines
 title: Native OpenAI / Codex Integration
 state: delivering
 links:
@@ -26,6 +27,8 @@ links:
 > flags. Operator procedures: `docs/runbooks/codex-credential-authority.md`.
 
 # Native OpenAI / Codex Integration
+
+Run native Codex sessions with account-specific models, quota, approvals, and history in the same managed workspace experience.
 
 **Problem** — ViberPit is meant to be a central hub for coding agents across accounts, models, and
 projects, but its native session engine is currently Claude-specific. GitHub Copilot adds a billing

@@ -268,7 +268,7 @@ order). The orchestrator passes a `children()` accessor on the context, mirrorin
 (`CCSWITCH_CHILD_SESSIONS_ENABLED`), `child_session_cap: int = 3`
 (`CCSWITCH_CHILD_SESSION_CAP`), `child_session_max_depth: int = 2`
 (`CCSWITCH_CHILD_SESSION_MAX_DEPTH`). Documented in `docs/product/features/session-tools.md`
-(tool list + kill switch) and a short `docs/product/features/child-sessions.md`.
+(tool list + kill switch) and a short `docs/product/guides/child-sessions.md`.
 
 ## 5. Error handling
 

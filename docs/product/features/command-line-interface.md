@@ -1,5 +1,6 @@
 ---
 slug: command-line-interface
+parent: operator-experience
 title: Command-Line Interface
 state: live
 links:
@@ -15,6 +16,8 @@ links:
 ---
 
 # Command-Line Interface
+
+Manage and switch accounts from a shell without requiring the web interface or session daemon.
 
 **Problem** — ViberPit is defined as "a CLI core plus a web-hosted interface," but before the web dashboard existed (and still, for scripting and headless setup) the primary way to manage accounts and switch which account a `claude` invocation runs under is the terminal. Without a first-class CLI, every account operation would require the daemon + web stack to be up, and there would be no scriptable, composable entry point for shells, cron, or setup automation.
 

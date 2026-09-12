@@ -1,5 +1,6 @@
 ---
 slug: config-library-snapshots
+parent: session-workspaces
 title: Config Library & Snapshots
 state: live
 links:
@@ -8,6 +9,8 @@ links:
 ---
 
 # Config Library & Snapshots
+
+Inspect, update, and restore shared agent configuration through a browsable library with recoverable changes.
 
 **Problem** — A ViberPit operator runs many `claude` sessions across several accounts, all sharing
 one config base (`CLAUDE_CONFIG_DIR`). The reusable configuration that shapes those sessions —

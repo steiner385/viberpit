@@ -1,5 +1,6 @@
 ---
 slug: deploy-controller
+parent: fleet-and-delivery-operations
 title: Self-Hosted Deploy Controller
 state: live
 links:
@@ -15,6 +16,8 @@ links:
 ---
 
 # Self-Hosted Deploy Controller
+
+Upgrade running services to verified code with session-aware draining, functional health checks, and recovery to the last working version.
 
 **Problem** — ViberPit is self-hosted and continuously improves itself, so it must upgrade the
 running edge (web server) and session daemon to a new commit without killing the live `claude`

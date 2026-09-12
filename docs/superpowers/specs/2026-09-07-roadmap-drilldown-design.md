@@ -50,7 +50,7 @@ add detail at any level; see status.
 
 | # | Decision | Rationale |
 |---|----------|-----------|
-| D1 | Spine is **Product → Capability → Initiative → Epic → Issue/PR**. | Capabilities are the durable map of what a product is; initiatives are efforts that change them. Matches the operator's mental model and the PM-layer data. |
+| D1 | Spine is **Product → Capability → Initiative → Issue**. An epic is the initiative’s GitHub representation; PRs and sessions are evidence. | Capabilities are the durable map of what a product is; initiatives are efforts that change them. Matches the operator's mental model and the PM-layer data. |
 | D2 | Capabilities form a **nested tree** of arbitrary depth via one `parent` link. | The operator wants groups; two fixed levels cannot express a sub-capability. |
 | D3 | **Markdown stays truth** for capabilities. UI edits write to a branch and open a PR; the tree shows them as proposed until merge. | Keeps one source of truth and the existing review gate; the AI feature-map proposals already work this way. |
 | D4 | **One open "map changes" PR per product**, appended until merged. | Edits feel immediate; one review per sitting; AI map-diff proposals join the same PR. |
@@ -60,8 +60,13 @@ add detail at any level; see status.
 | D8 | **Editing is inline** at every level. | Adding detail at a level is the point; a separate form page breaks the drill-down. |
 | D9 | The tree shows **one attention tier per row**, rolled up from children, computed like the sessions tier. | Five raw status vocabularies are the single largest source of confusion. |
 | D10 | Triage keeps its nav entry and keystrokes, moves onto the same chassis, gains a capability chooser and undo. | It is a work mode, not a page; the list/detail split fixes its unlabelled editor. |
-| D11 | User-facing vocabulary is fixed: **Product, Capability, Initiative, Epic, Issue**. Code and API identifiers keep `project`/`feature`. | Renaming tables and routes is a cascade across sync, reconcile and assistant tools; labels come from one module so copy cannot drift. |
+| D11 | User-facing vocabulary is fixed: **Product, Capability, Initiative, Issue**, with **Epic** naming an initiative’s GitHub representation and **Program** an optional grouping of initiatives. Code and API identifiers keep `project`/`feature`. | Renaming tables and routes is a cascade across sync, reconcile and assistant tools; labels come from one module so copy cannot drift. |
 | D12 | Control-band **incidents** (#804) are not "triage" in the UI. They surface in the Needs you tabs of the portfolio and of the product that owns the repo, and on the initiative that adopts one. The Triage nav entry is the PM proposal inbox only. | The two queues share a word and nothing else; the incident code already says "incident" everywhere. |
+
+The [product hierarchy and maintenance rules](../../product/README.md) clarify D1:
+initiative and epic describe one effort with two representations. A pre-build
+initiative can await epic materialization. Programs may group phase initiatives;
+this preserves native parent/child epics without adding a mandatory level.
 
 ## 3. Use cases
 
@@ -74,7 +79,7 @@ Grouped by job. "New" marks model or API work.
 4. See the ranked upcoming work with score inputs, per product and across products.
 
 **Navigate**
-5. Drill: product → capability → initiative → epic → issues → PRs and sessions.
+5. Drill: product → capability → initiative (GitHub epic) → issues, with linked PRs and sessions. Optional programs group phase initiatives through native GitHub nesting.
 6. Trace up from any issue, PR, session or initiative to its capability and product.
 7. Follow dependencies at each level: product edges, capability links, issue blocked-by.
 8. Group capabilities into sub-trees. *New.*
@@ -163,7 +168,7 @@ and hover affordances; a `roadmapTier.ts` shaped like `session/statusTier.ts`.
 **Scopes.**
 - **Map**: products as group headers; under each, the capability tree; initiatives
   (◆) as rows under their primary capability and as a link chip under any other
-  capability they touch; epics and issues as lazy leaves under initiatives and
+  capability they touch; GitHub epic details and issues as lazy leaves under initiatives and
   capabilities. Two pseudo-nodes per product: **Awaiting triage** (pending
   proposals) and **Needs a home** (rejected or no-fit). Both open the inbox scoped.
 - **Initiatives**: every initiative, grouped by stage (default) or product, sorted by

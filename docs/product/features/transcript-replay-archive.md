@@ -1,5 +1,6 @@
 ---
 slug: transcript-replay-archive
+parent: session-workspaces
 title: Transcript, Replay & Archive
 state: live
 links:
@@ -18,6 +19,8 @@ links:
 ---
 
 # Transcript, Replay & Archive
+
+Return to a complete session history after disconnects and preserve finished work for safe reopening.
 
 **Problem** — A session's transcript is the record of everything it did, but the `claude` binary
 owns the JSONL on disk and ViberPit may not patch it. That creates hard edges: when a user

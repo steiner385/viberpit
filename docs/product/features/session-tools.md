@@ -1,5 +1,6 @@
 ---
 slug: session-tools
+parent: session-workspaces
 title: Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, request_model)
 state: delivering
 links:
@@ -21,6 +22,8 @@ links:
 ---
 
 # Session Tool Surface (session_context, report_feedback, mark_complete, mark_no_pr, hand_back, request_model)
+
+Give coding agents reliable application context and a supported way to report feedback, coordinate child work, and signal progress.
 
 **Problem** — A coding session run by ViberPit has no way to ask "what am I, and why was I
 dispatched" or to tell ViberPit itself (not the repo it's working in) that something about the
@@ -45,7 +48,7 @@ seven tools:
 | `mark_no_pr` | SIGNAL | resolution (`not-needed` \| `cancelled`), note? | Declares the work is finished but no PR is appropriate. |
 | `hand_back` | SIGNAL | reason | Declares the session needs the user (a decision, review, approval or information) before the objective can be finished; lands at `waiting_question` ("Answer needed"). |
 | `request_model` | SIGNAL | model (`haiku`\|`sonnet`\|`opus`\|`fable`), reason | Asks to move to a different model tier. |
-| `dispatch_session` | MUTATION | name, prompt, model?, permission_mode? | Starts a linked **child session** (same repo, own worktree, same owner) the user can steer like any session; the parent is notified by a `<child-session-notification>` prompt when the child stops. Claude only; gated by `CCSWITCH_CHILD_SESSIONS_ENABLED`, capped by `CCSWITCH_CHILD_SESSION_CAP` / `_MAX_DEPTH`. Raises a permission card in interactive mode. See `child-sessions.md`. |
+| `dispatch_session` | MUTATION | name, prompt, model?, permission_mode? | Starts a linked **child session** (same repo, own worktree, same owner) the user can steer like any session; the parent is notified by a `<child-session-notification>` prompt when the child stops. Claude only; gated by `CCSWITCH_CHILD_SESSIONS_ENABLED`, capped by `CCSWITCH_CHILD_SESSION_CAP` / `_MAX_DEPTH`. Raises a permission card in interactive mode. See [Child sessions](../guides/child-sessions.md). |
 
 `session_context` and `report_feedback` are `ToolClass.READ` in `server/mcp_spec.py`'s shared
 registry — read-only in effect, since neither changes anything the user can see. `mark_complete`,

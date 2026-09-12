@@ -1,5 +1,6 @@
 ---
 slug: copilot-account-support
+parent: accounts-and-engines
 title: GitHub Copilot Account Support
 state: live
 links:
@@ -13,6 +14,8 @@ links:
 ---
 
 # GitHub Copilot Account Support
+
+Use supported, explicitly enabled Copilot accounts for coding sessions with visible premium-request quota and supervised proxy operation.
 
 **Problem** — Some users have a GitHub Copilot Pro+ subscription but not (or in addition to) a
 Claude Max subscription, and want to fold that quota into the same multi-account session pool. The

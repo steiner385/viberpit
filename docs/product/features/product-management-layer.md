@@ -1,5 +1,6 @@
 ---
 slug: product-management-layer
+parent: planning-and-automation
 title: Product-Management Layer
 state: delivering
 links:
@@ -8,6 +9,8 @@ links:
 ---
 
 # Product-Management Layer
+
+Maintain a durable capability map and connect prioritized work to the product outcomes it changes.
 
 **Problem** — ViberPit's autonomous SDLC can *build* work, but it had no product-management
 brain to decide *what the work is*. There was no durable model of what a product actually is

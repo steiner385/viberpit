@@ -1,5 +1,6 @@
 ---
 slug: push-notifications
+parent: operator-experience
 title: Push & Web Notifications
 state: live
 links:
@@ -16,6 +17,8 @@ links:
 ---
 
 # Push & Web Notifications
+
+Learn when coding work needs attention through relevant notifications that lead directly to the affected session.
 
 **Problem** — The operator can't watch the dashboard all the time. When a session finishes a
 turn ("your turn"), needs attention, or a session's PR breaks CI, they need to be alerted on

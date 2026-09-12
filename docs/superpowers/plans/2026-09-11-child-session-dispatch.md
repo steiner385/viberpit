@@ -1110,7 +1110,7 @@ printf '%s\n' 'feat(web): session lineage — child rows on the parent card and 
 ### Task 6: Docs, gates, PR
 
 **Files:**
-- Create: `docs/product/features/child-sessions.md`
+- Create: `docs/product/guides/child-sessions.md`
 - Modify: `docs/product/features/session-tools.md` (tool list: add `dispatch_session` with its class and gate; kill switch section: mention `CCSWITCH_CHILD_SESSIONS_ENABLED`)
 - Modify: `.agents/instructions/core.md` § "Session tool surface": change "drops all six tools" to name the seventh and its own switch — ONE sentence (the file is at the AGENTS.md render cap: run `agentctl render` and `agentctl check` afterwards and commit the regenerated `AGENTS.md`; see memory `core-md-at-agents-render-cap`).
 
