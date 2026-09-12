@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import subprocess
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
@@ -31,6 +32,10 @@ from server.db.models import (
     WorkItemDep,
 )
 from server.pm.desired_state import STATUS_READY
+from server.pm.featuredoc import FeatureLinkRef
+from server.pm.map_changes import NoOpenMapChanges, NoPrimaryRepo, NotBehind
+from server.pm.map_changes_gh import GhWriteError
+from server.pm.map_changes_ops import MapOp, MapOpError
 from server.pm.mirror_store import deps_in_repos
 from server.pm.queue import MIN_STATUS_OPTIONS, rank
 from server.pm.queue_store import load_queue_rows, runner_row_maps
@@ -693,6 +698,118 @@ async def advance_map(
     await record_audit(db=db, type="pm.onboard.advance_map", identity=identity,
                        detail={"slug": slug})
     return {"onboardingState": "map_merged"}
+
+
+class MapChangeBody(BaseModel):
+    """One capability edit. ``op`` selects which of the optional fields matter
+    (``create``: title/parentSlug/summary/links; ``rename``: title; …)."""
+
+    op: str
+    slug: str
+    title: str | None = None
+    parentSlug: str | None = None
+    summary: str | None = None
+    links: list[dict] | None = None     # [{kind, project, feature}]
+
+
+def _map_changes_http(e: Exception) -> HTTPException:
+    """The one place map-changes failures become status codes, so the three
+    routes cannot drift apart."""
+    if isinstance(e, MapOpError):
+        return HTTPException(status_code=422, detail={"error": e.code, "message": e.message})
+    if isinstance(e, NoPrimaryRepo):
+        return HTTPException(status_code=422, detail={
+            "error": "no_primary_repo", "message": str(e)})
+    if isinstance(e, NoOpenMapChanges):
+        return HTTPException(status_code=404, detail={
+            "error": "no_open_map_changes", "message": str(e)})
+    if isinstance(e, NotBehind):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+            "error": "not_behind", "message": str(e)})
+    if isinstance(e, GhWriteError):
+        if e.conflict:
+            return HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+                "error": "conflict", "step": e.step, "message": e.detail})
+        return HTTPException(status_code=502, detail={
+            "error": "github", "step": e.step, "message": e.detail})
+    if isinstance(e, subprocess.TimeoutExpired):
+        # `gh` hung past _run_gh's timeout — an upstream failure like any other
+        # GitHub error, not a 500: the edit simply did not happen.
+        return HTTPException(status_code=502, detail={
+            "error": "github", "step": "timeout", "message": str(e)})
+    raise e
+
+
+@router.post("/projects/{slug}/map-changes", status_code=status.HTTP_200_OK)
+async def map_changes_edit(
+    slug: str,
+    body: MapChangeBody,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """One capability edit on the product's map-changes branch (spec §8/§9).
+
+    The first edit opens the branch and the PR; every later one appends a commit
+    to the same PR. No agent session is involved (R8b-1): the edit is committed
+    through GitHub's API and pm-sync is asked for a pass so the map shows it."""
+    p = await _load_project(db, slug)
+    svc = request.app.state.sessions.pm_map_changes()
+    op = MapOp(
+        op=body.op, slug=body.slug, title=body.title, parent_slug=body.parentSlug,
+        summary=body.summary,
+        links=tuple(FeatureLinkRef(kind=str(link.get("kind")), project=str(link.get("project")),
+                                   feature=str(link.get("feature")))
+                    for link in (body.links or [])))
+    try:
+        pointer, path, sha = await svc.edit(db, p, op, identity)
+    except (MapOpError, NoPrimaryRepo, GhWriteError, subprocess.TimeoutExpired) as e:
+        raise _map_changes_http(e) from e
+    return {"pointer": pointer.to_dict(), "path": path, "commitSha": sha}
+
+
+@router.delete("/projects/{slug}/map-changes", status_code=status.HTTP_200_OK)
+async def map_changes_abandon(
+    slug: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Abandon the open map-changes PR: close it, delete the branch, mark the
+    pointer ``abandoned``, then drop the capabilities that only ever lived on
+    that branch (R8b-7) — nothing will ever read their docs again, so no index
+    pass could retire them.
+
+    With no pointer row, a branch or PR stranded on GitHub (the commit lands
+    before the row) is adopted first; 404 means neither exists."""
+    p = await _load_project(db, slug)
+    svc = request.app.state.sessions.pm_map_changes()
+    try:
+        pointer = await svc.abandon(db, p, identity)
+        cleanup = await svc.cleanup_after_abandon(db, p, pointer.pr_number)
+    except (MapOpError, NoOpenMapChanges, NoPrimaryRepo, GhWriteError,
+            subprocess.TimeoutExpired) as e:
+        raise _map_changes_http(e) from e
+    return {"pointer": pointer.to_dict(), "cleanup": cleanup}
+
+
+@router.post("/projects/{slug}/map-changes/rebase", status_code=status.HTTP_200_OK)
+async def map_changes_rebase(
+    slug: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Merge the base branch into the map-changes PR through GitHub's own
+    update-branch (R8b-8) — only while GitHub reports the PR behind."""
+    p = await _load_project(db, slug)
+    svc = request.app.state.sessions.pm_map_changes()
+    try:
+        pointer = await svc.rebase(db, p, identity)
+    except (NoOpenMapChanges, NotBehind, NoPrimaryRepo, GhWriteError,
+            subprocess.TimeoutExpired) as e:
+        raise _map_changes_http(e) from e
+    return {"pointer": pointer.to_dict()}
 
 
 @router.post("/projects/{slug}/advance-live", status_code=status.HTTP_200_OK)

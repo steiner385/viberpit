@@ -301,6 +301,63 @@ async def test_apply_feature_plan_map_proposed_no_upserts_stays(db_env):
         assert proj.onboarding_state == "map_proposed"  # no features → no advance
 
 
+@pytest.mark.asyncio
+async def test_apply_feature_plan_writes_commit_sha_and_the_pr_columns(db_env):
+    """R8b-4: the three provenance columns the planner now fills have to reach
+    the row. ``commit_sha`` is what ``CapabilityDetail``'s doc link renders from
+    (it was documented as "stamped by sync" and never written), and
+    ``pr_number``+NULL ``commit_sha`` is the exact pair
+    ``cleanup_after_abandon`` deletes on — so a proposed row that keeps a stale
+    ``commit_sha`` survives its own abandoned PR forever."""
+    await init_db(db_env)
+    async with db_session() as db:
+        p = Project(slug="stamp-proj", name="stamp-proj",
+                    onboarding_state="map_merged")
+        db.add(p)
+        await db.flush()
+        project_id = p.id
+
+    orch = _bare_orch()
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
+
+    def _up(slug, **over):
+        base = dict(slug=slug, title=slug.title(), state="live",
+                    summary=f"{slug}.", repo_path=f"docs/product/features/{slug}.md",
+                    parent_slug=None, links=())
+        base.update(over)
+        return FeatureUpsert(**base)
+
+    plan = FeatureIndexPlan(
+        upserts=(
+            _up("merged", commit_sha="sha-main"),
+            _up("proposed", state="proposed", pr_number=12,
+                pr_url="https://github.com/o/r/pull/12"),
+        ),
+        orphan_slugs=(), revive_slugs=(), warnings=())
+    await orch._pm_sync_apply_feature_plan(project_id, plan)
+
+    async with db_session() as db:
+        from sqlalchemy import select
+        rows = {f.slug: f for f in (await db.execute(select(Feature).where(
+            Feature.project_id == project_id))).scalars().all()}
+    assert (rows["merged"].commit_sha, rows["merged"].pr_number,
+            rows["merged"].pr_url) == ("sha-main", None, None)
+    assert (rows["proposed"].commit_sha, rows["proposed"].pr_number,
+            rows["proposed"].pr_url) == (
+        None, 12, "https://github.com/o/r/pull/12")
+
+    # …and a later pass moves a row BACK: the merge stamps the SHA and clears
+    # the PR columns, which is how a merged proposal stops being a proposal.
+    await orch._pm_sync_apply_feature_plan(project_id, FeatureIndexPlan(
+        upserts=(_up("proposed", commit_sha="sha-main2"),),
+        orphan_slugs=(), revive_slugs=(), warnings=()))
+    async with db_session() as db:
+        from sqlalchemy import select
+        row = (await db.execute(select(Feature).where(
+            Feature.slug == "proposed"))).scalars().one()
+    assert (row.commit_sha, row.pr_number, row.pr_url) == ("sha-main2", None, None)
+
+
 def _mk_async(value):
     async def _f(*a, **k):
         return value
@@ -408,14 +465,15 @@ async def test_read_feature_docs_returns_all_docs_from_pinned_snapshot(db_env):
     with tempfile.TemporaryDirectory() as root:
         clone = _make_feature_repo(root, ["alpha", "beta", "gamma"])
         with patch("ccswitch.gitrepos.ensure_clone", return_value=clone):
-            docs = await orch._pm_sync_read_feature_docs("o/r")
-    paths = sorted(p for p, _ in docs)
+            read = await orch._pm_sync_read_feature_docs("o/r")
+    paths = sorted(p for p, _ in read.docs)
     assert paths == [
         "docs/product/features/alpha.md",
         "docs/product/features/beta.md",
         "docs/product/features/gamma.md",
     ]
-    assert all("body" in text for _, text in docs)
+    assert all("body" in text for _, text in read.docs)
+    assert read.sha  # the pinned snapshot the docs were read at (R8b-4)
 
 
 @pytest.mark.asyncio
@@ -568,6 +626,53 @@ async def test_diff_map_spawn_does_not_schedule_critic(db_env):
     with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
         await orch.pm_onboard_spawn_map("ccswitch", scope="diff", suggestion="x")
     assert scheduled == []   # drift path never chains a critic
+
+
+async def _diff_prompt(db_env, *, pointer_status: str | None) -> str:
+    """Spawn one ``scope="diff"`` session and return the prompt it was seeded
+    with; *pointer_status* seeds a ``feature_map_changes`` row in that status
+    (None seeds none)."""
+    from server.db.models import FeatureMapChange
+    pid = await _seed_project_for_map(db_env)
+    if pointer_status is not None:
+        async with db_session() as db:
+            db.add(FeatureMapChange(
+                project_id=pid, repo="steiner385/cc-account-switcher",
+                branch="pm/map-changes-ccswitch", pr_number=12,
+                status=pointer_status))
+    orch = _bare_orch()
+    orch._backlog_healthy_account = _mk_async("acct1")
+    orch._effective_repo_root = _mk_async("/tmp/root")
+    orch._sdlc_default_branch = _mk_async("master")
+    rec = FakeAutomationContext()
+    orch._pm_onboard_ctx = rec
+    orch._spawn = lambda coro, name=None: coro.close()
+    with patch("ccswitch.gitrepos.ensure_clone", return_value="/tmp/clone"):
+        await orch.pm_onboard_spawn_map("ccswitch", scope="diff", suggestion="x")
+    return rec.calls[0]["initial_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_diff_map_spawn_targets_the_open_map_changes_branch(db_env):
+    """R8b-9: with a map-changes PR open, the drift session is told to commit to
+    that branch — the same PR the roadmap UI's inline edits ride."""
+    prompt = await _diff_prompt(db_env, pointer_status="open")
+    assert "pm/map-changes-ccswitch" in prompt
+    assert "pm/feature-map-ccswitch" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_diff_map_spawn_ignores_a_closed_pointer_and_uses_the_map_branch(db_env):
+    """An abandoned/merged pointer is not a target: only an ``open`` row is."""
+    prompt = await _diff_prompt(db_env, pointer_status="abandoned")
+    assert "pm/map-changes-ccswitch" not in prompt
+    assert "pm/feature-map-ccswitch" in prompt
+
+
+@pytest.mark.asyncio
+async def test_diff_map_spawn_without_a_pointer_uses_the_map_branch(db_env):
+    prompt = await _diff_prompt(db_env, pointer_status=None)
+    assert "pm/feature-map-ccswitch" in prompt
 
 
 @pytest.mark.asyncio

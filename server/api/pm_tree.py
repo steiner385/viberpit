@@ -15,6 +15,7 @@ from server.db.models import (
     Feature, FeatureLink, GhProjectItem, Initiative, Project, ProjectRepo,
     Session as DbSession, TriageItem, TriageProposal, WorkItem, WorkItemDep)
 from server.pm.desired_state import ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES
+from server.pm.map_changes import Pointer, open_pointer_rows
 from server.pm.refs import split_ref
 from server.pm.score import rice_score
 from server.pm.tree import CapabilityIn, InitiativeIn, ProductIn, build_product_tree, issue_tier
@@ -113,6 +114,11 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
     epics = await _epic_progress_batch(db, initiatives, include_children=False)
     caps = await _capabilities_batch(db, initiatives)
 
+    # The open map-changes pointer per product (spec §9) — one batched query
+    # through the same lookup the service and the sync loop use (R8b-5).
+    map_changes = {pid: Pointer.from_row(row).to_dict()
+                   for pid, row in (await open_pointer_rows(db, pids)).items()}
+
     repos = (await db.execute(select(ProjectRepo).where(ProjectRepo.project_id.in_(pids)))).scalars().all()
     repos_by_project: dict[str, list[str]] = {}
     for r in repos:
@@ -168,6 +174,7 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
             awaiting_triage=sum(pending_by_repo.get(r, 0) for r in my_repos),
             needs_home=sum(needs_home_by_repo.get(r, 0) for r in my_repos),
             incident_statuses=tuple(s for r in my_repos for s in incidents_by_repo.get(r, [])),
+            map_changes=map_changes.get(p.id),
         )))
     return {"products": products, "generatedAt": datetime.now(timezone.utc).isoformat()}
 

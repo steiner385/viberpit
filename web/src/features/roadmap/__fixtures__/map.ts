@@ -20,7 +20,7 @@ export function product(over: Partial<ProductNode> & { slug: string }): ProductN
   return {
     name: over.slug, tier: 'idle',
     counts: { inFlight: 0, blocked: 0, needsYou: 0, capabilities: 0, awaitingTriage: 0, needsHome: 0 },
-    capabilities: [], initiatives: [], ...over,
+    capabilities: [], initiatives: [], mapChanges: null, ...over,
   }
 }
 

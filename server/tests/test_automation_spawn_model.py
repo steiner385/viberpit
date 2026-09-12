@@ -63,6 +63,42 @@ async def test_backlog_spawn_passes_pinned_model(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_backlog_spawn_resolves_the_default_branch_through_the_one_resolver(
+        tmp_path, monkeypatch):
+    """``_sdlc_default_branch`` is THE default-branch resolver for every spawn
+    site in the orchestrator; a site with its own inline
+    ``list_remote_branches(...).get("default") or "master"`` drifts from it
+    silently (the prompts tell the agent never to assume ``master``)."""
+    orch = _build_backlog_orch({})
+    _patch_git(monkeypatch, tmp_path)
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    seen: dict = {}
+
+    async def fake_default_branch(repo):
+        seen["repo"] = repo
+        return "trunk"
+
+    orch._sdlc_default_branch = fake_default_branch  # type: ignore[method-assign]
+    await orch._backlog_spawn(_BATCH, "acct")
+    assert seen == {"repo": "o/r"}
+    assert "trunk" in captured["initial_prompt"]
+
+
+def test_no_spawn_site_resolves_the_default_branch_inline():
+    """The sibling sweep for the test above: nothing in the orchestrator may
+    re-derive the default branch from ``list_remote_branches`` itself."""
+    import inspect
+
+    import server.sessions.orchestrator as orch_mod
+
+    src = inspect.getsource(orch_mod)
+    assert 'list_remote_branches' not in src, (
+        "resolve the default branch through self._sdlc_default_branch() "
+        "(server/pm/map_changes.py:resolve_default_branch), not inline")
+
+
+@pytest.mark.asyncio
 async def test_backlog_spawn_auto_assesses_issue_titles(tmp_path, monkeypatch):
     import server.automations.model_pick as model_pick
     seen: dict = {}

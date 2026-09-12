@@ -65,3 +65,36 @@ def test_parent_cycle_breaks_at_the_closing_doc():
     assert len(roots) == 1
     assert len(plan.warnings) == 1
     assert plan.warnings[0].endswith("parent chain is a cycle; indexed at root")
+
+
+# -- R8b-4: commit_sha / pr_number stamping ------------------------------------
+
+
+def test_omitted_kwargs_stamp_nothing_today_unchanged():
+    plan = plan_feature_index([], [("d/a.md", _doc("a"))])
+    up = plan.upserts[0]
+    assert up.commit_sha is None
+    assert up.pr_number is None
+    assert up.pr_url is None
+
+
+def test_plain_doc_is_stamped_with_the_read_sha():
+    plan = plan_feature_index([], [("d/a.md", _doc("a"))], read_sha="sha-main")
+    up = plan.upserts[0]
+    assert up.commit_sha == "sha-main"
+    assert up.pr_number is None
+    assert up.pr_url is None
+
+
+def test_proposed_doc_is_stamped_with_pr_fields_and_no_commit_sha():
+    plan = plan_feature_index(
+        [], [("d/a.md", _doc("a")), ("d/b.md", _doc("b"))],
+        read_sha="sha-main",
+        proposed={"a": (12, "https://github.com/o/r/pull/12")})
+    by_slug = {u.slug: u for u in plan.upserts}
+    assert by_slug["a"].commit_sha is None
+    assert by_slug["a"].pr_number == 12
+    assert by_slug["a"].pr_url == "https://github.com/o/r/pull/12"
+    assert by_slug["b"].commit_sha == "sha-main"
+    assert by_slug["b"].pr_number is None
+    assert by_slug["b"].pr_url is None

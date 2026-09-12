@@ -24,7 +24,7 @@ import time
 import uuid
 from pathlib import Path
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, cast
+from typing import TYPE_CHECKING, Any, Callable, Mapping, cast
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -37,6 +37,8 @@ if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
     from server.pipeline.merge_train import MergeTrainState
     from server.pipeline.track import StageModel
+    from server.pm.feature_index import FeatureDocsRead
+    from server.pm.map_changes import MapChangesService, Pointer
     from server.pm.onboarding import ProjectOnboardingView
     from server.sessions.native_display import NativeDisplay
     from server.sessions.replay import EngineReplay
@@ -976,6 +978,16 @@ class SessionOrchestrator:
         # a swappable ``gh`` runner so tests can record argv without touching the
         # network. Defaults to the real ``gh`` shell-out.
         self._gh_run = gitrepos._run_gh
+        # …and the two other inputs a ``GhWrite`` takes (map-changes, spec §9):
+        # the GitHub App token provider and the environment its PAT fallback is
+        # read from. Seams for the same reason ``_gh_run`` is one — both are
+        # bound as DEFAULT ARGUMENTS of ``GhWrite.__init__``, so patching
+        # ``gitrepos.app_token_for_repo`` after import does nothing and a test
+        # would silently mint a real installation token (reading the App's
+        # private key, signing a JWT, calling api.github.com) and capture the
+        # host's real ``CCSWITCH_GH_PROJECT_TOKEN``.
+        self._gh_token_provider = gitrepos.app_token_for_repo
+        self._gh_env: Mapping[str, str] = os.environ
         # Backlog Runner control loop. Every I/O seam is now the real Plan-B
         # wiring: select_batch (priority queue → planned group → batch), announce
         # (the claim's issue comment — the claim itself is the durable row), spawn
@@ -1043,6 +1055,8 @@ class SessionOrchestrator:
             list_feature_rows=self._pm_sync_list_feature_rows,
             apply_feature_plan=self._pm_sync_apply_feature_plan,
             now_utc=self._pm_sync_now_utc,
+            read_map_changes=self._pm_sync_read_map_changes,
+            refresh_map_changes=self._pm_sync_refresh_map_changes,
             # Projects v2 + relations mirror seams (003 Phase A). Discovery rides
             # the owner-aware fetch (App token, has read:project); relations reuse
             # the ambient-credential fetch seam above.
@@ -5347,12 +5361,7 @@ class SessionOrchestrator:
             return None
         engine, _launch_config = plan
         url = f"https://github.com/{batch.repo}.git"
-        try:
-            default_branch = await asyncio.to_thread(
-                lambda: gitrepos.list_remote_branches(batch.repo).get("default") or "master"
-            )
-        except Exception:
-            default_branch = "master"
+        default_branch = await self._sdlc_default_branch(batch.repo)
         cwd = await asyncio.to_thread(
             gitrepos.ensure_clone, await self._effective_repo_root(), batch.repo, url)
         _mode, config = await self._backlog_read_config()
@@ -6129,21 +6138,32 @@ class SessionOrchestrator:
             for key, value in updates.items():
                 setattr(row, key, value)
 
-    async def _pm_sync_read_feature_docs(self, repo: str) -> list[tuple[str, str]]:
-        """Read docs/product/features/*.md at origin's default branch in the
-        shared clone. Uses git plumbing only — no GitHub API cost.
+    async def _pm_sync_read_feature_docs(
+        self, repo: str, ref: str | None = None
+    ) -> "FeatureDocsRead":
+        """Read docs/product/features/*.md at *ref* (default: origin's default
+        branch) in the shared clone. Uses git plumbing only — no GitHub API cost.
 
-        ATOMIC-OR-RAISE. The read resolves the default branch to an IMMUTABLE
-        commit SHA once, then reads every blob against THAT snapshot — so a
-        concurrent fetch moving origin/master (the shared clone is touched by
-        many automations) can't make the per-doc reads race. Any failure —
-        clone, ref resolution, ls-tree, or a single unreadable blob — RAISES
-        rather than returning a subset. Returning a subset is what orphaned 21
-        live features in the dogfood: the caller (``_feature_index``) treats a
-        missing doc as deleted and orphans its row. A raise makes the caller
-        skip the pass instead, leaving the index untouched until a clean read."""
+        ATOMIC-OR-RAISE for the default-branch read (``ref is None``): it
+        resolves the branch to an IMMUTABLE commit SHA once, then reads every
+        blob against THAT snapshot — so a concurrent fetch moving
+        origin/master (the shared clone is touched by many automations) can't
+        make the per-doc reads race. Any failure — clone, ref resolution,
+        ls-tree, or a single unreadable blob — RAISES rather than returning a
+        subset. Returning a subset is what orphaned 21 live features in the
+        dogfood: the caller (``_feature_index``) treats a missing doc as
+        deleted and orphans its row. A raise makes the caller skip the pass
+        instead, leaving the index untouched until a clean read.
 
-        async def _read() -> list[tuple[str, str]]:
+        A caller-supplied *ref* is a map-changes branch name (R8b-4), resolved
+        as ``refs/remotes/origin/<ref>``. ``git fetch origin`` above already
+        fetches every remote branch, so the ref resolves once that has run. A
+        branch that does not exist on the remote raises here too — the caller
+        (``_feature_index``) treats this read as best-effort and does not let
+        it poison the default-branch plan."""
+        from server.pm.feature_index import FeatureDocsRead
+
+        async def _read() -> FeatureDocsRead:
             import subprocess
             repo_root = await self._effective_repo_root()
             url = f"https://github.com/{repo}.git"
@@ -6156,24 +6176,27 @@ class SessionOrchestrator:
                 ["git", "-C", clone, "fetch", "origin", "--quiet"],
                 check=False, capture_output=True, timeout=120,
             )
-            head = await asyncio.to_thread(
-                subprocess.run,
-                ["git", "-C", clone, "symbolic-ref", "--quiet",
-                 "refs/remotes/origin/HEAD"],
-                capture_output=True, text=True, timeout=30,
-            )
-            ref = head.stdout.strip() or "refs/remotes/origin/master"
+            if ref is not None:
+                resolved_ref = f"refs/remotes/origin/{ref}"
+            else:
+                head = await asyncio.to_thread(
+                    subprocess.run,
+                    ["git", "-C", clone, "symbolic-ref", "--quiet",
+                     "refs/remotes/origin/HEAD"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                resolved_ref = head.stdout.strip() or "refs/remotes/origin/master"
             # Pin the ref to a concrete commit so every blob read below is against
             # one consistent snapshot, immune to a concurrent ref-moving fetch.
             rp = await asyncio.to_thread(
                 subprocess.run,
-                ["git", "-C", clone, "rev-parse", "--verify", f"{ref}^{{commit}}"],
+                ["git", "-C", clone, "rev-parse", "--verify", f"{resolved_ref}^{{commit}}"],
                 capture_output=True, text=True, timeout=30,
             )
             if rp.returncode != 0:
                 raise RuntimeError(
-                    f"pm_sync.read_feature_docs: cannot resolve {ref} in {repo}: "
-                    f"{(rp.stderr or '').strip()[:200]}")
+                    f"pm_sync.read_feature_docs: cannot resolve {resolved_ref} in "
+                    f"{repo}: {(rp.stderr or '').strip()[:200]}")
             sha = rp.stdout.strip()
             ls = await asyncio.to_thread(
                 subprocess.run,
@@ -6201,9 +6224,34 @@ class SessionOrchestrator:
                         f"pm_sync.read_feature_docs: read failed for {path} in "
                         f"{repo}: {(show.stderr or '').strip()[:200]}")
                 out.append((path, show.stdout))
-            return out
+            return FeatureDocsRead(sha=sha, docs=out)
 
         return await _read()
+
+    async def _pm_sync_read_map_changes(self, project_id: str) -> "Pointer | None":
+        """The product's open map-changes pointer, if any (R8b-4/5) — what
+        ``_feature_index`` reads the branch head at. The lookup itself lives in
+        ``server/pm/map_changes.py`` so the service, this seam and the map
+        payload cannot disagree about which row is "the open one"."""
+        from server.pm.map_changes import Pointer, open_pointer_row
+        async with db_session() as db:
+            row = await open_pointer_row(db, project_id)
+            return Pointer.from_row(row) if row is not None else None
+
+    async def _pm_sync_refresh_map_changes(self, project_id: str) -> None:
+        """One PR-lifecycle pass over the product's open map-changes pointer
+        (R8b-6): reads ``GET pulls/{n}`` and moves the row through
+        ``open → merged | abandoned``, recording behind/conflicting. Raises on a
+        GitHub failure only through the service's own ``last_error`` path — the
+        sync loop treats this seam as best-effort either way."""
+        from sqlalchemy import select
+        from server.db.models import Project
+        async with db_session() as db:
+            proj = (await db.execute(select(Project).where(
+                Project.id == project_id))).scalar_one_or_none()
+            if proj is None:
+                return
+            await self.pm_map_changes().refresh(db, proj)
 
     async def _pm_sync_list_feature_rows(self, project_id: str) -> list:
         """Return FeatureRowView for every Feature belonging to *project_id*."""
@@ -6255,6 +6303,9 @@ class SessionOrchestrator:
                 row.summary = up.summary
                 row.repo_path = up.repo_path
                 row.orphaned = False
+                row.commit_sha = up.commit_sha
+                row.pr_number = up.pr_number
+                row.pr_url = up.pr_url
             for slug in plan.orphan_slugs:
                 row = (await db.execute(
                     select(Feature).where(
@@ -6837,13 +6888,22 @@ class SessionOrchestrator:
                 WorkItem.repo == resolved_repo,
                 WorkItem.state != "open"))).scalar_one()
             project_id = proj.id
+            # R8b-9 / spec §9: while a map-changes PR is open, the drift
+            # session commits to THAT branch, so the UI's inline capability
+            # edits and the AI's proposal ride one reviewable PR.
+            map_branch: str | None = None
+            if scope == "diff":
+                from server.pm.map_changes import open_pointer_row
+                pointer = await open_pointer_row(db, proj.id)
+                map_branch = (pointer.branch or None) if pointer is not None else None
         repo = resolved_repo
         if scope == "diff":
             origin_ref = f"{slug}:map-diff:{suggestion}"
             name = f"pm map-diff {slug}"
             detail: dict = {"slug": slug, "kind": "feature-map-diff",
                             "suggestion": suggestion,
-                            "itemNumbers": list(item_numbers)}
+                            "itemNumbers": list(item_numbers),
+                            "branch": map_branch}
         else:
             origin_ref = f"{slug}:feature-map"
             name = f"pm map {slug}"
@@ -6869,7 +6929,7 @@ class SessionOrchestrator:
             slug=slug, repo=repo, default_branch=default_branch,
             open_count=int(open_count), closed_count=int(closed_count),
             scope=scope, suggestion=suggestion, item_numbers=item_numbers,
-            engine=engine)
+            engine=engine, branch=map_branch)
         detail["engine"] = engine.value
         rec = await self._pm_onboard_ctx.spawn_session(
             origin_ref=origin_ref,
@@ -7233,6 +7293,21 @@ class SessionOrchestrator:
                 proj.onboarding_state = "live"
                 await db.commit()
 
+    def pm_map_changes(self) -> "MapChangesService":
+        """The capability map-changes service (roadmap spec §9), wired to this
+        orchestrator's injectable ``gh`` runner, token provider and environment
+        plus its default-branch probe — so the API routes never construct a
+        GitHub client themselves and a test that swaps ``orch._gh_run`` for a
+        recorder is genuinely offline, credentials included."""
+        from server.pm.map_changes import MapChangesService
+        from server.pm.map_changes_gh import GhWrite
+        return MapChangesService(
+            gh_factory=lambda repo: GhWrite(
+                repo, run=self._gh_run, app_token=self._gh_token_provider,
+                env=self._gh_env),
+            default_branch=self._sdlc_default_branch,
+        )
+
     # ------------------------------------------------------------------
     # SDLC Synthesizer control-loop dependencies (injected into SdlcSynthesizerLoop)
     # ------------------------------------------------------------------
@@ -7307,13 +7382,12 @@ class SessionOrchestrator:
             await db.commit()
 
     async def _sdlc_default_branch(self, repo: str) -> str:
-        """The repo's default branch (``main``/``master``), resolved the same way
-        ``_backlog_spawn`` does — never hardcode ``master`` (the prompts warn)."""
-        try:
-            return await asyncio.to_thread(
-                lambda: gitrepos.list_remote_branches(repo).get("default") or "master")
-        except Exception:
-            return "master"
+        """The repo's default branch (``main``/``master``) — THE resolver for
+        every spawn path in this class (backlog, pr-doctor consolidation, sdlc).
+        Never hardcode ``master`` (the prompts warn); ``resolve_default_branch``
+        already degrades to it off the loop and never raises."""
+        from server.pm.map_changes import resolve_default_branch
+        return await resolve_default_branch(repo)
 
     async def _sdlc_spawn_synth(self, ini: dict, kind: str):
         """Spawn a de-duped spec/plan session for *ini*, seeding the prompt with
@@ -9422,12 +9496,7 @@ class SessionOrchestrator:
             if plan is None:                   # out of policy — the ctx recorded why
                 return
             eng, _launch_config = plan
-            try:
-                default_branch = await asyncio.to_thread(
-                    lambda: gitrepos.list_remote_branches(repo).get("default") or "master"
-                )
-            except Exception:
-                default_branch = "master"
+            default_branch = await self._sdlc_default_branch(repo)
             prompt = build_consolidation_prompt(repo, default_branch, prs, engine=eng)
             url = f"https://github.com/{repo}.git"
             try:

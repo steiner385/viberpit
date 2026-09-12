@@ -19,7 +19,7 @@ const cap = (id: string, slug: string, title: string, children: ProductNode['cap
 })
 const product = (slug: string, name: string, capabilities: ProductNode['capabilities']): ProductNode => ({
   slug, name, tier: 'idle', counts: { inFlight: 0, blocked: 0, needsYou: 0, capabilities: capabilities.length, awaitingTriage: 0, needsHome: 0 },
-  capabilities, initiatives: [],
+  capabilities, initiatives: [], mapChanges: null,
 })
 const products = [
   product('kindash', 'KinDash', [cap('f1', 'task-views', 'Task views', [cap('f2', 'filters', 'Filters')])]),

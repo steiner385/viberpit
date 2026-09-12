@@ -254,6 +254,38 @@ def test_diff_prompt_keeps_its_other_propose_guarantees():
     assert "docs-only" in p.lower()
 
 
+def test_diff_prompt_targets_an_open_map_changes_branch_when_given_one():
+    """R8b-9 / spec §9: while a map-changes PR is open, the AI map-diff session
+    commits to THAT branch rather than opening a branch and PR of its own — the
+    product's capability proposals all ride one reviewable PR."""
+    p = build_map_synthesis_prompt(
+        slug="acme", repo="acme/app", default_branch="main",
+        open_count=10, closed_count=20, scope="diff",
+        suggestion="new-capability", item_numbers=(1, 2),
+        branch="pm/map-changes-acme")
+    pl = p.lower()
+    assert "pm/map-changes-acme" in p
+    assert map_branch_name("acme") not in p          # not the historical branch
+    assert "do not open" in pl and "pull request" in pl
+    # That PR is human-owned from the roadmap UI (Rebase / Abandon) and may
+    # carry the human's own in-progress capability edits, so the session must
+    # never merge it — the opposite of the branch-of-its-own case below.
+    assert "do not arm auto-merge" in pl
+    assert "docs-only" in pl and "Co-Authored-By" in p
+
+
+def test_diff_prompt_without_a_branch_names_the_historical_map_branch():
+    """R8b-9's fallback: no open map-changes PR ⇒ the diff session opens its own
+    PR on the deterministic ``pm/feature-map-<slug>`` branch."""
+    p = build_map_synthesis_prompt(
+        slug="acme", repo="acme/app", default_branch="main",
+        open_count=10, closed_count=20, scope="diff", suggestion="x")
+    assert map_branch_name("acme") in p
+    assert "pm/map-changes-acme" not in p
+    assert "arm auto-merge" in p.lower()
+    assert "do not arm auto-merge" not in p.lower()
+
+
 def test_initial_and_critic_prompts_still_withhold_auto_merge():
     """The two-phase onboarding pipeline is deliberately NOT changed.
 

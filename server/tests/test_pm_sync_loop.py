@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 import pytest
 
 from server.automations.pm_sync import PmSyncLoop, RepoSyncView
+from server.pm.feature_index import FeatureDocsRead
+from server.pm.map_changes import Pointer
 
 
 class Ctx:
@@ -49,8 +51,15 @@ def _named(page, name):
     return page
 
 
-def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None):
-    """Wire a loop over canned data. `pages` is a list popped per fetch call."""
+def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None,
+          read_feature_docs=None, read_map_changes=None, refresh_map_changes=None):
+    """Wire a loop over canned data. `pages` is a list popped per fetch call.
+
+    ``read_feature_docs``/``read_map_changes`` let a test fully replace the
+    default-branch-only fake below (e.g. to answer differently per ``ref`` or
+    to serve a map-changes pointer) while every caller that only passes
+    ``feature_docs`` keeps getting a plain single-branch ``FeatureDocsRead``.
+    """
     saved = []
     upserted = []
     applied = []
@@ -70,8 +79,8 @@ def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None
     async def save(view, **updates):
         saved.append((view.repo, updates))
 
-    async def read_docs(repo):
-        return list(feature_docs or [])
+    async def read_docs(repo, ref=None):
+        return FeatureDocsRead(sha="sha-fake", docs=list(feature_docs or []))
 
     async def list_rows(project_id):
         return []
@@ -81,10 +90,12 @@ def _loop(ctx, views, pages, *, config=None, feature_docs=None, rename_repo=None
 
     loop = PmSyncLoop(
         ctx, read_config=read_config, list_repos=list_repos, fetch=fetch,
-        upsert_items=upsert, save_sync_state=save, read_feature_docs=read_docs,
+        upsert_items=upsert, save_sync_state=save,
+        read_feature_docs=read_feature_docs or read_docs,
         list_feature_rows=list_rows, apply_feature_plan=apply_plan,
         now_utc=lambda: datetime(2026, 2, 1, tzinfo=timezone.utc),
-        rename_repo=rename_repo)
+        rename_repo=rename_repo, read_map_changes=read_map_changes,
+        refresh_map_changes=refresh_map_changes)
     return loop, saved, upserted, applied
 
 
@@ -272,3 +283,321 @@ async def test_interval_gate_skips_recent_unless_requested():
                                            config={"min_sync_interval_s": 300})
     await loop.tick()
     assert saved == []  # skipped — nothing fetched, nothing saved
+
+
+# --- map-changes branch merge (R8b-4) -----------------------------------------
+
+
+def _fdoc(slug: str, title: str) -> str:
+    return f"---\nslug: {slug}\ntitle: {title}\nstate: proposed\n---\n# {title}\n"
+
+
+def _open_pointer(branch="pm/map-changes-proj", pr_number=12,
+                   pr_url="https://github.com/o/r/pull/12"):
+    return Pointer(branch=branch, pr_number=pr_number, pr_url=pr_url, status="open",
+                   opened_at=None, head_sha="sha-branch", behind=False, conflicting=False)
+
+
+async def _merge_plan(ctx, main, branch):
+    """One incremental pass with *main* on the default branch and *branch* on an
+    open map-changes branch; returns the applied ``{slug: upsert}``."""
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+
+    async def read_docs(repo, ref=None):
+        return branch if ref == "pm/map-changes-proj" else main
+
+    async def read_map_changes(project_id):
+        return _open_pointer()
+
+    loop, _saved, _upserted, applied = _loop(
+        ctx, [view], pages, read_feature_docs=read_docs,
+        read_map_changes=read_map_changes)
+    await loop.tick()
+    assert len(applied) == 1
+    _, plan = applied[0]
+    return {u.slug: u for u in plan.upserts}
+
+
+@pytest.mark.asyncio
+async def test_a_doc_the_branch_only_inherited_is_not_proposed():
+    """THE critical case (R8b-4 as amended): a map-changes branch inherits every
+    default-branch doc, so the branch read returns all of them. A doc that is
+    byte-identical on both is NOT this PR's doing — it keeps the default-branch
+    ``commit_sha`` and gets no PR fields.
+
+    Stamping it proposed would null ``commit_sha`` product-wide, and abandoning
+    the PR (which deletes every ``pr_number == N AND commit_sha IS NULL`` row)
+    would then delete the whole capability index."""
+    ctx = Ctx()
+    same = _fdoc("a", "A")
+    by_slug = await _merge_plan(
+        ctx,
+        FeatureDocsRead("sha-main", [("docs/product/features/a.md", same)]),
+        FeatureDocsRead("sha-branch", [("docs/product/features/a.md", same)]))
+    assert by_slug["a"].commit_sha == "sha-main"
+    assert by_slug["a"].pr_number is None
+    assert by_slug["a"].pr_url is None
+
+
+@pytest.mark.asyncio
+async def test_a_doc_changed_on_the_branch_wins_by_slug_and_is_proposed():
+    """Present on both but CHANGED: the branch content wins, the PR fields are
+    stamped and ``commit_sha`` is NULL (the edit is not on the default branch)."""
+    ctx = Ctx()
+    by_slug = await _merge_plan(
+        ctx,
+        FeatureDocsRead("sha-main", [
+            ("docs/product/features/a.md", _fdoc("a", "A")),
+            ("docs/product/features/b.md", _fdoc("b", "B")),
+        ]),
+        FeatureDocsRead("sha-branch", [
+            ("docs/product/features/a.md", _fdoc("a", "A")),
+            ("docs/product/features/b.md", _fdoc("b", "B Proposed")),
+        ]))
+    assert by_slug["a"].commit_sha == "sha-main"     # inherited unchanged
+    assert by_slug["a"].pr_number is None
+    assert by_slug["b"].title == "B Proposed"
+    assert by_slug["b"].commit_sha is None
+    assert by_slug["b"].pr_number == 12
+    assert by_slug["b"].pr_url == "https://github.com/o/r/pull/12"
+
+
+@pytest.mark.asyncio
+async def test_a_branch_only_doc_is_proposed_with_the_pr_fields():
+    ctx = Ctx()
+    by_slug = await _merge_plan(
+        ctx,
+        FeatureDocsRead("sha-main", [("docs/product/features/a.md", _fdoc("a", "A"))]),
+        FeatureDocsRead("sha-branch", [
+            ("docs/product/features/a.md", _fdoc("a", "A")),
+            ("docs/product/features/c.md", _fdoc("c", "C")),
+        ]))
+    assert by_slug["c"].commit_sha is None
+    assert by_slug["c"].pr_number == 12
+    assert by_slug["c"].pr_url == "https://github.com/o/r/pull/12"
+    assert by_slug["a"].commit_sha == "sha-main"
+
+
+@pytest.mark.asyncio
+async def test_no_open_map_changes_pointer_skips_the_branch_read():
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    calls = []
+
+    async def read_docs(repo, ref=None):
+        calls.append(ref)
+        return FeatureDocsRead("sha-main", [])
+
+    async def read_map_changes(project_id):
+        return None
+
+    loop, saved, upserted, applied = _loop(
+        ctx, [view], pages, read_feature_docs=read_docs,
+        read_map_changes=read_map_changes)
+    await loop.tick()
+    assert calls == [None]  # only the default-branch read happened
+
+
+@pytest.mark.asyncio
+async def test_branch_read_error_is_best_effort_default_plan_still_applied():
+    """The branch read is best-effort (R8b-4): a raise there must not poison
+    the default-branch plan, unlike the atomic-or-raise default-branch read."""
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    main = FeatureDocsRead("sha-main", [("docs/product/features/a.md", _fdoc("a", "A"))])
+
+    async def read_docs(repo, ref=None):
+        if ref is None:
+            return main
+        raise RuntimeError("branch does not exist on the remote")
+
+    async def read_map_changes(project_id):
+        return _open_pointer()
+
+    loop, saved, upserted, applied = _loop(
+        ctx, [view], pages, read_feature_docs=read_docs,
+        read_map_changes=read_map_changes)
+    await loop.tick()
+
+    assert len(applied) == 1
+    _, plan = applied[0]
+    assert plan.upserts[0].commit_sha == "sha-main"
+    assert any("watermark" in u for _, u in saved)  # work-item sync still completed
+    assert any(kw.get("kind") == "map_changes_read_error" for _, _, kw in ctx.events)
+    assert any(level == "warn" for level, _, _ in ctx.events)
+
+
+@pytest.mark.asyncio
+async def test_the_skipped_doc_denominator_counts_deduplicated_slugs():
+    """A doc on BOTH the default branch and the map-changes branch is ONE
+    capability: "N of M could not be parsed" must count de-duplicated slugs plus
+    the skipped docs, not raw doc rows (a 1-of-3 truth read as 1-of-4)."""
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    main = FeatureDocsRead("sha-main", [
+        ("docs/product/features/a.md", _fdoc("a", "A")),
+        ("docs/product/features/b.md", _fdoc("b", "B")),
+        ("docs/product/features/bad.md", "no frontmatter at all\n"),
+    ])
+    branch = FeatureDocsRead("sha-branch", [
+        ("docs/product/features/b.md", _fdoc("b", "B Proposed"))])
+
+    async def read_docs(repo, ref=None):
+        return branch if ref == "pm/map-changes-proj" else main
+
+    async def read_map_changes(project_id):
+        return _open_pointer()
+
+    loop, _saved, _upserted, _applied = _loop(
+        ctx, [view], pages, read_feature_docs=read_docs,
+        read_map_changes=read_map_changes)
+    await loop.tick()
+
+    (text,) = [t for _, t, kw in ctx.events if kw.get("kind") == "feature_doc_skipped"]
+    assert "1 of 3 feature docs" in text
+
+
+@pytest.mark.asyncio
+async def test_an_unparseable_doc_on_the_branch_is_skipped_and_reported():
+    """A bad doc on the map-changes branch must not poison the pass either: it
+    is skipped like a default-branch one and named in the same warning, so a
+    capability the UI wrote and cannot parse back is visible."""
+    ctx = Ctx()
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    view = _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    main = FeatureDocsRead("sha-main", [
+        ("docs/product/features/a.md", _fdoc("a", "A"))])
+    branch = FeatureDocsRead("sha-branch", [
+        ("docs/product/features/a.md", _fdoc("a", "A")),          # inherited
+        ("docs/product/features/c.md", _fdoc("c", "C")),          # new, good
+        ("docs/product/features/broken.md", "no frontmatter at all\n"),
+    ])
+
+    async def read_docs(repo, ref=None):
+        return branch if ref == "pm/map-changes-proj" else main
+
+    async def read_map_changes(project_id):
+        return _open_pointer()
+
+    loop, _saved, _upserted, applied = _loop(
+        ctx, [view], pages, read_feature_docs=read_docs,
+        read_map_changes=read_map_changes)
+    await loop.tick()
+
+    # The good docs still indexed — one bad doc never poisons the index.
+    _, plan = applied[0]
+    assert {u.slug for u in plan.upserts} == {"a", "c"}
+    (text,) = [t for _, t, kw in ctx.events if kw.get("kind") == "feature_doc_skipped"]
+    assert "1 of 3 feature docs" in text
+    assert "broken.md" in text
+
+
+# --- map-changes PR lifecycle refresh (R8b-6) ---------------------------------
+
+
+def _incremental_view():
+    wm = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    return _view(backfill_done=True, watermark=wm, sync_requested_at=wm)
+
+
+@pytest.mark.asyncio
+async def test_incremental_refreshes_the_map_changes_pr_before_the_index():
+    """R8b-6: one PR read per open pointer per incremental pass, driven by the
+    loop rather than the session PR poller (which watches session branches) —
+    and BEFORE the index, whose branch read is gated on the pointer's status."""
+    ctx = Ctx()
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    order = []
+
+    async def refresh(project_id):
+        order.append(("refresh", project_id))
+
+    async def read_docs(repo, ref=None):
+        order.append(("index", ref))
+        return FeatureDocsRead("sha-main", [])
+
+    loop, saved, _upserted, applied = _loop(
+        ctx, [_incremental_view()], pages, refresh_map_changes=refresh,
+        read_feature_docs=read_docs)
+    await loop.tick()
+    assert order == [("refresh", "p1"), ("index", None)]
+    assert len(applied) == 1          # …and the feature index still ran
+
+
+@pytest.mark.asyncio
+async def test_a_pointer_that_merged_this_tick_is_not_indexed_as_open():
+    """The lifecycle pass runs first, so a PR that merged since the last tick is
+    out of ``open`` before the index looks: no branch read that pass (the branch
+    may already be gone), and therefore no ``map_changes_read_error``."""
+    ctx = Ctx()
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    state = {"status": "open"}
+    refs = []
+
+    async def refresh(project_id):
+        state["status"] = "merged"
+
+    async def read_map_changes(project_id):
+        return Pointer(branch="pm/map-changes-proj", pr_number=12,
+                       pr_url="https://github.com/o/r/pull/12",
+                       status=state["status"], opened_at=None,
+                       head_sha="sha-branch", behind=False, conflicting=False)
+
+    async def read_docs(repo, ref=None):
+        refs.append(ref)
+        if ref is not None:
+            raise RuntimeError("branch deleted on merge")
+        return FeatureDocsRead("sha-main", [])
+
+    loop, _saved, _upserted, applied = _loop(
+        ctx, [_incremental_view()], pages, refresh_map_changes=refresh,
+        read_map_changes=read_map_changes, read_feature_docs=read_docs)
+    await loop.tick()
+    assert refs == [None]             # the branch was never read
+    assert len(applied) == 1
+    assert not [kw for _, _, kw in ctx.events
+                if kw.get("kind") == "map_changes_read_error"]
+
+
+@pytest.mark.asyncio
+async def test_a_non_primary_repo_never_refreshes_map_changes():
+    ctx = Ctx()
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+    refreshed = []
+
+    async def refresh(project_id):
+        refreshed.append(project_id)
+
+    view = _view(backfill_done=True, is_primary=False,
+                 watermark=datetime(2026, 1, 15, tzinfo=timezone.utc),
+                 sync_requested_at=datetime(2026, 1, 15, tzinfo=timezone.utc))
+    loop, *_ = _loop(ctx, [view], pages, refresh_map_changes=refresh)
+    await loop.tick()
+    assert refreshed == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_map_changes_refresh_is_best_effort():
+    """GitHub being down must not stall the work-item mirror: the refresh warns
+    and the pass still saves its watermark."""
+    ctx = Ctx()
+    pages = [_issue_page([], None, False), _pr_page([], None, False)]
+
+    async def refresh(project_id):
+        raise RuntimeError("GET pulls/12 failed")
+
+    loop, saved, _upserted, applied = _loop(
+        ctx, [_incremental_view()], pages, refresh_map_changes=refresh)
+    await loop.tick()
+    assert any("watermark" in u for _, u in saved)
+    assert any(kw.get("kind") == "map_changes_refresh_error" for _, _, kw in ctx.events)
+    assert not any(kw.get("kind") == "sync_error" for _, _, kw in ctx.events)

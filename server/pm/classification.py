@@ -108,6 +108,7 @@ def build_map_synthesis_prompt(
     suggestion: str | None = None,
     item_numbers: tuple[int, ...] = (),
     engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
+    branch: str | None = None,
 ) -> str:
     """Seed prompt for the map-synthesis session (spec §5 Step 1 / §6 drift).
 
@@ -133,9 +134,41 @@ def build_map_synthesis_prompt(
     ``scope="diff"`` is the diff-scoped drift prompt (phase 3 reuses this one
     builder): it names ``suggestion`` (the proposed new-feature name) and
     ``item_numbers`` (the clustered no-fit items) and asks for a single new/edited
-    feature doc plus PR — no full re-archaeology."""
+    feature doc plus PR — no full re-archaeology.
+
+    *branch* is the product's OPEN ccswitch-owned map-changes branch (R8b-9 /
+    spec §9): when one exists the drift session commits to it, so the map's
+    inline edits and the AI's proposal ride one reviewable PR instead of two.
+    Without it the diff session opens its own PR on the historical
+    ``pm/feature-map-<slug>`` branch, exactly as before. Ignored for
+    ``scope="initial"``, which IS the archaeology PR on that branch."""
     if scope == "diff":
         nums = ", ".join(f"#{n}" for n in item_numbers) or "(none listed)"
+        target = branch or map_branch_name(slug)
+        if branch:
+            # The map-changes PR is human-owned from the roadmap UI (Rebase /
+            # Abandon) and may carry the human's own in-progress capability
+            # edits, so the session appends to it and never merges it.
+            branch_step = (
+                f"1. The product has an OPEN pull request on the ccswitch-owned "
+                f"branch `{target}`. `git fetch` and check that branch out, and "
+                f"commit onto it.\n")
+            pr_step = (
+                "3. That branch's existing pull request carries this change — do "
+                "NOT open another pull request.\n")
+            merge_step = (
+                "4. Do NOT arm auto-merge on it: a human merges or abandons that "
+                "pull request from the roadmap, and it may carry their own "
+                "in-progress capability edits.\n")
+        else:
+            branch_step = (
+                f"1. Branch off `origin/{default_branch}` (never local "
+                f"`{default_branch}`) into a branch named exactly `{target}`.\n")
+            pr_step = "3. Open exactly ONE NON-draft PR, marked ready for review.\n"
+            merge_step = (
+                "4. Arm auto-merge on the PR (`gh pr merge --auto`). Full "
+                "automation is the default here — do not leave it unarmed and do "
+                "not claim in the PR body that a human curates the feature map.\n")
         return (
             "You are proposing a **feature-map update** for an existing project "
             "whose triage flagged a cluster of items that do not fit the current "
@@ -152,14 +185,11 @@ def build_map_synthesis_prompt(
             # surviving guarantee is one of SCOPE — feature docs only — so say
             # that instead of implying a merge gate that no longer exists.
             "Requirements — docs-only, follow exactly:\n"
-            f"1. Branch off `origin/{default_branch}` (never local "
-            f"`{default_branch}`).\n"
-            f"2. Commit only under `{FEATURE_DOCS_DIR}/`.\n"
-            "3. Open exactly ONE NON-draft PR, marked ready for review.\n"
-            "4. Arm auto-merge on the PR (`gh pr merge --auto`). Full "
-            "automation is the default here — do not leave it unarmed and do "
-            "not claim in the PR body that a human curates the feature map.\n"
-            "5. Human takeover is the exception, and you decide when to invoke "
+            + branch_step
+            + f"2. Commit only under `{FEATURE_DOCS_DIR}/`.\n"
+            + pr_step
+            + merge_step
+            + "5. Human takeover is the exception, and you decide when to invoke "
             "it: if your own confidence in this mapping is LOW — the capability "
             "may not be real, or the cluster may belong to a doc that already "
             "exists — add the `hold:human` label so a maintainer can take it "

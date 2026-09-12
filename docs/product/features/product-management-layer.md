@@ -95,8 +95,29 @@ under the nav section `roadmap`, on the same master/detail chassis as Sessions:
   their css are deleted. The queue's depth badges the **Roadmap** nav entry, which is what points
   at it from outside the section now that Triage is not a section.
 
-Still owed by that spec: issue leaves and inline overlay edits (phase 4), map-changes PRs
-(phase 5), the Queue scope and the Inbox's "Needs a home" Reclassify control (phase 6).
+Still owed by that spec: issue leaves and inline overlay edits (phase 4), the Queue scope and the
+Inbox's "Needs a home" Reclassify control (phase 6).
+
+**Map-changes PRs (spec §9) — backend landed, UI is row 8c.** A capability edit made through
+`POST /api/pm/projects/{slug}/map-changes` (`create` | `rename` | `reparent` | `summary` | `links`)
+is committed by the server itself — no agent session — onto one long-lived ccswitch-owned branch
+per product, `pm/map-changes-<slug>`, through GitHub's `createCommitOnBranch` (atomic, so the
+shared clone is never mutated); the first edit opens the PR, `DELETE` abandons it (close + delete
+the branch + drop the capabilities that only ever lived on it) and `POST …/map-changes/rebase`
+runs GitHub's own update-branch while the PR is behind. The sync loop indexes the branch head as
+well as the default branch: a doc that is **new on the branch or changed there** overrides the
+default-branch doc of the same slug and shows as **proposed** until the PR merges, while a doc the
+branch merely inherited unchanged is left alone. The roadmap UI for all of this — inline capability
+edits, the product-header PR card and the proposed badges — is row 8c.
+
+The pointer row (`feature_map_changes`) carries more than §9 spells out, all written by the
+per-pass PR read: `head_sha` (the branch's current head), `behind` and `conflicting` (from
+GitHub's `mergeable_state`: `behind` offers Rebase, `dirty` raises the conflict banner) and
+`last_error` (why the last PR read failed — recorded WITHOUT changing the status, so a transient
+502 never abandons a live PR). On a `Feature` row the provenance columns are exclusive:
+`commit_sha` is the default-branch SHA the doc was read at and is **NULL on a proposed row**,
+which instead carries `pr_number`/`pr_url` — and that exact pair (`pr_number = N AND commit_sha IS
+NULL`) is what abandon cleanup deletes on.
 
 **Phase 4 status:** superseded rather than pending. RICE→Score and the global queue landed in
 #1085, the portfolio UI is tracked as #993, and spec 003 (`specs/003-gh-projects-integration`)

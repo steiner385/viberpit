@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable
 
 from server.pm.feature_index import (
-    FeatureIndexPlan, FeatureRowView, plan_feature_index)
+    FeatureDocsRead, FeatureIndexPlan, FeatureRowView, plan_feature_index)
 from server.pm.featuredoc import FeatureDoc, FeatureDocError, parse_feature_doc
 from server.pm.gh_projects import (
     GhProjectItemView, GhProjectView, IssueRelView,
@@ -24,6 +24,7 @@ from server.pm.gh_projects import (
     parse_viewer_projects, project_node_missing)
 from server.pm.github_sync import (
     WorkItemView, build_issues_query, build_prs_query, canonical_repo_name, parse_page)
+from server.pm.map_changes import MAP_CHANGES_STATUS_OPEN, Pointer
 from server.pm.mirror_store import ProductSyncView
 
 from .base import AutomationStatus, ConfigField
@@ -105,9 +106,19 @@ ListRepos = Callable[[], Awaitable[list[RepoSyncView]]]
 Fetch = Callable[[str], Awaitable[dict]]
 UpsertItems = Callable[[list[WorkItemView]], Awaitable[None]]
 SaveSyncState = Callable[..., Awaitable[None]]
-ReadFeatureDocs = Callable[[str], Awaitable[list[tuple[str, str]]]]
+# Signature is really (repo, ref=None) -> FeatureDocsRead; ``...`` because a
+# fixed-arity Callable can't express the optional second positional arg that
+# the branch read (R8b-4) needs while the default-branch read omits it.
+ReadFeatureDocs = Callable[..., Awaitable[FeatureDocsRead]]
 ListFeatureRows = Callable[[str], Awaitable[list[FeatureRowView]]]
 ApplyFeaturePlan = Callable[[str, FeatureIndexPlan], Awaitable[None]]
+# The product's open map-changes pointer, if any (R8b-4/5). None ⇒ no branch
+# read — every pre-existing PmSyncLoop caller keeps today's default-branch-only
+# behaviour.
+ReadMapChanges = Callable[[str], Awaitable[Pointer | None]]
+# Move that pointer through its PR's lifecycle (R8b-6): one PR read per open
+# pointer per incremental pass. None ⇒ no lifecycle pass.
+RefreshMapChanges = Callable[[str], Awaitable[object]]
 
 # --- Projects v2 + relations mirror seams (003 Phase A) ---------------------
 # All default to None so the mirror pass is a no-op unless the orchestrator
@@ -146,6 +157,8 @@ class PmSyncLoop:
         list_feature_rows: ListFeatureRows,
         apply_feature_plan: ApplyFeaturePlan,
         now_utc: NowUtc,
+        read_map_changes: ReadMapChanges | None = None,
+        refresh_map_changes: RefreshMapChanges | None = None,
         list_products: ListProducts | None = None,
         fetch_gh_projects: FetchGhProjects | None = None,
         save_gh_project: SaveGhProject | None = None,
@@ -165,6 +178,10 @@ class PmSyncLoop:
         self._list_feature_rows = list_feature_rows
         self._apply_feature_plan = apply_feature_plan
         self._now_utc = now_utc
+        # None ⇒ the feature index only ever reads the default branch (R8b-4).
+        self._read_map_changes = read_map_changes
+        # None ⇒ no PR-lifecycle pass over the open pointer (R8b-6).
+        self._refresh_map_changes = refresh_map_changes
         # Projects v2 + relations mirror seams (003 Phase A); None ⇒ skip pass.
         self._list_products = list_products
         self._fetch_gh_projects = fetch_gh_projects
@@ -510,10 +527,34 @@ class PmSyncLoop:
                         max_seen = item.gh_updated_at
             if not more or len(fresh) < len(items):
                 break
+        # Lifecycle BEFORE the index: the pointer's status is what decides
+        # whether the index reads the branch at all, so a PR that merged or
+        # closed since the last tick must be moved out of ``open`` first —
+        # otherwise this pass indexes its docs as still-proposed (and reads a
+        # branch abandon has just deleted) for one whole tick.
+        await self._map_changes_lifecycle(view)
         await self._feature_index(view)
         await self._save_sync_state(
             view, watermark=max_seen or now, last_synced_at=now,
             sync_requested_at=None)
+
+    async def _map_changes_lifecycle(self, view: RepoSyncView) -> None:
+        """Move the product's open map-changes PR through its lifecycle (R8b-6).
+
+        Once per incremental pass over the product's PRIMARY repo — the pointer
+        is per product and its branch lives in that repo. Best-effort: GitHub
+        being down must never stall the work-item mirror, so a failure warns and
+        the pass completes (the next tick retries)."""
+        if not view.is_primary or self._refresh_map_changes is None:
+            return
+        try:
+            await self._refresh_map_changes(view.project_id)
+        except Exception:
+            log.warning("pm_sync.map_changes_refresh_failed repo=%s",
+                        view.repo, exc_info=True)
+            await self._ctx.emit(
+                "warn", f"map-changes PR refresh failed for {view.repo}",
+                kind="map_changes_refresh_error", target=view.repo)
 
     async def _feature_index(self, view: RepoSyncView) -> None:
         if not view.is_primary:
@@ -524,7 +565,7 @@ class PmSyncLoop:
         # dogfood bug). Best-effort and decoupled from work-item sync: a failed
         # read never propagates out to abort the surrounding incremental pass.
         try:
-            raw = await self._read_feature_docs(view.repo)
+            main = await self._read_feature_docs(view.repo)
         except Exception:
             log.warning("pm_sync.feature_read_failed repo=%s — skipping reindex",
                         view.repo, exc_info=True)
@@ -532,9 +573,13 @@ class PmSyncLoop:
                 "warn", f"feature-doc read failed for {view.repo}; reindex skipped",
                 kind="feature_read_error", target=view.repo)
             return
-        docs: list[tuple[str, FeatureDoc]] = []
+
+        docs_by_slug: dict[str, tuple[str, FeatureDoc]] = {}
+        # Default-branch text per slug, so the branch pass below can tell an
+        # edited doc from one the branch merely inherited (see R8b-4 there).
+        main_text_by_slug: dict[str, str] = {}
         skipped: list[str] = []
-        for path, text in raw:
+        for path, text in main.docs:
             try:
                 doc = parse_feature_doc(text)
             except FeatureDocError as e:
@@ -542,8 +587,55 @@ class PmSyncLoop:
                             view.repo, path, exc_info=True)
                 skipped.append(f"{path}: {e}")
                 continue  # one bad doc never poisons the index (spec §4)
-            docs.append((path, doc))
+            docs_by_slug[doc.slug] = (path, doc)
+            main_text_by_slug[doc.slug] = text
+
+        # Branch head, merged over the default branch BY SLUG (R8b-4 as
+        # amended): a doc that is NEW on the map-changes branch, or CHANGED
+        # there, overrides the default-branch doc of the same slug and is
+        # "proposed" until the PR merges.
+        #
+        # A branch inherits every default-branch doc, so the branch read returns
+        # all of them — stamping the whole set "proposed" would null
+        # ``commit_sha`` product-wide and hand every untouched capability this
+        # PR's number, at which point abandoning the PR deletes the entire
+        # capability index (``cleanup_after_abandon`` matches
+        # ``pr_number == N AND commit_sha IS NULL``). An unchanged inherited doc
+        # is therefore skipped outright: it keeps its default-branch
+        # ``commit_sha`` and gets no PR fields.
+        #
+        # Best-effort — unlike the default-branch read above, a failure here must
+        # never poison the default-branch plan; it only means the branch's
+        # proposals are missing from this pass.
+        proposed: dict[str, tuple[int | None, str | None]] = {}
+        if self._read_map_changes is not None:
+            try:
+                pointer = await self._read_map_changes(view.project_id)
+                if pointer is not None and pointer.status == MAP_CHANGES_STATUS_OPEN and pointer.branch:
+                    branch = await self._read_feature_docs(view.repo, pointer.branch)
+                    for path, text in branch.docs:
+                        try:
+                            doc = parse_feature_doc(text)
+                        except FeatureDocError as e:
+                            skipped.append(f"{path}: {e}")
+                            continue
+                        if main_text_by_slug.get(doc.slug) == text:
+                            continue  # inherited unchanged — not this PR's doing
+                        docs_by_slug[doc.slug] = (path, doc)
+                        proposed[doc.slug] = (pointer.pr_number, pointer.pr_url)
+            except Exception:
+                log.warning("pm_sync.map_changes_read_failed repo=%s",
+                            view.repo, exc_info=True)
+                await self._ctx.emit(
+                    "warn", f"map-changes branch read failed for {view.repo}",
+                    kind="map_changes_read_error", target=view.repo)
+
         if skipped:
+            # The denominator is CAPABILITIES, not doc rows: a doc present on
+            # both the default branch and the map-changes branch is one
+            # capability read twice (R8b-4 merges them by slug), and counting
+            # both would report "1 of 4" where three capabilities exist.
+            total_read = len(docs_by_slug) + len(skipped)
             # A skipped doc is invisible everywhere else: the capability simply
             # never appears on the map, and the pm-triage drift branch keeps
             # re-proposing it because an unindexed capability cannot latch. The
@@ -551,16 +643,17 @@ class PmSyncLoop:
             # a repo could sit at zero indexed features indefinitely with the
             # only trace in the process log. Emit once per pass, not per doc.
             log.warning("pm_sync.feature_docs_skipped repo=%s skipped=%d of=%d",
-                        view.repo, len(skipped), len(raw))
+                        view.repo, len(skipped), total_read)
             await self._ctx.emit(
                 "warn",
-                f"{len(skipped)} of {len(raw)} feature docs in {view.repo} "
+                f"{len(skipped)} of {total_read} feature docs in {view.repo} "
                 f"could not be parsed and are NOT on the map: "
                 + "; ".join(skipped[:5])
                 + ("; …" if len(skipped) > 5 else ""),
                 kind="feature_doc_skipped", target=view.repo)
         rows = await self._list_feature_rows(view.project_id)
-        plan = plan_feature_index(rows, docs)
+        plan = plan_feature_index(
+            rows, list(docs_by_slug.values()), read_sha=main.sha, proposed=proposed)
         await self._apply_feature_plan(view.project_id, plan)
 
     def _stash(self, synced: int, backfilling: int, errors: int,
