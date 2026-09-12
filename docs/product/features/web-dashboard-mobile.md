@@ -5,14 +5,13 @@ state: live
 links:
   code:
     - web/src/App.tsx
-    - web/src/components/Dashboard.tsx
-    - web/src/components/DesktopShell.tsx
-    - web/src/components/SessionCard.tsx
-    - web/src/components/DispatchBar.tsx
-    - web/src/components/session/SessionView.tsx
-    - web/src/components/session/Composer.tsx
-    - web/src/lib/useMediaQuery.ts
-  prs: [423, 461, 498, 776, 778, 316, 313, 330, 339, 524, 566, 376]
+    - web/src/shell/AppShell.tsx
+    - web/src/shell/useViewport.tsx
+    - web/src/features/sessions/list/SessionCard.tsx
+    - web/src/features/sessions/list/DispatchBar.tsx
+    - web/src/features/sessions/SessionBody.tsx
+    - web/src/features/sessions/composer/Composer.tsx
+  prs: [423, 461, 498, 776, 778, 316, 313, 330, 339, 524, 566, 376, 1471]
 ---
 
 # Web Dashboard & Mobile Access
@@ -23,17 +22,50 @@ usage, spot a session that needs your input, or type a follow-up prompt from a p
 away from the desk.
 
 **Target users** — The single operator running ccswitch on their tailnet: at the desk on a
-wide screen, and on a phone or tablet anywhere on the Tailscale network.
+wide screen, and on a phone or tablet anywhere on the Tailscale network. A wall-mounted kiosk
+display is a fourth, unattended "user" (see Modes below).
 
 **Desired outcome** — A browser UI, reachable from any device on the tailnet (via
 `tailscale serve`), that shows a dashboard of accounts and their usage, a session list with
-live status, an inline terminal/transcript for each session, and a prompt composer — all
-usable one-handed on a phone. The same single source of truth drives both the wide-screen
-master-detail `DesktopShell` and the mobile stacked layout.
+live status, a transcript for each session, and a prompt composer — all usable one-handed on
+a phone. One shell (`AppShell`) and one route table drive every device width and mode, rather
+than a mobile/desktop fork with its own copy of the rules.
+
+**Modes** — one operator wears several hats, so the nav is organized around the question each
+hat is asking rather than around a per-user account
+(`docs/superpowers/specs/2026-09-08-finish-line-persona-modes-design.md` D1, §3):
+
+- **Developer / vibe coder** — "What needs me right now? What are my sessions and PRs doing?"
+  Primary surfaces: Sessions (composer, permission cards, the Background scope) and Pipeline.
+- **Product manager** — "What are we building, how does it fit together, in what order?"
+  Primary surface: Roadmap (portfolio → product → capability → initiative → issues, plus the
+  Inbox scope for proposals).
+- **Project manager** — "What is in flight, blocked, or waiting on a human? Is delivery
+  healthy?" Primary surfaces: Roadmap's Needs-you tabs and Delivery (automations, CI health).
+- **Operator / admin** — "Accounts, hosts, deploy, config." Primary surface: Settings (16
+  sections, split variant).
+
+These are information-architecture groupings, not accounts or permission levels — every mode
+is reachable from the same five-entry nav rail at all times.
+
+Independently of persona, the shell also has a **kiosk mode** (`?kiosk=1`) for an unattended
+wall display: `web/src/shell/useViewport.tsx` reports it as a `LayoutMode`, and
+`web/src/shell/AppShell.tsx`'s region-visibility matrix (`REGION_VISIBILITY`) removes the nav
+rail, session list, composer and drawer entirely, refuses every `ui/Dialog`, and enlarges the
+whole type scale (`--scale`) for ten-foot readability. Only the two danger-tone banners a
+passer-by must act on (daemon down, every account rate-limited) stay visible.
+`shell/navDefs.ts`'s `showInKiosk` flag gates which sections a kiosk URL may ever land on — the
+bar is "verified read-only", not "looks glanceable" (see `docs/ACCESSIBILITY.md` §2 for the
+full region/mode table). Kiosk is orthogonal to the four persona modes above: today only
+Pipeline is kiosk-safe.
+
+Independently of both, `useViewport()` also reports a width tier (phone/tablet/desktop/wide)
+that the layout uses for master-detail vs. single-band rendering and touch-target sizing — see
+`docs/ACCESSIBILITY.md` §2 and `web/README.md` for the region/breakpoint detail.
 
 **Success metrics** — (unknown — needs owner input). Observable proxies in code: session
 cards reflect live status without sticking on "Working…"; layout adapts across widths via
-container queries; safe-area insets are respected on notched phones; no dropped
+`useViewport`'s width tiers; safe-area insets are respected on notched phones; no dropped
 interrupts/answers on reconnect.
 
 **Non-goals** — Public internet exposure (the server binds loopback and is fronted by
@@ -46,20 +78,25 @@ buttons with overflow menus (#778, #776), swipe-to-archive/delete on cards (#313
 Android soft-keyboard handling and viewport shrinking (#330, #339), a mobile-reachable tab
 strip with count badges (#461), safe-area insets on edge-touching elements (#524), and a
 static header/footer with only the session list scrolling (#376). A test invariant locks
-the mobile/desktop single-source-of-truth so the two layouts can't diverge (#423). The
-inline terminal is a live transcript view (xterm-style) bridged over WebSocket, not a raw
-PTY dump.
+the mobile/desktop single-source-of-truth so the layouts can't diverge (#423,
+`web/src/shell/visibilityMatrix.test.tsx`). #1471 (finish-line row 7) retired the
+`Dashboard`/`DesktopShell` fork this doc used to describe in favour of the one `AppShell`
+above, moved every component listed here out of `components/` into its `features/`/`shell/`
+home, and replaced the ad-hoc `lib/useMediaQuery.ts` call sites with the single
+`useViewport()` reader. The session transcript is a live view bridged over WebSocket, not a
+raw PTY dump — there is no terminal emulator in the tree.
 
 **Evidence** —
-- Layouts: `web/src/components/DesktopShell.tsx` (wide-screen master-detail),
-  `web/src/components/Dashboard.tsx`, `web/src/App.tsx`.
-- Session UI: `web/src/components/SessionCard.tsx`,
-  `web/src/components/session/SessionView.tsx`, `web/src/components/session/Composer.tsx`,
-  `web/src/components/DispatchBar.tsx`.
-- Responsiveness: `web/src/lib/useMediaQuery.ts`; swipe test
-  `web/src/components/__tests__/SessionCardSwipe.test.tsx`.
-- README `## ccswitch web` section (Tailscale-served, phone/tablet access).
+- Shell and layout: `web/src/shell/AppShell.tsx` (regions + mode matrix), `web/src/shell/useViewport.tsx`
+  (the one layout `matchMedia` reader), `web/src/App.tsx` (route table).
+- Session UI: `web/src/features/sessions/list/SessionCard.tsx`,
+  `web/src/features/sessions/SessionBody.tsx` (transcript host),
+  `web/src/features/sessions/composer/Composer.tsx`, `web/src/features/sessions/list/DispatchBar.tsx`.
+- Responsiveness: `web/src/shell/useViewport.tsx`; swipe test
+  `web/src/features/sessions/list/SessionCardSwipe.test.tsx`.
+- README `## ccswitch web` section (Tailscale-served, phone/tablet access) — `web/README.md`.
 - PRs: #423 (mobile/desktop single-source invariant), #461 (mobile-reachable tab strip),
   #776/#778 (mobile-responsive session/account controls), #313/#316 (swipe-to-archive),
   #330/#339 (Android keyboard/soft-keyboard), #524 (safe-area insets), #498 (mobile "more"
-  toggle in DispatchBar), #566 (session-card badge/action layout).
+  toggle in DispatchBar), #566 (session-card badge/action layout), #1471 (`AppShell` unification,
+  the four modes above, `components/` retired).
