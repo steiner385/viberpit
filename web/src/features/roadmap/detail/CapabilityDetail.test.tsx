@@ -131,8 +131,9 @@ describe('CapabilityDetail', () => {
     expect(screen.getByText(/PR #12/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /feature doc/ }))
       .toHaveAttribute('href', 'https://github.com/cairnea/KinDash/blob/abc123/docs/product/features/tasks.md')
-    // Linked capabilities are how a capability points at the one that powers it.
-    expect(screen.getByRole('link', { name: /viberpit\/sessions/ }))
+    // Linked capabilities are how a capability points at the one that powers
+    // it — named by the target's title, not its slug path.
+    expect(screen.getByRole('link', { name: 'powered by · Sessions (ViberPit)' }))
       .toHaveAttribute('href', '/roadmap/viberpit/capabilities/sessions')
   })
 
@@ -180,7 +181,7 @@ describe('CapabilityDetail', () => {
     // `prNumber` alone is history once the PR merged; the pending note needs the
     // product's map-changes pointer to still be open.
     mount({ product: { ...busyProduct, mapChanges: OPEN_PR } })
-    expect(screen.getByRole('button', { name: 'Remove link: powered by · viberpit/sessions' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove link: powered by · Sessions (ViberPit)' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'PR #31' })).toHaveAttribute('href', 'https://github.com/o/r/pull/31')
   })
 
