@@ -5974,11 +5974,14 @@ class SessionOrchestrator:
         # loop's auto path writes (spec §6) — same place in the sequence: after a
         # successful spawn, before the claim row is finalised. ``attempt_no`` comes
         # off the claim this tap is spawning for.
-        await self._backlog_ctx.record_outcome(
-            primary, product_slug=batch.product,
-            session_id=getattr(rec, "id", None),
-            model=getattr(rec, "model", None) or model,
-            attempt_no=st.get("attempts", 0))
+        try:
+            await self._backlog_ctx.record_outcome(
+                primary, product_slug=batch.product,
+                session_id=getattr(rec, "id", None),
+                model=getattr(rec, "model", None) or model,
+                attempt_no=st.get("attempts", 0))
+        except Exception:  # history is best-effort (spec §13); the claim write below must run
+            log.warning("backlog_runner.tap_record_outcome_failed target=%s", primary, exc_info=True)
         # A de-dup hit returns the existing row without appending to spawns; treat
         # a matching origin_ref that already existed as "exists".
         await self._backlog_ctx.set_target_state(primary, {
@@ -6057,11 +6060,14 @@ class SessionOrchestrator:
             return {"status": "refused", "session_id": None, "session_name": None}
         # Manual dispatch is a dispatch too — same ``running`` row, same position
         # (after the spawn, before the claim row is finalised).
-        await self._backlog_ctx.record_outcome(
-            primary, product_slug=batch.product,
-            session_id=getattr(rec, "id", None),
-            model=getattr(rec, "model", None) or model,
-            attempt_no=st.get("attempts", 0))
+        try:
+            await self._backlog_ctx.record_outcome(
+                primary, product_slug=batch.product,
+                session_id=getattr(rec, "id", None),
+                model=getattr(rec, "model", None) or model,
+                attempt_no=st.get("attempts", 0))
+        except Exception:  # history is best-effort (spec §13); the claim write below must run
+            log.warning("backlog_runner.tap_record_outcome_failed target=%s", primary, exc_info=True)
         await self._backlog_ctx.set_target_state(primary, {
             "session_id": getattr(rec, "id", None),
             "repo": batch.repo,

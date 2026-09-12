@@ -45,6 +45,7 @@ def dispatch_orch(tmp_path):
         ctx.get_target_state = AsyncMock(return_value={})
         ctx.set_target_state = AsyncMock()
         ctx.delete_target_state = AsyncMock()
+        ctx.record_outcome = AsyncMock()
         ctx.emit = AsyncMock()
         orch._backlog_ctx = ctx
         return orch
