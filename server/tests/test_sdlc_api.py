@@ -608,6 +608,131 @@ def test_initiative_without_capabilities_has_null_fields():
         assert body["capabilities"] == []
 
 
+def _seed_product_with_two_capabilities(db_url: str) -> tuple[str, str, str]:
+    """A product with a root capability and one child under it; returns
+    (project_id, root_id, child_id). Seeded BEFORE the client opens, like
+    ``test_create_with_capabilities_links_and_derives_product``."""
+    from server.db import db_session, init_db
+    from server.db.models import Feature, Project
+
+    async def _go():
+        await init_db(db_url)
+        async with db_session() as db:
+            p = Project(slug="example-product", name="Example product")
+            db.add(p)
+            await db.flush()
+            root = Feature(project_id=p.id, slug="sessions", title="Sessions", state="live")
+            db.add(root)
+            await db.flush()
+            child = Feature(project_id=p.id, slug="dictation", title="Dictation",
+                            state="delivering", parent_feature_id=root.id)
+            db.add(child)
+            await db.commit()
+            return p.id, root.id, child.id
+    return asyncio.run(_go())
+
+
+def test_patch_title_trims_and_audits():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_initiative(db_url)
+        with _client(db_url) as c:
+            r = c.patch("/api/sdlc/initiatives/dark-mode", json={"title": "  Dark mode v2  "},
+                        headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            assert r.json()["title"] == "Dark mode v2"
+            assert r.json()["stage"] == "plan"            # untouched
+            assert _audits(c, "sdlc.initiative.update") == [{"slug": "dark-mode", "fields": ["title"]}]
+            assert c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()["title"] == "Dark mode v2"
+
+
+def test_patch_empty_body_is_a_read_through_and_blank_title_is_422():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_initiative(db_url)
+        with _client(db_url) as c:
+            r = c.patch("/api/sdlc/initiatives/dark-mode", json={}, headers=IDENTITY_HEADERS)
+            assert r.status_code == 200 and r.json()["title"] == "Dark mode"
+            assert _audits(c, "sdlc.initiative.update") == []
+            r = c.patch("/api/sdlc/initiatives/dark-mode", json={"title": "   "}, headers=IDENTITY_HEADERS)
+            assert r.status_code == 422 and r.json()["detail"]["error"] == "bad_title"
+            assert c.patch("/api/sdlc/initiatives/nope", json={"title": "x"},
+                           headers=IDENTITY_HEADERS).status_code == 404
+
+
+def test_patch_capabilities_replaces_the_set_and_rederives_the_product():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _, root_id, child_id = _seed_product_with_two_capabilities(db_url)
+        with _client(db_url) as c:
+            created = c.post("/api/sdlc/initiatives", json={
+                "title": "Whisper", "repo": "o/r", "capabilityIds": [root_id]},
+                headers=IDENTITY_HEADERS)
+            assert created.status_code == 201, created.text
+            assert created.json()["primaryCapability"] is None
+            r = c.patch("/api/sdlc/initiatives/whisper", json={
+                "primaryCapabilityId": child_id, "capabilityIds": [child_id]},
+                headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["projectSlug"] == "example-product"
+            assert body["primaryCapability"]["slug"] == "dictation"
+            assert [(x["slug"], x["isPrimary"]) for x in body["capabilities"]] == [("dictation", True)]
+            assert _audits(c, "sdlc.initiative.update") == [
+                {"slug": "whisper", "fields": ["capabilityIds", "primaryCapabilityId"]}]
+
+
+def test_patch_primary_alone_joins_the_current_set_and_dropping_it_clears_it():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _, root_id, child_id = _seed_product_with_two_capabilities(db_url)
+        with _client(db_url) as c:
+            c.post("/api/sdlc/initiatives", json={
+                "title": "Whisper", "repo": "o/r", "capabilityIds": [root_id]}, headers=IDENTITY_HEADERS)
+            # primary alone: joins the current {root} set
+            r = c.patch("/api/sdlc/initiatives/whisper", json={"primaryCapabilityId": child_id},
+                        headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            assert sorted((x["slug"], x["isPrimary"]) for x in r.json()["capabilities"]) == [
+                ("dictation", True), ("sessions", False)]
+            # a new set that omits the primary: the primary is gone, the product follows the first
+            r = c.patch("/api/sdlc/initiatives/whisper", json={"capabilityIds": [root_id]},
+                        headers=IDENTITY_HEADERS)
+            assert r.json()["primaryCapability"] is None
+            assert [x["slug"] for x in r.json()["capabilities"]] == ["sessions"]
+            assert r.json()["projectSlug"] == "example-product"
+            # an empty set: no capabilities, no product
+            r = c.patch("/api/sdlc/initiatives/whisper", json={"capabilityIds": []}, headers=IDENTITY_HEADERS)
+            assert r.json()["capabilities"] == [] and r.json()["projectSlug"] is None
+
+
+def test_patch_rejects_unknown_and_cross_product_capabilities():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _, root_id, _ = _seed_product_with_two_capabilities(db_url)
+        with _client(db_url) as c:
+            c.post("/api/sdlc/initiatives", json={"title": "Whisper", "repo": "o/r"}, headers=IDENTITY_HEADERS)
+            r = c.patch("/api/sdlc/initiatives/whisper", json={"capabilityIds": ["nope"]}, headers=IDENTITY_HEADERS)
+            assert r.status_code == 422 and r.json()["detail"]["error"] == "capability_not_found"
+            # a second product's capability, seeded through the client's own loop
+            from server.db import db_session
+            from server.db.models import Feature, Project
+
+            async def _other():
+                async with db_session() as db:
+                    p = Project(slug="other", name="Other")
+                    db.add(p)
+                    await db.flush()
+                    f = Feature(project_id=p.id, slug="billing", title="Billing", state="live")
+                    db.add(f)
+                    await db.commit()
+                    return f.id
+            other_id = c.portal.call(_other)
+            r = c.patch("/api/sdlc/initiatives/whisper", json={"capabilityIds": [root_id, other_id]},
+                        headers=IDENTITY_HEADERS)
+            assert r.status_code == 422 and r.json()["detail"]["error"] == "capabilities_span_products"
+
+
 # --------------------------------------------------------------------------- #
 # Plan materialization — the human gate (spec 003 §7b, #992)                   #
 # --------------------------------------------------------------------------- #
