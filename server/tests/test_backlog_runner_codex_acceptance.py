@@ -36,8 +36,20 @@ from server.sessions.completion import (
     resolution_from_text,
 )
 
+# A batch carries the slug of a product whose dispatch is ON — the queue read is
+# policy-scoped, so `_refill` is entitled to refuse anything else.
+PRODUCT = "viberpit"
 BATCH = Batch(primary="o/r#1", issues=["o/r#1", "o/r#2"], repo="o/r",
-              titles={"o/r#1": "one", "o/r#2": "two"})
+              titles={"o/r#1": "one", "o/r#2": "two"}, product=PRODUCT)
+
+
+def _policies():
+    """The loop's ``read_policies`` seam: ``PRODUCT`` dispatches automatically,
+    with a per-product ceiling well clear of ``max_concurrent`` so the fleet-wide
+    slot budget stays the thing under test."""
+    from server.automations.product_policy import effective_policy
+    return _some({PRODUCT: effective_policy({"dispatch": "auto",
+                                             "max_in_flight": 100})})
 
 
 # --------------------------------------------------------------------------- #
@@ -229,6 +241,7 @@ def _loop(ctx, *, spawn, **overrides):
         pr_status_for=lambda _t: _some(None),
         pr_doctor_active=lambda _r: _some(False),
         read_config=overrides.pop("read_config", lambda: _some(("on", _CONFIG))),
+        read_policies=overrides.pop("read_policies", _policies),
         needs_human=_needs_human,
         clock=clock,
     )

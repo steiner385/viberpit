@@ -18,7 +18,7 @@ from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
 from .base import AutomationStatus, ConfigField
 from .context import AutomationContext
 from .engine_policy import EnginePolicy
-from .product_policy import unscoped_policy
+from .product_policy import effective_policy, is_on
 
 log = logging.getLogger(__name__)
 
@@ -122,12 +122,15 @@ async def select_batch(
         clone can only fetch a stale ref, so branching a worktree off it would
         implement against ancient code. Other repos are still serviced.
     weights / caps / repo_order:
-        The per-repo strategy inputs. The orchestrator derives these from the
-        PRODUCT policies (``_backlog_select_batch``: each ON product's weight and
-        in-flight cap, applied to its repos, ordered by product age), which is why
-        they are explicit parameters rather than config reads. They fall back to
-        the (retired) config keys only so a caller passing a legacy config dict —
-        the pure selection tests — still exercises the same code path.
+        The per-repo strategy inputs — explicit parameters, never config reads
+        (the config keys that used to carry them are retired). The orchestrator
+        derives ``weights``/``repo_order`` from the PRODUCT policies
+        (``_backlog_select_batch``: each ON product's weight, applied to its repos,
+        ordered by product age). It passes no ``caps``: a product's
+        ``max_in_flight`` is enforced per PRODUCT in the loop's ``_refill``, where
+        it is exact and strategy-independent, rather than aliased onto each of its
+        repos. ``caps`` remains part of this pure selection contract for the
+        ``concurrency-cap`` strategy.
     load_plan / mark_consumed:
         Injectable plan-store seams (default: the ``backlog_groups`` table).
         Tests pass canned functions so no DB or model is ever touched here.
@@ -146,10 +149,7 @@ async def select_batch(
     batch, group_id = plan_to_batch(
         plan, candidates, repo_load, paused_repos,
         strategy=config.get("selection_strategy") or "balanced",
-        repo_order=repo_order if repo_order is not None
-        else (config.get("enabled_repos") or []),
-        weights=weights if weights is not None else (config.get("repo_weights") or {}),
-        caps=caps if caps is not None else (config.get("repo_caps") or {}))
+        repo_order=repo_order or [], weights=weights or {}, caps=caps or {})
     if batch is not None and group_id is not None:
         try:
             await mark_consumed(group_id)
@@ -162,10 +162,37 @@ async def select_batch(
 def _on_products(products: dict) -> list[tuple[str, dict]]:
     """The per-product count rows whose dispatch is on, slug-sorted.
 
-    ONE reading of "which products is this runner working" for the card, matching
-    the queue's own scope rule (``effective_policy(...)["dispatch"] != "off"``)."""
-    return sorted((slug, p) for slug, p in products.items()
-                  if (p.get("dispatch") or "off") != "off")
+    ONE reading of "which products is this runner working" for the card — the
+    shared ``product_policy.is_on`` the queue scope and the selection knobs use."""
+    return sorted((slug, p) for slug, p in products.items() if is_on(p))
+
+
+# "this tick never reached the count seam" — a THIRD state, distinct from the two
+# the seam itself can report: ``None`` ("the read failed, we don't know") and ``{}``
+# ("the read worked and no product is opted in"). Three different sentences on the
+# card, so the absent case needs its own marker rather than sharing ``None``.
+_NO_COUNT_YET = object()
+
+
+def in_flight_by_product(states: dict) -> dict[str, int]:
+    """``{product slug: live claims}`` over the runner's durable target states.
+
+    ONE rule for "how many sessions is this product running", shared by the loop's
+    per-product ``max_in_flight`` gate and the status card's per-product
+    ``in_flight`` gauge, so the card can never show a number selection does not
+    act on. A claim counts from the moment it is written — a ``proposed`` row
+    (awaiting a human tap) holds the product's slot exactly like a spawned one —
+    until the sweep frees it: a ``gave_up`` row waits on a human and a
+    ``handed_off`` one belongs to PR Doctor, so neither holds a slot.
+    """
+    out: dict[str, int] = {}
+    for st in states.values():
+        if not st.get("claimed") or st.get("gave_up") or st.get("handed_off"):
+            continue
+        slug = st.get("product")
+        if slug:
+            out[slug] = out.get(slug, 0) + 1
+    return out
 
 
 class BacklogRunner:
@@ -241,11 +268,22 @@ class BacklogRunner:
         # never reached the count seam. An empty map is the real, reportable state:
         # the runner is enabled but no product opted in, which as a bare
         # "0 eligible" reads like an empty backlog rather than a policy nobody set.
-        products = getattr(ctx, "backlog_products", None)
-        if products is not None and not _on_products(products):
+        products = getattr(ctx, "backlog_products", _NO_COUNT_YET)
+        n = counts.get("in_flight", 0)
+        if products is None:
+            # The read FAILED. "We don't know" and "no product is opted in" must
+            # not share a sentence: an operator debugging a broken mirror read
+            # would otherwise be told their policies are unset. The in-flight
+            # count comes from a different seam and is still true, so it stays.
+            return AutomationStatus(
+                text=f"{n} implementing · product counts unavailable "
+                     f"(the queue read failed)",
+                level="warn", counts=counts)
+        counted = products is not _NO_COUNT_YET
+        rows: dict = products if isinstance(products, dict) else {}
+        if counted and not _on_products(rows):
             return AutomationStatus(text="idle — no product has dispatch on",
                                     level="idle", counts=counts)
-        n = counts.get("in_flight", 0)
         level = "active" if n else ("warn" if counts.get("needs_human") else "idle")
         # ``untriaged`` is the below-min-status skip: in the default Ready mode a
         # board full of untriaged items reads as "0 eligible", which looks like an
@@ -257,7 +295,7 @@ class BacklogRunner:
         # One segment per ON product after the summary: which products this runner
         # is working, how, and how hard. Joined with " · " on ONE line because the
         # web renders ``AutomationStatus.text`` without honouring newlines.
-        for slug, p in _on_products(products or {}):
+        for slug, p in _on_products(rows):
             text += (f" · {slug}: {p.get('dispatch')} · "
                      f"{p.get('in_flight', 0)}/{p.get('cap', 0)} in flight · "
                      f"{p.get('eligible', 0)} eligible")
@@ -307,8 +345,10 @@ CountInFlight = Callable[[], Awaitable[int]]
 # ``queue_min_status`` (in the default Ready mode, an untriaged board would
 # otherwise read as "0 eligible"). ``per_product`` is one row per ON product —
 # ``{slug: {dispatch, eligible, blocked, untriaged, in_flight, cap}}`` — which
-# ``status()`` renders as the per-product segments.
-CountCandidates = Callable[[], Awaitable["tuple[int, int, int, dict]"]]
+# ``status()`` renders as the per-product segments, or ``None`` when the read
+# FAILED: "we don't know" and "no product is opted in" are different sentences on
+# the card, and an empty dict would say the second.
+CountCandidates = Callable[[], Awaitable["tuple[int, int, int, dict | None]"]]
 HealthyAccount = Callable[[], Awaitable["str | None"]]
 PrStatusFor = Callable[[str], Awaitable["PullRequestInfo | None"]]
 PrDoctorActive = Callable[[str], Awaitable[bool]]
@@ -316,7 +356,8 @@ ReadConfig = Callable[[], Awaitable["tuple[str, dict]"]]
 # slug → the validated product policy (``effective_policy``). Read once per tick:
 # the loop looks a batch's/claim's product up in it for dispatch (propose vs auto),
 # the attempt cap and the session model. An unwired seam (or a product missing from
-# the map) falls back to ``unscoped_policy()``.
+# the map) falls back to the pure schema defaults (``effective_policy(None)``) — see
+# ``_policy_for`` for why that is the safe answer for the dispatch decision.
 ReadPolicies = Callable[[], Awaitable["dict[str, dict]"]]
 # D10 one-shot migration: carry the runner's retired global repo knobs onto the
 # products that owned those repos, returning how many policies were written. Called
@@ -483,13 +524,23 @@ class BacklogRunnerLoop:
 
         ONE lookup for every per-product decision in the loop (dispatch, attempt
         cap, model), so they cannot disagree about which product owns a target.
-        A product the map does not know falls back to ``unscoped_policy()`` — see
-        there for why that is ``auto`` rather than the pure defaults."""
+
+        A product the map does not know falls back to the pure schema defaults
+        (``effective_policy(None)``), i.e. dispatch ``off``. That is deliberately
+        fail-SAFE on the one decision where being wrong inverts an operator's
+        instruction: ``propose`` means "do not start a session without me", and a
+        fallback of ``auto`` would spawn for every proposing product the moment a
+        policy read hiccuped. Nothing legitimate is stranded by it — the QUEUE is
+        the off-gate, so a refill batch always carries a real ON slug — and the
+        two OTHER decisions this feeds keep working for a pre-flip claim that
+        carries no product: the defaults ARE the old global ``max_attempts`` (2)
+        and ``default_model`` (``auto``) those claims used to run under.
+        """
         if product:
             policy = self._policies.get(product)
             if policy is not None:
                 return policy
-        return unscoped_policy()
+        return effective_policy(None)
 
     async def _maybe_seed_policies(self) -> None:
         """Run the D10 migration once per process, on the first tick.
@@ -515,12 +566,24 @@ class BacklogRunnerLoop:
         # Every per-product decision below (dispatch, attempt cap, model) reads
         # from this one snapshot, taken once per tick so a policy edit mid-tick
         # cannot make refill and sweep act on different answers.
+        #
+        # A FAILED read must never reach refill on guessed policies: refill decides
+        # propose-vs-auto, and guessing there either spawns for a product whose
+        # operator said "ask me first" or refuses one that said "go". So the last
+        # good snapshot is kept if there is one (policies change rarely; a snapshot
+        # one tick old is far better than none), and with no snapshot at all refill
+        # is skipped for this tick. The sweep still runs either way — its work
+        # (handoffs, give-ups, reconciliation) frees slots and escalates stuck work,
+        # and stalling THAT on a DB blip is its own outage.
+        policies_known = True
         if self._read_policies is not None:
             try:
                 self._policies = await self._read_policies()
-            except Exception:  # pragma: no cover — a policy read must not stall the tick
-                log.warning("backlog_runner.policy_read_failed", exc_info=True)
-                self._policies = {}
+            except Exception:
+                policies_known = bool(self._policies)
+                log.warning("backlog_runner.policy_read_failed (refill %s)",
+                            "on the previous snapshot" if policies_known else "skipped",
+                            exc_info=True)
         # Surface stale-credential alerts every tick, before refill — a paused
         # repo must both notify the dashboard and be excluded from selection.
         await self._check_credentials()
@@ -531,7 +594,7 @@ class BacklogRunnerLoop:
         # group until the next grouping refresh. Expiring first lets the same
         # tick spawn it.
         await self._expire_give_ups(config)
-        if mode != "off":
+        if mode != "off" and policies_known:
             # The grouping optimizer runs BEFORE refill so a cold start (or a
             # just-consumed plan) can produce groups and spawn in the same tick.
             await self._maybe_refresh_groups(config)
@@ -629,10 +692,12 @@ class BacklogRunnerLoop:
         })
         # The per-product rows behind the card's per-product segments. Kept OFF
         # ``backlog_counts`` (which stays int-only: the web types
-        # ``AutomationStatus.counts`` as ``Record<string, number>``), and left
-        # unset when the count read failed — "we don't know" must not render as
-        # "no product has dispatch on".
-        if per_product is not None:
+        # ``AutomationStatus.counts`` as ``Record<string, number>``). ``None`` is
+        # published DELIBERATELY when the seam reported a failed read — "we don't
+        # know" is its own sentence on the card, and must not render as "no product
+        # has dispatch on". With no seam wired at all the attribute stays absent,
+        # which is the third state: the card keeps rendering its plain summary.
+        if self._count_candidates is not None:
             setattr(self._ctx, "backlog_products", per_product)
         # Queue provenance (#990): the last successful spawn's pick, if any —
         # a plain dict, for the same typing reason.
@@ -808,6 +873,17 @@ class BacklogRunnerLoop:
                 return                      # breaker open — no spawn attempts at all
             self._spawn_circuit_until = None    # cooldown over → half-open probe
         in_flight = await self._count_in_flight()
+        # The per-PRODUCT ceiling (``max_in_flight``), counted once up front and
+        # then kept in step with every claim this refill takes. ``max_concurrent``
+        # above is the fleet-wide slot budget; this is each product's share of it,
+        # enforced here rather than aliased onto the product's repos — a product
+        # owning N repos would otherwise run N × its cap, and the card's
+        # (product-aggregated) "4/2 in flight" would be a number nothing enforced.
+        try:
+            per_product = in_flight_by_product(await self._ctx.list_target_states())
+        except Exception:  # pragma: no cover — a state read must not stall the tick
+            log.warning("backlog_runner.in_flight_by_product_failed", exc_info=True)
+            per_product = {}
         free = config["max_concurrent"] - in_flight
         for _ in range(max(0, free)):
             if len(self._spawns_today) >= config["max_spawns_per_day"]:
@@ -841,6 +917,29 @@ class BacklogRunnerLoop:
             st = await self._ctx.get_target_state(batch.primary)
             if st.get("gave_up"):
                 continue
+            policy = self._policy_for(batch.product)
+            dispatch = policy["dispatch"]
+            if dispatch == "off":
+                # Flipped off (or unreadable) since the queue read that produced
+                # this batch — take no claim. ``continue``, not ``break``: another
+                # product's batch is still perfectly workable this tick.
+                await self._ctx.emit(
+                    "info",
+                    f"skipped {batch.primary}: {batch.product or 'unknown product'} "
+                    f"dispatch off",
+                    kind="skipped_dispatch_off", target=batch.primary,
+                    detail={"product": batch.product, "issues": batch.issues})
+                continue
+            cap = int(policy["max_in_flight"])
+            if batch.product and cap > 0 and per_product.get(batch.product, 0) >= cap:
+                await self._ctx.emit(
+                    "info",
+                    f"skipped {batch.primary}: {batch.product} is at its in-flight "
+                    f"cap ({cap})",
+                    kind="skipped_product_cap", target=batch.primary,
+                    detail={"product": batch.product, "cap": cap,
+                            "inFlight": per_product.get(batch.product, 0)})
+                continue
             if self._verify_ready is not None and not await self._live_check(batch):
                 # break, not continue: ``select_batch`` already consumed this
                 # pick's plan group, so continuing would burn the REST of the
@@ -849,8 +948,11 @@ class BacklogRunnerLoop:
                 break
             # Propose-vs-auto is the PRODUCT's call now (spec §5): one enabled
             # runner can announce for a product still being trusted and spawn for
-            # one that is, on the same tick.
-            if self._policy_for(batch.product)["dispatch"] == "propose":
+            # one that is, on the same tick. Spawning is the branch that needs an
+            # explicit ``auto``, never the fallthrough: announcing where a spawn
+            # was wanted costs a tap, spawning where an announce was wanted is the
+            # unattended session the operator asked not to have.
+            if dispatch != "auto":
                 # The row IS the claim (Phase D): writing it is what takes the
                 # issue out of the pool, and the announce that follows is only its
                 # human-visible trace — it cannot fail the claim, so there is no
@@ -866,6 +968,8 @@ class BacklogRunnerLoop:
                     "claimed": True,
                     "proposed": True,
                 })
+                if batch.product:
+                    per_product[batch.product] = per_product.get(batch.product, 0) + 1
                 await self._announce_claim(batch)
                 await self._ctx.emit("info", f"claimed {batch.primary}",
                                      kind="claimed", target=batch.primary,
@@ -959,6 +1063,8 @@ class BacklogRunnerLoop:
                 await self._emit_pick(batch)
             self._consec_spawn_failures = 0
             self._spawns_today.append(self._clock())
+            if batch.product:
+                per_product[batch.product] = per_product.get(batch.product, 0) + 1
             # NB: ``attempts`` is charged when a session ENDS without a mergeable
             # PR (see ``_sweep_one``), never at spawn time — a successful handoff
             # deletes the state row, so success costs no attempt. Update the

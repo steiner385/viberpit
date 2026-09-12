@@ -4909,6 +4909,12 @@ class SessionOrchestrator:
         pre-fold value is not lost: ``_backlog_read_raw_config`` hands it to the
         one-shot seed, which turns it into each product's ``dispatch``.
 
+        ``off`` is passed in ``modes`` so it survives the read VERBATIM.
+        ``read_automation_config`` answers ``default_mode`` for any stored mode it
+        was not given, so leaving ``off`` out would turn the pre-flip three-option
+        select's explicit "parked" answer into ``on`` — a row a human deliberately
+        stopped would start claiming issues on the next tick.
+
         ``default_mode="on"`` for the same reason every other two-mode automation
         passes one: with exactly two modes the UI hides the mode select, so its
         toggle enables the row with ``mode`` still NULL — without the default an
@@ -4916,18 +4922,22 @@ class SessionOrchestrator:
         from server.automations.backlog_runner import BacklogRunner
         from server.automations.config_store import read_automation_config
         mode, config = await read_automation_config(
-            BacklogRunner, modes=("on", "propose", "auto"), default_mode="on",
+            BacklogRunner, modes=("off", "on", "propose", "auto"), default_mode="on",
             log_key="backlog_runner")
         return ("on" if mode in ("propose", "auto") else mode), config
 
-    async def _backlog_read_raw_config(self) -> tuple[str, dict]:
-        """The backlog-runner row's ``(stored_mode, config)``, UNVALIDATED.
+    async def _backlog_read_raw_config(self) -> "tuple[bool, str | None, dict]":
+        """The backlog-runner row's ``(enabled, stored_mode, config)``, UNVALIDATED.
 
         The seed needs exactly what the validated read throws away: the retired
         repo knobs (``enabled_repos`` / ``repo_caps`` / …, dropped by
         ``validate_config``) and the stored mode before the ``propose``/``auto`` →
-        ``on`` fold, which is what each product's ``dispatch`` is seeded from.
-        Used ONLY by the seed — every acting path reads the validated config."""
+        ``on`` fold, which is what each product's ``dispatch`` is seeded from — as
+        well as ``enabled``, which the validated read collapses into ``off``. A row
+        the registry created and nobody ever configured has to be distinguishable
+        from one an operator turned on, or the seed opts every product in on an
+        install where the runner was never used. Used ONLY by the seed — every
+        acting path reads the validated config."""
         from sqlalchemy import select as _select
         from server.db.models import Automation
         try:
@@ -4935,11 +4945,11 @@ class SessionOrchestrator:
                 row = (await db.execute(_select(Automation).where(
                     Automation.id == "backlog-runner"))).scalar_one_or_none()
             if row is None:
-                return "off", {}
-            return (row.mode or "off"), dict(row.config or {})
+                return False, None, {}
+            return bool(row.enabled), row.mode, dict(row.config or {})
         except Exception:
             log.debug("backlog_runner.raw_config.load_failed", exc_info=True)
-            return "off", {}
+            return False, None, {}
 
     async def _backlog_count_in_flight(self) -> int:
         """Restart-safe in-flight count: active (not-given-up) durable target
@@ -5145,10 +5155,11 @@ class SessionOrchestrator:
 
         from sqlalchemy import select as sa_select
 
-        from server.automations.product_policy import policies_by_slug
+        from server.automations.product_policy import is_on, policies_by_slug
         from server.db.models import Project
         from server.pm.mirror_store import list_product_views
-        from server.pm.queue import NEEDS_HUMAN_RETRY_DAYS_DEFAULT, rank, to_candidate
+        from server.pm.queue import (NEEDS_HUMAN_RETRY_DAYS_DEFAULT, rank, rank_key,
+                                     to_candidate)
         from server.pm.queue_store import load_queue_rows, runner_row_maps
 
         now = datetime.now(timezone.utc)
@@ -5186,13 +5197,13 @@ class SessionOrchestrator:
                       else max(0, int(raw_days)))
         by_product: dict[str, list] = {}
         for r in rows:
-            if (policies.get(r.product) or {}).get("dispatch", "off") != "off":
+            if is_on(policies.get(r.product)):
                 by_product.setdefault(r.product, []).append(r)
         entries: list = []
         skipped: dict[str, int] = {}
         for slug in sorted(policies):
             policy = policies[slug]
-            if policy["dispatch"] == "off":
+            if not is_on(policy):
                 continue
             rows_p = by_product.get(slug, [])
             entries_p, skipped_p = rank(
@@ -5213,9 +5224,13 @@ class SessionOrchestrator:
                     "blocked": skipped_p.get("blocked", 0),
                     "untriaged": skipped_p.get("status", 0),
                 }
-        # Merge the per-product rankings into one pool: score desc, and STABLE, so
-        # each product's internal rank order (score, then age, then ref) survives.
-        entries.sort(key=lambda e: (e.score is None, -(e.score or 0.0)))
+        # Merge the per-product rankings into one pool with ``rank``'s OWN key, not
+        # a copy of its first two legs: ranking per product and re-sorting on score
+        # alone would break every cross-product tie by product slug (the append
+        # order) instead of by issue age, which on a board with no priority scores
+        # yet — every score ``None`` — reorders the entire pool and stops handing
+        # the oldest issue out first.
+        entries.sort(key=rank_key)
         if skipped_out is not None:
             skipped_out.update(skipped)
         self._backlog_last_queue = [to_candidate(e) for e in entries]
@@ -5256,6 +5271,10 @@ class SessionOrchestrator:
                 return []
 
         repo_load = await self._backlog_repo_load()
+        # NB: no ``caps``. ``max_in_flight`` is a PRODUCT number and is enforced per
+        # product in the loop's ``_refill``; aliasing it onto each of the product's
+        # repos here let a product owning N repos run N × its cap, and only under
+        # the one strategy that reads caps at all.
         # Repos whose clone can't fetch (stale git credentials, #670) are paused:
         # branching a worktree off their stale ref would implement against
         # ancient code. Auto-resumes when a later fetch clears the registry.
@@ -5264,37 +5283,40 @@ class SessionOrchestrator:
         # it fills are populated before the knobs below are derived from them;
         # ``select_batch`` then gets the pool it would have queried, once.
         pool = await _pool(config)
-        weights, caps, repo_order = self._backlog_repo_knobs()
+        weights, repo_order = self._backlog_repo_knobs()
 
         async def _read_pool(_cfg: dict) -> list[dict]:
             return pool
 
         return await select_batch(config, query=_read_pool,
                                   repo_load=repo_load, paused_repos=paused,
-                                  weights=weights, caps=caps, repo_order=repo_order)
+                                  weights=weights, repo_order=repo_order)
 
-    def _backlog_repo_knobs(self) -> "tuple[dict[str, float], dict[str, int], list[str]]":
-        """``(weights, caps, repo_order)`` for the ON products, keyed by repo.
+    def _backlog_repo_knobs(self) -> "tuple[dict[str, float], list[str]]":
+        """``(weights, repo_order)`` for the ON products, keyed by repo.
 
         Derived from the policy/repo snapshot ``_backlog_query_queue`` just took,
         so selection can never bias toward a product the pool no longer contains.
         A product with no repos contributes nothing; a repo shared by two products
         takes the last one in age order (the same last-writer rule the repo-keyed
         strategies always had — ownership uniqueness is a registration-time
-        problem, see ``owning_projects_by_repo``)."""
+        problem, see ``owning_projects_by_repo``).
+
+        ``max_in_flight`` is deliberately NOT translated here — it is a per-product
+        ceiling enforced in ``BacklogRunnerLoop._refill``."""
         weights: dict[str, float] = {}
-        caps: dict[str, int] = {}
         repo_order: list[str] = []
+        from server.automations.product_policy import is_on
         for slug, repos in self._backlog_last_repos.items():
             policy = self._backlog_last_policies.get(slug)
-            if policy is None or policy["dispatch"] == "off":
+            if not is_on(policy):
                 continue
+            assert policy is not None
             for repo in repos:
                 weights[repo] = policy["weight"]
-                caps[repo] = policy["max_in_flight"]
                 if repo not in repo_order:
                     repo_order.append(repo)
-        return weights, caps, repo_order
+        return weights, repo_order
 
     async def _backlog_load_policies(self) -> dict[str, dict]:
         """The loop's ``read_policies`` seam: slug → validated product policy.
@@ -5302,16 +5324,20 @@ class SessionOrchestrator:
         Read fresh rather than served off ``_backlog_last_policies``: the sweep
         half of a tick runs even when refill did not (mode ``off``, a saturated
         runner), so a cache filled by the queue read would be stale or empty
-        exactly when the sweep needs a product's attempt cap. A failed read
-        answers ``{}`` — every lookup then falls back to ``unscoped_policy()``,
-        which keeps the loop acting rather than stalling on a DB blip."""
+        exactly when the sweep needs a product's attempt cap.
+
+        A failed read RAISES rather than answering ``{}``. The loop is the only
+        caller and it has the context to fail safely — keep the previous snapshot,
+        else skip refill this tick — whereas ``{}`` here is indistinguishable from
+        "no product has ever opted in", which would silently drop every product's
+        dispatch, cap and model to a guess."""
         from server.automations.product_policy import load_policies
         try:
             async with db_session() as db:
                 return await load_policies(db)
         except Exception:
             log.warning("orchestrator._backlog_load_policies_failed", exc_info=True)
-            return {}
+            raise
 
     def _backlog_credential_alerts(self) -> list[dict]:
         """Stale-credential seam for the loop's dashboard notification (#670).
@@ -5471,7 +5497,7 @@ class SessionOrchestrator:
             return True
         return bool(row[0])
 
-    async def _backlog_count_candidates(self) -> "tuple[int, int, int, dict]":
+    async def _backlog_count_candidates(self) -> "tuple[int, int, int, dict | None]":
         """(eligible, blocked, untriaged, per_product) counts of unclaimed OPEN
         issues across the products the runner dispatches for.
 
@@ -5487,7 +5513,11 @@ class SessionOrchestrator:
         runner was never turned on for is never counted against it.
 
         ``per_product`` adds this product's live in-flight count and its policy cap
-        to that product's row, which is what the card's per-product segments show."""
+        to that product's row, which is what the card's per-product segments show.
+        It is ``None`` — not ``{}`` — when the queue read FAILED: an empty map is
+        the real, reportable state "no product has dispatch on", so returning it for
+        a broken read would tell an operator their policies are unset."""
+        from server.automations.backlog_runner import in_flight_by_product
         _mode, config = await self._backlog_read_config()
         skipped: dict[str, int] = {}
         per_product: dict[str, dict] = {}
@@ -5496,21 +5526,14 @@ class SessionOrchestrator:
                 config, skipped_out=skipped, products_out=per_product)
         except Exception:  # pragma: no cover — a queue read must not break the tick
             log.warning("orchestrator._backlog_count_candidates_failed", exc_info=True)
-            return 0, 0, 0, {}
-        # In flight PER PRODUCT, by the same rule ``_backlog_count_in_flight`` uses
-        # for the global slot ledger (a gave-up row holds no slot; a handed-off one
-        # freed its slot to PR Doctor).
-        in_flight: dict[str, int] = {}
+            return 0, 0, 0, None
+        # In flight PER PRODUCT, by the ONE rule the loop's per-product cap gate
+        # uses, so the card cannot show a number selection does not act on.
         try:
             states = await self._backlog_ctx.list_target_states()
         except Exception:  # pragma: no cover — defensive, matches the loop's guards
             states = {}
-        for st in states.values():
-            if st.get("gave_up") or st.get("handed_off"):
-                continue
-            slug = st.get("product")
-            if slug:
-                in_flight[slug] = in_flight.get(slug, 0) + 1
+        in_flight = in_flight_by_product(states)
         for slug, row in per_product.items():
             row["in_flight"] = in_flight.get(slug, 0)
             row["cap"] = self._backlog_last_policies.get(slug, {}).get("max_in_flight", 0)
@@ -5527,6 +5550,12 @@ class SessionOrchestrator:
         its ``max_in_flight``/``weight``, and the remaining globals
         (``queue_min_status``, ``max_attempts``, ``default_model``,
         ``respect_dependencies``) are copied to every seeded product.
+
+        Only keys the legacy config ACTUALLY SET are carried over; the rest are left
+        to the schema default rather than pinned to a made-up value. That matters
+        most for ``max_in_flight``: a repo absent from ``repo_caps`` was UNCAPPED,
+        and writing a literal cap in its place would invent a ceiling the operator
+        never chose.
 
         Reach is preserved too: a non-empty ``enabled_repos`` seeds exactly the
         products owning those repos, while the empty list — which MEANT "every
@@ -5548,10 +5577,12 @@ class SessionOrchestrator:
 
         fields = {f.key: f for f in PRODUCT_POLICY_SCHEMA}
 
-        def _int(value, default: int) -> int:
-            """A repo-number-map entry (or a legacy int) as a whole number."""
+        def _int(value) -> "int | None":
+            """A repo-number-map entry (or a legacy int) as a whole number, or
+            ``None`` when the legacy config never set a usable one — the caller
+            then omits the key and the schema default stands."""
             if isinstance(value, bool) or not isinstance(value, (int, float)):
-                return default
+                return None
             return int(value)
 
         def _enum(key: str, value) -> str:
@@ -5603,16 +5634,25 @@ class SessionOrchestrator:
             for project in rows:
                 slug = project.slug or project.id
                 repo = primary.get(project.id) or any_repo.get(project.id, "")
-                policy = effective_policy({
-                    "dispatch": "auto" if mode_before == "auto" else "propose",
-                    "queue_min_status": _enum(
-                        "queue_min_status", raw.get("queue_min_status")),
-                    "max_in_flight": _int(caps.get(repo), 1),
-                    "weight": _int(weights.get(repo), 1),
-                    "max_attempts": _int(raw.get("max_attempts"), 2),
-                    "default_model": _enum("default_model", raw.get("default_model")),
-                    "respect_dependencies": bool(raw.get("respect_dependencies", True)),
-                })
+                # Built key-by-key, omitting anything the legacy config left unset;
+                # ``effective_policy`` fills the omissions with the schema defaults.
+                legacy: dict = {
+                    "dispatch": "auto" if mode_before == "auto" else "propose"}
+                if "queue_min_status" in raw:
+                    legacy["queue_min_status"] = _enum(
+                        "queue_min_status", raw.get("queue_min_status"))
+                if (cap := _int(caps.get(repo))) is not None:
+                    legacy["max_in_flight"] = cap
+                if (weight := _int(weights.get(repo))) is not None:
+                    legacy["weight"] = weight
+                if (attempts := _int(raw.get("max_attempts"))) is not None:
+                    legacy["max_attempts"] = attempts
+                if "default_model" in raw:
+                    legacy["default_model"] = _enum(
+                        "default_model", raw.get("default_model"))
+                if "respect_dependencies" in raw:
+                    legacy["respect_dependencies"] = bool(raw["respect_dependencies"])
+                policy = effective_policy(legacy)
                 project.automation_policy = policy
                 project.automation_policy_updated_at = now
                 seeded.append(slug)
@@ -5629,8 +5669,20 @@ class SessionOrchestrator:
         return len(seeded)
 
     async def _backlog_seed_policies_once(self) -> int:
-        """The loop's ``seed_policies`` seam: read the raw row, seed from it."""
-        mode_before, raw = await self._backlog_read_raw_config()
+        """The loop's ``seed_policies`` seam: read the raw row, seed from it.
+
+        Gated on the row being ENABLED and carrying a stored mode, because there
+        is nothing to migrate otherwise. The registry creates a
+        ``backlog-runner`` row on every install; on one where nobody ever turned
+        the runner on that row is disabled with ``mode`` NULL, and seeding from it
+        would opt EVERY product in at ``propose`` — overwriting
+        ``PRODUCT_POLICY_SCHEMA``'s deliberate ``dispatch: "off"`` default, which
+        is the correct answer for a runner that was never used. A row a human
+        turned off after using it is likewise left alone: its policies are the
+        operator's to set when they turn it back on."""
+        enabled, mode_before, raw = await self._backlog_read_raw_config()
+        if not enabled or not mode_before:
+            return 0
         return await self._backlog_seed_policies(raw, mode_before)
 
     async def _backlog_spawn(self, batch, account: str):
@@ -5660,9 +5712,15 @@ class SessionOrchestrator:
         # config the resolvers already take, so ``resolve_model`` /
         # ``_resolve_codex_auto_effort`` keep their one ``default_model`` contract
         # instead of growing a second way to be told which model to use.
-        from server.automations.product_policy import unscoped_policy
-        policies = await self._backlog_load_policies()
-        policy = policies.get(batch.product) or unscoped_policy()
+        # A failed policy read costs the model PREFERENCE, never the spawn: the
+        # dispatch gate upstream has already decided this batch may run, and
+        # ``auto`` (the schema default) is exactly what a pre-flip claim ran under.
+        from server.automations.product_policy import effective_policy
+        try:
+            policies = await self._backlog_load_policies()
+        except Exception:
+            policies = {}
+        policy = policies.get(batch.product) or effective_policy(None)
         config = {**config, "default_model": policy["default_model"]}
         detail: dict = {"issues": batch.issues, "engine": engine.value}
         model = model_source = reasoning_effort = None

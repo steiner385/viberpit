@@ -27,8 +27,8 @@ def _capture_spawn(captured):
 def _build_backlog_orch(config, *, default_model=None):
     """A bare orchestrator whose runner config is *config* and whose PRODUCT policy
     (the source of the session model since policy phase 1) pins *default_model*.
-    ``None`` = the product has no policy, so the spawn falls back to the unscoped
-    one (model ``auto``)."""
+    ``None`` = the product has no policy, so the spawn falls back to the pure
+    schema defaults (model ``auto``)."""
     import server.sessions.orchestrator as orch_mod
     from server.automations.context import AutomationContext
     from server.automations.product_policy import effective_policy
@@ -140,6 +140,33 @@ async def test_backlog_spawn_default_keeps_account_default(tmp_path, monkeypatch
     assert captured["model"] is None
     # No model keys — but the engine is always recorded (Phase 7).
     assert captured["detail"] == {"issues": ["o/r#7"], "engine": "claude_code"}
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_survives_a_failing_policy_read(tmp_path, monkeypatch):
+    """The policy read RAISES for the loop (which has the context to fail safely by
+    skipping refill), so the spawn site has to absorb it: by the time we get here
+    the dispatch gate has already decided this batch may run, and the model is a
+    preference. A DB blip must cost the preference, never the session — and the
+    fallback ``auto`` is exactly what a pre-flip claim ran under."""
+    import server.automations.model_pick as model_pick
+
+    async def pick_haiku(task_summary, **kw):  # noqa: ARG001
+        return "haiku"
+    monkeypatch.setattr(model_pick, "assess_model", pick_haiku)
+
+    orch = _build_backlog_orch({})
+
+    async def boom():
+        raise RuntimeError("policy read down (injected)")
+    orch._backlog_load_policies = boom  # type: ignore[method-assign]
+
+    _patch_git(monkeypatch, tmp_path)
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    await orch._backlog_spawn(_BATCH, "acct")
+    assert captured["model"] == "haiku"                 # assessed, i.e. model "auto"
+    assert captured["detail"]["model_source"] == "auto"
 
 
 # --------------------------------------------------------------------------- #

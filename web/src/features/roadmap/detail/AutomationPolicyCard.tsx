@@ -8,7 +8,9 @@ import type { ConfigField } from '@/api/automations'
 import type { Project } from '@/api/pm'
 import type { ProductNode } from '@/api/roadmap'
 import { usePolicySchema, useUpdateProductPolicy } from '@/api/hooks'
+import { extractMutationErrorMessage } from '@/api/queryClient'
 import { ConfigInput } from '@/features/delivery/automation/ConfigInput'
+import { Banner } from '@/ui/Banner'
 import { Field } from '@/ui/Field'
 import { Skeleton } from '@/ui/Skeleton'
 
@@ -21,11 +23,24 @@ function orderedFields(schema: ConfigField[]): ConfigField[] {
 }
 
 export function AutomationPolicyCard({ product, project }: { product: ProductNode; project: Project }) {
-  const { data: schema, isLoading } = usePolicySchema()
+  const { data: schema, isLoading, isError } = usePolicySchema()
   const update = useUpdateProductPolicy(product.slug)
   const live = project.onboardingState === 'live'
   const policy = project.automationPolicy ?? {}
 
+  // A failed schema fetch is a real failure, not a slow one: without the banner
+  // the card renders its loading skeleton forever, so an operator is left waiting
+  // on a request that already gave up (the LeafList idiom).
+  if (isError && !schema) {
+    return (
+      <section aria-labelledby="automation-heading" className="flex flex-col gap-2">
+        <h3 id="automation-heading" className="text-xs font-medium uppercase text-ink-muted">Automation</h3>
+        <Banner tone="danger" title="Could not load the automation settings.">
+          They refresh on their own, so they will fill in once the connection is back.
+        </Banner>
+      </section>
+    )
+  }
   if (isLoading || !schema) {
     return (
       <section aria-labelledby="automation-heading">
@@ -50,6 +65,14 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
       <h3 id="automation-heading" className="text-xs font-medium uppercase text-ink-muted">Automation</h3>
       {!live && (
         <p className="text-sm text-ink-muted">Automation starts once the product is live.</p>
+      )}
+      {/* A rejected save must say so: without it the control springs back to its
+          old value on the next refetch with no explanation of why. */}
+      {update.isError && (
+        <Banner
+          tone="danger"
+          title={extractMutationErrorMessage(update.error, 'Could not save the automation settings')}
+        />
       )}
       {live && project.automationPolicy === null && (
         <p className="text-sm text-ink-muted">

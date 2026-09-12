@@ -129,6 +129,7 @@ class Harness:
             pr_status_for=self._pr_status_for,
             pr_doctor_active=self._pr_doctor_active_fn,
             read_config=self._read_config,
+            read_policies=self._read_policies,
             clock=clock,
             needs_human=self._needs_human,
             session_ended=self._session_ended,
@@ -139,6 +140,15 @@ class Harness:
 
     async def _read_config(self):
         return "on", self.config
+
+    async def _read_policies(self):
+        """The product every ``_queue_row`` belongs to, dispatching automatically.
+        Its ``max_in_flight`` is well clear of ``max_concurrent`` so the fleet-wide
+        slot budget stays the thing these tests measure; the per-product ceiling
+        has its own tests in test_backlog_runner_loop.py."""
+        from server.automations.product_policy import effective_policy
+        return {"viberpit": effective_policy({"dispatch": "auto",
+                                              "max_in_flight": 100})}
 
     async def _query_queue(self, _config: dict | None = None) -> list[dict]:
         """The candidate pool, ranked exactly as ``_backlog_query_queue`` does:

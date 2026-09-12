@@ -48,13 +48,14 @@ async def _seed_product(slug: str, repo: str, *, policy: dict | None = None,
 
 
 async def _seed_item(repo: str, number: int, *, status: str = "Ready",
-                     score: float | None = None) -> None:
+                     score: float | None = None, created=None) -> None:
     from sqlalchemy import select
     async with db_session() as db:
         item = WorkItem(repo=repo, number=number, kind="issue", state="open",
                         title=f"issue {number}", body="body",
                         url=f"https://github.com/{repo}/issues/{number}",
-                        author="steiner385", labels=[], assignees=[])
+                        author="steiner385", labels=[], assignees=[],
+                        gh_created_at=created)
         db.add(item)
         await db.flush()
         project_id = (await db.execute(select(ProjectRepo.project_id).where(
@@ -108,6 +109,21 @@ def test_stored_propose_or_auto_mode_folds_to_on(tmp_path):
     asyncio.run(run())
 
 
+def test_a_stored_off_mode_stays_off(tmp_path):
+    """The pre-flip UI rendered a three-option select including ``off``, so a row
+    an operator PARKED there while leaving the enable switch on reads ``off``.
+    ``read_automation_config`` answers ``default_mode`` for any mode it was not
+    given, so dropping ``off`` from ``modes`` would restart that row on the next
+    tick — it has to survive the read verbatim."""
+    async def run():
+        await _init(tmp_path, "storedoff.db")
+        orch = _orch_with_ctx()
+        await _set_runner_row(enabled=True, mode="off")
+        assert (await orch._backlog_read_config())[0] == "off"
+
+    asyncio.run(run())
+
+
 def test_an_enabled_row_with_no_mode_runs(tmp_path):
     """With exactly two modes the UI hides the mode select, so its toggle enables
     the row with ``mode`` still NULL — without a ``default_mode`` an enabled
@@ -145,17 +161,23 @@ def test_read_config_drops_the_retired_repo_knobs_but_keeps_the_rest(tmp_path):
 
 
 def test_read_raw_config_returns_the_unvalidated_blob_and_stored_mode(tmp_path):
-    """The seed needs what validation throws away — the retired values and the
-    pre-fold mode — so it reads the row a second time, unvalidated."""
+    """The seed needs what validation throws away — the retired values, the
+    pre-fold mode and ``enabled`` (which the validated read collapses into
+    ``off``) — so it reads the row a second time, unvalidated."""
     async def run():
         await _init(tmp_path, "raw.db")
         orch = _orch_with_ctx()
         await _set_runner_row(mode="auto", config={
             "enabled_repos": ["o/r"], "repo_caps": {"o/r": 2}, "max_concurrent": 6})
-        mode_before, raw = await orch._backlog_read_raw_config()
-        assert mode_before == "auto"
+        enabled, mode_before, raw = await orch._backlog_read_raw_config()
+        assert (enabled, mode_before) == (True, "auto")
         assert raw["enabled_repos"] == ["o/r"]
         assert raw["repo_caps"] == {"o/r": 2}
+
+        # A row the registry created and nobody ever configured: disabled, mode
+        # NULL. Distinguishable from a row an operator turned on.
+        await _set_runner_row(enabled=False, mode=None, config={})
+        assert await orch._backlog_read_raw_config() == (False, None, {})
 
     asyncio.run(run())
 
@@ -234,6 +256,33 @@ def test_query_queue_publishes_per_product_counts_and_caches_policies(tmp_path):
     asyncio.run(run())
 
 
+def test_query_queue_breaks_cross_product_ties_by_issue_age(tmp_path):
+    """The runner ranks one product at a time (each has its own reach) and merges.
+    That merge sorts by ``queue.rank_key`` — ``rank``'s OWN key — not a copy of its
+    first two legs: re-sorting on score alone breaks every cross-product tie by
+    product slug (the append order), which on a board with no priority scores yet
+    reorders the entire pool and stops handing the oldest issue out first."""
+    from datetime import datetime
+
+    async def run():
+        await _init(tmp_path, "tiebreak.db")
+        # "zeta" sorts AFTER "alpha", so slug order and age order disagree.
+        await _seed_product("alpha", "o/a", policy={"dispatch": "auto"})
+        await _seed_product("zeta", "o/z", policy={"dispatch": "auto"})
+        await _seed_item("o/a", 1, score=5.0, created=datetime(2026, 5, 1))
+        await _seed_item("o/z", 2, score=5.0, created=datetime(2026, 1, 1))
+        # …and the same again with no scores at all, the common board state.
+        await _seed_item("o/a", 3, created=datetime(2026, 6, 1))
+        await _seed_item("o/z", 4, created=datetime(2026, 2, 1))
+        orch = _orch_with_ctx()
+
+        cands = await orch._backlog_query_queue(_config())
+
+        assert [c["ref"] for c in cands] == ["o/z#2", "o/a#1", "o/z#4", "o/a#3"]
+
+    asyncio.run(run())
+
+
 def test_count_candidates_returns_per_product_rows_with_in_flight_and_cap(tmp_path):
     async def run():
         await _init(tmp_path, "counts.db")
@@ -266,7 +315,12 @@ def test_count_candidates_returns_per_product_rows_with_in_flight_and_cap(tmp_pa
 
 def test_select_batch_translates_policies_into_repo_keyed_knobs(tmp_path, monkeypatch):
     """``select_batch``/``plan_to_batch`` stay repo-keyed and unchanged; this seam
-    is the ONE place a product policy becomes a per-repo weight/cap/order."""
+    is the ONE place a product policy becomes a per-repo weight/order.
+
+    ``max_in_flight`` is NOT among them: it is a PRODUCT ceiling, enforced per
+    product in the loop's ``_refill``. Aliased onto each of a product's repos it
+    let a product owning N repos run N × its cap, and only under the one strategy
+    that reads caps at all."""
     async def run():
         await _init(tmp_path, "translate.db")
         await _seed_product("alpha", "o/a",
@@ -295,7 +349,7 @@ def test_select_batch_translates_policies_into_repo_keyed_knobs(tmp_path, monkey
 
         assert await orch._backlog_select_batch(_config()) is None
         assert seen["weights"] == {"o/a": 3, "o/b": 1}
-        assert seen["caps"] == {"o/a": 2, "o/b": 5}
+        assert "caps" not in seen                      # a PRODUCT ceiling, not a repo one
         assert seen["repo_order"] == ["o/a", "o/b"]     # Project.created_at order
         assert [c["ref"] for c in seen["pool"]] == ["o/a#1"]
 
@@ -400,5 +454,116 @@ def test_seed_is_a_no_op_once_any_product_has_a_policy(tmp_path):
         policies = await _policies()
         assert policies["alpha"][0] == {"dispatch": "off"}    # untouched
         assert policies["beta"] == (None, None)
+
+    asyncio.run(run())
+
+
+def test_seed_takes_the_primary_repos_cap_else_the_lowest_named_repos(tmp_path):
+    """The retired caps/weights were keyed by REPO; a product's PRIMARY repo is the
+    one that carried its settings. A product that never flagged a primary falls
+    back to its lowest-named repo rather than silently inheriting nothing."""
+    async def run():
+        from sqlalchemy import select
+        await _init(tmp_path, "seedprimary.db")
+        await _seed_product("alpha", "o/z")            # o/z is alpha's primary
+        await _seed_product("beta", "o/m")
+        async with db_session() as db:
+            # alpha owns a second, non-primary repo; beta's only repo stops being
+            # primary and gains a lower-named sibling.
+            alpha_id = (await db.execute(select(Project.id).where(
+                Project.slug == "alpha"))).scalars().one()
+            beta_id = (await db.execute(select(Project.id).where(
+                Project.slug == "beta"))).scalars().one()
+            db.add(ProjectRepo(project_id=alpha_id, repo="o/a", is_primary=False))
+            db.add(ProjectRepo(project_id=beta_id, repo="o/b", is_primary=False))
+            beta_repo = (await db.execute(select(ProjectRepo).where(
+                ProjectRepo.repo == "o/m"))).scalars().one()
+            beta_repo.is_primary = False
+        orch = _orch_with_ctx()
+
+        assert await orch._backlog_seed_policies(
+            {"enabled_repos": [], "repo_caps": {"o/z": 7, "o/a": 3,
+                                                "o/b": 5, "o/m": 9}}, "auto") == 2
+
+        policies = await _policies()
+        assert policies["alpha"][0]["max_in_flight"] == 7      # the primary's
+        assert policies["beta"][0]["max_in_flight"] == 5       # lowest-named o/b
+
+    asyncio.run(run())
+
+
+def test_seed_leaves_a_key_the_legacy_config_never_set_at_the_schema_default(tmp_path):
+    """Only keys the old config ACTUALLY set are carried over. A repo absent from
+    ``repo_caps`` was UNCAPPED; writing a literal in its place would invent a
+    ceiling nobody chose, so the schema default stands instead."""
+    async def run():
+        await _init(tmp_path, "seeddefaults.db")
+        await _seed_product("alpha", "o/a")
+        orch = _orch_with_ctx()
+
+        # A garbage stored value is "never set" too — it must not be coerced.
+        assert await orch._backlog_seed_policies(
+            {"enabled_repos": ["o/a"], "repo_caps": {"o/a": "lots"},
+             "max_attempts": None}, "auto") == 1
+
+        from server.automations.product_policy import effective_policy
+        defaults = effective_policy(None)
+        alpha, _ = (await _policies())["alpha"]
+        assert alpha["max_in_flight"] == defaults["max_in_flight"]
+        assert alpha["max_attempts"] == defaults["max_attempts"]
+        assert alpha["queue_min_status"] == defaults["queue_min_status"]
+        assert alpha["respect_dependencies"] == defaults["respect_dependencies"]
+        assert alpha["default_model"] == defaults["default_model"]
+
+    asyncio.run(run())
+
+
+# --- the seed's gate: an enabled row that carries a stored mode ------------- #
+
+def test_seed_once_is_a_no_op_on_a_never_configured_runner_row(tmp_path):
+    """The registry creates a ``backlog-runner`` row on every install. On one where
+    nobody ever turned the runner on, that row is disabled with ``mode`` NULL and
+    there is nothing to migrate — seeding from it would opt EVERY product in at
+    ``propose``, overwriting the schema's deliberate ``dispatch: off`` default."""
+    async def run():
+        await _init(tmp_path, "seedvirgin.db")
+        await _seed_product("alpha", "o/a")
+        orch = _orch_with_ctx()
+        await _set_runner_row(enabled=False, mode=None, config={})
+
+        assert await orch._backlog_seed_policies_once() == 0
+        assert (await _policies())["alpha"] == (None, None)
+
+    asyncio.run(run())
+
+
+def test_seed_once_is_a_no_op_while_the_runner_row_is_disabled(tmp_path):
+    """A runner a human turned OFF is not running; its products' policies are the
+    operator's to set when they turn it back on."""
+    async def run():
+        await _init(tmp_path, "seeddisabled.db")
+        await _seed_product("alpha", "o/a")
+        orch = _orch_with_ctx()
+        await _set_runner_row(enabled=False, mode="auto",
+                              config={"enabled_repos": ["o/a"]})
+
+        assert await orch._backlog_seed_policies_once() == 0
+        assert (await _policies())["alpha"] == (None, None)
+
+    asyncio.run(run())
+
+
+def test_seed_once_runs_for_an_enabled_row_with_a_stored_mode(tmp_path):
+    """The case the migration exists for: a runner that WAS working, whose global
+    mode becomes each of its products' ``dispatch``."""
+    async def run():
+        await _init(tmp_path, "seedlive.db")
+        await _seed_product("alpha", "o/a")
+        orch = _orch_with_ctx()
+        await _set_runner_row(enabled=True, mode="auto",
+                              config={"enabled_repos": ["o/a"]})
+
+        assert await orch._backlog_seed_policies_once() == 1
+        assert (await _policies())["alpha"][0]["dispatch"] == "auto"
 
     asyncio.run(run())

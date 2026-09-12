@@ -25,11 +25,13 @@ CANDIDATES = [
 
 
 def make_config(**overrides) -> dict:
+    """The runner-wide config ``select_batch`` reads — which is only
+    ``selection_strategy``. The per-repo strategy inputs (weights / caps / order)
+    are KWARGS, never config keys: the orchestrator derives them from the product
+    policies, and the config keys that used to carry them are retired."""
     cfg = {
-        "enabled_repos": ["o/r"],
         "max_concurrent": 1,
         "max_spawns_per_day": 10,
-        "max_attempts": 2,
         "max_issues_per_pr": 1,
     }
     cfg.update(overrides)
@@ -176,10 +178,11 @@ async def test_select_batch_prefers_least_loaded_repo():
     """Plan priority puts o/a first, but o/a already has active runs and o/b has
     none → fairness re-biases the pick to the idle repo o/b."""
     result = await select_batch(
-        make_config(enabled_repos=["o/a", "o/b"]),
+        make_config(),
         query=canned_query(_MULTI_REPO),
         load_plan=canned_plan(_MULTI_PLAN),
         mark_consumed=consumed_recorder([]),
+        repo_order=["o/a", "o/b"],
         repo_load={"o/a": 3, "o/b": 0},
     )
     assert result is not None
@@ -208,10 +211,11 @@ async def test_repo_load_preserves_plan_priority_within_a_repo():
 async def test_no_repo_load_keeps_plan_order():
     """Absent repo_load (the default) leaves selection exactly the plan order."""
     result = await select_batch(
-        make_config(enabled_repos=["o/a", "o/b"]),
+        make_config(),
         query=canned_query(_MULTI_REPO),
         load_plan=canned_plan(_MULTI_PLAN),
         mark_consumed=consumed_recorder([]),
+        repo_order=["o/a", "o/b"],
     )
     assert result is not None
     assert result.primary == "o/a#1"  # plan's top group, no fairness applied
@@ -226,10 +230,11 @@ async def test_strategy_priority_serves_by_enabled_repo_order():
     """'priority' ranks repos by the enabled_repos order — o/b first here even
     though the plan puts o/a's group first."""
     result = await select_batch(
-        make_config(enabled_repos=["o/b", "o/a"], selection_strategy="priority"),
+        make_config(selection_strategy="priority"),
         query=canned_query(_MULTI_REPO),
         load_plan=canned_plan(_MULTI_PLAN),
         mark_consumed=consumed_recorder([]),
+        repo_order=["o/b", "o/a"],
     )
     assert result is not None and result.primary == "o/b#2"
 
@@ -238,11 +243,11 @@ async def test_strategy_priority_serves_by_enabled_repo_order():
 async def test_strategy_weighted_favors_higher_weight():
     """'weighted' compares load/weight: o/a 6/3=2.0 beats o/b 3/1=3.0."""
     result = await select_batch(
-        make_config(enabled_repos=["o/a", "o/b"], selection_strategy="weighted",
-                    repo_weights={"o/a": 3, "o/b": 1}),
+        make_config(selection_strategy="weighted"),
         query=canned_query(_MULTI_REPO),
         load_plan=canned_plan(_MULTI_PLAN),
         mark_consumed=consumed_recorder([]),
+        repo_order=["o/a", "o/b"], weights={"o/a": 3, "o/b": 1},
         repo_load={"o/a": 6, "o/b": 3},
     )
     assert result is not None and result.primary == "o/a#1"
@@ -252,11 +257,11 @@ async def test_strategy_weighted_favors_higher_weight():
 async def test_strategy_concurrency_cap_skips_capped_repo():
     """A repo at its cap is skipped; the under-cap repo takes the slot."""
     result = await select_batch(
-        make_config(enabled_repos=["o/a", "o/b"],
-                    selection_strategy="concurrency-cap", repo_caps={"o/a": 2}),
+        make_config(selection_strategy="concurrency-cap"),
         query=canned_query(_MULTI_REPO),
         load_plan=canned_plan(_MULTI_PLAN),
         mark_consumed=consumed_recorder([]),
+        repo_order=["o/a", "o/b"], caps={"o/a": 2},
         repo_load={"o/a": 2, "o/b": 0},
     )
     assert result is not None and result.primary == "o/b#2"
@@ -267,12 +272,11 @@ async def test_strategy_concurrency_cap_idles_when_all_capped():
     """Every repo with work is at its cap → no batch (the slot idles rather than
     exceeding a hard ceiling)."""
     result = await select_batch(
-        make_config(enabled_repos=["o/a", "o/b"],
-                    selection_strategy="concurrency-cap",
-                    repo_caps={"o/a": 2, "o/b": 1}),
+        make_config(selection_strategy="concurrency-cap"),
         query=canned_query(_MULTI_REPO),
         load_plan=canned_plan(_MULTI_PLAN),
         mark_consumed=consumed_recorder([]),
+        repo_order=["o/a", "o/b"], caps={"o/a": 2, "o/b": 1},
         repo_load={"o/a": 2, "o/b": 1},
     )
     assert result is None

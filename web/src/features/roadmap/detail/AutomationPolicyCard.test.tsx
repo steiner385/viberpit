@@ -3,6 +3,7 @@
 // whole-object-replace patch on change (product automation policy phase 1).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+import { ApiRequestError } from '@/api/client'
 import type { Project } from '@/api/pm'
 import type { ProductNode } from '@/api/roadmap'
 import { AutomationPolicyCard } from './AutomationPolicyCard'
@@ -18,12 +19,13 @@ const SCHEMA = [
 ] as const
 
 const h = vi.hoisted(() => ({
-  schema: { data: undefined as unknown, isLoading: false },
+  schema: { data: undefined as unknown, isLoading: false, isError: false },
   update: vi.fn(),
+  updateState: { isError: false, error: null as unknown },
 }))
 vi.mock('@/api/hooks', () => ({
   usePolicySchema: () => h.schema,
-  useUpdateProductPolicy: () => ({ mutate: h.update, isPending: false }),
+  useUpdateProductPolicy: () => ({ mutate: h.update, isPending: false, ...h.updateState }),
   useGithubRepos: () => ({ data: [], isLoading: false }),
 }))
 
@@ -40,7 +42,8 @@ function makeProject(over: Partial<Project> = {}): Project {
 
 beforeEach(() => {
   h.update.mockReset()
-  Object.assign(h.schema, { data: SCHEMA, isLoading: false })
+  Object.assign(h.schema, { data: SCHEMA, isLoading: false, isError: false })
+  Object.assign(h.updateState, { isError: false, error: null })
 })
 
 describe('AutomationPolicyCard', () => {
@@ -81,6 +84,24 @@ describe('AutomationPolicyCard', () => {
     expect(screen.getByLabelText('Max in flight')).toHaveValue(3)
     // Unset keys still fall back to the schema default.
     expect(screen.getByLabelText('Weight')).toHaveValue(1)
+  })
+
+  it('a failed schema fetch banners instead of skeletoning forever', () => {
+    Object.assign(h.schema, { data: undefined, isLoading: false, isError: true })
+    render(<AutomationPolicyCard product={product} project={makeProject()} />)
+    expect(screen.getByText('Could not load the automation settings.')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Dispatch')).toBeNull()
+  })
+
+  it('a rejected save is bannered rather than springing the control back silently', () => {
+    Object.assign(h.updateState, {
+      isError: true,
+      error: new ApiRequestError(422, { detail: { message: 'max_in_flight must be an int' } }),
+    })
+    render(<AutomationPolicyCard product={product} project={makeProject()} />)
+    expect(screen.getByText('max_in_flight must be an int')).toBeInTheDocument()
+    // …and the fields stay on screen so the value can be corrected in place.
+    expect(screen.getByLabelText('Dispatch')).toBeInTheDocument()
   })
 
   it('disables every field and shows the not-live note until the product is live', () => {

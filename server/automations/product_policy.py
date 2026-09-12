@@ -74,20 +74,16 @@ def effective_policy(raw: dict | None) -> dict:
     return validate_config(PRODUCT_POLICY_SCHEMA, {})
 
 
-def unscoped_policy() -> dict:
-    """The policy to act on for work whose product has none.
+def is_on(policy: "dict | None") -> bool:
+    """Whether this product is opted in to the Backlog Runner.
 
-    A batch or claim can reach the runner's loop without a product the policy map
-    knows: a claim written before the flip, a product row deleted while its session
-    ran, or a policy read that failed this tick. The pure defaults are wrong there —
-    dispatch ``off`` is the "not opted in" answer for a PRODUCT, and applying it to
-    a batch the runner already selected would strand legacy claims and silently stop
-    the loop the moment a read hiccuped. The QUEUE is the off-gate (a product with
-    dispatch ``off`` never reaches selection at all), so anything that got this far
-    is work the runner already decided to do: defaults everywhere else, ``auto``
-    here.
+    The ONE reading of "dispatch is not off", shared by the queue's scope rule, the
+    selection knobs and the status card, so the four surfaces cannot disagree about
+    which products the runner works. Tolerates a partial row (the card's per-product
+    count dicts) and ``None``: anything without an explicit non-``off`` dispatch is
+    off.
     """
-    return {**effective_policy(None), "dispatch": "auto"}
+    return (policy or {}).get("dispatch", "off") != "off"
 
 
 def policies_by_slug(db: Session) -> dict[str, dict]:

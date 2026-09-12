@@ -137,6 +137,27 @@ def test_policy_schema_and_project_policy_round_trip():
         assert c.patch("/api/pm/projects/nope/policy", json={"policy": {}},
                        headers=IDENTITY_HEADERS).status_code == 404
 
+        # Every policy write is AUDITED with the acting identity and the validated
+        # blob — who told the runner to start (or stop) working a product, and
+        # what it was told, is the record an operator reconstructs a spawn from.
+        # No GET /api/audit route exists, so read the rows the DB-side way
+        # (the idiom in test_triage_undo_writes_audit_row).
+        from sqlalchemy import select
+
+        from server.db import db_session
+        from server.db.models import AuditEvent
+
+        async def _audits():
+            async with db_session() as db:
+                return (await db.execute(select(AuditEvent).where(
+                    AuditEvent.type == "pm.project.policy"))).scalars().all()
+        found = c.portal.call(_audits)
+        # Two accepted writes: the auto/2 policy and the clear. The three rejected
+        # ones (bad enum, unknown key, unknown slug) write nothing.
+        assert [a.detail["policy"] for a in found] == [pol, None]
+        assert {a.detail["slug"] for a in found} == {"kindash"}
+        assert {a.identity for a in found} == {IDENTITY_HEADERS["Tailscale-User-Login"]}
+
 
 def test_edges():
     """Create two projects, link with an edge, verify bad-kind/bad-dst 422/404, delete."""

@@ -160,6 +160,24 @@ def test_status_says_so_when_no_product_has_dispatch_on():
     assert status.level == "idle"
 
 
+def test_status_says_unavailable_when_the_count_read_failed():
+    """"We don't know" and "no product is opted in" are DIFFERENT sentences: a
+    ``None`` product map (the count seam's failed-read answer) must not render as
+    the idle text, or an operator debugging a broken mirror read is told their
+    policies are unset."""
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(
+        backlog_counts={"in_flight": 2, "eligible": 0, "blocked": 0},
+        backlog_products=None)
+    status = BacklogRunner().status(ctx)
+    assert status.text == ("2 implementing · product counts unavailable "
+                           "(the queue read failed)")
+    assert status.level == "warn"
+    assert status.text != "idle — no product has dispatch on"
+
+
 def test_status_without_the_products_cache_is_unchanged():
     """A tick that never reached the count seam leaves no ``backlog_products``;
     the card must keep rendering the summary rather than claiming nothing is on."""
