@@ -1417,3 +1417,179 @@ def test_triage_undo_no_snapshot_beats_the_window(monkeypatch):
         r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
         assert r.status_code == 409
         assert r.json()["detail"]["error"] == "no_snapshot", r.text
+
+
+def test_undo_of_an_auto_accept_marks_the_proposal_auto_undone():
+    """Spec §8: a human undid the machine once; the machine never gets a second
+    vote. Undo restores the overlay exactly as for a human accept AND flags the
+    proposal."""
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import Feature, Project, TriageProposal, WorkItem
+    from server.pm.triage_accept import apply_accept
+
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Viberpit", repo="o/r")
+
+        async def _seed():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "viberpit"))).scalar_one()
+                f = Feature(project_id=p.id, slug="sessions", title="Sessions", state="live")
+                w = WorkItem(repo="o/r", number=1, kind="issue", title="a",
+                             state="open", triage_state="proposed")
+                db.add_all([f, w])
+                await db.flush()
+                prop = TriageProposal(work_item_id=w.id, proposed_feature_id=f.id,
+                                      confidence_level="high", status="pending")
+                db.add(prop)
+                await db.flush()
+                await apply_accept(db, prop, decided_by="auto", audit_identity="pm-triage")
+                return prop.id
+        pid = c.portal.call(_seed)
+
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+
+        async def _check():
+            async with db_session() as db:
+                prop = (await db.execute(select(TriageProposal).where(
+                    TriageProposal.id == pid))).scalar_one()
+                w = (await db.execute(select(WorkItem).where(WorkItem.number == 1))).scalar_one()
+                assert prop.status == "pending" and prop.auto_undone is True
+                assert w.triage_state == "proposed" and w.classified_by is None
+        c.portal.call(_check)
+
+
+def test_undo_of_a_human_accept_does_not_mark_auto_undone():
+    """Mirror of the auto case: undoing a human decision must not flip the flag
+    the loop checks — otherwise it would wrongly withhold the machine from a
+    proposal it never touched."""
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import Feature, Project, TriageProposal, WorkItem
+    from server.pm.triage_accept import apply_accept
+
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Viberpit", repo="o/r")
+
+        async def _seed():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "viberpit"))).scalar_one()
+                f = Feature(project_id=p.id, slug="sessions", title="Sessions", state="live")
+                w = WorkItem(repo="o/r", number=1, kind="issue", title="a",
+                             state="open", triage_state="proposed")
+                db.add_all([f, w])
+                await db.flush()
+                prop = TriageProposal(work_item_id=w.id, proposed_feature_id=f.id,
+                                      confidence_level="high", status="pending")
+                db.add(prop)
+                await db.flush()
+                await apply_accept(db, prop, decided_by="human", audit_identity="tester")
+                return prop.id
+        pid = c.portal.call(_seed)
+
+        r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+
+        async def _check():
+            async with db_session() as db:
+                prop = (await db.execute(select(TriageProposal).where(
+                    TriageProposal.id == pid))).scalar_one()
+                assert prop.status == "pending" and prop.auto_undone is None
+        c.portal.call(_check)
+
+
+def test_triage_list_includes_a_fresh_auto_accept_with_its_marker():
+    """The inbox chip (spec §8/§9) has nothing to render unless the list carries
+    the auto-accepted row for the undo window."""
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import Feature, Project, TriageProposal, WorkItem
+    from server.pm.triage_accept import apply_accept
+
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Viberpit", repo="o/r")
+
+        async def _seed():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "viberpit"))).scalar_one()
+                f = Feature(project_id=p.id, slug="sessions", title="Sessions", state="live")
+                w_pending = WorkItem(repo="o/r", number=1, kind="issue", title="pending",
+                                     state="open", triage_state="proposed")
+                w_auto = WorkItem(repo="o/r", number=2, kind="issue", title="auto",
+                                  state="open", triage_state="proposed")
+                w_human = WorkItem(repo="o/r", number=3, kind="issue", title="human",
+                                   state="open", triage_state="proposed")
+                db.add_all([f, w_pending, w_auto, w_human])
+                await db.flush()
+                pending = TriageProposal(work_item_id=w_pending.id, proposed_feature_id=f.id,
+                                         confidence_level="high", status="pending")
+                auto_prop = TriageProposal(work_item_id=w_auto.id, proposed_feature_id=f.id,
+                                           confidence_level="high", status="pending")
+                human_prop = TriageProposal(work_item_id=w_human.id, proposed_feature_id=f.id,
+                                            confidence_level="high", status="pending")
+                db.add_all([pending, auto_prop, human_prop])
+                await db.flush()
+                await apply_accept(db, auto_prop, decided_by="auto", audit_identity="pm-triage")
+                await apply_accept(db, human_prop, decided_by="human", audit_identity="tester")
+                return pending.id, auto_prop.id, human_prop.id
+        pending_id, auto_id, human_id = c.portal.call(_seed)
+
+        r = c.get("/api/pm/triage", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        by_id = {row["id"]: row for row in r.json()}
+        assert set(by_id) == {pending_id, auto_id}
+        assert human_id not in by_id
+        assert by_id[pending_id]["status"] == "pending"
+        assert by_id[pending_id]["classifiedBy"] is None
+        assert by_id[auto_id]["status"] == "accepted"
+        assert by_id[auto_id]["classifiedBy"] == "auto"
+        assert isinstance(by_id[auto_id]["resolvedAt"], str) and by_id[auto_id]["resolvedAt"]
+
+
+def test_triage_list_drops_an_auto_accept_after_the_undo_window():
+    """Once past TRIAGE_UNDO_WINDOW_S, the row leaves the inbox — the same
+    boundary undo_triage enforces to reject the undo POST itself."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import Feature, Project, TriageProposal, WorkItem
+    from server.pm.triage_accept import apply_accept
+
+    with _client_with_stubbed_seams() as c:
+        _register(c, "Viberpit", repo="o/r")
+
+        async def _seed():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "viberpit"))).scalar_one()
+                f = Feature(project_id=p.id, slug="sessions", title="Sessions", state="live")
+                w = WorkItem(repo="o/r", number=1, kind="issue", title="a",
+                             state="open", triage_state="proposed")
+                db.add_all([f, w])
+                await db.flush()
+                prop = TriageProposal(work_item_id=w.id, proposed_feature_id=f.id,
+                                      confidence_level="high", status="pending")
+                db.add(prop)
+                await db.flush()
+                await apply_accept(db, prop, decided_by="auto", audit_identity="pm-triage")
+                return prop.id
+        pid = c.portal.call(_seed)
+
+        import server.api.pm as pm_api
+
+        async def _age_out():
+            async with db_session() as db:
+                prop = (await db.execute(select(TriageProposal).where(
+                    TriageProposal.id == pid))).scalar_one()
+                prop.resolved_at = (datetime.now(timezone.utc)
+                                    - timedelta(seconds=pm_api.TRIAGE_UNDO_WINDOW_S + 5))
+        c.portal.call(_age_out)
+
+        r = c.get("/api/pm/triage", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert all(row["id"] != pid for row in r.json())

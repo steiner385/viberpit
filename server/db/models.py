@@ -1798,6 +1798,12 @@ class TriageProposal(Base):
     undo_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
+    # Set by POST /triage/{id}/undo when the decision being undone was the PM
+    # Triage loop's auto-accept (spec 2026-09-12 product automation policy §8):
+    # a human undid the machine once, so the loop never auto-accepts this
+    # proposal again. Nullable so reconcile ALTER-ADDs it on both dialects;
+    # NULL/False = eligible.
+    auto_undone: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
 
 
 class MaterializationProposal(Base):

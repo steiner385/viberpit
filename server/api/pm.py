@@ -9,11 +9,11 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import and_, func, or_, select, tuple_
 
 from server.audit import record_audit
 from server.auth.middleware import current_identity
@@ -52,6 +52,7 @@ from server.pm.sync_request import request_project_sync
 # routes are callers, not owners. Private names are imported deliberately — they are
 # module-internal to the accept path, not part of a public API.
 from server.pm.triage_accept import (
+    DECIDED_BY_AUTO,
     DECIDED_BY_HUMAN,
     WorkItemMissing,
     _aware,
@@ -951,6 +952,8 @@ def _triage_to_dict(prop: TriageProposal, wi: WorkItem | None,
         "confidenceLevel": prop.confidence_level,
         "status": prop.status,
         "createdAt": prop.created_at.isoformat() if prop.created_at else None,
+        "classifiedBy": wi.classified_by if wi else None,
+        "resolvedAt": prop.resolved_at.isoformat() if prop.resolved_at else None,
     }
 
 
@@ -962,8 +965,20 @@ async def list_triage(
     db=Depends(get_db),
 ) -> list[dict]:
     """Pending triage proposals, newest first, filterable by project + confidence
-    (spec §7). Phase 2 is a flat list; the keyboard inbox is phase 3."""
-    stmt = select(TriageProposal).where(TriageProposal.status == "pending")
+    (spec §7). Phase 2 is a flat list; the keyboard inbox is phase 3.
+
+    Pending, PLUS the loop's fresh auto-accepts for the undo window (spec §8):
+    the inbox shows them with an "auto-accepted · undo" chip, then they leave
+    like a human accept. A human accept never appears here — its undo lives in
+    the toast of the browser that made it.
+    """
+    since = datetime.now(timezone.utc) - timedelta(seconds=TRIAGE_UNDO_WINDOW_S)
+    auto_ids = select(WorkItem.id).where(WorkItem.classified_by == DECIDED_BY_AUTO)
+    stmt = select(TriageProposal).where(or_(
+        TriageProposal.status == "pending",
+        and_(TriageProposal.status == "accepted",
+             TriageProposal.resolved_at >= since,
+             TriageProposal.work_item_id.in_(auto_ids))))
     if confidenceLevel:
         stmt = stmt.where(TriageProposal.confidence_level == confidenceLevel)
     props = (await db.execute(
@@ -1143,6 +1158,9 @@ async def undo_triage(
             "message": f"undo is only available for {TRIAGE_UNDO_WINDOW_S}s after a decision"})
     wi = (await db.execute(select(WorkItem).where(
         WorkItem.id == prop.work_item_id))).scalar_one_or_none()
+    if wi is not None and wi.classified_by == DECIDED_BY_AUTO and prop.status == "accepted":
+        # The decision being undone was the machine's: never let it re-decide.
+        prop.auto_undone = True
     if wi is not None:
         _restore_overlay(wi, snap)
     previous = prop.status
@@ -1152,7 +1170,7 @@ async def undo_triage(
     await db.flush()
     await record_audit(db=db, type="pm.triage.undo", identity=identity,
                        detail={"proposalId": proposal_id, "workItemId": prop.work_item_id,
-                               "previousStatus": previous})
+                               "previousStatus": previous, "autoUndone": prop.auto_undone})
     return {"id": prop.id, "status": "pending", "workItemId": prop.work_item_id,
             "triageState": wi.triage_state if wi is not None else None}
 

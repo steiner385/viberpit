@@ -28,6 +28,7 @@ from server.pm.repo_project import owning_projects_by_repo
 # a machine decision. (Other writers stamp their own provenance — "materialize",
 # "auto-link", "label-route" — which are not triage decisions.)
 DECIDED_BY_HUMAN = "human"
+DECIDED_BY_AUTO = "auto"
 
 
 class WorkItemMissing(LookupError):
