@@ -157,3 +157,14 @@ export function useProjectDeps(slug: string, enabled = true) {
     refetchInterval: 15_000,
   })
 }
+
+export interface RemoveDependencyInput { workItemId: string; blocker: string }
+export interface RemoveDependencyResult { ok: boolean; src: string; blocker: string }
+
+/** Delete the blocked-by edge `workItem ← blocker` on GitHub through the
+ *  reconciler's journaled seam. A 502 carries `detail.step` (`node_id` means
+ *  "not mirrored yet, wait for the sync"). */
+export function removeDependency({ workItemId, blocker }: RemoveDependencyInput): Promise<RemoveDependencyResult> {
+  return api.del<RemoveDependencyResult>(
+    `/pm/work-items/${encodeURIComponent(workItemId)}/deps?blocker=${encodeURIComponent(blocker)}`)
+}
