@@ -6479,12 +6479,18 @@ class SessionOrchestrator:
     async def _pm_triage_route_by_label(self, item) -> bool:
         """``labels:`` on a feature doc → mechanical home for a labelled item.
         Exactly one feature in the item's OWNING project must route one of its
-        labels; zero or several → False, the classifier decides."""
+        labels; zero or several → False, the classifier decides.
+
+        GitHub labels are case-insensitive, so the comparison folds both sides
+        (precedent: ``server/pm/queue.py``'s ``{lbl.strip().lower() for lbl in
+        row.labels}``) — a doc's ``labels: [Flaky]`` must still route GitHub's
+        ``flaky``. Only the comparison folds; ``Feature.route_labels`` keeps the
+        doc's own spelling on disk."""
         from datetime import datetime, timezone
         from sqlalchemy import select
         from server.db.models import Feature, WorkItem
         from server.pm.repo_project import owning_projects_by_repo
-        labels = {lbl for lbl in (item.labels or ()) if lbl}
+        labels = {lbl.strip().lower() for lbl in (item.labels or ()) if lbl and lbl.strip()}
         if not labels:
             return False
         async with db_session() as db:
@@ -6495,7 +6501,7 @@ class SessionOrchestrator:
                 Feature.project_id == owner.project_id,
                 Feature.route_labels.isnot(None),
                 Feature.orphaned.isnot(True)))).scalars().all()
-                      if labels & set(f.route_labels or [])]
+                      if labels & {str(x).strip().lower() for x in (f.route_labels or [])}]
             if len(routed) != 1:
                 return False
             wi = (await db.execute(select(WorkItem).where(
