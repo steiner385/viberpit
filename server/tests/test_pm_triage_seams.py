@@ -633,3 +633,260 @@ def _mk_async(value):
     async def _f(*a, **kw):
         return value
     return _f
+
+
+# --------------------------------------------------------------------------- #
+# auto-accept seams (spec §8)                                                 #
+# --------------------------------------------------------------------------- #
+
+
+async def _auto_accept_fixture() -> dict:
+    """Seed the auto-accept candidate landscape and return the ids by name.
+
+    viberpit holds a live capability ("sessions") and an unmerged proposed one
+    ("later"); the orphan repo belongs to no project at all.
+    """
+    from sqlalchemy import select
+    ids: dict = {}
+    async with db_session() as db:
+        pid = (await db.execute(select(Project.id).where(
+            Project.slug == "viberpit"))).scalars().one()
+        live = Feature(project_id=pid, slug="sessions", title="Sessions", state="live")
+        proposed = Feature(project_id=pid, slug="later", title="Later", state="proposed")
+        db.add_all([live, proposed])
+        await db.flush()
+        ids["live_feature"] = live.id
+        ids["proposed_feature"] = proposed.id
+        for n, feature_id, level, no_fit, undone in (
+                (1, live.id, "high", None, None),
+                (2, proposed.id, "high", None, None),
+                (3, None, "high", "offline-mode", None),
+                (4, live.id, "medium", None, True)):
+            w = WorkItem(repo=REPO, number=n, kind="issue", title=f"i{n}",
+                         state="open", triage_state="unclassified")
+            db.add(w)
+            await db.flush()
+            p = TriageProposal(work_item_id=w.id, status="pending",
+                               proposed_feature_id=feature_id,
+                               confidence_level=level, no_fit_suggestion=no_fit,
+                               auto_undone=undone)
+            db.add(p)
+            await db.flush()
+            ids[f"p{n}"] = p.id
+            ids[f"w{n}"] = w.id
+        orphan = WorkItem(repo="nobody/owns-me", number=9, kind="issue", title="i9",
+                          state="open", triage_state="unclassified")
+        db.add(orphan)
+        await db.flush()
+        orphan_prop = TriageProposal(work_item_id=orphan.id, status="pending",
+                                     proposed_feature_id=live.id,
+                                     confidence_level="high")
+        db.add(orphan_prop)
+        await db.flush()
+        ids["orphan"] = orphan_prop.id
+    return ids
+
+
+@pytest.mark.asyncio
+async def test_list_auto_accept_candidates_carries_product_feature_state_and_flags(db_env):
+    """Everything the pure gate needs, resolved in ONE pass: owning product
+    (None when no project owns the repo), the target capability's lifecycle
+    state, the no-fit's absent feature, and the ``auto_undone`` flag. Only
+    PENDING proposals are candidates."""
+    await _seed(db_env)
+    ids = await _auto_accept_fixture()
+    async with db_session() as db:
+        already = WorkItem(repo=REPO, number=5, kind="issue", title="i5",
+                           state="open", triage_state="classified")
+        db.add(already)
+        await db.flush()
+        db.add(TriageProposal(work_item_id=already.id, status="accepted",
+                              proposed_feature_id=ids["live_feature"],
+                              confidence_level="high"))
+    orch = _triage_orch()
+    out = await orch._pm_triage_list_auto_accept_candidates()
+    by_id = {c.proposal_id: c for c in out}
+    assert len(out) == 5                      # the accepted proposal is absent
+    assert by_id[ids["p1"]].product_slug == "viberpit"
+    assert by_id[ids["p1"]].feature_state == "live"
+    assert by_id[ids["p1"]].work_item_id == ids["w1"]
+    assert (by_id[ids["p1"]].repo, by_id[ids["p1"]].number) == (REPO, 1)
+    assert by_id[ids["p2"]].feature_state == "proposed"
+    assert by_id[ids["p3"]].proposed_feature_id is None
+    assert by_id[ids["p3"]].feature_state is None
+    assert by_id[ids["p4"]].auto_undone is True
+    assert by_id[ids["orphan"]].product_slug is None
+
+
+@pytest.mark.asyncio
+async def test_list_auto_accept_candidates_is_ordered_oldest_first(db_env):
+    """Deterministic order, oldest first. The loop takes only the first
+    ``MAX_AUTO_ACCEPTS_PER_TICK`` per product, so without an ORDER BY *which* 25
+    of a backlog get accepted is whatever the storage engine hands back — and
+    Postgres reorders a heap after UPDATE/VACUUM or a plan flip, so a proposal
+    could sit un-accepted for ticks while newer ones jump it. Oldest-first also
+    matches the queue the inbox shows."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+    await _seed(db_env)
+    base = datetime(2026, 9, 12, 10, 0, tzinfo=timezone.utc)
+    inserted: dict[str, str] = {}
+    async with db_session() as db:
+        pid = (await db.execute(select(Project.id).where(
+            Project.slug == "viberpit"))).scalars().one()
+        feat = Feature(project_id=pid, slug="sessions", title="Sessions", state="live")
+        db.add(feat)
+        await db.flush()
+        # Inserted middle, newest, oldest — so insertion order is NOT the answer.
+        for name, minutes in (("middle", 5), ("newest", 9), ("oldest", 1)):
+            w = WorkItem(repo=REPO, number=abs(hash(name)) % 1000, kind="issue",
+                         title=name, state="open", triage_state="unclassified")
+            db.add(w)
+            await db.flush()
+            p = TriageProposal(work_item_id=w.id, status="pending",
+                               proposed_feature_id=feat.id, confidence_level="high",
+                               created_at=base + timedelta(minutes=minutes))
+            db.add(p)
+            await db.flush()
+            inserted[p.id] = name
+    orch = _triage_orch()
+    out = await orch._pm_triage_list_auto_accept_candidates()
+    assert [inserted[c.proposal_id] for c in out] == ["oldest", "middle", "newest"]
+
+
+@pytest.mark.asyncio
+async def test_list_auto_accept_candidates_breaks_a_created_at_tie_on_id(db_env):
+    """``created_at`` alone is not a total order. One classify session writes its
+    whole batch of proposals inside the same transaction, and on Postgres that is
+    one ``CURRENT_TIMESTAMP`` for all of them — a tie is the COMMON case, not a
+    freak one. Untied, which of a tied batch the per-product cap admits is back to
+    whatever the storage engine hands back, and a proposal can be jumped tick
+    after tick. ``id`` is the tiebreak: arbitrary, but stable."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+    await _seed(db_env)
+    tie = datetime(2026, 9, 12, 10, 0, tzinfo=timezone.utc)
+    async with db_session() as db:
+        pid = (await db.execute(select(Project.id).where(
+            Project.slug == "viberpit"))).scalars().one()
+        feat = Feature(project_id=pid, slug="sessions", title="Sessions", state="live")
+        db.add(feat)
+        await db.flush()
+        # Inserted b-then-a, with ONE created_at: insertion order is not the answer
+        # and neither is the clock — only the id is left.
+        for n, prop_id in ((11, "bbbb"), (12, "aaaa")):
+            w = WorkItem(repo=REPO, number=n, kind="issue", title=prop_id,
+                         state="open", triage_state="unclassified")
+            db.add(w)
+            await db.flush()
+            db.add(TriageProposal(id=prop_id, work_item_id=w.id, status="pending",
+                                  proposed_feature_id=feat.id, confidence_level="high",
+                                  created_at=tie))
+            await db.flush()
+    orch = _triage_orch()
+    out = await orch._pm_triage_list_auto_accept_candidates()
+    assert [c.proposal_id for c in out] == ["aaaa", "bbbb"]
+
+
+@pytest.mark.asyncio
+async def test_auto_accept_seam_accepts_audits_and_returns_detail(db_env):
+    """One transaction: the shared ``apply_accept`` writes the overlay with
+    ``classified_by="auto"`` and the undo snapshot, and the seam audits
+    ``pm.triage.auto_accept`` as ``pm-triage``."""
+    from sqlalchemy import select
+    from server.db.models import AuditEvent
+    await _seed(db_env)
+    ids = await _auto_accept_fixture()
+    orch = _triage_orch()
+    detail = await orch._pm_triage_auto_accept(ids["p1"])
+    assert detail == {"workItemId": ids["w1"], "featureId": ids["live_feature"],
+                      "confidence": "high"}
+    async with db_session() as db:
+        prop = (await db.execute(select(TriageProposal).where(
+            TriageProposal.id == ids["p1"]))).scalars().one()
+        assert prop.status == "accepted"
+        assert prop.resolved_at is not None and prop.undo_snapshot is not None
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.id == ids["w1"]))).scalars().one()
+        assert wi.triage_state == "classified"
+        assert wi.classified_by == "auto"
+        assert wi.feature_id == ids["live_feature"]
+        audits = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.triage.auto_accept"))).scalars().all()
+        assert len(audits) == 1
+        assert audits[0].identity == "pm-triage"
+        assert audits[0].detail == {"proposalId": ids["p1"], "workItemId": ids["w1"],
+                                    "featureId": ids["live_feature"],
+                                    "confidence": "high"}
+
+
+@pytest.mark.asyncio
+async def test_auto_accept_seam_answers_none_when_a_human_got_there_first(db_env):
+    """The listing and the accept are separate transactions, so the seam
+    re-reads: a proposal a human resolved in between is a no-op, not a second
+    accept and not an audit row."""
+    from sqlalchemy import select
+    from server.db.models import AuditEvent
+    await _seed(db_env)
+    ids = await _auto_accept_fixture()
+    async with db_session() as db:
+        prop = (await db.execute(select(TriageProposal).where(
+            TriageProposal.id == ids["p1"]))).scalars().one()
+        prop.status = "accepted"
+    orch = _triage_orch()
+    assert await orch._pm_triage_auto_accept(ids["p1"]) is None
+    async with db_session() as db:
+        audits = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.triage.auto_accept"))).scalars().all()
+        assert audits == []
+
+
+@pytest.mark.asyncio
+async def test_auto_accept_seam_answers_none_when_the_work_item_is_gone(db_env):
+    """``apply_accept`` raises ``WorkItemMissing`` when the item row vanished —
+    there is nothing to classify, so the seam answers "nothing to accept"
+    rather than making the loop warn on every tick."""
+    from sqlalchemy import delete, select
+    from server.db.models import AuditEvent
+    await _seed(db_env)
+    ids = await _auto_accept_fixture()
+    async with db_session() as db:
+        await db.execute(delete(WorkItem).where(WorkItem.id == ids["w1"]))
+    orch = _triage_orch()
+    assert await orch._pm_triage_auto_accept(ids["p1"]) is None
+    async with db_session() as db:
+        audits = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.triage.auto_accept"))).scalars().all()
+        assert audits == []
+
+
+@pytest.mark.asyncio
+async def test_load_policies_seam_raises_on_a_broken_db(db_env, monkeypatch):
+    """A failed read must RAISE: ``{}`` is indistinguishable from "no product
+    opted in", which would silently disable auto-accept everywhere."""
+    from server.automations import product_policy as pp
+    await _seed(db_env)
+    orch = _triage_orch()
+    healthy = await orch._pm_triage_load_policies()
+    assert set(healthy) == {"viberpit", "kindash"}
+    assert healthy["viberpit"]["triage_auto_accept"] == "off"   # opt-in, never default-on
+
+    async def boom(db):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(pp, "load_policies", boom)
+    with pytest.raises(RuntimeError):
+        await orch._pm_triage_load_policies()
+
+
+def test_pm_triage_loop_is_wired_with_the_three_seams(db_env):
+    """The seams above are dead code unless the constructed loop holds them —
+    they are optional kwargs, so a missing one fails silently as "pass skipped"."""
+    from server.sessions.orchestrator import SessionOrchestrator
+    orch = SessionOrchestrator(sdk_factory=lambda *a, **kw: None)
+    loop = orch._pm_triage_loop
+    assert loop._read_policies == orch._pm_triage_load_policies
+    assert loop._list_candidates == orch._pm_triage_list_auto_accept_candidates
+    assert loop._auto_accept == orch._pm_triage_auto_accept

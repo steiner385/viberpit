@@ -26,7 +26,9 @@ FEATURE_DOCS_DIR = "docs/product/features"
 # Open items classified per session (spec §5: ~50/session, structured output).
 CLASSIFY_CHUNK_SIZE = 50
 
-_VALID_CONFIDENCE = ("low", "medium", "high")
+# The one confidence vocabulary, ASCENDING — the auto-accept tier gate
+# (server/pm/triage_accept.py) orders by index into this tuple.
+CONFIDENCE_LEVELS: tuple[str, ...] = ("low", "medium", "high")
 
 # Shared capability-surface list (single source of truth — constitution VI).
 # Referenced verbatim by BOTH build_map_synthesis_prompt (Step B) and
@@ -442,7 +444,7 @@ def _row_to_classification(row: object) -> ProposedClassification | None:
     no_fit = row.get("no_fit_suggestion")
     no_fit = str(no_fit).strip() if no_fit else None
     level = str(row.get("confidence_level") or "").lower()
-    if level not in _VALID_CONFIDENCE:
+    if level not in CONFIDENCE_LEVELS:
         level = "low"  # missing/garbage → conservative default
     return ProposedClassification(
         number=number,

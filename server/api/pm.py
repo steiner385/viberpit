@@ -9,11 +9,11 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import and_, func, or_, select, tuple_
 
 from server.audit import record_audit
 from server.auth.middleware import current_identity
@@ -47,6 +47,20 @@ from server.pm.queue_store import load_queue_rows, runner_row_maps
 from server.pm.repo_project import owning_projects_by_repo
 from server.pm.score import RICE_FIELDS, validate_rice
 from server.pm.sync_request import request_project_sync
+# The accept write path and the undo-snapshot format live in server/pm/triage_accept.py
+# (spec 2026-09-12 §8, D6) so the PM Triage loop's auto-accept shares them; these
+# routes are callers, not owners. Private names are imported deliberately — they are
+# module-internal to the accept path, not part of a public API.
+from server.pm.triage_accept import (
+    DECIDED_BY_AUTO,
+    DECIDED_BY_HUMAN,
+    WorkItemMissing,
+    _aware,
+    _overlay_snapshot,
+    _restore_overlay,
+    apply_accept,
+    pending_proposal_stmt,
+)
 
 log = logging.getLogger(__name__)
 
@@ -55,42 +69,6 @@ router = APIRouter(prefix="/api/pm", tags=["pm"])
 # How long after accept/reject a proposal can be undone. The UI toast lasts
 # six seconds; the server keeps a wider window so a slow click still lands.
 TRIAGE_UNDO_WINDOW_S = 60
-
-
-def _aware(dt: datetime | None) -> datetime | None:
-    """Normalize a DateTime(timezone=True) value to tz-aware UTC.
-
-    SQLite has no native timezone type: it stores DateTime(timezone=True) values
-    as naive strings and hands them back tzinfo-less, unlike Postgres. Every
-    datetime this module round-trips through undo_snapshot (or compares against
-    an aware `now`) goes through here so the naive/aware slip the DB clock rule
-    warns about can't happen. Mirrors server/pm/reconcile_inputs.py's `_aware`
-    (kept local — that one is module-private, not a shared import point)."""
-    if dt is None or dt.tzinfo is not None:
-        return dt
-    return dt.replace(tzinfo=timezone.utc)
-
-
-def _overlay_snapshot(wi: WorkItem) -> dict:
-    at = _aware(wi.classified_at)
-    return {
-        "featureId": wi.feature_id, "reach": wi.reach, "impact": wi.impact,
-        "effort": wi.effort, "confidence": wi.confidence, "triageState": wi.triage_state,
-        "classifiedBy": wi.classified_by,
-        "classifiedAt": at.isoformat() if at else None,
-    }
-
-
-def _restore_overlay(wi: WorkItem, snap: dict) -> None:
-    wi.feature_id = snap.get("featureId")
-    wi.reach = snap.get("reach")
-    wi.impact = snap.get("impact")
-    wi.effort = snap.get("effort")
-    wi.confidence = snap.get("confidence")
-    wi.triage_state = snap.get("triageState")
-    wi.classified_by = snap.get("classifiedBy")
-    at = snap.get("classifiedAt")
-    wi.classified_at = _aware(datetime.fromisoformat(at)) if at else None
 
 
 def _slugify(name: str) -> str:
@@ -953,6 +931,13 @@ async def classify(
     return {"dispatched": dispatched}
 
 
+def _decided_by(prop: TriageProposal) -> str | None:
+    """Who resolved *prop*: the ``decidedBy`` ``apply_accept`` stamps into the undo
+    snapshot (``human`` | ``auto``), or ``None`` for a pending row or a decision
+    taken before the snapshot carried it."""
+    return (prop.undo_snapshot or {}).get("decidedBy")
+
+
 def _triage_to_dict(prop: TriageProposal, wi: WorkItem | None,
                     feat_slug: str | None, project_slug: str | None) -> dict:
     return {
@@ -975,6 +960,10 @@ def _triage_to_dict(prop: TriageProposal, wi: WorkItem | None,
         "confidenceLevel": prop.confidence_level,
         "status": prop.status,
         "createdAt": prop.created_at.isoformat() if prop.created_at else None,
+        # Provenance of a RESOLVED proposal comes from the proposal itself (see
+        # ``list_triage``); a pending one has none.
+        "classifiedBy": _decided_by(prop) if prop.status != "pending" else None,
+        "resolvedAt": prop.resolved_at.isoformat() if prop.resolved_at else None,
     }
 
 
@@ -982,16 +971,43 @@ def _triage_to_dict(prop: TriageProposal, wi: WorkItem | None,
 async def list_triage(
     projectSlug: str | None = None,
     confidenceLevel: str | None = None,
+    pendingOnly: bool = False,
     _identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> list[dict]:
     """Pending triage proposals, newest first, filterable by project + confidence
-    (spec §7). Phase 2 is a flat list; the keyboard inbox is phase 3."""
-    stmt = select(TriageProposal).where(TriageProposal.status == "pending")
+    (spec §7). Phase 2 is a flat list; the keyboard inbox is phase 3.
+
+    Pending, PLUS the loop's fresh auto-accepts for the undo window (spec §8):
+    the inbox shows them with an "auto-accepted · undo" chip, then they leave
+    like a human accept. A human accept never appears here — its undo lives in
+    the toast of the browser that made it.
+
+    ``pendingOnly=true`` suppresses that widened leg and answers exactly
+    ``status == "pending"``. The widening exists for ONE surface — the inbox,
+    which renders the chip. Every other consumer is COUNTING "awaiting a human
+    decision" (the assistant's ``list_triage``, and anything that asks the API
+    rather than filtering client-side), and for those a fresh auto-accept is a
+    decision already taken: including it over-counts the queue and invites a
+    "3 proposals need you" that names rows nobody has to touch.
+    """
+    since = datetime.now(timezone.utc) - timedelta(seconds=TRIAGE_UNDO_WINDOW_S)
+    stmt = select(TriageProposal).where(
+        TriageProposal.status == "pending" if pendingOnly else or_(
+            TriageProposal.status == "pending",
+            and_(TriageProposal.status == "accepted",
+                 TriageProposal.resolved_at >= since)))
     if confidenceLevel:
         stmt = stmt.where(TriageProposal.confidence_level == confidenceLevel)
     props = (await db.execute(
         stmt.order_by(TriageProposal.created_at.desc()))).scalars().all()
+    # Who decided is read off the PROPOSAL (``undo_snapshot["decidedBy"]``, written
+    # by ``apply_accept``), never off ``WorkItem.classified_by``: an overlay PATCH
+    # inside the window re-stamps that column ``human``, and keying the widened
+    # leg on it made the row — and its undo chip — vanish while the undo was
+    # still valid. The window holds a handful of rows, so the filter is Python.
+    props = [p for p in props if p.status == "pending"
+             or _decided_by(p) == DECIDED_BY_AUTO]
     if not props:
         return []
     wi_ids = [p.work_item_id for p in props]
@@ -1028,8 +1044,18 @@ async def list_triage(
 
 
 async def _load_pending_proposal(db, proposal_id: str) -> TriageProposal:
-    prop = (await db.execute(select(TriageProposal).where(
-        TriageProposal.id == proposal_id))).scalar_one_or_none()
+    """Re-read the proposal under a row lock and refuse it unless it is still
+    pending — the human half of the human-vs-loop race.
+
+    The lock lives in the shared ``pending_proposal_stmt`` (server/pm/
+    triage_accept.py), which explains it: without one, this route and the PM
+    Triage loop's auto-accept can both read "pending" under Postgres READ
+    COMMITTED and both write, so whoever commits last wins — a human's
+    accept-with-edits silently replaced by the loop's plain copy, stamped
+    ``classified_by="auto"``. Locking here is what makes the loser re-read the
+    row as resolved and answer 409 instead."""
+    prop = (await db.execute(
+        pending_proposal_stmt(proposal_id))).scalar_one_or_none()
     if prop is None:
         raise HTTPException(status_code=404, detail={"error": "not_found"})
     if prop.status != "pending":
@@ -1037,38 +1063,6 @@ async def _load_pending_proposal(db, proposal_id: str) -> TriageProposal:
             "error": "already_resolved",
             "message": f"proposal is '{prop.status}', not pending"})
     return prop
-
-
-async def _repropose_siblings(db, accepted: TriageProposal, feature_id: str,
-                              *, project_id: str) -> list[str]:
-    """Other pending no_fit proposals sharing this suggestion get re-pointed at
-    the newly-merged feature so the human confirms them against the real map.
-
-    Scoped to ``project_id``: the suggestion is a bare feature slug, which is
-    unique only WITHIN a project, so an unscoped sweep would re-point unrelated
-    projects' proposals at a feature they have nothing to do with — and destroy
-    their ``no_fit_suggestion`` (the classifier's original suggestion) while doing
-    it. Returns the ids actually mutated so the caller can audit them.
-    """
-    candidates = (await db.execute(
-        select(TriageProposal, WorkItem.repo)
-        .join(WorkItem, WorkItem.id == TriageProposal.work_item_id)
-        .where(
-            TriageProposal.id != accepted.id,
-            TriageProposal.status == "pending",
-            TriageProposal.no_fit_suggestion == accepted.no_fit_suggestion)
-    )).all()
-    owners = await owning_projects_by_repo(
-        db, {repo for _sib, repo in candidates if repo})
-    moved: list[str] = []
-    for sib, repo in candidates:
-        owner = owners.get(repo) if repo else None
-        if owner is None or owner.project_id != project_id:
-            continue
-        sib.proposed_feature_id = feature_id
-        sib.no_fit_suggestion = None  # now has a home; no longer a drift item
-        moved.append(sib.id)
-    return moved
 
 
 async def _validate_accept_edits(db, edits: dict | None) -> None:
@@ -1112,69 +1106,6 @@ async def _validate_accept_edits(db, edits: dict | None) -> None:
                                 detail={"error": "feature_not_found"})
 
 
-async def _apply_accept(db, proposal: TriageProposal, identity: str, *,
-                        edits: dict | None = None) -> None:
-    """Shared accept logic (phase 3 EXTENDS this for accept-bulk — do NOT copy
-    it into a second helper). Copies the proposal onto the WorkItem overlay,
-    applying ``edits`` over the copied values when provided, marks the item
-    ``classified`` and the proposal ``accepted``.
-
-    ``classified_by`` is the constant ``"human"`` (a human accepted it), NOT the
-    tailnet identity — the identity is carried ONLY on the audit event by the
-    caller. The proposal row remains as audit."""
-    wi = (await db.execute(select(WorkItem).where(
-        WorkItem.id == proposal.work_item_id))).scalar_one_or_none()
-    if wi is None:
-        raise HTTPException(status_code=404, detail={"error": "work_item_missing"})
-    proposal.undo_snapshot = _overlay_snapshot(wi)
-    now = datetime.now(timezone.utc)
-    edits = edits or {}
-    feature_id = edits.get("featureId", proposal.proposed_feature_id)
-    # Drift resolution: a no_fit whose suggested name is now a real feature
-    # (the merged map-diff). Link it and re-propose orphaned siblings.
-    #
-    # SCOPED to the work item's own project. ``Feature.slug`` is unique only per
-    # project (models.py ``uq_feature_slug``), and drift suggestions are generic
-    # names ("offline-mode", "sessions", "auth") that several projects hold at
-    # once — an unscoped lookup silently binds the item to ANOTHER project's
-    # feature row, corrupting every consumer keyed on feature→project (the GH
-    # Projects reconciler, board panes, roadmap scoring). If the item's repo maps
-    # to no project we cannot scope the lookup, so the branch does not fire.
-    if feature_id is None and proposal.no_fit_suggestion:
-        owner = (await owning_projects_by_repo(
-            db, {wi.repo} if wi.repo else set())).get(wi.repo or "")
-        if owner is not None:
-            feat = (await db.execute(select(Feature).where(
-                Feature.project_id == owner.project_id,
-                Feature.slug == proposal.no_fit_suggestion))).scalar_one_or_none()
-            if feat is not None:
-                feature_id = feat.id
-                moved = await _repropose_siblings(db, proposal, feat.id,
-                                                  project_id=owner.project_id)
-                if moved:
-                    # Spec §7: every accept mutation is audited, and this one
-                    # rewrites proposals the caller never named (destroying their
-                    # no_fit_suggestion irrecoverably).
-                    await record_audit(
-                        db=db, type="pm.triage.repropose", identity=identity,
-                        detail={"proposalId": proposal.id,
-                                "projectId": owner.project_id,
-                                "featureId": feat.id,
-                                "featureSlug": proposal.no_fit_suggestion,
-                                "siblingProposalIds": moved})
-    wi.feature_id = feature_id
-    wi.reach = edits.get("reach", proposal.reach)
-    wi.impact = edits.get("impact", proposal.impact)
-    wi.effort = edits.get("effort", proposal.effort)
-    wi.confidence = edits.get("confidence", proposal.confidence)
-    wi.triage_state = "classified"
-    wi.classified_by = "human"
-    wi.classified_at = now
-    proposal.status = "accepted"
-    proposal.resolved_at = now
-    await db.flush()
-
-
 @router.post("/triage/{proposal_id}/accept")
 async def accept_triage(
     proposal_id: str,
@@ -1183,7 +1114,8 @@ async def accept_triage(
     db=Depends(get_db),
 ) -> dict:
     """Copy the proposal onto the WorkItem overlay and mark it classified
-    (spec §7), via the shared ``_apply_accept`` helper. An OPTIONAL request body
+    (spec §7), via the shared ``apply_accept`` (server/pm/triage_accept.py). An
+    OPTIONAL request body
     ``{edits?: {reach?, impact?, effort?, confidence?, featureId?}}`` overrides
     the copied values (lets phase-3 edit-then-accept work without a route
     change); absent body = plain accept. The batch form is ``accept-bulk``,
@@ -1191,7 +1123,12 @@ async def accept_triage(
     prop = await _load_pending_proposal(db, proposal_id)
     edits = (body or {}).get("edits")
     await _validate_accept_edits(db, edits)
-    await _apply_accept(db, prop, identity, edits=edits)
+    try:
+        await apply_accept(db, prop, decided_by=DECIDED_BY_HUMAN,
+                           audit_identity=identity, edits=edits)
+    except WorkItemMissing as e:
+        raise HTTPException(status_code=404,
+                            detail={"error": "work_item_missing"}) from e
     wi_id = prop.work_item_id
     await record_audit(db=db, type="pm.triage.accept", identity=identity,
                        detail={"proposalId": proposal_id, "workItemId": wi_id})
@@ -1256,6 +1193,17 @@ async def undo_triage(
             "message": f"undo is only available for {TRIAGE_UNDO_WINDOW_S}s after a decision"})
     wi = (await db.execute(select(WorkItem).where(
         WorkItem.id == prop.work_item_id))).scalar_one_or_none()
+    if snap.get("decidedBy") == DECIDED_BY_AUTO and prop.status == "accepted":
+        # The decision being undone was the machine's: never let it re-decide.
+        #
+        # Read from the SNAPSHOT (`apply_accept` stamps `decidedBy` there), not
+        # from `WorkItem.classified_by`. That column is live overlay state: any
+        # overlay PATCH rewrites it to "human", and the undo window is exactly
+        # when a human is invited to look at the auto-accept and tweak it. Scored
+        # first, then undone, the machine's authorship was gone — the flag stayed
+        # NULL and the loop auto-accepted the same proposal on its next tick,
+        # undoing the human who had just undone it.
+        prop.auto_undone = True
     if wi is not None:
         _restore_overlay(wi, snap)
     previous = prop.status
@@ -1265,7 +1213,7 @@ async def undo_triage(
     await db.flush()
     await record_audit(db=db, type="pm.triage.undo", identity=identity,
                        detail={"proposalId": proposal_id, "workItemId": prop.work_item_id,
-                               "previousStatus": previous})
+                               "previousStatus": previous, "autoUndone": prop.auto_undone})
     return {"id": prop.id, "status": "pending", "workItemId": prop.work_item_id,
             "triageState": wi.triage_state if wi is not None else None}
 
@@ -1281,7 +1229,7 @@ async def accept_bulk(
     db=Depends(get_db),
 ) -> dict:
     """Accept many proposals in one call (the keyboard inbox's bulk action).
-    Every id runs the SAME ``_apply_accept`` path as single-accept; per-id
+    Every id runs the SAME ``apply_accept`` path as single-accept; per-id
     failures are reported in ``results`` rather than failing the batch, so the
     response is always HTTP 200 with a 207-style aggregate.
 
@@ -1303,9 +1251,14 @@ async def accept_bulk(
             continue
         try:
             async with db.begin_nested():
-                await _apply_accept(db, proposal, identity)
+                await apply_accept(db, proposal, decided_by=DECIDED_BY_HUMAN,
+                                   audit_identity=identity)
             results.append({"id": pid, "ok": True})
             landed.append(pid)
+        except WorkItemMissing:
+            # The per-id twin of single-accept's 404: same ``work_item_missing``
+            # code, reported as this id's failure instead of the batch's.
+            results.append({"id": pid, "ok": False, "error": "work_item_missing"})
         except HTTPException as e:
             detail = e.detail if isinstance(e.detail, dict) else {"error": "failed"}
             results.append({"id": pid, "ok": False, "error": detail.get("error")})
@@ -1394,7 +1347,7 @@ async def patch_overlay(
             setattr(wi, attr, val)
     if body.triageState is not None:
         wi.triage_state = body.triageState
-    wi.classified_by = "human"
+    wi.classified_by = DECIDED_BY_HUMAN
     wi.classified_at = datetime.now(timezone.utc)
     await db.flush()
     await record_audit(db=db, type="pm.workitem.overlay", identity=identity,

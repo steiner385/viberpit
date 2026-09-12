@@ -31,6 +31,11 @@ export interface TriageProposal {
   confidenceLevel: string | null
   status: string
   createdAt: string | null
+  /** The work item's `classified_by` once the proposal is resolved: `"human"`,
+   *  `"auto"` (the PM Triage loop's auto-accept — spec §8), else null. */
+  classifiedBy: string | null
+  /** When the proposal was accepted/rejected; null while pending. */
+  resolvedAt: string | null
 }
 
 /** Overlay fields a human may override when accepting (phase-3 edit-then-accept

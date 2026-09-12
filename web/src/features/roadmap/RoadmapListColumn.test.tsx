@@ -15,6 +15,7 @@ vi.mock('@/api/hooks', () => ({
   useRejectProposal: () => ({ mutate: vi.fn(), isPending: false }),
   useAcceptBulk: () => ({ mutate: vi.fn(), isPending: false }),
   useTriageLive: () => undefined,
+  useUndoProposal: () => ({ mutate: vi.fn(), isPending: false }),
 }))
 
 const PROPOSALS: TriageProposal[] = [{
@@ -22,6 +23,7 @@ const PROPOSALS: TriageProposal[] = [{
   kind: 'issue', title: 'Recurring chores', url: null, proposedFeatureId: null,
   proposedFeatureSlug: 'tasks', noFitSuggestion: null, reach: 3, impact: 2, effort: 1,
   confidence: 80, rationale: null, confidenceLevel: 'high', status: 'pending', createdAt: null,
+  classifiedBy: null, resolvedAt: null,
 }]
 
 function mount(over: Partial<React.ComponentProps<typeof RoadmapListColumn>> = {}) {
@@ -114,6 +116,19 @@ describe('RoadmapListColumn', () => {
   it('badges the queue depth on the Inbox link from every scope', () => {
     mount()
     expect(screen.getByRole('link', { name: 'Inbox (1)' })).toBeInTheDocument()
+  })
+
+  // `proposals` is the WIDENED list: it also carries the triage loop's fresh
+  // auto-accepts so the inbox can show the "auto-accepted · undo" chip. The
+  // badge is a backlog count, and a decided row is not backlog.
+  it('the Inbox badge excludes a fresh auto-accept in its undo window', () => {
+    const proposals: TriageProposal[] = [
+      ...['a', 'b', 'c', 'd', 'e'].map((id) => ({ ...PROPOSALS[0], id })),
+      { ...PROPOSALS[0], id: 'auto', status: 'accepted', classifiedBy: 'auto' },
+    ]
+    mount({ inbox: { proposals, isLoading: false, isError: false, product: null,
+                     onOpenProposal: vi.fn(), onClearProduct: vi.fn() } })
+    expect(screen.getByRole('link', { name: 'Inbox (5)' })).toBeInTheDocument()
   })
 
   it('states: loading, error, empty', () => {

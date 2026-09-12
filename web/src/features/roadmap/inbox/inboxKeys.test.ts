@@ -55,6 +55,20 @@ describe('inboxReducer', () => {
     expect(inboxReducer(s, { type: 'deselect', id: 'p9' })).toBe(s)
   })
 
+  it('pruneSelected drops ids whose row is no longer pending', () => {
+    // A row can stop being decidable IN PLACE now that a fresh auto-accept
+    // stays visible for its undo window: the id is still on screen, so
+    // `rowsChanged` would keep it, and the bulk bar would go on counting it.
+    let s = inboxReducer(initialInboxState, { type: 'toggleSelect', id: 'p1' })
+    s = inboxReducer(s, { type: 'toggleSelect', id: 'p2' })
+    s = inboxReducer(s, { type: 'pruneSelected', pendingIds: ['p2', 'p3'] })
+    expect([...s.selected]).toEqual(['p2'])
+    // Nothing to prune keeps the same object (no needless re-render).
+    expect(inboxReducer(s, { type: 'pruneSelected', pendingIds: ['p2'] })).toBe(s)
+    expect(inboxReducer(initialInboxState, { type: 'pruneSelected', pendingIds: [] }))
+      .toBe(initialInboxState)
+  })
+
   it('clearSelection empties the set (a bulk accept must not resend dead ids)', () => {
     let s = inboxReducer(initialInboxState, { type: 'toggleSelect', id: 'p1' })
     s = inboxReducer(s, { type: 'toggleSelect', id: 'p2' })

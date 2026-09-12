@@ -19,11 +19,15 @@ import { ViewportProvider } from '@/shell/useViewport'
 const accept = vi.fn()
 const reject = vi.fn()
 const bulk = vi.fn()
+const undo = vi.fn()
 vi.mock('@/api/hooks', () => ({
   useAcceptProposal: () => ({ mutate: accept, isPending: false }),
   useRejectProposal: () => ({ mutate: reject, isPending: false }),
   useAcceptBulk: () => ({ mutate: bulk, isPending: false }),
   useTriageLive: () => undefined,
+  // ProposalCard's own undo control (auto-accept chip) — mocked here too since
+  // this file mounts the real ProposalCard rows.
+  useUndoProposal: () => ({ mutate: undo, isPending: false }),
 }))
 const overlayOpen = vi.fn(() => false)
 vi.mock('@/shell/useOverlayState', () => ({ overlayIsOpen: () => overlayOpen() }))
@@ -32,7 +36,7 @@ const p = (over: Partial<TriageProposal> & { id: string }): TriageProposal => ({
   workItemId: `w-${over.id}`, projectSlug: 'kindash', repo: 'cairnea/KinDash', number: 1, kind: 'issue',
   title: over.id, url: null, proposedFeatureId: null, proposedFeatureSlug: 'tasks', noFitSuggestion: null,
   reach: 3, impact: 3, effort: 2, confidence: 80, rationale: null, confidenceLevel: 'high', status: 'pending',
-  createdAt: null, ...over,
+  createdAt: null, classifiedBy: null, resolvedAt: null, ...over,
 })
 /** Ordered (group by product, then id): First, Third | Second. Three rows so
  *  "the selected set" and "the whole queue" are different assertions. */
@@ -45,15 +49,23 @@ const ROWS = [
 function mount(over: Partial<React.ComponentProps<typeof InboxScopeBody>> = {}) {
   const onOpen = vi.fn()
   const onClearProduct = vi.fn()
-  const { unmount } = render(
+  const tree = (props: Partial<React.ComponentProps<typeof InboxScopeBody>>) => (
     <ViewportProvider kiosk={null}>
       <MemoryRouter>
         <InboxScopeBody proposals={ROWS} isLoading={false} isError={false} product={null}
-          selectedKey={null} onOpen={onOpen} onClearProduct={onClearProduct} {...over} />
+          selectedKey={null} onOpen={onOpen} onClearProduct={onClearProduct}
+          {...over} {...props} />
       </MemoryRouter>
-    </ViewportProvider>,
+    </ViewportProvider>
   )
-  return { onOpen, onClearProduct, unmount }
+  const { unmount, rerender } = render(tree({}))
+  // Re-render with the same component instance (state preserved) — how a poll
+  // landing new server rows under a live selection is reproduced.
+  return {
+    onOpen, onClearProduct, unmount,
+    rerender: (next: Partial<React.ComponentProps<typeof InboxScopeBody>>) =>
+      rerender(tree(next)),
+  }
 }
 
 // jsdom implements no scrolling, so the row's scroll-into-view is only
@@ -63,7 +75,7 @@ const scrollIntoView = vi.fn()
 
 describe('InboxScopeBody', () => {
   beforeEach(() => {
-    accept.mockReset(); reject.mockReset(); bulk.mockReset()
+    accept.mockReset(); reject.mockReset(); bulk.mockReset(); undo.mockReset()
     overlayOpen.mockReturnValue(false)
     localStorage.clear()
     clearInboxOrder()
@@ -118,6 +130,20 @@ describe('InboxScopeBody', () => {
     expect(reject).toHaveBeenCalledWith({ id: 'First' })
   })
 
+  it('a/r/e/x do nothing when the cursor sits on a non-pending row', () => {
+    // A fresh auto-accept rides along in the list for the undo window — it has
+    // already had its one decision, so the keys that make a decision or select
+    // for a bulk one must not treat the cursor landing there as a request.
+    mount({ proposals: [p({ id: 'First', status: 'accepted', classifiedBy: 'auto', resolvedAt: '2026-09-12T10:00:00Z' }), p({ id: 'Second' })] })
+    fireEvent.keyDown(window, { key: 'a' })
+    fireEvent.keyDown(window, { key: 'r' })
+    fireEvent.keyDown(window, { key: 'x' })
+    fireEvent.keyDown(window, { key: 'e' })
+    expect(accept).not.toHaveBeenCalled()
+    expect(reject).not.toHaveBeenCalled()
+    expect(screen.queryByRole('region', { name: 'Bulk actions' })).toBeNull()
+  })
+
   it('scrolls the cursor row into view — `a` must never accept a row off-screen', () => {
     mount()
     scrollIntoView.mockReset()
@@ -143,6 +169,31 @@ describe('InboxScopeBody', () => {
     fireEvent.click(screen.getByRole('button', { name: /Accept selected/ }))
     expect(bulk).toHaveBeenCalledWith(expect.arrayContaining([expect.any(String)]), expect.anything())
     expect(bulk.mock.calls[0][0]).toEqual(['First', 'Third'])
+  })
+
+  it('drops a selected row from the selection once it stops being pending', () => {
+    // A fresh auto-accept STAYS in the list for its undo window, so a row the
+    // user ticked while pending can go `accepted` in place under their hands
+    // (the PM Triage loop landing between polls). Its tick then renders both
+    // checked and disabled, and the bulk bar counts a row nothing can act on.
+    const { rerender } = mount()
+    fireEvent.keyDown(window, { key: 'x' })
+    fireEvent.keyDown(window, { key: 'j' })
+    fireEvent.keyDown(window, { key: 'x' })
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+
+    const autoAccepted = (id: string) => ROWS.map((r) => (
+      r.id === id ? { ...r, status: 'accepted' as const, classifiedBy: 'auto' } : r))
+    rerender({ proposals: autoAccepted('First') })
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
+
+    // …and when the last selected row goes too, the bulk bar leaves entirely.
+    rerender({
+      proposals: ROWS.map((r) => (
+        r.id === 'First' || r.id === 'Third'
+          ? { ...r, status: 'accepted' as const, classifiedBy: 'auto' } : r)),
+    })
+    expect(screen.queryByRole('region', { name: 'Bulk actions' })).toBeNull()
   })
 
   it('A with nothing selected accepts nothing', () => {

@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from server.automations.pm_triage import PendingItemView, PmTriageLoop
+from server.automations.pm_triage import (
+    MAX_AUTO_ACCEPTS_PER_TICK,
+    AutoAcceptCandidateView,
+    PendingItemView,
+    PmTriageLoop,
+)
 from server.pm.engine import NoFitCluster, StaleFeature, TriageState
 
 
@@ -32,9 +37,16 @@ def _item(number, kind="issue", links=()):
 
 
 def _loop(ctx, *, mode="propose", config=None, pending=None, state=None,
-          autolink_pred=None, clock=None, list_pending=None):
-    """Wire a loop over recorder fakes. Returns (loop, rec)."""
-    rec = {"classified": [], "map_diffs": [], "stale": [], "autolinked": []}
+          autolink_pred=None, clock=None, list_pending=None,
+          policies=None, candidates=None, accept_fails=(), accept_none=(),
+          candidate_list_fails=False):
+    """Wire a loop over recorder fakes. Returns (loop, rec).
+
+    The auto-accept seams are wired whenever *candidates* is given; ``policies=None``
+    then makes the policy read RAISE, and ``candidate_list_fails=True`` makes the
+    candidate read raise (the two failure cases the pass must survive)."""
+    rec = {"classified": [], "map_diffs": [], "stale": [], "autolinked": [],
+           "auto_accepted": []}
     cfg = dict(config or {"drift_threshold": 5, "batch_size": 50,
                           "max_spawns_per_day": 8, "stale_days": 14})
 
@@ -69,13 +81,49 @@ def _loop(ctx, *, mode="propose", config=None, pending=None, state=None,
     async def mark_stale(slugs):
         rec["stale"].append(tuple(slugs))
 
+    async def read_policies():
+        if policies is None:
+            raise RuntimeError("policy read failed")
+        return dict(policies)
+
+    async def list_candidates():
+        if candidate_list_fails:
+            raise RuntimeError("candidate read failed")
+        return list(candidates or [])
+
+    async def auto_accept(proposal_id):
+        if proposal_id in accept_fails:
+            raise RuntimeError("accept blew up")
+        if proposal_id in accept_none:
+            return None
+        rec["auto_accepted"].append(proposal_id)
+        return {"workItemId": f"w-{proposal_id}", "featureId": "f1",
+                "confidence": "high"}
+
+    wired = candidates is not None
     loop = PmTriageLoop(
         ctx, read_config=read_config,
         list_pending=list_pending or _default_list_pending,
         auto_link=auto_link, count_state=count_state, classify=classify,
         propose_map_diff=propose_map_diff, mark_stale=mark_stale,
-        clock=clock or (lambda: 1000.0))
+        clock=clock or (lambda: 1000.0),
+        read_policies=read_policies if wired else None,
+        list_auto_accept_candidates=list_candidates if wired else None,
+        auto_accept=auto_accept if wired else None)
     return loop, rec
+
+
+def _cand(pid, *, product="viberpit", level="high", feature="f1", state="live",
+          undone=None, number=1):
+    return AutoAcceptCandidateView(
+        proposal_id=pid, work_item_id=f"w-{pid}", product_slug=product, repo="o/r",
+        number=number, confidence_level=level, proposed_feature_id=feature,
+        feature_state=state, auto_undone=undone)
+
+
+def _policy(tier):
+    from server.automations.product_policy import effective_policy
+    return {**effective_policy(None), "triage_auto_accept": tier}
 
 
 @pytest.mark.asyncio
@@ -156,7 +204,8 @@ async def test_idle_tick_records_no_work():
                      no_fit_clusters=(), stale_features=(), day_spawns=0, day_cap=8)
     loop, rec = _loop(ctx, pending=[], state=st)
     await loop.tick()
-    assert rec == {"classified": [], "map_diffs": [], "stale": [], "autolinked": []}
+    assert rec == {"classified": [], "map_diffs": [], "stale": [], "autolinked": [],
+                   "auto_accepted": []}
 
 
 # --------------------------------------------------------------------------- #
@@ -501,3 +550,135 @@ async def test_labelled_issues_are_offered_to_auto_link_and_leave_the_queue():
     await loop.tick()
     assert rec["autolinked"] == [7]
     assert rec["classified"] == [[8]]          # only the unrouted item reaches the classifier
+
+
+# --------------------------------------------------------------------------- #
+# The auto-accept pass (spec §8) — policy-gated, capped, fail-safe             #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_auto_accepts_qualifying_proposals_for_an_opted_in_product():
+    """Tier ``high`` accepts the high-confidence proposal and leaves the medium
+    one for a human — the gate is the shared ``auto_accept_eligible``."""
+    ctx = Ctx()
+    loop, rec = _loop(ctx, policies={"viberpit": _policy("high")},
+                      candidates=[_cand("p1", level="high"),
+                                  _cand("p2", level="medium", number=2)])
+    await loop.tick()
+    assert rec["auto_accepted"] == ["p1"]
+    kinds = [e[2].get("kind") for e in ctx.events]
+    assert kinds.count("auto_accepted") == 1
+
+
+@pytest.mark.asyncio
+async def test_product_with_auto_accept_off_is_untouched():
+    """``off`` is the default: opting in is an explicit product decision."""
+    ctx = Ctx()
+    loop, rec = _loop(ctx, policies={"viberpit": _policy("off")},
+                      candidates=[_cand("p1", level="high")])
+    await loop.tick()
+    assert rec["auto_accepted"] == []
+    assert [e[2].get("kind") for e in ctx.events].count("auto_accepted") == 0
+
+
+@pytest.mark.asyncio
+async def test_a_product_with_no_policy_is_off():
+    """No policy row at all reads as ``off`` — never as "anything goes"."""
+    ctx = Ctx()
+    loop, rec = _loop(ctx, policies={}, candidates=[_cand("p1", level="high")])
+    await loop.tick()
+    assert rec["auto_accepted"] == []
+
+
+@pytest.mark.asyncio
+async def test_no_fit_and_proposed_capability_and_undone_are_skipped():
+    """Three hard exclusions, even at a tier the confidence clears: a no-fit
+    (creating a capability is a human call), a target capability still
+    ``proposed`` (its doc is unmerged), and a proposal a human already undid."""
+    ctx = Ctx()
+    loop, rec = _loop(
+        ctx, policies={"viberpit": _policy("medium")},
+        candidates=[_cand("no-fit", feature=None, state=None),
+                    _cand("proposed-cap", state="proposed", number=2),
+                    _cand("undone", undone=True, number=3)])
+    await loop.tick()
+    assert rec["auto_accepted"] == []
+
+
+@pytest.mark.asyncio
+async def test_per_product_cap_per_tick():
+    """The cap is PER PRODUCT per tick: viberpit stops at
+    ``MAX_AUTO_ACCEPTS_PER_TICK`` while kindash's single proposal still lands,
+    and the cap is announced once for the product that hit it."""
+    ctx = Ctx()
+    viberpit = [_cand(f"v{n}", number=n) for n in range(30)]
+    kindash = [_cand("k1", product="kindash", number=99)]
+    loop, rec = _loop(ctx, policies={"viberpit": _policy("medium"),
+                                     "kindash": _policy("medium")},
+                      candidates=viberpit + kindash)
+    await loop.tick()
+    assert rec["auto_accepted"] == [f"v{n}" for n in range(MAX_AUTO_ACCEPTS_PER_TICK)] + ["k1"]
+    capped = [e for e in ctx.events if e[2].get("kind") == "auto_accept_capped"]
+    assert len(capped) == 1 and capped[0][2].get("target") == "viberpit"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_policy_read_skips_the_pass_but_the_tick_completes():
+    """Fail-safe: a policy read that raises accepts NOTHING this tick (``{}``
+    would read as "no product opted in" — same outcome, no warning), and the
+    rest of the tick still runs."""
+    ctx = Ctx()
+    loop, rec = _loop(ctx, policies=None, candidates=[_cand("p1")])
+    await loop.tick()
+    assert rec["auto_accepted"] == []
+    assert ctx.pm_triage_counts == {"unclassified": 0, "pending": 0, "drift": 0}
+    warns = [e for e in ctx.events if e[2].get("kind") == "auto_accept_skipped"]
+    assert len(warns) == 1 and warns[0][0] == "warn"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_candidate_read_skips_the_pass_but_the_tick_completes():
+    """R2-7, the twin of the policy-read guard: the candidate listing is the
+    pass's OTHER DB read, and an unguarded failure there took the whole tick
+    down with it — including ``_stash``, which is what the status card reads, so
+    one transient DB blip showed the operator "status unknown" instead of the
+    counts the tick had already computed."""
+    ctx = Ctx()
+    loop, rec = _loop(ctx, policies={"viberpit": _policy("high")},
+                      candidates=[_cand("p1")], candidate_list_fails=True)
+    await loop.tick()
+    assert rec["auto_accepted"] == []
+    warns = [e for e in ctx.events if e[2].get("kind") == "auto_accept_skipped"]
+    assert len(warns) == 1 and warns[0][0] == "warn"
+    assert "candidate read failed" in warns[0][1]
+    # the rest of the tick still ran: the counts the status card reads are set
+    assert ctx.pm_triage_counts == {"unclassified": 0, "pending": 0, "drift": 0}
+
+
+@pytest.mark.asyncio
+async def test_one_failing_accept_does_not_abort_the_others():
+    """Per-proposal guard: one accept blowing up is logged and skipped, never
+    the pass (the next proposal is independent work)."""
+    ctx = Ctx()
+    loop, rec = _loop(ctx, policies={"viberpit": _policy("high")},
+                      candidates=[_cand("p1", number=1), _cand("p2", number=2)],
+                      accept_fails=("p1",))
+    await loop.tick()
+    assert rec["auto_accepted"] == ["p2"]
+    failed = [e for e in ctx.events if e[2].get("kind") == "auto_accept_failed"]
+    assert len(failed) == 1
+    assert failed[0][0] == "warn" and failed[0][2].get("target") == "o/r#1"
+
+
+@pytest.mark.asyncio
+async def test_a_proposal_a_human_resolved_first_is_not_reported_as_accepted():
+    """The seam answers ``None`` when the proposal stopped being pending between
+    the list and the accept — a race a human won, not an error."""
+    ctx = Ctx()
+    loop, rec = _loop(ctx, policies={"viberpit": _policy("high")},
+                      candidates=[_cand("p1")], accept_none=("p1",))
+    await loop.tick()
+    assert rec["auto_accepted"] == []
+    kinds = [e[2].get("kind") for e in ctx.events]
+    assert "auto_accepted" not in kinds and "auto_accept_failed" not in kinds

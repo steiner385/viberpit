@@ -42,6 +42,9 @@ export type InboxEvent =
   | { type: 'toggleSelect'; id: string }
   | { type: 'deselect'; id: string }
   | { type: 'clearSelection' }
+  // The ids still `pending` in the rendered queue; everything else in the
+  // selection is dropped.
+  | { type: 'pruneSelected'; pendingIds: string[] }
   | { type: 'startEdit'; id: string }
   | { type: 'cancelEdit' }
   | { type: 'rowsChanged'; ids: string[] } // re-anchor/clamp when the queue moves
@@ -100,6 +103,19 @@ export function inboxReducer(s: InboxState, e: InboxEvent): InboxState {
     // keeping them would make the next `A` resend already-accepted proposals.
     case 'clearSelection':
       return s.selected.size === 0 ? s : { ...s, selected: new Set() }
+    // `deselect` and `clearSelection` both cover a row LEAVING; this covers a
+    // row that stays and stops being decidable. A fresh auto-accept remains in
+    // the queue for its undo window, so a row ticked while pending can flip to
+    // `accepted` in place (the PM Triage loop landing between polls) — and
+    // `rowsChanged`, which only knows ids, would happily keep it selected. Its
+    // tick would then render checked AND disabled, and the bulk bar would count
+    // a row that the send-side filter correctly refuses to send.
+    case 'pruneSelected': {
+      if (s.selected.size === 0) return s
+      const pending = new Set(e.pendingIds)
+      const selected = new Set([...s.selected].filter((id) => pending.has(id)))
+      return selected.size === s.selected.size ? s : { ...s, selected }
+    }
     case 'startEdit':
       return { ...s, editing: e.id }
     case 'cancelEdit':

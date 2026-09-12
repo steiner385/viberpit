@@ -3,6 +3,7 @@ import { useAccounts, useSessions, useAllPrs, useAutomations, useTriage } from '
 import { useDeployState } from '@/lib/deployState'
 import { inFlightPrCount } from '@/session/prStatus'
 import { isBackgroundSession } from '@/session/backgroundSessions'
+import { pendingProposals } from '@/features/roadmap/inbox/triageSelectors'
 
 export type NavBadges = Record<NavBadgeKey, number | boolean | undefined>
 
@@ -38,7 +39,7 @@ export function useNavBadges(): NavBadges {
   // the nav badge and the scope badge can never disagree. This observer OWNS
   // that key's interval: the column passes `poll: false` for the unscoped queue
   // precisely so the two do not run two timers over one key.
-  const { data: pendingProposals = [] } = useTriage()
+  const { data: proposals = [] } = useTriage()
   const deploy = useDeployState()
 
   const automationsActiveSessions = automationsData.reduce((n, a) => n + a.activeSessions, 0)
@@ -60,7 +61,9 @@ export function useNavBadges(): NavBadges {
     // Proposals awaiting a decision — the count the deleted Triage nav row wore.
     // The queue is the Roadmap section's Inbox scope now (finish-line row 3), so
     // the badge follows it onto Roadmap rather than disappearing with the row.
-    roadmap: pendingProposals.length || undefined,
+    // `pendingProposals` because the wire list is widened with the triage loop's
+    // fresh auto-accepts (their undo window); those are decided, not backlog.
+    roadmap: pendingProposals(proposals).length || undefined,
     // A FAILED deploy, not a pending one. The deploy banner is hidden on phone
     // (`useAppBanners`, `hideOn: ['phone']`), so without this dot a lost session
     // would be silent there — Settings › Deploy has the detail but nothing would

@@ -66,6 +66,7 @@ function proposal(over: Partial<TriageProposal> = {}): TriageProposal {
     proposedFeatureId: null, proposedFeatureSlug: null, noFitSuggestion: null,
     reach: null, impact: null, effort: null, confidence: null,
     rationale: null, confidenceLevel: null, status: 'pending', createdAt: null,
+    classifiedBy: null, resolvedAt: null,
     ...over,
   }
 }
@@ -113,6 +114,21 @@ describe('useNavBadges', () => {
     useTriage.mockReturnValue({ data: [] })
     const { result: empty } = renderHook(() => useNavBadges())
     expect(empty.current.roadmap).toBeUndefined()
+  })
+
+  // The list `useTriage` returns is WIDENED: it also carries the triage loop's
+  // fresh auto-accepts for their undo window, so the inbox can render the
+  // "auto-accepted · undo" chip. A badge that counted those says "6 need you"
+  // about 5 — and the sixth is already decided.
+  it('roadmap badge excludes a fresh auto-accept in its undo window', () => {
+    useTriage.mockReturnValue({
+      data: [
+        ...['a', 'b', 'c', 'd', 'e'].map((id) => proposal({ id })),
+        proposal({ id: 'auto', status: 'accepted', classifiedBy: 'auto' }),
+      ],
+    })
+    const { result } = renderHook(() => useNavBadges())
+    expect(result.current.roadmap).toBe(5)
   })
 
   it('settings is boolean-or-undefined, never a number', () => {

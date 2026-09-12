@@ -42,6 +42,7 @@ import { inboxReducer, initialInboxState, isTypingTarget, resolveCursorIndex } f
 import { clearInboxOrder, setInboxOrder } from './inboxOrderStore'
 import { INBOX_ORDERING_SPEC, type InboxGroupBy, type InboxSortBy } from './inboxOrdering'
 import { ProposalCard } from './ProposalCard'
+import { isPending, pendingProposals } from './triageSelectors'
 
 export interface InboxScopeBodyProps {
   proposals: readonly TriageProposal[]
@@ -83,10 +84,27 @@ export function InboxScopeBody({
   // open): the pane must fall back rather than follow a frozen order.
   useEffect(() => clearInboxOrder, [])
 
+  // The rows the user can still decide, through `triageSelectors`' one
+  // definition of "still pending" (the nav badge and the Inbox scope count read
+  // the same one). Shared from here by the selection prune below and by
+  // `acceptSelected` — two copies would be free to disagree about what the bulk
+  // bar counts and what it sends.
+  const pendingIds = useMemo(
+    () => pendingProposals(ordered).map((p) => p.id),
+    [ordered],
+  )
+
   const [state, dispatch] = useReducer(inboxReducer, initialInboxState)
   // Re-anchor whenever the queue moves — an optimistic removal, a live prepend,
-  // a re-group, or a search that hid the anchored row.
-  useEffect(() => { dispatch({ type: 'rowsChanged', ids }) }, [ids])
+  // a re-group, or a search that hid the anchored row — and drop from the
+  // selection any row that stopped being pending WITHOUT leaving: a fresh
+  // auto-accept stays visible for its undo window, so a ticked row can go
+  // `accepted` under the user's hands and `rowsChanged` (which sees ids, not
+  // statuses) would keep counting it in the bulk bar.
+  useEffect(() => {
+    dispatch({ type: 'rowsChanged', ids })
+    dispatch({ type: 'pruneSelected', pendingIds })
+  }, [ids, pendingIds])
   const current: TriageProposal | undefined = ordered[resolveCursorIndex(ids, state)]
 
   const accept = useAcceptProposal(product ?? undefined)
@@ -109,11 +127,15 @@ export function InboxScopeBody({
   }, [rejectMutate])
   // Cleared on SUCCESS, not on dispatch: a failed sweep rolls the rows back,
   // and a selection cleared ahead of that leaves them restored but unselected.
+  // The `pendingIds` filter is belt to the prune effect's braces: the prune
+  // runs on a render, this runs on a keystroke, and only this one decides what
+  // actually goes over the wire.
   const acceptSelected = useCallback(() => {
-    const sel = [...state.selected]
+    const stillPending = new Set(pendingIds)
+    const sel = [...state.selected].filter((id) => stillPending.has(id))
     if (sel.length === 0) return
     bulkMutate(sel, { onSuccess: () => dispatch({ type: 'clearSelection' }) })
-  }, [bulkMutate, state.selected])
+  }, [bulkMutate, state.selected, pendingIds])
 
   useEffect(() => {
     function onKey(ev: KeyboardEvent) {
@@ -126,20 +148,23 @@ export function InboxScopeBody({
       switch (ev.key) {
         case 'j': dispatch({ type: 'move', delta: 1, ids }); break
         case 'k': dispatch({ type: 'move', delta: -1, ids }); break
+        // A row past `pending` (a fresh auto-accept, still shown for the undo
+        // window) has already had its one decision — none of these keys have
+        // anything left to act on, so the cursor sitting on it is inert.
         case 'x':
-          if (!current) return
+          if (!isPending(current)) return
           dispatch({ type: 'toggleSelect', id: current.id })
           break
         case 'a':
-          if (!current) return
+          if (!isPending(current)) return
           acceptOne(current)
           break
         case 'r':
-          if (!current) return
+          if (!isPending(current)) return
           rejectOne(current)
           break
         case 'e':
-          if (!current) return
+          if (!isPending(current)) return
           onOpen(current, { edit: true })
           break
         case 'A':

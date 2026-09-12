@@ -4,7 +4,7 @@ parent: planning-and-automation
 title: Product-Management Layer
 state: delivering
 links:
-  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/tree.py, server/automations/pm_triage.py, server/automations/product_policy.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/detail/AutomationPolicyCard.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts]
+  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/tree.py, server/pm/triage_accept.py, server/automations/pm_triage.py, server/automations/product_policy.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/detail/AutomationPolicyCard.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalCard.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts, web/src/features/roadmap/inbox/triageSelectors.ts]
   prs: ['#866', '#879', '#893', '#897', '#899', '#1327']
 ---
 
@@ -43,8 +43,10 @@ project registration to `live` state.
 and deliberately does NOT arm auto-merge — the human merge is the curation gate
 (`server/pm/classification.py`). Not a blind-retry classifier — a rejected proposal sends the work
 item to `needs_human`, never a silent re-classify (`server/api/pm.py` `reject_triage`). Not an
-`auto` mode: `PmTriage.modes` is `("off", "propose")` only, the automation row ships
-`enabled=False`, and a human accept is the gate on everything it proposes. Not a re-proposing
+`auto` triage *mode*: `PmTriage.modes` is still `("off", "propose")` only, the automation row
+ships `enabled=False`, and a human accept is the gate on a proposal unless its product has opted
+in — phase 2's auto-accept (see "Triage auto-accept" below) is a per-product `triage_auto_accept`
+*policy* setting that runs inside `propose` mode, not a third loop mode. Not a re-proposing
 loop — the drift branch is latched (see Notes), so one unnamed capability yields one map-diff PR,
 not one per tick. The engine is pure/propose-only and never mutates onboarding state on its own.
 
@@ -159,11 +161,12 @@ the live `STAGE_SEQUENCE`, affecting every existing initiative, and it currently
 Revive it only when a concrete initiative needs a discovery artifact gate ahead of `intake`; the
 design for it is preserved in `docs/superpowers/plans/2026-08-31-pm-product-layer-phase4.md` Task 2.
 
-**Product automation policy (phase 1).** Each `Project` carries an opt-in `automation_policy` (JSON,
-nullable, `server/db/models.py`) that the Backlog Runner reads per product instead of one global
-config row governing every onboarded product alike. The schema — `PRODUCT_POLICY_SCHEMA` in
-`server/automations/product_policy.py`, the one `ConfigField` list and the one validated reader
-(`effective_policy`) every caller shares (constitution VI) — has seven fields this phase: `dispatch`
+**Product automation policy (phases 1–2).** Each `Project` carries an opt-in `automation_policy`
+(JSON, nullable, `server/db/models.py`) that the Backlog Runner — and, as of phase 2, the PM Triage
+loop — read per product instead of one global config row governing every onboarded product alike.
+The schema — `PRODUCT_POLICY_SCHEMA` in `server/automations/product_policy.py`, the one
+`ConfigField` list and the one validated reader (`effective_policy`) every caller shares
+(constitution VI) — has eight fields: `dispatch`
 (`off | propose | auto`, default `off` — whether the runner works this product's board at all, and
 whether a claimed batch is only announced or actually spawned), `queue_min_status` (default `Ready`,
 or `Backlog` to reach untriaged items — how far down the board the runner reaches), `max_in_flight`
@@ -174,15 +177,17 @@ like a spawned one, a `gave_up` or `handed_off` claim does not. `0` means PAUSED
 no claim while keeping the rest of its policy — never "unlimited"), `weight` (default 1, minimum 0 —
 its share when a freed slot is contested under the `weighted` selection strategy), `max_attempts`
 (default 2, minimum 1 — attempts per issue before the runner gives up), `default_model` (default
-`auto` — the session model; `auto` assesses each job), and `respect_dependencies` (default `true`).
-The minimums are `ConfigField.min`, enforced in `validate_config` (a below-minimum int is a 422
+`auto` — the session model; `auto` assesses each job), `respect_dependencies` (default `true`), and,
+landed in phase 2, `triage_auto_accept` (`off | high | medium`, default `off` — the PM Triage loop's
+own accept gate, at or above this confidence; `medium` includes `high`; see "Triage auto-accept"
+below). The minimums are `ConfigField.min`, enforced in `validate_config` (a below-minimum int is a 422
 `bad_policy`, not a browser courtesy) and published in the schema JSON so `ConfigInput` renders the
 same floor on the number input. `effective_policy`
 never raises: a `None` row (never opted in) and an unparseable one both read as the pure defaults,
-i.e. `dispatch: off`. `give_up_after_bounces` (bounce-based retry) and `triage_auto_accept`
-(confidence-tiered triage auto-accept) are in the design
-(`docs/superpowers/specs/2026-09-12-product-automation-policy-design.md` §4) but arrive with phases
-3 and 2 respectively, not this schema.
+i.e. `dispatch: off` and `triage_auto_accept: off`. `give_up_after_bounces` (bounce-based retry) is
+still in the design only
+(`docs/superpowers/specs/2026-09-12-product-automation-policy-design.md` §4) and arrives with
+phase 3, not this schema.
 
 It is edited from the product's Overview page (`web/src/features/roadmap/detail/AutomationPolicyCard.tsx`),
 an **Automation** card that renders every schema field through the same `ConfigInput` component the
@@ -230,11 +235,75 @@ concurrency-cap), `max_concurrent` (sessions in flight across every product comb
 `needs_human_retry_days` (the runner's own give-up cooldown — a property of the runner's retry
 behaviour, not of any one product's board).
 
-Phases 2–4 of the design add, respectively: confidence-tiered triage auto-accept per product
-(`triage_auto_accept`, §8), a `dispatch_outcomes` table feeding a bounce-based `needs_spec` skip and
-roadmap tier reason (`give_up_after_bounces`, §6–7), and a history-informed floor on the runner's
-model pick (§7). None of that has landed yet — see
+Phase 2 of the design has landed: confidence-tiered triage auto-accept per product
+(`triage_auto_accept`, §8 — the "Triage auto-accept" paragraph below). Phases 3–4 have not: a
+`dispatch_outcomes` table feeding a bounce-based `needs_spec` skip and roadmap tier reason
+(`give_up_after_bounces`, §6–7), and a history-informed floor on the runner's model pick (§7) — see
 `docs/superpowers/specs/2026-09-12-product-automation-policy-design.md` §11 for the phasing.
+
+**Triage auto-accept (phase 2).** For a product whose policy sets `triage_auto_accept` above `off`,
+`PmTriageLoop._auto_accept_pass` (`server/automations/pm_triage.py`) runs on every `propose`-mode
+tick, after the tick's one dispatched engine action (classify/drift/stale/needs-human/idle) —
+unconditionally, so a classify-saturated backlog never stalls accepts. It reads every product's
+policy through the injected `read_policies` seam (`_pm_triage_load_policies` in
+`server/sessions/orchestrator.py`, the same `load_policies` reader phase 1 uses) and lists every
+pending proposal as an `AutoAcceptCandidateView` through the `list_auto_accept_candidates` seam
+(`_pm_triage_list_auto_accept_candidates`: owning product via `owning_projects_by_repo`, the target
+capability's lifecycle `state`, and `auto_undone`). Each candidate is run through the ONE pure gate,
+`auto_accept_eligible` in `server/pm/triage_accept.py`: the product's tier and the proposal's
+`confidence_level` are ordered by index into `CONFIDENCE_LEVELS` (`server/pm/classification.py`,
+ascending `low < medium < high`), so a `medium` policy accepts `medium` and `high` alike; a
+`confidence_level` outside that vocabulary — including `None` — reads as `low` and is never
+auto-accepted; a `no_fit` proposal (`proposed_feature_id is None`) is never eligible, since creating
+a capability stays a human call; neither is a proposal whose target capability is still
+`state == "proposed"` (its doc is unmerged) nor one a human has already undone once
+(`auto_undone`). An eligible candidate is accepted through the injected `auto_accept` seam
+(`_pm_triage_auto_accept`), which re-reads the proposal in its own transaction — a human may have
+resolved it since the list, so a `None` return means "nothing left to accept," not a failure — and
+calls the SAME `apply_accept` (`server/pm/triage_accept.py`) the inbox routes use, with
+`decided_by=DECIDED_BY_AUTO` (the `"auto"` constant, stored on `WorkItem.classified_by`) and
+`audit_identity="pm-triage"`, recording the audit type `pm.triage.auto_accept`. A product is capped
+at `MAX_AUTO_ACCEPTS_PER_TICK = 25` accepts per tick — a constant in `pm_triage.py`, deliberately
+not a `ConfigField`: a blast-radius bound on an unattended writer, not an operator preference. The
+pass is fail-safe by construction: either of the pass's two DB reads failing — the policy read or
+the candidate listing — skips the whole pass for that tick and emits an `auto_accept_skipped` feed
+event, leaving the rest of the tick (including the status-card counts) to finish; one candidate's
+accept failure is logged and emits `auto_accept_failed` without aborting the rest of the pass; each
+accepted candidate emits `auto_accepted`; and a product that hits its cap emits one
+`auto_accept_capped` event, after the loop, naming the product (not the individual proposal ids)
+the cap deferred to the next tick. Candidates are read oldest-first and tie-broken on `id`
+(`order_by(created_at, id)`), so which of a backlog the cap lets through is the queue order the
+inbox shows and not the storage engine's — `created_at` alone is not a total order, since one
+classify session writes its whole batch under a single transaction timestamp.
+
+An auto-accept is undoable for the same `TRIAGE_UNDO_WINDOW_S` (60 s) window as a human accept,
+through the same `POST /api/pm/triage/{id}/undo` (`undo_triage`, `server/api/pm.py`) — but undoing
+one the loop made also sets `TriageProposal.auto_undone = True` so the gate above refuses to ever
+re-accept that proposal on a later tick; undoing a human accept the same way leaves `auto_undone`
+unset. Who decided is read from the proposal's OWN record: `apply_accept` stamps
+`undo_snapshot["decidedBy"]` (beside the pre-decision overlay, not inside it — `_restore_overlay`
+reads named overlay keys only and ignores it), and `undo_triage` keys `auto_undone` off that. It
+must not read `WorkItem.classified_by`, which is live overlay state any overlay PATCH rewrites to
+`"human"` — score an auto-accepted item inside its undo window, which is exactly what the chip
+invites, and the machine's authorship is gone, so the flag stays NULL and the loop re-accepts the
+proposal on its next tick. `list_triage`'s query widens to match the chip: alongside every `pending`
+proposal it now also returns proposals that are `accepted`, resolved within the undo window, AND
+whose work item carries `classified_by == DECIDED_BY_AUTO` — so a fresh auto-accept stays visible in
+the Inbox for exactly as long as it is undoable, then drops out of the list like a human accept's
+undo toast expires. That widening is for ONE surface, so `?pendingOnly=true` suppresses it and
+answers exactly `status == "pending"`; the assistant's `list_triage` tool passes it, because a
+decided row is not "awaiting a human decision". On the web the same distinction is one exported
+selector, `inbox/triageSelectors.ts` (`isPending` / `pendingProposals`), which the nav badge, the
+Inbox scope count, the bulk-selection prune and the row itself all read — no call site compares
+`status` for itself. `_triage_to_dict` carries `classifiedBy` and `resolvedAt` on every row so the
+web can tell a fresh auto-accept apart from a pending one. `ProposalCard.tsx` renders an
+`auto-accepted` info
+badge plus an inline Undo button (calling the ONE `useUndoProposal` hook — no second undo path) on
+exactly those rows, and disables rather than hides the row's bulk-select tick, so the leading rail
+stays aligned across a list mixing pending and fresh-auto-accepted rows. `InboxScopeBody.tsx`'s
+keyboard handlers (`a`/`r`/`e`/`x`) and its Select-All bulk-accept both no-op on a cursor or
+selection landing on a non-`pending` row, so a keystroke can never re-decide what the loop already
+accepted.
 
 This capability doc set is itself produced by the archaeology onboarding path dogfooding itself.
 The classification, onboarding and triage engines are pure functions (no I/O) mirroring
@@ -261,23 +330,28 @@ bounded classification batch and for synthesis/critic review separation on the r
 `server/pm/feature_index.py` (diff docs against `Feature` rows, orphan/revive planning);
 `server/pm/github_sync.py` (GraphQL backlog mirror for issues + PRs);
 `server/pm/engine.py` (pure `next_triage_action` — the classify → drift → stale priority ladder,
-with the latch above); `server/automations/pm_triage.py` (`PmTriage` + `PmTriageLoop`: the
-mechanical auto-link pass, one engine action per tick, rolling daily classify-session cap);
-`server/sessions/orchestrator.py` (`_pm_triage_*` seams + the loop's primary-only task);
+with the latch above); `server/pm/triage_accept.py` (the ONE `apply_accept`, shared by the inbox
+routes and the loop's auto-accept, and the pure `auto_accept_eligible` gate);
+`server/automations/pm_triage.py` (`PmTriage` + `PmTriageLoop`: the
+mechanical auto-link pass, one engine action per tick, rolling daily classify-session cap, the
+`_auto_accept_pass`); `server/sessions/orchestrator.py` (`_pm_triage_*` seams, including
+`_pm_triage_load_policies` / `_pm_triage_list_auto_accept_candidates` / `_pm_triage_auto_accept`,
+and the loop's primary-only task);
 `server/automations/pm_onboard.py`, `server/automations/pm_classify.py` (the two session
 origins' audited engine ceilings and their operator-triggered `modes = ()` declaration);
 `server/pm/repo_project.py` (the one repo→project resolver); `server/pm/score.py`
 (`rice_score` + `validate_rice` — the RICE formula and its input bounds in one place);
 `server/api/pm.py` (project registry, sync-now, edges, `/onboarding`, `/propose-map`, `/classify`,
-`/triage` accept/reject/accept-bulk, `/work-items/{id}/overlay`);
+`/triage` accept/reject/accept-bulk/undo, `/work-items/{id}/overlay`);
 `web/src/features/roadmap/RoadmapPage.tsx` (the portfolio / product / capability detail levels,
 with `OnboardingWizard` and `DependencyPanel` mounted as product tabs),
 `web/src/features/roadmap/RoadmapListColumn.tsx` (the Map, Initiatives and Inbox list scopes),
 `web/src/features/roadmap/InitiativePage.tsx`, `web/src/projects/OnboardingWizard.tsx`,
-`web/src/features/roadmap/inbox/InboxScopeBody.tsx` + `inboxKeys.ts` + `ProposalDetail.tsx` (the
-keyboard-first inbox: `j/k/a/e/r/x/A`, optimistic accept with a six-second server-backed Undo,
-cursor anchored to a proposal id so a queue that reorders under the user cannot misdirect a
-keystroke);
+`web/src/features/roadmap/inbox/InboxScopeBody.tsx` + `inboxKeys.ts` + `triageSelectors.ts` +
+`ProposalCard.tsx` + `ProposalDetail.tsx` (the keyboard-first inbox: `j/k/a/e/r/x/A`, optimistic accept with a
+six-second server-backed Undo, cursor anchored to a proposal id so a queue that reorders under
+the user cannot misdirect a keystroke, and the "auto-accepted" chip + Undo for the loop's own
+accepts);
 `specs/001-ccswitch-web/spec.md` (§§3–7). PRs: #866 (design spec), #879 (phase 2–4 plans),
 #893 (Phase 1), #897 (Phase 2), #899 (remote-mode seam fix), #1327 (Phase 3),
 #1268/#1269 (Codex parity for the onboarding, critic and classification sessions).

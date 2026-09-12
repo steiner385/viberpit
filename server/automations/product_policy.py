@@ -3,8 +3,8 @@ schema (`PRODUCT_POLICY_SCHEMA`) and the ONE validated reading (`effective_polic
 product's automation knobs — whether the Backlog Runner dispatches for it, how far down its
 board it reaches, its in-flight cap and weight, its attempt cap, its session model.
 
-Phase 1 only: `triage_auto_accept` (phase 2) and `give_up_after_bounces` (phase 3) are not part
-of this schema yet.
+`triage_auto_accept` joined the schema in phase 2 (the PM Triage loop's auto-accept tier);
+`give_up_after_bounces` (phase 3) is not part of this schema yet.
 
 Stored on ``Project.automation_policy`` as a JSON blob validated through this schema at write
 time (``PATCH /api/pm/projects/{slug}/policy``) — so a row in the DB is already valid. But
@@ -59,6 +59,14 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 help="Model for this product's sessions; 'auto' assesses each job."),
     ConfigField(key="respect_dependencies", label="Respect issue dependencies", type="bool",
                 default=True),
+    # Phase 2 (spec §4, §8): the PM Triage loop's own dispatch decision. Ordered
+    # by ``server/pm/classification.py:CONFIDENCE_LEVELS`` — "medium" means "medium
+    # or better", so the choices read as a descending strictness, not a set.
+    ConfigField(key="triage_auto_accept", label="Triage auto-accept", type="enum",
+                default="off", choices=["off", "high", "medium"],
+                help="Accept this product's classification proposals at or above this "
+                     "confidence without a human; medium includes high. Never a no-fit "
+                     "proposal, never one whose capability doc is still proposed."),
 ]
 
 # Logged once per process, not once per bad row: a corrupt policy is a per-deploy fact
