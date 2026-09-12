@@ -816,6 +816,69 @@ def test_pr_doctor_attempts_seam_reads_the_total_off_the_doctors_row(tmp_path):
     asyncio.run(run())
 
 
+def test_the_seam_counts_the_lifetime_totals_that_outlive_a_recovery_clear(tmp_path):
+    """R3-10: the doctor's ``total_*`` ceiling is deliberately reset when CI
+    recovers (a green PR earns a fresh budget), so ``total_*`` alone cannot answer
+    "did the doctor ever act on this PR". The recovery clear carries the counts
+    forward under ``lifetime_*``, which the ENGINE never reads — the seam sums all
+    four, so a doctored PR reads ≥1 no matter how many recoveries it went through.
+    An empty row is still UNKNOWN: the carry writes ``{}`` when there is nothing
+    to carry, so ``{}`` still means "the doctor's row says nothing"."""
+    async def run():
+        await _init(tmp_path, "prdoc_lifetime.db")
+        orch = _orch_with_ctx()
+
+        # Post-recovery-clear shape: only the lifetime counters remain.
+        await orch._pr_doctor_ctx.set_target_state(
+            "o/r#20", {"lifetime_attempts": 2, "lifetime_mechanical": 0})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#20") == 2
+        await orch._pr_doctor_ctx.set_target_state(
+            "o/r#21", {"lifetime_attempts": 0, "lifetime_mechanical": 1})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#21") == 1
+
+        # Recovered once, then doctored again: both halves count, never double.
+        await orch._pr_doctor_ctx.set_target_state("o/r#22", {
+            "lifetime_attempts": 2, "lifetime_mechanical": 1,
+            "total_attempts": 1, "total_mechanical": 1, "attempts": 0})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#22") == 5
+
+        # A row carrying explicit zeros is still a known zero, not unknown.
+        await orch._pr_doctor_ctx.set_target_state(
+            "o/r#23", {"lifetime_attempts": 0, "lifetime_mechanical": 0,
+                       "last_head_sha": "abc"})
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#23") == 0
+
+    asyncio.run(run())
+
+
+def test_the_recovery_carry_keeps_the_counts_and_drops_the_give_up_ceiling(tmp_path):
+    """The pure half of the clear (``_pr_doctor_lifetime_carry``). Two invariants:
+
+    * the engine's give-up keys (``total_attempts`` / ``total_mechanical``,
+      ``attempts``, ``attempted``, ``gave_up``, ``last_*``) are NOT carried — the
+      clear must still hand a recovered PR a fresh budget, exactly as before;
+    * a target the doctor never acted on carries nothing, so its clear is still a
+      byte-for-byte ``{}`` and the seam still answers UNKNOWN for it.
+    """
+    orch = _orch_with_ctx()
+    carry = orch._pr_doctor_lifetime_carry
+
+    assert carry({}) == {}
+    assert carry({"last_head_sha": "abc", "attempts": 0}) == {}
+    assert carry({"attempted": True, "attempts": 1, "total_attempts": 1,
+                  "last_action_sha": "sha1", "gave_up": False}) == {
+        "lifetime_attempts": 1, "lifetime_mechanical": 0}
+    assert carry({"total_mechanical": 2}) == {
+        "lifetime_attempts": 0, "lifetime_mechanical": 2}
+    # Cumulative across repeated recoveries.
+    assert carry({"lifetime_attempts": 2, "lifetime_mechanical": 1,
+                  "total_attempts": 1, "total_mechanical": 3}) == {
+        "lifetime_attempts": 3, "lifetime_mechanical": 4}
+    # A garbage value from an old row degrades to 0 — the clear must never raise
+    # inside the PR poller's transition callback.
+    assert carry({"total_attempts": "x", "total_mechanical": None}) == {}
+
+
 def test_both_tap_spawn_paths_record_a_running_outcome(tmp_path):
     """The propose tap and manual dispatch are dispatches too (spec §6): each
     leaves the same ``running`` row the loop's auto path writes, carrying the

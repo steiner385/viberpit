@@ -2432,6 +2432,90 @@ def test_a_doctor_row_without_counters_still_reads_as_a_first_pass_merge(tmp_pat
     asyncio.run(run())
 
 
+def test_a_doctor_rescued_merge_is_not_a_first_pass_merge(tmp_path):
+    """The regression R3-10 asks for: ``first_pass_merge`` must survive PR
+    Doctor's own recovery clear.
+
+    PR Doctor WIPES its per-target row when CI goes green after an attempt
+    (``_on_pr_change``), and every SUCCESSFUL session fix ends in exactly that
+    failing→passing transition — while auto-merge only ever lands a green PR. So
+    at merge time the row was counter-less in precisely the case the metric
+    exists to detect, and a doctor-rescued merge was branded a first pass.
+
+    Driven through the real writers end to end: ``record_attempt`` (what
+    ``_pr_doctor_step``'s SessionFix branch persists) → the real ``_on_pr_change``
+    recovery clear → ``apply_rearm`` re-writing a fresh row on the next poll →
+    the runner's sweep seeing the merge. The doctored PR must read False; a
+    tracked PR the doctor never touched must still read True."""
+
+    async def one(name: str, *, doctored: bool, expected: bool):
+        from types import SimpleNamespace
+
+        from server.automations import pr_doctor_engine as engine
+        from server.db.models import Automation
+        from server.github.pr_status import PullRequestInfo
+        from server.sessions.orchestrator import SessionOrchestrator
+
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / name}")
+        await _seed_row()
+        await _seed_product()
+        async with db_session() as db:
+            db.add(Automation(id="pr-doctor"))
+
+        def _info(**over):
+            base = dict(number=12, url="https://example/pr/12", state="open",
+                        checks="failing", title="", head_sha="sha1")
+            base.update(over)
+            return PullRequestInfo(**base)
+
+        failing = _info()
+        orch = SessionOrchestrator.__new__(SessionOrchestrator)
+        orch._pr_doctor_ctx = AutomationContext("pr-doctor")
+        orch._pushed_pr = set()
+        orch._records = {}
+        orch._pr_poller = SimpleNamespace(  # type: ignore[assignment]
+            cached=lambda _repo, _branch: failing)
+
+        ctx = orch._pr_doctor_ctx
+        st = engine.apply_rearm(await ctx.get_target_state("o/r#12"), failing)
+        if doctored:
+            # Exactly what _pr_doctor_step persists after a real injection.
+            st = engine.record_attempt(st, engine.SessionFix(kind="failing_ci"), "sha1")
+            st["attempted"] = True
+        await ctx.set_target_state("o/r#12", st)
+
+        # The fix lands and CI turns green — the recovery clear fires here.
+        await orch._on_pr_change("o/r", "feat/x", "failing", "passing")
+        # The doctor's give-up ceiling IS reset by the clear (unchanged
+        # semantics: a recovered PR earns a fresh budget).
+        assert (await ctx.get_target_state("o/r#12")).get("total_attempts", 0) == 0
+
+        # The next poll cycle re-arms the still-open, now-green PR.
+        green = _info(checks="passing", head_sha="sha2")
+        await ctx.set_target_state(
+            "o/r#12", engine.apply_rearm(await ctx.get_target_state("o/r#12"), green))
+
+        merged = PullRequestInfo(number=12, url="https://example/pr/12",
+                                 state="merged", checks="none", title="", merged=True)
+        loop, _rec, _ctx = build_loop(
+            candidates=[batch("o/r#1")], pr_status={"o/r#1": merged},
+            spawn_result=SimpleNamespace(id="sess-1"),
+            pr_doctor_attempts_fn=orch._backlog_pr_doctor_attempts_for)
+
+        await loop.tick()
+
+        rows = await _outcomes("o/r#1")
+        assert len(rows) == 1
+        assert rows[0].outcome == "merged"
+        assert rows[0].first_pass_merge is expected
+
+    async def run():
+        await one("oc_rescued.db", doctored=True, expected=False)
+        await one("oc_untouched.db", doctored=False, expected=True)
+
+    asyncio.run(run())
+
+
 def test_pr_doctor_gave_up_finalises_pr_gave_up(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_prgu.db'}"
 

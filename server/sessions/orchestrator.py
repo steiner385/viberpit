@@ -5134,20 +5134,60 @@ class SessionOrchestrator:
             log.debug("backlog_runner.pr_doctor_active_failed", exc_info=True)
             return False
 
+    @staticmethod
+    def _pr_doctor_lifetime_carry(state: dict) -> dict:
+        """What PR Doctor's RECOVERY clear leaves behind — the lifetime counts.
+
+        The clear (``_on_pr_change``, CI back to green after an attempt) must keep
+        resetting the engine's give-up ceiling: ``plan_recovery`` keys give-up on
+        ``total_attempts`` / ``total_mechanical``, and a PR whose CI recovered has
+        earned a fresh budget. But after that reset NOTHING remembers that the
+        doctor ever acted, and ``first_pass_merge`` is exactly that question
+        (R3-10) — every successful session fix ends in a failing→passing
+        transition, so the wipe hit the metric in precisely the case it exists to
+        detect.
+
+        So the counts are carried forward under ``lifetime_*`` keys, which:
+        * the ENGINE NEVER READS (give-up is unaffected — proven by PR Doctor's
+          own suite passing untouched), and
+        * ``apply_rearm`` / ``record_attempt`` preserve through every later cycle
+          (both copy the whole dict, so unknown keys survive).
+
+        ``{}`` when there is nothing to carry, so a target the doctor only ever
+        WATCHED clears byte-for-byte as it did before and the seam below still
+        answers UNKNOWN for it rather than inventing a zero."""
+        def _n(key: str) -> int:
+            try:
+                return int(state.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                return 0  # a garbage value must never raise inside the poller
+
+        carry = {"lifetime_attempts": _n("lifetime_attempts") + _n("total_attempts"),
+                 "lifetime_mechanical": _n("lifetime_mechanical") + _n("total_mechanical")}
+        if not (carry["lifetime_attempts"] or carry["lifetime_mechanical"]):
+            return {}
+        return carry
+
     async def _backlog_pr_doctor_attempts_for(self, pr_ref: str) -> int | None:
         """How much recovery PR Doctor injected into *pr_ref* (``repo#N``), or
         None when that is UNKNOWN.
 
         Read off PR Doctor's own per-target state: ``total_attempts`` (session
         fixes) + ``total_mechanical`` (mechanical injections) are its monotonic,
-        re-arm-immune counters (``pr_doctor_engine.record_attempt``). BOTH count —
-        the runner turns this into ``first_pass_merge``, and a first pass means no
-        doctor recovery of ANY kind, so a merge carried home by mechanical-only
-        fixes is not one (R3-7).
+        re-arm-immune counters (``pr_doctor_engine.record_attempt``), and
+        ``lifetime_attempts`` / ``lifetime_mechanical`` are the same counts
+        carried across a recovery clear by ``_pr_doctor_lifetime_carry`` (the
+        ``total_*`` pair is deliberately reset there, so it alone under-reports a
+        doctor-rescued PR — R3-10). All four count, and they never overlap: the
+        carry moves ``total_*`` into ``lifetime_*`` and zeroes the source.
+
+        BOTH KINDS count — the runner turns this into ``first_pass_merge``, and a
+        first pass means no doctor recovery of ANY kind, so a merge carried home
+        by mechanical-only fixes is not one (R3-7).
 
         The UNKNOWN test is the STATE ROW, not the counters: ``record_attempt``
         only ever writes a counter starting at 1, so a tracked PR the doctor never
-        had to act on carries neither key and is a real, known zero. (Keying
+        had to act on carries none of the keys and is a real, known zero. (Keying
         unknown on a missing ``total_attempts`` made ``first_pass_merge is True``
         unreachable in production.) An empty dict — no row at all, or one the
         doctor already cleared at terminal (``set_target_state(target, {})``) — and
@@ -5160,7 +5200,9 @@ class SessionOrchestrator:
         if not st:
             return None
         try:
-            return int(st.get("total_attempts", 0)) + int(st.get("total_mechanical", 0))
+            return (int(st.get("total_attempts", 0)) + int(st.get("total_mechanical", 0))
+                    + int(st.get("lifetime_attempts", 0))
+                    + int(st.get("lifetime_mechanical", 0)))
         except (TypeError, ValueError):
             return None
 
@@ -9644,10 +9686,15 @@ class SessionOrchestrator:
                     # Any recorded attempt (session-fix or mechanical) means we
                     # tried and CI is now green → clear the per-target state so a
                     # fresh break re-attempts. ``attempted`` kept for back-compat
-                    # with rows written before the engine migration.
+                    # with rows written before the engine migration. The clear
+                    # keeps ONLY the seam-only lifetime counts (R3-10): the
+                    # give-up ceiling is still reset, but the fact that the doctor
+                    # acted has to outlive the wipe or every doctor-rescued merge
+                    # reads as a first-pass merge.
                     if (state.get("attempted") or state.get("attempts")
                             or state.get("mechanical_attempts")):
-                        await self._pr_doctor_ctx.set_target_state(target, {})
+                        await self._pr_doctor_ctx.set_target_state(
+                            target, self._pr_doctor_lifetime_carry(state))
                         await self._pr_doctor_ctx.emit(
                             "info", f"{repo}#{info.number} CI recovered",
                             kind="recovered", target=target)
