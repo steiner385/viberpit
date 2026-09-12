@@ -1,7 +1,8 @@
 """Pure attention-tier and rollup rules for the roadmap tree (spec §11)."""
 from server.pm.tree import (
     TIERS, CapabilityIn, InitiativeIn, ProductIn, build_product_tree,
-    capability_own_tier, incident_tier, initiative_tier, issue_tier, max_tier,
+    capability_own_tier, derived_stage, incident_tier, initiative_tier,
+    issue_tier, max_tier, rollup_epic_progress,
 )
 
 
@@ -195,3 +196,111 @@ def test_blocked_initiative_node_carries_its_reason():
     # the reason field says why it needs a human beyond its status, and it does not.
     park = _initiative_node(InitiativeIn("w", "W", "build", "awaiting_human", None, (), epic), "p")
     assert (park["tier"], park["reason"]) == ("needs-you", None)
+
+
+def test_rollup_sums_leaf_descendants_and_leaves_leaves_alone():
+    entries = {
+        "prog": {"ref": "o/r#1", "url": "u1", "total": 2, "done": 0, "blocked": 0, "needsHuman": 0},
+        "p1": {"ref": "o/r#2", "url": "u2", "total": 4, "done": 1, "blocked": 1, "needsHuman": 0},
+        "p2": {"ref": "o/r#3", "url": "u3", "total": 6, "done": 3, "blocked": 0, "needsHuman": 2},
+        "solo": {"ref": "o/r#9", "url": "u9", "total": 5, "done": 5, "blocked": 0, "needsHuman": 0},
+        "noepic": None,
+    }
+    parent_of = {"prog": None, "p1": "prog", "p2": "prog", "solo": None, "noepic": None}
+    out = rollup_epic_progress(entries, parent_of)
+    assert out["prog"] == {"ref": "o/r#1", "url": "u1", "total": 10, "done": 4, "blocked": 1, "needsHuman": 2}
+    assert out["p1"] == entries["p1"] and out["solo"] == entries["solo"] and out["noepic"] is None
+
+
+def test_rollup_walks_grandchildren_and_a_program_without_an_epic_entry():
+    entries = {"prog": None, "mid": None, "leaf": {"ref": "o/r#5", "url": "u", "total": 3, "done": 1, "blocked": 0, "needsHuman": 0}}
+    parent_of = {"prog": None, "mid": "prog", "leaf": "mid"}
+    out = rollup_epic_progress(entries, parent_of)
+    assert out["prog"] == {"ref": None, "url": None, "total": 3, "done": 1, "blocked": 0, "needsHuman": 0}
+    assert out["mid"] == out["prog"] | {"ref": None, "url": None}
+
+
+def test_derived_stage_is_the_earliest_unfinished_phase():
+    # NOTE: the plan brief's draft of this assertion expected "plan" here, but that
+    # contradicts both the brief's own sample implementation (min by
+    # INITIATIVE_STAGES.index) and mirror_store.back_sync_stage's comment ("a
+    # program's stage is derived from its phases" = the laggard, i.e. the
+    # earliest/least-advanced non-done stage). "design" (index 1) is earlier than
+    # "plan" (index 2) in INITIATIVE_STAGES, so it is the correct expected value —
+    # flagged in the Task 4 report rather than silently left as a typo.
+    assert derived_stage(["design", "plan", "build"]) == "design"
+    assert derived_stage(["done", "deploy"]) == "deploy"
+    assert derived_stage(["done", "done"]) == "done"
+    assert derived_stage([]) is None
+    assert derived_stage([None, "build"]) == "build"
+    # No entry recognized (e.g. every phase's mirrored stage was garbage or
+    # unset) → None, so callers fall back to the row's own stage rather than
+    # a phantom "done". A "done" entry mixed with an unrecognized one is still
+    # "done": every RECOGNIZED entry is done, and at least one is recognized.
+    assert derived_stage([None, None]) is None
+    assert derived_stage(["bogus"]) is None
+    assert derived_stage([None, "done"]) == "done"
+
+
+def test_program_reason_tier_and_counts_come_from_its_phases():
+    phase_epic = {"ref": "o/r#2", "url": "u", "total": 4, "done": 4, "blocked": 0, "needsHuman": 0}
+    product = ProductIn(
+        slug="p", name="P", capabilities=(_cap("a11y"),),
+        initiatives=(
+            InitiativeIn(slug="audit", title="UI audit", stage="design", status="active",
+                         primary_slug="a11y", capability_slugs=("a11y",),
+                         epic={"ref": "o/r#1", "url": "u", "total": 4, "done": 4, "blocked": 0, "needsHuman": 0}),
+            InitiativeIn(slug="audit-01", title="01", stage="build", status="active",
+                         primary_slug="a11y", capability_slugs=("a11y",), epic=phase_epic,
+                         parent_slug="audit"),
+            InitiativeIn(slug="audit-02", title="02", stage="design", status="active",
+                         primary_slug="a11y", capability_slugs=("a11y",), epic=None,
+                         parent_slug="audit"),
+        ),
+        awaiting_triage=0, needs_home=0, incident_statuses=())
+    tree = build_product_tree(product)
+    by_slug = {i["slug"]: i for i in tree["initiatives"]}
+    assert by_slug["audit-01"]["reason"] == "advance" and by_slug["audit-01"]["tier"] == "needs-you"
+    assert by_slug["audit"]["reason"] is None                 # a program never "advances"
+    assert by_slug["audit"]["tier"] == "needs-you"            # …but inherits its phase's tier
+    assert by_slug["audit"]["hasChildren"] is True and by_slug["audit"]["parentInitiative"] is None
+    assert by_slug["audit-01"]["parentInitiative"] == "audit"
+    a11y = tree["capabilities"][0]
+    assert a11y["counts"]["needsYou"] == 1 and a11y["counts"]["inFlight"] == 1   # leaves only, no double count
+    assert tree["counts"]["needsYou"] == 1
+
+
+def test_rollup_breaks_a_cycle_into_roots():
+    """A mutual parent_slug pair must never blow the stack: 'unknown or cyclic
+    parent counts as a root' applies here too, so each entry passes through
+    unchanged — both are simultaneously roots and leaves of themselves."""
+    entries = {
+        "a": {"ref": "o/r#1", "url": "u1", "total": 2, "done": 1, "blocked": 0, "needsHuman": 0},
+        "b": {"ref": "o/r#2", "url": "u2", "total": 3, "done": 0, "blocked": 1, "needsHuman": 0},
+    }
+    parent_of = {"a": "b", "b": "a"}
+    out = rollup_epic_progress(entries, parent_of)
+    assert out == entries
+
+
+def test_cyclic_initiative_parents_become_roots():
+    """A mutual parent_slug pair must not silently become two "programs" that
+    hide each other's counts (both hasChildren=True bumps nothing): the
+    sanitize rule demotes both to independent, leaf roots."""
+    product = ProductIn(
+        slug="p", name="P", capabilities=(_cap("infra"),),
+        initiatives=(
+            InitiativeIn(slug="x", title="X", stage="build", status="blocked",
+                         primary_slug="infra", capability_slugs=("infra",), epic=None,
+                         parent_slug="y"),
+            InitiativeIn(slug="y", title="Y", stage="build", status="blocked",
+                         primary_slug="infra", capability_slugs=("infra",), epic=None,
+                         parent_slug="x"),
+        ),
+        awaiting_triage=0, needs_home=0, incident_statuses=())
+    tree = build_product_tree(product)
+    by_slug = {i["slug"]: i for i in tree["initiatives"]}
+    assert by_slug["x"]["parentInitiative"] is None and by_slug["x"]["hasChildren"] is False
+    assert by_slug["y"]["parentInitiative"] is None and by_slug["y"]["hasChildren"] is False
+    infra = tree["capabilities"][0]
+    assert infra["counts"]["blocked"] == 2

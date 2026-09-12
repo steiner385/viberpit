@@ -97,8 +97,11 @@ def next_onboarding_action(view: ProjectOnboardingView) -> OnboardingAction:
     state = view.state
 
     if state in ("registered", "syncing"):
-        # `syncing` is declared but no loop writes it (pm-sync backfills without
-        # touching onboarding_state), so `registered` carries the same ladder.
+        # `syncing` is declared and no loop writes it INTO this state, so
+        # `registered` carries the same ladder here — but pm-sync now advances
+        # both `registered` and `syncing` straight to `map_merged` once it has
+        # indexed ≥1 default-branch doc (`_pm_sync_apply_feature_plan`), so a
+        # project can leave `syncing` without ever passing through here.
         if view.repo_count <= 0:
             return Register()
         if view.backfill_done_count < view.repo_count:

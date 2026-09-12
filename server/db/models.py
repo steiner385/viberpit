@@ -1250,6 +1250,12 @@ class Initiative(Base):
     # Owning project; nullable so pre-PM initiatives keep working unlinked.
     project_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("projects.id"), nullable=True, index=True)
+    # Program → phase nesting, mirrored from GitHub's sub-issue parent when the
+    # parent is itself an adopted epic (roadmap 5S plan, Standardize 3). NULL =
+    # a root initiative. Programs are derived nodes: their stage and tier come
+    # from their phases and they are never advanced or back-synced directly.
+    parent_initiative_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("initiatives.id"), nullable=True, index=True)
     # timezone=True to match the newer tables: both default to _utcnow() (AWARE),
     # which asyncpg rejects into a naive `timestamp without time zone` column.
     created_at: Mapped[datetime] = mapped_column(
@@ -1512,6 +1518,14 @@ class Feature(Base):
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     state: Mapped[str | None] = mapped_column(String, nullable=True)  # FEATURE_LIFECYCLE_STATES
     summary: Mapped[str | None] = mapped_column(String, nullable=True)
+    # `labels:` frontmatter — GitHub labels that route a work item onto this
+    # capability mechanically (pm-triage's auto-link pass), so bot-filed issues
+    # (`flaky`, `forced-deploy-audit`, …) never reach the classifier and never
+    # cluster into a proposed capability. The doc owns the rule; this mirrors it.
+    # none_as_null so an explicit None is SQL NULL and `route_labels IS NOT NULL`
+    # means "routes something."
+    route_labels: Mapped[list | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, default=None)
     repo_path: Mapped[str | None] = mapped_column(String, nullable=True)
     commit_sha: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
