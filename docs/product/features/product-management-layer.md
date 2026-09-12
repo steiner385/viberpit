@@ -265,11 +265,14 @@ calls the SAME `apply_accept` (`server/pm/triage_accept.py`) the inbox routes us
 `audit_identity="pm-triage"`, recording the audit type `pm.triage.auto_accept`. A product is capped
 at `MAX_AUTO_ACCEPTS_PER_TICK = 25` accepts per tick — a constant in `pm_triage.py`, deliberately
 not a `ConfigField`: a blast-radius bound on an unattended writer, not an operator preference. The
-pass is fail-safe by construction: a failed policy read skips the whole pass for that tick and emits
-an `auto_accept_skipped` feed event; one candidate's accept failure is logged and emits
-`auto_accept_failed` without aborting the rest of the pass; each accepted candidate emits
-`auto_accepted`; and a product that hits its cap emits one `auto_accept_capped` event, after the
-loop, naming the ids the cap deferred to the next tick.
+pass is fail-safe by construction: either of the pass's two DB reads failing — the policy read or
+the candidate listing — skips the whole pass for that tick and emits an `auto_accept_skipped` feed
+event, leaving the rest of the tick (including the status-card counts) to finish; one candidate's
+accept failure is logged and emits `auto_accept_failed` without aborting the rest of the pass; each
+accepted candidate emits `auto_accepted`; and a product that hits its cap emits one
+`auto_accept_capped` event, after the loop, naming the product (not the individual proposal ids)
+the cap deferred to the next tick. Candidates are read oldest-first, so which of a backlog the cap
+lets through is the queue order the inbox shows and not the storage engine's.
 
 An auto-accept is undoable for the same `TRIAGE_UNDO_WINDOW_S` (60 s) window as a human accept,
 through the same `POST /api/pm/triage/{id}/undo` (`undo_triage`, `server/api/pm.py`) — but undoing
