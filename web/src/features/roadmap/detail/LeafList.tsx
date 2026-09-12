@@ -2,7 +2,8 @@
 // work actually is. Open first and closed below it, because "what is left" is
 // the question the list is opened with; the closed rows stay because they are
 // the evidence a capability is finished (finish-line spec §7).
-import type { Leaf, LeavesScope } from '@/api/roadmap'
+import { useMemo } from 'react'
+import type { Leaf, LeavesScope, ProductNode, CapabilityNode } from '@/api/roadmap'
 import { useLeaves, useRemoveDependency } from '@/api/hooks'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { Skeleton } from '@/ui/Skeleton'
@@ -14,6 +15,8 @@ import { ISSUE } from '@/features/products/vocab'
 import { issueUrl } from '@/lib/githubUrl'
 import { tierLabel } from '../roadmapTier'
 import { TierDot } from '../rows/TierDot'
+import { flattenCapabilities } from '../lookup'
+import { LeafScoreButton, LeafCapabilityChip } from './LeafEditors'
 
 /** `owner/repo#N` → `#N` when it is the leaf's own repo; the full ref otherwise. */
 function shortRef(ref: string, ownRepo: string): string {
@@ -53,7 +56,7 @@ function BlockerRow({ leaf, blockerRef }: { leaf: Leaf; blockerRef: string }) {
   )
 }
 
-function LeafRow({ leaf }: { leaf: Leaf }) {
+function LeafRow({ leaf, capabilities }: { leaf: Leaf; capabilities: { node: CapabilityNode; depth: number }[] }) {
   const blockers = leaf.blockedBy.length
   return (
     <li className="flex flex-col gap-1 rounded-md border border-edge bg-surface p-2 text-sm">
@@ -82,9 +85,8 @@ function LeafRow({ leaf }: { leaf: Leaf }) {
         {blockers > 0 && (
           <Badge tone="danger" count={blockers} aria-label={`${blockers} blocker${blockers === 1 ? '' : 's'}`} />
         )}
-        <span className="w-10 shrink-0 text-right text-xs tabular-nums text-ink-muted" title="Priority score">
-          {leaf.score?.toFixed(1) ?? '—'}
-        </span>
+        <LeafCapabilityChip leaf={leaf} capabilities={capabilities} />
+        <LeafScoreButton leaf={leaf} />
       </div>
       {blockers > 0 && (
         // GitHub owns the edge, but removing it is the one disposition a blocked
@@ -97,8 +99,9 @@ function LeafRow({ leaf }: { leaf: Leaf }) {
   )
 }
 
-export function LeafList({ scope }: { scope: LeavesScope }) {
+export function LeafList({ scope, product }: { scope: LeavesScope; product: ProductNode | null }) {
   const { data, isLoading, isError } = useLeaves(scope)
+  const capabilities = useMemo(() => (product ? flattenCapabilities(product.capabilities) : []), [product])
   // The leaves are their own query, so a failure here costs only this panel;
   // everything around it came from the map and stays on screen.
   if (isError && !data) {
@@ -119,7 +122,7 @@ export function LeafList({ scope }: { scope: LeavesScope }) {
         <section>
           <h3 className="mb-1 text-xs font-medium uppercase text-ink-muted">Open · {open.length}</h3>
           <ul className="flex flex-col gap-1">
-            {open.map((l) => <LeafRow key={l.id} leaf={l} />)}
+            {open.map((l) => <LeafRow key={l.id} leaf={l} capabilities={capabilities} />)}
           </ul>
         </section>
       )}
@@ -127,7 +130,7 @@ export function LeafList({ scope }: { scope: LeavesScope }) {
         <section>
           <h3 className="mb-1 text-xs font-medium uppercase text-ink-muted">Closed · {closed.length}</h3>
           <ul className="flex flex-col gap-1">
-            {closed.map((l) => <LeafRow key={l.id} leaf={l} />)}
+            {closed.map((l) => <LeafRow key={l.id} leaf={l} capabilities={capabilities} />)}
           </ul>
         </section>
       )}

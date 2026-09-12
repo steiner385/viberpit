@@ -2056,7 +2056,13 @@ export function useUpdateOverlay() {
     { itemId: string; edit: OverlayEdits }
   >({
     mutationFn: ({ itemId, edit }) => updateOverlay(itemId, edit),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: QK.triage }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.triage })
+      // A score reorders every leaves list the row is in; a capability change
+      // moves the row between nodes and shifts two nodes' counts on the map.
+      void qc.invalidateQueries({ queryKey: ['pm', 'leaves'] })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+    },
     onError: (e) => toast.error(extractMutationErrorMessage(e, 'Could not update work item')),
     meta: PM_MUTATION_META,
   })

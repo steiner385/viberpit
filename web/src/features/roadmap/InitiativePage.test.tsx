@@ -93,6 +93,7 @@ vi.mock('@/api/hooks', () => ({
   useRejectMaterialization: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useLeaves: () => ({ data: h.state.leaves, isLoading: false, isError: false }),
   useRemoveDependency: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
+  useUpdateOverlay: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useStepBackInitiative: () => ({ mutate: h.stepBackMutate, isPending: false, isError: false, error: null }),
   useUnblockInitiative: () => ({ mutate: h.unblockMutate, isPending: false, isError: false, error: null }),
   useUpdateInitiative: () => ({ mutate: h.updateMutate, isPending: false, isError: false, error: null }),
@@ -166,7 +167,8 @@ describe('InitiativePage', () => {
       id: 'w1', ref: 'cairnea/KinDash#1', repo: 'cairnea/KinDash', number: 1, kind: 'issue',
       title: 'Child one', url: 'https://x/1', state: 'open', triageState: 'classified', score: 3,
       reach: null, impact: null, effort: null, confidence: null, tier: 'blocked',
-      blockedBy: ['cairnea/KinDash#9'], parentRef: 'cairnea/KinDash#15727', sessionStatus: null, ghCreatedAt: null,
+      blockedBy: ['cairnea/KinDash#9'], parentRef: 'cairnea/KinDash#15727', featureId: null,
+      sessionStatus: null, ghCreatedAt: null,
     }]
     mount('/initiatives/views?tab=epic')
     expect(screen.getByRole('link', { name: '#1 Child one' })).toBeInTheDocument()

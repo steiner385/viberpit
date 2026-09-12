@@ -34,10 +34,9 @@ import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { Badge, type Tone } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
 import { Field } from '@/ui/Field'
-import { Input } from '@/ui/Input'
 import { Select } from '@/ui/Select'
 import { CAPABILITY } from '@/features/products/vocab'
-import { scoreInputValue } from './inboxKeys'
+import { ScoreFields, SCORE_FIELDS, type ScoreField } from './ScoreFields'
 import { riceScore } from './rice'
 
 /** A capability the proposal could be homed on — `flattenCapabilities` of its
@@ -67,10 +66,6 @@ export interface ProposalDetailProps {
   /** The decision is made; the page moves on. */
   onDone: () => void
 }
-
-/** The four RICE inputs, in formula order (`server/pm/score.py:RICE_FIELDS`). */
-const FIELDS = ['reach', 'impact', 'effort', 'confidence'] as const
-type ScoreField = typeof FIELDS[number]
 
 /** The list column's key map, which lives on `window` and must not reach past
  *  this pane. `A` is Shift+a, and just as destructive. */
@@ -133,11 +128,11 @@ export function ProposalDetail({
   }
   const differs = (f: ScoreField) => (effective[f] ?? null) !== (p[f] ?? null)
   const featureChanged = (effective.featureId ?? null) !== (p.proposedFeatureId ?? null)
-  const changed = FIELDS.some(differs) || featureChanged
+  const changed = SCORE_FIELDS.some(differs) || featureChanged
   // Only what actually moved: an accept body that restates the proposal's own
   // values is noise in the audit trail and in the diff a reviewer reads.
   const edited: OverlayEdits = {}
-  for (const f of FIELDS) if (differs(f)) edited[f] = effective[f]
+  for (const f of SCORE_FIELDS) if (differs(f)) edited[f] = effective[f]
   if (featureChanged) edited.featureId = effective.featureId
   const score = riceScore(effective.reach, effective.impact, effective.effort, effective.confidence)
   const name = p.title ?? p.id
@@ -201,20 +196,7 @@ export function ProposalDetail({
           before an irreversible accept, so it reads before the form. */}
       {p.rationale && <p className="text-sm text-ink">{p.rationale}</p>}
       <form className="flex flex-col gap-3" onSubmit={(e) => { e.preventDefault(); saveAndAccept() }}>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {FIELDS.map((f, i) => (
-            <Field key={f} label={f} htmlFor={`score-${f}`}>
-              <Input
-                id={`score-${f}`}
-                type="number"
-                aria-label={f}
-                ref={i === 0 ? firstRef : undefined}
-                value={edits[f] ?? ''}
-                onChange={(e) => setEdits((s) => ({ ...s, [f]: scoreInputValue(e.target.value) }))}
-              />
-            </Field>
-          ))}
-        </div>
+        <ScoreFields edits={edits} onChange={setEdits} firstRef={firstRef} />
         <p className="text-sm text-ink-muted">
           {/* Announced: the score is the consequence of the four numbers above,
               and a sighted user sees it move as they type. */}

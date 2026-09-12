@@ -12,6 +12,7 @@ import {
   useStepBackInitiative, useUnblockInitiative,
 } from '@/api/hooks'
 import { ApiRequestError } from '@/api/client'
+import type { ProductNode } from '@/api/roadmap'
 import { BRAND_NAME } from '@/brand'
 import { createdIssueCount, type Initiative, type InitiativeArtifact } from '@/api/sdlc'
 import { extractMutationErrorMessage } from '@/api/queryClient'
@@ -246,7 +247,7 @@ function TrackTab({ initiative }: { initiative: Initiative }) {
 // The sub-issues come from the leaves endpoint (tier, blockers, live session,
 // and the Remove disposition), not from the detail payload's `children`, which
 // stays for the assistant.
-function EpicTab({ initiative }: { initiative: Initiative }) {
+function EpicTab({ initiative, product }: { initiative: Initiative; product: ProductNode | null }) {
   const epic = initiative.epic
   if (!epic) {
     return (
@@ -269,7 +270,7 @@ function EpicTab({ initiative }: { initiative: Initiative }) {
           { label: 'Needs human', value: epic.needsHuman, tone: 'warning' },
         ]}
       />
-      <LeafList scope={{ initiative: initiative.slug }} />
+      <LeafList scope={{ initiative: initiative.slug }} product={product} />
     </div>
   )
 }
@@ -366,9 +367,8 @@ export function InitiativePage() {
   // The map is where a product's display NAME lives; the detail payload only
   // carries its slug, and a slug among titles reads as a different kind of thing.
   const productSlug = initiative?.projectSlug ?? node?.projectSlug ?? null
-  const productName = productSlug
-    ? (map?.products.find((p) => p.slug === productSlug)?.name ?? productSlug)
-    : null
+  const productNode = productSlug ? (map?.products.find((p) => p.slug === productSlug) ?? null) : null
+  const productName = productSlug ? (productNode?.name ?? productSlug) : null
 
   const crumbs: BreadcrumbItem[] = [
     { label: ROADMAP.label, to: roadmapPath('initiatives') },
@@ -476,7 +476,7 @@ export function InitiativePage() {
             />
             <div role="tabpanel" id={panelId(tab)} aria-labelledby={`tab-${tab}`} className="flex flex-col gap-4">
               {tab === 'track' && <TrackTab initiative={initiative} />}
-              {tab === 'epic' && <EpicTab initiative={initiative} />}
+              {tab === 'epic' && <EpicTab initiative={initiative} product={productNode} />}
               {tab === 'sessions' && <SessionsTab initiative={initiative} />}
               {tab === 'capabilities' && <CapabilitiesTab initiative={initiative} onEdit={() => setEditing(true)} />}
             </div>

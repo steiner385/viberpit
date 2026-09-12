@@ -34,6 +34,7 @@ const removeState = vi.hoisted(() => ({
 vi.mock('@/api/hooks', () => ({
   useLeaves: () => leavesQuery,
   useRemoveDependency: () => ({ mutate: removeMutate, ...removeState }),
+  useUpdateOverlay: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
   useIncidents: () => ({ data: [], isError: false }),
   useIncidentAction: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
 }))
@@ -42,7 +43,7 @@ const leaf = (over: Partial<Leaf> & { id: string; number: number }): Leaf => ({
   ref: `cairnea/KinDash#${over.number}`, repo: 'cairnea/KinDash', kind: 'issue', title: null,
   url: `https://x/${over.number}`, state: 'open', triageState: 'classified', score: null, reach: null,
   impact: null, effort: null, confidence: null, tier: 'idle', blockedBy: [], parentRef: null,
-  sessionStatus: null, ghCreatedAt: null, ...over,
+  featureId: null, sessionStatus: null, ghCreatedAt: null, ...over,
 })
 
 const LEAVES: Leaf[] = [
