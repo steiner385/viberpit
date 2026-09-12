@@ -242,9 +242,12 @@ def _alias(i: int) -> str:
 
 
 # Shared deployment-node selection so the main-window and per-env supplement
-# queries can never drift in which fields feed _active_deploy_dates.
+# queries can never drift in which fields feed _active_deploy_dates. The deploy
+# monitor (server/github/deployments.py) reads the same node, which is why the
+# selection also carries identity, creator and the status's time/log URL.
 _DEPLOY_NODE_FIELDS = (
-    "latestEnvironment commitOid latestStatus { state } commit { committedDate }"
+    "databaseId createdAt latestEnvironment commitOid ref { name } creator { login } "
+    "latestStatus { state createdAt logUrl environmentUrl } commit { committedDate }"
 )
 
 # Per-env supplement depth: an environments:-filtered window only holds that
