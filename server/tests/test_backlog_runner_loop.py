@@ -106,7 +106,7 @@ def build_loop(*, mode="on", config=None, clock=None,
 
     announce_fn = announce or _default_announce
 
-    async def _default_spawn(batch, account):
+    async def _default_spawn(batch, account, **_kw):
         rec.spawns.append((batch, account))
         rec.in_flight += 1
         return object()
@@ -299,7 +299,7 @@ def test_non_reentrant_no_double_spawn(tmp_path):
         async def select_batch(_c):
             return cand.pop(0) if cand else None
 
-        async def spawn(b, account):
+        async def spawn(b, account, **_kw):
             await gate.wait()  # slow spawn: hold the lock
             spawns.append(b)
             in_flight["n"] += 1
@@ -907,7 +907,7 @@ def test_dispatch_is_per_product_propose_announces_auto_spawns(tmp_path):
         await _seed_row()
         spawned: list = []
 
-        async def spawn(b, account):
+        async def spawn(b, account, **_kw):
             spawned.append((b, account))
             # A real record: a spawn whose row never records a session id is the
             # dangling claim reconciliation deletes at the end of the tick.
@@ -989,6 +989,12 @@ def test_a_failed_policy_read_with_no_snapshot_skips_refill_but_still_sweeps(tmp
 
         loop, rec, ctx = build_loop(candidates=[batch("r#1")], candidate_count=3)
         loop._read_policies = boom
+        selections: list[dict] = []
+
+        async def counting_select(config):
+            selections.append(config)
+            return batch("r#1")
+        loop._select_batch = counting_select
         # A dangling claim row (claimed, no session id, no proposed flag): the
         # sweep's reconciliation is what deletes it, so its absence afterwards
         # proves the sweep half of the tick ran.
@@ -998,6 +1004,13 @@ def test_a_failed_policy_read_with_no_snapshot_skips_refill_but_still_sweeps(tmp
         await loop.tick()
 
         assert rec.spawns == [] and rec.announced == []
+        # SKIPPED, not "ran and refused everything": the candidate/plan seam is
+        # never touched, so no plan group is consumed and no pick is burnt. Without
+        # this, the same visible outcome (no spawn, no announce) is also what a
+        # refill that ran on guessed policies produces — every batch falling
+        # through the fail-safe dispatch-off branch, one consumed group each.
+        assert selections == []
+        assert await ctx.list_events(kind="skipped_dispatch_off") == []
         assert await ctx.get_target_state("o/x#9") == {}      # the sweep ran
         assert getattr(ctx, "backlog_counts", {}).get("eligible") == 3
 
@@ -1078,6 +1091,61 @@ def test_max_in_flight_is_one_ceiling_across_all_of_a_products_repos(tmp_path):
         await loop.tick()
 
         assert len(rec.spawns) == 2
+
+    asyncio.run(run())
+
+
+def test_a_zero_max_in_flight_pauses_the_product(tmp_path):
+    """``max_in_flight: 0`` is the PAUSED setting (schema ``min=0``), not an
+    "unlimited" sentinel: the product keeps the rest of its policy and takes no
+    claim. The guard that exempted ``cap <= 0`` from the ceiling made 0 — and any
+    hand-edited negative — mean the exact opposite of what it says."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'zerocap.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=4),
+            candidates=[batch("a#1", product="paused"), batch("b#2", product="roomy")],
+            policies={"paused": policy(max_in_flight=0),
+                      "roomy": policy(max_in_flight=5)})
+
+        await loop.tick()
+
+        assert [b.primary for b, _a in rec.spawns] == ["b#2"]
+        assert await ctx.get_target_state("a#1") == {}       # no claim at all
+        events = await ctx.list_events(kind="skipped_product_cap")
+        assert len(events) == 1 and "cap (0)" in events[0]["summary"]
+
+    asyncio.run(run())
+
+
+def test_the_spawn_gets_the_products_model_from_this_ticks_snapshot(tmp_path):
+    """The session model travels WITH the claim: the loop hands the spawn seam the
+    ``default_model`` off the same policy snapshot its dispatch decision was made
+    on, instead of the spawn site re-reading policies and possibly getting a
+    different (or failed, i.e. ``auto``) answer."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'spawnmodel.db'}"
+
+    async def run():
+        seen: list = []
+
+        async def spawn(b, account, *, default_model):
+            seen.append((b.primary, default_model))
+            return object()
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=4), spawn=spawn,
+            candidates=[batch("a#1", product="pinned"), batch("b#2", product="assessed")],
+            policies={"pinned": policy(default_model="opus"),
+                      "assessed": policy(default_model="auto")})
+
+        await loop.tick()
+
+        assert seen == [("a#1", "opus"), ("b#2", "auto")]
 
     asyncio.run(run())
 
@@ -1674,7 +1742,7 @@ def test_spawn_failure_backs_off_target(tmp_path):
         clock = FakeClock()
         attempts: list[float] = []
 
-        async def failing_spawn(b, account):
+        async def failing_spawn(b, account, **_kw):
             attempts.append(clock())
             raise RuntimeError("git worktree add --detach failed: boom")
 
@@ -1709,7 +1777,7 @@ def test_spawn_backoff_ramps_per_consecutive_failure(tmp_path):
         clock = FakeClock()
         attempts: list[float] = []
 
-        async def failing_spawn(b, account):
+        async def failing_spawn(b, account, **_kw):
             attempts.append(clock())
             raise RuntimeError("boom")
 
@@ -1768,7 +1836,7 @@ def test_spawn_success_clears_backoff(tmp_path):
         clock = FakeClock()
         calls = {"n": 0}
 
-        async def flaky_spawn(b, account):
+        async def flaky_spawn(b, account, **_kw):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise RuntimeError("boom")
@@ -1799,7 +1867,7 @@ def test_enospc_spawn_failure_trips_circuit_immediately(tmp_path):
         clock = FakeClock()
         attempts: list[str] = []
 
-        async def enospc_spawn(b, account):
+        async def enospc_spawn(b, account, **_kw):
             attempts.append(b.primary)
             raise RuntimeError(
                 "git worktree add --detach failed: error: unable to create "
@@ -1833,7 +1901,7 @@ def test_three_consecutive_failures_trip_circuit(tmp_path):
         clock = FakeClock()
         attempts: list[str] = []
 
-        async def failing_spawn(b, account):
+        async def failing_spawn(b, account, **_kw):
             attempts.append(b.primary)
             raise RuntimeError("boom")          # no disk marker
 
@@ -1860,7 +1928,7 @@ def test_spawn_success_resets_consecutive_failures(tmp_path):
         clock = FakeClock()
         calls = {"n": 0}
 
-        async def alternating_spawn(b, account):
+        async def alternating_spawn(b, account, **_kw):
             calls["n"] += 1
             if calls["n"] % 2:
                 raise RuntimeError("boom")
@@ -2091,7 +2159,7 @@ def test_queue_tail_raising_does_not_disturb_spawn_bookkeeping(tmp_path):
 
         spawned: list = []
 
-        async def spawn(b, account):
+        async def spawn(b, account, **_kw):
             spawned.append((b, account))
             return SimpleNamespace(id="s-picked-1", branch="b-picked-1")
 

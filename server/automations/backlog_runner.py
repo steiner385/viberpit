@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, cast
+from typing import Any, Awaitable, Callable, Protocol, cast
 
 from ccswitch.worktrees import DISK_EXHAUSTION_MARKERS
 from server.github.pr_status import PullRequestInfo
@@ -174,20 +174,54 @@ def _on_products(products: dict) -> list[tuple[str, dict]]:
 _NO_COUNT_YET = object()
 
 
+#: The global runner modes that existed BEFORE policy phase 1, when propose-vs-auto
+#: was one fleet-wide switch. The vocabulary is ``off | on`` now (``modes`` below)
+#: and these two fold to ``on``; the pre-fold value is what the one-shot seed turns
+#: into each product's ``dispatch``.
+LEGACY_GLOBAL_MODES: tuple[str, ...] = ("propose", "auto")
+
+
+def fold_global_mode(mode: str) -> str:
+    """A stored global mode in the phase-1 vocabulary (``off | on``).
+
+    ONE fold, shared by the read path (``_backlog_read_config``, so an enabled
+    pre-flip row keeps running) and the seed's row migration (which rewrites the
+    stored value so the fold stops being load-bearing). A stored ``off`` survives
+    verbatim: it is a human's explicit "parked"."""
+    return "on" if mode in LEGACY_GLOBAL_MODES else mode
+
+
+def is_in_flight(state: dict) -> bool:
+    """Whether one durable target state still holds a runner slot.
+
+    THE predicate for "this row occupies a slot", shared by the fleet-wide count
+    (``SessionOrchestrator._backlog_count_in_flight``, the ``max_concurrent``
+    gate) and the per-product one below (the ``max_in_flight`` gate and the
+    card's per-product gauge). Two ledgers over the same rows with two different
+    row filters is the shape where a product reads "2/2 in flight" while the
+    fleet counts 3 and neither number is wrong on its own terms.
+
+    A claim counts from the moment the row is written — a ``proposed`` row
+    awaiting a human tap holds the slot exactly like a spawned one — until the
+    sweep frees it: a ``gave_up`` row waits on a human and a ``handed_off`` one
+    belongs to PR Doctor, so neither holds a slot. Nothing else is asked of the
+    row: the row EXISTING is the claim (Phase D), so an extra ``claimed`` test
+    would only restate that while quietly dropping any row a future write path
+    forgets the flag on — under-counting a ceiling, i.e. over-spawning.
+    """
+    return not state.get("gave_up") and not state.get("handed_off")
+
+
 def in_flight_by_product(states: dict) -> dict[str, int]:
     """``{product slug: live claims}`` over the runner's durable target states.
 
-    ONE rule for "how many sessions is this product running", shared by the loop's
-    per-product ``max_in_flight`` gate and the status card's per-product
-    ``in_flight`` gauge, so the card can never show a number selection does not
-    act on. A claim counts from the moment it is written — a ``proposed`` row
-    (awaiting a human tap) holds the product's slot exactly like a spawned one —
-    until the sweep frees it: a ``gave_up`` row waits on a human and a
-    ``handed_off`` one belongs to PR Doctor, so neither holds a slot.
+    ``is_in_flight`` per row, bucketed by the product recorded ON the claim. A
+    row with no product (a pre-flip claim) counts toward the fleet-wide budget
+    but against no product's ceiling — there is no product to charge it to.
     """
     out: dict[str, int] = {}
     for st in states.values():
-        if not st.get("claimed") or st.get("gave_up") or st.get("handed_off"):
+        if not is_in_flight(st):
             continue
         slug = st.get("product")
         if slug:
@@ -335,7 +369,22 @@ QueueTail = Callable[[], "list[dict]"]
 # durable target-state row this loop writes first). Best-effort by contract —
 # ``_refill`` swallows a failure rather than losing the spawn it already earned.
 Announce = Callable[["Batch"], Awaitable[None]]
-Spawn = Callable[["Batch", str], Awaitable[Any]]
+
+
+class Spawn(Protocol):
+    """Spawn the session for a claimed batch.
+
+    ``default_model`` is the PRODUCT's session model, taken from the SAME
+    per-tick policy snapshot every other per-product decision in this refill
+    used. Passed rather than re-read at the spawn site: a second read is a second
+    answer (policies can change between the dispatch decision and the spawn, and
+    a failed re-read silently downgraded the model to ``auto``), and the loop is
+    the only place that knows which snapshot governed this claim."""
+
+    def __call__(self, batch: "Batch", account: str, *,
+                 default_model: str) -> Awaitable[Any]: ...
+
+
 CountInFlight = Callable[[], Awaitable[int]]
 # (eligible, blocked, untriaged, per_product): the true count of eligible,
 # unclaimed OPEN issues — the honest backlog gauge for the Automation card,
@@ -923,6 +972,14 @@ class BacklogRunnerLoop:
                 # Flipped off (or unreadable) since the queue read that produced
                 # this batch — take no claim. ``continue``, not ``break``: another
                 # product's batch is still perfectly workable this tick.
+                #
+                # COST: ``select_batch`` already consumed this pick's plan group
+                # (``mark_consumed``), so the group is burnt until the next
+                # grouping refresh even though nothing was claimed. Accepted
+                # deliberately: the alternative — ``break`` — parks every OTHER
+                # product's work for the tick because one product was flipped off,
+                # which is the worse trade on a multi-product board. A dispatch
+                # flip is rare and operator-driven, so the burn is bounded.
                 await self._ctx.emit(
                     "info",
                     f"skipped {batch.primary}: {batch.product or 'unknown product'} "
@@ -930,8 +987,15 @@ class BacklogRunnerLoop:
                     kind="skipped_dispatch_off", target=batch.primary,
                     detail={"product": batch.product, "issues": batch.issues})
                 continue
+            # Every cap is read LITERALLY, 0 included: ``max_in_flight: 0`` is the
+            # PAUSED setting (schema ``min=0``), not an "unlimited" sentinel — a
+            # product an operator parked at 0 must take no claim while keeping the
+            # rest of its policy. Negative values cannot be stored (validation).
             cap = int(policy["max_in_flight"])
-            if batch.product and cap > 0 and per_product.get(batch.product, 0) >= cap:
+            if batch.product and per_product.get(batch.product, 0) >= cap:
+                # Same plan-group burn as the dispatch-off skip above, and the same
+                # reason for ``continue``: one product at its ceiling must not stop
+                # the tick from serving the products that are not.
                 await self._ctx.emit(
                     "info",
                     f"skipped {batch.primary}: {batch.product} is at its in-flight "
@@ -1000,7 +1064,10 @@ class BacklogRunnerLoop:
                                  kind="claimed", target=batch.primary,
                                  detail={"issues": batch.issues})
             try:
-                rec = await self._spawn(batch, account)
+                # The product's session model rides along from THIS tick's policy
+                # snapshot — the same one that just decided this batch may spawn.
+                rec = await self._spawn(batch, account,
+                                        default_model=policy["default_model"])
             except Exception as exc:
                 # Spawn/clone failed → RELEASE the claim (delete the row — that IS
                 # the release; NO give-up row) and do NOT consume an attempt or a

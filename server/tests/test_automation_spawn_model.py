@@ -24,14 +24,16 @@ def _capture_spawn(captured):
 # backlog-runner (_backlog_spawn)                                              #
 # --------------------------------------------------------------------------- #
 
-def _build_backlog_orch(config, *, default_model=None):
-    """A bare orchestrator whose runner config is *config* and whose PRODUCT policy
-    (the source of the session model since policy phase 1) pins *default_model*.
-    ``None`` = the product has no policy, so the spawn falls back to the pure
-    schema defaults (model ``auto``)."""
+def _build_backlog_orch(config, *, policies=None):
+    """A bare orchestrator whose runner config is *config*.
+
+    The session model is NOT read here since the fix wave: ``_backlog_spawn``
+    takes it as a required ``default_model`` keyword — the loop passes the value
+    from the tick's policy snapshot, the tap paths read it through
+    ``_backlog_policy_model``. *policies* stubs that read for the few tests that
+    exercise it."""
     import server.sessions.orchestrator as orch_mod
     from server.automations.context import AutomationContext
-    from server.automations.product_policy import effective_policy
     orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
     orch._backlog_ctx = AutomationContext("backlog-runner")
 
@@ -40,10 +42,7 @@ def _build_backlog_orch(config, *, default_model=None):
     orch._backlog_read_config = read_config  # type: ignore[method-assign]
 
     async def load_policies():
-        if default_model is None:
-            return {}
-        return {"widget": effective_policy({"dispatch": "auto",
-                                            "default_model": default_model})}
+        return dict(policies or {})
     orch._backlog_load_policies = load_policies  # type: ignore[method-assign]
     return orch
 
@@ -62,11 +61,11 @@ _BATCH = Batch(primary="o/r#7", issues=["o/r#7"], repo="o/r",
 
 @pytest.mark.asyncio
 async def test_backlog_spawn_passes_pinned_model(tmp_path, monkeypatch):
-    orch = _build_backlog_orch({}, default_model="sonnet")
+    orch = _build_backlog_orch({})
     _patch_git(monkeypatch, tmp_path)
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct")
+    await orch._backlog_spawn(_BATCH, "acct", default_model="sonnet")
     assert captured["model"] == "sonnet"
     # `engine` joins the detail in Phase 7: a spawn record has to say which agent
     # ran it, or a mixed-engine backlog is unreadable after the fact.
@@ -92,7 +91,7 @@ async def test_backlog_spawn_resolves_the_default_branch_through_the_one_resolve
         return "trunk"
 
     orch._sdlc_default_branch = fake_default_branch  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct")
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto")
     assert seen == {"repo": "o/r"}
     assert "trunk" in captured["initial_prompt"]
 
@@ -120,11 +119,11 @@ async def test_backlog_spawn_auto_assesses_issue_titles(tmp_path, monkeypatch):
         return "haiku"
     monkeypatch.setattr(model_pick, "assess_model", pick_haiku)
 
-    orch = _build_backlog_orch({}, default_model="auto")
+    orch = _build_backlog_orch({})
     _patch_git(monkeypatch, tmp_path)
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct")
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto")
     assert "fix the frobnicator" in seen["summary"]  # titles reach the assessor
     assert captured["model"] == "haiku"
     assert captured["detail"]["model_source"] == "auto"
@@ -132,41 +131,49 @@ async def test_backlog_spawn_auto_assesses_issue_titles(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_backlog_spawn_default_keeps_account_default(tmp_path, monkeypatch):
-    orch = _build_backlog_orch({}, default_model="default")
+    orch = _build_backlog_orch({})
     _patch_git(monkeypatch, tmp_path)
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct")
+    await orch._backlog_spawn(_BATCH, "acct", default_model="default")
     assert captured["model"] is None
     # No model keys — but the engine is always recorded (Phase 7).
     assert captured["detail"] == {"issues": ["o/r#7"], "engine": "claude_code"}
 
 
 @pytest.mark.asyncio
-async def test_backlog_spawn_survives_a_failing_policy_read(tmp_path, monkeypatch):
-    """The policy read RAISES for the loop (which has the context to fail safely by
-    skipping refill), so the spawn site has to absorb it: by the time we get here
-    the dispatch gate has already decided this batch may run, and the model is a
-    preference. A DB blip must cost the preference, never the session — and the
-    fallback ``auto`` is exactly what a pre-flip claim ran under."""
-    import server.automations.model_pick as model_pick
+async def test_tap_paths_read_the_products_model_and_survive_a_failing_read():
+    """The loop hands ``default_model`` down from its tick snapshot; the propose
+    tap and manual dispatch have no snapshot, so they resolve it through
+    ``_backlog_policy_model`` — the ONE read left on a spawn path.
 
-    async def pick_haiku(task_summary, **kw):  # noqa: ARG001
-        return "haiku"
-    monkeypatch.setattr(model_pick, "assess_model", pick_haiku)
-
-    orch = _build_backlog_orch({})
+    A read that RAISES costs the model PREFERENCE, never the spawn: by the time a
+    tap runs, the decision that this batch may run has already been taken, and
+    ``auto`` (the schema default) is exactly what a pre-flip claim ran under."""
+    from server.automations.product_policy import effective_policy
+    orch = _build_backlog_orch({}, policies={
+        "widget": effective_policy({"dispatch": "auto", "default_model": "opus"})})
+    assert await orch._backlog_policy_model("widget") == "opus"
+    assert await orch._backlog_policy_model("unknown-product") == "auto"
+    assert await orch._backlog_policy_model(None) == "auto"
 
     async def boom():
         raise RuntimeError("policy read down (injected)")
     orch._backlog_load_policies = boom  # type: ignore[method-assign]
+    assert await orch._backlog_policy_model("widget") == "auto"
 
-    _patch_git(monkeypatch, tmp_path)
-    captured: dict = {}
-    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct")
-    assert captured["model"] == "haiku"                 # assessed, i.e. model "auto"
-    assert captured["detail"]["model_source"] == "auto"
+
+def test_backlog_spawn_never_reads_policies_itself():
+    """Sibling guard for the test above: a second read at the spawn site is a
+    SECOND answer — policies can change between the dispatch decision and the
+    spawn, and the re-read's own failure path silently downgraded the product's
+    pinned model to ``auto``. The value travels with the claim instead."""
+    import inspect
+
+    import server.sessions.orchestrator as orch_mod
+
+    src = inspect.getsource(orch_mod.SessionOrchestrator._backlog_spawn)
+    assert "_backlog_load_policies" not in src and "effective_policy" not in src
 
 
 # --------------------------------------------------------------------------- #
@@ -182,7 +189,7 @@ def _fake_launch_plan_codex(config):
 
 @pytest.mark.asyncio
 async def test_backlog_spawn_codex_auto_uses_codex_assessor(tmp_path, monkeypatch):
-    orch = _build_backlog_orch({}, default_model="auto")
+    orch = _build_backlog_orch({})
     _patch_git(monkeypatch, tmp_path)
     orch._backlog_ctx.launch_plan_or_refuse = _fake_launch_plan_codex(
         {"default_model": "auto"})
@@ -196,7 +203,7 @@ async def test_backlog_spawn_codex_auto_uses_codex_assessor(tmp_path, monkeypatc
 
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct")
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto")
 
     assert seen["account"] == "acct"
     assert "fix the frobnicator" in seen["summary"]
@@ -212,7 +219,7 @@ async def test_backlog_spawn_codex_auto_uses_codex_assessor(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_backlog_spawn_codex_assessment_failure_falls_back(tmp_path, monkeypatch):
-    orch = _build_backlog_orch({}, default_model="auto")
+    orch = _build_backlog_orch({})
     _patch_git(monkeypatch, tmp_path)
     orch._backlog_ctx.launch_plan_or_refuse = _fake_launch_plan_codex(
         {"default_model": "auto"})
@@ -223,7 +230,7 @@ async def test_backlog_spawn_codex_assessment_failure_falls_back(tmp_path, monke
 
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct")
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto")
 
     assert captured["model"] is None
     assert captured["reasoning_effort"] is None

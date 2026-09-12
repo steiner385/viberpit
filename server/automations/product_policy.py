@@ -39,12 +39,21 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
     ConfigField(key="queue_min_status", label="Minimum board status", type="enum",
                 default=STATUS_READY, choices=list(MIN_STATUS_OPTIONS),
                 help="How far down the board the runner may reach for this product."),
-    ConfigField(key="max_in_flight", label="Max in flight", type="int", default=1,
-                help="This product's concurrent runner sessions."),
-    ConfigField(key="weight", label="Weight", type="int", default=1,
+    # ``min=0`` on the cap, not 1: 0 is a meaningful setting — PAUSED, the "stop
+    # working this product but keep its other settings" state an operator would
+    # otherwise have to fake by flipping dispatch off. A NEGATIVE cap is what is
+    # rejected; ``_refill`` treats every cap literally, so a stored ``-1`` would
+    # read as an unreachable ceiling, i.e. unlimited.
+    ConfigField(key="max_in_flight", label="Max in flight", type="int", default=1, min=0,
+                help="This product's concurrent runner sessions. 0 pauses the "
+                     "product without losing the rest of its policy."),
+    ConfigField(key="weight", label="Weight", type="int", default=1, min=0,
                 help="This product's share when a freed slot is contested (the "
                      "'weighted' strategy)."),
-    ConfigField(key="max_attempts", label="Max attempts per issue", type="int", default=2),
+    # At least one attempt: a 0 cap gives up on the first sweep of every issue it
+    # ever claims, escalating the whole product to needs-human.
+    ConfigField(key="max_attempts", label="Max attempts per issue", type="int", default=2,
+                min=1),
     ConfigField(key="default_model", label="Session model", type="enum", default="auto",
                 choices=AUTOMATION_MODEL_CHOICES,
                 help="Model for this product's sessions; 'auto' assesses each job."),

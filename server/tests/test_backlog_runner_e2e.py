@@ -196,7 +196,7 @@ class Harness:
         await asyncio.to_thread(backlog_github.announce_needs_human, batch, reason,
                                 gh_run=self.gh)
 
-    async def _spawn(self, batch, account: str):
+    async def _spawn(self, batch, account: str, **_kw):
         if self.spawn_raises:
             raise RuntimeError("clone failed (injected)")
         # No real clone / SDK session: route through the context spawner, which

@@ -309,6 +309,38 @@ def test_count_candidates_returns_per_product_rows_with_in_flight_and_cap(tmp_pa
     asyncio.run(run())
 
 
+def test_the_global_and_per_product_in_flight_ledgers_count_the_same_rows(tmp_path):
+    """ONE predicate (``is_in_flight``) behind both slot ledgers. Two filters over
+    the same rows is how a product reads "2/2 in flight" while the fleet-wide
+    ``max_concurrent`` gate counts 3 — neither number wrong on its own terms, and
+    no way to tell from the card which one the loop acted on."""
+    async def run():
+        from server.automations.backlog_runner import in_flight_by_product
+        await _init(tmp_path, "ledgers.db")
+        orch = _orch_with_ctx()
+        rows = {
+            "o/a#1": {"claimed": True, "product": "alpha"},                # spawned
+            "o/a#2": {"claimed": True, "proposed": True, "product": "alpha"},  # pending tap
+            "o/a#3": {"claimed": True, "product": "alpha", "gave_up": True},   # freed
+            "o/b#4": {"claimed": True, "product": "beta", "handed_off": True},  # PR Doctor's
+            "o/b#5": {"claimed": True, "product": "beta"},
+            "o/c#6": {"claimed": True},                       # pre-flip claim, no product
+        }
+        for target, state in rows.items():
+            await orch._backlog_ctx.set_target_state(target, state)
+
+        states = await orch._backlog_ctx.list_target_states()
+        per_product = in_flight_by_product(states)
+        global_count = await orch._backlog_count_in_flight()
+
+        assert per_product == {"alpha": 2, "beta": 1}
+        # The ONLY difference is the productless row: it holds a fleet slot but
+        # there is no product to charge it to.
+        assert global_count == sum(per_product.values()) + 1
+
+    asyncio.run(run())
+
+
 # --------------------------------------------------------------------------- #
 # 4. Selection: policies → the repo-keyed weights / caps / order                #
 # --------------------------------------------------------------------------- #
@@ -444,9 +476,11 @@ def test_seed_with_no_enabled_repos_covers_every_product_with_a_board(tmp_path):
     asyncio.run(run())
 
 
-def test_seed_is_a_no_op_once_any_product_has_a_policy(tmp_path):
-    """One-shot by construction: a human who has already set a policy owns the
-    answer, and a second seed would overwrite it with the retired defaults."""
+def test_a_hand_set_policy_survives_the_seed_without_blocking_the_others(tmp_path):
+    """Per-PRODUCT skip, not a global gate: a human who set a policy before the
+    first tick owns THAT product's answer, and the seed must not overwrite it with
+    the retired defaults — but their edit is no reason to strand every other
+    product on the wrong side of the migration."""
     async def run():
         await _init(tmp_path, "seedonce.db")
         await _seed_product("alpha", "o/a", policy={"dispatch": "off"})
@@ -454,10 +488,97 @@ def test_seed_is_a_no_op_once_any_product_has_a_policy(tmp_path):
         orch = _orch_with_ctx()
 
         assert await orch._backlog_seed_policies({"enabled_repos": ["o/a", "o/b"]},
-                                                 "auto") == 0
+                                                 "auto") == 1
         policies = await _policies()
         assert policies["alpha"][0] == {"dispatch": "off"}    # untouched
-        assert policies["beta"] == (None, None)
+        assert policies["beta"][0]["dispatch"] == "auto"      # migrated
+
+    asyncio.run(run())
+
+
+def test_the_seed_consumes_the_retired_keys_and_the_legacy_mode_off_the_row(tmp_path):
+    """The DURABLE one-shot marker (M1/M4): the seed strips every retired key from
+    the runner row's own config in the SAME session it writes the policies, and
+    folds a pre-flip ``propose``/``auto`` mode to the phase-1 ``on`` the UI offers.
+    Settings that are still schema fields are untouched."""
+    async def run():
+        from sqlalchemy import select
+        from server.automations.backlog_runner import BacklogRunner
+        from server.db.models import Automation
+        await _init(tmp_path, "seedmarker.db")
+        await _seed_product("alpha", "o/a")
+        orch = _orch_with_ctx()
+        await _set_runner_row(enabled=True, mode="auto", config={
+            "enabled_repos": ["o/a"], "repo_caps": {"o/a": 4},
+            "queue_min_status": "Backlog", "max_attempts": 5,
+            "default_model": "opus", "respect_dependencies": False,
+            "max_concurrent": 6})
+
+        assert await orch._backlog_seed_policies_once() == 1
+
+        async with db_session() as db:
+            row = (await db.execute(select(Automation).where(
+                Automation.id == "backlog-runner"))).scalar_one()
+            config, mode = dict(row.config or {}), row.mode
+        assert not set(config) & set(BacklogRunner.retired_config_keys)
+        assert config["max_concurrent"] == 6          # a live field is left alone
+        assert mode == "on"
+
+    asyncio.run(run())
+
+
+def test_the_marker_is_consumed_even_when_no_product_is_seeded(tmp_path):
+    """A legacy row on an install with nothing to seed (no onboarded products yet)
+    is still MIGRATED: leaving the retired keys behind would re-read them on a
+    later start and opt products in that were onboarded after the flip, at the old
+    global settings nobody chose for them."""
+    async def run():
+        from sqlalchemy import select
+        from server.automations.backlog_runner import BacklogRunner
+        from server.db.models import Automation
+        await _init(tmp_path, "seednoproducts.db")
+        orch = _orch_with_ctx()
+        await _set_runner_row(enabled=True, mode="propose",
+                              config={"enabled_repos": ["o/a"]})
+
+        assert await orch._backlog_seed_policies_once() == 0
+
+        async with db_session() as db:
+            row = (await db.execute(select(Automation).where(
+                Automation.id == "backlog-runner"))).scalar_one()
+            assert not set(row.config or {}) & set(BacklogRunner.retired_config_keys)
+            assert row.mode == "on"
+
+    asyncio.run(run())
+
+
+def test_clearing_every_policy_does_not_re_arm_the_seed(tmp_path):
+    """The bug the marker fixes: the old gate ("does any product have a policy")
+    re-armed the moment an operator cleared the last one, so the next process
+    start silently re-opted every product back in at the retired defaults. The
+    marker lives on the runner ROW, which nothing in the policy UI touches."""
+    async def run():
+        from server.api.pm import PolicyPatchBody, update_project_policy
+        await _init(tmp_path, "rearm.db")
+        await _seed_product("alpha", "o/a")
+        await _seed_product("beta", "o/b")
+        orch = _orch_with_ctx()
+        await _set_runner_row(enabled=True, mode="auto",
+                              config={"enabled_repos": ["o/a", "o/b"]})
+
+        assert await orch._backlog_seed_policies_once() == 2
+
+        # Cleared through the real PATCH handler — ``{"policy": null}`` writes SQL
+        # NULL (the column is ``JSON(none_as_null=True)``), which is exactly the
+        # state the old Python scan read as "never seeded".
+        async with db_session() as db:
+            for slug in ("alpha", "beta"):
+                await update_project_policy(slug, PolicyPatchBody(policy=None),
+                                            identity="tester", db=db)
+        assert await _policies() == {"alpha": (None, None), "beta": (None, None)}
+
+        assert await orch._backlog_seed_policies_once() == 0
+        assert await _policies() == {"alpha": (None, None), "beta": (None, None)}
 
     asyncio.run(run())
 
@@ -550,6 +671,22 @@ def test_seed_once_is_a_no_op_while_the_runner_row_is_disabled(tmp_path):
         orch = _orch_with_ctx()
         await _set_runner_row(enabled=False, mode="auto",
                               config={"enabled_repos": ["o/a"]})
+
+        assert await orch._backlog_seed_policies_once() == 0
+        assert (await _policies())["alpha"] == (None, None)
+
+    asyncio.run(run())
+
+
+def test_seed_once_is_a_no_op_on_a_row_carrying_no_retired_key(tmp_path):
+    """The durable gate: a config with none of the runner's retired keys has
+    already been migrated (or never carried legacy settings), so there is nothing
+    to seed from — regardless of what any product's policy currently says."""
+    async def run():
+        await _init(tmp_path, "seedmigrated.db")
+        await _seed_product("alpha", "o/a")
+        orch = _orch_with_ctx()
+        await _set_runner_row(enabled=True, mode="on", config={"max_concurrent": 3})
 
         assert await orch._backlog_seed_policies_once() == 0
         assert (await _policies())["alpha"] == (None, None)

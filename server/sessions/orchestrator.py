@@ -4919,12 +4919,12 @@ class SessionOrchestrator:
         passes one: with exactly two modes the UI hides the mode select, so its
         toggle enables the row with ``mode`` still NULL — without the default an
         enabled runner would read ``off`` forever."""
-        from server.automations.backlog_runner import BacklogRunner
+        from server.automations.backlog_runner import BacklogRunner, fold_global_mode
         from server.automations.config_store import read_automation_config
         mode, config = await read_automation_config(
             BacklogRunner, modes=("off", "on", "propose", "auto"), default_mode="on",
             log_key="backlog_runner")
-        return ("on" if mode in ("propose", "auto") else mode), config
+        return fold_global_mode(mode), config
 
     async def _backlog_read_raw_config(self) -> "tuple[bool, str | None, dict]":
         """The backlog-runner row's ``(enabled, stored_mode, config)``, UNVALIDATED.
@@ -4967,10 +4967,15 @@ class SessionOrchestrator:
         spawning new work. Target states are the authoritative slot ledger the
         sweep already maintains.
 
-        A handed_off row is PR Doctor's to carry — it is kept only so the merged close-out can run, and must not occupy a slot."""
+        A handed_off row is PR Doctor's to carry — it is kept only so the merged close-out can run, and must not occupy a slot.
+
+        Which rows hold a slot is ``backlog_runner.is_in_flight`` — the SAME
+        predicate the per-product ``max_in_flight`` ledger buckets by product, so
+        the fleet-wide count and the card's per-product counts can never disagree
+        about a row."""
+        from server.automations.backlog_runner import is_in_flight
         states = await self._backlog_ctx.list_target_states()
-        return sum(1 for st in states.values()
-                   if not st.get("gave_up") and not st.get("handed_off"))
+        return sum(1 for st in states.values() if is_in_flight(st))
 
     async def _backlog_healthy_account(
             self, engine: AgentEngine = AgentEngine.CLAUDE_CODE) -> str | None:
@@ -5561,18 +5566,25 @@ class SessionOrchestrator:
         products owning those repos, while the empty list — which MEANT "every
         onboarded product" — seeds every product with a linked board.
 
-        It is a no-op the moment ANY product carries a policy: a human who has set
-        one owns the answer, and a second seed would overwrite it with retired
-        defaults. That check is also what makes this safe to call on every process
-        start rather than exactly once in history."""
+        The migration is one-shot because it CONSUMES its own input: in this same
+        session it strips every retired key from the runner row's stored config
+        (and folds a legacy ``propose``/``auto`` mode to ``on``), which is what
+        ``_backlog_seed_policies_once`` gates on. The old gate — "any product
+        already has a policy" — was not durable: clearing every product's policy
+        re-armed the seed and silently re-opted them all in at the retired
+        defaults. A product that ALREADY carries a policy is skipped individually
+        instead: a human who has set one owns that answer, and their edit must not
+        block the other products' migration."""
         from datetime import datetime, timezone
 
         from sqlalchemy import select as sa_select
 
         from server.audit import record_audit
+        from server.automations.backlog_runner import BacklogRunner, fold_global_mode
+        from server.automations.base import retired_config_keys_of
         from server.automations.product_policy import (
             PRODUCT_POLICY_SCHEMA, effective_policy)
-        from server.db.models import GhProject, Project, ProjectRepo
+        from server.db.models import Automation, GhProject, Project, ProjectRepo
         from server.pm.repo_project import owning_projects_by_repo
 
         fields = {f.key: f for f in PRODUCT_POLICY_SCHEMA}
@@ -5597,13 +5609,28 @@ class SessionOrchestrator:
         weights = raw.get("repo_weights") or {}
         seeded: list[str] = []
         async with db_session() as db:
-            # Scanned in Python, not as ``.isnot(None)``: on a ``JSON`` column that
-            # renders a JSON-null comparison, which matches a SQL-NULL row and would
-            # make the seed a permanent no-op. The projects table is small.
-            already = any(p is not None for p in (await db.execute(
-                sa_select(Project.automation_policy))).scalars())
-            if already:
-                return 0
+            # The DURABLE marker, written in the same transaction as the policies:
+            # consume the retired keys off the runner row so the migration can
+            # never run twice, and retire the legacy mode with them. Done FIRST and
+            # unconditionally — even a seed that writes no product (no onboarded
+            # products yet) has migrated the row, and re-reading those keys later
+            # would re-opt products in behind an operator's back.
+            runner_row = (await db.execute(sa_select(Automation).where(
+                Automation.id == BacklogRunner.id))).scalar_one_or_none()
+            if runner_row is not None:
+                stored = dict(runner_row.config or {})
+                remaining = {k: v for k, v in stored.items()
+                             if k not in retired_config_keys_of(BacklogRunner)}
+                if remaining != stored:
+                    runner_row.config = remaining
+                # M4: a row written before the flip still says ``propose``/``auto``.
+                # ``_backlog_read_config`` folds it on every read, but the row an
+                # operator sees in ``GET /api/automations`` kept claiming a mode the
+                # UI no longer offers. Normalised HERE, with the keys, because this
+                # is the one place that has already captured the pre-fold value
+                # (``mode_before`` became each product's ``dispatch``).
+                if runner_row.mode and fold_global_mode(runner_row.mode) != runner_row.mode:
+                    runner_row.mode = fold_global_mode(runner_row.mode)
             if repos:
                 owners = await owning_projects_by_repo(db, repos)
                 project_ids = {o.project_id for o in owners.values()}
@@ -5633,6 +5660,12 @@ class SessionOrchestrator:
             now = datetime.now(timezone.utc)
             for project in rows:
                 slug = project.slug or project.id
+                if project.automation_policy is not None:
+                    # A human set this product's policy before the first tick —
+                    # theirs is the answer, and overwriting it with the retired
+                    # defaults would be the migration undoing an operator. Skipped
+                    # per PRODUCT, so it costs the other products nothing.
+                    continue
                 repo = primary.get(project.id) or any_repo.get(project.id, "")
                 # Built key-by-key, omitting anything the legacy config left unset;
                 # ``effective_policy`` fills the omissions with the schema defaults.
@@ -5679,20 +5712,54 @@ class SessionOrchestrator:
         ``PRODUCT_POLICY_SCHEMA``'s deliberate ``dispatch: "off"`` default, which
         is the correct answer for a runner that was never used. A row a human
         turned off after using it is likewise left alone: its policies are the
-        operator's to set when they turn it back on."""
+        operator's to set when they turn it back on.
+
+        The one-shot gate is the ROW ITSELF: a config still carrying any of the
+        runner's ``retired_config_keys`` has not been migrated; the seed strips
+        them, so the second call sees none and does nothing. That marker is
+        durable in a way "does any product have a policy" was not — the latter
+        re-armed the moment an operator cleared the last policy, re-opting every
+        product back in at the retired defaults."""
+        from server.automations.backlog_runner import BacklogRunner
+        from server.automations.base import retired_config_keys_of
         enabled, mode_before, raw = await self._backlog_read_raw_config()
         if not enabled or not mode_before:
             return 0
+        if not set(raw) & set(retired_config_keys_of(BacklogRunner)):
+            return 0          # already migrated (or never carried legacy settings)
         return await self._backlog_seed_policies(raw, mode_before)
 
-    async def _backlog_spawn(self, batch, account: str):
+    async def _backlog_policy_model(self, product: "str | None") -> str:
+        """The session model for *product*, for the spawn paths that have no tick
+        snapshot to take it from (the propose tap and manual dispatch).
+
+        The LOOP never calls this — it passes ``default_model`` down from the
+        policy snapshot its dispatch decision was made on. A failed read costs the
+        model PREFERENCE, never the spawn: by the time a spawn path runs, the
+        decision that this batch may run has already been taken, and ``auto`` (the
+        schema default) is exactly what a pre-flip claim ran under."""
+        from server.automations.product_policy import effective_policy
+        try:
+            policies = await self._backlog_load_policies()
+        except Exception:
+            log.warning("backlog_runner.spawn_policy_read_failed", exc_info=True)
+            policies = {}
+        policy = (policies.get(product) if product else None) or effective_policy(None)
+        return str(policy["default_model"])
+
+    async def _backlog_spawn(self, batch, account: str, *, default_model: str):
         """Spawn a de-duped runner session for *batch*, seeded with the implement
         prompt.
 
         Resolves the repo's ViberPit-owned clone ``cwd`` off the event loop
         (mirrors PR Doctor's spawn), then spawns via the de-dup-safe context
         spawner (stamps origin/origin_ref, enforces one session per primary, and
-        emits ``spawned`` with ``detail.issues``). Returns the SessionRecord."""
+        emits ``spawned`` with ``detail.issues``). Returns the SessionRecord.
+
+        *default_model* is the PRODUCT's session model, supplied by the caller —
+        the loop hands down the snapshot its dispatch decision was made on, the
+        tap paths read it through ``_backlog_policy_model``. Keyword-only and
+        required so no spawn site can silently fall back to a different model."""
         from server.automations.backlog_prompt import build_implement_prompt
         from server.automations.model_pick import resolve_model
         # Engine FIRST, before any network or disk work: the seed prompt states a
@@ -5708,20 +5775,11 @@ class SessionOrchestrator:
         cwd = await asyncio.to_thread(
             gitrepos.ensure_clone, await self._effective_repo_root(), batch.repo, url)
         _mode, config = await self._backlog_read_config()
-        # The session model is the PRODUCT's (policy phase 1): overlay it onto the
-        # config the resolvers already take, so ``resolve_model`` /
+        # The session model is the PRODUCT's (policy phase 1): overlay the caller's
+        # answer onto the config the resolvers already take, so ``resolve_model`` /
         # ``_resolve_codex_auto_effort`` keep their one ``default_model`` contract
         # instead of growing a second way to be told which model to use.
-        # A failed policy read costs the model PREFERENCE, never the spawn: the
-        # dispatch gate upstream has already decided this batch may run, and
-        # ``auto`` (the schema default) is exactly what a pre-flip claim ran under.
-        from server.automations.product_policy import effective_policy
-        try:
-            policies = await self._backlog_load_policies()
-        except Exception:
-            policies = {}
-        policy = policies.get(batch.product) or effective_policy(None)
-        config = {**config, "default_model": policy["default_model"]}
+        config = {**config, "default_model": default_model}
         detail: dict = {"issues": batch.issues, "engine": engine.value}
         model = model_source = reasoning_effort = None
         summary = "\n".join(
@@ -5801,7 +5859,9 @@ class SessionOrchestrator:
         account = await self._automation_account_for(self._backlog_ctx, primary)
         if account is None:
             return "no_account"
-        rec = await self._backlog_spawn(batch, account)
+        rec = await self._backlog_spawn(
+            batch, account,
+            default_model=await self._backlog_policy_model(batch.product))
         if rec is None:
             # REFUSED before anything was created (engine policy, or an
             # engine/permission-mode pair that could not open a PR). Reporting
@@ -5881,7 +5941,9 @@ class SessionOrchestrator:
         if account is None:
             return {"status": "no_account", "session_id": None,
                     "session_name": None}
-        rec = await self._backlog_spawn(batch, account)
+        rec = await self._backlog_spawn(
+            batch, account,
+            default_model=await self._backlog_policy_model(batch.product))
         if rec is None:
             await self._backlog_ctx.delete_target_state(primary)
             return {"status": "refused", "session_id": None, "session_name": None}

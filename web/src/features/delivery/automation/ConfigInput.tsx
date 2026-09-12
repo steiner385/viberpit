@@ -115,6 +115,10 @@ export function ConfigInput({ field, value, onChange, enabledRepos }: FieldValue
           id={field.key}
           type="number"
           size="sm"
+          // The floor comes from the schema (`ConfigField.min`), never a literal
+          // per call site: the server 422s on the same bound, and a hard-coded
+          // `min={0}` here would be a second, silently drifting copy of it.
+          min={field.min ?? undefined}
           value={value == null ? '' : String(value)}
           onChange={(e) => { const v = e.target.valueAsNumber; if (!Number.isNaN(v)) onChange(field.key, v) }}
           className="w-28"

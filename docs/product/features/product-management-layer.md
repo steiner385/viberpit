@@ -167,13 +167,17 @@ config row governing every onboarded product alike. The schema — `PRODUCT_POLI
 (`off | propose | auto`, default `off` — whether the runner works this product's board at all, and
 whether a claimed batch is only announced or actually spawned), `queue_min_status` (default `Ready`,
 or `Backlog` to reach untriaged items — how far down the board the runner reaches), `max_in_flight`
-(default 1 — this product's concurrent runner sessions, enforced per PRODUCT in the runner's
-refill loop rather than translated into a per-repo cap, so a product owning several repos still
-runs at most this many sessions total; a `proposed` announce-only claim holds the slot exactly like
-a spawned one, a `gave_up` or `handed_off` claim does not), `weight` (default 1 — its share when a
-freed slot is contested under the `weighted` selection strategy), `max_attempts` (default 2 —
-attempts per issue before the runner gives up), `default_model` (default `auto` — the session
-model; `auto` assesses each job), and `respect_dependencies` (default `true`). `effective_policy`
+(default 1, minimum 0 — this product's concurrent runner sessions, enforced per PRODUCT in the
+runner's refill loop rather than translated into a per-repo cap, so a product owning several repos
+still runs at most this many sessions total; a `proposed` announce-only claim holds the slot exactly
+like a spawned one, a `gave_up` or `handed_off` claim does not. `0` means PAUSED — the product takes
+no claim while keeping the rest of its policy — never "unlimited"), `weight` (default 1, minimum 0 —
+its share when a freed slot is contested under the `weighted` selection strategy), `max_attempts`
+(default 2, minimum 1 — attempts per issue before the runner gives up), `default_model` (default
+`auto` — the session model; `auto` assesses each job), and `respect_dependencies` (default `true`).
+The minimums are `ConfigField.min`, enforced in `validate_config` (a below-minimum int is a 422
+`bad_policy`, not a browser courtesy) and published in the schema JSON so `ConfigInput` renders the
+same floor on the number input. `effective_policy`
 never raises: a `None` row (never opted in) and an unparseable one both read as the pure defaults,
 i.e. `dispatch: off`. `give_up_after_bounces` (bounce-based retry) and `triage_auto_accept`
 (confidence-tiered triage auto-accept) are in the design
@@ -205,9 +209,14 @@ primary repo's entry in the old `repo_caps` / `repo_weights` becomes its `max_in
 globals are copied onto every seeded product, but only the keys the legacy config actually set: a
 key it left unset is left at the schema default rather than pinned to a made-up value. A non-empty
 `enabled_repos` seeded exactly the products owning those repos; the empty list — which meant "every
-onboarded product" — seeded every product with a linked board. The seed is a no-op the moment any
-product already carries a policy, which is also what makes it safe to run on every process start
-rather than exactly once in history: a human-set policy is never overwritten by a re-seed.
+onboarded product" — seeded every product with a linked board. The seed CONSUMES its own input: in
+the same transaction it strips every retired key off the runner row's config and normalises a stored
+`propose`/`auto` mode to the phase-1 `on`, and a row carrying none of those keys is what makes the
+next call a no-op. That marker is what makes it safe to run on every process start rather than
+exactly once in history — durably, unlike the earlier "does any product have a policy" check, which
+re-armed the moment an operator cleared the last policy. A product that already carries one is
+skipped individually, so a human-set policy is never overwritten and never blocks the rest of the
+migration.
 
 What stays global on the runner: whether it runs at all (`off | on` — one row-level toggle;
 propose-vs-auto is now the per-product `dispatch` value, not a runner mode), `selection_strategy`

@@ -103,8 +103,13 @@ PR linkage, never on labels alone.
   `max_in_flight` is enforced directly per PRODUCT in the loop's `_refill`, counted once per tick
   from the runner's durable target-state rows and kept in step with every claim taken that tick: a
   `proposed` (announce-only) claim holds its product's slot exactly like a spawned one, while a
-  `gave_up` or `handed_off` row does not — it is never translated into a per-repo cap, so a
-  product owning several repos cannot run more than its own cap across all of them combined. The
+  `gave_up` or `handed_off` row does not (one predicate, `backlog_runner.is_in_flight`, shared with
+  the fleet-wide `max_concurrent` count so the two ledgers cannot disagree about a row) — it is
+  never translated into a per-repo cap, so a product owning several repos cannot run more than its
+  own cap across all of them combined. Every cap is read literally, `0` included: `0` is the
+  PAUSED setting (the product takes no claim but keeps the rest of its policy), not an
+  "unlimited" sentinel, and the schema's `min: 0` keeps a negative value — which `_refill` would
+  read as an unreachable ceiling — out of the store in the first place. The
   runner's own `mode` is just `off | on` now — whether it runs at all; dispatch mode (`propose`
   announces a batch without spawning, `auto` spawns) is a PER-PRODUCT decision
   (`policy["dispatch"]`), so one enabled runner can announce for a product still being trusted and
@@ -133,7 +138,13 @@ PR linkage, never on labels alone.
   primary repo's entry in `repo_caps` / `repo_weights` becomes its `max_in_flight` / `weight`, or
   its lowest-named repo's when none is flagged primary, and only the keys the legacy config
   actually set are written, the rest left at the schema default — so no product's behaviour
-  changed at the flip; the seed is a no-op the moment any product already has a policy. The status
+  changed at the flip. The seed is one-shot because it CONSUMES its own input: in the same
+  transaction that writes the policies it strips every `retired_config_keys` key off the runner
+  row's stored config and normalises a stored `propose`/`auto` mode to `on` (so the row an
+  operator sees in `GET /api/automations` stops claiming a mode the UI no longer offers), and a
+  row carrying none of those keys is what makes the next call a no-op. A product that ALREADY has
+  a policy is skipped individually — a human's answer is never overwritten, and their edit does
+  not strand the other products on the wrong side of the migration. The status
   card appends one ` · `-joined segment per product whose dispatch is on, onto the SAME status-card
   line ("slug: dispatch · in_flight/cap in flight · eligible eligible") rather than a separate line
   each (the web renders `AutomationStatus.text` without honouring newlines); it reports "idle — no

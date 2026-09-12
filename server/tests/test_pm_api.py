@@ -110,7 +110,14 @@ def test_policy_schema_and_project_policy_round_trip():
     with _client() as c:
         schema = c.get("/api/pm/policy-schema", headers=IDENTITY_HEADERS)
         assert schema.status_code == 200
-        assert [f["key"] for f in schema.json()][:2] == ["dispatch", "queue_min_status"]
+        fields = {f["key"]: f for f in schema.json()}
+        assert list(fields)[:2] == ["dispatch", "queue_min_status"]
+        # The int fields publish their floor so the browser renders the same range
+        # the server enforces, instead of hard-coding one (or none).
+        assert fields["max_in_flight"]["min"] == 0      # 0 = paused, not unlimited
+        assert fields["weight"]["min"] == 0
+        assert fields["max_attempts"]["min"] == 1       # 0 would give up instantly
+        assert fields["dispatch"]["min"] is None
 
         r = c.post("/api/pm/projects", json={"name": "KinDash", "slug": "kindash",
                                              "repos": [{"repo": "cairnea/KinDash", "isPrimary": True}]},
@@ -131,6 +138,21 @@ def test_policy_schema_and_project_policy_round_trip():
         assert r.status_code == 422 and r.json()["detail"]["error"] == "bad_policy"
         r = c.patch("/api/pm/projects/kindash/policy", json={"policy": {"nope": 1}}, headers=IDENTITY_HEADERS)
         assert r.status_code == 422
+        # A below-minimum int is a server-side refusal, not a browser courtesy: a
+        # stored ``-1`` cap reads as an unreachable ceiling in ``_refill``, i.e.
+        # unlimited spawning for that product.
+        r = c.patch("/api/pm/projects/kindash/policy",
+                    json={"policy": {"dispatch": "auto", "max_in_flight": -1}},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 422 and r.json()["detail"]["error"] == "bad_policy"
+        assert "minimum" in r.json()["detail"]["message"]
+        # …while 0 is a legal, meaningful value (paused).
+        r = c.patch("/api/pm/projects/kindash/policy",
+                    json={"policy": {"dispatch": "auto", "max_in_flight": 0}},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        paused = r.json()["automationPolicy"]
+        assert paused["max_in_flight"] == 0
 
         r = c.patch("/api/pm/projects/kindash/policy", json={"policy": None}, headers=IDENTITY_HEADERS)
         assert r.status_code == 200 and r.json()["automationPolicy"] is None
@@ -152,9 +174,10 @@ def test_policy_schema_and_project_policy_round_trip():
                 return (await db.execute(select(AuditEvent).where(
                     AuditEvent.type == "pm.project.policy"))).scalars().all()
         found = c.portal.call(_audits)
-        # Two accepted writes: the auto/2 policy and the clear. The three rejected
-        # ones (bad enum, unknown key, unknown slug) write nothing.
-        assert [a.detail["policy"] for a in found] == [pol, None]
+        # Three accepted writes: the auto/2 policy, the paused (0) one and the
+        # clear. The four rejected ones (bad enum, unknown key, below-minimum int,
+        # unknown slug) write nothing.
+        assert [a.detail["policy"] for a in found] == [pol, paused, None]
         assert {a.detail["slug"] for a in found} == {"kindash"}
         assert {a.identity for a in found} == {IDENTITY_HEADERS["Tailscale-User-Login"]}
 
