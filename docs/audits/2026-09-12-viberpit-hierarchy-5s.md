@@ -90,6 +90,23 @@ requires documentation consolidation, and [#996](https://github.com/steiner385/v
 requires operational cleanup verification. None is closed merely to make the
 hierarchy appear complete.
 
+A read-only check narrowed #996: the live database already contains
+`ix_gh_write_journal_mutation_id` on `gh_write_journal(mutation_id)`, so no index
+DDL is needed. The archived [Phase 0 scratch repository](https://github.com/steiner385/gh-projects-spike-003)
+still exists. Its irreversible deletion remains an operational action, not a
+documentation or hierarchy mutation.
+
+## Verification
+
+The unchanged application code passed the complete local Python gate: Ruff,
+Mypy, 681 core tests, and 9,158 server tests (33 skipped). The full server run
+used parallel file distribution and a clean test environment. Existing focused
+product-map and brand checks passed (60 tests), as did 137 assistant conformance,
+grader, permission, and external-token tests. The brand-ratchet ceilings remain
+unchanged and local documentation links resolve. Independent task and branch
+reviews found no remaining qualifying findings after two stale backlog premises
+were moved to verification holds.
+
 Use the canonical product maintenance rules for subsequent changes: preserve
 stable identities, verify references before retirement, distinguish parentage
 from dependency order, and attach acceptance evidence before advancing a stage.
