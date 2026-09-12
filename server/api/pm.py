@@ -1187,3 +1187,49 @@ async def patch_overlay(
     await record_audit(db=db, type="pm.workitem.overlay", identity=identity,
                        detail={"workItemId": item_id})
     return _work_item_to_dict(wi)
+
+
+_REF_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#\d+$")
+
+
+@router.delete("/work-items/{item_id}/deps")
+async def delete_work_item_dep(
+    item_id: str,
+    request: Request,
+    blocker: str,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """Remove the blocked-by edge ``item ← blocker`` on GitHub (roadmap spec §8,
+    §10; #1472) — the disposition for a `blocked` leaf. ``blocker`` is the
+    canonical ``owner/repo#N`` ref the leaf's ``blockedBy`` carries; a query
+    parameter because a ref has a slash and a hash in it.
+
+    The GitHub write belongs to the orchestrator seam (its gh ladder, its
+    journal); this route decides that a human asked and records that in the
+    audit trail whether or not GitHub agreed. A refusal is a 502 carrying the
+    seam's ``step`` so the web can say what to do (an unmirrored side means
+    "wait for the sync", a GitHub error means "look at the issue")."""
+    if not _REF_RE.match(blocker):
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_blocker", "message": "blocker must be owner/repo#N"})
+    wi = (await db.execute(select(WorkItem).where(WorkItem.id == item_id))).scalar_one_or_none()
+    if wi is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found"})
+    src_ref = f"{wi.repo}#{wi.number}"
+    dep = (await db.execute(select(WorkItemDep.id).where(
+        WorkItemDep.src_ref == src_ref, WorkItemDep.dst_ref == blocker,
+        WorkItemDep.active.is_(True)))).scalars().first()
+    if dep is None:
+        raise HTTPException(status_code=404, detail={
+            "error": "dep_not_found", "message": f"{src_ref} is not blocked by {blocker}"})
+    result = await request.app.state.sessions.pm_remove_dependency(item_id, blocker)
+    await record_audit(db=db, type="pm.workitem.dep_remove", identity=identity,
+                       detail={"workItemId": item_id, "blocker": blocker,
+                               "ok": bool(result.get("ok")), "step": result.get("step")})
+    if not result.get("ok"):
+        await db.commit()  # the failed attempt is exactly what the trail must keep
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={
+            "error": "dep_remove_failed", "step": result.get("step"),
+            "message": str(result.get("error") or "dependency removal failed")})
+    return result

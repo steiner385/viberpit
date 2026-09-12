@@ -737,6 +737,10 @@ def test_api_orchestrator_reads_are_all_classified():
         # Initiative-scoped human-gate apply (#992) — see the GLOBAL-set comment
         # in the sibling test: fanning it out would repeat every GitHub write.
         "sdlc_materialize_apply",
+        # Blocked-by removal (roadmap spec §8, #1472): same reasoning as
+        # sdlc_materialize_apply — shared-DB truth plus the daemon's own gh
+        # credential ladder and journal, so it must not fan out per host.
+        "pm_remove_dependency",
         # Account-scoped and identical on every host: the primary answers, and one
         # app-server is started rather than one per host.
         "codex_models", "codex_validate_model",
