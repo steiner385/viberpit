@@ -588,3 +588,28 @@ async def test_pr_fix_spawn_auto_fails_open_without_model_access():
     # detail always carries the resolved engine now (Phase 7, #1267), even
     # when there is no model to report.
     assert captured["detail"] == {"engine": "claude_code"}
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_that_dedupes_onto_an_existing_session_is_unaudited(
+        isolated_db, tmp_path, monkeypatch):
+    """``spawn_session`` hands back the EXISTING record on a dedupe hit (it only
+    answers ``None`` for a refusal), so the audit must key on "a new session was
+    created", not on "a record came back": a pick that landed on a session
+    spawned earlier was never applied."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    import server.automations.model_pick as model_pick
+    monkeypatch.setattr(model_pick, "assess_model", _assess_returning("sonnet"))
+
+    orch = _build_backlog_orch({}, tier_floor="opus")
+    _patch_git(monkeypatch, tmp_path)
+    existing = SimpleNamespace(id="already-running", model="sonnet")
+    orch._backlog_ctx._existing_session = AsyncMock(return_value=existing)  # type: ignore[method-assign]
+
+    async def dedupe(**kw):
+        return existing
+    orch._backlog_ctx.spawn_session = dedupe  # type: ignore[method-assign]
+    rec = await orch._backlog_spawn(_BATCH, "acct", default_model="auto")
+    assert rec is existing
+    assert await _audit_model_picks() == []

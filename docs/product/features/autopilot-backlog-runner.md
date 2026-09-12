@@ -197,8 +197,8 @@ PR linkage, never on labels alone.
   is deliberately unfloored — it carries only a free-form prompt, with no issue ref or capability
   whose history there would be to read. The spawned `AutomationEvent`'s `detail` carries
   `assessed`/`floor` only when set (so a pinned spawn's detail is unchanged from before this
-  phase), and every `auto`-policy pick — raised or not — also writes one
-  `backlog_runner.model_pick` audit row (identity `backlog-runner`, `{target, product, assessed,
+  phase), and every `auto`-policy pick — raised or not — whose spawn produced a new session
+  also writes one `backlog_runner.model_pick` audit row (identity `backlog-runner`, `{target, product, assessed,
   floor, applied, source}`), so "the assessor said sonnet but this capability's history floored it
   at opus" is recoverable after the fact. Neither the event detail nor the audit surfaces in the
   UI yet — `AutomationContext.list_events` drops `detail` entirely, so this is data for the

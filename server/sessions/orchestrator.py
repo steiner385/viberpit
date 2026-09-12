@@ -5931,6 +5931,12 @@ class SessionOrchestrator:
                 account, config, summary)
             if reasoning_effort is not None:
                 detail.update(reasoning_effort=reasoning_effort, model_source=model_source)
+        # Snapshot the key's current holder so a de-duped spawn is recognisable
+        # afterwards. Best-effort: a failed read only costs the dedupe check.
+        try:
+            existing_before = await self._backlog_ctx._existing_session(batch.primary)
+        except Exception:
+            existing_before = None
         rec = await self._backlog_ctx.spawn_session(
             origin_ref=batch.primary,
             dedupe_key=batch.primary,
@@ -5944,7 +5950,12 @@ class SessionOrchestrator:
             reasoning_effort=reasoning_effort,
             detail=detail,
         )
-        if audit_pick is not None and rec is not None:
+        # A de-duped spawn hands back the session that already existed: the
+        # context resolves the same key (``dedupe_key=batch.primary``) it did, so
+        # a record whose id matches the pre-spawn holder is not a new session.
+        deduped = (rec is not None and existing_before is not None
+                   and getattr(rec, "id", None) == getattr(existing_before, "id", None))
+        if audit_pick is not None and rec is not None and not deduped:
             # One durable row per auto pick that actually ran: `assessed` vs
             # `applied` is the metric for whether the assessor and the history
             # agree, so a spawn the context refused or de-duped onto an existing
