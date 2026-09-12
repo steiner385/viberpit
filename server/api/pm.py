@@ -24,6 +24,8 @@ from server.db.models import (
     Feature,
     GhProject,
     GhProjectItem,
+    Initiative,
+    InitiativeFeature,
     Project,
     ProjectEdge,
     ProjectRepo,
@@ -33,6 +35,7 @@ from server.db.models import (
 )
 from server.pm.desired_state import STATUS_READY
 from server.pm.featuredoc import FeatureLinkRef
+from server.pm.health import roadmap_health
 from server.pm.map_changes import NoOpenMapChanges, NoPrimaryRepo, NotBehind
 from server.pm.map_changes_gh import GhWriteError
 from server.pm.map_changes_ops import MapOp, MapOpError
@@ -287,6 +290,47 @@ async def get_project(
     d["repos"] = [_repo_to_dict(r) for r in repos]
     d["edges"] = [_edge_to_dict(e, slug_by_id) for e in edges]
     return d
+
+
+@router.get("/projects/{slug}/health")
+async def project_health(slug: str, _identity: str = Depends(current_identity),
+                         db=Depends(get_db)) -> dict:
+    """Roadmap drift for one product (5S plan, Sustain): loose capabilities,
+    initiatives with no capability, stale `proposed` leaves, old inbox items."""
+    p = await _load_project(db, slug)
+    feats = (await db.execute(select(Feature).where(
+        Feature.project_id == p.id, Feature.orphaned.isnot(True)))).scalars().all()
+    slug_by_id = {f.id: f.slug for f in feats}
+    caps = [(f.slug, slug_by_id.get(f.parent_feature_id), f.state, f.updated_at) for f in feats]
+    inits = (await db.execute(select(Initiative).where(Initiative.project_id == p.id))).scalars().all()
+    ids = [i.id for i in inits]
+    link_counts: dict[str, int] = {}
+    parents_with_kids: set[str] = set()
+    if ids:
+        for iid, in (await db.execute(select(InitiativeFeature.initiative_id).where(
+                InitiativeFeature.initiative_id.in_(ids)))).all():
+            link_counts[iid] = link_counts.get(iid, 0) + 1
+        parents_with_kids = {pid for pid, in (await db.execute(
+            select(Initiative.parent_initiative_id).where(
+                Initiative.parent_initiative_id.in_(ids)))).all() if pid}
+    repos = (await db.execute(
+        select(ProjectRepo).where(ProjectRepo.project_id == p.id))).scalars().all()
+    repo_names = [r.repo for r in repos if r.repo]
+    props: list[datetime] = []
+    if repo_names:
+        props = [c for c, in (await db.execute(select(TriageProposal.created_at).join(
+            WorkItem, WorkItem.id == TriageProposal.work_item_id).where(
+            TriageProposal.status == "pending",
+            WorkItem.repo.in_(repo_names)))).all()]
+    now = datetime.now(timezone.utc)
+    h = roadmap_health(capabilities=caps,
+                       initiatives=[(i.slug or "", link_counts.get(i.id, 0), i.id in parents_with_kids,
+                                    i.stage == "done" or i.status == "done") for i in inits],
+                       proposals=props, now=now)
+    return {"unparentedCapabilities": list(h.unparented_capabilities),
+            "unlinkedInitiatives": list(h.unlinked_initiatives),
+            "staleProposed": list(h.stale_proposed), "staleInbox": h.stale_inbox,
+            "generatedAt": now.isoformat()}
 
 
 @router.post("/projects/{slug}/sync", status_code=status.HTTP_202_ACCEPTED)

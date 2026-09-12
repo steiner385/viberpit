@@ -374,6 +374,146 @@ async def test_auto_link_skips_unclassified_issue(db_env):
     assert await orch._pm_triage_auto_link(item) is False
 
 
+@pytest.mark.asyncio
+async def test_auto_link_routes_an_issue_by_feature_label(db_env):
+    await _seed(db_env)
+    async with db_session() as db:
+        from sqlalchemy import select
+        pid = (await db.execute(select(Project.id).where(Project.slug == "viberpit"))).scalars().one()
+        f = Feature(project_id=pid, slug="flaky-test-triage", title="Flaky", state="live",
+                    route_labels=["flaky"])
+        db.add(f)
+        db.add(Feature(project_id=pid, slug="task-views", title="Views", state="live"))
+        await db.flush()
+        db.add(WorkItem(repo=REPO, number=7, kind="issue", title="[flaky] x", state="open",
+                        triage_state="unclassified"))
+        feature_id = f.id
+    orch = _triage_orch()
+    item = PendingItemView(repo=REPO, number=7, kind="issue", title="[flaky] x", body="",
+                           labels=("flaky", "bug"), linked_issue_numbers=())
+    assert await orch._pm_triage_auto_link(item) is True
+    async with db_session() as db:
+        from sqlalchemy import select
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == REPO, WorkItem.number == 7))).scalars().one()
+        assert wi.feature_id == feature_id
+        assert wi.triage_state == "classified" and wi.classified_by == "label-route"
+
+
+@pytest.mark.asyncio
+async def test_auto_link_declines_when_two_features_route_the_same_label(db_env):
+    await _seed(db_env)
+    async with db_session() as db:
+        from sqlalchemy import select
+        pid = (await db.execute(select(Project.id).where(Project.slug == "viberpit"))).scalars().one()
+        db.add(Feature(project_id=pid, slug="a", title="A", state="live", route_labels=["ci"]))
+        db.add(Feature(project_id=pid, slug="b", title="B", state="live", route_labels=["ci"]))
+        db.add(WorkItem(repo=REPO, number=7, kind="issue", title="x", state="open",
+                        triage_state="unclassified"))
+    orch = _triage_orch()
+    item = PendingItemView(repo=REPO, number=7, kind="issue", title="x", body="",
+                           labels=("ci",), linked_issue_numbers=())
+    assert await orch._pm_triage_auto_link(item) is False
+
+
+@pytest.mark.asyncio
+async def test_auto_link_label_route_folds_case(db_env):
+    await _seed(db_env)
+    async with db_session() as db:
+        from sqlalchemy import select
+        pid = (await db.execute(select(Project.id).where(Project.slug == "viberpit"))).scalars().one()
+        f = Feature(project_id=pid, slug="flaky-test-triage", title="Flaky", state="live",
+                    route_labels=["Flaky"])
+        db.add(f)
+        await db.flush()
+        db.add(WorkItem(repo=REPO, number=7, kind="issue", title="[flaky] x", state="open",
+                        triage_state="unclassified"))
+        feature_id = f.id
+    orch = _triage_orch()
+    item = PendingItemView(repo=REPO, number=7, kind="issue", title="[flaky] x", body="",
+                           labels=("flaky",), linked_issue_numbers=())
+    assert await orch._pm_triage_auto_link(item) is True
+    async with db_session() as db:
+        from sqlalchemy import select
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == REPO, WorkItem.number == 7))).scalars().one()
+        assert wi.feature_id == feature_id
+        assert wi.triage_state == "classified" and wi.classified_by == "label-route"
+
+
+@pytest.mark.asyncio
+async def test_label_route_opens_no_session_for_an_unrouted_item(db_env, monkeypatch):
+    """pm-triage ticks every 60s over every labelled pending item; once the
+    per-repo route map cache (``_pm_triage_label_route_cache_for``) is warm, an
+    item whose labels route nowhere must resolve with ZERO DB sessions — not a
+    session per item just to learn there is no route."""
+    await _seed(db_env)
+    async with db_session() as db:
+        from sqlalchemy import select
+        pid = (await db.execute(select(Project.id).where(Project.slug == "viberpit"))).scalars().one()
+        db.add(Feature(project_id=pid, slug="flaky-test-triage", title="Flaky", state="live",
+                       route_labels=["flaky"]))
+        db.add(WorkItem(repo=REPO, number=7, kind="issue", title="x", state="open",
+                        triage_state="unclassified"))
+    orch = _triage_orch()
+    warm = PendingItemView(repo=REPO, number=7, kind="issue", title="x", body="",
+                           labels=("flaky",), linked_issue_numbers=())
+    assert await orch._pm_triage_route_by_label(warm) is True   # warms the cache for REPO
+
+    import server.sessions.orchestrator as orch_mod
+    real_db_session = orch_mod.db_session
+    calls = {"n": 0}
+
+    def counting_db_session(*a, **kw):
+        calls["n"] += 1
+        return real_db_session(*a, **kw)
+
+    monkeypatch.setattr(orch_mod, "db_session", counting_db_session)
+    unrouted = PendingItemView(repo=REPO, number=8, kind="issue", title="y", body="",
+                               labels=("bug",), linked_issue_numbers=())
+    assert await orch._pm_triage_route_by_label(unrouted) is False
+    assert calls["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_link_declines_an_already_classified_item_and_an_unmatched_label(db_env):
+    await _seed(db_env)
+    async with db_session() as db:
+        from sqlalchemy import select
+        pid = (await db.execute(select(Project.id).where(Project.slug == "viberpit"))).scalars().one()
+        f = Feature(project_id=pid, slug="flaky-test-triage", title="Flaky", state="live",
+                    route_labels=["flaky"])
+        db.add(f)
+        await db.flush()
+        db.add(WorkItem(repo=REPO, number=7, kind="issue", title="x", state="open",
+                        triage_state="unclassified"))
+        other_feature = Feature(project_id=pid, slug="other", title="Other", state="live")
+        db.add(other_feature)
+        await db.flush()
+        db.add(WorkItem(repo=REPO, number=8, kind="issue", title="y", state="open",
+                        triage_state="classified", feature_id=other_feature.id))
+        other_feature_id = other_feature.id
+    orch = _triage_orch()
+    # (a) label matches no feature
+    unmatched = PendingItemView(repo=REPO, number=7, kind="issue", title="x", body="",
+                                labels=("bug",), linked_issue_numbers=())
+    assert await orch._pm_triage_auto_link(unmatched) is False
+    async with db_session() as db:
+        from sqlalchemy import select
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == REPO, WorkItem.number == 7))).scalars().one()
+        assert wi.feature_id is None
+    # (b) item already classified onto a feature
+    already_classified = PendingItemView(repo=REPO, number=8, kind="issue", title="y", body="",
+                                         labels=("flaky",), linked_issue_numbers=())
+    assert await orch._pm_triage_auto_link(already_classified) is False
+    async with db_session() as db:
+        from sqlalchemy import select
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == REPO, WorkItem.number == 8))).scalars().one()
+        assert wi.feature_id == other_feature_id
+
+
 # --------------------------------------------------------------------------- #
 # classify / propose_map_diff — reuse of the phase-2 seams                     #
 # --------------------------------------------------------------------------- #

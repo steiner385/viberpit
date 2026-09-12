@@ -63,3 +63,61 @@ def test_initiative_artifact_links_to_its_initiative(tmp_path):
     assert art.pr_number == 795
     assert art.commit_sha is None, "commit_sha is nullable until the artifact is committed"
     assert art.created_at is not None
+
+
+def test_initiative_parent_link_roundtrips(tmp_path):
+    """A phase initiative points at its program by id; a root has None."""
+    from sqlalchemy import select as sa_select
+
+    from server.db import db_session, init_db
+    from server.db.models import Initiative
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'sdlc.db'}")
+        async with db_session() as db:
+            program = Initiative(slug="ui-audit-2026-09", title="UI audit 2026-09")
+            db.add(program)
+            await db.flush()
+            db.add(Initiative(slug="ui-audit-2026-09-01", title="01 Restore core actions",
+                              parent_initiative_id=program.id))
+            program_id = program.id
+        async with db_session() as db:
+            phase = (await db.execute(sa_select(Initiative).where(
+                Initiative.slug == "ui-audit-2026-09-01"))).scalars().one()
+            root = (await db.execute(sa_select(Initiative).where(
+                Initiative.slug == "ui-audit-2026-09"))).scalars().one()
+            return program_id, phase.parent_initiative_id, root.parent_initiative_id
+
+    program_id, phase_parent, root_parent = asyncio.run(run())
+    assert phase_parent == program_id
+    assert root_parent is None
+
+
+def test_feature_route_labels_roundtrip_as_a_list(tmp_path):
+    from sqlalchemy import select as sa_select
+
+    from server.db import db_session, init_db
+    from server.db.models import Feature, Project
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'pm.db'}")
+        async with db_session() as db:
+            p = Project(slug="kindash", name="KinDash")
+            db.add(p)
+            await db.flush()
+            db.add(Feature(project_id=p.id, slug="flaky-test-triage", title="Flaky test triage",
+                           state="live", route_labels=["flaky"]))
+            db.add(Feature(project_id=p.id, slug="task-views", title="Task views", state="live",
+                           route_labels=None))
+        async with db_session() as db:
+            rows = (await db.execute(sa_select(Feature).order_by(Feature.slug))).scalars().all()
+            routed = (await db.execute(sa_select(Feature.slug).where(
+                Feature.route_labels.isnot(None)))).scalars().all()
+            return [(r.slug, r.route_labels) for r in rows], routed
+
+    pairs, routed = asyncio.run(run())
+    assert pairs == [("flaky-test-triage", ["flaky"]), ("task-views", None)]
+    assert routed == ["flaky-test-triage"], (
+        "explicit None must persist as SQL NULL, not the JSON literal 'null', so "
+        "route_labels IS NOT NULL excludes unrouted features"
+    )

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from server.db.models import FEATURE_LINK_KINDS
 
@@ -144,18 +144,18 @@ def apply_op(op: MapOp, current: str | None) -> tuple[str, str]:
         doc = parse_feature_doc(current)
     except FeatureDocError as e:
         raise MapOpError("bad_doc", f"the existing doc cannot be parsed: {e}") from e
+    # dataclasses.replace() carries every field the branch does not name
+    # (labels included) forward unchanged — reconstructing FeatureDoc(...) by
+    # hand here is exactly how a rename/reparent/summary/links edit silently
+    # dropped a doc's `labels:` frontmatter (fix round 1, Task 7).
     if op.op == "rename":
-        doc = FeatureDoc(slug=doc.slug, title=(op.title or "").strip(), state=doc.state,
-                         links=doc.links, body=doc.body, parent=doc.parent)
+        doc = replace(doc, title=(op.title or "").strip())
     elif op.op == "reparent":
-        doc = FeatureDoc(slug=doc.slug, title=doc.title, state=doc.state,
-                         links=doc.links, body=doc.body, parent=op.parent_slug)
+        doc = replace(doc, parent=op.parent_slug)
     elif op.op == "summary":
-        doc = FeatureDoc(slug=doc.slug, title=doc.title, state=doc.state, links=doc.links,
-                         body=_replace_summary(doc.body, op.summary or ""), parent=doc.parent)
+        doc = replace(doc, body=_replace_summary(doc.body, op.summary or ""))
     elif op.op == "links":
-        doc = FeatureDoc(slug=doc.slug, title=doc.title, state=doc.state,
-                         links=tuple(op.links), body=doc.body, parent=doc.parent)
+        doc = replace(doc, links=tuple(op.links))
     else:
         raise MapOpError("bad_op", f"op must be one of {MAP_OPS}")
     return path, serialize_feature_doc(doc)

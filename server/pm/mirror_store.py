@@ -1,6 +1,7 @@
 """Session-level persistence for the 003 read-only mirror. Callers own the transaction."""
 from __future__ import annotations
 
+import logging
 from collections.abc import Collection, Sequence, Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,13 +12,15 @@ from sqlalchemy.orm import Session
 from server.db.models import (
     INITIATIVE_STAGES, GhProject, GhProjectItem, Initiative, Project, ProjectRepo,
     TriageProposal, WorkItem, WorkItemDep)
-from server.sdlc.slug import slugify
+from server.sdlc.slug import normalize_epic_title, slugify
 
 from .dep_plan import DepRowView, observed_deps, plan_dep_rows
 from .gh_projects import GhProjectItemView, GhProjectView, IssueRelView
 from .journal import applied_keys, own_write_key
 from .reconcile_diff import remove_blocked_by_mutation
 from .refs import split_ref
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -171,7 +174,15 @@ def back_sync_stage(db: Session, edits: Sequence[HumanEdit]) -> int:
             continue
         ini = db.query(Initiative).filter_by(
             epic_repo=repo, epic_number=int(number)).first()
-        if ini is not None and ini.stage != e.new:
+        if ini is None:
+            continue
+        # A program's stage is derived from its phases (tree.derived_stage);
+        # GitHub may drive a leaf's Stage, never a program's.
+        if db.query(Initiative.id).filter_by(parent_initiative_id=ini.id).first() is not None:
+            log.info("mirror_store.back_sync_stage.skipped_program initiative=%s ref=%s",
+                     ini.slug, e.ref)
+            continue
+        if ini.stage != e.new:
             ini.stage = e.new
             n += 1
     return n
@@ -243,7 +254,7 @@ def adopt_epics(db: Session, project_id: str, *, now: datetime) -> list[str]:
         if already is not None:
             continue
         ref = f"{epic.repo}#{epic.number}"
-        title = epic.title or ref
+        title = normalize_epic_title(epic.title or ref)
         board_stage = stage_by_work_item.get(epic.id)
         stage = board_stage if board_stage in INITIATIVE_STAGES else "build"
         db.add(Initiative(
@@ -252,7 +263,77 @@ def adopt_epics(db: Session, project_id: str, *, now: datetime) -> list[str]:
             epic_repo=epic.repo, epic_number=epic.number, project_id=project_id,
             created_at=now, updated_at=now))
         adopted.append(ref)
+    link_epic_parents(db, project_id)
     return adopted
+
+
+def link_epic_parents(db: Session, project_id: str) -> int:
+    """Mirror GitHub's epic nesting onto the project's adopted initiatives.
+
+    For every Initiative with an epic pointer, its parent is the Initiative
+    whose epic is the mirrored ``WorkItem.parent_work_item_id`` of that epic —
+    or None when the epic has no parent, the parent is not an epic, or the
+    parent is not adopted. Idempotent and re-run every adoption pass, so rows
+    adopted before nesting existed are linked on the next tick. A title that
+    still equals the raw epic title is normalized here too (it was written by
+    adoption, not a human); an edited title is never touched. Returns the
+    number of rows whose parent or title changed (a row where both change is
+    counted once, not twice)."""
+    inits = db.query(Initiative).filter(
+        Initiative.project_id == project_id,
+        Initiative.epic_repo.isnot(None), Initiative.epic_number.isnot(None)).all()
+    if not inits:
+        return 0
+    by_pointer = {(i.epic_repo, i.epic_number): i for i in inits}
+    by_id = {i.id: i for i in inits}
+    epics = db.query(WorkItem).filter(
+        WorkItem.repo.in_({i.epic_repo for i in inits}),
+        WorkItem.number.in_({i.epic_number for i in inits}),
+        WorkItem.kind == "issue").all()
+    epic_by_pointer = {(w.repo, w.number): w for w in epics}
+    parent_ids = {w.parent_work_item_id for w in epics if w.parent_work_item_id}
+    parents = {w.id: w for w in db.query(WorkItem).filter(
+        WorkItem.id.in_(parent_ids)).all()} if parent_ids else {}
+    changed = 0
+    for ini in inits:
+        row_changed = False
+        epic = epic_by_pointer.get((ini.epic_repo, ini.epic_number))
+        parent_ini = None
+        if epic is not None and epic.parent_work_item_id:
+            parent_wi = parents.get(epic.parent_work_item_id)
+            if parent_wi is not None and parent_wi.is_epic:
+                parent_ini = by_pointer.get((parent_wi.repo, parent_wi.number))
+        new_parent = parent_ini.id if parent_ini is not None and parent_ini.id != ini.id else None
+        if new_parent is not None:
+            # A mirrored cycle (e.g. two epics each other's GitHub sub-issue)
+            # would otherwise infinite-loop every consumer that walks
+            # parent_initiative_id — index the offending row at root, same as
+            # feature_index does for a capability cycle. Walked against the
+            # initiatives' current (possibly already-updated-this-pass)
+            # parent_initiative_id, via the id map built from `inits`.
+            visited: set[str] = set()
+            current: str | None = new_parent
+            while current is not None:
+                if current == ini.id:
+                    log.warning("mirror_store.epic_parent_cycle initiative=%s", ini.slug)
+                    new_parent = None
+                    break
+                if current in visited:
+                    break
+                visited.add(current)
+                current_ini = by_id.get(current)
+                current = current_ini.parent_initiative_id if current_ini is not None else None
+        if ini.parent_initiative_id != new_parent:
+            ini.parent_initiative_id = new_parent
+            row_changed = True
+        if epic is not None and epic.title and ini.title == epic.title:
+            normalized = normalize_epic_title(epic.title)
+            if normalized != ini.title:
+                ini.title = normalized
+                row_changed = True
+        if row_changed:
+            changed += 1
+    return changed
 
 
 def upsert_relations(db: Session, repo: str, rels: list[IssueRelView]) -> None:

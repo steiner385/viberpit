@@ -59,6 +59,26 @@ def test_load_product_facts_assembles_signals():
     assert facts.newest_decision_at == T and facts.mirror_synced_at == T
 
 
+def test_a_program_initiative_yields_no_stage_field():
+    """A program (an initiative with phases) is never driven directly: its Stage
+    is derived from its phases, so the reconciler must not push the program's own
+    raw column stage — that would fight the UI's derived value and back_sync_stage's
+    refusal to write a human's correction onto it."""
+    db = _db(); _seed(db)
+    program = Initiative(slug="program", stage="build", epic_repo=REPO, epic_number=6, updated_at=T)
+    db.add(program); db.flush()
+    db.add(Initiative(slug="phase", stage="deploy", epic_repo=REPO, epic_number=7,
+                      parent_initiative_id=program.id, updated_at=T))
+    i6 = WorkItem(repo=REPO, number=6, kind="issue", state="open", gh_node_id="I_6", labels=[])
+    i7 = WorkItem(repo=REPO, number=7, kind="issue", state="open", gh_node_id="I_7", labels=[])
+    db.add_all([i6, i7]); db.commit()
+
+    facts = load_product_facts(db, list_product_views(db)[0], now=T)
+    by_ref = {f.ref: f for f in facts.items}
+    assert by_ref[f"{REPO}#6"].initiative_stage is None       # program: no Stage decision
+    assert by_ref[f"{REPO}#7"].initiative_stage == "deploy"   # phase: unaffected
+
+
 def test_a_runner_give_up_row_marks_every_issue_in_the_bundle():
     """Phase D: ``Needs human`` comes from the runner's durable give-up row, not a
     label. The row rides on the bundle's primary target, so every issue the runner

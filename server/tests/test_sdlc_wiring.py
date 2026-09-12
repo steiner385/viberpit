@@ -100,3 +100,35 @@ def test_sdlc_list_initiatives_projects_the_epic_pointer():
             rows = client.portal.call(_seed_and_list, orch)
     assert [(r["slug"], r["epic_repo"], r["epic_number"]) for r in rows] == \
         [("dark-mode", "o/r", 42)]
+
+
+def test_sdlc_list_initiatives_excludes_a_program():
+    """A program (an initiative with phases) is never driven directly — the
+    synthesizer must never propose artifacts for it or materialize it as a
+    plan. Only the leaf phase belongs in the candidate pool."""
+    from server.app import create_app
+    from server.db import db_session
+    from server.db.models import Initiative
+
+    async def _seed_and_list(orch):
+        async with db_session() as db:
+            program = Initiative(slug="ui-audit", repo="o/r", title="UI audit",
+                                 stage="plan", status="active",
+                                 epic_repo="o/r", epic_number=10)
+            db.add(program)
+            await db.flush()
+            db.add(Initiative(slug="ui-audit-01", repo="o/r", title="01 phase",
+                              stage="plan", status="active",
+                              epic_repo="o/r", epic_number=11,
+                              parent_initiative_id=program.id))
+        return await orch._sdlc_list_initiatives()
+
+    with tempfile.TemporaryDirectory() as tmp, temp_env(), patch.dict(
+        os.environ, {"CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{tmp}/wiring.db"}
+    ):
+        orch = _make_orch()
+        app = create_app(orchestrator=orch)
+        client = TestClient(app, raise_server_exceptions=False)
+        with client:  # lifespan runs init_db; same loop for the pool (see above)
+            rows = client.portal.call(_seed_and_list, orch)
+    assert [r["slug"] for r in rows] == ["ui-audit-01"]

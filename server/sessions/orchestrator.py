@@ -1134,6 +1134,11 @@ class SessionOrchestrator:
             clock=time.monotonic,
         )
         self._pm_triage_task: asyncio.Task | None = None
+        # Per-repo label→feature route map cache for `_pm_triage_route_by_label`
+        # (repo → (monotonic build time, {folded label: feature_id or None when
+        # ambiguous})), rebuilt at most once per 60s per repo instead of opening
+        # a DB session per labelled pending item on every tick.
+        self._label_route_cache: dict[str, tuple[float, dict[str, str | None]]] = {}
         # SDLC Synthesizer control loop (#800): carries initiatives intent→spec→
         # plan by proposing each stage's artifact PR and enriching artifact index
         # rows with PR metadata (number/url, then merge sha). Same injected-seam
@@ -6280,10 +6285,11 @@ class SessionOrchestrator:
         than failing the apply. Plan warnings (unknown parent, cycle) are
         logged the same way.
 
-        After upserting, if the project is in ``map_proposed`` and now has ≥1
-        non-orphaned Feature, advance it to ``map_merged``.  This ties the
-        transition to the observable "map merged & indexed" state — no PR
-        webhook needed.  No other states are touched."""
+        After upserting, if the project is in ``map_proposed``, ``registered``,
+        or ``syncing`` and now has ≥1 non-orphaned Feature, advance it to
+        ``map_merged``.  Indexed docs from the default branch ARE a merged map
+        regardless of onboarding route.  ``map_merged``, ``classifying``, and
+        ``live`` are left alone."""
         from sqlalchemy import delete, func, select
         from server.db.models import Feature, FeatureLink, Project
         for warning in plan.warnings:
@@ -6307,6 +6313,7 @@ class SessionOrchestrator:
                 row.commit_sha = up.commit_sha
                 row.pr_number = up.pr_number
                 row.pr_url = up.pr_url
+                row.route_labels = list(up.labels) or None
             for slug in plan.orphan_slugs:
                 row = (await db.execute(
                     select(Feature).where(
@@ -6350,16 +6357,20 @@ class SessionOrchestrator:
                         continue
                     db.add(FeatureLink(src_feature_id=src.id, dst_feature_id=dst_id, kind=link.kind))
 
-            # Advance map_proposed → map_merged when ≥1 non-orphaned feature
-            # exists after this upsert.  Other states are intentionally left alone.
+            # Advance map_proposed/registered/syncing → map_merged when ≥1 non-orphaned
+            # feature exists after this upsert. Indexed docs ARE a merged map.
             proj = (await db.execute(
                 select(Project).where(Project.id == project_id)
             )).scalar_one_or_none()
-            if proj is not None and proj.onboarding_state == "map_proposed":
+            if proj is not None and proj.onboarding_state in ("map_proposed", "registered", "syncing"):
+                # Only features indexed from the default branch (commit_sha set)
+                # count — a proposed feature (an open map-changes PR, not yet
+                # merged) must not itself flip onboarding to map_merged.
                 live_count = (await db.execute(
                     select(func.count(Feature.id)).where(
                         Feature.project_id == project_id,
                         Feature.orphaned.is_not(True),
+                        Feature.commit_sha.isnot(None),
                     )
                 )).scalar_one()
                 if live_count >= 1:
@@ -6438,16 +6449,17 @@ class SessionOrchestrator:
             ) for w in rows if w.id not in pending_ids]
 
     async def _pm_triage_auto_link(self, item) -> bool:
-        """Mechanical PR→feature inheritance (design §6.2): if any issue this PR
-        closes is already classified onto a feature, copy that feature onto the
-        PR's overlay (``classified_by='auto-link'``). No AI session, no proposal —
-        the closing reference IS the evidence. Returns True on a real link."""
+        """Mechanical routing, no AI session (design §6.2): a PR whose closing
+        refs point at a classified issue inherits that feature
+        (``classified_by='auto-link'``) — the closing reference IS the evidence.
+        Falls through to ``_pm_triage_route_by_label`` when that does not link,
+        so a labelled issue with no closing ref still gets a mechanical home."""
         from datetime import datetime, timezone
         from sqlalchemy import select
         from server.db.models import WorkItem
         numbers = [int(n) for n in (item.linked_issue_numbers or ())]
         if not numbers:
-            return False
+            return await self._pm_triage_route_by_label(item)
         async with db_session() as db:
             issue = (await db.execute(
                 select(WorkItem).where(
@@ -6457,20 +6469,108 @@ class SessionOrchestrator:
                     WorkItem.feature_id.isnot(None))
             )).scalars().first()
             if issue is None:
-                return False
+                return await self._pm_triage_route_by_label(item)
             pr = (await db.execute(
                 select(WorkItem).where(
                     WorkItem.repo == item.repo, WorkItem.kind == "pr",
                     WorkItem.number == item.number)
             )).scalar_one_or_none()
             if pr is None:
-                return False
+                return await self._pm_triage_route_by_label(item)
             pr.feature_id = issue.feature_id
             pr.triage_state = "classified"
             pr.classified_by = "auto-link"
             # Naive-UTC everywhere: never func.now() (Postgres CURRENT_TIMESTAMP
             # is tz-aware and SQLite-only tests hide the difference).
             pr.classified_at = datetime.now(timezone.utc)
+        return True
+
+    async def _pm_triage_label_route_cache_for(self, repo: str) -> dict[str, str | None]:
+        """(folded label → feature id, or ``None`` when two features in the
+        project both claim it) for *repo*'s owning project, cached for 60s.
+
+        pm-triage ticks every 60s and offers every labelled pending item to
+        ``_pm_triage_route_by_label``; without this cache each one opened a DB
+        session (``owning_projects_by_repo`` + the ``Feature.route_labels``
+        scan) just to answer "does this route anywhere" — most of the time,
+        for a route map that rarely changes. Built with the same two queries
+        the old per-item path used, once per repo per 60s."""
+        import time as _time
+        from sqlalchemy import select
+        from server.db.models import Feature
+        from server.pm.repo_project import owning_projects_by_repo
+        cache = getattr(self, "_label_route_cache", None)
+        if cache is None:
+            cache = {}
+            self._label_route_cache = cache
+        now = _time.monotonic()
+        cached = cache.get(repo)
+        if cached is not None and now - cached[0] < 60.0:
+            return cached[1]
+        route_map: dict[str, str | None] = {}
+        async with db_session() as db:
+            owner = (await owning_projects_by_repo(db, [repo])).get(repo)
+            if owner is not None:
+                rows = (await db.execute(select(Feature).where(
+                    Feature.project_id == owner.project_id,
+                    Feature.route_labels.isnot(None),
+                    Feature.orphaned.isnot(True)))).scalars().all()
+                for f in rows:
+                    for lbl in (f.route_labels or []):
+                        folded = str(lbl).strip().lower()
+                        if not folded:
+                            continue
+                        if folded in route_map and route_map[folded] not in (None, f.id):
+                            route_map[folded] = None   # two features claim the same label
+                        else:
+                            route_map.setdefault(folded, f.id)
+        cache[repo] = (now, route_map)
+        return route_map
+
+    async def _pm_triage_route_by_label(self, item) -> bool:
+        """``labels:`` on a feature doc → mechanical home for a labelled item.
+        Exactly one feature in the item's OWNING project must route one of its
+        labels; zero or several → False, the classifier decides.
+
+        GitHub labels are case-insensitive, so the comparison folds both sides
+        (precedent: ``server/pm/queue.py``'s ``{lbl.strip().lower() for lbl in
+        row.labels}``) — a doc's ``labels: [Flaky]`` must still route GitHub's
+        ``flaky``. Only the comparison folds; ``Feature.route_labels`` keeps the
+        doc's own spelling on disk.
+
+        The route map lookup (``_pm_triage_label_route_cache_for``) opens no DB
+        session once warm; a session opens only to WRITE the WorkItem once
+        exactly one feature is resolved for this item's labels."""
+        labels = {lbl.strip().lower() for lbl in (item.labels or ()) if lbl and lbl.strip()}
+        if not labels:
+            return False
+        route_map = await self._pm_triage_label_route_cache_for(item.repo)
+        resolved_ids: set[str] = set()
+        ambiguous = False
+        for lbl in labels:
+            if lbl not in route_map:
+                continue
+            fid = route_map[lbl]
+            if fid is None:
+                ambiguous = True
+            else:
+                resolved_ids.add(fid)
+        if ambiguous or len(resolved_ids) != 1:
+            return False
+        feature_id = next(iter(resolved_ids))
+        from datetime import datetime, timezone
+        from sqlalchemy import select
+        from server.db.models import WorkItem
+        async with db_session() as db:
+            wi = (await db.execute(select(WorkItem).where(
+                WorkItem.repo == item.repo, WorkItem.kind == item.kind,
+                WorkItem.number == item.number))).scalar_one_or_none()
+            if wi is None or wi.feature_id is not None:
+                return False
+            wi.feature_id = feature_id
+            wi.triage_state = "classified"
+            wi.classified_by = "label-route"
+            wi.classified_at = datetime.now(timezone.utc)
         return True
 
     async def _pm_triage_open_map_diffs(self, clusters) -> tuple[str, ...]:
@@ -7324,21 +7424,29 @@ class SessionOrchestrator:
             log_key="sdlc_synthesizer")
 
     async def _sdlc_list_initiatives(self) -> list[dict]:
-        """Every non-done Initiative as a plain dict (the loop's seam shape).
+        """Every non-done LEAF Initiative as a plain dict (the loop's seam shape).
 
         An initiative is 'done' when EITHER its status or its stage is ``done`` —
-        both terminal signals drop it from the loop's candidate pool."""
+        both terminal signals drop it from the loop's candidate pool. A program
+        (an initiative with phases) is never driven directly — its stage/status
+        are derived from its phases, so the synthesizer must never propose
+        artifacts for it or materialize it as a plan. The parent-id query is
+        unfiltered by status: a program with only done phases still has phases,
+        and must still be excluded even though none of them appear in ``rows``."""
         from sqlalchemy import select
         from server.db.models import Initiative
         async with db_session() as db:
             rows = (await db.execute(select(Initiative).where(
                 Initiative.status != "done", Initiative.stage != "done"))).scalars().all()
+            parent_ids = set((await db.execute(select(Initiative.parent_initiative_id).where(
+                Initiative.parent_initiative_id.isnot(None)))).scalars().all())
         return [{"id": r.id, "slug": r.slug, "repo": r.repo, "title": r.title,
                  "stage": r.stage, "status": r.status, "origin": r.origin,
                  "origin_ref": r.origin_ref,
                  # The engine decides plan-stage materialization off this pointer
                  # (spec 003 §7b) — without it every merged plan looks un-decomposed.
-                 "epic_repo": r.epic_repo, "epic_number": r.epic_number} for r in rows]
+                 "epic_repo": r.epic_repo, "epic_number": r.epic_number}
+                for r in rows if r.id not in parent_ids]
 
     async def _sdlc_list_artifacts(self, initiative_id: str) -> list[dict]:
         """Every InitiativeArtifact index row for *initiative_id* as a plain dict."""

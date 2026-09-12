@@ -219,13 +219,14 @@ async def test_apply_feature_plan_map_proposed_advances_to_map_merged(db_env):
 
     orch = _bare_orch()
 
-    # Build a minimal plan with one upsert (simulating an indexed feature doc).
+    # Build a minimal plan with one upsert (simulating an indexed feature doc —
+    # read off the default branch, so it carries a commit_sha).
     from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
     plan = FeatureIndexPlan(
         upserts=(FeatureUpsert(
             slug="core", title="Core", state="live",
             summary="Core feature.", repo_path="docs/product/features/core.md",
-            parent_slug=None, links=(),
+            parent_slug=None, links=(), commit_sha="sha-core",
         ),),
         orphan_slugs=(),
         revive_slugs=(),
@@ -239,6 +240,43 @@ async def test_apply_feature_plan_map_proposed_advances_to_map_merged(db_env):
             select(Project).where(Project.id == project_id)
         )).scalar_one()
         assert proj.onboarding_state == "map_merged"
+
+
+@pytest.mark.asyncio
+async def test_apply_feature_plan_a_proposed_only_project_does_not_advance(db_env):
+    """A project whose only feature is a PROPOSED one (an open map-changes PR,
+    commit_sha=None) must NOT advance — only a feature indexed off the default
+    branch (commit_sha set) counts as a merged map (#h, matching the
+    docstring: 'Indexed docs from the default branch ARE a merged map')."""
+    await init_db(db_env)
+    async with db_session() as db:
+        p = Project(slug="proposed-only-proj", name="proposed-only-proj",
+                    onboarding_state="map_proposed")
+        db.add(p)
+        await db.flush()
+        project_id = p.id
+
+    orch = _bare_orch()
+
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
+    plan = FeatureIndexPlan(
+        upserts=(FeatureUpsert(
+            slug="core", title="Core", state="proposed",
+            summary="Core feature.", repo_path="docs/product/features/core.md",
+            parent_slug=None, links=(), commit_sha=None, pr_number=1,
+        ),),
+        orphan_slugs=(),
+        revive_slugs=(),
+        warnings=(),
+    )
+    await orch._pm_sync_apply_feature_plan(project_id, plan)
+
+    async with db_session() as db:
+        from sqlalchemy import select
+        proj = (await db.execute(
+            select(Project).where(Project.id == project_id)
+        )).scalar_one()
+        assert proj.onboarding_state == "map_proposed"  # still not merged
 
 
 @pytest.mark.asyncio
@@ -356,6 +394,31 @@ async def test_apply_feature_plan_writes_commit_sha_and_the_pr_columns(db_env):
         row = (await db.execute(select(Feature).where(
             Feature.slug == "proposed"))).scalars().one()
     assert (row.commit_sha, row.pr_number, row.pr_url) == ("sha-main2", None, None)
+
+
+@pytest.mark.asyncio
+async def test_apply_feature_plan_registered_project_with_docs_advances_to_map_merged(db_env):
+    """KinDash's map was merged by hand, never via propose-map, so the project
+    sat at `registered` with 18 indexed features and the wizard called it
+    un-onboarded. Indexed docs ARE a merged map: registered/syncing advance."""
+    await init_db(db_env)
+    async with db_session() as db:
+        p = Project(slug="hand-merged", name="hand-merged", onboarding_state="registered")
+        db.add(p)
+        await db.flush()
+        project_id = p.id
+    orch = _bare_orch()
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
+    plan = FeatureIndexPlan(
+        upserts=(FeatureUpsert(slug="tasks", title="Task management", state="live",
+                               summary="s", repo_path="docs/product/features/tasks.md",
+                               parent_slug=None, links=(), commit_sha="sha-tasks"),),
+        orphan_slugs=(), revive_slugs=(), warnings=())
+    await orch._pm_sync_apply_feature_plan(project_id, plan)
+    async with db_session() as db:
+        from sqlalchemy import select
+        assert (await db.execute(select(Project).where(
+            Project.id == project_id))).scalar_one().onboarding_state == "map_merged"
 
 
 def _mk_async(value):
@@ -1344,3 +1407,29 @@ async def test_materialize_chain_ingest_spends_the_settle_budget(db_env, monkeyp
         ini = (await db.execute(select(Initiative).where(
             Initiative.slug == "dark-mode"))).scalar_one()
         assert ini.status == "awaiting_human"  # NOT blocked
+
+
+@pytest.mark.asyncio
+async def test_apply_feature_plan_writes_route_labels(db_env):
+    await init_db(db_env)
+    async with db_session() as db:
+        p = Project(slug="lbl", name="lbl", onboarding_state="live")
+        db.add(p)
+        await db.flush()
+        project_id = p.id
+    orch = _bare_orch()
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
+    plan = FeatureIndexPlan(
+        upserts=(FeatureUpsert(slug="flaky-test-triage", title="Flaky", state="live", summary="s",
+                               repo_path="docs/product/features/flaky-test-triage.md",
+                               parent_slug=None, links=(), labels=("flaky",)),
+                 FeatureUpsert(slug="task-views", title="Views", state="live", summary="s",
+                               repo_path="docs/product/features/task-views.md",
+                               parent_slug=None, links=())),
+        orphan_slugs=(), revive_slugs=(), warnings=())
+    await orch._pm_sync_apply_feature_plan(project_id, plan)
+    async with db_session() as db:
+        from sqlalchemy import select
+        rows = {f.slug: f.route_labels for f in (await db.execute(
+            select(Feature).where(Feature.project_id == project_id))).scalars().all()}
+    assert rows == {"flaky-test-triage": ["flaky"], "task-views": None}

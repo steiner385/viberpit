@@ -4,7 +4,7 @@ parent: planning-and-automation
 title: Product-Management Layer
 state: delivering
 links:
-  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/automations/pm_triage.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts]
+  code: [server/pm/onboarding.py, server/pm/classification.py, server/pm/engine.py, server/pm/featuredoc.py, server/pm/feature_index.py, server/pm/github_sync.py, server/pm/repo_project.py, server/pm/score.py, server/pm/health.py, server/pm/tree.py, server/automations/pm_triage.py, server/api/pm.py, web/src/projects/OnboardingWizard.tsx, web/src/features/roadmap/RoadmapPage.tsx, web/src/features/roadmap/RoadmapListColumn.tsx, web/src/features/roadmap/InitiativePage.tsx, web/src/features/roadmap/inbox/InboxScopeBody.tsx, web/src/features/roadmap/inbox/ProposalDetail.tsx, web/src/features/roadmap/inbox/inboxKeys.ts]
   prs: ['#866', '#879', '#893', '#897', '#899', '#1327']
 ---
 
@@ -100,6 +100,27 @@ under the nav section `roadmap`, on the same master/detail chassis as Sessions:
 
 Still owed by that spec: issue leaves and inline overlay edits (phase 4), the Queue scope and the
 Inbox's "Needs a home" Reclassify control (phase 6).
+
+**Roadmap hygiene (5S plan, 2026-09-12).** A feature doc's `labels:` frontmatter list mirrors onto
+`Feature.route_labels`; pm-triage's mechanical pass (`_pm_triage_route_by_label`, before the AI
+classifier ever sees the item) case-folds a labelled item's GitHub labels and, when exactly one
+feature in the item's owning project claims one of them, links it straight in
+(`classified_by="label-route"`) — so a bot-filed issue carrying a recognized label (`flaky`,
+`forced-deploy-audit`, …) never clusters into a proposed capability the classifier invented. The
+lookup is served from a per-repo route-map cache rebuilt at most once every 60s, not a DB session
+per labelled item per tick. `_pm_sync_apply_feature_plan` also now advances a project sitting at
+`registered` or `syncing` straight to `map_merged` once it has indexed ≥1 feature doc off the
+*default* branch (`commit_sha` set — a still-open map-changes PR does not count), closing the gap
+where a hand-merged map left onboarding permanently claiming "not onboarded". Initiatives nest the
+same way GitHub epics do: `Initiative.parent_initiative_id` mirrors a sub-issue epic's parent onto
+the adopted initiative, so a **program** (an initiative with phases) reports a derived stage (its
+earliest non-done phase) and tier from its **phases**, rolls up leaf-issue progress across every
+phase rather than counting its own epic's direct sub-issues (which would be sub-epics, not leaves),
+and is never advanced, stepped back, or GitHub-Stage-back-synced directly — only a leaf initiative
+is. `GET /api/pm/projects/{slug}/health` (`server/pm/health.py`) is the roadmap-drift readout: loose
+capabilities outside the tree, initiatives linked to no capability (a program is judged by its
+phases, and a `done` initiative is finished rather than drifting, so neither counts), stale
+`proposed` leaves, and the inbox's oldest untouched proposal.
 
 **Map-changes PRs (spec §9) — backend and UI landed (row 8c).** A capability edit made through
 `POST /api/pm/projects/{slug}/map-changes` (`create` | `rename` | `reparent` | `summary` | `links`)

@@ -171,14 +171,16 @@ class PmTriageLoop:
         pending = await self._list_pending()
 
         # 0. Mechanical auto-link pass (design §6.2): PRs whose closing refs point
-        #    at a classified issue inherit that feature with no AI session. Linked
-        #    items leave the queue so only unlinked ones reach the classifier.
-        #    The pass is per-item and independent, so it is guarded per item: an
-        #    ordinary GitHub 404/timeout on item 3 of 50 must not abandon the
-        #    whole tick (no classify, no drift, no stale, no status refresh).
+        #    at a classified issue inherit that feature; an item carrying a label
+        #    a feature doc routes (`labels:`) is homed the same way — no AI
+        #    session either way. Linked/routed items leave the queue so only
+        #    unresolved ones reach the classifier. The pass is per-item and
+        #    independent, so it is guarded per item: an ordinary GitHub
+        #    404/timeout on item 3 of 50 must not abandon the whole tick (no
+        #    classify, no drift, no stale, no status refresh).
         still_pending: list[PendingItemView] = []
         for item in pending:
-            if item.kind == "pr" and item.linked_issue_numbers:
+            if (item.kind == "pr" and item.linked_issue_numbers) or item.labels:
                 try:
                     linked = await self._auto_link(item)
                 except Exception as exc:
