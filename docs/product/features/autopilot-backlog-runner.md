@@ -12,6 +12,7 @@ links:
     - server/automations/backlog_selection.py
     - server/automations/backlog_grouping.py
     - server/automations/backlog_github.py
+    - server/automations/product_policy.py
     - server/automations/action_providers.py
     - server/automations/consolidation_engine.py
     - server/automations/completion_bar.py
@@ -84,19 +85,50 @@ PR linkage, never on labels alone.
   slot once auto-merge is armed), and terminal sessions (charge an attempt, give up at max).
   Candidates come from the **global priority queue** over the mirrored Projects v2 boards
   (spec 003 §7a, `server/pm/queue.py`) — the same ranking `GET /api/pm/queue` renders, so
-  what the operator sees is what agents do next. It is scoped by `enabled_repos` (empty =
-  every onboarded product *for candidate selection only* — the `priority` selection
-  strategy reads the list directly, so an empty list makes that strategy a
-  no-op), gated by `queue_min_status` (`Ready`, the safe default, or
-  `Backlog` to reach untriaged items), dependency-gated from the compiled graph
-  (`respect_dependencies`; native blocked-by edges, `Depends on #N` body references and epic
-  list order), and the top pick is re-verified against live GitHub immediately before the
+  what the operator sees is what agents do next.
+
+  **Scope, reach and per-product knobs are the products' now** (product automation policy
+  phase 1 — `docs/superpowers/specs/2026-09-12-product-automation-policy-design.md`,
+  `docs/product/features/product-management-layer.md` § Product automation policy): each
+  `Project.automation_policy` (`server/automations/product_policy.py`), not the runner's own
+  config, decides. `_backlog_query_queue` keeps only products whose policy `dispatch != off`
+  (a product that never opted in is `off` and contributes nothing), and ranks each ON product
+  with ITS OWN `queue_min_status` (`Ready`, the safe default, or `Backlog` to reach untriaged
+  items) and `respect_dependencies` (dependency-gated from the compiled graph: native
+  blocked-by edges, `Depends on #N` body references and epic list order), merging the
+  per-product rankings into one pool by score. `max_in_flight` and `weight` likewise come from
+  each ON product's policy, applied to every repo it owns and handed to the selection
+  strategies below as per-repo weights/caps/order. The runner's own `mode` is just `off | on`
+  now — whether it runs at all; dispatch mode (`propose` announces a batch without spawning,
+  `auto` spawns) is a PER-PRODUCT decision (`policy["dispatch"]`), so one enabled runner can
+  announce for a product still being trusted and spawn for one that's earned auto, on the same
+  tick. `max_attempts` and `default_model` are read the same way, off the target's recorded
+  product (falling back to the pure defaults with `dispatch: auto` for a claim written before
+  the flip, or a product the policy map has lost — the queue is the real off-gate, so anything
+  that reached the loop this far was already decided to run). The runner's OWN config schema
+  keeps only fleet-wide knobs: `max_concurrent`, `max_spawns_per_day`, `max_issues_per_pr`,
+  `grouping_interval_minutes`, `needs_human_retry_days`. `retired_config_keys`
+  (`eligible_label`, `enabled_repos`, `repo_weights`, `repo_caps`, `queue_min_status`,
+  `max_attempts`, `default_model`, `respect_dependencies`) still lists the retired ones so a
+  row that still carries them keeps the rest of its settings, and a row's stored `propose` or
+  `auto` mode (written before the flip) folds to `on` on read — the flip's one-shot seed
+  (`server/sessions/orchestrator.py`'s `_backlog_seed_policies`, run once per daemon process on
+  the loop's first tick) is what turns that old value, and the old `enabled_repos` /
+  `repo_weights` / `repo_caps` / the rest, into each owning product's policy instead, so no
+  product's behaviour changed at the flip; the seed is a no-op the moment any product already
+  has a policy. The status card gains one line per product whose dispatch is on ("slug:
+  dispatch · in_flight/cap in flight · eligible eligible"), or reports "idle — no product has
+  dispatch on" when every product's is off.
+
+  The top pick is re-verified against live GitHub immediately before the
   claim — that check **fails closed** (§10), so a mirror lagging reality costs a tick, never
   a session spawned on stale work. The old `eligible_label` gate is retired: board status,
   not a label, says what is workable.
   Grouping is a background Sonnet optimizer (#610) persisted in `backlog_groups`; selection
   ordering supports balanced / priority / weighted / concurrency-cap strategies (#773) for
-  per-repo fairness (#771). A **claim is the runner's durable target-state row** (#994): writing
+  per-repo fairness (#771) — `priority` now serves the ON products' repos oldest-first by
+  `Project.created_at`, the deterministic stand-in for the retired hand-ordered `enabled_repos`
+  list. A **claim is the runner's durable target-state row** (#994): writing
   the row is what takes the issue out of the pool, the session it spawns is what the reconciler
   renders as board Status `In progress`, and the issue comment that follows is the claim's
   human-visible trace only — a failed comment cannot lose a claim. Reconciliation heals dangling
@@ -130,6 +162,12 @@ PR linkage, never on labels alone.
 - Backlog work selection / claim / spawn: `server/automations/backlog_runner.py`,
   `server/automations/backlog_selection.py`, `server/automations/backlog_grouping.py`,
   `server/automations/backlog_github.py`.
+- Per-product automation policy (phase 1 — scope, reach, caps/weights/attempts/model, the
+  one-shot seed off the retired repo knobs): `server/automations/product_policy.py`,
+  `server/sessions/orchestrator.py` (`_backlog_query_queue`, `_backlog_select_batch`,
+  `_backlog_seed_policies`), `web/src/features/roadmap/detail/AutomationPolicyCard.tsx`;
+  see `docs/product/features/product-management-layer.md` § Product automation policy and
+  `docs/superpowers/specs/2026-09-12-product-automation-policy-design.md`.
 - Claim-label retirement (#994): `server/pm/label_retirement.py`,
   `scripts/retire_claim_labels.py`, `specs/003-gh-projects-integration/phase-d-runbook.md`.
 - Action surface / consolidation / API / web: `server/automations/action_providers.py`,
