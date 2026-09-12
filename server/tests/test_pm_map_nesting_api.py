@@ -51,3 +51,9 @@ def test_map_initiative_nodes_carry_their_parent():
                 assert nodes["audit-01"]["parentInitiative"] == "audit"
                 assert nodes["audit"]["stage"] == "plan"
                 assert prod["capabilities"][0]["counts"]["inFlight"] == 1   # the phase only
+
+                health = c.get("/api/pm/projects/kindash/health", headers=IDENTITY_HEADERS).json()
+                assert health["unlinkedInitiatives"] == []   # a program is judged by its phases, the phase is linked
+                assert health["staleInbox"] == 0
+                assert health["unparentedCapabilities"] == []   # flat one-capability map flags nothing
+                assert health["staleProposed"] == []
