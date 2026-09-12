@@ -1,0 +1,81 @@
+"""Remove one blocked-by edge on GitHub, journaled (roadmap spec §8/§10, #1472).
+
+The human disposition for a `blocked` issue leaf. Shaped like
+``materialize_apply``: the write is journaled BEFORE the call, the payload comes
+back through the same ``mutate`` seam, and the local ``WorkItemDep`` rows are
+deactivated only once GitHub has agreed — the map's tier reads those rows, so a
+refused removal leaves the row red rather than lying green for a sync cycle.
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from uuid import uuid4
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from server.db.models import WorkItem, WorkItemDep
+
+from . import journal
+from .gh_mutations import build_batch, parse_batch
+from .materialize_apply import Mutate, _error_text
+from .reconcile_diff import remove_blocked_by_mutation
+from .repo_project import owning_projects_by_repo
+from .sync_request import request_project_sync
+
+INITIATED_BY_PREFIX = "dep-remove:"
+
+
+def _split_ref(ref: str) -> tuple[str, int] | None:
+    repo, _, num = ref.rpartition("#")
+    return (repo, int(num)) if repo and num.isdigit() else None
+
+
+async def remove(db: AsyncSession, *, src: WorkItem, blocker_ref: str,
+                 mutate: Mutate, now: datetime) -> dict:
+    """Delete the native edge ``src`` ← blocked by ← ``blocker_ref``.
+
+    Returns ``{"ok": True, "src", "blocker"}`` or ``{"ok": False, "step", "error"}``
+    with ``step`` in ``resolve`` (blocker not mirrored), ``node_id`` (a side has
+    no GitHub node id yet) or ``mutate`` (GitHub refused). Does not commit."""
+    src_ref = f"{src.repo}#{src.number}"
+    parsed = _split_ref(blocker_ref)
+    dst = None
+    if parsed is not None:
+        dst = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == parsed[0], WorkItem.number == parsed[1],
+            WorkItem.kind == "issue"))).scalar_one_or_none()
+    if dst is None:
+        return {"ok": False, "step": "resolve", "error": f"blocker {blocker_ref} is not mirrored"}
+    for item, ref in ((src, src_ref), (dst, blocker_ref)):
+        if not item.gh_node_id:
+            return {"ok": False, "step": "node_id",
+                    "error": f"{ref} has no GitHub node id yet; wait for the next sync"}
+    mutation = remove_blocked_by_mutation(
+        str(src.gh_node_id), str(dst.gh_node_id),
+        initiated_by=f"{INITIATED_BY_PREFIX}{src_ref}->{blocker_ref}")
+    batch_id = f"{INITIATED_BY_PREFIX}{uuid4()}"
+    row_id = (await db.run_sync(lambda s: journal.record_pending(
+        s, [mutation], batch_id=batch_id, now=now, dry_run=False)))[0]
+    await db.commit()  # write-ahead: the row must outlive a crash mid-call
+    doc, alias_map = build_batch([mutation], project_node_id="", field_cache={})
+    owner = str(src.repo or "").partition("/")[0]
+    try:
+        payload = await mutate(owner, doc)
+    except Exception as e:  # transport failure — still a recorded attempt
+        payload = {"errors": [{"message": str(e)}]}
+    error = parse_batch(payload, alias_map).errors.get("m0") or ""
+    if error:
+        error = error if error != "no data returned" else (_error_text(payload) or error)
+        await db.run_sync(lambda s: journal.mark_failed(s, row_id, error, now))
+        return {"ok": False, "step": "mutate", "error": error}
+    await db.run_sync(lambda s: journal.mark_applied(s, [row_id], now))
+    rows = (await db.execute(select(WorkItemDep).where(
+        WorkItemDep.src_ref == src_ref, WorkItemDep.dst_ref == blocker_ref,
+        WorkItemDep.active.is_(True)))).scalars().all()
+    for row in rows:
+        row.active = False
+    owner_row = (await owning_projects_by_repo(db, [str(src.repo or "")])).get(str(src.repo or ""))
+    if owner_row is not None:
+        await request_project_sync(db, owner_row.project_id, now)
+    return {"ok": True, "src": src_ref, "blocker": blocker_ref}

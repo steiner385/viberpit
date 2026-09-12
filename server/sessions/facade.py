@@ -241,3 +241,5 @@ class InProcessOrchestratorAdapter:
     # The GitHub writes belong to the orchestrator (its gh credential ladder and
     # its journal), so the API reaches them only through here.
     async def sdlc_materialize_apply(self, *a, **k): return await _maybe_await(self._orch._sdlc_materialize_apply(*a, **k))
+    # --- blocked-by removal, human disposition (roadmap spec §8, #1472) -------
+    async def pm_remove_dependency(self, *a, **k): return await _maybe_await(self._orch._pm_remove_dependency(*a, **k))

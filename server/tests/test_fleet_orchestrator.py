@@ -554,6 +554,10 @@ def test_every_remote_method_is_classified():
         # its truth is the shared DB plus the daemon's gh credential ladder. A
         # fan-out would run the SAME journaled GitHub writes once per host.
         "sdlc_materialize_apply",
+        # Blocked-by removal (roadmap spec §8, #1472): same reasoning as
+        # sdlc_materialize_apply — shared-DB truth plus the daemon's own gh
+        # credential ladder and journal, so it must not fan out per host.
+        "pm_remove_dependency",
     }
     public = {n for n, _ in inspect.getmembers(RemoteOrchestrator, callable)
               if not n.startswith("_")}

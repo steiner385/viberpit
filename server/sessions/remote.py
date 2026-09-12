@@ -1195,6 +1195,22 @@ class RemoteOrchestrator:
                     "error": "session daemon did not answer"}
         return result
 
+    async def pm_remove_dependency(self, work_item_id: str, blocker_ref: str) -> dict:
+        """Delete one blocked-by edge, via the daemon (its gh ladder, its journal).
+        A dead RPC is a failed removal, not an exception — the route answers 502
+        and the row stays blocked, which is the truth."""
+        try:
+            result = await self._client.call("pm_remove_dependency",
+                                             work_item_id=work_item_id,
+                                             blocker_ref=blocker_ref,
+                                             timeout=MATERIALIZE_RPC_TIMEOUT)
+        except DaemonUnavailable as exc:
+            log.warning("pm_remove_dependency RPC unavailable: %s", exc)
+            return {"ok": False, "step": "rpc", "error": f"session daemon unavailable: {exc}"}
+        if not isinstance(result, dict):
+            return {"ok": False, "step": "rpc", "error": "session daemon did not answer"}
+        return result
+
     async def aclose(self) -> None:
         if self._global_pump is not None and not self._global_pump.done():
             self._global_pump.cancel()
