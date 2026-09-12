@@ -12,7 +12,12 @@ from sqlalchemy.sql import Select
 
 from server.db.models import DISPATCH_OUTCOMES, DispatchOutcome
 
-FINALISED_BOUNCE_OUTCOMES: frozenset[str] = frozenset(DISPATCH_OUTCOMES) - {"running", "merged"}
+# A bounce is a dispatch that ENDED without a merge: ``running`` has not ended,
+# ``merged`` did not bounce, and ``superseded`` was replaced before it could answer
+# — a double tap must not read as the issue being unworkable (R3-9). Derived from
+# the vocabulary so a new outcome counts as a bounce unless it is named here.
+FINALISED_BOUNCE_OUTCOMES: frozenset[str] = (
+    frozenset(DISPATCH_OUTCOMES) - {"running", "merged", "superseded"})
 
 
 def body_fingerprint(title: str | None, body: str | None) -> str:

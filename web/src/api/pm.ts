@@ -263,8 +263,11 @@ export function fetchProjectHealth(slug: string): Promise<ProjectHealth> {
 // --- dispatch outcome history (spec §6/§7; server contract `server/pm/outcomes.py`,
 // `server/api/pm.py:get_work_item_outcomes`) ---
 
+// Mirrors `server/db/models.py:DISPATCH_OUTCOMES` — `superseded` is a dispatch a
+// newer one replaced before it could answer (never counted as a bounce).
 export const DISPATCH_OUTCOMES = [
   'running', 'merged', 'no_pr', 'pr_gave_up', 'needs_human', 'reverted', 'abandoned',
+  'superseded',
 ] as const
 export type DispatchOutcomeKind = (typeof DISPATCH_OUTCOMES)[number]
 

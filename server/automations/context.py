@@ -200,10 +200,12 @@ class AutomationContext:
         history must never block a spawn (§13).
 
         A new dispatch first closes any row still ``running`` for this target as
-        ``abandoned``/``superseded``: AT MOST ONE running row per (automation,
-        target) is the invariant every reader leans on. Without it a double tap or
-        a manual dispatch over a live claim stranded the earlier row ``running``
-        forever — uncounted as a bounce, and a decoy for the next finalise.
+        ``superseded``: AT MOST ONE running row per (automation, target) is the
+        invariant every reader leans on. Without it a double tap or a manual
+        dispatch over a live claim stranded the earlier row ``running`` forever —
+        a decoy for the next finalise. ``superseded`` is its own outcome and NOT a
+        bounce (R3-9): the dispatch never got to answer, so counting it would let a
+        double tap push an issue towards ``needs_spec`` on its own.
 
         Every import this needs sits at module scope: an ImportError raised inside
         the method would escape the ``try`` below, and "best effort" has to mean
@@ -216,7 +218,8 @@ class AutomationContext:
                     DispatchOutcome.target_ref == target,
                     DispatchOutcome.outcome == "running"))).scalars().all()
                 for row in stale:
-                    row.outcome, row.cause = "abandoned", "superseded"
+                    # ``superseded`` is the whole fact, so no ``cause`` echoes it.
+                    row.outcome, row.cause = "superseded", None
                     row.ended_at, row.updated_at = now, now
                     row.duration_s = _elapsed_s(row.started_at, now)
                 project_id = None

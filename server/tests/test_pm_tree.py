@@ -43,6 +43,10 @@ def test_issue_and_capability_and_incident_tiers():
     assert capability_own_tier("live") == "live"
     assert capability_own_tier("proposed") == "proposed"
     assert capability_own_tier("delivering") == "idle"
+    assert incident_tier("open") == "needs-you"
+    assert incident_tier("scheduled") == "needs-you"
+    assert incident_tier("diagnosing") == "in-flight"
+    assert incident_tier("dismissed") == "idle"
 
 
 def test_issue_reason_needs_spec_from_bounces():
@@ -61,10 +65,6 @@ def test_issue_tier_honours_reason():
     assert issue_tier("merged", "classified", False, None, reason="needs_spec") == "live"
     # No reason: the existing chain is unaffected.
     assert issue_tier("open", "classified", False, None) == "idle"
-    assert incident_tier("open") == "needs-you"
-    assert incident_tier("scheduled") == "needs-you"
-    assert incident_tier("diagnosing") == "in-flight"
-    assert incident_tier("dismissed") == "idle"
 
 
 def _cap(slug, parent=None, state="live", issues=(), links=()):

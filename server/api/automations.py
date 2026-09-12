@@ -92,12 +92,12 @@ async def list_automations(request: Request, _identity: str = Depends(current_id
         out.append({
             "id": a.id, "name": a.name, "description": a.description,
             "enabled": row.enabled, "mode": row.mode, "modes": list(a.modes),
+            # Phase 3 (spec §9/§10): the runner's per-product rows ride INSIDE
+            # ``status`` (``AutomationStatus.to_dict``) — a list for an automation
+            # whose status carries per-product data, ``None`` for one that has no
+            # concept of products (e.g. PR Doctor). Published once, so the browser
+            # cannot read a stale sibling copy of the same fact (R3-8).
             "status": status,
-            # Phase 3 (spec §9/§10): the runner's per-product rows, beside
-            # ``status`` rather than nested in it — a list for an automation whose
-            # status carries per-product data, ``None`` for one that has none
-            # (e.g. PR Doctor).
-            "products": status.get("products"),
             # The schema INCLUDING the engine fields this origin's audited
             # ceiling admits (none for a claude_only origin). Same source the
             # PATCH validates against, so the browser can never render a control

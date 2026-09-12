@@ -25,8 +25,15 @@ def test_bounced_out_threshold_and_zero_means_never():
     assert not bounced_out(99, 0)
 
 
-def test_finalised_bounce_outcomes_are_everything_but_running_and_merged():
-    assert FINALISED_BOUNCE_OUTCOMES == frozenset(DISPATCH_OUTCOMES) - {"running", "merged"}
+def test_finalised_bounce_outcomes_exclude_running_merged_and_superseded():
+    """A bounce is a dispatch that ENDED without a merge. ``running`` has not ended,
+    ``merged`` did not bounce, and ``superseded`` is a dispatch that was replaced
+    before it could answer — a double tap is not evidence the issue is unworkable
+    (R3-9)."""
+    assert FINALISED_BOUNCE_OUTCOMES == (
+        frozenset(DISPATCH_OUTCOMES) - {"running", "merged", "superseded"})
+    assert "superseded" in DISPATCH_OUTCOMES
+    assert "superseded" not in FINALISED_BOUNCE_OUTCOMES
 
 
 def test_rows_to_bounces_matches_only_the_current_fingerprint():

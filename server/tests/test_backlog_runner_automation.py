@@ -191,6 +191,10 @@ def test_status_says_so_when_no_product_has_dispatch_on():
     status = BacklogRunner().status(ctx)
     assert status.text == "idle — no product has dispatch on"
     assert status.level == "idle"
+    # ``[]`` — "this automation HAS products, none are on" — not ``None``, which
+    # is reserved for an automation with no concept of products (PR Doctor). The
+    # web renders the two differently (empty table vs no section at all).
+    assert status.products == []
 
 
 def test_status_says_unavailable_when_the_count_read_failed():

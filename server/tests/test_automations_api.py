@@ -75,10 +75,13 @@ def test_list_status_reflects_live_ctx_counts():
 
 
 def test_list_carries_products_for_the_runner_and_null_for_pr_doctor():
-    """``AutomationStatus.products`` is a NEW top-level field on the list item
-    (``counts`` stays int-only) — present as a list for an automation whose
-    status reports per-product rows, ``None`` for one that has no concept of
-    products at all."""
+    """``AutomationStatus.products`` is a NEW field on the status (``counts``
+    stays int-only) — present as a list for an automation whose status reports
+    per-product rows, ``None`` for one that has no concept of products at all.
+
+    It is published exactly ONCE, inside ``status`` (R3-8): a sibling top-level
+    key beside ``status`` is a second copy of one fact that can only ever drift
+    or be read by the wrong half of the web."""
     from unittest.mock import AsyncMock
 
     from server.automations.backlog_runner import BacklogRunnerLoop
@@ -93,10 +96,13 @@ def test_list_carries_products_for_the_runner_and_null_for_pr_doctor():
 
         automations = c.get("/api/automations", headers=H).json()
         br = next(a for a in automations if a["id"] == "backlog-runner")
-        assert br["products"] == [{"slug": "kwgt-cairn", "dispatch": "auto", "inFlight": 1,
-                                   "cap": 1, "eligible": 3, "bounced": 2}]
+        assert br["status"]["products"] == [
+            {"slug": "kwgt-cairn", "dispatch": "auto", "inFlight": 1,
+             "cap": 1, "eligible": 3, "bounced": 2}]
         pd = next(a for a in automations if a["id"] == "pr-doctor")
-        assert pd["products"] is None
+        assert pd["status"]["products"] is None
+        # Published once — no sibling copy beside ``status``.
+        assert "products" not in br and "products" not in pd
 
 
 def test_requires_auth():

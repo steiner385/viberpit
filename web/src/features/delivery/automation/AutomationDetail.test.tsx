@@ -83,4 +83,15 @@ describe('AutomationDetail', () => {
     mount(prDoctor)
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
+  it('Status tab: no per-product section at all when status.products is empty', () => {
+    // The runner answers `[]` while no product has dispatch on. `CheckTable` with
+    // no rows renders its heading and empty state but NO <table>, so a bare
+    // "no table" assertion would miss a dropped `.length > 0` guard — the card
+    // would grow an empty "Products" section reading like a broken read.
+    const runner = { ...AUTOMATIONS[1], status: { ...AUTOMATIONS[1].status, products: [] } }
+    mount(runner, '/delivery/automations/backlog-runner')
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Products' })).not.toBeInTheDocument()
+    expect(screen.queryByText('No products yet.')).not.toBeInTheDocument()
+  })
 })

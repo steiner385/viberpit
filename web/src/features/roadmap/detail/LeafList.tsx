@@ -83,8 +83,10 @@ function LeafRow({ leaf, capabilities }: { leaf: Leaf; capabilities: { node: Cap
         {/* The dot is decorative, so the tier is said in words for a screen
             reader — the same words the pills elsewhere use. */}
         <span className="sr-only">{tierLabel(leaf.tier)}</span>
+        {/* `data-testid` so the row's test can assert the chip is ABSENT as an
+            element: a text query cannot tell "no chip" from an empty pill. */}
         {leaf.reason && (
-          <Badge tone="warning">
+          <Badge tone="warning" data-testid="leaf-reason">
             {leaf.reason === 'needs_spec' ? bouncedLabel(leaf.bounces) : reasonLabel(leaf.reason)}
           </Badge>
         )}

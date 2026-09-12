@@ -655,9 +655,16 @@ class AutomationTargetState(Base):
 
 
 # Dispatch outcome vocabulary (spec 2026-09-12 product automation policy §6).
-# ``reverted`` is reserved — nothing writes it in v1.
+# ``reverted`` is reserved — nothing writes it in v1. ``superseded`` is the row a
+# NEW dispatch closed because it replaced it (a double tap, or a manual dispatch
+# over a live claim): its own outcome rather than an ``abandoned`` flavour, so the
+# D8 bounce count can exclude it — being replaced is not evidence that the issue
+# is unworkable (R3-9). The bounce side derives from this tuple in
+# ``server/pm/outcomes.py:FINALISED_BOUNCE_OUTCOMES``; the web mirrors it in
+# ``web/src/api/pm.ts:DISPATCH_OUTCOMES``.
 DISPATCH_OUTCOMES: tuple[str, ...] = (
-    "running", "merged", "no_pr", "pr_gave_up", "needs_human", "reverted", "abandoned")
+    "running", "merged", "no_pr", "pr_gave_up", "needs_human", "reverted", "abandoned",
+    "superseded")
 
 
 class DispatchOutcome(Base):

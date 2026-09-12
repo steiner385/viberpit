@@ -2,7 +2,7 @@
 // of issues mounts a handful of rows, and the two section headers travel with
 // the leaves inside the same virtualizer.
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import type { Leaf } from '@/api/roadmap'
 import { LeafList } from './LeafList'
 
@@ -60,8 +60,11 @@ describe('LeafList', () => {
       leaf(2, 'open', { reason: null, bounces: 0 }),
     ]
     render(<div data-page-scroll=""><LeafList scope={{ capability: 'f1' }} product={null} /></div>)
-    expect(screen.getByText('bounced 2× — needs spec')).toBeInTheDocument()
-    // Only one chip rendered — the second leaf has no reason.
-    expect(screen.getAllByText(/needs spec/)).toHaveLength(1)
+    const row = (n: number) => within(screen.getByText(`#${n} Issue ${n}`).closest('[role="listitem"]')!)
+    expect(row(1).getByTestId('leaf-reason')).toHaveTextContent('bounced 2× — needs spec')
+    // Absence of the ELEMENT inside the second row, not of the words: without the
+    // `leaf.reason &&` guard every ordinary leaf renders an EMPTY warning pill,
+    // which any text query happily reports as "no chip".
+    expect(row(2).queryByTestId('leaf-reason')).toBeNull()
   })
 })

@@ -316,8 +316,12 @@ class BacklogRunner:
         counted = products is not _NO_COUNT_YET
         rows: dict = products if isinstance(products, dict) else {}
         if counted and not _on_products(rows):
+            # ``products=[]``, never ``None``: this automation HAS products and
+            # none is on. ``None`` is reserved for an automation with no concept
+            # of products at all (PR Doctor), which the web renders differently —
+            # an empty per-product table vs no table at all.
             return AutomationStatus(text="idle — no product has dispatch on",
-                                    level="idle", counts=counts)
+                                    level="idle", counts=counts, products=[])
         level = "active" if n else ("warn" if counts.get("needs_human") else "idle")
         # ``untriaged`` is the below-min-status skip: in the default Ready mode a
         # board full of untriaged items reads as "0 eligible", which looks like an

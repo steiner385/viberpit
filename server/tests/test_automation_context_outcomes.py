@@ -70,7 +70,9 @@ async def test_a_second_record_supersedes_the_running_row_it_replaces(db_env):
     dispatch over a live claim, used to leave the first row ``running`` forever:
     nothing ever finalised it, so that bounce was invisible to the D8 count and a
     later finalise could stamp the wrong attempt. The new dispatch closes it as
-    ``abandoned``/``superseded`` first, and the sweep then finalises the survivor."""
+    ``superseded`` — its OWN outcome, so the D8 bounce count ignores it: a double
+    tap is not evidence the issue is unworkable (R3-9) — and the sweep then
+    finalises the survivor."""
     await _seed(db_env)
     ctx = AutomationContext("backlog-runner")
     await ctx.record_outcome("o/r#7", product_slug="viberpit", session_id="s1",
@@ -79,8 +81,9 @@ async def test_a_second_record_supersedes_the_running_row_it_replaces(db_env):
                              model="opus", attempt_no=1)
 
     older, newer = await _rows()
-    assert older.session_id == "s1" and older.outcome == "abandoned"
-    assert older.cause == "superseded"
+    assert older.session_id == "s1" and older.outcome == "superseded"
+    # The outcome column carries the whole fact; ``cause`` is not a second copy.
+    assert older.cause is None
     assert older.ended_at is not None and older.duration_s is not None
     assert newer.session_id == "s2" and newer.outcome == "running"
     assert newer.ended_at is None
@@ -91,7 +94,7 @@ async def test_a_second_record_supersedes_the_running_row_it_replaces(db_env):
     assert newer.attempt_no == 1 and newer.outcome == "merged"
     assert newer.pr_number == 42 and newer.pr_url == "https://example/pr/42"
     assert newer.first_pass_merge is True
-    assert older.outcome == "abandoned"          # untouched by the finalise
+    assert older.outcome == "superseded"         # untouched by the finalise
     assert older.pr_number is None
 
 
@@ -233,8 +236,8 @@ async def test_writes_are_best_effort(db_env, monkeypatch):
 @pytest.mark.asyncio
 async def test_bounces_stmt_counts_finalised_rows_for_the_current_body(db_env):
     """The query builder against a real dialect: two finalised non-merged rows on the
-    current body count, the ``running`` row and a row carrying the pre-edit
-    fingerprint do not."""
+    current body count, while the ``running`` row, the ``superseded`` row a double
+    tap left behind, and a row carrying the pre-edit fingerprint do not."""
     await _seed(db_env)
     ctx = AutomationContext("backlog-runner")
     for outcome in ("no_pr", "pr_gave_up"):
@@ -242,7 +245,12 @@ async def test_bounces_stmt_counts_finalised_rows_for_the_current_body(db_env):
                                  model="sonnet", attempt_no=0)
         await ctx.finalize_outcome("o/r#7", outcome=outcome)
     await ctx.record_outcome("o/r#7", product_slug="viberpit", session_id=None,
-                             model="sonnet", attempt_no=2)   # still running
+                             model="sonnet", attempt_no=2)
+    # The double tap: this second record supersedes the row above (which is NOT a
+    # third bounce) and leaves its own row running.
+    await ctx.record_outcome("o/r#7", product_slug="viberpit", session_id=None,
+                             model="sonnet", attempt_no=3)
+    assert [r.outcome for r in await _rows()][-2:] == ["superseded", "running"]
     async with db_session() as db:
         db.add(DispatchOutcome(target_ref="o/r#7", body_fingerprint="stale",
                                outcome="no_pr"))
