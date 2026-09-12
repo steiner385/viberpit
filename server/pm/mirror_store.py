@@ -1,6 +1,7 @@
 """Session-level persistence for the 003 read-only mirror. Callers own the transaction."""
 from __future__ import annotations
 
+import logging
 from collections.abc import Collection, Sequence, Set as AbstractSet
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,6 +19,8 @@ from .gh_projects import GhProjectItemView, GhProjectView, IssueRelView
 from .journal import applied_keys, own_write_key
 from .reconcile_diff import remove_blocked_by_mutation
 from .refs import split_ref
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -272,13 +275,15 @@ def link_epic_parents(db: Session, project_id: str) -> int:
     adopted before nesting existed are linked on the next tick. A title that
     still equals the raw epic title is normalized here too (it was written by
     adoption, not a human); an edited title is never touched. Returns the
-    number of rows whose parent or title changed."""
+    number of rows whose parent or title changed (a row where both change is
+    counted once, not twice)."""
     inits = db.query(Initiative).filter(
         Initiative.project_id == project_id,
         Initiative.epic_repo.isnot(None), Initiative.epic_number.isnot(None)).all()
     if not inits:
         return 0
     by_pointer = {(i.epic_repo, i.epic_number): i for i in inits}
+    by_id = {i.id: i for i in inits}
     epics = db.query(WorkItem).filter(
         WorkItem.repo.in_({i.epic_repo for i in inits}),
         WorkItem.number.in_({i.epic_number for i in inits}),
@@ -289,6 +294,7 @@ def link_epic_parents(db: Session, project_id: str) -> int:
         WorkItem.id.in_(parent_ids)).all()} if parent_ids else {}
     changed = 0
     for ini in inits:
+        row_changed = False
         epic = epic_by_pointer.get((ini.epic_repo, ini.epic_number))
         parent_ini = None
         if epic is not None and epic.parent_work_item_id:
@@ -296,14 +302,35 @@ def link_epic_parents(db: Session, project_id: str) -> int:
             if parent_wi is not None and parent_wi.is_epic:
                 parent_ini = by_pointer.get((parent_wi.repo, parent_wi.number))
         new_parent = parent_ini.id if parent_ini is not None and parent_ini.id != ini.id else None
+        if new_parent is not None:
+            # A mirrored cycle (e.g. two epics each other's GitHub sub-issue)
+            # would otherwise infinite-loop every consumer that walks
+            # parent_initiative_id — index the offending row at root, same as
+            # feature_index does for a capability cycle. Walked against the
+            # initiatives' current (possibly already-updated-this-pass)
+            # parent_initiative_id, via the id map built from `inits`.
+            visited: set[str] = set()
+            current: str | None = new_parent
+            while current is not None:
+                if current == ini.id:
+                    log.warning("mirror_store.epic_parent_cycle initiative=%s", ini.slug)
+                    new_parent = None
+                    break
+                if current in visited:
+                    break
+                visited.add(current)
+                current_ini = by_id.get(current)
+                current = current_ini.parent_initiative_id if current_ini is not None else None
         if ini.parent_initiative_id != new_parent:
             ini.parent_initiative_id = new_parent
-            changed += 1
+            row_changed = True
         if epic is not None and epic.title and ini.title == epic.title:
             normalized = normalize_epic_title(epic.title)
             if normalized != ini.title:
                 ini.title = normalized
-                changed += 1
+                row_changed = True
+        if row_changed:
+            changed += 1
     return changed
 
 

@@ -542,6 +542,59 @@ def test_back_sync_stage_ignores_a_program():
     assert by_number[950].stage == "plan"     # phase moved
 
 
+def test_link_epic_parents_counts_a_row_once_when_parent_and_title_both_change():
+    """A row whose parent link AND title both need writing is still one changed
+    ROW, not two — the docstring promises row counts, not attribute counts."""
+    db = _db()
+    project = _seed(db)
+    _seed_program(db, project, phases=(950,))
+    db.add(Initiative(slug="program", title="September 2026 audit",
+                      repo=REPO, epic_repo=REPO, epic_number=945, project_id=project.id,
+                      origin="epic-adoption"))
+    db.add(Initiative(slug="phase", title="epic(ui-audit): 01 — Phase 1",
+                      repo=REPO, epic_repo=REPO, epic_number=950, project_id=project.id,
+                      origin="epic-adoption"))
+    db.commit()
+
+    changed = mirror_store.link_epic_parents(db, project.id)
+
+    assert changed == 1
+    program = db.query(Initiative).filter_by(slug="program").one()
+    phase = db.query(Initiative).filter_by(slug="phase").one()
+    assert phase.parent_initiative_id == program.id
+    assert phase.title == "01 — Phase 1"
+
+
+def test_link_epic_parents_breaks_a_mirrored_cycle():
+    """A malformed mirror (two epics each other's sub-issue — should never
+    happen on GitHub's own tree, but the mirror doesn't get to assume that)
+    must not let two initiatives point at each other, which would infinite-
+    loop every consumer that walks parent_initiative_id."""
+    db = _db()
+    project = _seed(db)
+    _seed_board_epic(db, project, number=950, title="Epic A")
+    _seed_board_epic(db, project, number=951, title="Epic B")
+    a = db.query(WorkItem).filter_by(number=950).one()
+    b = db.query(WorkItem).filter_by(number=951).one()
+    a.parent_work_item_id = b.id
+    b.parent_work_item_id = a.id
+    db.commit()
+
+    mirror_store.adopt_epics(db, project.id, now=ADOPT_NOW)
+
+    by_number = {i.epic_number: i for i in db.query(Initiative).all()}
+    ini_a, ini_b = by_number[950], by_number[951]
+    assert ini_a.parent_initiative_id is None or ini_b.parent_initiative_id is None
+    for ini in (ini_a, ini_b):
+        seen: set[str] = set()
+        current = ini.parent_initiative_id
+        while current is not None:
+            assert current not in seen and current != ini.id
+            seen.add(current)
+            parent = db.get(Initiative, current)
+            current = parent.parent_initiative_id if parent else None
+
+
 # --- applied removals survive the next mirror pass (#1472) ---------------------
 
 
