@@ -88,6 +88,17 @@ verification and precise remaining exit criteria. In particular, a merged
 implementation or closed GitHub tracker is not evidence of deployment acceptance.
 Observation periods remain open until the required time and measurements exist.
 
+The previously missing #1056 live smoke passed against the existing edge, daemon,
+and database using only newly created disposable sessions. A real read tool
+produced a fresh successful audit event; an archive permission request was denied,
+the target remained idle, and both test sessions were then archived through the
+normal API. Independent review supported exactly one `build` → `deploy` advance,
+which was applied and verified. A separate deployed browser check rendered the
+assistant model picker, starter prompts, successful read tool, and answer; its
+temporary assistant and browser tab were also cleaned up. These observations do
+not establish external CLI access, every tool/browser interaction, or long-term
+metrics.
+
 The planning consolidation epic [#997](https://github.com/steiner385/viberpit/issues/997)
 remains open for its actual unfinished children: [#988](https://github.com/steiner385/viberpit/issues/988)
 requires board reconciliation acceptance, and [#996](https://github.com/steiner385/viberpit/issues/996)
