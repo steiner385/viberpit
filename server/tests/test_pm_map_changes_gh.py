@@ -68,16 +68,20 @@ def test_branch_exists_is_a_probe_that_never_creates_the_ref():
 
 
 def test_find_open_pr_returns_the_head_branch_pr_or_none():
+    # The LIST endpoint's shape: no `mergeable_state`, no `merged` — GitHub only
+    # computes those for a single-PR read, which is why the caller re-reads.
     pr = {"number": 12, "html_url": "https://github.com/cairnea/KinDash/pull/12",
-          "state": "open", "merged": False, "merged_at": None,
-          "head": {"sha": "new1"}, "mergeable_state": "clean"}
+          "state": "open", "merged_at": None, "head": {"sha": "new1"}}
     gh, fake = _gh([(json.dumps([pr]), 0, ""), ("[]", 0, "")])
-    found = gh.find_open_pr("pm/map-changes-kindash")
+    found = gh.find_open_pr("pm/map-changes-kindash", "master")
     assert found is not None and found.number == 12 and found.head_sha == "new1"
-    # `head` is qualified with the repo owner — GitHub ignores an unqualified one.
+    assert found.mergeable_state is None
+    # `head` is qualified with the repo owner — GitHub ignores an unqualified one;
+    # `base` keeps a stacked PR off the same branch from being adopted.
     assert fake.calls[0][0] == [
-        "api", f"repos/{REPO}/pulls?head=cairnea:pm/map-changes-kindash&state=open"]
-    assert gh.find_open_pr("pm/map-changes-kindash") is None
+        "api",
+        f"repos/{REPO}/pulls?head=cairnea:pm/map-changes-kindash&base=master&state=open"]
+    assert gh.find_open_pr("pm/map-changes-kindash", "master") is None
 
 
 def test_read_file_decodes_and_404_is_none():
@@ -135,8 +139,14 @@ def test_open_read_close_pr_update_branch_and_delete_branch():
     ])
     opened = gh.open_pr("pm/map-changes-kindash", "master", "Capability map changes: KinDash", "body")
     assert (opened.number, opened.url, opened.behind, opened.conflicting) == (12, pr["html_url"], True, False)
-    assert fake.calls[0][0][:4] == ["api", "-X", "POST", f"repos/{REPO}/pulls"]
-    assert "draft=false" in fake.calls[0][0] or "-F" in fake.calls[0][0]
+    argv = fake.calls[0][0]
+    assert argv[:4] == ["api", "-X", "POST", f"repos/{REPO}/pulls"]
+    assert "draft=false" in argv or "-F" in argv
+    # The title is a `-f` FIELD, not `-F` (which would read `@`-prefixed input
+    # and coerce a numeric-looking title): pin the adjacency, not just presence.
+    assert argv[argv.index("title=Capability map changes: KinDash") - 1] == "-f"
+    assert argv[argv.index("head=pm/map-changes-kindash") - 1] == "-f"
+    assert argv[argv.index("base=master") - 1] == "-f"
     read = gh.read_pr(12)
     assert read.conflicting is True and read.head_sha == "new1"
     gh.close_pr(12)

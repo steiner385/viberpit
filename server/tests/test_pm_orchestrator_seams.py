@@ -301,6 +301,63 @@ async def test_apply_feature_plan_map_proposed_no_upserts_stays(db_env):
         assert proj.onboarding_state == "map_proposed"  # no features → no advance
 
 
+@pytest.mark.asyncio
+async def test_apply_feature_plan_writes_commit_sha_and_the_pr_columns(db_env):
+    """R8b-4: the three provenance columns the planner now fills have to reach
+    the row. ``commit_sha`` is what ``CapabilityDetail``'s doc link renders from
+    (it was documented as "stamped by sync" and never written), and
+    ``pr_number``+NULL ``commit_sha`` is the exact pair
+    ``cleanup_after_abandon`` deletes on — so a proposed row that keeps a stale
+    ``commit_sha`` survives its own abandoned PR forever."""
+    await init_db(db_env)
+    async with db_session() as db:
+        p = Project(slug="stamp-proj", name="stamp-proj",
+                    onboarding_state="map_merged")
+        db.add(p)
+        await db.flush()
+        project_id = p.id
+
+    orch = _bare_orch()
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
+
+    def _up(slug, **over):
+        base = dict(slug=slug, title=slug.title(), state="live",
+                    summary=f"{slug}.", repo_path=f"docs/product/features/{slug}.md",
+                    parent_slug=None, links=())
+        base.update(over)
+        return FeatureUpsert(**base)
+
+    plan = FeatureIndexPlan(
+        upserts=(
+            _up("merged", commit_sha="sha-main"),
+            _up("proposed", state="proposed", pr_number=12,
+                pr_url="https://github.com/o/r/pull/12"),
+        ),
+        orphan_slugs=(), revive_slugs=(), warnings=())
+    await orch._pm_sync_apply_feature_plan(project_id, plan)
+
+    async with db_session() as db:
+        from sqlalchemy import select
+        rows = {f.slug: f for f in (await db.execute(select(Feature).where(
+            Feature.project_id == project_id))).scalars().all()}
+    assert (rows["merged"].commit_sha, rows["merged"].pr_number,
+            rows["merged"].pr_url) == ("sha-main", None, None)
+    assert (rows["proposed"].commit_sha, rows["proposed"].pr_number,
+            rows["proposed"].pr_url) == (
+        None, 12, "https://github.com/o/r/pull/12")
+
+    # …and a later pass moves a row BACK: the merge stamps the SHA and clears
+    # the PR columns, which is how a merged proposal stops being a proposal.
+    await orch._pm_sync_apply_feature_plan(project_id, FeatureIndexPlan(
+        upserts=(_up("proposed", commit_sha="sha-main2"),),
+        orphan_slugs=(), revive_slugs=(), warnings=()))
+    async with db_session() as db:
+        from sqlalchemy import select
+        row = (await db.execute(select(Feature).where(
+            Feature.slug == "proposed"))).scalars().one()
+    assert (row.commit_sha, row.pr_number, row.pr_url) == ("sha-main2", None, None)
+
+
 def _mk_async(value):
     async def _f(*a, **k):
         return value

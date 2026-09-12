@@ -314,6 +314,31 @@ class MapChangesService:
 
     # -- writes ---------------------------------------------------------------
 
+    async def _adopt_or_open_pr(
+        self, gh: GhWrite, branch: str, base: str, project: Project,
+    ) -> PrState:
+        """The product's map-changes PR: the open one if GitHub already has it,
+        else a newly opened one.
+
+        Adopt before opening: the commit and the PR land before the pointer row
+        does, so a previous attempt may already have opened the PR (F2), and
+        asking GitHub for a second one answers "A pull request already exists"
+        forever.
+
+        An adopted PR is then READ (``GET pulls/{n}``): the list endpoint
+        ``find_open_pr`` uses carries no ``mergeable_state``, so building the row
+        from it would record ``behind``/``conflicting`` as false for a PR that is
+        in fact behind or in conflict — and the UI would offer neither Rebase nor
+        the conflict banner until the next sync pass happened to correct it."""
+        found = await asyncio.to_thread(gh.find_open_pr, branch, base)
+        if found is None:
+            title = f"Capability map changes: {project.name or project.slug}"
+            return await asyncio.to_thread(gh.open_pr, branch, base, title, PR_BODY)
+        log.info("map_changes: adopting existing PR #%s for %s", found.number, branch)
+        if not found.number:
+            return found
+        return await asyncio.to_thread(gh.read_pr, found.number)
+
     async def edit(
         self, db, project: Project, op: MapOp, identity: str,
     ) -> tuple[Pointer, str, str]:
@@ -363,22 +388,25 @@ class MapChangesService:
 
         now = self._now()
         if pointer is None:
-            # Adopt before opening: the commit above lands before this row does,
-            # so a previous attempt may already have opened the PR (F2). Asking
-            # GitHub for a second one answers "A pull request already exists".
-            pr: PrState | None = await asyncio.to_thread(gh.find_open_pr, branch)
-            if pr is None:
-                pr = await asyncio.to_thread(
-                    gh.open_pr, branch, base,
-                    f"Capability map changes: {project.name}", PR_BODY)
+            pr = await self._adopt_or_open_pr(gh, branch, base, project)
+            # Re-run the lookup immediately before inserting: "one open pointer
+            # per product" is enforced by lookup, not by a partial unique index
+            # (R8b-5), so two concurrent first edits would otherwise both insert.
+            # Everything above is idempotent — the commit is atomic and the PR is
+            # adopted, not re-opened — so the loser just reuses the winner's row.
+            existing = await open_pointer_row(db, project.id)
+            if existing is not None:
+                pointer = existing
+                pointer.head_sha = sha
+                if not pointer.pr_number and pr.number:
+                    pointer.pr_number, pointer.pr_url = pr.number, pr.url or None
             else:
-                log.info("map_changes: adopting existing PR #%s for %s", pr.number, branch)
-            pointer = FeatureMapChange(
-                project_id=project.id, repo=repo, branch=branch,
-                pr_number=pr.number or None, pr_url=pr.url or None,
-                status=MAP_CHANGES_STATUS_OPEN, head_sha=sha,
-                behind=pr.behind, conflicting=pr.conflicting, opened_at=now)
-            db.add(pointer)
+                pointer = FeatureMapChange(
+                    project_id=project.id, repo=repo, branch=branch,
+                    pr_number=pr.number or None, pr_url=pr.url or None,
+                    status=MAP_CHANGES_STATUS_OPEN, head_sha=sha,
+                    behind=pr.behind, conflicting=pr.conflicting, opened_at=now)
+                db.add(pointer)
         else:
             pointer.head_sha = sha
         await db.flush()
@@ -511,15 +539,57 @@ class MapChangesService:
                  project.slug, pr_number, counts)
         return counts
 
+    async def _adopt_stranded(
+        self, db, project: Project,
+    ) -> tuple[FeatureMapChange, GhWrite]:
+        """A pointer row for a branch/PR that exists on GitHub with no row.
+
+        Same failure as the edit path's adoption (F2): the commit, and then the
+        PR, land before the DB row, so a crash in between strands real work
+        nothing points at. Without this, Abandon answers 404 forever and the only
+        way out is an edit — while the stranded branch's docs keep showing on the
+        map through the next index pass.
+
+        Raises :class:`NoOpenMapChanges` when neither the branch nor a PR exists,
+        which is the genuine "nothing to abandon" 404."""
+        branch = map_changes_branch_name(project.slug or "")
+        repo = await self._primary_repo(db, project)
+        gh = await asyncio.to_thread(self._gh_factory, repo)   # token mint blocks
+        base = await self._default_branch(repo)
+        exists = await asyncio.to_thread(gh.branch_exists, branch)
+        found = await asyncio.to_thread(gh.find_open_pr, branch, base)
+        if found is None and not exists:
+            raise NoOpenMapChanges(
+                f"product '{project.slug}' has no open map-changes PR")
+        pr = (await asyncio.to_thread(gh.read_pr, found.number)
+              if found is not None and found.number else found)
+        log.info("map_changes: abandoning a stranded %s for %s",
+                 "PR" if pr is not None else "branch", branch)
+        pointer = FeatureMapChange(
+            project_id=project.id, repo=repo, branch=branch,
+            pr_number=(pr.number or None) if pr is not None else None,
+            pr_url=(pr.url or None) if pr is not None else None,
+            status=MAP_CHANGES_STATUS_OPEN,
+            head_sha=(pr.head_sha or None) if pr is not None else None,
+            behind=bool(pr and pr.behind), conflicting=bool(pr and pr.conflicting),
+            opened_at=self._now())
+        db.add(pointer)
+        await db.flush()
+        return pointer, gh
+
     async def abandon(self, db, project: Project, identity: str) -> Pointer:
         """Close the PR, delete the branch and mark the row abandoned (R8b-7).
         The never-merged proposals it leaves behind are dropped by
-        :meth:`cleanup_after_abandon`, which the route calls next."""
+        :meth:`cleanup_after_abandon`, which the route calls next.
+
+        With no pointer row the branch/PR are probed directly and adopted
+        (:meth:`_adopt_stranded`) — only "neither exists" is a 404."""
         pointer = await self.open_pointer(db, project)
         if pointer is None:
-            raise NoOpenMapChanges(f"product '{project.slug}' has no open map-changes PR")
-        repo = pointer.repo or await self._primary_repo(db, project)
-        gh = await asyncio.to_thread(self._gh_factory, repo)   # token mint blocks
+            pointer, gh = await self._adopt_stranded(db, project)
+        else:
+            repo = pointer.repo or await self._primary_repo(db, project)
+            gh = await asyncio.to_thread(self._gh_factory, repo)  # token mint blocks
         if pointer.pr_number:
             await asyncio.to_thread(gh.close_pr, pointer.pr_number)
         if pointer.branch:

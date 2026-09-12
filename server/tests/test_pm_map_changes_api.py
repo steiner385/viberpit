@@ -19,6 +19,7 @@ import subprocess
 import tempfile
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from server.tests.test_pm_map_changes_gh import FakeGh
@@ -32,6 +33,10 @@ DOCS = "docs/product/features"
 # The slug of a product whose name never survived slugification — underscores
 # are not branch-safe, so every map-changes edit on it is refused.
 UNSAFE_SLUG = "bad_slug"
+# A product row with no ``name`` at all — the PR title has to fall back to the
+# slug rather than titling the PR "… : None".
+NAMELESS_SLUG = "nameless-product"
+NAMELESS_BRANCH = f"pm/map-changes-{NAMELESS_SLUG}"
 
 
 # -- fake `gh` answers --------------------------------------------------------
@@ -77,8 +82,14 @@ def _pr_closed(*, merged: bool, number: int = 12):
 
 
 def _pr_list(*, number: int = 12):
-    """What ``find_open_pr`` sees: the list endpoint, not the single-PR one."""
-    return (json.dumps([_pr_json(number=number)]), 0, "")
+    """What ``find_open_pr`` sees: the LIST endpoint, which carries neither
+    ``mergeable_state`` nor ``merged`` — GitHub computes those only for a
+    single-PR read. Modelling them here would hide the bug the adoption path's
+    ``read_pr`` fixes."""
+    d = _pr_json(number=number)
+    d.pop("mergeable_state", None)
+    d.pop("merged", None)
+    return (json.dumps([d]), 0, "")
 
 
 def _contents(text: str):
@@ -108,8 +119,8 @@ def _first_create_answers() -> list:
 
 def _seed(db_url: str) -> None:
     """A product with a primary repo and two indexed capabilities (``sessions``
-    with the child ``dictation``), a second product with no repo at all, and a
-    third whose slug is not branch-safe."""
+    with the child ``dictation``), a second product with no repo at all, a third
+    whose slug is not branch-safe, and a fourth with a repo but no name."""
     from server.db import db_session, init_db
     from server.db.models import Feature, Project, ProjectRepo
 
@@ -127,6 +138,10 @@ def _seed(db_url: str) -> None:
                            state="delivering", parent_feature_id=root.id))
             db.add(Project(slug="bare-product", name="Bare product"))
             db.add(Project(slug=UNSAFE_SLUG, name="Bad slug product"))
+            nameless = Project(slug=NAMELESS_SLUG)
+            db.add(nameless)
+            await db.flush()
+            db.add(ProjectRepo(project_id=nameless.id, repo=REPO, is_primary=True))
             await db.commit()
 
     asyncio.run(_go())
@@ -135,7 +150,17 @@ def _seed(db_url: str) -> None:
 @contextmanager
 def _client(db_url: str, gh):
     """``test_pm_map_api._client`` with the orchestrator's ``gh`` runner swapped
-    for *gh* before ``create_app``, and the default-branch probe stubbed."""
+    for *gh* before ``create_app``, and the default-branch probe stubbed.
+
+    All THREE GitHub seams are swapped, not just the runner: ``GhWrite`` binds
+    ``app_token=gitrepos.app_token_for_repo`` and ``env=os.environ`` as DEFAULT
+    ARGUMENTS, so patching the module afterwards cannot reach them — and
+    ``create_app``'s lifespan registers the real provider. On a host that has
+    ``CCSWITCH_GITHUB_APP_ID`` + a private key (this repo's own runner does),
+    every edit here would otherwise read the App's private key, sign a JWT and
+    call api.github.com, and capture the host's real project PAT into
+    ``GhWrite._pat``."""
+    from ccswitch import gitrepos
     from fastapi.testclient import TestClient
     from server.app import create_app
     from server.sessions.orchestrator import SessionOrchestrator
@@ -146,6 +171,7 @@ def _client(db_url: str, gh):
         "CCSWITCH_SESSIOND_HOST", "CCSWITCH_SESSIOND_PORT",
         "CCSWITCH_SESSIOND_CLIENT_CERT", "CCSWITCH_SESSIOND_CLIENT_KEY",
         "CCSWITCH_SESSIOND_CA", "CCSWITCH_DAEMON_ROLE",
+        "CCSWITCH_GH_PROJECT_TOKEN", "VIBERPIT_GH_PROJECT_TOKEN",
     ]
     with contextlib.ExitStack() as stack:
         saved = {k: os.environ.pop(k, None) for k in _clear}
@@ -158,10 +184,16 @@ def _client(db_url: str, gh):
                 return_value={"default": "master", "branches": ["master"]}))
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
             orch._gh_run = gh  # type: ignore[assignment]
+            orch._gh_token_provider = lambda repo: None  # type: ignore[assignment]
+            orch._gh_env = {}
             app = create_app(orchestrator=orch)
             with TestClient(app, raise_server_exceptions=False) as c:
+                # Belt and braces: the lifespan has just registered the real
+                # owner-token provider on the process-global `gitrepos` seam.
+                gitrepos.set_token_provider(None)
                 yield c
         finally:
+            gitrepos.set_token_provider(None)
             for k, v in saved.items():
                 if v is not None:
                     os.environ[k] = v
@@ -202,14 +234,19 @@ def _pointers(c) -> list[tuple]:
 
 
 def _sync_requested(c) -> bool:
+    """Whether every repo of the EDITED product is stamped sync-requested (other
+    products' repos are none of this edit's business)."""
     from sqlalchemy import select
 
     from server.db import db_session
-    from server.db.models import ProjectRepo
+    from server.db.models import Project, ProjectRepo
 
     async def _read():
         async with db_session() as db:
-            rows = (await db.execute(select(ProjectRepo))).scalars().all()
+            p = (await db.execute(select(Project).where(
+                Project.slug == SLUG))).scalars().one()
+            rows = (await db.execute(select(ProjectRepo).where(
+                ProjectRepo.project_id == p.id))).scalars().all()
             return all(r.sync_requested_at is not None for r in rows) and bool(rows)
 
     return c.portal.call(_read)
@@ -267,11 +304,14 @@ def _seed_proposed_capabilities(c) -> None:
     """Two capabilities indexed from the branch head (pr_number set, no
     commit_sha): ``payments`` referenced by nothing, ``billing`` referenced by a
     classified work item. Plus a merged capability (``sessions``) that abandon
-    must never touch."""
+    must never touch, a merged CHILD of ``payments`` (whose
+    ``parent_feature_id`` must be nulled, not left dangling) and a triage
+    proposal pointing at ``payments`` (same for ``proposed_feature_id``)."""
     from sqlalchemy import select
 
     from server.db import db_session
-    from server.db.models import Feature, FeatureLink, Project, WorkItem
+    from server.db.models import (
+        Feature, FeatureLink, Project, TriageProposal, WorkItem)
 
     async def _write():
         async with db_session() as db:
@@ -292,9 +332,63 @@ def _seed_proposed_capabilities(c) -> None:
                                dst_feature_id=sessions.id, kind="powered_by"))
             db.add(FeatureLink(src_feature_id=sessions.id,
                                dst_feature_id=payments.id, kind="integrates_with"))
-            db.add(WorkItem(repo=REPO, number=7, kind="issue", state="open",
+            # A SURVIVING row parented to a doomed one: the FK is real on
+            # Postgres, so the delete is illegal unless the parent is nulled.
+            db.add(Feature(project_id=p.id, slug="payments-child",
+                           title="Payments child", state="live",
+                           commit_sha="merged-sha", parent_feature_id=payments.id))
+            item = WorkItem(repo=REPO, number=7, kind="issue", state="open",
                             title="Billing bug", feature_id=billing.id,
-                            triage_state="classified"))
+                            triage_state="classified")
+            db.add(item)
+            await db.flush()
+            # The triage proposal that proposed the doomed capability: it stays
+            # as audit, so its FK has to be cleared rather than cascaded.
+            db.add(TriageProposal(work_item_id=item.id,
+                                  proposed_feature_id=payments.id,
+                                  status="accepted"))
+            await db.commit()
+
+    c.portal.call(_write)
+
+
+def _dangling_fks(c) -> dict:
+    """The two FKs into a doomed capability that the cleanup has to clear."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import Feature, TriageProposal
+
+    async def _read():
+        async with db_session() as db:
+            child = (await db.execute(select(Feature).where(
+                Feature.slug == "payments-child"))).scalars().one()
+            prop = (await db.execute(
+                select(TriageProposal))).scalars().one()
+            return {"parent_feature_id": child.parent_feature_id,
+                    "proposed_feature_id": prop.proposed_feature_id}
+
+    return c.portal.call(_read)
+
+
+def _seed_pointer(c, *, pr_number: int = 12, head_sha: str = "c0",
+                  opened_at: datetime | None = None, status: str = "open") -> None:
+    """An open pointer row inserted behind the service's back — what a racing
+    concurrent first edit leaves committed."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import FeatureMapChange, Project
+
+    async def _write():
+        async with db_session() as db:
+            p = (await db.execute(select(Project).where(
+                Project.slug == SLUG))).scalars().one()
+            db.add(FeatureMapChange(
+                project_id=p.id, repo=REPO, branch=BRANCH, pr_number=pr_number,
+                pr_url=f"https://github.com/{REPO}/pull/{pr_number}", status=status,
+                head_sha=head_sha, behind=False, conflicting=False,
+                opened_at=opened_at or datetime.now(timezone.utc)))
             await db.commit()
 
     c.portal.call(_write)
@@ -378,8 +472,10 @@ def test_create_opens_the_branch_the_pr_and_the_pointer_row():
         assert f"ref=refs/heads/{BRANCH}" in argv[3] and "sha=base1" in argv[3]
         assert argv[4] == ["api", f"repos/{REPO}/contents/{DOCS}/payments.md?ref={BRANCH}"]
         assert argv[5] == ["api", "graphql", "--input", "-"]
-        assert argv[6] == ["api", f"repos/{REPO}/pulls?head=o:{BRANCH}&state=open"]
+        assert argv[6] == [
+            "api", f"repos/{REPO}/pulls?head=o:{BRANCH}&base=master&state=open"]
         assert argv[7][:4] == ["api", "-X", "POST", f"repos/{REPO}/pulls"]
+        assert "title=Capability map changes: Example product" in argv[7]
         assert len(argv) == 8
 
         # The committed text is the canonical serialized doc, proposed on create.
@@ -566,6 +662,23 @@ def test_a_gh_timeout_is_502_not_a_500():
         assert gh.calls
 
 
+def test_these_tests_never_mint_a_real_github_token():
+    """The whole file is offline by construction: no `gh` call carries a token,
+    and the App-token provider is the injected one, not ``app_token_for_repo``
+    (which reads the App's private key, signs a JWT and calls api.github.com)."""
+    gh = FakeGh(_first_create_answers())
+    with _seeded(gh) as c:
+        orch = getattr(c.app.state.sessions, "_orch", c.app.state.sessions)
+        assert orch._gh_token_provider("o/r") is None
+        assert orch._gh_env == {}
+        svc = orch.pm_map_changes()
+        built = svc._gh_factory(REPO)
+        assert built._app is None and built._pat is None and built._token() is None
+
+        assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
+        assert [call[1] for call in gh.calls] == [None] * len(gh.calls)
+
+
 def test_the_github_client_is_built_off_the_event_loop():
     """Minting the App token reads a PEM, takes a process-global lock and may
     POST — all blocking, so the factory has to run in a worker thread."""
@@ -597,9 +710,11 @@ def test_a_pr_that_failed_to_record_is_adopted_not_reopened():
         _NO_PR, ("", 1, "HTTP 502: Bad Gateway"),
         # 2) the same create again: the doc is visible on the branch now
         _ref("c0"), _listing("payments.md"), _contents(doc),
-        # 3) any other op on that slug works, and adopts the PR that IS open
+        # 3) any other op on that slug works, and adopts the PR that IS open —
+        #    finding it on the list endpoint, then READING it for its state
         _ref("c0"), _listing("payments.md"), _contents(doc),
-        _ref("base1"), _ref("c0"), _contents(doc), _commit("c1"), _pr_list(),
+        _ref("base1"), _ref("c0"), _contents(doc), _commit("c1"),
+        _pr_list(), _pr(mergeable_state="behind"),
     ])
     with _seeded(gh) as c:
         r = _edit(c, op="create", slug="payments", title="Payments")
@@ -616,34 +731,188 @@ def test_a_pr_that_failed_to_record_is_adopted_not_reopened():
         r = _edit(c, op="summary", slug="payments", summary="Take money.")
         assert r.status_code == 200, r.text
         assert r.json()["pointer"]["prNumber"] == 12
-        assert _pointers(c) == [(REPO, BRANCH, 12, "open", "c1", False)]
+        # …with the state from the single-PR READ, not the list endpoint (which
+        # carries no `mergeable_state`, so `behind` would be a false negative).
+        assert r.json()["pointer"]["behind"] is True
+        assert _pointers(c) == [(REPO, BRANCH, 12, "open", "c1", True)]
         # The PR was adopted, never re-opened: a second `POST pulls` would
         # answer "A pull request already exists" forever.
         assert not [a for a in _argv(gh)[after_failure:]
                     if a[:4] == ["api", "-X", "POST", f"repos/{REPO}/pulls"]]
 
 
-def test_an_open_pr_without_a_row_is_adopted_on_the_first_edit():
+def test_an_open_pr_without_a_row_is_adopted_and_read_for_its_state():
+    """Adoption builds the pointer row from ``GET pulls/{n}``, not from the list
+    endpoint: only the single-PR read carries ``mergeable_state``, so a PR that
+    is behind (or conflicting) would otherwise be recorded clean and the UI would
+    offer neither Rebase nor the conflict banner."""
     gh = FakeGh([
         _ref("c0"), _EMPTY_LIST,   # the branch exists, with no docs on it yet
-        _ref("base1"), _ref("c0"), _404, _commit("c1"), _pr_list(number=12),
+        _ref("base1"), _ref("c0"), _404, _commit("c1"),
+        _pr_list(number=12), _pr(number=12, mergeable_state="behind"),
     ])
     with _seeded(gh) as c:
         r = _edit(c, op="create", slug="payments", title="Payments")
         assert r.status_code == 200, r.text
         assert r.json()["pointer"]["prNumber"] == 12
-        assert _pointers(c) == [(REPO, BRANCH, 12, "open", "c1", False)]
+        assert r.json()["pointer"]["behind"] is True
+        assert _pointers(c) == [(REPO, BRANCH, 12, "open", "c1", True)]
         argv = _argv(gh)
-        assert argv[-1] == ["api", f"repos/{REPO}/pulls?head=o:{BRANCH}&state=open"]
+        # `base` is part of the lookup: a stacked PR off this branch targeting
+        # something else is not the product's map-changes PR.
+        assert argv[-2] == [
+            "api", f"repos/{REPO}/pulls?head=o:{BRANCH}&base=master&state=open"]
+        assert argv[-1] == ["api", f"repos/{REPO}/pulls/12"]
         assert not [a for a in argv if a[:4] == ["api", "-X", "POST", f"repos/{REPO}/pulls"]]
 
 
-def test_delete_without_a_pointer_is_404():
+def test_the_newest_open_row_is_the_products_pointer():
+    """``open_pointer_rows`` is what enforces "at most one open map-changes PR
+    per product" (R8b-5) — there is no partial unique index, so when two open
+    rows do exist every reader has to agree on the SAME one: the newest."""
+    from server.pm.map_changes import open_pointer_row, open_pointer_rows
+
     gh = FakeGh([])
+    with _seeded(gh) as c:
+        old = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        new = datetime(2026, 9, 10, tzinfo=timezone.utc)
+        _seed_pointer(c, pr_number=11, head_sha="old", opened_at=old)
+        _seed_pointer(c, pr_number=12, head_sha="new", opened_at=new)
+        # …plus an abandoned row newer than both: status gates the lookup first.
+        _seed_pointer(c, pr_number=13, head_sha="dead",
+                      opened_at=datetime(2026, 9, 11, tzinfo=timezone.utc),
+                      status="abandoned")
+
+        from sqlalchemy import select
+
+        from server.db import db_session
+        from server.db.models import Project
+
+        async def _read():
+            async with db_session() as db:
+                pid = (await db.execute(select(Project).where(
+                    Project.slug == SLUG))).scalars().one().id
+                one = await open_pointer_row(db, pid)
+                batched = await open_pointer_rows(db, [pid])
+                return one.pr_number, batched[pid].pr_number
+
+        assert c.portal.call(_read) == (12, 12)
+
+
+def test_an_unparseable_github_timestamp_never_raises():
+    """A polling pass must not die on a timestamp GitHub changed the shape of;
+    the caller falls back to its own clock."""
+    from server.pm.map_changes import _parse_gh_time
+
+    assert _parse_gh_time("2026-09-11T10:00:00Z") == datetime(
+        2026, 9, 11, 10, 0, tzinfo=timezone.utc)
+    assert _parse_gh_time(None) is None
+    assert _parse_gh_time("") is None
+    assert _parse_gh_time("yesterday") is None
+    assert _parse_gh_time("2026-13-45T99:99:99Z") is None
+
+
+def test_a_nameless_product_titles_the_pr_with_its_slug():
+    """``project.name`` is nullable, and an f-string over it titles the PR
+    "Capability map changes: None"."""
+    gh = FakeGh(_first_create_answers())
+    with _seeded(gh) as c:
+        r = _edit(c, NAMELESS_SLUG, op="create", slug="payments", title="Payments")
+        assert r.status_code == 200, r.text
+        assert r.json()["pointer"]["branch"] == NAMELESS_BRANCH
+        post = [a for a in _argv(gh) if a[:4] == ["api", "-X", "POST", f"repos/{REPO}/pulls"]]
+        assert post and f"title=Capability map changes: {NAMELESS_SLUG}" in post[0]
+
+
+def test_a_pointer_that_appeared_mid_edit_is_reused_not_duplicated():
+    """Two concurrent first edits (R8b-5 is enforced by lookup, not by a partial
+    unique index, which SQLite's reconcile path cannot add): the lookup is re-run
+    immediately before the insert, so the loser reuses the winner's row instead
+    of opening a second "one open pointer per product"."""
+    import server.pm.map_changes as mc
+
+    gh = FakeGh([
+        _ref("c0"), _EMPTY_LIST,   # the branch exists, with no docs on it yet
+        _ref("base1"), _ref("c0"), _404, _commit("c1"), _pr_list(), _pr(),
+    ])
+    with _seeded(gh) as c:
+        _seed_pointer(c)                       # the racing writer's row
+        real = mc.open_pointer_row
+        seen = {"n": 0}
+
+        async def _blind_first(db, project_id):
+            """The racing writer had not committed when WE looked."""
+            seen["n"] += 1
+            return None if seen["n"] == 1 else await real(db, project_id)
+
+        with patch.object(mc, "open_pointer_row", _blind_first):
+            r = _edit(c, op="create", slug="payments", title="Payments")
+        assert r.status_code == 200, r.text
+        assert seen["n"] >= 2                  # the re-check really ran
+        assert r.json()["pointer"]["prNumber"] == 12
+        # ONE row, the racing writer's, with our commit on it.
+        assert _pointers(c) == [(REPO, BRANCH, 12, "open", "c1", False)]
+
+
+def test_delete_without_a_pointer_a_branch_or_a_pr_is_404():
+    gh = FakeGh([
+        _404,          # GET git/ref/heads/<branch> — no branch
+        _EMPTY_LIST,   # GET pulls?head=… — no PR either
+    ])
     with _seeded(gh) as c:
         r = c.delete(f"/api/pm/projects/{SLUG}/map-changes", headers=IDENTITY_HEADERS)
         assert r.status_code == 404, r.text
         assert r.json()["detail"]["error"] == "no_open_map_changes"
+
+
+def test_delete_adopts_a_stranded_pr_and_abandons_it():
+    """The commit and the PR land before the pointer row, so a crash in between
+    strands them. Abandon must adopt and close, not 404 forever."""
+    gh = FakeGh([
+        _ref("c0"),                    # the branch is there
+        _pr_list(), _pr(),             # …and so is an open PR → read it
+        _OK,                           # PATCH pulls/12 state=closed
+        _OK,                           # DELETE git/refs/heads/<branch>
+    ])
+    with _seeded(gh) as c:
+        _seed_proposed_capabilities(c)
+        r = c.delete(f"/api/pm/projects/{SLUG}/map-changes", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["pointer"]["status"] == "abandoned"
+        assert r.json()["pointer"]["prNumber"] == 12
+        # …and the adopted PR's proposals are cleaned up like any other abandon.
+        assert r.json()["cleanup"] == {"deleted": 1, "orphaned": 1}
+
+        argv = _argv(gh)
+        assert argv[1] == [
+            "api", f"repos/{REPO}/pulls?head=o:{BRANCH}&base=master&state=open"]
+        assert argv[2] == ["api", f"repos/{REPO}/pulls/12"]
+        assert argv[3][:4] == ["api", "-X", "PATCH", f"repos/{REPO}/pulls/12"]
+        assert argv[4][:4] == ["api", "-X", "DELETE", f"repos/{REPO}/git/refs/heads/{BRANCH}"]
+        assert [row[2:4] for row in _pointers(c)] == [(12, "abandoned")]
+
+
+def test_delete_deletes_a_stranded_branch_that_never_got_a_pr():
+    """The commit lands, opening the PR fails: a branch with docs on it and no
+    PR at all. Abandon deletes it and records an abandoned pointer with no PR."""
+    gh = FakeGh([
+        _ref("c0"),     # the branch is there
+        _EMPTY_LIST,    # …but no PR was ever opened
+        _OK,            # DELETE git/refs/heads/<branch>
+    ])
+    with _seeded(gh) as c:
+        r = c.delete(f"/api/pm/projects/{SLUG}/map-changes", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["pointer"]["status"] == "abandoned"
+        assert r.json()["pointer"]["prNumber"] is None
+        assert r.json()["cleanup"] == {"deleted": 0, "orphaned": 0}
+
+        argv = _argv(gh)
+        assert argv[-1][:4] == ["api", "-X", "DELETE", f"repos/{REPO}/git/refs/heads/{BRANCH}"]
+        assert not [a for a in argv if a[:3] == ["api", "-X", "PATCH"]]
+        assert [row[2:4] for row in _pointers(c)] == [(None, "abandoned")]
+        assert _audits(c, "pm.map_changes.abandon") == [
+            {"slug": SLUG, "branch": BRANCH, "prNumber": None}]
 
 
 def test_delete_closes_the_pr_deletes_the_branch_and_abandons_the_row():
@@ -651,6 +920,7 @@ def test_delete_closes_the_pr_deletes_the_branch_and_abandons_the_row():
         *_first_create_answers(),
         _OK,  # PATCH pulls/12 state=closed
         _OK,  # DELETE git/refs/heads/<branch>
+        _404, _EMPTY_LIST,  # the second abandon: neither branch nor PR is left
     ])
     with _seeded(gh) as c:
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
@@ -737,7 +1007,8 @@ def test_refresh_marks_a_merged_pr_merged():
         assert row["merged_at"] is not None
         # A merge is NOT an abandon: the docs are on the default branch now and
         # the next index pass stamps commit_sha over the PR columns.
-        assert set(_features(c)) == {"sessions", "dictation", "payments", "billing"}
+        assert set(_features(c)) == {"sessions", "dictation", "payments", "billing",
+                                     "payments-child"}
 
         # …and the pointer is closed, so the next pass reads nothing.
         before = len(gh.calls)
@@ -761,6 +1032,8 @@ def test_refresh_abandons_a_closed_unmerged_pr_and_cleans_up():
         assert "payments" not in feats          # proposed-only, unreferenced
         assert feats["billing"][0] is True      # referenced ⇒ orphaned, not deleted
         assert feats["sessions"] == (False, None, "merged-sha")
+        assert _dangling_fks(c) == {"parent_feature_id": None,
+                                    "proposed_feature_id": None}
 
 
 def test_a_failed_pr_read_records_last_error_and_leaves_the_status():
@@ -827,3 +1100,8 @@ def test_delete_deletes_unreferenced_proposals_and_orphans_referenced_ones():
         assert feats["billing"] == (True, 12, None)
         assert feats["sessions"] == (False, None, "merged-sha")   # merged: untouched
         assert feats["dictation"][0] is False
+        # The surviving child and the triage proposal keep their rows, with the
+        # FKs into the deleted capability cleared (real FKs on Postgres).
+        assert "payments-child" in feats
+        assert _dangling_fks(c) == {"parent_feature_id": None,
+                                    "proposed_feature_id": None}

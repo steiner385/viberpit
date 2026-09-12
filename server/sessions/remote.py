@@ -305,6 +305,16 @@ class RemoteOrchestrator:
         self._global_subs: set[asyncio.Queue] = set()
         self._global_pump: asyncio.Task | None = None
         self._engines_cache: tuple[float, dict] | None = None
+        # The three GitHub seams the edge-local map-changes service takes — the
+        # same names ``SessionOrchestrator`` uses, so a test swaps them the same
+        # way in either mode (they are ``GhWrite.__init__`` default arguments,
+        # which patching after import cannot reach).
+        import os
+
+        from ccswitch import gitrepos
+        self._gh_run = gitrepos._run_gh
+        self._gh_token_provider = gitrepos.app_token_for_repo
+        self._gh_env = os.environ
 
     async def _engines(self) -> dict:
         """This daemon's advertised engines, cached briefly. Never raises.
@@ -1215,9 +1225,15 @@ class RemoteOrchestrator:
         """Capability map-changes edits (roadmap spec §9) run EDGE-LOCAL, not over
         the daemon RPC: the service takes the API request's own DB session, and the
         edge already makes its own ``gh`` calls (repo/branch enumeration for the
-        chooser). Same service class as in-process, on the default ``gh`` runner."""
+        chooser). Same service class as in-process, on the same three injectable
+        GitHub seams (runner, App-token provider, environment) so a test that
+        swaps them is offline here too."""
         from server.pm.map_changes import MapChangesService
-        return MapChangesService()
+        from server.pm.map_changes_gh import GhWrite
+        return MapChangesService(
+            gh_factory=lambda repo: GhWrite(
+                repo, run=self._gh_run, app_token=self._gh_token_provider,
+                env=self._gh_env))
 
     async def aclose(self) -> None:
         if self._global_pump is not None and not self._global_pump.done():

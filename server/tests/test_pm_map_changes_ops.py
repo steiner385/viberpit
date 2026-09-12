@@ -140,3 +140,19 @@ def test_unknown_op_and_missing_doc_for_an_edit():
     with pytest.raises(MapOpError) as e:
         apply_op(MapOp(op="rename", slug="dictation", title="x"), None)
     assert e.value.code == "not_found"
+
+
+def test_commit_message_names_the_verb_for_every_op():
+    """One commit subject shape per op — the branch's log IS the human-readable
+    record of what the UI did, and only ``create`` was pinned."""
+    assert [commit_message(MapOp(op=op, slug="dictation"), "KinDash")
+            for op in ("create", "rename", "reparent", "summary", "links")] == [
+        "map(kindash): add capability dictation",
+        "map(kindash): rename capability dictation",
+        "map(kindash): move capability dictation",
+        "map(kindash): update summary of dictation",
+        "map(kindash): update links of dictation",
+    ]
+    # A multi-word product name is slugified into the scope.
+    assert commit_message(MapOp(op="rename", slug="x"), "Example Product").startswith(
+        "map(example-product): ")

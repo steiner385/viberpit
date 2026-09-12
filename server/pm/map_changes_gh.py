@@ -204,17 +204,27 @@ class GhWrite:
                                 "pr", input=body))
         return _pr_state(d)
 
-    def find_open_pr(self, branch: str) -> PrState | None:
-        """The open PR whose head is *branch*, or ``None``.
+    def find_open_pr(self, branch: str, base: str) -> PrState | None:
+        """The open PR whose head is *branch* and whose base is *base*, or ``None``.
 
         This is what makes a half-finished edit recoverable: the GitHub commit
         and the PR land before the DB row does, so a failure in between leaves
         an open PR with no pointer row. The next edit adopts that PR instead of
         asking GitHub to open a second one (which answers "A pull request
-        already exists" forever)."""
+        already exists" forever).
+
+        ``base`` is part of the query, not a post-filter: a PR off this branch
+        targeting something other than the default branch is somebody else's
+        (a stacked PR, a release branch), and adopting it would point the
+        product's map-changes pointer at a PR the UI must never close.
+
+        NOTE: the list endpoint carries no ``mergeable_state`` — the caller
+        re-reads the PR through :meth:`read_pr` for behind/conflicting."""
         owner = self.repo.split("/")[0]
         out = self._gh(
-            ["api", f"repos/{self.repo}/pulls?head={owner}:{branch}&state=open"], "pr_find")
+            ["api",
+             f"repos/{self.repo}/pulls?head={owner}:{branch}&base={base}&state=open"],
+            "pr_find")
         if not out.strip():
             return None
         found = json.loads(out)

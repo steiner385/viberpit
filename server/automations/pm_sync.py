@@ -527,8 +527,13 @@ class PmSyncLoop:
                         max_seen = item.gh_updated_at
             if not more or len(fresh) < len(items):
                 break
-        await self._feature_index(view)
+        # Lifecycle BEFORE the index: the pointer's status is what decides
+        # whether the index reads the branch at all, so a PR that merged or
+        # closed since the last tick must be moved out of ``open`` first —
+        # otherwise this pass indexes its docs as still-proposed (and reads a
+        # branch abandon has just deleted) for one whole tick.
         await self._map_changes_lifecycle(view)
+        await self._feature_index(view)
         await self._save_sync_state(
             view, watermark=max_seen or now, last_synced_at=now,
             sync_requested_at=None)
@@ -570,6 +575,9 @@ class PmSyncLoop:
             return
 
         docs_by_slug: dict[str, tuple[str, FeatureDoc]] = {}
+        # Default-branch text per slug, so the branch pass below can tell an
+        # edited doc from one the branch merely inherited (see R8b-4 there).
+        main_text_by_slug: dict[str, str] = {}
         skipped: list[str] = []
         for path, text in main.docs:
             try:
@@ -580,13 +588,25 @@ class PmSyncLoop:
                 skipped.append(f"{path}: {e}")
                 continue  # one bad doc never poisons the index (spec §4)
             docs_by_slug[doc.slug] = (path, doc)
+            main_text_by_slug[doc.slug] = text
 
-        # Branch head, merged over the default branch BY SLUG (R8b-4): every doc
-        # on an open map-changes branch overrides the default-branch doc of the
-        # same slug and is "proposed" until the PR merges. Best-effort — unlike
-        # the default-branch read above, a failure here must never poison the
-        # default-branch plan; it only means the branch's proposals are missing
-        # from this pass.
+        # Branch head, merged over the default branch BY SLUG (R8b-4 as
+        # amended): a doc that is NEW on the map-changes branch, or CHANGED
+        # there, overrides the default-branch doc of the same slug and is
+        # "proposed" until the PR merges.
+        #
+        # A branch inherits every default-branch doc, so the branch read returns
+        # all of them — stamping the whole set "proposed" would null
+        # ``commit_sha`` product-wide and hand every untouched capability this
+        # PR's number, at which point abandoning the PR deletes the entire
+        # capability index (``cleanup_after_abandon`` matches
+        # ``pr_number == N AND commit_sha IS NULL``). An unchanged inherited doc
+        # is therefore skipped outright: it keeps its default-branch
+        # ``commit_sha`` and gets no PR fields.
+        #
+        # Best-effort — unlike the default-branch read above, a failure here must
+        # never poison the default-branch plan; it only means the branch's
+        # proposals are missing from this pass.
         proposed: dict[str, tuple[int | None, str | None]] = {}
         if self._read_map_changes is not None:
             try:
@@ -599,6 +619,8 @@ class PmSyncLoop:
                         except FeatureDocError as e:
                             skipped.append(f"{path}: {e}")
                             continue
+                        if main_text_by_slug.get(doc.slug) == text:
+                            continue  # inherited unchanged — not this PR's doing
                         docs_by_slug[doc.slug] = (path, doc)
                         proposed[doc.slug] = (pointer.pr_number, pointer.pr_url)
             except Exception:
