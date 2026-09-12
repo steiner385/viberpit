@@ -38,7 +38,7 @@ import { describe, it, expect } from 'vitest'
  * package root as cwd — but `vitest --root web` from the repo root does not, and
  * a guard that silently cannot find its subject is worse than no guard.
  */
-const WEB_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
+const WEB_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
 function read(rel: string): string {
   return readFileSync(path.resolve(WEB_ROOT, rel), 'utf-8')

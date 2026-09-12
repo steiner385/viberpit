@@ -51,7 +51,7 @@ const inputClass = cn(
   'bg-surface text-ink',
   'px-3 py-2 text-sm min-h-target',
   'focus:outline-none focus:ring-2 focus:ring-accent',
-  'placeholder:text-ink-muted',
+  'placeholder:text-ink-faint',
 )
 
 function errorMessage(err: unknown): string {

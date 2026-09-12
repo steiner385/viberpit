@@ -23,7 +23,7 @@ import { useStopSubAgent } from '@/api/hooks'
 import { useSessionRuntime } from '@/session/useSessionRuntime'
 import { listScopeForPath, sessionPath } from '@/session/sessionNavState'
 import type { SubAgentStatus } from '@/session/selectors'
-import { STATUS_TONE, STATUS_LABEL } from '@/features/sessions/subAgentStatus'
+import { STATUS_LABEL, statusTone } from '@/features/sessions/subAgentStatus'
 import { agentDuration } from '@/components/session/subAgentDuration'
 import { TranscriptView } from '@/components/session/TranscriptView'
 import { PendingPermissionPanel } from '@/components/session/PendingPermissionPanel'
@@ -70,7 +70,7 @@ export function SubAgentReaderPage({ sessionId, agentId }: { sessionId: string; 
           <div className="flex min-w-0 flex-col gap-1">
             <Breadcrumb items={[{ label: rt.title || sessionId.slice(0, 8), to: parentPath }, { label }]} />
             <div className="flex items-center gap-2 text-xs">
-              <span aria-hidden className={cn('h-2 w-2 rounded-full', STATUS_TONE[status])} />
+              <span aria-hidden className={cn('h-2 w-2 rounded-full', statusTone(status))} />
               <span className="uppercase tracking-wide">{STATUS_LABEL[status]}</span>
               {usage && <span className="tabular-nums">· {usage}</span>}
             </div>

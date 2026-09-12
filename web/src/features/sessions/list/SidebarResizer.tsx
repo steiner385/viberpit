@@ -99,7 +99,7 @@ export function SidebarResizer({
         className={cn(
           'absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2',
           'h-10 w-0.5 rounded-full bg-neutral',
-          'group-hover:bg-surface group-focus-visible:bg-surface',
+          'group-hover:bg-accent-ink group-focus-visible:bg-accent-ink',
         )}
       />
     </div>

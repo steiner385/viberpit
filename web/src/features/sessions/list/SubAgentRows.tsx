@@ -3,7 +3,7 @@ import { cn } from '@/lib/utils'
 import { subAgentTreeFromSummaries, type SubAgentNode } from '@/session/selectors'
 import { listScopeForPath, subAgentPath } from '@/session/sessionNavState'
 import type { SubAgentSummary } from '@/api/types'
-import { STATUS_TONE } from '@/features/sessions/subAgentStatus'
+import { statusTone } from '@/features/sessions/subAgentStatus'
 
 function Row({ sessionId, node, depth }: { sessionId: string; node: SubAgentNode; depth: number }) {
   const navigate = useNavigate()
@@ -24,7 +24,7 @@ function Row({ sessionId, node, depth }: { sessionId: string; node: SubAgentNode
         )}
         aria-label={`Review sub-agent ${node.agentType}: ${node.description}`}
       >
-        <span aria-hidden className={cn('h-2 w-2 flex-shrink-0 rounded-full', STATUS_TONE[node.status])} />
+        <span aria-hidden className={cn('h-2 w-2 flex-shrink-0 rounded-full', statusTone(node.status))} />
         <span className="font-medium text-ink">{node.agentType}</span>
         {node.description && <span className="truncate opacity-80">{node.description}</span>}
       </button>

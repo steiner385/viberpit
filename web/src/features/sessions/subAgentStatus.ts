@@ -21,3 +21,14 @@ export const STATUS_TONE: Record<SubAgentStatus, string> = {
 export const STATUS_LABEL: Record<SubAgentStatus, string> = {
   running: 'running', done: 'completed', failed: 'failed', stopped: 'stopped',
 }
+
+/**
+ * Status → dot tone, tolerant of an unrecognized wire value. `status` arrives
+ * as a plain string off the wire, so an unknown value must still render as
+ * something visible rather than an invisible dot — mirrors the FALLBACK idea
+ * in `session/statusTier.ts` (no console noise here; this is a small, fixed
+ * enum, not the session status vocabulary that warrants instrumentation).
+ */
+export function statusTone(status: string): string {
+  return STATUS_TONE[status as SubAgentStatus] ?? 'bg-neutral'
+}

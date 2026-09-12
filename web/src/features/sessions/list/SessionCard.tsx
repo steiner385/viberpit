@@ -261,7 +261,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           aria-expanded={expanded}
           className={cn(
             'flex-shrink-0 h-6 w-6 flex items-center justify-center rounded',
-            'text-ink-muted hover:text-ink-muted',
+            'text-ink-muted hover:text-ink',
             'hover:bg-surface-raised',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
           )}
@@ -628,8 +628,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
               // marker); generic violet for created-by/other automation, and
               // for an autopilot session that's paused.
               guidedByAutopilot && !session.origin
-                ? 'text-success hover:text-success'
-                : 'text-info hover:text-info',
+                ? 'text-success'
+                : 'text-info',
             )}
             title={session.origin
               ? `Created by automation: ${session.origin}`

@@ -89,8 +89,8 @@ export function ConsolidatePanel({ enabled, onOpenSession }: {
               onClick={() => selectCluster(cl)}
               className={`rounded-full px-3 py-1 text-xs ${
                 cl.risk === 'risky'
-                  ? 'bg-danger-wash text-danger hover:bg-danger-wash/90'
-                  : 'bg-surface-raised text-ink hover:bg-surface-raised/90'
+                  ? 'bg-danger-wash text-danger hover:ring-1 hover:ring-danger'
+                  : 'bg-surface-raised text-ink hover:bg-edge'
               }`}
             >
               {cl.numbers.length} PRs · {cl.rationale}
@@ -120,7 +120,7 @@ export function ConsolidatePanel({ enabled, onOpenSession }: {
                 type="button"
                 aria-label={`consolidation underway for PR ${c.number} — open session`}
                 onClick={() => onOpenSession?.(underway.get(c.number)!)}
-                className="rounded bg-warning-wash px-1 text-xs text-warning hover:bg-warning-wash/90 shrink-0"
+                className="rounded bg-warning-wash px-1 text-xs text-warning hover:ring-1 hover:ring-warning shrink-0"
               >
                 consolidating…
               </button>

@@ -300,7 +300,7 @@ export function BrowserTab({ sessionId, statusState, initialState, displayMode, 
         <div
           className={cn(
             'pointer-events-none absolute left-2 top-2',
-            'rounded bg-warning-strong px-2 py-1 text-xs font-medium text-on-strong',
+            'rounded bg-warning-strong/90 px-2 py-1 text-xs font-medium text-on-strong',
           )}
         >
           Agent is driving
