@@ -62,6 +62,9 @@ vi.mock('@/api/hooks', () => ({
   // open pointer by default, so these are exercised by MapChangesCard's own tests.
   useAbandonMapChanges: () => ({ mutate: vi.fn(), isPending: false }),
   useRebaseMapChanges: () => ({ mutate: vi.fn(), isPending: false }),
+  // The Overview's hygiene notice — no data, so `RoadmapHealthCard` renders
+  // nothing and stays out of this file's assertions.
+  useProjectHealth: () => ({ data: undefined, isLoading: false, isError: false }),
 }))
 
 vi.mock('@/api/pm', async (orig) => ({

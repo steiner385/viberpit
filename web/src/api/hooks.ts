@@ -36,10 +36,12 @@ import {
   removeDependency, createEdge, deleteEdge,
   editMapChanges, abandonMapChanges, rebaseMapChanges,
   fetchPolicySchema, updateProductPolicy,
+  fetchProjectHealth,
   type Project, type CreateProjectInput, type OnboardingView,
   type RemoveDependencyInput, type RemoveDependencyResult,
   type CreateEdgeInput, type ProjectEdgeInfo,
   type MapChangeInput, type MapChangeResult, type AbandonResult,
+  type ProjectHealth,
 } from './pm'
 import {
   fetchRoadmapMap, fetchLeaves, fetchQueue, fetchProject,
@@ -112,6 +114,7 @@ export const QK = {
   queue: ['pm', 'queue'] as const,
   project: (slug: string) => ['pm', 'project', slug] as const,
   policySchema: ['pm', 'policy-schema'] as const,
+  health: (slug: string) => ['pm', 'health', slug] as const,
 }
 
 /**
@@ -1815,6 +1818,17 @@ export function useUpdateProductPolicy(slug: string) {
     },
     onError: (e) => toast.error(extractMutationErrorMessage(e, 'Could not update the automation policy')),
     meta: PM_MUTATION_META,
+  })
+}
+
+/** The product overview's hygiene notice (`RoadmapHealthCard`): unparented
+ *  capabilities, unlinked leaf initiatives, stale-proposed capabilities and the
+ *  stale-inbox count. Stale enough at 30s — this is a notice, not a live feed. */
+export function useProjectHealth(slug: string) {
+  return useQuery<ProjectHealth>({
+    queryKey: QK.health(slug),
+    queryFn: () => fetchProjectHealth(slug),
+    staleTime: 30_000,
   })
 }
 

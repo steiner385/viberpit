@@ -25,6 +25,7 @@ import { ProductEdgesEditor } from './ProductEdgesEditor'
 import { NewCapabilityDialog } from './NewCapabilityDialog'
 import { MapChangesCard } from './MapChangesCard'
 import { AutomationPolicyCard } from './AutomationPolicyCard'
+import { RoadmapHealthCard } from './RoadmapHealthCard'
 
 const TABS = ['overview', 'in-flight', 'needs-you', 'ranked', 'dependencies'] as const
 
@@ -91,6 +92,9 @@ export function ProductDetail({ product }: { product: ProductNode }) {
       <div role="tabpanel" id={panelId(tab)} aria-labelledby={`tab-${tab}`} className="flex flex-col gap-4">
         {tab === 'overview' && (
           <>
+            {/* Below the tiles above: a notice, not a tile, so it does not
+                compete with the counts for the top of the page. */}
+            <RoadmapHealthCard productSlug={product.slug} />
             {isLoading && !project
               ? <Skeleton lines={3} />
               : project && (

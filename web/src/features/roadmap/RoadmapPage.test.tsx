@@ -68,6 +68,8 @@ vi.mock('@/api/hooks', () => ({
   useTriage: () => triage,
   useAcceptProposal: (slug?: string) => { acceptScope(slug); return accept },
   useRejectProposal: () => reject,
+  // The product Overview's hygiene notice — no data, so it renders nothing.
+  useProjectHealth: () => ({ data: undefined, isLoading: false, isError: false }),
 }))
 
 vi.mock('@/api/pm', async (orig) => ({
