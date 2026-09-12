@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from server.github.pr_status import PipelinePr
     from server.pipeline.merge_train import MergeTrainState
     from server.pipeline.track import StageModel
+    from server.pm.map_changes import MapChangesService
     from server.pm.onboarding import ProjectOnboardingView
     from server.sessions.native_display import NativeDisplay
     from server.sessions.replay import EngineReplay
@@ -7233,6 +7234,18 @@ class SessionOrchestrator:
                 proj.onboarding_state = "live"
                 await db.commit()
 
+    def pm_map_changes(self) -> "MapChangesService":
+        """The capability map-changes service (roadmap spec §9), wired to this
+        orchestrator's injectable ``gh`` runner and its default-branch probe —
+        so the API routes never construct a GitHub client themselves and tests
+        swap ``orch._gh_run`` for a recorder."""
+        from server.pm.map_changes import MapChangesService
+        from server.pm.map_changes_gh import GhWrite
+        return MapChangesService(
+            gh_factory=lambda repo: GhWrite(repo, run=self._gh_run),
+            default_branch=self._sdlc_default_branch,
+        )
+
     # ------------------------------------------------------------------
     # SDLC Synthesizer control-loop dependencies (injected into SdlcSynthesizerLoop)
     # ------------------------------------------------------------------
@@ -7309,11 +7322,8 @@ class SessionOrchestrator:
     async def _sdlc_default_branch(self, repo: str) -> str:
         """The repo's default branch (``main``/``master``), resolved the same way
         ``_backlog_spawn`` does — never hardcode ``master`` (the prompts warn)."""
-        try:
-            return await asyncio.to_thread(
-                lambda: gitrepos.list_remote_branches(repo).get("default") or "master")
-        except Exception:
-            return "master"
+        from server.pm.map_changes import resolve_default_branch
+        return await resolve_default_branch(repo)
 
     async def _sdlc_spawn_synth(self, ini: dict, kind: str):
         """Spawn a de-duped spec/plan session for *ini*, seeding the prompt with

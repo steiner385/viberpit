@@ -1211,6 +1211,14 @@ class RemoteOrchestrator:
             return {"ok": False, "step": "rpc", "error": "session daemon did not answer"}
         return result
 
+    def pm_map_changes(self):
+        """Capability map-changes edits (roadmap spec §9) run EDGE-LOCAL, not over
+        the daemon RPC: the service takes the API request's own DB session, and the
+        edge already makes its own ``gh`` calls (repo/branch enumeration for the
+        chooser). Same service class as in-process, on the default ``gh`` runner."""
+        from server.pm.map_changes import MapChangesService
+        return MapChangesService()
+
     async def aclose(self) -> None:
         if self._global_pump is not None and not self._global_pump.done():
             self._global_pump.cancel()

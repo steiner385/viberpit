@@ -243,3 +243,7 @@ class InProcessOrchestratorAdapter:
     async def sdlc_materialize_apply(self, *a, **k): return await _maybe_await(self._orch._sdlc_materialize_apply(*a, **k))
     # --- blocked-by removal, human disposition (roadmap spec §8, #1472) -------
     async def pm_remove_dependency(self, *a, **k): return await _maybe_await(self._orch._pm_remove_dependency(*a, **k))
+    # --- capability map-changes PRs (roadmap spec §9, #1472) ------------------
+    # A SYNC factory, not an RPC seam: it hands back a service the API drives with
+    # the request's own DB session, so it must not be awaited or serialized.
+    def pm_map_changes(self, *a, **k): return self._orch.pm_map_changes(*a, **k)

@@ -558,6 +558,10 @@ def test_every_remote_method_is_classified():
         # sdlc_materialize_apply — shared-DB truth plus the daemon's own gh
         # credential ladder and journal, so it must not fan out per host.
         "pm_remove_dependency",
+        # Capability map-changes (roadmap spec §9, #1472): a sync factory for an
+        # EDGE-LOCAL service — the pointer row and the docs are shared-DB/GitHub
+        # truth, so a fan-out would repeat every GitHub write once per host.
+        "pm_map_changes",
     }
     public = {n for n, _ in inspect.getmembers(RemoteOrchestrator, callable)
               if not n.startswith("_")}
@@ -741,6 +745,10 @@ def test_api_orchestrator_reads_are_all_classified():
         # sdlc_materialize_apply — shared-DB truth plus the daemon's own gh
         # credential ladder and journal, so it must not fan out per host.
         "pm_remove_dependency",
+        # Capability map-changes (roadmap spec §9, #1472): a sync factory for an
+        # EDGE-LOCAL service — the pointer row and the docs are shared-DB/GitHub
+        # truth, so a fan-out would repeat every GitHub write once per host.
+        "pm_map_changes",
         # Account-scoped and identical on every host: the primary answers, and one
         # app-server is started rather than one per host.
         "codex_models", "codex_validate_model",
