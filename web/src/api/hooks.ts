@@ -21,7 +21,7 @@ import type {
 } from './types'
 import { fetchDeployStatus, startDeploy } from './deploy'
 import {
-  fetchInitiative, advanceInitiative, createInitiative,
+  fetchInitiative, advanceInitiative, stepBackInitiative, unblockInitiative, createInitiative,
   fetchMaterialization, acceptMaterialization, rejectMaterialization,
   fetchIncidents, actOnIncident,
   type Initiative, type CreateInitiativeInput,
@@ -31,7 +31,9 @@ import {
 import {
   createProject, requestProjectSync,
   fetchOnboarding, proposeMap, runClassify, advanceMap, advanceLive,
+  removeDependency,
   type Project, type CreateProjectInput, type OnboardingView,
+  type RemoveDependencyInput, type RemoveDependencyResult,
 } from './pm'
 import {
   fetchRoadmapMap, fetchLeaves, fetchQueue, fetchProject,
@@ -1511,6 +1513,32 @@ export function useAdvanceInitiative() {
   })
 }
 
+/** One stage back. Same invalidations as advance: the map lists it, the detail shows it. */
+export function useStepBackInitiative() {
+  const qc = useQueryClient()
+  return useMutation<Initiative, ApiRequestError, string>({
+    mutationFn: (slug) => stepBackInitiative(slug),
+    onSuccess: (updated) => {
+      void qc.invalidateQueries({ queryKey: QK.initiative(updated.slug) })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+/** Clear a block. The row leaves the Needs-you pile's blocked section, so the map refreshes too. */
+export function useUnblockInitiative() {
+  const qc = useQueryClient()
+  return useMutation<Initiative, ApiRequestError, string>({
+    mutationFn: (slug) => unblockInitiative(slug),
+    onSuccess: (updated) => {
+      void qc.invalidateQueries({ queryKey: QK.initiative(updated.slug) })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
 /** The initiative's latest decomposition proposal, or `null` when it has never
  *  been decomposed (#992). Polled on the detail's own cadence: the proposal
  *  appears when a decompose session's ingest lands, which is not a tap this page
@@ -1686,6 +1714,24 @@ export function useLeaves(scope: LeavesScope | null) {
     enabled: scope !== null,
     staleTime: 5_000,
     refetchInterval: 30_000,
+  })
+}
+
+/** Remove a blocked-by edge from a leaf. Every leaves list is invalidated by
+ *  prefix — the row does not know which scope(s) it is rendered under — plus the
+ *  map, whose blocked counts and initiative tiers read the same dep rows, and
+ *  every initiative detail by prefix: the input carries only a `workItemId`, so
+ *  the row cannot say which initiative's epic-blocked count it just changed. */
+export function useRemoveDependency() {
+  const qc = useQueryClient()
+  return useMutation<RemoveDependencyResult, ApiRequestError, RemoveDependencyInput>({
+    mutationFn: (input) => removeDependency(input),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['pm', 'leaves'] })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      void qc.invalidateQueries({ queryKey: ['sdlc', 'initiative'] })
+    },
+    meta: PM_MUTATION_META,
   })
 }
 

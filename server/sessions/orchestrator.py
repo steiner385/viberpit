@@ -7585,6 +7585,27 @@ class SessionOrchestrator:
                     DbSession.status.not_in(INACTIVE_SESSION_STATUSES)))).first()
         return (str(row[0]), str(row[1] or "")) if row is not None else None
 
+    async def _pm_remove_dependency(self, work_item_id: str, blocker_ref: str) -> dict:
+        """Delete one blocked-by edge on GitHub (roadmap spec §8, #1472).
+
+        THE seam the API calls, for the same reason as ``_sdlc_materialize_apply``:
+        the router decides a human asked, this owns the transport
+        (``_pm_reconcile_mutate``) and the journal. A failure is data, not an
+        exception — the route turns it into a 502 and the row stays blocked."""
+        from sqlalchemy import select
+        from server.db.models import WorkItem
+        from server.pm.dep_remove import remove
+        now = self._pm_sync_now_utc()
+        async with db_session() as db:
+            src = (await db.execute(select(WorkItem).where(
+                WorkItem.id == work_item_id))).scalar_one_or_none()
+            if src is None:
+                return {"ok": False, "step": "load", "error": f"no such work item: {work_item_id}"}
+            result = await remove(db, src=src, blocker_ref=blocker_ref,
+                                  mutate=self._pm_reconcile_mutate, now=now)
+            await db.commit()
+        return result
+
     async def _sdlc_materialize_apply(self, proposal_id: str) -> dict:
         """Apply an accepted MaterializationProposal (spec 003 §7b, human gate).
 

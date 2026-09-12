@@ -66,7 +66,10 @@ def _decomposition(payload: dict) -> Decomposition:
                     for t in tasks))
 
 
-def _error_text(payload: dict) -> str:
+def error_text(payload: dict) -> str:
+    """First human-readable message in a GraphQL document-level ``errors`` block.
+
+    Public because ``dep_remove`` reads the same payload shape."""
     errors = payload.get("errors") or []
     for err in errors:
         message = str((err or {}).get("message") or "").strip()
@@ -143,7 +146,7 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
             payload = {"errors": [{"message": str(e)}]}
         issue = ((payload.get("data") or {}).get("createIssue") or {}).get("issue") or {}
         if not issue.get("id"):
-            error = _error_text(payload) or "createIssue returned no issue"
+            error = error_text(payload) or "createIssue returned no issue"
             await db.run_sync(lambda s: journal.mark_failed(s, row_id, error, now))
             return None, error
         await db.run_sync(lambda s: journal.mark_applied(s, [row_id], now))
@@ -165,7 +168,7 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
                             .get("id") or "")
         if not repository_id:
             return await fail("repository",
-                              _error_text(payload) or f"cannot resolve {repo}")
+                              error_text(payload) or f"cannot resolve {repo}")
         created["repository_id"] = repository_id
         await remember()
 

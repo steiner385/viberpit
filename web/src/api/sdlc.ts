@@ -125,6 +125,18 @@ export function advanceInitiative(slug: string): Promise<Initiative> {
   return api.post<Initiative>(`/sdlc/initiatives/${encodeURIComponent(slug)}/advance`)
 }
 
+/** The undo for a mis-tapped Advance: one stage back. 409 at intake or while blocked. */
+export function stepBackInitiative(slug: string): Promise<Initiative> {
+  return api.post<Initiative>(`/sdlc/initiatives/${encodeURIComponent(slug)}/step-back`)
+}
+
+/** Clear a `blocked` initiative back to the parked state without moving the gate.
+ *  409 unless blocked, and 409 while a materialization proposal is pending (that
+ *  card has its own accept/reject). */
+export function unblockInitiative(slug: string): Promise<Initiative> {
+  return api.post<Initiative>(`/sdlc/initiatives/${encodeURIComponent(slug)}/unblock`)
+}
+
 // ── Plan materialization: the decomposition gate (spec 003 §7b, #992) ────────
 
 /** One task of a proposed decomposition.

@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 from server.db.models import (
     Base, GhProject, GhProjectItem, Initiative, Project, ProjectRepo, WorkItem, WorkItemDep)
 from server.pm.gh_projects import GhProjectItemView, GhProjectView, IssueRelView
-from server.pm import mirror_store
+from server.pm import journal, mirror_store
+from server.pm.reconcile_diff import remove_blocked_by_mutation
 
 REPO = "steiner385/cc-account-switcher"
 
@@ -463,3 +464,80 @@ def test_back_sync_stage_updates_adopted_initiative():
     assert n == 1
     assert db.query(Initiative).filter_by(
         epic_repo=REPO, epic_number=945).one().stage == "deploy"
+
+
+# --- applied removals survive the next mirror pass (#1472) ---------------------
+
+
+def _journal_applied_removal(db, src_node: str, dst_node: str) -> None:
+    """Record what ``dep_remove`` leaves behind: an APPLIED remove_blocked_by row."""
+    now = datetime.now(timezone.utc)
+    ids = journal.record_pending(
+        db, [remove_blocked_by_mutation(src_node, dst_node, initiated_by="dep-remove:test")],
+        batch_id="dep-remove:test", now=now, dry_run=False)
+    journal.mark_applied(db, ids, now)
+    db.commit()
+
+
+def _seed_order_pair(db):
+    """945 is an epic over 950, 951 — so the mirror derives an ``order`` dep
+    951 ← 950 on every pass. Both siblings carry a GitHub node id."""
+    for number, node in ((950, "I_950"), (951, "I_951")):
+        db.query(WorkItem).filter_by(number=number).one().gh_node_id = node
+    db.commit()
+    return [IssueRelView(repo=REPO, number=945, blocked_by=[], parent_ref=None,
+                         sub_issue_refs=[f"{REPO}#950", f"{REPO}#951"])]
+
+
+def test_upsert_relations_does_not_revive_a_removed_dependency():
+    db = _db()
+    _seed(db)
+    rels = _seed_order_pair(db)
+    mirror_store.upsert_relations(db, REPO, rels)
+    order = db.query(WorkItemDep).filter_by(source="order").one()
+    assert order.active is True
+    # The human removes it: dep_remove deactivates the row and journals the apply.
+    order.active = False
+    _journal_applied_removal(db, "I_951", "I_950")
+
+    mirror_store.upsert_relations(db, REPO, rels)  # GitHub still reports the sibling order
+
+    assert db.query(WorkItemDep).filter_by(source="order").one().active is False
+    # ...and the create path is suppressed too, not just the reactivate path.
+    db.query(WorkItemDep).filter_by(source="order").delete()
+    db.commit()
+    mirror_store.upsert_relations(db, REPO, rels)
+    assert db.query(WorkItemDep).filter_by(source="order").count() == 0
+
+
+def test_upsert_relations_reactivates_when_no_removal_was_applied():
+    """Control for the suppression: without a journaled removal the row comes back."""
+    db = _db()
+    _seed(db)
+    rels = _seed_order_pair(db)
+    mirror_store.upsert_relations(db, REPO, rels)
+    db.query(WorkItemDep).filter_by(source="order").one().active = False
+    db.commit()
+
+    mirror_store.upsert_relations(db, REPO, rels)
+
+    assert db.query(WorkItemDep).filter_by(source="order").one().active is True
+
+
+def test_upsert_relations_still_honours_a_native_re_add_after_a_removal():
+    """A removal suppresses only the mirror's own re-derivation. A ``native`` edge
+    is GitHub saying the dependency exists again — a newer human decision."""
+    db = _db()
+    _seed(db)
+    for number, node in ((950, "I_950"), (951, "I_951")):
+        db.query(WorkItem).filter_by(number=number).one().gh_node_id = node
+    db.commit()
+    _journal_applied_removal(db, "I_950", "I_951")
+
+    mirror_store.upsert_relations(db, REPO, [IssueRelView(
+        repo=REPO, number=950, blocked_by=[f"{REPO}#951"], parent_ref=None,
+        sub_issue_refs=[])])
+
+    native = db.query(WorkItemDep).filter_by(source="native").one()
+    assert (native.src_ref, native.dst_ref, native.active) == (
+        f"{REPO}#950", f"{REPO}#951", True)

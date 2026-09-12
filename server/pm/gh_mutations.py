@@ -52,6 +52,9 @@ def _render(m: Mutation, project_node_id: str, field_cache: Mapping[str, dict]) 
     if m.kind == "add_blocked_by":
         return ("addBlockedBy(input: {issueId: %s, blockingIssueId: %s}) { clientMutationId }"
                 % (_q(m.target_node_id), _q(m.new_value)))
+    if m.kind == "remove_blocked_by":
+        return ("removeBlockedBy(input: {issueId: %s, blockingIssueId: %s}) { clientMutationId }"
+                % (_q(m.target_node_id), _q(m.new_value)))
     raise ValueError(f"unknown mutation kind {m.kind!r}")
 
 

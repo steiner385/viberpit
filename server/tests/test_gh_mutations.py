@@ -24,6 +24,19 @@ def test_build_batch_emits_aliased_mutations():
     assert "rateLimit" not in doc
 
 
+def test_render_remove_blocked_by_matches_the_live_schema():
+    """`removeBlockedBy(input: {issueId, blockingIssueId})` — introspected live
+    2026-09-11 (RemoveBlockedByInput: issueId ID!, blockingIssueId ID!). Ignores
+    the project arguments exactly as add_blocked_by does."""
+    from server.pm.gh_mutations import build_batch
+    from server.pm.reconcile_diff import remove_blocked_by_mutation
+    m = remove_blocked_by_mutation("I_blocked", "I_blocker", initiated_by="dep-remove:o/r#5")
+    doc, alias_map = build_batch([m], project_node_id="", field_cache={})
+    assert doc == ('mutation { m0: removeBlockedBy(input: {issueId: "I_blocked", '
+                   'blockingIssueId: "I_blocker"}) { clientMutationId } }')
+    assert alias_map == {"m0": m}
+
+
 def test_build_batch_rejects_unknown_option_and_oversize():
     bad = [Mutation("set_field", "PVTI_1", "Status", None, "Nope", "x")]
     with pytest.raises(UnknownOption):

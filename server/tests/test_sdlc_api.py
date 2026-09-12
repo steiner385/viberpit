@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import tempfile
 from contextlib import contextmanager
@@ -11,15 +12,21 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
 
 @contextmanager
-def _client():
+def _client(db_url: str | None = None):
+    """Same idiom as ``test_pm_map_api.py::_client``: accept a caller-prepared
+    ``db_url`` so seeding can happen BEFORE the client (and its own event loop)
+    is opened, or build its own temp dir when none is given."""
     from fastapi.testclient import TestClient
     from server.app import create_app
     from server.sessions.orchestrator import SessionOrchestrator
     from server.tests.fakes.fake_factory import fake_sdk_factory
 
-    with tempfile.TemporaryDirectory() as tmp:
-        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
+    with contextlib.ExitStack() as stack:
+        url = db_url
+        if url is None:
+            tmp = stack.enter_context(tempfile.TemporaryDirectory())
+            url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        with patch.dict(os.environ, {"CCSWITCH_DB_URL": url,
                                      "CCSWITCH_DEV": "1",
                                      "CCSWITCH_TAILNET_ALLOWLIST": ""}):
             orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
@@ -867,3 +874,161 @@ def test_materialization_routes_404_for_an_unknown_initiative():
                      headers=IDENTITY_HEADERS).status_code == 404
         assert c.post("/api/sdlc/initiatives/nope/materialization/accept",
                       headers=IDENTITY_HEADERS).status_code == 404
+
+
+def _seed_initiative(db_url: str, **fields):
+    """One Initiative row before the client opens (its loop must not race ours)."""
+    from server.db import db_session, init_db
+    from server.db.models import Initiative
+
+    async def _go():
+        await init_db(db_url)
+        async with db_session() as db:
+            db.add(Initiative(**{"slug": "dark-mode", "repo": "o/r", "title": "Dark mode",
+                                 "stage": "plan", "status": "active", **fields}))
+    asyncio.run(_go())
+
+
+def test_step_back_moves_the_stage_back_one_and_activates():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_initiative(db_url, stage="build", status="awaiting_human")
+        with _client(db_url) as c:
+            r = c.post("/api/sdlc/initiatives/dark-mode/step-back", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            assert (r.json()["stage"], r.json()["status"]) == ("plan", "active")
+            assert _audits(c, "sdlc.initiative.step_back") == [{"slug": "dark-mode", "stage": "plan"}]
+
+
+def test_step_back_refuses_at_intake_and_when_blocked():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_initiative(db_url, stage="intake")
+        with _client(db_url) as c:
+            r = c.post("/api/sdlc/initiatives/dark-mode/step-back", headers=IDENTITY_HEADERS)
+            assert r.status_code == 409 and r.json()["detail"]["error"] == "at_first_stage"
+            assert c.post("/api/sdlc/initiatives/nope/step-back", headers=IDENTITY_HEADERS).status_code == 404
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_initiative(db_url, stage="plan", status="blocked")
+        with _client(db_url) as c:
+            r = c.post("/api/sdlc/initiatives/dark-mode/step-back", headers=IDENTITY_HEADERS)
+            assert r.status_code == 409 and r.json()["detail"]["error"] == "blocked"
+
+
+def test_advance_refuses_a_blocked_initiative():
+    """Advance was the accidental unblock: it flipped status to active AND moved
+    the gate. A blocked row must be cleared on purpose, by the route for it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_initiative(db_url, stage="plan", status="blocked")
+        with _client(db_url) as c:
+            r = c.post("/api/sdlc/initiatives/dark-mode/advance", headers=IDENTITY_HEADERS)
+            assert r.status_code == 409, r.text
+            assert r.json()["detail"]["error"] == "blocked"
+            got = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
+            assert (got["stage"], got["status"]) == ("plan", "blocked")
+
+
+def test_unblock_returns_a_blocked_initiative_to_the_parked_state():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_initiative(db_url, stage="plan", status="blocked")
+        with _client(db_url) as c:
+            r = c.post("/api/sdlc/initiatives/dark-mode/unblock", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            assert (r.json()["stage"], r.json()["status"]) == ("plan", "awaiting_human")
+            assert _audits(c, "sdlc.initiative.unblock") == [{"slug": "dark-mode"}]
+            # Not blocked any more → a second tap is a conflict, not a silent no-op.
+            r2 = c.post("/api/sdlc/initiatives/dark-mode/unblock", headers=IDENTITY_HEADERS)
+            assert r2.status_code == 409 and r2.json()["detail"]["error"] == "not_blocked"
+
+
+def test_unblock_refuses_while_a_materialization_is_pending():
+    """A pending proposal already has its two dispositions (accept resumes the
+    apply, reject abandons it); unblocking underneath it would leave the card up
+    on a row the loop thinks is free to decompose again."""
+    from server.db import db_session, init_db
+    from server.db.models import Initiative, MaterializationProposal
+
+    async def _seed(db_url: str):
+        await init_db(db_url)
+        async with db_session() as db:
+            ini = Initiative(slug="dark-mode", repo="o/r", title="Dark mode",
+                             stage="plan", status="blocked")
+            db.add(ini)
+            await db.flush()
+            db.add(MaterializationProposal(initiative_id=ini.id, status="pending",
+                                           session_id="s", payload={"tasks": []}))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        asyncio.run(_seed(db_url))
+        with _client(db_url) as c:
+            r = c.post("/api/sdlc/initiatives/dark-mode/unblock", headers=IDENTITY_HEADERS)
+            assert r.status_code == 409, r.text
+            assert r.json()["detail"]["error"] == "proposal_pending"
+
+
+def _seed_exhausted(db_url: str, *, proposals: int, epic_number: int | None = None):
+    """A plan-stage initiative the synthesizer blocked after N failed decompositions."""
+    from server.db import db_session, init_db
+    from server.db.models import Initiative, MaterializationProposal
+
+    async def _run():
+        await init_db(db_url)
+        async with db_session() as db:
+            ini = Initiative(slug="dark-mode", repo="o/r", title="Dark mode",
+                             stage="plan", status="blocked", epic_repo="o/r" if epic_number else None,
+                             epic_number=epic_number)
+            db.add(ini)
+            await db.flush()
+            for _ in range(proposals):
+                db.add(MaterializationProposal(initiative_id=ini.id, status="rejected",
+                                               session_id="s", payload={"tasks": []}))
+
+    asyncio.run(_run())
+
+
+def test_unblock_refuses_an_initiative_the_synthesizer_gave_up_on():
+    """The second writer of ``blocked`` is the synthesizer's exhaustion path, and
+    clearing that block only re-blocks the row on the next tick."""
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_exhausted(db_url, proposals=MATERIALIZE_MAX_ATTEMPTS)
+        with _client(db_url) as c:
+            r = c.post("/api/sdlc/initiatives/dark-mode/unblock", headers=IDENTITY_HEADERS)
+            assert r.status_code == 409, r.text
+            assert r.json()["detail"]["error"] == "materialize_exhausted"
+            assert str(MATERIALIZE_MAX_ATTEMPTS) in r.json()["detail"]["message"]
+            got = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
+            assert got["status"] == "blocked"
+
+
+def test_unblock_allows_an_initiative_below_the_attempt_cap():
+    """Under the cap the loop will decompose again, so the block IS clearable."""
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_exhausted(db_url, proposals=MATERIALIZE_MAX_ATTEMPTS - 1)
+        with _client(db_url) as c:
+            r = c.post("/api/sdlc/initiatives/dark-mode/unblock", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            assert r.json()["status"] == "awaiting_human"
+
+
+def test_unblock_ignores_the_attempt_cap_once_an_epic_exists():
+    """The refusal is about a plan that never decomposed. An initiative that HAS
+    an epic is past that writer — its block came from the failed apply."""
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_exhausted(db_url, proposals=MATERIALIZE_MAX_ATTEMPTS, epic_number=101)
+        with _client(db_url) as c:
+            r = c.post("/api/sdlc/initiatives/dark-mode/unblock", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            assert r.json()["status"] == "awaiting_human"

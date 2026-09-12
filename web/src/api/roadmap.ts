@@ -53,8 +53,8 @@ export interface InitiativeNode {
   primaryCapability: string | null
   capabilities: string[]
   tier: RoadmapTier
-  /** Why it needs a human beyond its status; today only `'advance'`. */
-  reason: 'advance' | string | null
+  /** Why it needs a human beyond its status: 'advance', or for a blocked row 'blocked' | 'epic_blocked'. */
+  reason: 'advance' | 'blocked' | 'epic_blocked' | string | null
   epic: InitiativeEpic | null
 }
 

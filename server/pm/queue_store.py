@@ -25,6 +25,7 @@ from .desired_state import ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES
 from .mirror_store import deps_in_repos, list_product_views
 from .queue import QueueRow
 from .reconcile_inputs import _aware
+from .refs import split_ref
 
 _LIVE_SESSION_STATUSES = ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES
 
@@ -74,13 +75,6 @@ def runner_row_maps(db: Session) -> tuple[frozenset[str], dict[str, datetime]]:
         elif st.get("claimed"):
             claimed.update(refs)
     return frozenset(claimed), needs_human_at
-
-
-def _split_ref(ref: str) -> tuple[str, int] | None:
-    repo, _, number = ref.rpartition("#")
-    if repo and number.isdigit():
-        return repo, int(number)
-    return None
 
 
 def load_queue_rows(db: Session, *, now: datetime,
@@ -136,7 +130,7 @@ def load_queue_rows(db: Session, *, now: datetime,
             select(WorkItemDep).where(deps_in_repos(product.repos), WorkItemDep.active.is_(True))
         ).all()
         dst_refs = {d.dst_ref for d in deps if d.dst_ref}
-        parsed_dst = [split for split in (_split_ref(r) for r in dst_refs) if split is not None]
+        parsed_dst = [split for split in (split_ref(r) for r in dst_refs) if split is not None]
         dst_state: dict[str, str] = {}
         if parsed_dst:  # guard: an empty in_() is a SQLAlchemy warning, not a no-op query
             dst_state = {

@@ -2,11 +2,7 @@ import { useState } from 'react'
 import { toast } from 'sonner'
 import { useBacklogGroups, useDispatchBacklogGroup } from '@/api/hooks'
 import type { BacklogGroup } from '@/api/automations'
-
-function issueUrl(ref: string): string {
-  const [repo, num] = ref.split('#')
-  return `https://github.com/${repo}/issues/${num}`
-}
+import { issueUrl } from '@/lib/githubUrl'
 
 function GroupRow({
   group,
@@ -23,19 +19,22 @@ function GroupRow({
         {group.repo && (
           <span className="text-xs text-ink-muted shrink-0">{group.repo}</span>
         )}
-        {group.refs.map((ref) => (
-          <a
-            key={ref}
-            href={issueUrl(ref)}
-            target="_blank"
-            rel="noreferrer"
-            title={group.titles[ref]}
-            className="hover:underline"
-          >
-            #{ref.split('#')[1]}
-            {group.titles[ref] ? ` ${group.titles[ref]}` : ''}
-          </a>
-        ))}
+        {group.refs.map((ref) => {
+          const [repo, num] = ref.split('#')
+          return (
+            <a
+              key={ref}
+              href={issueUrl(repo ?? '', Number(num))}
+              target="_blank"
+              rel="noreferrer"
+              title={group.titles[ref]}
+              className="hover:underline"
+            >
+              #{num}
+              {group.titles[ref] ? ` ${group.titles[ref]}` : ''}
+            </a>
+          )
+        })}
         {group.consumedAt ? (
           <span className="ml-auto rounded bg-accent-wash px-1 text-xs text-accent shrink-0">
             picked up

@@ -179,7 +179,8 @@ def prune_superseded_applied(db: Session, older_than: datetime) -> int:
     Bounds the journal's growth without losing anything live: the newest applied
     row per (item, field) is always kept (that is the value ``own_applied_values``
     replays), and only rows for fields we own are eligible — ``add_item`` and
-    ``add_blocked_by`` rows are the permanent record ``applied_keys`` reads."""
+    ``add_blocked_by``/``remove_blocked_by`` rows are the permanent record
+    ``applied_keys`` reads."""
     sub = _latest_owned_applied()
     stale = {row[0] for row in db.execute(select(sub.c.id).where(
         sub.c.rank > 1, sub.c.updated_at < older_than)).all()}

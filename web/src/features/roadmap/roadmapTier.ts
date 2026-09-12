@@ -16,6 +16,18 @@ export const TIER_TONE: Record<RoadmapTier, Tone> = {
   idle: 'neutral',
 }
 
+/** Text colour for a tier's inline reason line. Beside `TIER_TONE` so a row and
+ *  a list cannot disagree about what colour "blocked" reads in — the two
+ *  surfaces that show a reason (`InitiativeCard`, `NeedsYouList`) both read it. */
+export const TIER_TEXT: Record<RoadmapTier, string> = {
+  'needs-you': 'text-warning',
+  blocked: 'text-danger',
+  'in-flight': 'text-ink-muted',
+  proposed: 'text-ink-muted',
+  live: 'text-ink-muted',
+  idle: 'text-ink-muted',
+}
+
 /** Rail + dot classes, muted where the tier is calm (same reading as sessions). */
 export const TIER_ACCENT: Record<RoadmapTier, { rail: string; dot: string; pulse: boolean }> = {
   'needs-you': { rail: 'bg-warning', dot: 'bg-warning', pulse: true },

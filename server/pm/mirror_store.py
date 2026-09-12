@@ -15,7 +15,9 @@ from server.sdlc.slug import slugify
 
 from .dep_plan import DepRowView, observed_deps, plan_dep_rows
 from .gh_projects import GhProjectItemView, GhProjectView, IssueRelView
-from .journal import own_write_key
+from .journal import applied_keys, own_write_key
+from .reconcile_diff import remove_blocked_by_mutation
+from .refs import split_ref
 
 
 @dataclass(frozen=True)
@@ -280,14 +282,50 @@ def upsert_relations(db: Session, repo: str, rels: list[IssueRelView]) -> None:
         DepRowView(id=d.id, src_ref=d.src_ref or "", dst_ref=d.dst_ref or "",
                    source=d.source or "", active=bool(d.active)) for d in existing])
     rows_by_id = {d.id: d for d in existing}
+    # THE one place a removed dependency is kept removed on the ccswitch side
+    # (#1472). ``dep_remove`` deletes the edge on GitHub and deactivates the local
+    # rows, but the mirror re-derives ``order``/``prose`` edges from the epic's
+    # sibling order and the issue body on every pass, so without this the row is
+    # recreated (or reactivated) on the next sync and the leaf turns red again.
+    # The applied ``remove_blocked_by`` key is the newer decision, exactly as it is
+    # for ``reconcile_diff.compile_edges`` on the GitHub side.
+    applied = applied_keys(db)
+    node_ids: dict[str, str | None] = {}
+
+    def _node_id(ref: str) -> str | None:
+        if ref not in node_ids:
+            node_ids[ref] = _gh_node_id(by_ref.get(ref) or _work_item_by_ref(db, ref))
+        return node_ids[ref]
+
+    def _removed(src_ref: str, dst_ref: str, source: str) -> bool:
+        """Has a human removed this dependency through ``dep_remove``?
+
+        Never suppresses a ``native`` edge: that one is GitHub telling us the
+        dependency exists *again* (someone re-added it there), which is a newer
+        decision than our removal — only the mirror's own re-derivation from the
+        sibling order or the body prose is suppressed. A pair we cannot resolve to
+        two node ids is never suppressed either: we could never have removed it."""
+        if source == "native":
+            return False
+        src_node, dst_node = _node_id(src_ref), _node_id(dst_ref)
+        if not src_node or not dst_node:
+            return False
+        return remove_blocked_by_mutation(
+            src_node, dst_node, initiated_by="").key() in applied
+
     for dep in plan.create:
+        if _removed(dep.src_ref, dep.dst_ref, dep.source):
+            continue
         src_item = by_ref.get(dep.src_ref)
         db.add(WorkItemDep(
             src_ref=dep.src_ref, dst_ref=dep.dst_ref, source=dep.source, active=True,
             src_work_item_id=src_item.id if src_item else None,
             dst_work_item_id=_resolve_ref(db, dep.dst_ref)))
     for row_id in plan.reactivate:
-        rows_by_id[row_id].active = True
+        row = rows_by_id[row_id]
+        if _removed(row.src_ref or "", row.dst_ref or "", row.source or ""):
+            continue
+        row.active = True
     for row_id in plan.deactivate:
         rows_by_id[row_id].active = False
     # Backfill FKs left NULL at creation (the target wasn't mirrored yet). Runs
@@ -309,6 +347,20 @@ def _resolve_ref(db: Session, ref: str) -> str | None:
     if not number.isdigit():
         return None
     return _work_item_id(db, repo, int(number), "issue")
+
+
+def _work_item_by_ref(db: Session, ref: str) -> WorkItem | None:
+    """The mirrored issue *ref* names, whatever repo it lives in (the blocked-by
+    side of a dep edge is routinely cross-repo, so ``by_ref`` cannot answer it)."""
+    parsed = split_ref(ref)
+    if parsed is None:
+        return None
+    return db.query(WorkItem).filter_by(
+        repo=parsed[0], number=parsed[1], kind="issue").first()
+
+
+def _gh_node_id(item: WorkItem | None) -> str | None:
+    return str(item.gh_node_id) if item is not None and item.gh_node_id else None
 
 
 def _rowcount(result: object) -> int:

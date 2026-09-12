@@ -97,6 +97,17 @@ def membership(open_issue_nodes: Mapping[str, str], mirrored_refs: Set[str],
             for ref, node in sorted(open_issue_nodes.items()) if ref not in mirrored_refs]
 
 
+def remove_blocked_by_mutation(blocked_node: str, blocker_node: str, *,
+                               initiated_by: str) -> Mutation:
+    """The inverse of an `add_blocked_by` edge, as the reconciler's own `Mutation`.
+
+    Same field layout as the add (target = the blocked issue, new_value = the
+    blocker) so ONE key shape covers both directions, and `compile_edges` can
+    recognise an applied removal by key and stop re-compiling the edge from a
+    prose dep that still names it in the issue body."""
+    return Mutation("remove_blocked_by", blocked_node, None, None, blocker_node, initiated_by)
+
+
 def compile_edges(deps: Iterable[DepView], node_ids: Mapping[str, str],
                   already: Set[str]) -> list[Mutation]:
     deps = list(deps)
@@ -113,6 +124,10 @@ def compile_edges(deps: Iterable[DepView], node_ids: Mapping[str, str],
         m = Mutation("add_blocked_by", src, None, None, dst,
                      f"compile:{d.source}:{d.src_ref}->{d.dst_ref}")
         if m.key() in already:
+            continue
+        # A human deleted this edge from the app (`dep_remove`): the applied
+        # removal is the newer decision, and the body's prose does not re-add it.
+        if remove_blocked_by_mutation(src, dst, initiated_by="").key() in already:
             continue
         seen.add(pair)
         out.append(m)

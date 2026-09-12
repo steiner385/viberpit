@@ -5,6 +5,7 @@ via db_session(), CCSWITCH_DEV=1 + empty allowlist auth bypass.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
 from contextlib import contextmanager
@@ -14,7 +15,10 @@ IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
 
 @contextmanager
-def _client():
+def _client(db_url: str | None = None):
+    """Same idiom as ``test_sdlc_api.py::_client`` / ``test_pm_map_api.py::_client``:
+    accept a caller-prepared ``db_url`` so seeding can happen BEFORE the client (and
+    its own event loop) is opened, or build its own temp dir when none is given."""
     from fastapi.testclient import TestClient
     from server.app import create_app
     from server.sessions.orchestrator import SessionOrchestrator
@@ -29,21 +33,24 @@ def _client():
         "CCSWITCH_SESSIOND_CLIENT_KEY",
         "CCSWITCH_SESSIOND_CA",
     ]
-    with tempfile.TemporaryDirectory() as tmp:
-        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
-        saved = {k: os.environ.pop(k, None) for k in _clear}
-        try:
-            with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url,
+    saved = {k: os.environ.pop(k, None) for k in _clear}
+    try:
+        with contextlib.ExitStack() as stack:
+            url = db_url
+            if url is None:
+                tmp = stack.enter_context(tempfile.TemporaryDirectory())
+                url = f"sqlite+aiosqlite:///{tmp}/test.db"
+            with patch.dict(os.environ, {"CCSWITCH_DB_URL": url,
                                          "CCSWITCH_DEV": "1",
                                          "CCSWITCH_TAILNET_ALLOWLIST": ""}):
                 orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())
                 app = create_app(orchestrator=orch)
                 with TestClient(app, raise_server_exceptions=False) as c:
                     yield c
-        finally:
-            for k, v in saved.items():
-                if v is not None:
-                    os.environ[k] = v
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
 
 
 def test_deps_endpoint_returns_edges_and_drift(tmp_path):  # noqa: ARG001
@@ -143,6 +150,88 @@ def test_deps_endpoint_404_on_unknown_slug():
         assert c.get(
             "/api/pm/projects/nope/deps", headers=IDENTITY_HEADERS
         ).status_code == 404
+
+
+def _audits(c, type_: str) -> list[dict]:
+    """Every audit row of *type_*, oldest first. No GET /api/audit route exists, so
+    this reads the DB through the client's own loop — same idiom as
+    ``test_sdlc_api.py::_audits``."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import AuditEvent
+
+    async def _read():
+        async with db_session() as db:
+            return [dict(r.detail or {}) for r in (await db.execute(
+                select(AuditEvent).where(AuditEvent.type == type_)
+                .order_by(AuditEvent.at))).scalars().all()]
+
+    return c.portal.call(_read)
+
+
+def _seed_blocked_pair(db_url: str) -> str:
+    """#5 blocked by #3, native; returns #5's work item id."""
+    import asyncio
+
+    from server.db import db_session, init_db
+    from server.db.models import WorkItem, WorkItemDep
+
+    async def _go() -> str:
+        await init_db(db_url)
+        async with db_session() as db:
+            src = WorkItem(repo="o/r", number=5, kind="issue", state="open", gh_node_id="N5")
+            dst = WorkItem(repo="o/r", number=3, kind="issue", state="open", gh_node_id="N3")
+            db.add_all([src, dst])
+            await db.flush()
+            db.add(WorkItemDep(src_ref="o/r#5", dst_ref="o/r#3", source="native", active=True,
+                               src_work_item_id=src.id, dst_work_item_id=dst.id))
+            await db.commit()
+            return src.id
+    return asyncio.run(_go())
+
+
+def test_delete_dep_calls_the_seam_and_audits():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        wid = _seed_blocked_pair(db_url)
+        with _client(db_url) as c:
+            calls: list[tuple[str, str]] = []
+
+            async def fake(work_item_id: str, blocker_ref: str) -> dict:
+                calls.append((work_item_id, blocker_ref))
+                return {"ok": True, "src": "o/r#5", "blocker": "o/r#3"}
+            c.app.state.sessions.pm_remove_dependency = fake
+            r = c.delete(f"/api/pm/work-items/{wid}/deps?blocker=o/r%233", headers=IDENTITY_HEADERS)
+            assert r.status_code == 200, r.text
+            assert r.json() == {"ok": True, "src": "o/r#5", "blocker": "o/r#3"}
+            assert calls == [(wid, "o/r#3")]
+            assert _audits(c, "pm.workitem.dep_remove") == [
+                {"workItemId": wid, "blocker": "o/r#3", "ok": True, "step": None}]
+
+
+def test_delete_dep_refusals():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        wid = _seed_blocked_pair(db_url)
+        with _client(db_url) as c:
+            async def refuse(work_item_id: str, blocker_ref: str) -> dict:
+                return {"ok": False, "step": "mutate", "error": "no such edge"}
+            c.app.state.sessions.pm_remove_dependency = refuse
+            assert c.delete("/api/pm/work-items/nope/deps?blocker=o/r%233",
+                            headers=IDENTITY_HEADERS).status_code == 404
+            r = c.delete(f"/api/pm/work-items/{wid}/deps?blocker=o/r%239",
+                         headers=IDENTITY_HEADERS)
+            assert r.status_code == 404 and r.json()["detail"]["error"] == "dep_not_found"
+            r = c.delete(f"/api/pm/work-items/{wid}/deps?blocker=garbage", headers=IDENTITY_HEADERS)
+            assert r.status_code == 422 and r.json()["detail"]["error"] == "bad_blocker"
+            r = c.delete(f"/api/pm/work-items/{wid}/deps?blocker=o/r%233", headers=IDENTITY_HEADERS)
+            assert r.status_code == 502, r.text
+            assert r.json()["detail"] == {"error": "dep_remove_failed", "step": "mutate",
+                                          "message": "no such edge"}
+            # The failed attempt is still in the trail (committed before the raise).
+            assert [a["ok"] for a in _audits(c, "pm.workitem.dep_remove")] == [False]
+            assert c.delete(f"/api/pm/work-items/{wid}/deps?blocker=o/r%233").status_code == 401
 
 
 def test_deps_endpoint_null_project_when_no_gh_project():
