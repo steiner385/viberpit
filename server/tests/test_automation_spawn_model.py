@@ -24,15 +24,27 @@ def _capture_spawn(captured):
 # backlog-runner (_backlog_spawn)                                              #
 # --------------------------------------------------------------------------- #
 
-def _build_backlog_orch(config):
+def _build_backlog_orch(config, *, default_model=None):
+    """A bare orchestrator whose runner config is *config* and whose PRODUCT policy
+    (the source of the session model since policy phase 1) pins *default_model*.
+    ``None`` = the product has no policy, so the spawn falls back to the unscoped
+    one (model ``auto``)."""
     import server.sessions.orchestrator as orch_mod
     from server.automations.context import AutomationContext
+    from server.automations.product_policy import effective_policy
     orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
     orch._backlog_ctx = AutomationContext("backlog-runner")
 
     async def read_config():
-        return "auto", config
+        return "on", config
     orch._backlog_read_config = read_config  # type: ignore[method-assign]
+
+    async def load_policies():
+        if default_model is None:
+            return {}
+        return {"widget": effective_policy({"dispatch": "auto",
+                                            "default_model": default_model})}
+    orch._backlog_load_policies = load_policies  # type: ignore[method-assign]
     return orch
 
 
@@ -45,12 +57,12 @@ def _patch_git(monkeypatch, tmp_path):
 
 
 _BATCH = Batch(primary="o/r#7", issues=["o/r#7"], repo="o/r",
-               titles={"o/r#7": "fix the frobnicator"})
+               titles={"o/r#7": "fix the frobnicator"}, product="widget")
 
 
 @pytest.mark.asyncio
 async def test_backlog_spawn_passes_pinned_model(tmp_path, monkeypatch):
-    orch = _build_backlog_orch({"default_model": "sonnet"})
+    orch = _build_backlog_orch({}, default_model="sonnet")
     _patch_git(monkeypatch, tmp_path)
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
@@ -108,7 +120,7 @@ async def test_backlog_spawn_auto_assesses_issue_titles(tmp_path, monkeypatch):
         return "haiku"
     monkeypatch.setattr(model_pick, "assess_model", pick_haiku)
 
-    orch = _build_backlog_orch({"default_model": "auto"})
+    orch = _build_backlog_orch({}, default_model="auto")
     _patch_git(monkeypatch, tmp_path)
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
@@ -120,7 +132,7 @@ async def test_backlog_spawn_auto_assesses_issue_titles(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_backlog_spawn_default_keeps_account_default(tmp_path, monkeypatch):
-    orch = _build_backlog_orch({"default_model": "default"})
+    orch = _build_backlog_orch({}, default_model="default")
     _patch_git(monkeypatch, tmp_path)
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
@@ -143,7 +155,7 @@ def _fake_launch_plan_codex(config):
 
 @pytest.mark.asyncio
 async def test_backlog_spawn_codex_auto_uses_codex_assessor(tmp_path, monkeypatch):
-    orch = _build_backlog_orch({"default_model": "auto"})
+    orch = _build_backlog_orch({}, default_model="auto")
     _patch_git(monkeypatch, tmp_path)
     orch._backlog_ctx.launch_plan_or_refuse = _fake_launch_plan_codex(
         {"default_model": "auto"})
@@ -173,7 +185,7 @@ async def test_backlog_spawn_codex_auto_uses_codex_assessor(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_backlog_spawn_codex_assessment_failure_falls_back(tmp_path, monkeypatch):
-    orch = _build_backlog_orch({"default_model": "auto"})
+    orch = _build_backlog_orch({}, default_model="auto")
     _patch_git(monkeypatch, tmp_path)
     orch._backlog_ctx.launch_plan_or_refuse = _fake_launch_plan_codex(
         {"default_model": "auto"})

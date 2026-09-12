@@ -102,19 +102,18 @@ def test_an_engine_capable_automation_reads_its_stored_config_whole(tmp_path):
     row and silently degrades to pure defaults.
 
     That is not a theoretical drift: it took the backlog runner down for two days. Defaults
-    mean ``enabled_repos: []``, which scopes the candidate query to nothing — so the card
-    read "0 eligible" over a 156-issue backlog, with no failing log line anywhere, while
-    the row in the UI still showed 14 repos.
+    meant ``enabled_repos: []`` (since retired to the product policy), which scoped the
+    candidate query to nothing — so the card read "0 eligible" over a 156-issue backlog,
+    with no failing log line anywhere, while the row in the UI still showed 14 repos.
     """
     async def run():
         await _init_db(tmp_path)
         orch = _bare_orch()
         await _set_row("backlog-runner", enabled=True, mode="auto", config={
-            "enabled_repos": ["steiner385/viberpit"], "max_concurrent": 6,
+            "max_concurrent": 6,
             "engine": "claude_code", "codex_model": "", "codex_reasoning_effort": ""})
         mode, config = await orch._backlog_read_config()
-        assert mode == "auto"
-        assert config["enabled_repos"] == ["steiner385/viberpit"]
+        assert mode == "on"          # a pre-flip ``auto`` row folds to the new vocabulary
         assert config["max_concurrent"] == 6
         assert config["engine"] == "claude_code"
         # PR Doctor persists the same fields and had its own hand-rolled copy of the read.
@@ -166,7 +165,8 @@ def test_validate_config_drops_a_retired_key_but_still_rejects_an_unknown_one():
 def test_a_stored_row_carrying_a_retired_key_still_loads_its_settings(tmp_path):
     """End-to-end for the above through the reader every control loop uses: the live
     backlog-runner row carries ``eligible_label`` (retired with the label search in
-    #990), and it must keep its ``enabled_repos`` rather than degrade to defaults."""
+    #990) and ``enabled_repos`` (retired to the product policy), and it must keep its
+    remaining settings rather than degrade to defaults."""
     async def run():
         await _init_db(tmp_path)
         orch = _bare_orch()
@@ -174,8 +174,8 @@ def test_a_stored_row_carrying_a_retired_key_still_loads_its_settings(tmp_path):
             "enabled_repos": ["steiner385/viberpit"], "eligible_label": "ready",
             "max_concurrent": 6})
         mode, config = await orch._backlog_read_config()
-        assert mode == "auto"
-        assert config["enabled_repos"] == ["steiner385/viberpit"]
+        assert mode == "on"
         assert config["max_concurrent"] == 6
         assert "eligible_label" not in config
+        assert "enabled_repos" not in config
     asyncio.run(run())

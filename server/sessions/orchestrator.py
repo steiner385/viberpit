@@ -1007,6 +1007,8 @@ class SessionOrchestrator:
             pr_status_for=self._backlog_pr_status_for,
             pr_doctor_active=self._backlog_pr_doctor_active,
             read_config=self._backlog_read_config,
+            read_policies=self._backlog_load_policies,
+            seed_policies=self._backlog_seed_policies_once,
             clock=time.monotonic,
             needs_human=self._backlog_needs_human,
             session_ended=self._backlog_session_ended,
@@ -1019,8 +1021,12 @@ class SessionOrchestrator:
         )
         self._backlog_task: asyncio.Task | None = None
         # The last ranked candidate pool ``_backlog_query_queue`` produced, kept so
-        # the automation card can show WHERE the runner's next pick comes from.
+        # the automation card can show WHERE the runner's next pick comes from…
         self._backlog_last_queue: list[dict] = []
+        # …and the product policies / repos that same read saw, so selection's
+        # per-repo weights and caps are derived from exactly the scope the pool was.
+        self._backlog_last_policies: dict[str, dict] = {}
+        self._backlog_last_repos: dict[str, list[str]] = {}
         # SDLC Intake control loop: turns pending triggers into proposed intent.md
         # PRs (propose-only). Same injected-seam mold as BacklogRunnerLoop; the
         # trigger source (read_triggers) stays empty until a triage queue (#804) or
@@ -4894,12 +4900,46 @@ class SessionOrchestrator:
 
         Mode is ``off`` unless the row is enabled AND carries a mode; an
         absent/invalid row falls back to ``off`` + pure defaults so a bad config
-        never spawns.  Single source of truth for the flags the loop reads."""
+        never spawns.  Single source of truth for the flags the loop reads.
+
+        The vocabulary is ``off | on`` from policy phase 1 — propose-vs-auto is a
+        PRODUCT decision now. Rows written before the flip still carry ``propose``
+        or ``auto``, and an enabled runner must not silently stop because of it, so
+        both FOLD to ``on`` here (the one place that reads the stored mode). The
+        pre-fold value is not lost: ``_backlog_read_raw_config`` hands it to the
+        one-shot seed, which turns it into each product's ``dispatch``.
+
+        ``default_mode="on"`` for the same reason every other two-mode automation
+        passes one: with exactly two modes the UI hides the mode select, so its
+        toggle enables the row with ``mode`` still NULL — without the default an
+        enabled runner would read ``off`` forever."""
         from server.automations.backlog_runner import BacklogRunner
         from server.automations.config_store import read_automation_config
-        return await read_automation_config(
-            BacklogRunner, modes=("propose", "auto"),
+        mode, config = await read_automation_config(
+            BacklogRunner, modes=("on", "propose", "auto"), default_mode="on",
             log_key="backlog_runner")
+        return ("on" if mode in ("propose", "auto") else mode), config
+
+    async def _backlog_read_raw_config(self) -> tuple[str, dict]:
+        """The backlog-runner row's ``(stored_mode, config)``, UNVALIDATED.
+
+        The seed needs exactly what the validated read throws away: the retired
+        repo knobs (``enabled_repos`` / ``repo_caps`` / …, dropped by
+        ``validate_config``) and the stored mode before the ``propose``/``auto`` →
+        ``on`` fold, which is what each product's ``dispatch`` is seeded from.
+        Used ONLY by the seed — every acting path reads the validated config."""
+        from sqlalchemy import select as _select
+        from server.db.models import Automation
+        try:
+            async with db_session() as db:
+                row = (await db.execute(_select(Automation).where(
+                    Automation.id == "backlog-runner"))).scalar_one_or_none()
+            if row is None:
+                return "off", {}
+            return (row.mode or "off"), dict(row.config or {})
+        except Exception:
+            log.debug("backlog_runner.raw_config.load_failed", exc_info=True)
+            return "off", {}
 
     async def _backlog_count_in_flight(self) -> int:
         """Restart-safe in-flight count: active (not-given-up) durable target
@@ -5076,7 +5116,8 @@ class SessionOrchestrator:
             return False
 
     async def _backlog_query_queue(self, config: dict, *,
-                                   skipped_out: dict | None = None) -> list[dict]:
+                                   skipped_out: dict | None = None,
+                                   products_out: dict | None = None) -> list[dict]:
         """The runner's candidate pool: the global priority queue (spec 003 §7a).
 
         ONE composition — ``rank(load_queue_rows(...))`` over the mirrored
@@ -5088,43 +5129,93 @@ class SessionOrchestrator:
         and refs the runner GAVE UP on carry their give-up time into the queue's
         needs-human cooldown (Phase D: the row is the signal, not a label).
 
+        Scope and reach are the PRODUCTS' now (policy phase 1, spec §5): a product
+        whose policy says ``dispatch: off`` contributes nothing, and each ON
+        product is ranked with ITS OWN ``queue_min_status`` /
+        ``respect_dependencies`` — one ``rank`` call per product, merged by score.
+        Scoping happens BEFORE ranking, not after: skip reasons are per-row, so an
+        off product's stuck backlog would otherwise land in this runner's
+        ``blocked`` gauge.
+
         ``skipped_out``, when given, receives ``rank``'s per-reason skip counts
         (``blocked`` is the card's "why isn't the backlog draining" note).
+        ``products_out`` receives one row per ON product for the status card.
         """
         from datetime import datetime, timezone
 
-        from server.pm.desired_state import STATUS_READY
+        from sqlalchemy import select as sa_select
+
+        from server.automations.product_policy import policies_by_slug
+        from server.db.models import Project
+        from server.pm.mirror_store import list_product_views
         from server.pm.queue import NEEDS_HUMAN_RETRY_DAYS_DEFAULT, rank, to_candidate
         from server.pm.queue_store import load_queue_rows, runner_row_maps
 
         now = datetime.now(timezone.utc)
+        _EPOCH = datetime.min
 
         def _rows(s):
             # The runner's claims and give-ups come from the SAME derivation
             # ``GET /api/pm/queue`` uses (``runner_row_maps``), in the same session
             # as the mirror read, so the operator's view cannot disagree with the
-            # pool selection draws from.
+            # pool selection draws from. The policies are read in that same session
+            # too: which products are on decides the pool, so a policy edit must
+            # not be able to land between the two reads.
             claimed, needs_human_at = runner_row_maps(s)
-            return load_queue_rows(s, now=now, claimed_refs=claimed,
+            rows = load_queue_rows(s, now=now, claimed_refs=claimed,
                                    needs_human_at=needs_human_at)
+            # Which products are on, and each one's repos, in
+            # ``Project.created_at`` order — so the ``priority`` strategy serves
+            # products oldest-first (the deterministic stand-in for the retired
+            # hand-ordered ``enabled_repos`` list).
+            born = dict(s.execute(sa_select(Project.id, Project.created_at)).all())
+            views = sorted(list_product_views(s),
+                           key=lambda v: (born.get(v.project_id) or _EPOCH,
+                                          v.slug or v.project_id))
+            repos_by_slug = {(v.slug or v.project_id): list(v.repos) for v in views}
+            return rows, policies_by_slug(s), repos_by_slug
 
         async with db_session() as db:
-            rows = await db.run_sync(_rows)
-        # The queue spans every onboarded product; ``enabled_repos`` is still the
-        # operator's scope switch (empty = all of them). Scoping happens BEFORE
-        # ranking, not after: skip reasons are per-row, so an unscoped product's
-        # stuck backlog would otherwise land in this runner's ``blocked`` gauge.
-        repos = set(config.get("enabled_repos") or ())
-        if repos:
-            rows = [r for r in rows if r.repo in repos]
+            rows, policies, repos_by_slug = await db.run_sync(_rows)
+        # Cached for the other seams in this same tick (selection's weights/caps/
+        # order, the spawn's model) so they cannot read a different answer.
+        self._backlog_last_policies = policies
+        self._backlog_last_repos = repos_by_slug
         raw_days = config.get("needs_human_retry_days")
-        entries, skipped = rank(
-            rows,
-            min_status=config.get("queue_min_status") or STATUS_READY,
-            respect_dependencies=bool(config.get("respect_dependencies", True)),
-            needs_human_retry_days=(NEEDS_HUMAN_RETRY_DAYS_DEFAULT if raw_days is None
-                                    else max(0, int(raw_days))),
-            now=now)
+        retry_days = (NEEDS_HUMAN_RETRY_DAYS_DEFAULT if raw_days is None
+                      else max(0, int(raw_days)))
+        by_product: dict[str, list] = {}
+        for r in rows:
+            if (policies.get(r.product) or {}).get("dispatch", "off") != "off":
+                by_product.setdefault(r.product, []).append(r)
+        entries: list = []
+        skipped: dict[str, int] = {}
+        for slug in sorted(policies):
+            policy = policies[slug]
+            if policy["dispatch"] == "off":
+                continue
+            rows_p = by_product.get(slug, [])
+            entries_p, skipped_p = rank(
+                rows_p,
+                min_status=policy["queue_min_status"],
+                respect_dependencies=bool(policy["respect_dependencies"]),
+                # The needs-human cooldown stays runner-wide: it is the runner's
+                # own give-up window, not a property of the product's board.
+                needs_human_retry_days=retry_days,
+                now=now)
+            entries.extend(entries_p)
+            for reason, n in skipped_p.items():
+                skipped[reason] = skipped.get(reason, 0) + n
+            if products_out is not None:
+                products_out[slug] = {
+                    "dispatch": policy["dispatch"],
+                    "eligible": len(entries_p),
+                    "blocked": skipped_p.get("blocked", 0),
+                    "untriaged": skipped_p.get("status", 0),
+                }
+        # Merge the per-product rankings into one pool: score desc, and STABLE, so
+        # each product's internal rank order (score, then age, then ref) survives.
+        entries.sort(key=lambda e: (e.score is None, -(e.score or 0.0)))
         if skipped_out is not None:
             skipped_out.update(skipped)
         self._backlog_last_queue = [to_candidate(e) for e in entries]
@@ -5145,7 +5236,12 @@ class SessionOrchestrator:
         No model call here — grouping happens in the background via
         ``_backlog_refresh_groups``; this path only intersects the stored plan
         with the live candidate pool. Returns ``None`` (the loop waits and
-        nudges the optimizer) when no plan group is live."""
+        nudges the optimizer) when no plan group is live.
+
+        This is also the ONE place a product policy becomes a per-repo knob: the
+        pure selection code (``plan_to_batch`` / ``order_live_groups``) stays
+        repo-keyed, so each ON product's ``weight`` / ``max_in_flight`` is applied
+        to every repo it owns, in product age order."""
         from server.automations.backlog_runner import select_batch
 
         async def _pool(cfg: dict) -> list[dict]:
@@ -5164,8 +5260,58 @@ class SessionOrchestrator:
         # branching a worktree off their stale ref would implement against
         # ancient code. Auto-resumes when a later fetch clears the registry.
         paused = {a["repo"] for a in gitrepos.stale_credential_repos()}
-        return await select_batch(config, query=_pool,
-                                  repo_load=repo_load, paused_repos=paused)
+        # The pool is read HERE rather than through the seam so the policy caches
+        # it fills are populated before the knobs below are derived from them;
+        # ``select_batch`` then gets the pool it would have queried, once.
+        pool = await _pool(config)
+        weights, caps, repo_order = self._backlog_repo_knobs()
+
+        async def _read_pool(_cfg: dict) -> list[dict]:
+            return pool
+
+        return await select_batch(config, query=_read_pool,
+                                  repo_load=repo_load, paused_repos=paused,
+                                  weights=weights, caps=caps, repo_order=repo_order)
+
+    def _backlog_repo_knobs(self) -> "tuple[dict[str, float], dict[str, int], list[str]]":
+        """``(weights, caps, repo_order)`` for the ON products, keyed by repo.
+
+        Derived from the policy/repo snapshot ``_backlog_query_queue`` just took,
+        so selection can never bias toward a product the pool no longer contains.
+        A product with no repos contributes nothing; a repo shared by two products
+        takes the last one in age order (the same last-writer rule the repo-keyed
+        strategies always had — ownership uniqueness is a registration-time
+        problem, see ``owning_projects_by_repo``)."""
+        weights: dict[str, float] = {}
+        caps: dict[str, int] = {}
+        repo_order: list[str] = []
+        for slug, repos in self._backlog_last_repos.items():
+            policy = self._backlog_last_policies.get(slug)
+            if policy is None or policy["dispatch"] == "off":
+                continue
+            for repo in repos:
+                weights[repo] = policy["weight"]
+                caps[repo] = policy["max_in_flight"]
+                if repo not in repo_order:
+                    repo_order.append(repo)
+        return weights, caps, repo_order
+
+    async def _backlog_load_policies(self) -> dict[str, dict]:
+        """The loop's ``read_policies`` seam: slug → validated product policy.
+
+        Read fresh rather than served off ``_backlog_last_policies``: the sweep
+        half of a tick runs even when refill did not (mode ``off``, a saturated
+        runner), so a cache filled by the queue read would be stale or empty
+        exactly when the sweep needs a product's attempt cap. A failed read
+        answers ``{}`` — every lookup then falls back to ``unscoped_policy()``,
+        which keeps the loop acting rather than stalling on a DB blip."""
+        from server.automations.product_policy import load_policies
+        try:
+            async with db_session() as db:
+                return await load_policies(db)
+        except Exception:
+            log.warning("orchestrator._backlog_load_policies_failed", exc_info=True)
+            return {}
 
     def _backlog_credential_alerts(self) -> list[dict]:
         """Stale-credential seam for the loop's dashboard notification (#670).
@@ -5264,7 +5410,7 @@ class SessionOrchestrator:
         st = await self._backlog_ctx.get_target_state(target)
         issues = st.get("issues") or [target]
         return Batch(primary=target, issues=list(issues),
-                     repo=target.split("#", 1)[0])
+                     repo=target.split("#", 1)[0], product=st.get("product"))
 
     async def _backlog_needs_human(self, target: str, reason: str) -> None:
         """GIVE-UP path: comment the handoff, carrying the ``reason`` a human needs
@@ -5325,28 +5471,167 @@ class SessionOrchestrator:
             return True
         return bool(row[0])
 
-    async def _backlog_count_candidates(self) -> "tuple[int, int, int]":
-        """(eligible, blocked, untriaged) counts of unclaimed OPEN issues in the
-        configured repos.
+    async def _backlog_count_candidates(self) -> "tuple[int, int, int, dict]":
+        """(eligible, blocked, untriaged, per_product) counts of unclaimed OPEN
+        issues across the products the runner dispatches for.
 
         The honest backlog gauge for the Automation card — independent of how many
         runner slots are free (a saturated runner still reports the real depth).
         ``blocked`` is how many otherwise-eligible issues were skipped because a
         dependency is still open — the "why isn't the backlog draining" note.
-        ``untriaged`` is the board-status skip (``queue_min_status``): in the
-        default ``Ready`` mode a board full of Backlog items would otherwise read
-        as a bare "0 eligible" with no hint that the work exists but is waiting on
-        triage. All three numbers cover the SAME pool selection draws from: the
-        queue scoped to ``enabled_repos``, so another product's stuck backlog is
-        never counted against this runner."""
+        ``untriaged`` is the board-status skip (the product's ``queue_min_status``):
+        in the default ``Ready`` reach a board full of Backlog items would otherwise
+        read as a bare "0 eligible" with no hint that the work exists but is waiting
+        on triage. All the numbers cover the SAME pool selection draws from — the
+        queue scoped to the products whose ``dispatch`` is on — so a product this
+        runner was never turned on for is never counted against it.
+
+        ``per_product`` adds this product's live in-flight count and its policy cap
+        to that product's row, which is what the card's per-product segments show."""
         _mode, config = await self._backlog_read_config()
         skipped: dict[str, int] = {}
+        per_product: dict[str, dict] = {}
         try:
-            entries = await self._backlog_query_queue(config, skipped_out=skipped)
+            entries = await self._backlog_query_queue(
+                config, skipped_out=skipped, products_out=per_product)
         except Exception:  # pragma: no cover — a queue read must not break the tick
             log.warning("orchestrator._backlog_count_candidates_failed", exc_info=True)
-            return 0, 0, 0
-        return len(entries), skipped.get("blocked", 0), skipped.get("status", 0)
+            return 0, 0, 0, {}
+        # In flight PER PRODUCT, by the same rule ``_backlog_count_in_flight`` uses
+        # for the global slot ledger (a gave-up row holds no slot; a handed-off one
+        # freed its slot to PR Doctor).
+        in_flight: dict[str, int] = {}
+        try:
+            states = await self._backlog_ctx.list_target_states()
+        except Exception:  # pragma: no cover — defensive, matches the loop's guards
+            states = {}
+        for st in states.values():
+            if st.get("gave_up") or st.get("handed_off"):
+                continue
+            slug = st.get("product")
+            if slug:
+                in_flight[slug] = in_flight.get(slug, 0) + 1
+        for slug, row in per_product.items():
+            row["in_flight"] = in_flight.get(slug, 0)
+            row["cap"] = self._backlog_last_policies.get(slug, {}).get("max_in_flight", 0)
+        return (len(entries), skipped.get("blocked", 0), skipped.get("status", 0),
+                per_product)
+
+    async def _backlog_seed_policies(self, raw: dict, mode_before: str) -> int:
+        """D10, one shot: turn the runner's retired global repo knobs into per-product
+        policies so the flip changes no behaviour, and return how many were written.
+
+        The mapping is settings-preserving: the old global mode becomes each
+        product's ``dispatch`` (``auto`` stayed ``auto``, anything else proposes),
+        the product's PRIMARY repo's entry in ``repo_caps``/``repo_weights`` becomes
+        its ``max_in_flight``/``weight``, and the remaining globals
+        (``queue_min_status``, ``max_attempts``, ``default_model``,
+        ``respect_dependencies``) are copied to every seeded product.
+
+        Reach is preserved too: a non-empty ``enabled_repos`` seeds exactly the
+        products owning those repos, while the empty list — which MEANT "every
+        onboarded product" — seeds every product with a linked board.
+
+        It is a no-op the moment ANY product carries a policy: a human who has set
+        one owns the answer, and a second seed would overwrite it with retired
+        defaults. That check is also what makes this safe to call on every process
+        start rather than exactly once in history."""
+        from datetime import datetime, timezone
+
+        from sqlalchemy import select as sa_select
+
+        from server.audit import record_audit
+        from server.automations.product_policy import (
+            PRODUCT_POLICY_SCHEMA, effective_policy)
+        from server.db.models import GhProject, Project, ProjectRepo
+        from server.pm.repo_project import owning_projects_by_repo
+
+        fields = {f.key: f for f in PRODUCT_POLICY_SCHEMA}
+
+        def _int(value, default: int) -> int:
+            """A repo-number-map entry (or a legacy int) as a whole number."""
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return default
+            return int(value)
+
+        def _enum(key: str, value) -> str:
+            """*value* if the schema still offers it, else the schema default — a
+            stale stored choice must degrade one field, never the whole policy
+            (``effective_policy`` falls back to dispatch ``off`` on a ValueError)."""
+            field = fields[key]
+            return value if value in (field.choices or []) else field.default
+
+        repos = [r for r in (raw.get("enabled_repos") or []) if r]
+        caps = raw.get("repo_caps") or {}
+        weights = raw.get("repo_weights") or {}
+        seeded: list[str] = []
+        async with db_session() as db:
+            # Scanned in Python, not as ``.isnot(None)``: on a ``JSON`` column that
+            # renders a JSON-null comparison, which matches a SQL-NULL row and would
+            # make the seed a permanent no-op. The projects table is small.
+            already = any(p is not None for p in (await db.execute(
+                sa_select(Project.automation_policy))).scalars())
+            if already:
+                return 0
+            if repos:
+                owners = await owning_projects_by_repo(db, repos)
+                project_ids = {o.project_id for o in owners.values()}
+            else:
+                project_ids = {pid for pid in (await db.execute(
+                    sa_select(GhProject.project_id))).scalars() if pid}
+            if not project_ids:
+                return 0
+            rows = (await db.execute(sa_select(Project).where(
+                Project.id.in_(project_ids)).order_by(Project.slug))).scalars().all()
+            owned = (await db.execute(sa_select(
+                ProjectRepo.project_id, ProjectRepo.repo, ProjectRepo.is_primary,
+            ).where(ProjectRepo.project_id.in_(project_ids)))).all()
+            # The per-repo caps/weights were keyed by repo; a product's PRIMARY repo
+            # is the one that carried its settings. Falls back to the product's
+            # lowest-named repo so a product that never flagged a primary still
+            # inherits something rather than silently resetting to 1.
+            primary: dict[str, str] = {}
+            any_repo: dict[str, str] = {}
+            for project_id, repo, is_primary in sorted(owned,
+                                                       key=lambda r: (r[0], r[1] or "")):
+                if not repo:
+                    continue
+                any_repo.setdefault(project_id, repo)
+                if is_primary:
+                    primary.setdefault(project_id, repo)
+            now = datetime.now(timezone.utc)
+            for project in rows:
+                slug = project.slug or project.id
+                repo = primary.get(project.id) or any_repo.get(project.id, "")
+                policy = effective_policy({
+                    "dispatch": "auto" if mode_before == "auto" else "propose",
+                    "queue_min_status": _enum(
+                        "queue_min_status", raw.get("queue_min_status")),
+                    "max_in_flight": _int(caps.get(repo), 1),
+                    "weight": _int(weights.get(repo), 1),
+                    "max_attempts": _int(raw.get("max_attempts"), 2),
+                    "default_model": _enum("default_model", raw.get("default_model")),
+                    "respect_dependencies": bool(raw.get("respect_dependencies", True)),
+                })
+                project.automation_policy = policy
+                project.automation_policy_updated_at = now
+                seeded.append(slug)
+                await record_audit(
+                    db=db, type="pm.project.policy", identity="backlog-runner",
+                    detail={"slug": slug, "policy": policy,
+                            "seeded_from": "enabled_repos"})
+        if seeded:
+            await self._backlog_ctx.emit(
+                "info",
+                f"seeded automation policies for {len(seeded)} product(s) from the "
+                f"runner's retired repo settings",
+                kind="policies_seeded", detail={"products": sorted(seeded)})
+        return len(seeded)
+
+    async def _backlog_seed_policies_once(self) -> int:
+        """The loop's ``seed_policies`` seam: read the raw row, seed from it."""
+        mode_before, raw = await self._backlog_read_raw_config()
+        return await self._backlog_seed_policies(raw, mode_before)
 
     async def _backlog_spawn(self, batch, account: str):
         """Spawn a de-duped runner session for *batch*, seeded with the implement
@@ -5371,6 +5656,14 @@ class SessionOrchestrator:
         cwd = await asyncio.to_thread(
             gitrepos.ensure_clone, await self._effective_repo_root(), batch.repo, url)
         _mode, config = await self._backlog_read_config()
+        # The session model is the PRODUCT's (policy phase 1): overlay it onto the
+        # config the resolvers already take, so ``resolve_model`` /
+        # ``_resolve_codex_auto_effort`` keep their one ``default_model`` contract
+        # instead of growing a second way to be told which model to use.
+        from server.automations.product_policy import unscoped_policy
+        policies = await self._backlog_load_policies()
+        policy = policies.get(batch.product) or unscoped_policy()
+        config = {**config, "default_model": policy["default_model"]}
         detail: dict = {"issues": batch.issues, "engine": engine.value}
         model = model_source = reasoning_effort = None
         summary = "\n".join(
@@ -5421,7 +5714,8 @@ class SessionOrchestrator:
         if primary not in by_ref:
             return "unknown"
         batch = Batch(primary=primary, issues=[primary], repo=by_ref[primary]["repo"],
-                      titles={primary: t} if (t := by_ref[primary].get("title")) else {})
+                      titles={primary: t} if (t := by_ref[primary].get("title")) else {},
+                      product=by_ref[primary].get("product"))
         st = await self._backlog_ctx.get_target_state(primary)
         already_claimed = bool(st.get("issues"))
         if not already_claimed:
@@ -5431,6 +5725,7 @@ class SessionOrchestrator:
             # dangler and releases it by deleting the row.
             await self._backlog_ctx.set_target_state(primary, {
                 "repo": batch.repo,
+                "product": batch.product,
                 "attempts": st.get("attempts", 0),
                 "issues": batch.issues,
                 "claimed": True,
@@ -5462,6 +5757,7 @@ class SessionOrchestrator:
         await self._backlog_ctx.set_target_state(primary, {
             "session_id": getattr(rec, "id", None),
             "repo": batch.repo,
+            "product": batch.product,
             "branch": getattr(rec, "branch", None),
             "attempts": st.get("attempts", 0),
             "issues": batch.issues,
@@ -5501,7 +5797,8 @@ class SessionOrchestrator:
         repo = by_ref.get(primary, {}).get("repo") or primary.split("#")[0]
         titles = {r: by_ref[r]["title"]
                   for r in refs if r in by_ref and by_ref[r].get("title")}
-        batch = Batch(primary=primary, issues=list(refs), repo=repo, titles=titles)
+        batch = Batch(primary=primary, issues=list(refs), repo=repo, titles=titles,
+                      product=by_ref.get(primary, {}).get("product"))
         st = await self._backlog_ctx.get_target_state(primary)
         already_claimed = bool(st.get("issues"))
         if not already_claimed:
@@ -5512,6 +5809,7 @@ class SessionOrchestrator:
             # below — the finalising write then updates 0 rows and 500s.
             await self._backlog_ctx.set_target_state(primary, {
                 "repo": batch.repo,
+                "product": batch.product,
                 "attempts": st.get("attempts", 0),
                 "issues": batch.issues,
                 "claimed": True,
@@ -5532,6 +5830,7 @@ class SessionOrchestrator:
         await self._backlog_ctx.set_target_state(primary, {
             "session_id": getattr(rec, "id", None),
             "repo": batch.repo,
+            "product": batch.product,
             "branch": getattr(rec, "branch", None),
             "attempts": st.get("attempts", 0),
             "issues": batch.issues,

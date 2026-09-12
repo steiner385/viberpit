@@ -74,6 +74,22 @@ def effective_policy(raw: dict | None) -> dict:
     return validate_config(PRODUCT_POLICY_SCHEMA, {})
 
 
+def unscoped_policy() -> dict:
+    """The policy to act on for work whose product has none.
+
+    A batch or claim can reach the runner's loop without a product the policy map
+    knows: a claim written before the flip, a product row deleted while its session
+    ran, or a policy read that failed this tick. The pure defaults are wrong there —
+    dispatch ``off`` is the "not opted in" answer for a PRODUCT, and applying it to
+    a batch the runner already selected would strand legacy claims and silently stop
+    the loop the moment a read hiccuped. The QUEUE is the off-gate (a product with
+    dispatch ``off`` never reaches selection at all), so anything that got this far
+    is work the runner already decided to do: defaults everywhere else, ``auto``
+    here.
+    """
+    return {**effective_policy(None), "dispatch": "auto"}
+
+
 def policies_by_slug(db: Session) -> dict[str, dict]:
     """slug -> effective policy for every Project (sync session; the queue loader's session)."""
     rows = db.execute(select(Project.slug, Project.automation_policy)).all()

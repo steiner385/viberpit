@@ -228,7 +228,7 @@ def _loop(ctx, *, spawn, **overrides):
         healthy_account=overrides.pop("healthy_account", lambda: _some("acct")),
         pr_status_for=lambda _t: _some(None),
         pr_doctor_active=lambda _r: _some(False),
-        read_config=overrides.pop("read_config", lambda: _some(("auto", _CONFIG))),
+        read_config=overrides.pop("read_config", lambda: _some(("on", _CONFIG))),
         needs_human=_needs_human,
         clock=clock,
     )
@@ -237,7 +237,7 @@ def _loop(ctx, *, spawn, **overrides):
     return loop, announced, escalated
 
 
-_CONFIG = {"max_concurrent": 1, "max_spawns_per_day": 10, "max_attempts": 2}
+_CONFIG = {"max_concurrent": 1, "max_spawns_per_day": 10}
 
 
 def _some(value):
@@ -332,7 +332,7 @@ def _orch_with_refusing_spawn(monkeypatch):
             return None
 
     async def read_config():
-        return "auto", _CONFIG
+        return "on", _CONFIG
 
     async def announce(_batch):
         return None

@@ -320,6 +320,11 @@ def plan_to_batch(
         issues=refs,
         repo=by_ref[primary]["repo"],
         titles={r: t for r in refs if (t := by_ref[r].get("title"))},
+        # The primary's product decides the batch's policy (dispatch, attempt cap,
+        # model). A group is single-product in practice — the plan is built per
+        # board — and where it is not, the primary is the issue the session is
+        # actually for, so its product is the right owner.
+        product=by_ref[primary].get("product"),
     ), group.get("id")
 
 

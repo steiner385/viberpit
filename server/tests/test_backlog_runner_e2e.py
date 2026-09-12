@@ -63,10 +63,8 @@ class FakeClock:
 
 def make_config(**over) -> dict:
     cfg = {
-        "enabled_repos": ["o/r"],
         "max_concurrent": 1,
         "max_spawns_per_day": 10,
-        "max_attempts": 2,
         "max_issues_per_pr": 1,
     }
     cfg.update(over)
@@ -140,7 +138,7 @@ class Harness:
         self.needs_human_reasons: list[str] = []
 
     async def _read_config(self):
-        return "auto", self.config
+        return "on", self.config
 
     async def _query_queue(self, _config: dict | None = None) -> list[dict]:
         """The candidate pool, ranked exactly as ``_backlog_query_queue`` does:
@@ -325,7 +323,7 @@ def test_ended_without_pr_increments_then_gives_up(tmp_path):
     async def go():
         await init_db(db_url=db_url)
         await _seed_rows()
-        h = Harness(config=make_config(max_concurrent=1, max_attempts=2),
+        h = Harness(config=make_config(max_concurrent=1),
                     clock=FakeClock(),
                     candidate_refs=[("o/r", 1, "one")], pr_status={})
         await h.loop.tick()                  # spawn o/r#1, attempts=0
