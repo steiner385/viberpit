@@ -161,8 +161,8 @@ export function SessionCard({ session, account, selected = false, listMode = fal
   const repoLabel = formatRepoLabel(session.repo)
 
   // The dot pulse and the autopilot marker degrade to static glyphs under
-  // reduced-motion. (CardFrame reads the same query for the swipe transition;
-  // a second call to one media query is free.)
+  // reduced-motion. (CardFrame reads the same `reducedMotion` field for the
+  // swipe transition — one subscription in useViewport, two readers.)
   const reduceMotion = useViewport().reducedMotion
 
   function handleKeyDown(e: React.KeyboardEvent) {
