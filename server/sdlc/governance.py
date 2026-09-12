@@ -10,7 +10,7 @@ managed non-negotiables are present; the session spawner reads ``permission_tier
 Three governance surfaces, one per issue #805 checklist item:
 
 1. **Permission tiers by environment** — ``permission_tier`` maps an environment
-   to an existing ViberPit session mode (dev = ``full-auto`` · staging =
+   to an existing ccswitch session mode (dev = ``full-auto`` · staging =
    ``acceptEdits`` · prod = ``interactive``). It does NOT invent a new permission
    engine: each returned mode is a real ``VALID_SESSION_MODES`` value already
    understood by ``PermissionRegistry.request`` (constitution VI).
@@ -38,7 +38,7 @@ Environment = Literal["dev", "staging", "prod"]
 # Ordered least- to most-restricted. ``prod`` is the only gated tier.
 ENVIRONMENTS: tuple[Environment, ...] = ("dev", "staging", "prod")
 
-# The permission-tier ladder. Each value is a real ViberPit session mode (see
+# The permission-tier ladder. Each value is a real ccswitch session mode (see
 # server.sessions.types.VALID_SESSION_MODES) — this is a *policy* over the
 # existing permission engine, not a new one:
 #   dev         → full-auto   (approve every tool, incl. shell — fast local loop)
@@ -52,7 +52,7 @@ _TIER_BY_ENV: dict[str, str] = {
 
 
 def permission_tier(environment: str) -> str:
-    """The ViberPit session mode for *environment*'s permission tier.
+    """The ccswitch session mode for *environment*'s permission tier.
 
     Pure + total. Raises ``ValueError`` on an unknown environment so a typo
     surfaces loudly instead of silently falling through to a permissive default.

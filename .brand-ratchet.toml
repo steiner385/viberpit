@@ -136,3 +136,9 @@ id = "constitution"
 paths = [".specify/memory/constitution.md"]
 issue = 1377
 ceiling = 2
+
+[[allow]]
+id = "governance-enforcement"
+paths = [".codex/config.toml", "scripts/check_constitution_amendment.py", "server/sdlc/governance.py"]
+issue = 1594
+ceiling = 5
