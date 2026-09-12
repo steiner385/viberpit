@@ -94,6 +94,33 @@ def test_valid_feature_links_still_parse():
     assert doc.links == (FeatureLinkRef("powered_by", "infra", "message-queue"),)
 
 
+LABELLED = """---
+slug: flaky-test-triage
+title: Flaky test triage
+state: live
+parent: delivery
+labels: [flaky, ci-failure]
+---
+A flaky-labeled issue means a live, unfixed flake.
+
+## Problem
+"""
+
+
+def test_labels_parse_and_round_trip():
+    doc = parse_feature_doc(LABELLED)
+    assert doc.labels == ("flaky", "ci-failure") and doc.parent == "delivery"
+    assert parse_feature_doc(serialize_feature_doc(doc)) == doc
+    assert "labels:" in serialize_feature_doc(doc)
+
+
+def test_labels_absent_or_malformed_is_empty():
+    assert parse_feature_doc(VALID).labels == ()
+    bad = VALID.replace("state: live", "state: live\nlabels: not-a-list")
+    assert parse_feature_doc(bad).labels == ()
+    assert "labels:" not in serialize_feature_doc(parse_feature_doc(VALID))
+
+
 def test_unknown_link_kind_is_skipped():
     """An unknown link kind must be skipped, not fail the whole doc."""
     text = (

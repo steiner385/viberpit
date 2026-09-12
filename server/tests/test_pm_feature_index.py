@@ -1,6 +1,6 @@
 """Pure feature-index planner tests (spec §4: upsert + sunset-orphan)."""
 from server.pm.feature_index import FeatureRowView, plan_feature_index
-from server.pm.featuredoc import FeatureDoc, FeatureLinkRef
+from server.pm.featuredoc import FeatureDoc, FeatureLinkRef, parse_feature_doc
 
 
 def _doc(slug: str, body: str = "## Problem\n\nSummary line here.") -> FeatureDoc:
@@ -98,3 +98,10 @@ def test_proposed_doc_is_stamped_with_pr_fields_and_no_commit_sha():
     assert by_slug["b"].commit_sha == "sha-main"
     assert by_slug["b"].pr_number is None
     assert by_slug["b"].pr_url is None
+
+
+def test_labels_are_carried_onto_the_upsert():
+    doc = parse_feature_doc(
+        "---\nslug: flaky-test-triage\ntitle: Flaky\nstate: live\nlabels: [flaky]\n---\nbody\n")
+    plan = plan_feature_index([], [("docs/product/features/flaky-test-triage.md", doc)])
+    assert plan.upserts[0].labels == ("flaky",)

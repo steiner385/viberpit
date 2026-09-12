@@ -1369,3 +1369,29 @@ async def test_materialize_chain_ingest_spends_the_settle_budget(db_env, monkeyp
         ini = (await db.execute(select(Initiative).where(
             Initiative.slug == "dark-mode"))).scalar_one()
         assert ini.status == "awaiting_human"  # NOT blocked
+
+
+@pytest.mark.asyncio
+async def test_apply_feature_plan_writes_route_labels(db_env):
+    await init_db(db_env)
+    async with db_session() as db:
+        p = Project(slug="lbl", name="lbl", onboarding_state="live")
+        db.add(p)
+        await db.flush()
+        project_id = p.id
+    orch = _bare_orch()
+    from server.pm.feature_index import FeatureIndexPlan, FeatureUpsert
+    plan = FeatureIndexPlan(
+        upserts=(FeatureUpsert(slug="flaky-test-triage", title="Flaky", state="live", summary="s",
+                               repo_path="docs/product/features/flaky-test-triage.md",
+                               parent_slug=None, links=(), labels=("flaky",)),
+                 FeatureUpsert(slug="task-views", title="Views", state="live", summary="s",
+                               repo_path="docs/product/features/task-views.md",
+                               parent_slug=None, links=())),
+        orphan_slugs=(), revive_slugs=(), warnings=())
+    await orch._pm_sync_apply_feature_plan(project_id, plan)
+    async with db_session() as db:
+        from sqlalchemy import select
+        rows = {f.slug: f.route_labels for f in (await db.execute(
+            select(Feature).where(Feature.project_id == project_id))).scalars().all()}
+    assert rows == {"flaky-test-triage": ["flaky"], "task-views": None}

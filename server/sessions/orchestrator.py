@@ -6308,6 +6308,7 @@ class SessionOrchestrator:
                 row.commit_sha = up.commit_sha
                 row.pr_number = up.pr_number
                 row.pr_url = up.pr_url
+                row.route_labels = list(up.labels) or None
             for slug in plan.orphan_slugs:
                 row = (await db.execute(
                     select(Feature).where(
