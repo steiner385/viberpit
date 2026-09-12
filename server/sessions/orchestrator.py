@@ -5461,6 +5461,14 @@ class SessionOrchestrator:
         _mode, config = await self._backlog_read_config()
         return await self._backlog_query_queue(config)
 
+    @staticmethod
+    def _claim_now_iso() -> str:
+        """The ``claimed_at`` stamp, in the same wall-clock UTC ISO form the
+        backlog loop writes — ``_reconcile_dangling`` parses both with
+        ``parse_iso_utc``, so the two claim sites must not drift."""
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).isoformat()
+
     async def backlog_runner_dispatch(self, refs: list[str]) -> dict:
         """Manual dispatch: claim + spawn a batch for *refs*.
 
@@ -5482,11 +5490,17 @@ class SessionOrchestrator:
         st = await self._backlog_ctx.get_target_state(primary)
         already_claimed = bool(st.get("issues"))
         if not already_claimed:
+            # ``claimed_at`` marks this claim as mid-spawn for CLAIM_GRACE_S. A
+            # dispatch is a separate task from the tick loop, so without it a
+            # concurrent tick's ``_reconcile_dangling`` reads this row (claimed,
+            # no session_id yet) as a crash leak and deletes it during the spawn
+            # below — the finalising write then updates 0 rows and 500s.
             await self._backlog_ctx.set_target_state(primary, {
                 "repo": batch.repo,
                 "attempts": st.get("attempts", 0),
                 "issues": batch.issues,
                 "claimed": True,
+                "claimed_at": self._claim_now_iso(),
             })
             await self._backlog_announce(batch)
             await self._backlog_ctx.emit("info", f"manual dispatch {primary}",
