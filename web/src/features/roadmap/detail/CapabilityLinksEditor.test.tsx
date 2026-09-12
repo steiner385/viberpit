@@ -3,7 +3,7 @@
 // another. Every change sends the WHOLE list as one `links` op — the server
 // replaces, it does not merge.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { ApiRequestError } from '@/api/client'
 import type { MapChangeInput } from '@/api/pm'
@@ -143,6 +143,33 @@ describe('CapabilityLinksEditor', () => {
     })
     rerender(<MemoryRouter><CapabilityLinksEditor product={kindash} capability={other} /></MemoryRouter>)
     expect(screen.getByRole('button', { name: 'Remove link: powered by · viberpit/sessions' })).toBeInTheDocument()
+  })
+
+  it('a send that resolves after the capability changed never lands on the new one', async () => {
+    // A real GitHub round trip is seconds; clicking another capability in the
+    // tree meanwhile is ordinary. The late result must stay with `tasks`.
+    let resolve!: () => void
+    h.mutateAsync = vi.fn().mockImplementation(() => new Promise<void>((r) => { resolve = r }))
+    const { rerender } = mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove link: powered by · viberpit/sessions' }))
+    await waitFor(() => expect(h.mutateAsync).toHaveBeenCalledTimes(1))
+
+    const billing = cap({
+      slug: 'billing', title: 'Billing',
+      links: [{ kind: 'powered_by', projectSlug: 'viberpit', featureSlug: 'roadmap' }],
+    })
+    rerender(<MemoryRouter><CapabilityLinksEditor product={kindash} capability={billing} /></MemoryRouter>)
+    await act(async () => { resolve() })
+
+    // Billing shows ITS link, not tasks' leftover.
+    expect(screen.getByRole('button', { name: 'Remove link: powered by · viberpit/roadmap' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Remove link: integrates with · kindash/billing' })).toBeNull()
+    // …and an edit on billing is based on billing's own prop.
+    h.mutateAsync = vi.fn().mockResolvedValue({})
+    rerender(<MemoryRouter><CapabilityLinksEditor product={kindash} capability={billing} /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: 'Remove link: powered by · viberpit/roadmap' }))
+    await waitFor(() => expect(h.mutateAsync).toHaveBeenCalledTimes(1))
+    expect(sent(0)).toEqual({ op: 'links', slug: 'billing', links: [] })
   })
 
   it('says so when the server refuses the change', async () => {

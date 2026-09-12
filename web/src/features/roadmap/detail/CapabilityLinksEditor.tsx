@@ -57,19 +57,15 @@ export function CapabilityLinksEditor({ product, capability }: {
   // computed from them would re-send the state before the first one (remove X,
   // then remove Y from stale chips, sends `[X, Z]` and X comes back). Every send
   // and the chips themselves are based on this while it is set.
-  const [sent, setSent] = useState<CapabilityLink[] | null>(null)
-  // Render-phase reset (the `ProposalDetail` "seededFor" idiom, React's
-  // documented "resetting state when a prop changes"): the editor does not
-  // unmount when the page swaps capability, and one capability's sent list is
-  // not another's.
-  const [seededFor, setSeededFor] = useState(capability.id)
+  // Keyed to the capability it was sent FOR: the editor does not unmount when
+  // the page swaps capability, and a send is a real GitHub round trip, so a
+  // swap while one is in flight would otherwise let the late `setSent` land
+  // one capability's links on another (and the next edit would write them
+  // into the wrong doc). A record for another id is simply ignored.
+  const [sent, setSent] = useState<{ id: string; links: CapabilityLink[] } | null>(null)
 
-  let base = sent
-  if (seededFor !== capability.id) {
-    setSeededFor(capability.id)
-    setSent(null)
-    base = null
-  } else if (sent && sameLinks(sent, capability.links)) {
+  let base = sent?.id === capability.id ? sent.links : null
+  if (base && sameLinks(base, capability.links)) {
     // The map caught up — the prop is the truth again, and holding the copy
     // would freeze out a change made from somewhere else.
     setSent(null)
@@ -90,6 +86,9 @@ export function CapabilityLinksEditor({ product, capability }: {
   const canAdd = targetProduct !== '' && targetCapability !== '' && !edit.isPending
 
   const send = async (next: CapabilityLink[], after?: () => void) => {
+    // Captured before the await: the record must name the capability this
+    // send was for, not whichever one is on screen when it resolves.
+    const forId = capability.id
     setFailure(null)
     try {
       await edit.mutateAsync({ op: 'links', slug: capability.slug, links: next.map(toApi) })
@@ -97,7 +96,7 @@ export function CapabilityLinksEditor({ product, capability }: {
       setFailure(mapChangesErrorMessage(e, 'Could not save the links.'))
       return
     }
-    setSent(next)
+    setSent({ id: forId, links: next })
     after?.()
   }
 
