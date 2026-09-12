@@ -21,11 +21,10 @@ export default defineConfig([
     },
   },
   {
-    // Token discipline is enforced folder-by-folder: the new UI system and
-    // shell first, features/ joined in PR 4 (task 1), pipeline/ once row 5 put it
-    // on tokens, the whole tree in row 7 (7a: everything but `components/`; 7f: everything).
+    // Token discipline covers the whole tree (row 7, 2026-09); the chart
+    // allowlist is the one exemption.
     files: ['src/**/*.{ts,tsx}'],
-    ignores: ['src/components/**', 'src/features/pipeline/charts/**'],
+    ignores: ['src/features/pipeline/charts/**'],
     plugins: { ccswitch: { rules: { 'no-raw-palette': noRawPalette } } },
     rules: { 'ccswitch/no-raw-palette': 'error' },
   },
