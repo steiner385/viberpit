@@ -18,6 +18,12 @@ A tick, in order (design §6):
   1..N. Build the ``TriageState`` from DB counts and ask the engine for the ONE
      highest-priority action; execute it. Classify sessions are bounded by a
      rolling daily cap (like SdlcIntakeLoop).
+  N+1. The auto-accept pass (spec §8): for a product whose policy opts in via
+     ``triage_auto_accept``, accept its qualifying pending proposals through the
+     SAME ``apply_accept`` the inbox uses — audited, undoable, capped at
+     ``MAX_AUTO_ACCEPTS_PER_TICK`` per product per tick. Propose-only stays the
+     default: the mode vocabulary is unchanged and a product that never opts in
+     never sees a machine accept.
 
 **The engine is told the truth about budget and backlog.** ``count_state``
 cannot see the loop's in-memory spawn ledger and its unclassified query can
@@ -44,6 +50,7 @@ from server.pm.engine import (
     next_triage_action,
     qualifying_clusters,
 )
+from server.pm.triage_accept import auto_accept_eligible
 
 from .base import AutomationStatus, ConfigField
 from .engine_policy import EnginePolicy
@@ -54,6 +61,13 @@ log = logging.getLogger(__name__)
 _DAY_SECONDS = 24 * 60 * 60
 
 _DEFAULT_MAX_SPAWNS_PER_DAY = 8
+
+# Per product, per tick (spec §8). Deliberately a CONSTANT and not a
+# ``ConfigField``: it is a blast-radius bound on an unattended writer, not an
+# operator preference — the tick is 60 s, so a real backlog drains within
+# minutes anyway, while a knob invites "just set it to 1000" the one time it
+# matters most.
+MAX_AUTO_ACCEPTS_PER_TICK = 25
 
 
 @dataclass(frozen=True)
@@ -68,6 +82,20 @@ class PendingItemView:
     body: str
     labels: tuple[str, ...]
     linked_issue_numbers: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class AutoAcceptCandidateView:
+    """One pending proposal as the auto-accept step sees it (all I/O injected)."""
+    proposal_id: str
+    work_item_id: str
+    product_slug: str | None       # None: the repo maps to no product → skip
+    repo: str
+    number: int
+    confidence_level: str | None
+    proposed_feature_id: str | None
+    feature_state: str | None      # the target capability's lifecycle state (None if no row)
+    auto_undone: bool | None
 
 
 class PmTriage:
@@ -119,6 +147,11 @@ CountState = Callable[[], Awaitable[TriageState]]
 Classify = Callable[[list[PendingItemView], int], Awaitable[Any]]
 ProposeMapDiff = Callable[[str, tuple[int, ...], str], Awaitable[Any]]
 MarkStale = Callable[[tuple[str, ...]], Awaitable[None]]
+ReadPolicies = Callable[[], Awaitable[dict[str, dict]]]
+ListAutoAcceptCandidates = Callable[[], Awaitable[list[AutoAcceptCandidateView]]]
+# proposal_id -> audit detail ({"workItemId", "featureId", "confidence"}) or None
+# when the proposal was no longer pending (a human got there first).
+AutoAccept = Callable[[str], Awaitable["dict | None"]]
 
 
 class PmTriageLoop:
@@ -137,6 +170,9 @@ class PmTriageLoop:
         propose_map_diff: ProposeMapDiff,
         mark_stale: MarkStale,
         clock: Callable[[], float],
+        read_policies: ReadPolicies | None = None,
+        list_auto_accept_candidates: ListAutoAcceptCandidates | None = None,
+        auto_accept: AutoAccept | None = None,
     ) -> None:
         self._ctx = ctx
         self._read_config = read_config
@@ -147,6 +183,12 @@ class PmTriageLoop:
         self._propose_map_diff = propose_map_diff
         self._mark_stale = mark_stale
         self._clock = clock
+        # Optional (default None) so every existing construction — and every
+        # test that predates the auto-accept pass — keeps working; the pass is
+        # skipped outright unless all three are wired.
+        self._read_policies = read_policies
+        self._list_candidates = list_auto_accept_candidates
+        self._auto_accept = auto_accept
         self._spawns_today: list[float] = []
         self._was_capped = False
 
@@ -228,6 +270,12 @@ class PmTriageLoop:
             await self._ctx.emit("info", action.reason, kind="needs_human")
         # Idle: nothing.
 
+        # The engine picks ONE action per tick; the auto-accept pass is not one
+        # of them — it is policy-driven bookkeeping over proposals that already
+        # exist, so it runs on every propose-mode tick regardless of which
+        # action fired (a classify-saturated backlog must not stall accepts).
+        await self._auto_accept_pass()
+
         # The status card counts drift through the ENGINE's own rule — threshold
         # AND latch. Re-implementing the threshold half here would pin the card
         # at "N drift" forever, since ``no_fit`` clusters never shrink.
@@ -277,6 +325,67 @@ class PmTriageLoop:
             "info", f"classifying {len(batch)} items",
             kind="classify", session_id=getattr(session, "id", None),
             detail={"numbers": [i.number for i in batch]})
+
+    async def _auto_accept_pass(self) -> None:
+        """Spec §8: for every product whose policy sets ``triage_auto_accept``,
+        accept the pending proposals at or above that tier — through the SAME
+        ``apply_accept`` the inbox uses (injected as ``auto_accept``), audited by
+        the seam, undoable for the same window. Runs every tick so a policy
+        change catches up on the next one.
+
+        Fail-safe by construction: no policies (a failed read) → no accepts this
+        tick, with a warn; one proposal's failure is logged and skipped, never
+        the pass; a proposal a human resolved between the list and the accept
+        answers ``None`` from the seam and is silently dropped.
+        """
+        if (self._read_policies is None or self._list_candidates is None
+                or self._auto_accept is None):
+            return
+        try:
+            policies = await self._read_policies()
+        except Exception as exc:
+            log.warning("pm_triage.policy_read_failed", exc_info=True)
+            await self._ctx.emit("warn", f"auto-accept skipped: policy read failed: {exc}",
+                                 kind="auto_accept_skipped")
+            return
+        tiers = {slug: (p.get("triage_auto_accept") or "off") for slug, p in policies.items()}
+        if all(t == "off" for t in tiers.values()):
+            return
+        accepted_by_product: dict[str, int] = {}
+        capped: set[str] = set()
+        for cand in await self._list_candidates():
+            slug = cand.product_slug
+            if not slug:
+                continue
+            tier = tiers.get(slug, "off")
+            if not auto_accept_eligible(
+                    tier=tier, confidence_level=cand.confidence_level,
+                    proposed_feature_id=cand.proposed_feature_id,
+                    feature_state=cand.feature_state, auto_undone=cand.auto_undone):
+                continue
+            if accepted_by_product.get(slug, 0) >= MAX_AUTO_ACCEPTS_PER_TICK:
+                capped.add(slug)
+                continue
+            target = f"{cand.repo}#{cand.number}"
+            try:
+                detail = await self._auto_accept(cand.proposal_id)
+            except Exception as exc:
+                log.warning("pm_triage.auto_accept_failed", exc_info=True)
+                await self._ctx.emit("warn", f"auto-accept failed for {target}: {exc}",
+                                     kind="auto_accept_failed", target=target)
+                continue
+            if detail is None:
+                continue          # a human resolved it first
+            accepted_by_product[slug] = accepted_by_product.get(slug, 0) + 1
+            await self._ctx.emit(
+                "info", f"auto-accepted {target} ({cand.confidence_level})",
+                kind="auto_accepted", target=target,
+                detail={"proposalId": cand.proposal_id, "product": slug, **detail})
+        for slug in sorted(capped):
+            await self._ctx.emit(
+                "info", f"auto-accept cap reached for {slug} this tick "
+                        f"({MAX_AUTO_ACCEPTS_PER_TICK}); the rest wait",
+                kind="auto_accept_capped", target=slug)
 
     def _prune_day(self) -> None:
         cutoff = self._clock() - _DAY_SECONDS

@@ -1138,6 +1138,9 @@ class SessionOrchestrator:
             propose_map_diff=self._pm_triage_propose_map_diff,
             mark_stale=self._pm_triage_mark_stale,
             clock=time.monotonic,
+            read_policies=self._pm_triage_load_policies,
+            list_auto_accept_candidates=self._pm_triage_list_auto_accept_candidates,
+            auto_accept=self._pm_triage_auto_accept,
         )
         self._pm_triage_task: asyncio.Task | None = None
         # Per-repo label→feature route map cache for `_pm_triage_route_by_label`
@@ -7214,6 +7217,88 @@ class SessionOrchestrator:
             await self._pm_triage_ctx.emit(
                 "info", f"stale features: {', '.join(slugs)}",
                 kind="stale_features", detail={"slugs": list(slugs)})
+
+    async def _pm_triage_load_policies(self) -> dict[str, dict]:
+        """The triage loop's ``read_policies`` seam: slug → validated product
+        policy. RAISES on failure (the loop skips the auto-accept pass for the
+        tick with a warn) — ``{}`` would read as "no product opted in"."""
+        from server.automations.product_policy import load_policies
+        try:
+            async with db_session() as db:
+                return await load_policies(db)
+        except Exception:
+            log.warning("orchestrator._pm_triage_load_policies_failed", exc_info=True)
+            raise
+
+    async def _pm_triage_list_auto_accept_candidates(self) -> list:
+        """Every pending proposal, with what the auto-accept gate needs:
+        owning product (via ``owning_projects_by_repo`` — the ONE repo→project
+        resolver), the target capability's lifecycle state, and the flags."""
+        from sqlalchemy import select
+        from server.automations.pm_triage import AutoAcceptCandidateView
+        from server.db.models import Feature, TriageProposal, WorkItem
+        from server.pm.repo_project import owning_projects_by_repo
+        async with db_session() as db:
+            rows = (await db.execute(
+                select(TriageProposal, WorkItem)
+                .join(WorkItem, WorkItem.id == TriageProposal.work_item_id)
+                .where(TriageProposal.status == "pending"))).all()
+            repos = {wi.repo for _, wi in rows if wi.repo}
+            owners = await owning_projects_by_repo(db, repos) if repos else {}
+            feature_ids = {p.proposed_feature_id for p, _ in rows if p.proposed_feature_id}
+            states: dict[str, str | None] = {}
+            if feature_ids:
+                states = {fid: st for fid, st in (await db.execute(
+                    select(Feature.id, Feature.state).where(
+                        Feature.id.in_(feature_ids)))).all()}
+            out = []
+            for prop, wi in rows:
+                owner = owners.get(wi.repo or "")
+                out.append(AutoAcceptCandidateView(
+                    proposal_id=prop.id, work_item_id=wi.id,
+                    product_slug=owner.slug if owner else None,
+                    repo=wi.repo or "", number=wi.number or 0,
+                    confidence_level=prop.confidence_level,
+                    proposed_feature_id=prop.proposed_feature_id,
+                    feature_state=(states.get(prop.proposed_feature_id)
+                                   if prop.proposed_feature_id else None),
+                    auto_undone=prop.auto_undone))
+            return out
+
+    async def _pm_triage_auto_accept(self, proposal_id: str) -> "dict | None":
+        """The loop's ``auto_accept`` seam: ONE transaction — re-read the
+        proposal (a human may have resolved it since the list), accept through
+        the shared ``apply_accept`` with ``decided_by="auto"``, audit
+        ``pm.triage.auto_accept`` as ``pm-triage``. Returns the audit detail, or
+        ``None`` when there was nothing left to accept."""
+        from sqlalchemy import select
+        from server.audit import record_audit
+        from server.db.models import TriageProposal
+        from server.pm.triage_accept import DECIDED_BY_AUTO, WorkItemMissing, apply_accept
+        async with db_session() as db:
+            prop = (await db.execute(select(TriageProposal).where(
+                TriageProposal.id == proposal_id))).scalar_one_or_none()
+            if prop is None or prop.status != "pending":
+                return None
+            try:
+                await apply_accept(db, prop, decided_by=DECIDED_BY_AUTO,
+                                   audit_identity="pm-triage")
+            except WorkItemMissing:
+                # The work item row is gone (deleted/reconciled away since the
+                # listing): there is nothing to classify, so this is the same
+                # "nothing left to accept" answer as a human beating us to it —
+                # not a failure worth a warn event on every tick.
+                log.warning("orchestrator._pm_triage_auto_accept_work_item_missing: %s",
+                            proposal_id)
+                return None
+            wi_id = prop.work_item_id
+            detail = {"proposalId": prop.id, "workItemId": wi_id,
+                      "featureId": prop.proposed_feature_id,
+                      "confidence": prop.confidence_level}
+            await record_audit(db=db, type="pm.triage.auto_accept",
+                               identity="pm-triage", detail=detail)
+            return {"workItemId": wi_id, "featureId": prop.proposed_feature_id,
+                    "confidence": prop.confidence_level}
 
     async def _pm_triage_tick_loop(self, interval: float) -> None:
         """Periodic driver for the pm-triage control loop (mirrors _pm_sync_tick_loop)."""
