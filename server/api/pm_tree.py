@@ -33,6 +33,18 @@ def _ref(w: WorkItem) -> str:
     return f"{w.repo}#{w.number}"
 
 
+def _threshold_for(project: Project | None) -> int:
+    """This product's D8 bounce threshold — the ONE reading both handlers use.
+
+    A missing product (an unowned feature, an initiative with no project) falls
+    back through ``effective_policy(None)`` to the SCHEMA's default, never to a
+    hand-written literal: the two handlers defaulted to 0 and 2 respectively
+    before, so the same orphan leaf could read bounced-out on one surface and
+    fine on the other."""
+    return int(effective_policy(project.automation_policy if project else None)
+               ["give_up_after_bounces"])
+
+
 async def _issue_facts(db, items: list[WorkItem]) -> tuple[
         dict[str, bool], dict[str, str | None], dict[str, list[str]], dict[str, str | None],
         dict[str, int]]:
@@ -116,13 +128,14 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
     blocked, session, _, board_status, bounces = await _issue_facts(db, open_items)
     # Threshold per product (D8): a feature belongs to exactly one project, so its
     # issues bounce against THAT product's `give_up_after_bounces`, never a global one.
-    policy_by_project = {p.id: effective_policy(p.automation_policy) for p in projects}
+    threshold_by_project = {p.id: _threshold_for(p) for p in projects}
     tiers_by_feature: dict[str, list[str]] = {}
     for w in open_items:
         feat = feat_by_id.get(w.feature_id)
-        threshold = (policy_by_project.get(feat.project_id, {}).get("give_up_after_bounces", 0)
-                    if feat else 0)
-        reason = issue_reason(bounces=bounces[w.id], give_up_after_bounces=threshold)
+        threshold = (threshold_by_project.get(feat.project_id, _threshold_for(None))
+                    if feat else _threshold_for(None))
+        reason = issue_reason(state=w.state, bounces=bounces[w.id],
+                              give_up_after_bounces=threshold)
         tiers_by_feature.setdefault(w.feature_id, []).append(
             issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id],
                       board_status[w.id], reason=reason))
@@ -281,13 +294,14 @@ async def get_leaves(
     blocked, session, blockers, board_status, bounces = await _issue_facts(db, items)
     project = (await db.execute(select(Project).where(
         Project.id == project_id))).scalar_one_or_none() if project_id else None
-    threshold = effective_policy(project.automation_policy if project else None)["give_up_after_bounces"]
+    threshold = _threshold_for(project)
     parent_ids = {w.parent_work_item_id for w in items if w.parent_work_item_id}
     parents = {p.id: _ref(p) for p in (await db.execute(select(WorkItem).where(
         WorkItem.id.in_(parent_ids)))).scalars().all()} if parent_ids else {}
     leaves = []
     for w in items:
-        reason = issue_reason(bounces=bounces[w.id], give_up_after_bounces=threshold)
+        reason = issue_reason(state=w.state, bounces=bounces[w.id],
+                              give_up_after_bounces=threshold)
         leaves.append(_leaf(
             w, issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id],
                          board_status[w.id], reason=reason),

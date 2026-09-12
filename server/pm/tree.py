@@ -95,9 +95,18 @@ def capability_own_tier(state: str | None) -> str:
     return "idle"
 
 
-def issue_reason(*, bounces: int = 0, give_up_after_bounces: int = 0) -> str | None:
+def issue_reason(*, state: str | None = None, bounces: int = 0,
+                 give_up_after_bounces: int = 0) -> str | None:
     """Why an issue needs a human beyond its tier — the ``InitiativeIn.reason``
-    shape. ``needs_spec`` when D8's rule fires (ONE rule: ``bounced_out``)."""
+    shape. ``needs_spec`` when D8's rule fires (ONE rule: ``bounced_out``).
+
+    A RESOLVED issue (``state`` closed/merged) carries no reason at all: it takes
+    ``issue_tier``'s own closed/merged short-circuit to ``live``, and a reason
+    surviving that renders "bounced N× — needs spec" on a done leaf — the tier and
+    the chip disagreeing about one row. The bounce COUNT is untouched (the history
+    happened); only the call to action goes."""
+    if state in ("closed", "merged"):
+        return None
     return "needs_spec" if bounced_out(bounces, give_up_after_bounces) else None
 
 

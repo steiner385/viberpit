@@ -1253,16 +1253,29 @@ class BacklogRunnerLoop:
             log.warning("backlog_runner.record_outcome_failed target=%s", target,
                         exc_info=True)
 
+    @staticmethod
+    def _outcome_fallback(st: dict) -> dict:
+        """The claim's own facts, for spec §13's recovery insert: when the
+        spawn-time ``record_outcome`` failed there is no row to finalise, and the
+        context inserts one from these instead of losing the bounce. The claim is
+        the only surviving account of that dispatch — ``model`` is not stored on it
+        today, so it recovers as None rather than as a guess, and ``attempts`` is
+        the count at spawn (the sweep charges its increment after this call), which
+        is exactly what ``record_outcome`` would have written."""
+        return {"product_slug": st.get("product"), "session_id": st.get("session_id"),
+                "model": st.get("model"), "attempt_no": st.get("attempts", 0)}
+
     async def _finalize_outcome(self, target: str, *, outcome: str,
                                 cause: str | None = None, pr_number: int | None = None,
                                 pr_url: str | None = None,
                                 first_pass_merge: bool | None = None,
-                                upgrade_from: tuple[str, ...] = ()) -> None:
+                                upgrade_from: tuple[str, ...] = (),
+                                fallback: dict | None = None) -> None:
         try:
             await self._ctx.finalize_outcome(
                 target, outcome=outcome, cause=cause, pr_number=pr_number,
                 pr_url=pr_url, first_pass_merge=first_pass_merge,
-                upgrade_from=upgrade_from)
+                upgrade_from=upgrade_from, fallback=fallback)
         except Exception:
             log.warning("backlog_runner.finalize_outcome_failed target=%s", target,
                         exc_info=True)
@@ -1342,7 +1355,8 @@ class BacklogRunnerLoop:
                                      kind="gave_up", target=target)
                 await self._finalize_outcome(target, outcome="needs_human",
                                              cause=reason, pr_number=info.number,
-                                             pr_url=info.url)
+                                             pr_url=info.url,
+                                             fallback=self._outcome_fallback(st))
                 await self._give_up(target, st, reason)
                 return
             if outcome == "unlinked":
@@ -1370,7 +1384,8 @@ class BacklogRunnerLoop:
             attempts = await self._pr_doctor_attempts(f"{repo}#{info.number}")
             await self._finalize_outcome(
                 target, outcome="merged", pr_number=info.number, pr_url=info.url,
-                first_pass_merge=(attempts == 0) if attempts is not None else None)
+                first_pass_merge=(attempts == 0) if attempts is not None else None,
+                fallback=self._outcome_fallback(st))
             await self._ctx.delete_target_state(target)
             return
 
@@ -1385,7 +1400,8 @@ class BacklogRunnerLoop:
                 target, outcome="pr_gave_up" if doctor_gave_up else "abandoned",
                 cause=reason,
                 pr_number=info.number if info is not None else None,
-                pr_url=info.url if info is not None else None)
+                pr_url=info.url if info is not None else None,
+                fallback=self._outcome_fallback(st))
             await self._give_up(target, st, reason)
             return
 
@@ -1437,7 +1453,8 @@ class BacklogRunnerLoop:
                     await self._finalize_outcome(
                         target, outcome="abandoned",
                         cause="session never ran a turn",
-                        upgrade_from=("no_pr",))
+                        upgrade_from=("no_pr",),
+                        fallback=self._outcome_fallback(st))
                     await self._ctx.delete_target_state(target)
                     return
                 reason = f"max attempts ({attempts}) reached with no mergeable PR"
@@ -1448,7 +1465,8 @@ class BacklogRunnerLoop:
                 # ``no_pr``, so it upgrades that row instead of finding nothing.
                 await self._finalize_outcome(target, outcome="needs_human",
                                              cause=reason,
-                                             upgrade_from=("no_pr",))
+                                             upgrade_from=("no_pr",),
+                                             fallback=self._outcome_fallback(st))
                 await self._give_up(target, st, reason)
             else:
                 # Charge the attempt and mark this session consumed so we don't
@@ -1458,7 +1476,8 @@ class BacklogRunnerLoop:
                 # (a bounce), and the next spawn opens a fresh one.
                 await self._finalize_outcome(
                     target, outcome="no_pr",
-                    cause="session ended without a mergeable PR")
+                    cause="session ended without a mergeable PR",
+                    fallback=self._outcome_fallback(st))
                 new_st = dict(st)
                 new_st["attempts"] = attempts
                 new_st["_ended"] = True

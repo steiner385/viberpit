@@ -51,6 +51,32 @@ def _elapsed_s(started_at: datetime | None, now: datetime) -> float | None:
     return (now - started).total_seconds()
 
 
+async def _project_id_for(db, product_slug: str | None) -> str | None:
+    """The project id behind a product slug, or None (no slug, or no such product).
+    Shared by both ``dispatch_outcomes`` INSERT paths so they cannot disagree."""
+    if not product_slug:
+        return None
+    return (await db.execute(select(Project.id).where(
+        Project.slug == product_slug))).scalar_one_or_none()
+
+
+async def _fingerprint_for(db, target: str) -> str | None:
+    """The D8 body fingerprint for ``owner/repo#N`` off its mirror row, or None when
+    the ref is unparseable or unmirrored — a row with no fingerprint can never be
+    counted against a body nobody has seen. THE reading for both INSERT paths
+    (spawn-time ``record_outcome`` and ``finalize_outcome``'s §13 fallback): a
+    second copy would let a recovered row be counted against a different body than
+    the one the dispatch actually ran on."""
+    parts = split_ref(target)
+    if parts is None:
+        return None
+    repo, number = parts
+    wi = (await db.execute(select(WorkItem).where(
+        WorkItem.repo == repo, WorkItem.number == number,
+        WorkItem.kind == "issue"))).scalars().first()
+    return body_fingerprint(wi.title, wi.body) if wi is not None else None
+
+
 def _account_defaults_for(account: str) -> dict:
     """This account's ledger defaults, or {} — the same read the human create path does.
 
@@ -223,19 +249,8 @@ class AutomationContext:
                     row.outcome, row.cause = "superseded", None
                     row.ended_at, row.updated_at = now, now
                     row.duration_s = _elapsed_s(row.started_at, now)
-                project_id = None
-                if product_slug:
-                    project_id = (await db.execute(select(Project.id).where(
-                        Project.slug == product_slug))).scalar_one_or_none()
-                fingerprint = None
-                parts = split_ref(target)
-                if parts is not None:
-                    repo, number = parts
-                    wi = (await db.execute(select(WorkItem).where(
-                        WorkItem.repo == repo, WorkItem.number == number,
-                        WorkItem.kind == "issue"))).scalars().first()
-                    if wi is not None:
-                        fingerprint = body_fingerprint(wi.title, wi.body)
+                project_id = await _project_id_for(db, product_slug)
+                fingerprint = await _fingerprint_for(db, target)
                 db.add(DispatchOutcome(
                     automation_id=self.automation_id, project_id=project_id,
                     target_ref=target, body_fingerprint=fingerprint, session_id=session_id,
@@ -248,7 +263,8 @@ class AutomationContext:
     async def finalize_outcome(self, target: str, *, outcome: str, cause: str | None = None,
                                pr_number: int | None = None, pr_url: str | None = None,
                                first_pass_merge: bool | None = None,
-                               upgrade_from: tuple[str, ...] = ()) -> None:
+                               upgrade_from: tuple[str, ...] = (),
+                               fallback: dict | None = None) -> None:
         """Finalise the newest ``running`` row for *target* (spec §6). An unknown
         outcome is a programming error and raises; a DB failure is logged and
         swallowed (§13).
@@ -263,7 +279,20 @@ class AutomationContext:
         are kept — the dispatch ended when its session did, not when the loop
         noticed — and the PR fields are overwritten only when given, so an upgrade
         that knows nothing new about the PR does not erase what the bounce
-        recorded. Neither a running nor an upgradable row → still a no-op."""
+        recorded.
+
+        *fallback* is spec §13's recovery for the OTHER way a row can be missing:
+        the spawn-time write failed (history is best-effort, dispatch is not), so
+        the dispatch really happened but left nothing behind. Given
+        ``{"product_slug", "session_id", "model", "attempt_no"}`` — the claim's own
+        facts — an already-FINALISED row is inserted here instead: the fingerprint
+        read off the mirror row exactly as ``record_outcome`` reads it (or the
+        bounce could never be counted against the body it bounced on),
+        ``started_at`` left None because nobody knows when it began (and so
+        ``duration_s`` with it), ``ended_at`` now. It is strictly a LAST resort —
+        a running row, then an upgradable one, then this — so it can never add a
+        second row for one dispatch. Neither a row nor a fallback → still a
+        no-op."""
         if outcome not in DISPATCH_OUTCOMES:
             raise ValueError(f"unknown dispatch outcome {outcome!r}")
         try:
@@ -286,11 +315,50 @@ class AutomationContext:
                 if upgrade and upgrade_from:
                     row = (await db.execute(
                         _newest(*upgrade_from))).scalars().first()
+                now = datetime.now(timezone.utc)
+                if row is None and fallback is not None:
+                    # §13: the spawn-time write was lost — insert the dispatch's
+                    # row here, already finalised, so the bounce is not forgotten.
+                    #
+                    # Guarded by the DISPATCH's identity, which is its session: the
+                    # sweep re-runs its "ended with no PR" branch on every tick
+                    # until the attempt cap, and each of those finalises found
+                    # nothing and was a harmless no-op before. Unguarded, they
+                    # would mint a fresh bounce per tick and walk the issue to
+                    # ``needs_spec`` on one dispatch. A claim with no recorded
+                    # session matches the same way (NULL to NULL), i.e. at most
+                    # one recovered row per target for it.
+                    sid = fallback.get("session_id")
+                    same_session = (DispatchOutcome.session_id.is_(None) if sid is None
+                                    else DispatchOutcome.session_id == sid)
+                    dispatched = (await db.execute(select(DispatchOutcome.id).where(
+                        DispatchOutcome.automation_id == self.automation_id,
+                        DispatchOutcome.target_ref == target,
+                        same_session))).first()
+                    if dispatched is not None:
+                        log.info(
+                            "automation_context.finalize_outcome_already_recorded target=%s",
+                            target)
+                        return
+                    db.add(DispatchOutcome(
+                        automation_id=self.automation_id,
+                        project_id=await _project_id_for(db, fallback.get("product_slug")),
+                        target_ref=target,
+                        body_fingerprint=await _fingerprint_for(db, target),
+                        session_id=fallback.get("session_id"),
+                        model=fallback.get("model"),
+                        attempt_no=fallback.get("attempt_no"),
+                        started_at=None, ended_at=now, updated_at=now,
+                        outcome=outcome, cause=cause,
+                        pr_number=pr_number, pr_url=pr_url,
+                        first_pass_merge=first_pass_merge))
+                    log.info("automation_context.finalize_outcome_recovered_row target=%s",
+                             target)
+                    return
                 if row is None:
                     log.info("automation_context.finalize_outcome_no_running_row target=%s",
                              target)
                     return
-                now = datetime.now(timezone.utc)
                 row.outcome, row.cause = outcome, cause
                 if pr_number is not None:
                     row.pr_number = pr_number

@@ -332,14 +332,21 @@ def test_leaves_and_map_surface_needs_spec_bounces():
                                body="needs a spec", feature_id=cap.id, triage_state="classified")
             stale = WorkItem(repo="o/r", number=2, kind="issue", state="open", title="Stale",
                              body="edited since", feature_id=cap.id, triage_state="classified")
-            db.add_all([bounced, stale])
+            # Bounced the same number of times, but DONE: a resolved issue carries no
+            # reason (R3-12) — its tier already reads 'live'.
+            done = WorkItem(repo="o/r", number=3, kind="issue", state="closed", title="Done",
+                            body="shipped anyway", feature_id=cap.id, triage_state="classified")
+            db.add_all([bounced, stale, done])
             await db.flush()
             fp = body_fingerprint("Bounced", "needs a spec")
+            done_fp = body_fingerprint("Done", "shipped anyway")
             db.add_all([
                 DispatchOutcome(target_ref="o/r#1", body_fingerprint=fp, outcome="no_pr"),
                 DispatchOutcome(target_ref="o/r#1", body_fingerprint=fp, outcome="no_pr"),
                 # A row for #2's OLD body — must not count against the current one.
                 DispatchOutcome(target_ref="o/r#2", body_fingerprint="stale-fp", outcome="no_pr"),
+                DispatchOutcome(target_ref="o/r#3", body_fingerprint=done_fp, outcome="no_pr"),
+                DispatchOutcome(target_ref="o/r#3", body_fingerprint=done_fp, outcome="no_pr"),
             ])
             await db.commit()
             return cap.id
@@ -358,6 +365,11 @@ def test_leaves_and_map_surface_needs_spec_bounces():
             assert by_ref["o/r#2"]["reason"] is None
             assert by_ref["o/r#2"]["bounces"] == 0
             assert by_ref["o/r#2"]["tier"] == "idle"
+            # The closed leaf keeps its bounce COUNT (the history is real) but the
+            # reason is scrubbed, so the chip cannot contradict the 'live' tier.
+            assert by_ref["o/r#3"]["tier"] == "live"
+            assert by_ref["o/r#3"]["reason"] is None
+            assert by_ref["o/r#3"]["bounces"] == 2
 
             r = c.get("/api/pm/map", headers=IDENTITY_HEADERS)
             assert r.status_code == 200, r.text
@@ -365,3 +377,15 @@ def test_leaves_and_map_surface_needs_spec_bounces():
             dictation = products["example-product"]["capabilities"][0]
             assert dictation["slug"] == "dictation"
             assert dictation["counts"]["needsYou"] == 1
+
+
+def test_threshold_fallback_is_the_schema_default_for_both_handlers():
+    """Both handlers read the D8 threshold through ONE helper, so an item with no
+    owning product falls back to the POLICY SCHEMA's default rather than to a
+    hand-written literal (the two defaulted to 0 and 2 before — R3-12)."""
+    from server.api.pm_tree import _threshold_for
+    from server.automations.product_policy import PRODUCT_POLICY_SCHEMA
+
+    default = next(f.default for f in PRODUCT_POLICY_SCHEMA
+                   if f.key == "give_up_after_bounces")
+    assert _threshold_for(None) == default

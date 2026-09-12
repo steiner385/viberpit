@@ -18,7 +18,8 @@ from sqlalchemy import and_, func, or_, select, tuple_
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.automations.base import validate_config
-from server.automations.product_policy import PRODUCT_POLICY_SCHEMA
+from server.automations.product_policy import (
+    PRODUCT_POLICY_SCHEMA, effective_policy, policies_by_slug)
 from server.db import get_db
 from server.db.models import (
     PROJECT_EDGE_KINDS,
@@ -43,7 +44,7 @@ from server.pm.map_changes_gh import GhWriteError
 from server.pm.map_changes_ops import MapOp, MapOpError
 from server.pm.mirror_store import deps_in_repos
 from server.pm.outcomes import list_outcomes_stmt, outcome_to_dict
-from server.pm.queue import MIN_STATUS_OPTIONS, rank
+from server.pm.queue import MIN_STATUS_OPTIONS, rank, rank_key
 from server.pm.queue_store import load_queue_rows, runner_row_maps
 from server.pm.repo_project import owning_projects_by_repo
 from server.pm.score import RICE_FIELDS, validate_rice
@@ -570,13 +571,21 @@ async def queue(
     The runner's durable rows — its claims and its give-ups — ride the SAME
     derivation the runner's own pool read uses (``runner_row_maps``), so a claimed
     issue reads as ``claimed`` here and one waiting on a human as
-    ``needs_human_cooldown``, exactly as selection sees them.
+    ``needs_human_cooldown``, exactly as selection sees them. Ranking is PER PRODUCT
+    with that product's ``give_up_after_bounces`` (D8) and the per-product rankings
+    are merged with ``rank``'s own ``rank_key`` — the runner's
+    ``_backlog_query_queue`` shape — so a bounced-out issue the runner skips as
+    ``needs_spec`` is not shown here as "up next" either, and cross-product ties
+    still break by issue age rather than by product slug.
 
-    Two knobs still differ from the runner's composition:
+    Three knobs still differ from the runner's composition:
     - ``needs_human_retry_days`` uses ``queue.NEEDS_HUMAN_RETRY_DAYS_DEFAULT`` rather
       than the backlog runner's stored config.
     - ``min_status`` and ``respect_dependencies`` come from query params here; the
-      runner reads them from its stored config.
+      runner reads them from its stored config (its per-product policy), so they
+      apply uniformly to every product in this view.
+    - SCOPE: the runner ranks only products whose ``dispatch`` is on; this view is a
+      view, not a dispatch decision, and ranks every onboarded product's board.
     """
     if min_status not in MIN_STATUS_OPTIONS:
         raise HTTPException(
@@ -588,13 +597,37 @@ async def queue(
     now = datetime.now(timezone.utc)
 
     def _rows(s):
+        # The policies are read in the SAME session as the rows: which threshold a
+        # product's issues are judged against decides what this view shows, so a
+        # policy edit must not be able to land between the two reads.
         claimed, needs_human_at = runner_row_maps(s)
-        return load_queue_rows(s, now=now, claimed_refs=claimed,
-                               needs_human_at=needs_human_at)
+        return (load_queue_rows(s, now=now, claimed_refs=claimed,
+                                needs_human_at=needs_human_at),
+                policies_by_slug(s))
 
-    rows = await db.run_sync(_rows)
-    entries, skipped = rank(
-        rows, min_status=min_status, respect_dependencies=respect_dependencies, now=now)
+    rows, policies = await db.run_sync(_rows)
+    by_product: dict[str, list] = {}
+    for r in rows:
+        by_product.setdefault(r.product, []).append(r)
+    entries: list = []
+    skipped: dict[str, int] = {}
+    for slug in sorted(by_product):
+        # A product with no row of its own (an unmirrored slug) reads as the policy
+        # SCHEMA's defaults, never as a hand-written 0.
+        policy = policies.get(slug) or effective_policy(None)
+        entries_p, skipped_p = rank(
+            by_product[slug], min_status=min_status,
+            respect_dependencies=respect_dependencies, now=now,
+            # D8: THE bounce threshold, from this product's own policy — the same
+            # reading the runner's pool uses.
+            give_up_after_bounces=int(policy["give_up_after_bounces"]))
+        entries.extend(entries_p)
+        for reason, n in skipped_p.items():
+            skipped[reason] = skipped.get(reason, 0) + n
+    # Merge with ``rank``'s OWN key rather than a hand-copied tuple: ranking per
+    # product and re-sorting on score alone would break every cross-product tie by
+    # product slug (the loop order) instead of by issue age.
+    entries.sort(key=rank_key)
 
     return {
         "entries": [{

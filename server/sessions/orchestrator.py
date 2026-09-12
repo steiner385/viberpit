@@ -9826,10 +9826,17 @@ class SessionOrchestrator:
         config = await self._pr_doctor_config()
         await self._bump_automation_active("pr-doctor")
 
-        # Terminal (merged/closed): clear per-target state and stop.
+        # Terminal (merged/closed): clear per-target state and stop. Same carry as
+        # the recovery clear (R3-11) — this wipe lands on a MERGED PR, the exact
+        # row ``_backlog_pr_doctor_attempts_for`` reads to answer whether the
+        # doctor ever acted, so dropping the counts here turns a doctor-rescued
+        # merge's ``first_pass_merge`` into UNKNOWN. The engine reads none of the
+        # ``lifetime_*`` keys, so nothing about terminal behaviour changes.
         if engine.target_terminal(info):
             target = f"{repo}#{info.number}"
-            await self._pr_doctor_ctx.set_target_state(target, {})
+            terminal_st = await self._pr_doctor_ctx.get_target_state(target)
+            await self._pr_doctor_ctx.set_target_state(
+                target, self._pr_doctor_lifetime_carry(terminal_st))
             await self._pr_doctor_ctx.emit(
                 "info", f"{target} {info.state}", kind="terminal", target=target)
             return False

@@ -298,3 +298,105 @@ async def test_finalize_breaks_a_created_at_tie_deterministically(db_env):
     by_id = {r.id: r for r in await _rows()}
     assert by_id[ids[0]].outcome == "abandoned"
     assert by_id[ids[-1]].outcome == "no_pr"     # untouched by the second call
+
+
+@pytest.mark.asyncio
+async def test_finalize_inserts_a_fallback_row_when_the_spawn_write_was_lost(db_env):
+    """Spec §13's recovery: "the outcome write fails at spawn: the spawn proceeds;
+    the sweep inserts the row at finalisation with ``attempt_no`` from the target
+    state". Without it a lost spawn-time write loses that bounce FOREVER — the
+    dispatch happened, the issue bounced, and D8 never counts it.
+
+    The inserted row is already finalised: ``started_at`` stays None (nobody knows
+    when it began, so ``duration_s`` is unknowable too) while ``ended_at`` is now.
+    The fingerprint comes off the mirror row exactly as ``record_outcome`` reads
+    it, or the row could never be counted against the body it bounced on."""
+    await _seed(db_env)
+    ctx = AutomationContext("backlog-runner")
+    await ctx.finalize_outcome(
+        "o/r#7", outcome="no_pr", cause="session ended without a mergeable PR",
+        fallback={"product_slug": "viberpit", "session_id": "s1",
+                  "model": "sonnet", "attempt_no": 1})
+
+    (row,) = await _rows()
+    assert row.outcome == "no_pr" and row.cause == "session ended without a mergeable PR"
+    assert row.body_fingerprint == body_fingerprint("T", "B")
+    assert row.project_id is not None
+    assert row.session_id == "s1" and row.model == "sonnet" and row.attempt_no == 1
+    assert row.started_at is None and row.duration_s is None
+    assert row.ended_at is not None and row.updated_at is not None
+    assert row.automation_id == "backlog-runner" and row.target_ref == "o/r#7"
+
+    # And D8 counts it: a recovered row is a real bounce against the current body.
+    pairs = [("o/r#7", body_fingerprint("T", "B"))]
+    async with db_session() as db:
+        counted = (await db.execute(bounces_stmt(pairs))).all()
+    assert rows_to_bounces(counted, pairs) == {"o/r#7": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_fallback_is_only_a_last_resort(db_env):
+    """The fallback NEVER adds a second row: a running row still wins, and so does
+    an upgradable one. One row per dispatch is the invariant every reader leans
+    on, and a fallback that raced it would double-count the bounce."""
+    await _seed(db_env)
+    ctx = AutomationContext("backlog-runner")
+    fallback = {"product_slug": "viberpit", "session_id": "s9", "model": "opus",
+                "attempt_no": 3}
+
+    await ctx.record_outcome("o/r#7", product_slug="viberpit", session_id="s1",
+                             model="sonnet", attempt_no=0)
+    await ctx.finalize_outcome("o/r#7", outcome="no_pr", cause="bounce",
+                               fallback=fallback)
+    (row,) = await _rows()
+    assert row.session_id == "s1" and row.model == "sonnet"    # the running row won
+
+    await ctx.finalize_outcome("o/r#7", outcome="needs_human", cause="gave up",
+                               upgrade_from=("no_pr",), fallback=fallback)
+    (row,) = await _rows()
+    assert row.outcome == "needs_human" and row.session_id == "s1"
+
+
+@pytest.mark.asyncio
+async def test_a_fallback_never_re_records_a_dispatch_that_already_has_a_row(db_env):
+    """One row per DISPATCH, and the dispatch is its session. The sweep re-runs its
+    "ended with no PR" branch every tick until the attempt cap, and each of those
+    finalises finds nothing to claim — before the fallback they were harmless
+    no-ops. Unguarded they would mint a fresh bounce per tick and walk the issue to
+    ``needs_spec`` on the strength of one dispatch."""
+    await _seed(db_env)
+    ctx = AutomationContext("backlog-runner")
+    fallback = {"product_slug": "viberpit", "session_id": "s1", "model": "sonnet",
+                "attempt_no": 0}
+    await ctx.finalize_outcome("o/r#7", outcome="no_pr", cause="bounce",
+                               fallback=fallback)
+    # The next sweep of the same dead claim: same session, one attempt later.
+    await ctx.finalize_outcome("o/r#7", outcome="no_pr", cause="bounce again",
+                               fallback={**fallback, "attempt_no": 1})
+    (row,) = await _rows()
+    assert row.cause == "bounce" and row.attempt_no == 0
+
+    # A LATER dispatch (a new session) whose spawn write was also lost is its own
+    # row — the guard is per dispatch, not per target.
+    await ctx.finalize_outcome("o/r#7", outcome="no_pr", cause="second dispatch",
+                               fallback={**fallback, "session_id": "s2",
+                                         "attempt_no": 1})
+    first, second = await _rows()
+    assert first.session_id == "s1" and second.session_id == "s2"
+    assert second.cause == "second dispatch"
+
+
+@pytest.mark.asyncio
+async def test_a_fallback_row_survives_an_unknown_product_and_missing_mirror(db_env):
+    """Same tolerance ``record_outcome`` has: an unknown product slug leaves
+    ``project_id`` null and an unmirrored ref leaves the fingerprint null (it can
+    never be counted against a body nobody has seen). Neither loses the row."""
+    await _seed(db_env)
+    ctx = AutomationContext("backlog-runner")
+    await ctx.finalize_outcome(
+        "o/r#999", outcome="no_pr", cause="bounce",
+        fallback={"product_slug": "nope", "session_id": None, "model": None,
+                  "attempt_no": 0})
+    (row,) = await _rows()
+    assert row.project_id is None and row.body_fingerprint is None
+    assert row.outcome == "no_pr" and row.target_ref == "o/r#999"

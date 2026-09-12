@@ -169,7 +169,10 @@ PR linkage, never on labels alone.
   over a still-`running` row (a double tap racing the loop) closes the earlier row `superseded`
   instead of `abandoned` — it never got to answer, so it is not counted as a bounce. Both writers
   are best-effort (`server/pm/outcomes.py`, spec §13): a write failure is logged and never blocks
-  a spawn or strands a claim mid-sweep.
+  a spawn or strands a claim mid-sweep — and a spawn-time write lost that way is recovered by the
+  sweep, which passes the claim's own product/session/model/attempt (`_outcome_fallback`) as
+  `finalize_outcome(fallback=…)` so the dispatch is inserted already finalised rather than
+  forgotten, at most once per dispatch.
 
   `_backlog_query_queue` threads each ON product's own `give_up_after_bounces` into `rank`
   (`server/pm/queue.py`), which checks the `needs_spec` skip right after the needs-human cooldown

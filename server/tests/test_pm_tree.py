@@ -58,6 +58,17 @@ def test_issue_reason_needs_spec_from_bounces():
     assert issue_reason() is None                                    # defaults: no bounces
 
 
+def test_issue_reason_is_none_for_a_resolved_issue():
+    """A closed/merged issue carries NO reason: `issue_tier` short-circuits it to
+    'live', so a surviving `needs_spec` would render "bounced 2x - needs spec" on a
+    done leaf — the tier and the chip disagreeing about the same row (R3-12)."""
+    assert issue_reason(state="open", bounces=2, give_up_after_bounces=2) == "needs_spec"
+    assert issue_reason(state="closed", bounces=2, give_up_after_bounces=2) is None
+    assert issue_reason(state="merged", bounces=5, give_up_after_bounces=2) is None
+    # An unknown/missing state is not a resolution — the rule still applies.
+    assert issue_reason(state=None, bounces=2, give_up_after_bounces=2) == "needs_spec"
+
+
 def test_issue_tier_honours_reason():
     assert issue_tier("open", "classified", False, None, reason="needs_spec") == "needs-you"
     # A reason never overrides a resolved issue: closed/merged wins first.

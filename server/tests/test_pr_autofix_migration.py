@@ -306,6 +306,58 @@ def test_a_recovery_the_doctor_never_acted_on_still_clears_to_nothing(tmp_path):
     asyncio.run(run())
 
 
+def test_the_terminal_clear_carries_the_lifetime_counts_too(tmp_path):
+    """R3-11: a merged/closed PR clears the same durable row the recovery clear
+    does, so it has to keep the same provenance. Without the carry, a PR the
+    doctor rescued and which then merged answers UNKNOWN to
+    ``_backlog_pr_doctor_attempts_for`` — the runner's ``first_pass_merge`` goes
+    None on precisely the PRs the metric exists to describe."""
+    async def run():
+        await _init_db(tmp_path, "terminal_carry.db")
+        await _set_mode("auto")
+        orch, sent, _pushed, restore = _build_orch(_pr())
+
+        # One real injection (the doctor acted), then the PR lands.
+        await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
+        assert len(sent) == 1
+
+        merged = _pr(state="merged", checks="failing")
+        took = await orch._pr_doctor_step("o/r", "feat/x", merged,
+                                          rec=orch._records["sess1"])
+        assert took is False
+        assert await orch._pr_doctor_ctx.get_target_state("o/r#7") == {
+            "lifetime_attempts": 1, "lifetime_mechanical": 0}
+        # And the seam the runner reads answers 1, not UNKNOWN.
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#7") == 1
+
+        restore()
+
+    asyncio.run(run())
+
+
+def test_a_terminal_pr_the_doctor_never_acted_on_still_clears_to_nothing(tmp_path):
+    """The terminal clear stays byte-for-byte what it was for an UNDOCTORED PR:
+    nothing to carry writes no keys, so the seam still answers UNKNOWN rather
+    than inventing a zero (and the table gains nothing)."""
+    async def run():
+        await _init_db(tmp_path, "terminal_nocarry.db")
+        await _set_mode("auto")
+        orch, _sent, _pushed, restore = _build_orch(_pr())
+
+        # The re-armable guard keys alone — no ``total_*`` the doctor ever counted.
+        await orch._pr_doctor_ctx.set_target_state("o/r#7", {"attempts": 2})
+        merged = _pr(state="merged", checks="failing")
+        took = await orch._pr_doctor_step("o/r", "feat/x", merged,
+                                          rec=orch._records["sess1"])
+        assert took is False
+        assert await orch._pr_doctor_ctx.get_target_state("o/r#7") == {}
+        assert await orch._backlog_pr_doctor_attempts_for("o/r#7") is None
+
+        restore()
+
+    asyncio.run(run())
+
+
 def test_no_driver_spawns_deduped(tmp_path):
     """No live driver ⇒ spawn a fresh de-duped fix session (recovery took action).
 

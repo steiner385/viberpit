@@ -229,3 +229,67 @@ def test_queue_endpoint_requires_identity():
         _seed_ready_and_blocked(c)
         assert c.get("/api/pm/queue").status_code == 401
         assert c.get("/api/pm/queue", headers=IDENTITY_HEADERS).status_code == 200
+
+
+def _seed_bounced_issue(c, *, give_up_after_bounces: int) -> None:
+    """One onboarded product with a linked board whose single Ready issue already
+    has two FINALISED non-merged dispatches against its CURRENT body."""
+    from server.db import db_session
+    from server.db.models import (
+        DispatchOutcome, GhProject, GhProjectItem, Project, ProjectRepo, WorkItem)
+    from server.pm.outcomes import body_fingerprint
+
+    async def _seed_async() -> None:
+        async with db_session() as db:
+            proj = Project(slug="bouncy", name="bouncy",
+                           automation_policy={
+                               "give_up_after_bounces": give_up_after_bounces})
+            db.add(proj)
+            await db.flush()
+            db.add(ProjectRepo(project_id=proj.id, repo="o/bouncy", is_primary=True))
+            wi = WorkItem(repo="o/bouncy", number=1, kind="issue", title="bounced",
+                          state="open", body="needs a spec",
+                          url="https://example.com/b1")
+            db.add(wi)
+            await db.flush()
+            ghp = GhProject(project_id=proj.id, gh_project_number=9, title="bouncy")
+            db.add(ghp)
+            await db.flush()
+            db.add(GhProjectItem(gh_project_id=ghp.id, work_item_id=wi.id,
+                                 status="Ready", score=3.0))
+            fp = body_fingerprint("bounced", "needs a spec")
+            db.add_all([
+                DispatchOutcome(target_ref="o/bouncy#1", body_fingerprint=fp,
+                                outcome="no_pr"),
+                DispatchOutcome(target_ref="o/bouncy#1", body_fingerprint=fp,
+                                outcome="no_pr"),
+            ])
+            await db.commit()
+
+    assert c.portal is not None
+    c.portal.call(_seed_async)
+
+
+def test_queue_skips_an_issue_bounced_out_by_its_products_threshold():
+    """D8 parity with the runner: this view ranks PER PRODUCT with that product's
+    ``give_up_after_bounces``, so an issue the runner would skip as ``needs_spec``
+    is not shown as "up next" here either (R3-12)."""
+    with _client() as c:
+        _seed_bounced_issue(c, give_up_after_bounces=2)
+
+        body = c.get("/api/pm/queue", headers=IDENTITY_HEADERS).json()
+
+        assert body["entries"] == []
+        assert body["skipped"] == {"needs_spec": 1}
+
+
+def test_queue_keeps_a_bounced_issue_for_a_product_that_never_gives_up():
+    """The threshold is the PRODUCT's, not a constant: 0 means never give up, and
+    the same two bounces then leave the issue rankable."""
+    with _client() as c:
+        _seed_bounced_issue(c, give_up_after_bounces=0)
+
+        body = c.get("/api/pm/queue", headers=IDENTITY_HEADERS).json()
+
+        assert [e["ref"] for e in body["entries"]] == ["o/bouncy#1"]
+        assert body["skipped"] == {}

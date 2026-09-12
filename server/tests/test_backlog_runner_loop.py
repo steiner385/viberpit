@@ -2763,3 +2763,58 @@ def test_a_failing_outcome_write_never_blocks_a_spawn(tmp_path):
         assert (await ctx.get_target_state("o/r#1"))["session_id"] == "sess-1"
 
     asyncio.run(run())
+
+
+def test_a_lost_spawn_time_write_is_recovered_at_finalisation(tmp_path):
+    """Spec §13's other half: "the outcome write fails at spawn: the spawn
+    proceeds; the sweep inserts the row at finalisation with ``attempt_no`` from
+    the target state". The dispatch ran and bounced — losing its row would lose
+    that bounce forever, and D8 would never reach the threshold for an issue that
+    really is unworkable.
+
+    Exactly ONE row after the sweep: the fallback is a last resort, not a second
+    writer."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_recover.db'}"
+
+    async def run():
+        from types import SimpleNamespace
+
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        loop, rec, ctx = build_loop(
+            candidates=[batch("o/r#1")], pr_status={},
+            spawn_result=SimpleNamespace(id="sess-1", branch="b1"),
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000, max_attempts=3)})
+
+        async def boom(*_a, **_kw):
+            raise RuntimeError("spawn-time outcome write blew up (injected)")
+
+        ctx.record_outcome = boom            # type: ignore[method-assign]
+
+        await loop.tick()
+        assert len(rec.spawns) == 1
+        assert await _outcomes("o/r#1") == []      # the dispatch left no history
+
+        # The session ends with no PR: the sweep's bounce branch finalises it.
+        await _mark_session_ended(ctx, "o/r#1")
+        await loop.tick()
+
+        rows = await _outcomes("o/r#1")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.outcome == "no_pr" and row.cause
+        # The claim's own facts, not invented ones.
+        assert row.session_id == "sess-1" and row.attempt_no == 0
+        assert row.project_id is not None
+        # And it counts: the fingerprint is the issue's CURRENT body.
+        assert row.body_fingerprint is not None
+        # Nobody knows when this dispatch began — only that it is over.
+        assert row.started_at is None and row.duration_s is None
+        assert row.ended_at is not None
+
+        # A second sweep of the same ended session must not add another row.
+        await loop.tick()
+        assert len(await _outcomes("o/r#1")) == 1
+
+    asyncio.run(run())

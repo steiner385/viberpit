@@ -258,7 +258,14 @@ reconcile creates the table on both dialects with no hand-written migration defa
 
 The two writers are `AutomationContext.record_outcome` / `.finalize_outcome`
 (`server/automations/context.py`), both best-effort (spec §13): a DB failure is logged and
-swallowed, never blocking a spawn or a sweep. `record_outcome` inserts the `running` row right after
+swallowed, never blocking a spawn or a sweep — and a spawn-time write that was lost that way is
+RECOVERED at finalisation: with no `running` row and nothing to upgrade, `finalize_outcome`'s
+`fallback` (the claim's own `product_slug`/`session_id`/`model`/`attempt_no`, passed by the loop's
+`_outcome_fallback`) inserts the already-finalised row itself, fingerprinted off the mirror row and
+with `started_at` left `None` because nobody knows when that dispatch began. It inserts at most one
+row per dispatch — a target that already has a row for the same `session_id` is left alone, so the
+sweep re-running its "ended with no PR" branch on later ticks cannot mint a bounce each time.
+`record_outcome` inserts the `running` row right after
 a spawn succeeds — from the loop's own `_refill` (`server/automations/backlog_runner.py`, guarded by
 its `_record_outcome` wrapper) and from the two manual taps,
 `SessionOrchestrator.backlog_runner_implement_core` (the propose tap) and `.backlog_runner_dispatch`
@@ -282,8 +289,10 @@ the moment the merge is swept, and `None` otherwise — never guessed. The seam 
 `SessionOrchestrator._backlog_pr_doctor_attempts_for`: an unknown target (no PR Doctor state row at
 all) answers `None`; a tracked one answers `total_attempts + total_mechanical` (PR Doctor's
 monotonic, re-arm-immune counters) plus `lifetime_attempts + lifetime_mechanical` — the same counts
-carried forward by `SessionOrchestrator._pr_doctor_lifetime_carry` across PR Doctor's own CI-recovery
-clear (`_on_pr_change`, triggered when checks go back to passing). That clear still resets
+carried forward by `SessionOrchestrator._pr_doctor_lifetime_carry` across BOTH of PR Doctor's state
+clears: the CI-recovery clear (`_on_pr_change`, triggered when checks go back to passing) and the
+terminal clear (`_pr_doctor_step`, when the PR merges or closes — the very moment the runner's sweep
+asks the question). Both clears still reset
 `total_attempts`/`total_mechanical` to zero, because the give-up ceiling in
 `server/automations/pr_doctor_engine.py` reads exactly those keys and a recovered PR earns a fresh
 budget — but without the `lifetime_*` carry (which the engine never reads, and which `apply_rearm`/
