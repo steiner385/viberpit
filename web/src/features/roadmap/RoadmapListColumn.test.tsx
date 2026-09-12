@@ -5,7 +5,7 @@ import type { TriageProposal } from '@/api/triage'
 import type { RoadmapMap } from '@/api/roadmap'
 import { MAP, cap } from './__fixtures__/map'
 import { RoadmapListColumn } from './RoadmapListColumn'
-import { capabilityKey, productKey } from './treeRows'
+import { capabilityKey, initiativeKey, productKey } from './treeRows'
 import { ViewportProvider } from '@/shell/useViewport'
 
 // The Inbox scope's rows call the real triage mutations; the column's job here
@@ -121,6 +121,15 @@ describe('RoadmapListColumn', () => {
     expect(screen.getByRole('status', { name: 'Loading roadmap' })).toBeInTheDocument()
   })
 
+  it('the Initiatives scope lists phases with their program and hides program rows', () => {
+    mount({ scope: 'initiatives' })
+    // A program has no stage a human acts on directly — its phases do — so it
+    // is not a row here at all.
+    expect(screen.queryByTestId(`row-${initiativeKey('audit')}`)).toBeNull()
+    const phase = screen.getByTestId(`row-${initiativeKey('audit-01')}`)
+    expect(within(phase).getByText('UI audit')).toBeInTheDocument()
+  })
+
   it('badges a capability row with its open map-changes PR number', () => {
     const map: RoadmapMap = {
       ...MAP,
@@ -216,5 +225,13 @@ describe('RoadmapListColumn — tree keyboard', () => {
     expect(onOpen).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'capability', key: capabilityKey('kindash', 'tasks') }),
     )
+  })
+
+  it('the Map scope folds a program with ArrowLeft', () => {
+    mount()
+    const program = screen.getByTestId(`row-${initiativeKey('audit')}`)
+    expect(program).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.keyDown(program, { key: 'ArrowLeft' })
+    expect(screen.queryByTestId(`row-${initiativeKey('audit-01')}`)).toBeNull()
   })
 })

@@ -32,7 +32,7 @@ import {
   CAPABILITY, EPIC, INITIATIVE, ROADMAP,
   initiativeStatusLabel, nextActionLabel, nextStage, prevStage, reasonLabel, stageLabel,
 } from '@/features/products/vocab'
-import { capabilityPath, productPath, roadmapPath } from './roadmapNavState'
+import { capabilityPath, initiativePath, productPath, roadmapPath } from './roadmapNavState'
 import { findProduct } from './lookup'
 import { TIER_TONE } from './roadmapTier'
 import { useTabParam } from './useTabParam'
@@ -40,7 +40,13 @@ import { StatTiles } from './detail/StatTiles'
 import { LeafList } from './detail/LeafList'
 import { EditInitiativeDialog } from './detail/EditInitiativeDialog'
 
-const TABS = ['track', 'epic', 'sessions', 'capabilities'] as const
+// `epic` and `phases` are mutually exclusive on any one initiative — a
+// program's roll-up epic has no pointer of its own to show a per-child list
+// for (the leaves endpoint rolls a program up to leaf issues, which would
+// disagree with `epic.total`), so a program gets `phases` instead. Both stay
+// in the allowed set so `?tab=` validates either; the tab STRIP only ever
+// offers the one that matches `initiative.hasChildren` (below).
+const TABS = ['track', 'epic', 'phases', 'sessions', 'capabilities'] as const
 type Tab = (typeof TABS)[number]
 
 const panelId = (id: string) => `initiative-panel-${id}`
@@ -282,6 +288,25 @@ function EpicTab({ initiative, product }: { initiative: Initiative; product: Pro
   )
 }
 
+// A program's phases (replaces the Epic tab — see the `TABS` comment above).
+function PhasesTab({ initiative }: { initiative: Initiative }) {
+  if (initiative.children.length === 0) {
+    return <EmptyState title="No phases yet" />
+  }
+  return (
+    <ul className="flex flex-col gap-1" aria-label="Phases">
+      {initiative.children.map((c) => (
+        <li key={c.slug} className="flex items-center gap-2 rounded-md border border-edge bg-surface p-2 text-sm">
+          <Link to={initiativePath(c.slug)} className="text-ink hover:underline">
+            {c.title ?? c.slug}
+          </Link>
+          <Badge tone="neutral">{stageLabel(c.stage)}</Badge>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 function SessionsTab({ initiative }: { initiative: Initiative }) {
   const rows = initiative.buildSessions ?? []
   if (rows.length === 0) return <EmptyState title="No sessions yet" description="Sessions appear here as the build stage runs them." />
@@ -390,6 +415,15 @@ export function InitiativePage() {
   const productNode = productSlug ? findProduct(map, productSlug) : null
   const productName = productSlug ? (productNode?.name ?? productSlug) : null
 
+  // A phase names the program it belongs to (`parentInitiativeSlug`); the map
+  // is the only place a display TITLE lives for that slug — same reasoning as
+  // `productName` above, read from the same query rather than a second fetch.
+  const programSlug = initiative?.parentInitiativeSlug ?? null
+  const programNode = programSlug
+    ? map?.products.flatMap((p) => p.initiatives).find((i) => i.slug === programSlug)
+    : undefined
+  const programTitle = programSlug ? (programNode?.title ?? programSlug) : null
+
   const crumbs: BreadcrumbItem[] = [
     { label: ROADMAP.label, to: roadmapPath('initiatives') },
     ...(productSlug && productName ? [{ label: productName, to: productPath(productSlug) }] : []),
@@ -414,6 +448,17 @@ export function InitiativePage() {
                 {reason && <Badge tone="warning">{reason}</Badge>}
                 {initiative.repo && <span className="text-xs text-ink-muted">{initiative.repo}</span>}
               </div>
+            )}
+            {/* A phase names the program it belongs to — same "Part of" idiom a
+                sub-capability's own page uses for its parent capability
+                (`CapabilityDetail`'s Overview panel). */}
+            {initiative && programSlug && (
+              <p className="text-xs text-ink-muted">
+                Part of{' '}
+                <Link className="text-accent hover:underline" to={initiativePath(programSlug)}>
+                  {programTitle}
+                </Link>
+              </p>
             )}
           </div>
         }
@@ -459,15 +504,20 @@ export function InitiativePage() {
             )}
             {/* Disabled rather than absent at the end of the lifecycle: the gate is
                 the page's one action, and a header that loses its only button reads
-                as a page that failed to load. */}
-            <Button
-              size="sm"
-              disabled={!next || blocked || advance.isPending}
-              onClick={() => setConfirming(true)}
-              title={blocked ? 'Clear the block first' : next ? `Move the gate to ${stageLabel(next)}` : 'Already at the final stage'}
-            >
-              {next ? `Advance → ${stageLabel(next)}` : 'Complete'}
-            </Button>
+                as a page that failed to load. A PROGRAM is the one exception — it
+                has no gate of its own (its phases each carry theirs), and the
+                server 409s an advance on it, so the control is absent rather than
+                a disabled control that always fails. */}
+            {!initiative.hasChildren && (
+              <Button
+                size="sm"
+                disabled={!next || blocked || advance.isPending}
+                onClick={() => setConfirming(true)}
+                title={blocked ? 'Clear the block first' : next ? `Move the gate to ${stageLabel(next)}` : 'Already at the final stage'}
+              >
+                {next ? `Advance → ${stageLabel(next)}` : 'Complete'}
+              </Button>
+            )}
           </div>
         )}
       />
@@ -499,14 +549,19 @@ export function InitiativePage() {
               panelId={panelId}
               items={[
                 { id: 'track', label: 'Track' },
-                { id: 'epic', label: EPIC.singular, count: initiative.epic?.total },
+                // A program's Epic tab is REPLACED by Phases, never shown
+                // alongside it — see the `TABS` comment above.
+                initiative.hasChildren
+                  ? { id: 'phases', label: 'Phases', count: initiative.children.length }
+                  : { id: 'epic', label: EPIC.singular, count: initiative.epic?.total },
                 { id: 'sessions', label: 'Sessions', count: initiative.buildSessions?.length },
                 { id: 'capabilities', label: CAPABILITY.plural, count: initiative.capabilities.length },
               ]}
             />
             <div role="tabpanel" id={panelId(tab)} aria-labelledby={`tab-${tab}`} className="flex flex-col gap-4">
               {tab === 'track' && <TrackTab initiative={initiative} />}
-              {tab === 'epic' && <EpicTab initiative={initiative} product={productNode} />}
+              {tab === 'epic' && !initiative.hasChildren && <EpicTab initiative={initiative} product={productNode} />}
+              {tab === 'phases' && initiative.hasChildren && <PhasesTab initiative={initiative} />}
               {tab === 'sessions' && <SessionsTab initiative={initiative} />}
               {tab === 'capabilities' && (
                 <CapabilitiesTab initiative={initiative} onEdit={map ? () => setEditing(true) : null} />

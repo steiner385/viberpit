@@ -155,9 +155,10 @@ describe('ProductDetail', () => {
     // The tile and the badge beside it must not be two different numbers: both
     // are the moving-or-stuck initiatives (`counts.inFlight` also rolls up issue
     // tiers, which belong to the capability level). `views`, `orphan`, and the
-    // `audit` program with its `audit-01` phase (both default in-flight).
-    expect(tile('In flight')).toHaveTextContent('4')
-    expect(screen.getByRole('tab', { name: 'In flight (4)' })).toBeInTheDocument()
+    // `audit` program's `audit-01` phase — the `audit` program itself is
+    // excluded (leaf-only, `inFlight.ts`), so it is 3, not 4.
+    expect(tile('In flight')).toHaveTextContent('3')
+    expect(screen.getByRole('tab', { name: 'In flight (3)' })).toBeInTheDocument()
   })
 
   it('counts Needs you exactly as the portfolio counts it for this product', () => {

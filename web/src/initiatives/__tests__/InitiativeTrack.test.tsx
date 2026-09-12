@@ -55,6 +55,18 @@ describe('InitiativeTrack', () => {
     expect(link).toHaveAttribute('href', 'https://github.com/o/r/issues/997')
   })
 
+  it('shows the roll-up count with no link when the epic has no pointer of its own', () => {
+    // A program's roll-up epic can report real sub-issue counts with no
+    // pointer of its own (`ref`/`url: null`) — same guard `InitiativePage`'s
+    // `EpicTab` uses: no anchor without a target to link to.
+    const epic: InitiativeEpic = {
+      ref: null, url: null, total: 4, done: 1, blocked: 0, needsHuman: 0, children: [],
+    }
+    const { container } = render(<InitiativeTrack stage="build" status="active" epic={epic} />)
+    expect(container.querySelector('.node.active .node-label')?.textContent).toBe('Build 1/4')
+    expect(container.querySelector('a')).toBeNull()
+  })
+
   it('exposes the epic deep link to keyboard and screen-reader users', () => {
     // Regression coverage for review round 1 IMPORTANT 2: the link must not be
     // both aria-hidden *and* pulled out of tab order (that combination made it

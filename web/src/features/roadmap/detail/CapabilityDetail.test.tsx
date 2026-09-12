@@ -8,6 +8,7 @@ import type { Leaf } from '@/api/roadmap'
 import { ApiRequestError } from '@/api/client'
 import { MAP, cap, ini, product } from '../__fixtures__/map'
 import { findCapability } from '../lookup'
+import { initiativeKey } from '../treeRows'
 import { CapabilityDetail } from './CapabilityDetail'
 import { ViewportProvider } from '@/shell/useViewport'
 
@@ -224,6 +225,21 @@ describe('CapabilityDetail', () => {
     // Shipped is history; the other capability's initiative is not ours at all.
     expect(screen.queryByText('Already shipped')).toBeNull()
     expect(screen.queryByText('Somewhere else')).toBeNull()
+  })
+
+  it('In flight: a program appears above its in-flight phase, but only the phase counts', () => {
+    // `MAP`'s `tasks` capability carries the `audit` program and its
+    // `audit-01` phase (both `primaryCapability: 'tasks'`) — the fixture this
+    // task's nesting exercises (`__fixtures__/map.ts`).
+    const capability = findCapability(kindash, 'tasks')!
+    const { container } = mount({ product: kindash, capability }, '/roadmap/kindash/capabilities/tasks?tab=in-flight')
+    const rowIds = [...container.querySelectorAll('[data-testid^="row-initiative:"]')]
+      .map((el) => el.getAttribute('data-testid'))
+    expect(rowIds).toEqual([`row-${initiativeKey('audit')}`, `row-${initiativeKey('audit-01')}`])
+    // Leaf-only (`inFlight.ts`): the program is shown for context but never
+    // counted — only its phase is in flight.
+    expect(tile('In flight')).toHaveTextContent('1')
+    expect(screen.getByRole('tab', { name: 'In flight (1)' })).toBeInTheDocument()
   })
 
   it('Issues: open work first, with its blockers, score and live session', () => {

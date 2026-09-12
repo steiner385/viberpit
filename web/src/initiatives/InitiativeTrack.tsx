@@ -87,16 +87,17 @@ export function InitiativeTrack(
             {i > 0 && segment(nodes[i - 1]!, `seg-${i}`)}
             <span className={`node ${n.status}`} title={title} aria-hidden={isBuild ? undefined : 'true'}>
               <span className="c" aria-hidden="true">{GLYPH[n.status] ?? i + 1}</span>
-              {isBuild
+              {isBuild && epic.url
                 ? (
-                  // `epic.url` is nullable for a program's roll-up epic with no
-                  // pointer of its own; this task only keeps the type honest —
-                  // giving that case its own presentation is Task 13's.
-                  <a className="node-label" href={epic.url ?? undefined} target="_blank" rel="noreferrer"
+                  <a className="node-label" href={epic.url} target="_blank" rel="noreferrer"
                      aria-label={`${label} — view epic on GitHub`}>
                     {label}
                   </a>
                 )
+                // `epic.url` is nullable for a program's roll-up epic with no
+                // pointer of its own (real counts, no GitHub issue to link) —
+                // same guard `InitiativePage`'s `EpicTab` uses: no anchor
+                // without a target, the label still shows the roll-up count.
                 : <span className="node-label">{label}</span>}
             </span>
           </Fragment>

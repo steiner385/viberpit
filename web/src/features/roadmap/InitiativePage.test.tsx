@@ -34,6 +34,10 @@ const h = vi.hoisted(() => {
     projectSlug: 'kindash',
     primaryCapability: { id: 'f1', slug: 'task-views', title: 'Task views' },
     capabilities: [{ id: 'f1', slug: 'task-views', title: 'Task views', isPrimary: true }],
+    // A plain (non-program, non-phase) initiative: no parent, no children.
+    parentInitiativeSlug: null,
+    hasChildren: false,
+    children: [] as { slug: string; title: string | null; stage: string | null; status: string | null }[],
     buildSessions: [{ id: 's1', status: 'complete', branch: 'viberpit/views' }],
     nextAction: { type: 'handoff_to_build' },
   }
@@ -55,6 +59,15 @@ const h = vi.hoisted(() => {
         slug: 'views', title: 'Use-case-first task views', stage: 'build', status: 'active',
         projectSlug: 'kindash', primaryCapability: 'task-views', capabilities: ['task-views'],
         tier: 'needs-you', reason: 'advance', epic: null,
+        parentInitiative: null, hasChildren: false,
+      }, {
+        // The program a "Part of" test points `views` at — kept off `views`
+        // itself (`parentInitiativeSlug` stays null there) so only the one
+        // test that mutates it exercises the link.
+        slug: 'audit', title: 'UI audit', stage: 'plan', status: 'active',
+        projectSlug: 'kindash', primaryCapability: null, capabilities: [],
+        tier: 'in-flight', reason: null, epic: null,
+        parentInitiative: null, hasChildren: true,
       }],
     }],
   }
@@ -173,6 +186,33 @@ describe('InitiativePage', () => {
     mount('/initiatives/views?tab=epic')
     expect(screen.getByRole('link', { name: '#1 Child one' })).toBeInTheDocument()
     expect(screen.getByRole('list', { name: 'Blocked by' })).toBeInTheDocument()
+  })
+
+  it('a program shows a Phases tab listing its children, no Epic tab, and no Advance control', () => {
+    h.state.data = {
+      ...h.initiative,
+      hasChildren: true,
+      children: [{ slug: 'audit-01', title: '01', stage: 'plan', status: 'active' }],
+    }
+    mount()
+    // The Epic tab is REPLACED, not joined — a program's roll-up epic has no
+    // pointer of its own for a per-child list to disagree with `epic.total`.
+    expect(screen.queryByRole('tab', { name: /^Epic/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /^Phases/ })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: /^Phases/ }))
+    expect(screen.getByText('01')).toBeInTheDocument()
+    // The server 409s an advance on a program (each phase carries its own
+    // gate), so the control is absent, not merely disabled.
+    expect(screen.queryByRole('button', { name: /Advance|Complete/ })).not.toBeInTheDocument()
+  })
+
+  it('a phase names the program it is part of, in the header', () => {
+    h.state.data = { ...h.initiative, parentInitiativeSlug: 'audit' }
+    mount()
+    // The map is the only place a display TITLE lives for the program's slug
+    // (same reasoning `productName` already uses for the product crumb).
+    expect(screen.getByRole('link', { name: 'UI audit' })).toHaveAttribute('href', '/initiatives/audit')
+    expect(screen.getByText(/^Part of/)).toBeInTheDocument()
   })
 
   it('steps back only after confirming', () => {
