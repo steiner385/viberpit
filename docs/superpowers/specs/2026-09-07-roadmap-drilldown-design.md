@@ -233,9 +233,9 @@ add-repo form; the onboarding-state chip uses the wizard's friendly labels.
 | Create initiative; set primary and touched capabilities | `a` on a capability row; chips on the initiative header; drag ◆ row to another capability | ccswitch DB, immediate |
 | Reassign an issue's capability | Click the capability chip on the row; type-ahead over the tree | Overlay PATCH, immediate |
 | Edit scores | Click score chips; four labelled fields with computed score | Overlay PATCH; Score reaches the board via the reconciler |
-| Add / remove issue dependency | `+ dep` on the row; pick a target from the tree or by number | GitHub native blocked-by through the reconciler journal (add exists; remove is new) |
+| Remove issue dependency | `Remove` beside each blocker on the leaf row | GitHub native `removeBlockedBy` through the reconciler journal (`DELETE /api/pm/work-items/{id}/deps?blocker=`); add stays a GitHub-side edit for now |
 | Product dependency | Chip editor on the product's Dependencies tab | ccswitch DB (endpoints exist) |
-| Advance / step back a stage | Track button with confirm | ccswitch DB; back-synced to the board Stage field |
+| Advance / step back / unblock | Header buttons with confirm; Advance and Step back refuse a blocked row, Unblock returns it to awaiting-human without moving the gate | ccswitch DB (`/advance`, `/step-back`, `/unblock`); back-synced to the board Stage field |
 
 All writes are optimistic with rollback and toast, as the triage hooks do today.
 Every mutation records an audit row with the acting identity.
