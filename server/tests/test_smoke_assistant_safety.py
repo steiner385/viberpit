@@ -25,7 +25,7 @@ async def test_requires_disposable_environment_acknowledgement(monkeypatch):
     client.assert_not_called()
 
 
-UNSAFE = [
+UNSAFE: list[object] = [
     {}, [], None, {"maxArchivedSessions": 100}, {"maxArchivedSessions": 0},
     {"maxArchivedSessions": False}, {"maxArchivedSessions": "null"},
     {"maxArchivedSessions": []}, "invalid-json", "http-error", "read-error",
