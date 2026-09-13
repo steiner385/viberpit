@@ -184,9 +184,7 @@ def _sessions() -> list[dict[str, Any]]:
         {"id": S1, "name": "Refactor billing auth", "status": "waiting_input",
          "repo": "acme/billing", "host": "dobby", "accountName": "prod-1", "model": "sonnet",
          "summary": "Waiting on a permission to run a database migration",
-         "prs": [{"number": 42, "state": "open"}],
-         "pendingPermission": {"id": "perm-1", "tool": "Bash",
-                               "input": {"command": "alembic upgrade head"}}},
+         "prs": [{"number": 42, "state": "open"}]},
         {"id": S2, "name": "Fix flaky checkout test", "status": "in_progress",
          "repo": "acme/checkout", "host": "rocky", "accountName": "prod-2", "model": "sonnet",
          "summary": "Running the test suite", "prs": [{"number": 10, "state": "open"}]},
@@ -202,9 +200,7 @@ def _sessions() -> list[dict[str, Any]]:
          "summary": "Account hit its weekly limit", "prs": []},
         {"id": S6, "name": "Investigate checkout timeout", "status": "waiting_input",
          "repo": "acme/checkout", "host": "rocky", "accountName": "prod-2", "model": "sonnet",
-         "summary": "Asking which branch to target", "prs": [],
-         "pendingQuestion": {"id": "q-1", "text": "Which branch should I target?",
-                             "options": ["main", "release"]}},
+         "summary": "Asking which branch to target", "prs": []},
         {"id": S7, "name": "Old spike branch cleanup", "status": "done",
          "repo": "acme/checkout", "host": "rocky", "accountName": "prod-2", "model": "haiku",
          "summary": "Finished, nothing pending", "prs": []},
@@ -259,11 +255,38 @@ def _pr_detail(repo: str, number: int) -> dict[str, Any] | None:
             "reviews": [{"author": "alice", "state": "APPROVED"}]}
 
 
-def _pipeline_health(repo: str, window: str) -> dict[str, Any]:
-    return {"repo": repo, "window": window, "checks": [
-        {"name": "lint-and-test", "p95DurationS": 420, "flakeRatePct": 3.5},
-        {"name": "frontend", "p95DurationS": 180, "flakeRatePct": 0.5},
-    ]}
+def _pipeline_health(repo: str, window: str, now: datetime) -> dict[str, Any]:
+    from server.pipeline.history import (
+        CheckDurationStat, CheckFlakeStat, CheckRegressionStat, RunnerWaitStat,
+    )
+
+    # Same supported windows/default as SessionOrchestrator.check_insights. Each
+    # sample represents history present in every supported window, not real data.
+    window = window if window in {"24h", "7d", "14d", "30d"} else "7d"
+    slowest: list[CheckDurationStat] = []
+    flakiest: list[CheckFlakeStat] = []
+    regressions: list[CheckRegressionStat] = []
+    runner_wait: list[RunnerWaitStat] = []
+    if repo == "acme/billing":
+        slowest = [CheckDurationStat("lint-and-test", "pull_request", 300, 420, 1.4, 40),
+                   CheckDurationStat("build-image", "pull_request", 195, 230, 230 / 195, 40)]
+        flakiest = [CheckFlakeStat("lint-and-test", "pull_request", 10, 4, 40, 44),
+                    CheckFlakeStat("build-image", "pull_request", 2.5, 1, 40, 41)]
+        since = (now - timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        regressions = [CheckRegressionStat("lint-and-test", "pull_request", 110, 300, 300 / 110, since),
+                       CheckRegressionStat("build-image", "pull_request", 120, 195, 195 / 120, since)]
+        runner_wait = [RunnerWaitStat("pull_request", 12, 25, 10, 40)]
+    elif repo == "acme/checkout":
+        slowest = [CheckDurationStat("lint-and-test", "pull_request", 70, 95, 95 / 70, 40)]
+        flakiest = [CheckFlakeStat("lint-and-test", "pull_request", 5, 2, 40, 42)]
+        runner_wait = [RunnerWaitStat("pull_request", 5, 10, 5, 40)]
+    # _check_insights_sync owns this envelope; the contract test runs its actual
+    # serializer against the same typed row shapes. No p95 is available there.
+    return {"repo": repo, "window": window,
+            "slowest": [row.to_dict() for row in slowest],
+            "flakiest": [row.to_dict() for row in flakiest],
+            "regressions": [row.to_dict() for row in regressions],
+            "runner_wait_health": [row.to_dict() for row in runner_wait]}
 
 
 def _automations() -> list[dict[str, Any]]:
@@ -529,13 +552,16 @@ def _branches(repo: str) -> dict[str, Any]:
 
 
 def _stage_models() -> dict[str, Any]:
-    return {
-        "acme/billing": {"stages": ["lint", "test", "build"], "p95DurationS": 420,
-                         "regressedChecks": [{"name": "lint-and-test", "deltaS": 190},
-                                              {"name": "build-image", "deltaS": 75}]},
-        "acme/checkout": {"stages": ["lint", "test"], "p95DurationS": 95,
-                          "regressedChecks": []},
-    }
+    from server.pipeline.track import StageModel, StageNode
+
+    # The actual /pipeline/repos contract is structural. Durations and regressions
+    # belong to /pipeline/insights/checks, even when an old eval rubric says otherwise.
+    return {repo: StageModel(repo, tuple(
+        StageNode(name, name, "ci", order) for order, name in enumerate(checks)
+    )).to_dict() for repo, checks in (
+        ("acme/billing", ("lint-and-test", "build-image")),
+        ("acme/checkout", ("lint-and-test",)),
+    )}
 
 
 def _export_md(session_id: str) -> str:
@@ -556,6 +582,14 @@ class EvalFixture:
         if now.tzinfo is None or now.utcoffset() != timedelta(0):
             raise ValueError("fixture clock must be aware UTC")
         self.now = now
+        # ready_merge's inline production serializer has four explicit outcomes.
+        # Keep offline outcomes configurable for contract tests, without invoking gh.
+        self.ready_merge_outcomes = {
+            (pr["repo"], pr["number"]): {
+                "markedReady": True, "autoMergeArmed": True,
+                "alreadyArmed": False, "cleanReadyToMerge": False,
+            } for pr in _prs()
+        }
         rows = _sessions()
         for original, sid, name in ((S7, "99999999-9999-4999-8999-999999999999", "Finished docs cleanup"),
                                     (S5, "10101010-1010-4010-8010-101010101010", "Stalled checkout migration")):
@@ -758,8 +792,7 @@ class EvalFixture:
                         session_row.update(archivedAt=self.now.isoformat(), status="archived")
                     elif action == "unarchive":
                         session_row.update(archivedAt=None, status="idle")
-                        for pending in ("pendingPermission", "pendingQuestion", "pendingModel"):
-                            session_row.pop(pending, None)
+                        session_row.pop("pendingModel", None)
                     else:
                         session_row.update(status="in_progress", accountName="prod-2")
             return httpx.Response(200, json={"succeeded": succeeded, "failed": failed})
@@ -809,7 +842,7 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
             return httpx.Response(200, json=detail)
         if path == "/api/pipeline/insights/checks":
             return httpx.Response(
-                200, json=_pipeline_health(params.get("repo", ""), params.get("window", "7d")))
+                200, json=_pipeline_health(params.get("repo", ""), params.get("window", "7d"), fixture.now))
         if path == "/api/automations":
             return httpx.Response(200, json=fixture.automations())
         if path.startswith("/api/automations/") and path.endswith("/events"):
@@ -906,8 +939,35 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
             if row is None:
                 return httpx.Response(
                     404, json={"error": {"code": "SESSION_NOT_FOUND", "message": "no such session"}})
-            return httpx.Response(200, json=row)
+            from server.api.sessions import _record_to_dict
+            from server.sessions.types import SessionRecord
+
+            # The detail endpoint supplies neither cached summary nor PRs. Pending
+            # permission/question IDs are not fields of its canonical serializer.
+            record = SessionRecord.from_dict({**row, "account": row["accountName"],
+                                              "cols": 80, "rows": 24, "cwd": ""})
+            return httpx.Response(200, json=_record_to_dict(
+                record, repo=record.repo, heartbeats={},
+                heartbeats_now=fixture.now.replace(tzinfo=None)))
         return httpx.Response(404, json={"error": {"code": "NOT_FOUND", "message": path}})
+
+    if method == "POST" and path == "/api/pipeline/pr/ready-merge":
+        from pydantic import ValidationError
+        from server.api.pipeline import ReadyMergeBody
+
+        try:
+            body = ReadyMergeBody.model_validate_json(request.content)
+        except ValidationError:
+            return httpx.Response(422, json={"detail": "invalid ready-merge request"})
+        outcome = fixture.ready_merge_outcomes.get((body.repo, body.number), {
+            "markedReady": False, "autoMergeArmed": False,
+            "alreadyArmed": False, "cleanReadyToMerge": False,
+        })
+        if outcome["autoMergeArmed"]:
+            fixture.ready_merge_outcomes[(body.repo, body.number)] = {
+                **outcome, "markedReady": False, "alreadyArmed": True,
+            }
+        return httpx.Response(200, json=outcome)
 
     if method == "POST" and path == "/api/sessions":
         return httpx.Response(201, json={"id": "new-eval-session-id", "name": None})

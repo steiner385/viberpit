@@ -69,7 +69,7 @@ def test_batches_are_stateful_and_partial_failures_are_visible():
         result = c.post("/api/sessions/batch/unarchive", json={"ids": [done[0], ev.S1, "missing"]}).json()
         assert result["succeeded"] == [done[0]]
         assert len(result["failed"]) == 2
-        assert c.get("/api/sessions/" + done[0]).json()["archivedAt"] is None
+        assert done[0] in {r["id"] for r in c.get("/api/sessions").json()}
         assert c.post("/api/sessions/batch/rotate", json={"ids": limited}).json()["succeeded"] == limited
         assert c.post("/api/sessions/batch/unarchive", json={"ids": [done[1]]}).json() == {"succeeded": [done[1]], "failed": []}
         assert c.post("/api/sessions/batch/unarchive", json={"ids": []}).status_code == 422
@@ -275,3 +275,124 @@ def test_event_filters_limits_empty_and_unknown():
         assert c.get("/api/automations/backlog-runner/events?kind=absent").json() == []
         assert c.get("/api/automations/pr-doctor/events").json() == []
         assert c.get("/api/automations/unknown/events").status_code == 404
+
+
+def test_stage_models_use_only_canonical_structure():
+    from server.pipeline.track import StageModel
+
+    with client() as c:
+        models = c.get('/api/pipeline/repos').json()
+    assert set(models) == {'acme/billing', 'acme/checkout'}
+    for repo, model in models.items():
+        assert model == StageModel.from_dict(model).to_dict()
+        assert model['repo'] == repo
+        assert model['nodes']
+        assert all(set(node) == {'id', 'label', 'kind', 'order', 'source'} for node in model['nodes'])
+    assert 'p95' not in json.dumps(models)
+    assert 'regressedChecks' not in json.dumps(models)
+
+
+@pytest.mark.parametrize('repo', ['acme/billing', 'acme/checkout', 'acme/web', 'unknown/repo', ''])
+@pytest.mark.parametrize('window', ['24h', '7d', '14d', '30d'])
+def test_pipeline_health_matches_canonical_serializers(repo, window):
+    from types import SimpleNamespace
+    from server.pipeline.history import CheckDurationStat, CheckFlakeStat, CheckRegressionStat, RunnerWaitStat
+    from server.sessions.orchestrator import SessionOrchestrator
+
+    with client() as c:
+        actual = c.get('/api/pipeline/insights/checks', params={'repo': repo, 'window': window}).json()
+    assert set(actual) == {'repo', 'window', 'slowest', 'flakiest', 'regressions', 'runner_wait_health'}
+    store = SimpleNamespace(
+        slowest_checks=lambda *_: [CheckDurationStat(**r) for r in actual['slowest']],
+        flakiest_checks=lambda *_: [CheckFlakeStat(**r) for r in actual['flakiest']],
+        duration_regressions=lambda *_: [CheckRegressionStat(**r) for r in actual['regressions']],
+        runner_wait_health=lambda *_: [RunnerWaitStat(**r) for r in actual['runner_wait_health']],
+    )
+    assert actual == SessionOrchestrator._check_insights_sync(store, repo, window, {}, '', '')
+    assert 'p95' not in json.dumps(actual)
+    if repo in {'acme/billing', 'acme/checkout'}:
+        assert actual['slowest'] and actual['flakiest'] and actual['runner_wait_health']
+    else:
+        assert all(actual[key] == [] for key in ('slowest', 'flakiest', 'regressions', 'runner_wait_health'))
+
+
+def test_pipeline_health_varies_by_repository():
+    with client() as c:
+        billing = c.get('/api/pipeline/insights/checks?repo=acme/billing').json()
+        checkout = c.get('/api/pipeline/insights/checks?repo=acme/checkout').json()
+        assert billing['slowest'] != checkout['slowest']
+        assert billing['regressions'] and not checkout['regressions']
+        assert c.get('/api/pipeline/insights/checks?repo=acme/billing&window=invalid').json()['window'] == '7d'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('ready_code,merge_code,stderr', [(0, 0, ''), (1, 1, 'auto-merge is already enabled'), (0, 1, 'permission denied')])
+async def test_ready_merge_fixture_matches_actual_outcome_flags(ready_code, merge_code, stderr):
+    import subprocess
+    from types import SimpleNamespace
+    from server.sessions.orchestrator import SessionOrchestrator
+
+    responses = iter([subprocess.CompletedProcess([], ready_code), subprocess.CompletedProcess([], merge_code, stderr=stderr)])
+    actual = await SessionOrchestrator.ready_merge(SimpleNamespace(_gh_run=lambda _: next(responses)), 'acme/billing', 42)
+    fixture = ev.EvalFixture()
+    fixture.ready_merge_outcomes[('acme/billing', 42)] = actual
+    with client(fixture) as c:
+        result = c.post('/api/pipeline/pr/ready-merge', json={'repo': 'acme/billing', 'number': 42}).json()
+    assert result == actual
+    assert result['cleanReadyToMerge'] is False
+    assert result['autoMergeArmed'] == (merge_code == 0 or 'already enabled' in stderr)
+
+
+def test_ready_merge_default_and_unknown_are_explicit():
+    with client() as c:
+        known = c.post('/api/pipeline/pr/ready-merge', json={'repo': 'acme/billing', 'number': 42}).json()
+        assert known == {'markedReady': True, 'autoMergeArmed': True, 'alreadyArmed': False, 'cleanReadyToMerge': False}
+        assert c.post('/api/pipeline/pr/ready-merge', json={'repo': 'acme/billing', 'number': 42}).json() == {
+            **known, 'markedReady': False, 'alreadyArmed': True}
+        unknown = c.post('/api/pipeline/pr/ready-merge', json={'repo': 'missing/repo', 'number': 42}).json()
+        assert unknown == dict.fromkeys(known, False)
+        assert c.post('/api/pipeline/pr/ready-merge', json={'repo': 'acme/billing'}).status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('sid', [ev.S1, ev.S2, ev.S3, ev.S4, ev.S6, ev.S_ARCHIVED])
+async def test_session_detail_matches_actual_endpoint_defaults(monkeypatch, sid):
+    from types import SimpleNamespace
+    from server.api import sessions
+    from server.sessions.types import SessionRecord
+
+    fixture = ev.EvalFixture()
+    row = fixture.rows[sid]
+    record = SessionRecord.from_dict({**row, 'account': row['accountName'],
+                                     'cols': 80, 'rows': 24, 'cwd': ''})
+
+    async def get_record(_sid):
+        assert _sid == sid
+        return record
+
+    async def resolve_repo(_record):
+        return record.repo
+
+    async def snapshot():
+        return SimpleNamespace(hosts={}, now=fixture.now.replace(tzinfo=None))
+
+    monkeypatch.setattr(sessions, '_get_orchestrator', lambda _: SimpleNamespace(get_session=get_record))
+    monkeypatch.setattr(sessions, '_resolve_repo', resolve_repo)
+    monkeypatch.setattr(sessions.host_heartbeat, 'snapshot', snapshot)
+    expected = await sessions.get_session(sid, SimpleNamespace(), 'eval')
+    with client(fixture) as c:
+        actual = c.get('/api/sessions/' + sid).json()
+    assert actual == expected
+    assert actual['summary'] == ''
+    assert actual['prs'] == []
+    assert 'pendingPermission' not in actual
+    assert 'pendingQuestion' not in actual
+    if sid == ev.S3:
+        assert actual['pendingModel'] == 'opus'
+
+
+def test_session_lists_do_not_leak_invented_pending_ids():
+    with client() as c:
+        for row in c.get('/api/sessions').json():
+            assert 'pendingPermission' not in row
+            assert 'pendingQuestion' not in row
