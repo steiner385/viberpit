@@ -623,3 +623,39 @@ async def test_recorder_failure_also_awaits_nested_query_cleanup(isolated_query)
                                               query_fn=query_fn, evidence=evidence)
     assert retained and closed == [True]
     assert evidence.helper_error and outcome.error is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('consumer', ['assistant', 'judge'])
+async def test_transient_failure_never_retries_or_combines_native_attempts(isolated_query, tmp_path, consumer):
+    import json
+    source, _, _, _, registry = isolated_query
+    attempts = {'sonnet': 0, 'haiku': 0}
+    failed_model = 'sonnet' if consumer == 'assistant' else 'haiku'
+
+    async def query_fn(*, prompt, options):
+        attempts[options.model] += 1
+        if options.model == 'sonnet':
+            if attempts['sonnet'] == 1:
+                await registry['list_sessions'].handler({})
+                yield _message('Inspected the sessions in the first attempt.')
+            else:
+                yield _message('Second assistant attempt claimed success without tools.')
+        else:
+            yield _message('PASS - supported by the first attempt')
+        if options.model == failed_model and attempts[failed_model] == 1:
+            raise RuntimeError('terminated process /private/account sk-ant-secret')
+
+    case = _case(expect_tools=('list_sessions',), rubric='Inspect the sessions.')
+    with eval_assistant.EvidenceArtifact(tmp_path, {}) as artifact:
+        result = (await eval_assistant.run_all([case], config_dir=str(source), model='sonnet',
+                                              query_fn=query_fn, artifact=artifact))[0]
+        journal = artifact.path.read_text()
+    assert attempts[failed_model] == 1
+    assert not result.passed
+    assert len(result.evidence.invocations) == 1
+    assert 'Second assistant attempt' not in journal
+    assert 'terminated process' not in journal and '/private/account' not in journal and 'sk-ant-' not in journal
+    failures = [row for row in map(json.loads, journal.splitlines()) if row['kind'] == 'native_failure']
+    assert len(failures) == 1 and failures[0]['category'] == 'process_crash'
+    assert failures[0].get('role', 'assistant') == consumer

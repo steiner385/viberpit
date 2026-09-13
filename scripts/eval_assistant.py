@@ -1028,6 +1028,8 @@ class TurnEvidence:
             entry["text"] = event["text"]
         if "name" in event:
             entry["name"] = event["name"]
+        if "category" in event:
+            entry["category"] = event["category"]
         self.timeline.append(entry)
         if self.emit is not None:
             self.emit({"event_index": index, **event})
@@ -1181,6 +1183,7 @@ async def _evidence_stream(query_fn: Callable[..., Any], *, prompt: str, options
                     # its loop body while the SDK's inner generator is suspended.
                     error = exc
                     evidence.helper_error = True
+                    evidence.emit = None  # Keep failure metadata in memory if the recorder broke.
                     stop.set()
         except Exception as exc:
             error = exc  # Classify through run_helper_call; never log native diagnostics.
@@ -1231,7 +1234,11 @@ async def run_turn(
         outcome = await run_helper_call(
             lambda: _evidence_stream(query_fn, prompt=f"{header}\n{case.prompt}", options=options,
                                      evidence=evidence, allowed=allowed),
-            subsystem="eval_assistant", account_key=config_dir, per_attempt_timeout=90.0)
+            subsystem="eval_assistant", account_key=config_dir, per_attempt_timeout=90.0,
+            retries=0)  # One native attempt per case; never pool a failed turn's evidence.
+    if outcome.error is not None:
+        evidence.helper_error = True
+        evidence.record({"kind": "native_failure", "category": outcome.failure_kind or "other"})
     return evidence, outcome
 
 
@@ -1284,7 +1291,11 @@ async def judge_rubric(
         outcome = await run_helper_call(
             lambda: _evidence_stream(query_fn, prompt=body, options=options,
                                      evidence=judge_evidence, allowed=set()),
-            subsystem="eval_assistant_judge", account_key=config_dir, per_attempt_timeout=60.0)
+            subsystem="eval_assistant_judge", account_key=config_dir, per_attempt_timeout=60.0,
+            retries=0)  # A failed judge attempt cannot contribute to a later verdict.
+    if outcome.error is not None:
+        judge_evidence.helper_error = True
+        judge_evidence.record({"kind": "native_failure", "category": outcome.failure_kind or "other"})
     text = "\n".join(event["text"] for event in judge_evidence.text_events).strip()
     if judge_evidence.unexpected_tool:
         evidence.unexpected_tool = True
