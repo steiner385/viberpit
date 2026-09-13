@@ -520,3 +520,47 @@ async def test_adopt_epics_seam_skipped_when_board_deleted():
 
     assert calls == []
     assert [e for e in ctx.events if e[2].get("kind") == "epic_adopted"] == []
+
+
+@pytest.mark.asyncio
+async def test_project_failure_survives_skipped_tick_and_independent_repo_refresh():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from server.automations.context import observed_status
+    from server.automations.pm_sync import PmSync
+
+    ctx = Ctx()
+    fetch_calls = []
+    failing = True
+    now = datetime(2026, 2, 1, tzinfo=timezone.utc)
+
+    def owner_fetch(owner, query):
+        fetch_calls.append(query)
+        if "projectsV2" in query:
+            return _owner_projects_payload()
+        if failing:
+            raise RuntimeError("board fields unavailable")
+        return _fields_payload() if "fields" in query else _items_payload()
+
+    loop, _ = _loop(ctx, products=[_product()], owner_fetch=owner_fetch,
+                    repo_fetch=lambda _: _relations_payload(), now_fn=lambda: now)
+    await loop.tick()
+    first = observed_status(ctx, PmSync().status(ctx)).to_dict()
+    assert first["level"] == "warn"
+    call_count = len(fetch_calls)
+    await loop.tick()
+    assert len(fetch_calls) == call_count
+    assert observed_status(ctx, PmSync().status(ctx)).to_dict() == first
+
+    loop._list_repos = AsyncMock(return_value=[SimpleNamespace(
+        sync_requested_at=None, last_synced_at=None, backfill_done=True)])
+    loop._incremental = AsyncMock()
+    await loop.tick()
+    assert len(fetch_calls) == call_count
+    assert observed_status(ctx, PmSync().status(ctx)).level == "warn"
+
+    failing = False
+    now += timedelta(seconds=301)
+    await loop.tick()
+    assert len(fetch_calls) > call_count
+    assert observed_status(ctx, PmSync().status(ctx)).level != "warn"

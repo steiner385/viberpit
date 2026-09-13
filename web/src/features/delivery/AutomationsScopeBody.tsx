@@ -5,7 +5,6 @@
 // its only ordering is the fixed tier-then-name sort (spec §4.4).
 import { useMemo, useState } from 'react'
 import type { Automation } from '@/api/automations'
-import { useAutomationActionableCounts } from '@/api/hooks'
 import { ListSearchInput } from '@/ui/list/ListSearchInput'
 import { Banner } from '@/ui/Banner'
 import { EmptyState } from '@/ui/EmptyState'
@@ -30,19 +29,16 @@ export function AutomationsScopeBody({
   automations, isLoading, isError, selectedKey, onOpen,
 }: AutomationsScopeBodyProps) {
   const [query, setQuery] = useState('')
-  // One counts read for the whole scope — each row is handed its own number
-  // rather than re-running `useAutomationActionableCounts` per row.
-  const counts = useAutomationActionableCounts(automations.map((a) => a.id))
   const q = query.trim().toLowerCase()
   const visible = useMemo(
     () => (q ? automations.filter((a) => haystack(a).includes(q)) : automations),
     [automations, q],
   )
   const sorted = useMemo(() => [...visible].sort((a, b) => {
-    const ta = automationTier(a, counts[a.id] ?? 0)
-    const tb = automationTier(b, counts[b.id] ?? 0)
+    const ta = automationTier(a)
+    const tb = automationTier(b)
     return AUTOMATION_TIER_RANK[ta] - AUTOMATION_TIER_RANK[tb] || a.name.localeCompare(b.name)
-  }), [visible, counts])
+  }), [visible])
 
   return (
     <ScopeBody
@@ -72,7 +68,6 @@ export function AutomationsScopeBody({
             <AutomationRow
               key={a.id}
               automation={a}
-              actionable={counts[a.id] ?? 0}
               selected={selectedKey === automationKey(a.id)}
               onOpen={onOpen}
             />

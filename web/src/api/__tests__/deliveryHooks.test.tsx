@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 
@@ -21,7 +21,7 @@ vi.mock('@/api/client', async (importOriginal) => {
   }) } }
 })
 import { api } from '@/api/client'
-import { useAutomationActionableCounts, useCheckInsights, useStageModels } from '@/api/hooks'
+import { useAutomations, useCheckInsights, useStageModels } from '@/api/hooks'
 
 const get = vi.mocked(api.get)
 function wrap() {
@@ -31,16 +31,26 @@ function wrap() {
 
 describe('delivery hooks', () => {
   beforeEach(() => get.mockClear())
-  it('useAutomationActionableCounts fetches one /actionable per id and counts', async () => {
-    const { result } = renderHook(() => useAutomationActionableCounts(['pr-doctor', 'backlog-runner']), { wrapper: wrap() })
-    await waitFor(() => expect(result.current).toEqual({ 'pr-doctor': 1, 'backlog-runner': 0 }))
-    expect(get.mock.calls.map(([p]) => p).sort()).toEqual(['/automations/backlog-runner/actionable', '/automations/pr-doctor/actionable'])
+  it('automation observers share the list request without fetching every action list', async () => {
+    get.mockResolvedValueOnce([{ id: 'pr-doctor', actionableCount: null }])
+    const { result } = renderHook(() => [useAutomations({ poll: true }), useAutomations()], { wrapper: wrap() })
+    await waitFor(() => expect(result.current[0].data).toEqual([{ id: 'pr-doctor', actionableCount: null }]))
+    expect(get.mock.calls.map(([path]) => path)).toEqual(['/automations'])
   })
-  it('useAutomationActionableCounts asks for nothing while disabled', async () => {
-    const { result } = renderHook(() => useAutomationActionableCounts(['pr-doctor'], false), { wrapper: wrap() })
-    expect(result.current).toEqual({ 'pr-doctor': 0 })
-    await new Promise((r) => setTimeout(r, 20))
-    expect(get).not.toHaveBeenCalled()
+  it('only the navigation observer polls the shared list every 30 seconds', async () => {
+    vi.useFakeTimers()
+    get.mockResolvedValueOnce([]).mockResolvedValueOnce([])
+    const { unmount } = renderHook(() => [useAutomations({ poll: true }), useAutomations(), useAutomations()], { wrapper: wrap() })
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+      expect(get).toHaveBeenCalledTimes(1)
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+      expect(get).toHaveBeenCalledTimes(2)
+      expect(get.mock.calls.every(([path]) => path === '/automations')).toBe(true)
+    } finally {
+      unmount()
+      vi.useRealTimers()
+    }
   })
   it('useStageModels honours enabled', async () => {
     renderHook(() => useStageModels({ enabled: false }), { wrapper: wrap() })

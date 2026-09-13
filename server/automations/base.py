@@ -39,17 +39,27 @@ ConfigSchema = list[ConfigField]
 @dataclass
 class AutomationStatus:
     text: str
-    level: str = "idle"  # idle | active | warn | error
+    level: str = "idle"  # idle | active | warn | error | unknown
     counts: dict | None = None
     # Phase 3 (spec §9/§10): the runner's per-product rows for the web's
     # per-product table (Task 5) — a NEW field, not folded into ``counts``,
     # which stays int-only (the web types it ``Record<string, number>``). ``None``
     # for every automation with no concept of products (e.g. PR Doctor).
     products: list[dict] | None = None
+    waiting_reason: str | None = None
+    observed_at: str | None = None
+    last_refresh_failed_at: str | None = None
 
     def to_dict(self) -> dict:
-        return {"text": self.text, "level": self.level, "counts": self.counts,
-                "products": self.products}
+        result = {"text": self.text, "level": self.level, "counts": self.counts,
+                  "products": self.products}
+        if self.observed_at is not None:
+            result["observedAt"] = self.observed_at
+        if self.last_refresh_failed_at is not None:
+            result["lastRefreshFailedAt"] = self.last_refresh_failed_at
+        if self.waiting_reason is not None:
+            result["waitingReason"] = self.waiting_reason
+        return result
 
 
 @dataclass

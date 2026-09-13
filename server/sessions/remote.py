@@ -493,6 +493,11 @@ class RemoteOrchestrator:
         """
         return await self._client.call("request_pr_fix", session_id=session_id, pr_number=pr_number)
 
+    async def automation_overview(self) -> dict:
+        """Batched observed status and bounded actionable counts via the daemon."""
+        result = await self._client.call("automation_overview")
+        return result if isinstance(result, dict) else {}
+
     async def automation_statuses(self) -> "dict[str, dict]":
         """Rendered live status per automation id (badge text/level), via the daemon."""
         return await self._client.call("automation_statuses")

@@ -545,12 +545,12 @@ def test_status_reflects_non_idle_counts_after_tick(tmp_path):
         await _seed_rows()
         h = Harness(config=make_config(max_concurrent=1), clock=FakeClock(),
                     candidate_refs=[("o/r", 1, "one")])
-        # Before any tick: idle.
-        assert BacklogRunner().status(h.ctx).level == "idle"
+        # Before any tick: workload has not been measured.
+        assert BacklogRunner().status(h.ctx).level == "unknown"
         await h.loop.tick()
         st = BacklogRunner().status(h.ctx)
         assert st.level == "active"
-        assert "1 implementing" in st.text
+        assert "1 work in flight" in st.text
         assert getattr(h.ctx, "backlog_counts")["in_flight"] == 1
 
     run(go())

@@ -187,11 +187,13 @@ def test_daily_cap_limits_spawns_per_tick(tmp_path):
     async def run():
         await init_db(db_url=db_url)
         await _seed_row()
-        loop, rec, _ = build_loop(
+        loop, rec, ctx = build_loop(
             config=make_config(max_spawns_per_day=1),
             triggers=[trig("a"), trig("b")])
         await loop.tick()
         assert len(rec.spawns) == 1  # capped
+        from server.automations.sdlc_intake import SdlcIntake
+        assert SdlcIntake().status(ctx).waiting_reason == "budget"
 
     asyncio.run(run())
 
@@ -220,3 +222,54 @@ def test_automation_registered_with_expected_identity():
 
     from server.automations.registry import registry
     assert registry.get("sdlc-intake") is not None
+
+
+def test_intake_human_gate_is_observed_and_clears(tmp_path):
+    from server.automations.sdlc_intake import SdlcIntake
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'gate.db'}")
+        await _seed_row()
+        triggers = [trig("dark-mode")]
+        loop, rec, ctx = build_loop(triggers=triggers)
+        await loop.tick()
+        await loop.tick()
+        status = SdlcIntake().status(ctx)
+        assert status.waiting_reason == "human"
+        assert status.counts["awaiting"] == 1
+        triggers.clear()
+        await loop.tick()
+        assert SdlcIntake().status(ctx).waiting_reason is None
+
+    asyncio.run(run())
+
+
+def test_production_trigger_read_failure_is_unknown_then_recovers(monkeypatch):
+    from unittest.mock import AsyncMock
+    from server.automations.context import observed_status, publish_observation
+    from server.automations.sdlc_intake import SdlcIntake
+    from server.sessions.orchestrator import SessionOrchestrator
+    from server.sdlc import triage_store
+
+    async def run():
+        loop, _, ctx = build_loop()
+        loop._read_triggers = lambda: SessionOrchestrator._sdlc_intake_read_triggers(None)
+        publish_observation(ctx, "sdlc_intake_counts", {"pending": 2, "awaiting": 1})
+        first = ctx.observed_at
+        read = AsyncMock(side_effect=RuntimeError("queue unavailable"))
+        monkeypatch.setattr(triage_store, "queued_for_intake", read)
+        await loop.tick()
+        status = observed_status(ctx, SdlcIntake().status(ctx))
+        assert status.level == "unknown"
+        assert status.observed_at == first
+        assert status.last_refresh_failed_at
+        read.side_effect = None
+        read.return_value = []
+        await loop.tick()
+        status = observed_status(ctx, SdlcIntake().status(ctx))
+        assert status.level == "idle"
+        assert status.counts["pending"] == 0
+        assert status.waiting_reason is None
+        assert status.last_refresh_failed_at is None
+
+    asyncio.run(run())

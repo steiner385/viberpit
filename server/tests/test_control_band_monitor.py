@@ -173,7 +173,8 @@ async def test_off_mode_reads_nothing_at_all():
     await loop.tick()
     assert calls["series"] == [] and calls["filed"] == []
     assert calls["released"] == 0
-    assert ctx.control_band_counts == {"watched": 0, "breaching": 0}
+    assert not hasattr(ctx, "control_band_counts")
+    assert not hasattr(ctx, "observed_at")
 
 
 @pytest.mark.asyncio

@@ -169,14 +169,3 @@ export const AUTOMATION_TAB = {
 } as const
 export type AutomationTab = keyof typeof AUTOMATION_TAB
 export const AUTOMATION_TABS = Object.keys(AUTOMATION_TAB) as readonly AutomationTab[]
-
-/** What each automation mode means, beside the mode select. */
-export const MODE_DESCRIPTION: Record<string, string> = {
-  off: 'Not monitoring.',
-  // The Backlog Runner's only ON mode since the product automation policy
-  // (spec 2026-09-12 §5): propose-vs-auto is each PRODUCT's `dispatch` now, so
-  // the global knob only says whether the runner runs at all.
-  on: 'Running — each product\'s policy decides whether it proposes or spawns.',
-  propose: 'Suggests actions — you approve before anything runs.',
-  auto: 'Acts automatically without confirmation.',
-}

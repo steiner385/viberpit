@@ -283,6 +283,7 @@ async def test_interval_gate_skips_recent_unless_requested():
                                            config={"min_sync_interval_s": 300})
     await loop.tick()
     assert saved == []  # skipped — nothing fetched, nothing saved
+    assert not hasattr(ctx, "observed_at")
 
 
 # --- map-changes branch merge (R8b-4) -----------------------------------------

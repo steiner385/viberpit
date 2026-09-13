@@ -150,11 +150,12 @@ def test_watch_mode_alerts_and_opens_no_issue():
     assert not h.gh.calls
 
 
-def test_off_mode_does_nothing_and_stashes_zero_counts():
+def test_off_mode_does_not_fabricate_observation():
     h = Harness(mode="off")
     h.tick()
     assert not h.ctx.states and not h.notified and not h.gh.calls
-    assert h.ctx.deploy_monitor_counts["envs"] == 0
+    assert not hasattr(h.ctx, "deploy_monitor_counts")
+    assert not hasattr(h.ctx, "observed_at")
 
 
 def test_unclassified_env_ignored_unless_all_envs():

@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 
 from server.auth.middleware import current_identity
 from server.automations.base import (
+    AutomationStatus,
     operator_triggered,
     retired_config_keys_of,
     validate_config,
@@ -77,18 +78,30 @@ async def list_automations(request: Request, _identity: str = Depends(current_id
         .group_by(DbSession.origin))).all())
     # Live badge status is rendered by the orchestrator (only it can reach the
     # in-process ctx where each loop stashes its counts). Best-effort: if the
-    # orchestrator is unreachable, fall back to the idle status per automation.
+    # orchestrator is unreachable, retain unknown rather than inventing idle.
     statuses: dict = {}
+    actionable_counts: dict = {}
     orch = getattr(request.app.state, "sessions", None)
     if orch is not None:
         try:
-            statuses = await orch.automation_statuses()
+            overview = await orch.automation_overview()
+            statuses = overview.get("statuses") or {}
+            actionable_counts = overview.get("actionableCounts") or {}
         except Exception:
             statuses = {}
     out = []
     for a in registry.all():
         row = await _row(db, a.id)
-        status = statuses.get(a.id) or a.status(ctx=None).to_dict()
+        status = dict(statuses.get(a.id) or AutomationStatus(
+            "Runtime telemetry unavailable", level="unknown").to_dict())
+        active_sessions = int(active_counts.get(a.id, 0))
+        actionable_count = actionable_counts.get(a.id)
+        # A previous scheduling/capacity wait no longer constrains a disabled
+        # loop. Disabling never resolves an observed human decision, even when
+        # its producer has no action provider or live session (e.g. a proposal).
+        if (not row.enabled or row.mode == "off") and status.get("waitingReason") != "human":
+            status.pop("waitingReason", None)
+        oversight = registry.oversight_for(a.id)
         out.append({
             "id": a.id, "name": a.name, "description": a.description,
             "enabled": row.enabled, "mode": row.mode, "modes": list(a.modes),
@@ -98,6 +111,8 @@ async def list_automations(request: Request, _identity: str = Depends(current_id
             # concept of products (e.g. PR Doctor). Published once, so the browser
             # cannot read a stale sibling copy of the same fact (R3-8).
             "status": status,
+            "actionableCount": actionable_count,
+            "oversight": oversight.to_dict() if oversight is not None else None,
             # The schema INCLUDING the engine fields this origin's audited
             # ceiling admits (none for a claude_only origin). Same source the
             # PATCH validates against, so the browser can never render a control
@@ -115,7 +130,7 @@ async def list_automations(request: Request, _identity: str = Depends(current_id
             "config": row.config or {},
             "schedule": row.schedule or None,
             "lastActiveAt": row.last_active_at.isoformat() if row.last_active_at else None,
-            "activeSessions": int(active_counts.get(a.id, 0)),
+            "activeSessions": active_sessions,
         })
     return out
 

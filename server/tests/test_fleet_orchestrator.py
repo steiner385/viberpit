@@ -517,7 +517,7 @@ def test_every_remote_method_is_classified():
         "all_repos_stage_models", "all_merge_trains", "latest_queue_entries",
         "check_insights", "ready_merge", "deploy_config_list", "deploy_config_put",
         "deploy_status", "git_credential_alerts", "dismiss_git_credential_alert",
-        "automation_statuses", "automation_actionable", "automation_trigger",
+        "automation_statuses", "automation_overview", "automation_actionable", "automation_trigger",
         "pr_doctor_job", "resume_recovery_status", "consolidation_candidates",
         "automation_consolidate", "backlog_candidates", "backlog_runner_dispatch",
         "list_adoptable_candidates", "migrate_archive_home", "cloned_repos", "usage",
@@ -729,7 +729,7 @@ def test_api_orchestrator_reads_are_all_classified():
         "list_archived", "all_prs", "pr_detail", "all_merge_trains", "all_repos_stage_models",
         "latest_queue_entries", "check_insights", "ready_merge", "deploy_config_list",
         "deploy_config_put", "deploy_status", "git_credential_alerts",
-        "dismiss_git_credential_alert", "automation_statuses", "automation_actionable",
+        "dismiss_git_credential_alert", "automation_statuses", "automation_overview", "automation_actionable",
         "automation_trigger", "automation_consolidate", "consolidation_candidates",
         "backlog_candidates", "backlog_runner_dispatch", "list_adoptable_candidates",
         "adopt_session", "migrate_archive_home", "cloned_repos", "usage",
@@ -974,3 +974,15 @@ async def test_unreachable_worker_still_warns_when_no_restart_is_expected(caplog
         await fo.live_session_load()
     rocky_lines = [r for r in caplog.records if "host=rocky" in r.getMessage()]
     assert rocky_lines and all(r.levelno == logging.WARNING for r in rocky_lines)
+
+
+@pytest.mark.asyncio
+async def test_automation_overview_asks_primary_once_without_polling_workers():
+    primary, worker = _FakeOrch("dobby"), _FakeOrch("rocky")
+    expected = {"statuses": {}, "actionableCounts": {"pr-doctor": None}}
+    primary.automation_overview = mock.AsyncMock(return_value=expected)
+    worker.automation_overview = mock.AsyncMock(side_effect=AssertionError("must not fan out"))
+    fleet = FleetOrchestrator(_FakeRouter({"dobby": primary, "rocky": worker}), primary="dobby")
+    assert await fleet.automation_overview() == expected
+    primary.automation_overview.assert_awaited_once()
+    worker.automation_overview.assert_not_awaited()

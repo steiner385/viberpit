@@ -14,7 +14,10 @@ export interface AutomationStatusProduct {
 
 export interface AutomationStatus {
   text: string
-  level: 'idle' | 'active' | 'warn' | 'error'
+  level: 'idle' | 'active' | 'warn' | 'error' | 'unknown'
+  waitingReason?: 'schedule' | 'human' | 'capacity' | 'budget'
+  observedAt?: string
+  lastRefreshFailedAt?: string
   counts: Record<string, number> | null
   /** Per-product Backlog Runner detail (spec §9), or null/absent for an
    *  automation with no per-product policy (every automation but the runner). */
@@ -43,6 +46,18 @@ export interface Automation {
   mode: string | null
   modes: string[]
   status: AutomationStatus
+  /** One server snapshot shared by navigation, list, and detail. Missing means unknown. */
+  actionableCount?: number | null
+  oversight?: {
+    responsibility: { id: string; label: string }
+    scope: string
+    modeDescriptions: Record<string, string>
+    relationships: {
+      kind: 'requires' | 'uses' | 'hands_off_to' | 'shares_work_with'
+      targetId: string
+      description: string
+    }[]
+  }
   /** Audited agent-engine ceiling for this origin (Phase 7). `claude_only` means
    *  the origin has no Codex acceptance evidence, so `configSchema` carries no
    *  engine selector — the absence IS the enforcement, and the card must not

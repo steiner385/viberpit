@@ -20,3 +20,22 @@ paths or synthetic settings/API-only paths.
 
 The isolated fixture and shutdown checks passed together with the original timing
 limit. Application runtime code is unchanged by this test-harness correction.
+
+## Shared settings and generated files also affect verification
+
+A temporary account store does not isolate `paths.shared_base()`: without an
+external temporary `CLAUDE_CONFIG_DIR`, default-model lookup can read the host's
+shared Claude settings. A gated host default then parks fake test sessions before
+their drivers start. For local suite runs, use an empty temporary shared config
+outside the account store and unset inherited `ANTHROPIC_MODEL`; do not alter the
+host's settings or weaken the approval gate. Tests of explicit model policy still
+set their own inputs. Three model/driver tests that failed against the host default
+passed with only this process-local isolation.
+
+Run backend gates with source files frozen. `inspect.getsource()` combines loaded
+code line numbers with files on disk, so edits during a run can produce false guard
+failures. Keep generated `web/dist` outside the checkout during backend tests, as
+in the backend CI job: the SPA fallback otherwise changes unmatched API requests
+from 404 to 405. Preserve the build for restoration instead of deleting it. In the
+automation oversight verification, all nine failures passed after these isolation
+corrections without product-code changes.

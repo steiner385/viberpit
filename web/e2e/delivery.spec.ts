@@ -30,17 +30,19 @@ const AUTOMATIONS = [
       { key: 'enabled_repos', label: 'Repositories', type: 'repo-multiselect', default: [], help: '', choices: null },
     ],
     config: { auto_fix: true, enabled_repos: ['o/r'] }, schedule: null, lastActiveAt: '2026-09-11T10:00:00Z',
+    actionableCount: 2,
+    oversight: { responsibility: { id: 'execution', label: 'Execute and finish work' }, scope: 'Configured repositories', modeDescriptions: { auto: 'Repairs eligible PRs within configured permissions.' }, relationships: [{ kind: 'shares_work_with', targetId: 'backlog-runner', description: 'Receives implementation PRs when recovery coverage is available.' }] },
     activeSessions: 1, workClass: 'maintenance',
   },
   {
     id: 'backlog-runner', name: 'Backlog runner', description: 'Dispatches eligible issues.', enabled: true, mode: 'on',
     modes: ['off', 'on'], status: { text: 'Idle', level: 'idle', counts: null },
     enginePolicy: 'claude_only', operatorTriggered: false, configSchema: [], config: {}, schedule: null,
-    lastActiveAt: null, activeSessions: 0, workClass: 'development',
+    actionableCount: null, lastActiveAt: null, activeSessions: 0, workClass: 'development',
   },
   {
     id: 'pm-classify', name: 'PM classify', description: 'Classifies issues on request.', enabled: false, mode: null,
-    modes: [], status: { text: 'Idle', level: 'idle', counts: null }, enginePolicy: 'claude_only', operatorTriggered: true,
+    actionableCount: 0, modes: [], status: { text: 'Idle', level: 'idle', counts: null }, enginePolicy: 'claude_only', operatorTriggered: true,
     configSchema: [], config: {}, schedule: null, lastActiveAt: null, activeSessions: 0, workClass: 'maintenance',
   },
 ]
@@ -185,4 +187,15 @@ test.describe('Delivery — phone', () => {
     await expect(list).toBeVisible()
     await expect(page.getByRole('heading', { level: 1 })).toHaveCount(0)
   })
+})
+
+test('registry mode effects and relationships explain the workflow', async ({ page }) => {
+  await interceptApi(page)
+  await page.goto('/delivery/automations/pr-doctor')
+  await expect(page.getByText(/Configured mode: auto — Repairs eligible PRs/)).toBeVisible()
+  await expect(page.getByText('Execute and finish work')).toBeVisible()
+  await page.getByRole('link', { name: 'Backlog runner', exact: true }).click()
+  await expect(page).toHaveURL(/delivery\/automations\/backlog-runner$/)
+  await expect(page.getByText('Actionable count unknown', { exact: true })).toBeVisible()
+  await expect(page.getByText('Unassigned workload unknown.')).toBeVisible()
 })

@@ -36,6 +36,8 @@ classify check, and both are the engine's.
 """
 from __future__ import annotations
 
+from .context import observation_failed, publish_observation
+
 import logging
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -196,6 +198,7 @@ class PmTriageLoop:
         try:
             await self._run()
         except Exception as exc:
+            observation_failed(self._ctx)
             # A warn (not just a log line): every other event this loop emits is
             # ``info``, and the notification route fires on error/warn only, so a
             # silently-logged tick failure is invisible to an operator.
@@ -207,9 +210,9 @@ class PmTriageLoop:
     async def _run(self) -> None:
         mode, config = await self._read_config()
         if mode == "off":
-            self._stash(0, 0, 0)
             return
 
+        self._observation_degraded = False
         pending = await self._list_pending()
 
         # 0. Mechanical auto-link pass (design §6.2): PRs whose closing refs point
@@ -226,6 +229,7 @@ class PmTriageLoop:
                 try:
                     linked = await self._auto_link(item)
                 except Exception as exc:
+                    self._observation_degraded = True
                     log.warning("pm_triage.auto_link_failed", exc_info=True)
                     await self._ctx.emit(
                         "warn", f"auto-link failed for {item.repo}#{item.number}: {exc}",
@@ -345,6 +349,7 @@ class PmTriageLoop:
         try:
             policies = await self._read_policies()
         except Exception as exc:
+            self._observation_degraded = True
             log.warning("pm_triage.policy_read_failed", exc_info=True)
             await self._ctx.emit("warn", f"auto-accept skipped: policy read failed: {exc}",
                                  kind="auto_accept_skipped")
@@ -363,6 +368,7 @@ class PmTriageLoop:
         try:
             candidates = await self._list_candidates()
         except Exception as exc:
+            self._observation_degraded = True
             log.warning("pm_triage.candidate_list_failed", exc_info=True)
             await self._ctx.emit("warn",
                                  f"auto-accept skipped: candidate read failed: {exc}",
@@ -385,6 +391,7 @@ class PmTriageLoop:
             try:
                 detail = await self._auto_accept(cand.proposal_id)
             except Exception as exc:
+                self._observation_degraded = True
                 log.warning("pm_triage.auto_accept_failed", exc_info=True)
                 await self._ctx.emit("warn", f"auto-accept failed for {target}: {exc}",
                                      kind="auto_accept_failed", target=target)
@@ -407,5 +414,6 @@ class PmTriageLoop:
         self._spawns_today = [t for t in self._spawns_today if t >= cutoff]
 
     def _stash(self, unclassified: int, pending: int, drift: int) -> None:
-        self._ctx.pm_triage_counts = {
-            "unclassified": unclassified, "pending": pending, "drift": drift}
+        publish_observation(self._ctx, "pm_triage_counts", {
+            "unclassified": unclassified, "pending": pending, "drift": drift},
+                            degraded=self._observation_degraded)

@@ -10,17 +10,19 @@ export const AUTOMATIONS: Automation[] = [
       { key: 'enabled_repos', label: 'Repositories', type: 'repo-multiselect', default: [], help: '', choices: null },
     ],
     config: { auto_fix: true, enabled_repos: ['o/r'] }, schedule: null, lastActiveAt: '2026-09-11T10:00:00Z',
+    actionableCount: 0,
+    oversight: { responsibility: { id: 'execution', label: 'Execute and finish work' }, scope: 'Configured repositories', modeDescriptions: { auto: 'Repairs eligible PRs within configured permissions.' }, relationships: [{ kind: 'shares_work_with', targetId: 'backlog-runner', description: 'Receives implementation PRs when recovery coverage is available.' }] },
     activeSessions: 1, workClass: 'maintenance',
   },
   {
     id: 'backlog-runner', name: 'Backlog runner', description: 'Dispatches eligible issues.', enabled: true, mode: 'on',
     modes: ['off', 'on'], status: { text: 'Idle', level: 'idle', counts: null },
     enginePolicy: 'claude_only', operatorTriggered: false, configSchema: [], config: {}, schedule: null,
-    lastActiveAt: null, activeSessions: 0, workClass: 'development',
+    actionableCount: 2, lastActiveAt: null, activeSessions: 0, workClass: 'development',
   },
   {
     id: 'pm-classify', name: 'PM classify', description: 'Classifies issues on request.', enabled: false, mode: null,
-    modes: [], status: { text: 'Idle', level: 'idle', counts: null }, enginePolicy: 'claude_only', operatorTriggered: true,
+    actionableCount: 0, modes: [], status: { text: 'Idle', level: 'idle', counts: null }, enginePolicy: 'claude_only', operatorTriggered: true,
     configSchema: [], config: {}, schedule: null, lastActiveAt: null, activeSessions: 0, workClass: 'maintenance',
   },
 ]

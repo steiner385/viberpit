@@ -7,6 +7,8 @@ lives in server/obs/errsink.py; the file/comment/regress rule in issue_filing.py
 """
 from __future__ import annotations
 
+from .context import observation_failed, publish_observation
+
 import asyncio  # noqa: F401
 import logging
 from datetime import datetime, timedelta  # noqa: F401
@@ -188,6 +190,7 @@ class ErrorTriageLoop:
             try:
                 await self._run_once()
             except Exception:  # noqa: BLE001 — a tick must never crash the loop
+                observation_failed(self._ctx)
                 log.warning("error_triage.tick_failed", exc_info=True)
 
     async def _run_once(self) -> None:
@@ -204,9 +207,9 @@ class ErrorTriageLoop:
         await self._reset_stale_warning_bursts(config, now)
         await self._recurrence_comments(repo, config, now)
         candidates, filed_today = await self._file_candidates(repo, config, now)
-        self._ctx.error_triage_counts = {
+        publish_observation(self._ctx, "error_triage_counts", {
             **(await self._counts()), "candidates": candidates,
-            "filed_today": filed_today, "daily_cap": int(config.get("daily_cap", 0))}
+            "filed_today": filed_today, "daily_cap": int(config.get("daily_cap", 0))})
 
     # -- steps ---------------------------------------------------------------
     async def _sync_issue_states(self, repo: str, now: datetime) -> None:

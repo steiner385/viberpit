@@ -63,7 +63,6 @@ vi.mock('@/api/hooks', () => ({
   // The Delivery list column's two reads (finish-line row 4). Gated off on
   // every Sessions route, but the shell calls the hook unconditionally.
   useStageModels: () => ({ data: undefined, isLoading: false, isError: false }),
-  useAutomationActionableCounts: () => ({}),
   useReauthAccount: vi.fn(),
   useReauthStatus: vi.fn(),
   useCancelReauth: vi.fn(),

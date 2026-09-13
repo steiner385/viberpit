@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient, useQueries, type QueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState, useRef, useCallback, useSyncExternalStore } from 'react'
 import { api, ApiRequestError } from './client'
 import {
@@ -1146,9 +1146,10 @@ export function useStageModels({ enabled = true, poll = true }: { enabled?: bool
   })
 }
 
-export function useAutomations() {
+export function useAutomations({ poll = false }: { poll?: boolean } = {}) {
   return useQuery<Automation[]>({
-    queryKey: QK.automations, queryFn: fetchAutomations, staleTime: 10_000 })
+    queryKey: QK.automations, queryFn: fetchAutomations, staleTime: 10_000,
+    refetchInterval: poll ? 30_000 : false })
 }
 
 export function useAutomationEvents(id: string, enabled = true) {
@@ -1192,28 +1193,14 @@ export function useAutomationActionable(id: string, enabled = true) {
     enabled, staleTime: 10_000 })
 }
 
-/** Actionable-item counts for many automations at once — the Delivery list's
- *  tier input (finish-line §4.4). One `/actionable` read per id, no poll: the
- *  detail page's own `useAutomationActionable` shares each key and refreshes
- *  it on every trigger. */
-export function useAutomationActionableCounts(ids: readonly string[], enabled = true): Record<string, number> {
-  const results = useQueries({
-    queries: ids.map((id) => ({
-      queryKey: QK.automationActionable(id),
-      queryFn: () => fetchAutomationActionable(id),
-      enabled, staleTime: 10_000,
-    })),
-  })
-  const out: Record<string, number> = {}
-  ids.forEach((id, i) => { out[id] = results[i]?.data?.length ?? 0 })
-  return out
-}
-
 export function useAutomationTrigger(id: string) {
   const qc = useQueryClient()
   return useMutation<TriggerResult, ApiRequestError, { item_id: string; kind: string }>({
     mutationFn: (body) => postAutomationTrigger(id, body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: QK.automationActionable(id) }) },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: QK.automationActionable(id) })
+      qc.invalidateQueries({ queryKey: QK.automations })
+    },
   })
 }
 

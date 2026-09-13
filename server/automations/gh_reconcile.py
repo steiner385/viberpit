@@ -11,6 +11,8 @@ speak).
 """
 from __future__ import annotations
 
+from .context import observation_failed, publish_observation
+
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -41,7 +43,7 @@ _DRY_RUN_TTL = timedelta(hours=24)
 #: (item, field) is never pruned however old it is — see ``journal.own_applied_values``.
 _APPLIED_HISTORY_TTL = timedelta(days=30)
 _COUNT_KEYS = ("products", "planned", "applied", "failed", "parked", "skipped_stale",
-               "skipped_rate", "halted_cap", "fenced", "disabled", "dry_run")
+               "halted_cap", "dry_run")
 
 ReadConfig = Callable[[], Awaitable[tuple[str, dict]]]
 ListProducts = Callable[[], Awaitable[list[ProductSyncView]]]
@@ -106,18 +108,15 @@ class GhReconcile:
 
     def status(self, ctx: Any) -> AutomationStatus:
         c = getattr(ctx, "gh_reconcile_counts", None) if ctx is not None else None
+        guard = getattr(ctx, "gh_reconcile_guard", None) if ctx is not None else None
+        if guard:
+            return AutomationStatus(text=guard, level="warn", counts=c)
         if not c:
             return AutomationStatus(text="idle", level="idle")
-        if c.get("disabled"):
-            return AutomationStatus(text="kill switch off (CCSWITCH_GH_RECONCILE_ENABLED)",
-                                    level="idle", counts=c)
-        if c.get("fenced"):
-            return AutomationStatus(text="refused: daemon SHA != origin/master", level="warn",
-                                    counts=c)
         parts = [f"{c.get('planned', 0)} planned", f"{c.get('applied', 0)} applied"]
         if c.get("dry_run"):
             parts.insert(0, "dry run")
-        for key in ("failed", "parked", "halted_cap", "skipped_stale", "skipped_rate"):
+        for key in ("failed", "parked", "halted_cap", "skipped_stale"):
             if c.get(key):
                 parts.append(f"{c[key]} {key.replace('_', ' ')}")
         level = "error" if c.get("halted_cap") else (
@@ -181,12 +180,13 @@ class GhReconcileLoop:
         try:
             await self._run()
         except Exception:
+            observation_failed(self._ctx)
             log.warning("gh_reconcile.tick_failed", exc_info=True)
 
     def _stash(self, **counts: int) -> None:
         full = {k: 0 for k in _COUNT_KEYS}
         full.update(counts)
-        setattr(self._ctx, "gh_reconcile_counts", full)
+        publish_observation(self._ctx, "gh_reconcile_counts", full)
 
     async def _rate_ok(self, products: list[ProductSyncView], min_rate: int) -> bool:
         """Sample the GraphQL budget once per cycle. A failed query is not a skip."""
@@ -205,6 +205,7 @@ class GhReconcileLoop:
 
     async def _run(self) -> None:
         mode, config = await self._read_config()
+        self._ctx.gh_reconcile_guard = None
         if mode == "off":
             # Drop the previous run's counts. Leaving them stashed makes the status card
             # keep reporting "12 applied, 3 parked" for a loop that is switched off —
@@ -215,10 +216,10 @@ class GhReconcileLoop:
             self._dry_drift_warned.clear()
             return
         if not self._kill_switch():
-            self._stash(disabled=1)
+            self._ctx.gh_reconcile_guard = "Reconcile paused: kill switch off"
             return
         if not await self._sha_fence():
-            self._stash(fenced=1)
+            self._ctx.gh_reconcile_guard = "Reconcile refused: daemon SHA != origin/master"
             if not self._fence_warned:
                 self._fence_warned = True
                 await self._ctx.emit("warn", "reconcile refused: daemon SHA is not origin/master",
@@ -242,8 +243,7 @@ class GhReconcileLoop:
         # Rate budget: one Query-root sample per cycle, before anything is converged.
         # A dry run writes nothing, so it never spends (or needs) the budget.
         if not dry_run and not await self._rate_ok(products, min_rate):
-            counts["skipped_rate"] = len(products)
-            self._stash(**counts)
+            self._ctx.gh_reconcile_guard = "Reconcile paused: GitHub rate budget is low"
             return
         applied_keys = await self._j_applied_keys()
         # Our own applied values, sampled once per cycle beside applied_keys: the diff
@@ -259,6 +259,7 @@ class GhReconcileLoop:
                 await self._converge(product, now, dry_run, cap, applied_keys, counts,
                                      migrate=migrate, own_values=own_values, dry_keys=dry_keys)
             except Exception:
+                counts["failed"] += 1
                 log.warning("gh_reconcile.product_failed", exc_info=True)
                 await self._ctx.emit("warn", f"reconcile failed for {product.slug}",
                                      kind="gh_reconcile_error", target=product.project_id)

@@ -2,6 +2,8 @@
 spawns implementation sessions, handing finished PRs to PR Doctor."""
 from __future__ import annotations
 
+from .context import observation_failed, publish_observation
+
 import asyncio
 import logging
 import os
@@ -262,9 +264,9 @@ class BacklogRunner:
                          "higher-weighted products; weight 0 pauses one). "
                          "'concurrency-cap': never exceed a product's max in "
                          "flight."),
-        ConfigField(key="max_concurrent", label="Max sessions in flight", type="int", default=1,
-                    help="Parallel implementing sessions allowed at once, across "
-                         "every product."),
+        ConfigField(key="max_concurrent", label="Max occupied slots", type="int", default=1,
+                    help="Work claims allowed at once across every product, "
+                         "including proposals awaiting approval."),
         ConfigField(key="max_spawns_per_day", label="Max spawns per day", type="int", default=10,
                     help="Circuit-breaker: pause spawning past this many per day."),
         ConfigField(key="max_issues_per_pr", label="Max issues per PR", type="int", default=1,
@@ -296,26 +298,28 @@ class BacklogRunner:
 
     def status(self, ctx) -> AutomationStatus:
         counts = getattr(ctx, "backlog_counts", None) if ctx is not None else None
-        if not counts:
-            return AutomationStatus(text="idle", level="idle")
+        if counts is None:
+            return AutomationStatus(text="Workload counts unavailable", level="unknown")
         # Per-product rows (``_backlog_count_candidates``), absent on a tick that
         # never reached the count seam. An empty map is the real, reportable state:
         # the runner is enabled but no product opted in, which as a bare
         # "0 eligible" reads like an empty backlog rather than a policy nobody set.
         products = getattr(ctx, "backlog_products", _NO_COUNT_YET)
-        n = counts.get("in_flight", 0)
-        if products is None:
+        n = counts.get("in_flight")
+        errors = getattr(ctx, "backlog_count_errors", [])
+        if errors or products is None:
             # The read FAILED. "We don't know" and "no product is opted in" must
             # not share a sentence: an operator debugging a broken mirror read
             # would otherwise be told their policies are unset. The in-flight
             # count comes from a different seam and is still true, so it stays.
             return AutomationStatus(
-                text=f"{n} implementing · product counts unavailable "
-                     f"(the queue read failed)",
+                text=((f"{n} work in flight · " if n is not None else "")
+                      + " · ".join(errors or [
+                          "product counts unavailable (the queue read failed)"])),
                 level="warn", counts=counts)
         counted = products is not _NO_COUNT_YET
         rows: dict = products if isinstance(products, dict) else {}
-        if counted and not _on_products(rows):
+        if counted and not _on_products(rows) and not n and not counts.get("needs_human"):
             # ``products=[]``, never ``None``: this automation HAS products and
             # none is on. ``None`` is reserved for an automation with no concept
             # of products at all (PR Doctor), which the web renders differently —
@@ -326,7 +330,9 @@ class BacklogRunner:
         # ``untriaged`` is the below-min-status skip: in the default Ready mode a
         # board full of untriaged items reads as "0 eligible", which looks like an
         # empty backlog rather than one waiting on triage.
-        text = (f"{n} implementing, {counts.get('eligible', 0)} eligible"
+        text = (f"{n} work in flight, "
+                + (f"{counts['eligible']} eligible" if "eligible" in counts
+                   else "queue counts unavailable")
                 + (f", {counts['blocked']} blocked" if counts.get("blocked") else "")
                 + (f", {counts['untriaged']} untriaged" if counts.get("untriaged") else "")
                 + (f", {counts['needs_human']} needs-human" if counts.get("needs_human") else ""))
@@ -336,7 +342,10 @@ class BacklogRunner:
         # ``products`` (spec §9/§10) carries the SAME rows, structured, for the
         # web's per-product table (Task 5) — the text is the human summary, this
         # is the machine one, built from one loop so they can never disagree.
-        on = _on_products(rows)
+        if counts.get("unassigned_in_flight"):
+            text += f" · {counts['unassigned_in_flight']} unattributed"
+        on = sorted((slug, p) for slug, p in rows.items()
+                    if is_on(p) or p.get("in_flight"))
         products_out = []
         for slug, p in on:
             text += (f" · {slug}: {p.get('dispatch')} · "
@@ -356,7 +365,8 @@ class BacklogRunner:
         pick = getattr(ctx, "backlog_last_pick", None)
         if pick and level != "idle":
             text += f" · {format_pick(pick)}"
-        return AutomationStatus(text=text, level=level, counts=counts, products=products_out)
+        return AutomationStatus(text=text, level=level, counts=counts, products=products_out,
+                                waiting_reason=getattr(ctx, "backlog_waiting_reason", None))
 
     async def on_state_change(self, *, enabled, mode, config, ctx) -> None:
         # The orchestrator's loop reads mode/config each tick; nothing to start here.
@@ -580,6 +590,7 @@ class BacklogRunnerLoop:
         self._spawn_circuit_until: float | None = None  # breaker open until this clock time
         self._consec_spawn_failures = 0             # resets on any successful spawn
         self._no_account_emitted = False            # debounce the skipped_no_account event
+        self._waiting_reason: str | None = None
         self._last_pick: dict | None = None          # queue provenance of the last successful spawn (#990)
 
     async def tick(self) -> None:
@@ -587,6 +598,7 @@ class BacklogRunnerLoop:
             try:
                 await self._refill_and_sweep()
             except Exception:  # pragma: no cover — defensive: a tick must never crash the loop
+                observation_failed(self._ctx)
                 log.warning("backlog_runner.tick_failed", exc_info=True)
 
     # -- refill ------------------------------------------------------------- #
@@ -633,6 +645,7 @@ class BacklogRunnerLoop:
             log.info("backlog_runner.policies_seeded count=%d", n)
 
     async def _refill_and_sweep(self) -> None:
+        self._waiting_reason = None
         await self._maybe_seed_policies()
         mode, config = await self._read_config()
         # Every per-product decision below (dispatch, attempt cap, model) reads
@@ -674,16 +687,18 @@ class BacklogRunnerLoop:
             if len(self._spawns_today) < config["max_spawns_per_day"]:
                 self._circuit_open_emitted = False
                 await self._refill(config)
-            elif not self._circuit_open_emitted:
-                self._circuit_open_emitted = True
-                await self._ctx.emit("warn", "daily spawn cap reached — pausing",
-                                     kind="circuit_open")
+            else:
+                self._waiting_reason = "budget"
+                if not self._circuit_open_emitted:
+                    self._circuit_open_emitted = True
+                    await self._ctx.emit("warn", "daily spawn cap reached — pausing",
+                                         kind="circuit_open")
         # handoff + terminal-watch runs every tick, regardless of mode.
         await self._sweep()
         # Return orphaned claims to the pool (crash-between-claim-and-spawn leak).
         await self._reconcile_dangling()
         # Stash live counts on the ctx so ``BacklogRunner.status(ctx)`` renders
-        # "N implementing, M eligible, K needs-human" instead of always "idle".
+        # "N work in flight, M eligible, K needs-human" from measured claims.
         await self._stash_counts(config)
 
     async def _check_credentials(self) -> None:
@@ -727,52 +742,49 @@ class BacklogRunnerLoop:
                 kind="credential_restored", target=repo, detail={"repo": repo})
 
     async def _stash_counts(self, config: dict) -> None:
-        """Cache the current in-flight / eligible / needs-human counts on the ctx
-        so ``status(ctx)`` can render non-idle text. Best-effort — a count read
-        failure must never break a tick."""
-        try:
-            in_flight = await self._count_in_flight()
-        except Exception:  # pragma: no cover — count read must not stall the tick
-            in_flight = 0
-        needs_human = 0
+        """Publish one claim snapshot; missing measurements never become zeroes.
+
+        Execution still uses its fresh capacity check under the dispatch lock.
+        """
+        counts: dict[str, int] = {}
+        errors: list[str] = []
+        states = None
         try:
             states = await self._ctx.list_target_states()
-            needs_human = sum(1 for s in states.values() if s.get("gave_up"))
-        except Exception:  # pragma: no cover — defensive
-            states = {}
-        # The honest backlog gauge: the true count of eligible, unclaimed issues,
-        # independent of how many runner slots are free (a saturated runner still
-        # reports real depth), plus how many were skipped as dependency-blocked
-        # and how many sit below the configured board status (untriaged).
-        # Best-effort — a query failure reports 0.
-        eligible = 0
-        blocked = 0
-        untriaged = 0
+            counts["in_flight"] = sum(is_in_flight(s) for s in states.values())
+            counts["needs_human"] = sum(bool(s.get("gave_up")) for s in states.values())
+        except Exception:
+            errors.append("workload counts unavailable (the claim read failed)")
         per_product: dict | None = None
         if self._count_candidates is not None:
             try:
                 eligible, blocked, untriaged, per_product = await self._count_candidates()
-            except Exception:  # pragma: no cover — a count read must not stall the tick
-                eligible = blocked = untriaged = 0
-                per_product = None
-        setattr(self._ctx, "backlog_counts", {
-            "in_flight": in_flight,
-            "eligible": eligible,
-            "blocked": blocked,
-            "untriaged": untriaged,
-            "needs_human": needs_human,
-        })
-        # The per-product rows behind the card's per-product segments. Kept OFF
-        # ``backlog_counts`` (which stays int-only: the web types
-        # ``AutomationStatus.counts`` as ``Record<string, number>``). ``None`` is
-        # published DELIBERATELY when the seam reported a failed read — "we don't
-        # know" is its own sentence on the card, and must not render as "no product
-        # has dispatch on". With no seam wired at all the attribute stays absent,
-        # which is the third state: the card keeps rendering its plain summary.
+                if per_product is not None:
+                    counts.update(eligible=eligible, blocked=blocked, untriaged=untriaged)
+            except Exception:
+                pass
+            if per_product is None:
+                errors.append("product counts unavailable (the queue read failed)")
+        if states is not None and per_product is not None:
+            by_product = in_flight_by_product(states)
+            for slug, row in per_product.items():
+                row["in_flight"] = by_product.get(slug, 0)
+            counts["unassigned_in_flight"] = counts["in_flight"] - sum(
+                row["in_flight"] for row in per_product.values())
+        if states is None:
+            per_product = None
+        if not counts and errors:
+            observation_failed(self._ctx)
+            setattr(self._ctx, "backlog_counts", counts)
+        else:
+            publish_observation(self._ctx, "backlog_counts", counts, degraded=bool(errors))
+        human_wait = states is not None and any(
+            s.get("gave_up") or s.get("proposed") for s in states.values())
+        setattr(self._ctx, "backlog_waiting_reason",
+                "human" if human_wait else self._waiting_reason)
+        setattr(self._ctx, "backlog_count_errors", errors)
         if self._count_candidates is not None:
             setattr(self._ctx, "backlog_products", per_product)
-        # Queue provenance (#990): the last successful spawn's pick, if any —
-        # a plain dict, for the same typing reason.
         setattr(self._ctx, "backlog_last_pick", self._last_pick)
 
     async def _reconcile_dangling(self) -> None:
@@ -957,8 +969,11 @@ class BacklogRunnerLoop:
             log.warning("backlog_runner.in_flight_by_product_failed", exc_info=True)
             per_product = {}
         free = config["max_concurrent"] - in_flight
+        if free <= 0:
+            self._waiting_reason = "capacity"
         for _ in range(max(0, free)):
             if len(self._spawns_today) >= config["max_spawns_per_day"]:
+                self._waiting_reason = "budget"
                 if not self._circuit_open_emitted:
                     self._circuit_open_emitted = True
                     await self._ctx.emit("warn", "daily spawn cap reached — pausing",
@@ -1016,6 +1031,7 @@ class BacklogRunnerLoop:
             # rest of its policy. Negative values cannot be stored (validation).
             cap = int(policy["max_in_flight"])
             if batch.product and per_product.get(batch.product, 0) >= cap:
+                self._waiting_reason = "capacity"
                 # Same plan-group burn as the dispatch-off skip above, and the same
                 # reason for ``continue``: one product at its ceiling must not stop
                 # the tick from serving the products that are not.
