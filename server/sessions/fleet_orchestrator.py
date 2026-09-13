@@ -12,6 +12,7 @@ from server.ipc.client import DaemonUnavailable
 from server.usage.process_quota import persist_quota_snapshot
 from server.sessions.display_policy import DISPLAY_VIRTUAL
 from server.sessions.facade import _DEADLINE_ATTR
+from server.sessions import host_upgrade
 from server.sessions.fleet_router import FleetRouter, NoHostAvailable
 from server.sessions.host_engines import expected_contract_sha256
 from server.sessions.engine import AgentEngine, parse_agent_engine
@@ -172,6 +173,18 @@ class FleetOrchestrator:
 
     def _primary_orch(self):
         return self._router.get(self._primary)
+
+    async def _log_unreachable(self, host: str, exc: BaseException, msg: str, *args) -> None:
+        """Skipping an unreachable worker is right either way; the LEVEL depends on why.
+
+        A worker mid-deploy is unreachable on purpose for 30–90 s, several times a day.
+        Logging each failed poll in that window at WARNING fed Error Triage a "daemon
+        unreachable" issue about a host doing exactly what it was told (#1614).
+        """
+        if await host_upgrade.restart_expected(host):
+            log.info(msg + " (restart in progress)", *args)
+        else:
+            log.warning(msg, *args, exc_info=exc)
 
     async def _host_for(self, session_id: str) -> str | None:
         cached = self._host_cache.get(session_id)
@@ -348,8 +361,9 @@ class FleetOrchestrator:
                 if exc is not None:
                     if host == self._primary:
                         raise exc
-                    log.warning("fleet.%s host=%s unreachable; skipping its share "
-                                "this pass", name, host, exc_info=exc)
+                    await self._log_unreachable(
+                        host, exc, "fleet.%s host=%s unreachable; skipping its share "
+                        "this pass", name, host)
                     continue
                 parts.append(res or {})
             return merge(parts)
@@ -404,8 +418,9 @@ class FleetOrchestrator:
             if exc is not None:
                 if name == self._primary:
                     raise exc
-                log.warning("fleet.list_sessions host=%s unreachable; skipping its "
-                            "sessions this pass", name, exc_info=exc)
+                await self._log_unreachable(
+                    name, exc, "fleet.list_sessions host=%s unreachable; skipping its "
+                    "sessions this pass", name)
                 continue
             for rec in recs or []:
                 if not include_assistant and is_assistant(rec):
@@ -497,11 +512,8 @@ class FleetOrchestrator:
             if exc is not None:
                 if host == self._primary:
                     raise exc
-                log.warning(
-                    "fleet.codex_account_status host=%s unreachable; skipping",
-                    host,
-                    exc_info=exc,
-                )
+                await self._log_unreachable(
+                    host, exc, "fleet.codex_account_status host=%s unreachable; skipping", host)
                 continue
             parts.append(result or {})
         merged = _merge_codex_status(parts)

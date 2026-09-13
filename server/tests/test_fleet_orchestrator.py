@@ -932,3 +932,45 @@ async def test_a_router_without_the_method_still_works():
     await fo.list_sessions()
 
     assert a.calls and b.calls, "fell back to no hosts instead of all hosts"
+
+
+@pytest.mark.asyncio
+async def test_unreachable_worker_logs_info_not_warning_while_its_restart_is_expected(caplog):
+    """#1614: a worker mid-deploy is unreachable on purpose. Skipping it is still right,
+    but a WARNING per failed poll turns every deploy into an Error Triage issue."""
+    import logging
+    from server.sessions import host_upgrade
+
+    dobby = _AggOrch("dobby", load={"acctA": 1.0})
+    rocky = _AggOrch("rocky", fail=True)
+    fo = FleetOrchestrator(_FakeRouter({"dobby": dobby, "rocky": rocky}), primary="dobby")
+
+    async def expected(name, **_):
+        return name == "rocky"
+
+    with mock.patch.object(host_upgrade, "restart_expected", expected), \
+         caplog.at_level(logging.INFO, logger="server.sessions.fleet_orchestrator"):
+        assert await fo.live_session_load() == {"acctA": 1.0}
+    rocky_lines = [r for r in caplog.records if "host=rocky" in r.getMessage()]
+    assert rocky_lines, "the skip must still be logged"
+    assert all(r.levelno == logging.INFO for r in rocky_lines), \
+        [(r.levelname, r.getMessage()) for r in rocky_lines]
+    assert all("restart in progress" in r.getMessage() for r in rocky_lines)
+
+
+@pytest.mark.asyncio
+async def test_unreachable_worker_still_warns_when_no_restart_is_expected(caplog):
+    import logging
+    from server.sessions import host_upgrade
+
+    fo = FleetOrchestrator(_FakeRouter({"dobby": _AggOrch("dobby", load={}),
+                                        "rocky": _AggOrch("rocky", fail=True)}), primary="dobby")
+
+    async def not_expected(name, **_):
+        return False
+
+    with mock.patch.object(host_upgrade, "restart_expected", not_expected), \
+         caplog.at_level(logging.INFO, logger="server.sessions.fleet_orchestrator"):
+        await fo.live_session_load()
+    rocky_lines = [r for r in caplog.records if "host=rocky" in r.getMessage()]
+    assert rocky_lines and all(r.levelno == logging.WARNING for r in rocky_lines)

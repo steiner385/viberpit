@@ -27,9 +27,12 @@ def test_derived_paths_share_selected_roots():
     assert hostpaths.DEPLOY_SNAPSHOT_PATH == f"{hostpaths.STATE_DIR}/deploy-snapshot/live.json"
 
 
-def test_consumers_alias_hostpaths():
+def test_consumers_alias_hostpaths(monkeypatch):
     assert ipc_paths.DEFAULT_SOCKET_PATH is hostpaths.SESSIOND_SOCKET
-    assert serve.DEFAULT_DEPLOY_SOCKET is hostpaths.DEPLOY_SOCKET
+    # The controller socket is resolved in ONE place (server.deploy.client) for both the
+    # controller's serve() and the edge's client; the default must still be hostpaths'.
+    monkeypatch.delenv("CCSWITCH_DEPLOY_SOCKET", raising=False)
+    assert serve.deploy_socket() == hostpaths.DEPLOY_SOCKET
     assert serve.DEFAULT_DEPLOY_STATUS_PATH is hostpaths.DEPLOY_STATUS_PATH
     assert deploy_snapshot.DEFAULT_PATH is hostpaths.DEPLOY_SNAPSHOT_PATH
     assert daemon_health._DEFAULT_HEALTH_STATE_DIR is hostpaths.HEALTH_STATE_DIR

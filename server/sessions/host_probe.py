@@ -88,7 +88,14 @@ async def probe_host(name: str, endpoint: str, *, fetch: Fetch,
     except Exception as exc:
         # Record the failure; do NOT leave a previous healthy=True in place.
         values.update(healthy=False, last_error=f"{type(exc).__name__}: {exc}"[:500])
-        log.warning("fleet.probe_failed host=%s endpoint=%s: %s", name, endpoint, exc)
+        # healthy=False regardless — dispatch must avoid the host either way. Only the
+        # log LEVEL depends on whether the outage is a deploy doing its job (#1614).
+        from server.sessions import host_upgrade  # deferred: runners imports this module
+        if await host_upgrade.restart_expected(name):
+            log.info("fleet.probe_failed host=%s endpoint=%s: %s (restart in progress)",
+                     name, endpoint, exc)
+        else:
+            log.warning("fleet.probe_failed host=%s endpoint=%s: %s", name, endpoint, exc)
 
     async with db_session() as db:
         await db.execute(sa_update(Host).where(Host.name == name).values(**values))

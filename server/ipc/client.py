@@ -7,6 +7,8 @@ import time
 from typing import Any
 
 import httpx
+
+from server.http_keepalive import CLIENT_KEEPALIVE_EXPIRY_S
 import websockets
 
 from server.aio import cancel_and_reap
@@ -34,8 +36,10 @@ log = logging.getLogger("server.ipc.client")
 #   connections on the next poll instead of closing 80% of them every time.
 # keepalive_expiry: httpx's 5s default, made explicit. Short on purpose — an idle
 #   connection to a daemon that has since restarted must be discarded, not handed out.
+#   Shared with the daemon's uvicorn via server/http_keepalive.py, whose server-side
+#   timeout must outlive this or the two timers race (#1614).
 _LIMITS = httpx.Limits(max_connections=100, max_keepalive_connections=32,
-                       keepalive_expiry=5.0)
+                       keepalive_expiry=CLIENT_KEEPALIVE_EXPIRY_S)
 
 # The RESERVED HEALTH CHANNEL — a pool of exactly one connection, used by `/info` and
 # nothing else.

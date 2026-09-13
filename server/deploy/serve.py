@@ -7,16 +7,17 @@ import os
 import uvicorn
 
 from server.deploy.app import build_controller_app
+from server.deploy.client import default_socket_path
 from server.deploy.__main__ import _daemon_enabled
-from server.hostpaths import DEPLOY_SOCKET as DEFAULT_DEPLOY_SOCKET, DEPLOY_STATUS_PATH as DEFAULT_DEPLOY_STATUS_PATH
+from server.hostpaths import DEPLOY_STATUS_PATH as DEFAULT_DEPLOY_STATUS_PATH
+from server.http_keepalive import SERVER_KEEPALIVE_TIMEOUT_S
 
 log = logging.getLogger("server.deploy.serve")
 
 
 def deploy_socket() -> str:
-    """Return the UDS socket path for the deploy controller, from CCSWITCH_DEPLOY_SOCKET env
-    or the default under hostpaths.RUN_DIR."""
-    return os.environ.get("CCSWITCH_DEPLOY_SOCKET", DEFAULT_DEPLOY_SOCKET)
+    """The controller's UDS socket path — the same resolution the edge's client uses."""
+    return default_socket_path()
 
 
 def deploy_status_path() -> str:
@@ -44,4 +45,5 @@ def serve(socket_path: str | None = None) -> None:
                                      status_path=deploy_status_path(),
                                      init_db_url=os.environ.get("CCSWITCH_DB_URL", ""))
     log.info("deploy controller serving on %s", sock)
-    uvicorn.run(app, uds=sock, log_level="info")
+    # timeout_keep_alive must outlive the edge's client-pool expiry — server/http_keepalive.py.
+    uvicorn.run(app, uds=sock, log_level="info", timeout_keep_alive=SERVER_KEEPALIVE_TIMEOUT_S)
