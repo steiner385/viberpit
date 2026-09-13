@@ -11,27 +11,81 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
+import time
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from server.deploy import git as deploy_git
+from server.deploy.client import DeployControllerClient, default_socket_path
 from server.deploy.runners import RunnerDeploy, RunnerTarget
 from server.version import repo_root
 
 log = logging.getLogger(__name__)
 
-__all__ = ["start_upgrade", "run_upgrade", "upgrade_wire", "is_running", "default_target_sha"]
+__all__ = ["start_upgrade", "run_upgrade", "upgrade_wire", "is_running", "default_target_sha",
+           "restart_expected"]
 
 _STATE: dict[str, dict[str, Any]] = {}
 
 
 def _reset_state_for_tests() -> None:
     _STATE.clear()
+    _controller_cache.update(at=0.0, hosts={})
 
 
 def is_running(name: str) -> bool:
     st = _STATE.get(name)
     return bool(st and st.get("state") == "running")
+
+
+# --------------------------------------------------------------------------- #
+# "Is this host down ON PURPOSE right now?" — the one predicate the fleet's failure
+# paths (fleet_orchestrator, host_probe) consult before logging a worker as
+# unreachable. A runner restarts on every deploy and is unreachable for 30–90 s each
+# time; logging every failed poll in that window at WARNING turned 19 restarts in
+# 48 h into ~100 warnings and an Error Triage issue about a daemon that was doing
+# exactly what it was told (#1614). Two things restart a host deliberately, and both
+# must be visible here: the Fleet "Update" button (this module's own `_STATE`) and the
+# deploy controller's fan-out — a SEPARATE process, read through its status socket.
+# --------------------------------------------------------------------------- #
+
+# One status read per burst of failures, not one per failure: a restart window fails
+# two RPCs every 5 s plus the probe, and the controller is busy driving the deploy.
+_CONTROLLER_STATUS_TTL_S = 5.0
+_controller_cache: dict[str, Any] = {"at": 0.0, "hosts": {}}
+_controller_client: DeployControllerClient | None = None
+
+
+async def _default_controller_status() -> dict:
+    global _controller_client
+    if _controller_client is None:
+        _controller_client = DeployControllerClient(default_socket_path())
+    return await _controller_client.get_status()
+
+
+async def _controller_hosts(fetch: Callable[[], Awaitable[dict]]) -> dict[str, dict]:
+    now = time.monotonic()
+    if now - _controller_cache["at"] < _CONTROLLER_STATUS_TTL_S:
+        return _controller_cache["hosts"]
+    try:
+        hosts = (await fetch()).get("hosts") or {}
+    except Exception:  # noqa: BLE001 — a logging decision must never raise
+        # No controller, or one that could not answer: no evidence of a deploy. Cached
+        # like a real answer so an absent controller is not re-dialled per failure.
+        hosts = {}
+    _controller_cache.update(at=now, hosts=hosts)
+    return hosts
+
+
+async def restart_expected(name: str, *,
+                           controller_status: Callable[[], Awaitable[dict]] | None = None,
+                           ) -> bool:
+    """True while ``name`` is being brought to a commit by the Fleet UI or the deploy
+    controller — i.e. its daemon being unreachable is expected, not an incident."""
+    if is_running(name):
+        return True
+    hosts = await _controller_hosts(controller_status or _default_controller_status)
+    return (hosts.get(name) or {}).get("state") == "running"
 
 
 def upgrade_wire(name: str) -> dict[str, Any]:

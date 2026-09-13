@@ -168,3 +168,39 @@ def test_probe_records_checkout_sha_separately_from_process_sha(tmp_path):
 
     row = asyncio.run(run())
     assert row.sha == "proc111" and row.checkout_sha == "chk2222"
+
+
+def test_failed_probe_logs_info_while_the_hosts_restart_is_expected(tmp_path, caplog):
+    """#1614: the probe still records healthy=False (dispatch must avoid the host),
+    but a deploy-driven outage is not a WARNING — that is what fed Error Triage."""
+    import logging
+    from unittest import mock
+
+    from sqlalchemy import select as sa_select
+
+    from server.db import db_session
+    from server.db.models import Host
+    from server.sessions import host_upgrade
+    from server.sessions.host_probe import probe_all
+
+    async def failing_fetch(endpoint):
+        raise ConnectionError("connection refused")
+
+    async def expected(name, **_):
+        return True
+
+    async def run():
+        await _seed(tmp_path, "p3.db", Host(name="rocky", endpoint="https://rocky:9443",
+                                            healthy=True))()
+        with mock.patch.object(host_upgrade, "restart_expected", expected), \
+             caplog.at_level(logging.INFO, logger="server.sessions.host_probe"):
+            await probe_all(fetch=failing_fetch)
+        async with db_session() as db:
+            return (await db.execute(
+                sa_select(Host).where(Host.name == "rocky"))).scalars().first()
+
+    row = asyncio.run(run())
+    assert row.healthy is False
+    lines = [r for r in caplog.records if "probe_failed" in r.getMessage()]
+    assert lines and all(r.levelno == logging.INFO for r in lines)
+    assert "restart in progress" in lines[0].getMessage()

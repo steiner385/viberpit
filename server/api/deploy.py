@@ -1,5 +1,4 @@
 from __future__ import annotations
-import os
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -8,8 +7,9 @@ from pydantic import BaseModel
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.db import get_db
-from server.deploy.client import DeployControllerClient, DeployControllerUnavailable
-from server import hostpaths
+from server.deploy.client import (
+    DeployControllerClient, DeployControllerUnavailable, default_socket_path,
+)
 
 router = APIRouter(prefix="/api/deploy", tags=["deploy"])
 
@@ -20,8 +20,7 @@ def deploy_client_for(app) -> DeployControllerClient:
     stubs ``app.state.deploy_client`` steers both."""
     client = getattr(app.state, "deploy_client", None)
     if client is None:
-        sock = os.environ.get("CCSWITCH_DEPLOY_SOCKET", hostpaths.DEPLOY_SOCKET)
-        client = DeployControllerClient(sock)
+        client = DeployControllerClient(default_socket_path())
         app.state.deploy_client = client
     return client
 

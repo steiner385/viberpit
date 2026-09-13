@@ -11,6 +11,7 @@ import uvicorn
 from server.aio import cancel_and_reap
 from server.config import get_settings
 from server.db import init_db
+from server.http_keepalive import SERVER_KEEPALIVE_TIMEOUT_S
 from server.ipc.daemon import create_daemon_app
 from server.ipc.drain_on_signal import install_drain_on_sigterm
 from server.ipc.orchestrator_rpc import register_orchestrator_rpc
@@ -312,5 +313,7 @@ def serve(socket_path: str | None = None) -> None:
         app,
         log_level="info",
         timeout_graceful_shutdown=_DAEMON_GRACEFUL_SHUTDOWN_TIMEOUT_S,
+        # Must outlive the edge pool's keepalive_expiry — see server/http_keepalive.py.
+        timeout_keep_alive=SERVER_KEEPALIVE_TIMEOUT_S,
         **uvicorn_run_kwargs(endpoint, allowlist=client_allowlist()),
     )
