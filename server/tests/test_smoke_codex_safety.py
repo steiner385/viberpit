@@ -11,7 +11,7 @@ import pytest
 
 from scripts import smoke_codex_interactive as smoke
 
-UNSAFE = [
+UNSAFE: list[object] = [
     {}, [], None, {"maxArchivedSessions": 100}, {"maxArchivedSessions": 0},
     {"maxArchivedSessions": False}, {"maxArchivedSessions": "null"},
     {"maxArchivedSessions": []}, "invalid-json", "http-error", "read-error",
