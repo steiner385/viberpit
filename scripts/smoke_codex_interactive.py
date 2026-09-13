@@ -11,7 +11,7 @@ unless the model opt-in and disposable-environment acknowledgement are explicit.
 Use a dedicated isolated edge, daemon and DB with stable unlimited archive
 retention; never a shared fleet. There is no default account or repo:
 
-    CCSWITCH_TEST_CODEX_INTERACTIVE=1 \\
+    VIBERPIT_TEST_CODEX_INTERACTIVE=1 \\
     python scripts/smoke_codex_interactive.py \\
         --account <the-smoke-openai-account> --repo <owner/name> --disposable-environment
 
@@ -185,10 +185,11 @@ async def main() -> int:
               "and DB with stable unlimited archive retention", file=sys.stderr)
         return 2
 
-    if os.environ.get("CCSWITCH_TEST_CODEX_INTERACTIVE") != "1":
+    if os.environ.get("VIBERPIT_TEST_CODEX_INTERACTIVE",
+                      os.environ.get("CCSWITCH_TEST_CODEX_INTERACTIVE")) != "1":
         print(
             "refusing to run: this starts REAL model turns on a REAL account.\n"
-            "Set CCSWITCH_TEST_CODEX_INTERACTIVE=1 and pass --account/--repo "
+            "Set VIBERPIT_TEST_CODEX_INTERACTIVE=1 and pass --account/--repo "
             "explicitly.",
             file=sys.stderr,
         )

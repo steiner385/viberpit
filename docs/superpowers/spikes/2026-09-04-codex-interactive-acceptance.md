@@ -91,7 +91,7 @@ host row. It is now shape-scrubbed and length-capped at the probe.
 Run the scripted portion only on dedicated disposable test runner hosts:
 
 ```bash
-CCSWITCH_TEST_CODEX_INTERACTIVE=1 \
+VIBERPIT_TEST_CODEX_INTERACTIVE=1 \
 python scripts/smoke_codex_interactive.py \
     --account <smoke-account> --repo <owner/name> --disposable-environment [--approvals]
 ```

@@ -31,7 +31,7 @@ def settings_response(request, value):
 
 @pytest.fixture
 def harness(monkeypatch, tmp_path):
-    monkeypatch.setenv("CCSWITCH_TEST_CODEX_INTERACTIVE", "1")
+    monkeypatch.setenv("VIBERPIT_TEST_CODEX_INTERACTIVE", "1")
     monkeypatch.setattr("sys.argv", [
         "smoke_codex_interactive.py", "--account", "test", "--repo", "test/disposable",
         "--runner-home-base", str(tmp_path), "--disposable-environment",
@@ -163,3 +163,28 @@ async def test_archive_failure_is_not_reported_as_success(failure):
     async with httpx.AsyncClient(base_url="http://isolated.test", transport=httpx.MockTransport(handle)) as client:
         await smoke._cleanup(client, ["owned-1"], steps)
     assert smoke._summarize(steps) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("canonical", "legacy", "expected"), [
+    (None, "1", 1), (None, "0", 2), ("1", "0", 1), ("0", "1", 2),
+])
+async def test_model_opt_in_prefers_canonical_flag(harness, monkeypatch, canonical, legacy, expected):
+    if canonical is None:
+        monkeypatch.delenv("VIBERPIT_TEST_CODEX_INTERACTIVE")
+    else:
+        monkeypatch.setenv("VIBERPIT_TEST_CODEX_INTERACTIVE", canonical)
+    monkeypatch.setenv("CCSWITCH_TEST_CODEX_INTERACTIVE", legacy)
+    requests = []
+
+    def handle(request):
+        requests.append((request.method, request.url.path))
+        return httpx.Response(503)
+
+    client = httpx.AsyncClient(base_url="http://isolated.test", transport=httpx.MockTransport(handle))
+    monkeypatch.setattr(smoke.httpx, "AsyncClient", lambda **kw: client)
+    try:
+        assert await smoke.main() == expected
+        assert requests == ([("GET", "/api/settings")] if expected == 1 else [])
+    finally:
+        await client.aclose()
