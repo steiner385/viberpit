@@ -31,6 +31,7 @@ import os
 import re
 import subprocess
 import tempfile
+import uuid
 import unicodedata
 from contextlib import contextmanager
 import sys
@@ -602,6 +603,22 @@ class EvalFixture:
                          "interruptedByRestart": True, "interruptedFromStatus": "in_progress",
                          "summary": "Interrupted mid-turn by the restart; waiting to resume"})
         self.rows = {r["id"]: {**r, "archivedAt": None} for r in rows}
+        self.suggestions = {S2: ["Investigate the failing checkout test, reproduce it, and propose a focused fix."]}
+        from server.sessions.adopt import AdoptionCandidate
+
+        # This offline scenario SIMULATES the enabled adoption capability. It never
+        # reads/changes the live gate or discovers, terminates, or starts a process.
+        self.adoption_candidates = {candidate.claude_session_id: candidate for candidate in (
+            AdoptionCandidate(pid=4242, account="prod-1", cwd="/eval/checkout",
+                claude_session_id="ext-99999999-9999-4999-8999-999999999999",
+                transcript_path="/eval/checkout/transcript.jsonl", name="External checkout session",
+                mapped=True, tracked=False, skip_reason=None,
+                last_activity=now - timedelta(minutes=3), pid_alive=True),
+            AdoptionCandidate(pid=4243, account=None, cwd="/eval/unmapped",
+                claude_session_id="ext-unmapped", transcript_path="/eval/unmapped/transcript.jsonl",
+                name="Unmapped external session", mapped=False, tracked=False, skip_reason="unmapped",
+                last_activity=now - timedelta(minutes=5), pid_alive=True),
+        )}
         self.resume_driver_ids = {sid for sid, row in self.rows.items() if row.get("interruptedByRestart")}
         monday = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now.weekday())
         for sid, name, archived in (
@@ -642,6 +659,16 @@ class EvalFixture:
     def archived(self) -> list[dict[str, Any]]:
         return [{**r, "account": r.get("accountName", r.get("account"))}
                 for r in self.rows.values() if r["archivedAt"] is not None]
+
+    def session_detail(self, row: dict[str, Any], *, heartbeat_snapshot: bool = True) -> dict[str, Any]:
+        from server.api.sessions import _record_to_dict
+        from server.sessions.types import SessionRecord
+
+        # Detail supplies neither cached summary/PRs nor pending permission/question IDs.
+        record = SessionRecord.from_dict({"cols": 80, "rows": 24, "cwd": "",
+                                          **row, "account": row["accountName"]})
+        return _record_to_dict(record, repo=record.repo, heartbeats={} if heartbeat_snapshot else None,
+                               heartbeats_now=self.now.replace(tzinfo=None))
 
     def automations(self) -> list[dict[str, Any]]:
         return [{**r, "lastRun": (self.now - timedelta(minutes=5)).isoformat() if r["lastRun"] else None}
@@ -815,6 +842,38 @@ class EvalFixture:
             if method == "GET" and not tail:
                 return httpx.Response(200, json=template)
             return httpx.Response(404)
+        if path == "/api/sessions/adoptable" and method == "GET":
+            from server.sessions.adopt import candidate_to_wire
+
+            return httpx.Response(200, json={"candidates": [
+                candidate_to_wire(candidate) for candidate in self.adoption_candidates.values()]})
+        if path == "/api/sessions/adopt" and method == "POST":
+            from dataclasses import replace
+            from server.api.sessions import AdoptRequest
+
+            try:
+                adoption = AdoptRequest.model_validate(body)
+            except ValidationError:
+                return httpx.Response(422, json={"detail": "invalid adoption request"})
+            candidate = self.adoption_candidates.get(adoption.claudeSessionId)
+            if candidate is None or not candidate.mapped or candidate.tracked:
+                return httpx.Response(409, json={"detail": "session no longer adoptable"})
+            sid = str(uuid.uuid4())
+            adopted_row = {"id": sid, "name": candidate.name, "accountName": candidate.account,
+                           "engineSessionId": candidate.claude_session_id, "cwd": candidate.cwd,
+                           "repo": None, "status": "idle", "archivedAt": None,
+                           "adoptedInPlace": True, "lastTurnAt": candidate.last_activity.isoformat()}
+            self.rows[sid] = adopted_row
+            self.adoption_candidates[adoption.claudeSessionId] = replace(
+                candidate, tracked=True, skip_reason="tracked", pid_alive=False)
+            return httpx.Response(201, json={"session": self.session_detail(adopted_row, heartbeat_snapshot=False),
+                                            "resumed": True, "terminatedPid": candidate.pid})
+        if method == "POST" and path.startswith("/api/sessions/") and path.endswith("/suggest"):
+            sid = path[len("/api/sessions/"):-len("/suggest")]
+            if sid not in self.rows or self.rows[sid]["archivedAt"] is not None:
+                return httpx.Response(404, json={"detail": {
+                    "code": "not_found", "message": f"Session {sid!r} not found"}})
+            return httpx.Response(200, json={"suggestions": self.suggestions.get(sid, [])})
         if path.startswith("/api/sessions/") and not path.startswith("/api/sessions/batch/"):
             sid, _, tail = path[len("/api/sessions/"):].partition("/")
             action = ("archive" if method == "DELETE" and not tail else
@@ -1001,24 +1060,13 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
             return httpx.Response(404, json={"error": {"code": "NOT_FOUND", "message": path}})
         if path.startswith("/api/sessions/") and path.endswith("/transcript"):
             return httpx.Response(200, json=_transcript(path.split("/")[3]))
-        if path == "/api/sessions/adoptable":
-            return httpx.Response(200, json={"candidates": []})
         if path.startswith("/api/sessions/"):
             sid = path.split("/")[3]
             row = fixture.rows.get(sid)
             if row is None:
                 return httpx.Response(
                     404, json={"error": {"code": "SESSION_NOT_FOUND", "message": "no such session"}})
-            from server.api.sessions import _record_to_dict
-            from server.sessions.types import SessionRecord
-
-            # The detail endpoint supplies neither cached summary nor PRs. Pending
-            # permission/question IDs are not fields of its canonical serializer.
-            record = SessionRecord.from_dict({**row, "account": row["accountName"],
-                                              "cols": 80, "rows": 24, "cwd": ""})
-            return httpx.Response(200, json=_record_to_dict(
-                record, repo=record.repo, heartbeats={},
-                heartbeats_now=fixture.now.replace(tzinfo=None)))
+            return httpx.Response(200, json=fixture.session_detail(row))
         return httpx.Response(404, json={"error": {"code": "NOT_FOUND", "message": path}})
 
     if method == "POST" and path == "/api/pipeline/pr/ready-merge":

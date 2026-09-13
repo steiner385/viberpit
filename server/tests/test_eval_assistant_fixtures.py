@@ -490,3 +490,112 @@ def test_notification_preview_negative_and_critical_controls():
         assert result['deliver'] is True and result['suppressedByQuiet'] is False
         assert result['matchedRuleId'] == rule['id']
         assert c.post('/api/notifications/test', json={'eventClass': None}).status_code == 422
+
+
+def test_suggestions_are_contentful_empty_or_missing_without_session_mutation():
+    fixture = ev.EvalFixture()
+    with client(fixture) as c:
+        before = c.get('/api/sessions').json()
+        response = c.post(f'/api/sessions/{ev.S2}/suggest')
+        assert response.status_code == 200
+        assert set(response.json()) == {'suggestions'}
+        assert response.json()['suggestions']
+        assert all(isinstance(s, str) for s in response.json()['suggestions'])
+        assert c.post(f'/api/sessions/{ev.S1}/suggest').json() == {'suggestions': []}
+        assert c.post('/api/sessions/missing/suggest').status_code == 404
+        assert c.get('/api/sessions').json() == before
+
+
+def test_adoption_candidates_and_transition_use_canonical_contracts():
+    from server.sessions.adopt import candidate_to_wire
+
+    fixture = ev.EvalFixture()
+    target = 'ext-99999999-9999-4999-8999-999999999999'
+    with client(fixture) as c:
+        before = c.get('/api/sessions').json()
+        candidates = c.get('/api/sessions/adoptable').json()['candidates']
+        assert candidates == [candidate_to_wire(row) for row in fixture.adoption_candidates.values()]
+        eligible = next(row for row in candidates if row['claudeSessionId'] == target)
+        negative = next(row for row in candidates if row['skipReason'])
+        assert eligible['mapped'] and eligible['pidAlive'] and not eligible['tracked']
+        for sid in ('missing', negative['claudeSessionId']):
+            assert c.post('/api/sessions/adopt', json={'claudeSessionId': sid}).status_code == 409
+        assert c.post('/api/sessions/adopt', json={}).status_code == 422
+        response = c.post('/api/sessions/adopt', json={'claudeSessionId': target})
+        assert response.status_code == 201
+        outcome = response.json()
+        assert set(outcome) == {'session', 'resumed', 'terminatedPid'}
+        assert outcome['resumed'] is True
+        assert outcome['terminatedPid'] == eligible['pid']
+        record = outcome['session']
+        assert record['adoptedInPlace'] is True
+        assert record['engineSessionId'] == target
+        detail = c.get('/api/sessions/' + record['id']).json()
+        assert {key: detail[key] for key in record} == record
+        assert set(detail) - set(record) == {'liveness', 'lastConfirmedAliveAt'}
+        assert len(c.get('/api/sessions').json()) == len(before) + 1
+        assert all(row in c.get('/api/sessions').json() for row in before)
+        assert c.post('/api/sessions/adopt', json={'claudeSessionId': target}).status_code == 409
+        tracked = next(row for row in c.get('/api/sessions/adoptable').json()['candidates']
+                       if row['claudeSessionId'] == target)
+        assert tracked['tracked'] and tracked['skipReason'] == 'tracked'
+        assert c.get('/api/sessions/adoptable').json()['candidates'][1] == negative
+    assert not ev.EvalFixture().adoption_candidates[target].tracked
+
+
+@pytest.mark.asyncio
+async def test_suggestion_fixture_matches_real_route_with_offline_orchestrator(monkeypatch):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from server.api import sessions
+
+    fixture = ev.EvalFixture()
+
+    class OfflineOrchestrator:
+        async def get_session(self, sid):
+            return fixture.rows.get(sid)
+
+        async def generate_suggestions_now(self, sid):
+            return fixture.suggestions.get(sid)
+
+    monkeypatch.setattr(sessions, '_get_orchestrator', lambda request: OfflineOrchestrator())
+    with client(fixture) as c:
+        for sid in (ev.S1, ev.S2):
+            actual = await sessions.generate_session_suggestions(sid, SimpleNamespace(), 'eval')
+            assert c.post(f'/api/sessions/{sid}/suggest').json() == actual
+        with pytest.raises(HTTPException) as error:
+            await sessions.generate_session_suggestions('missing', SimpleNamespace(), 'eval')
+        assert error.value.status_code == c.post('/api/sessions/missing/suggest').status_code
+
+
+@pytest.mark.asyncio
+async def test_adoption_fixture_matches_real_route_with_offline_orchestrator(monkeypatch):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from server.api import sessions
+    from server.sessions.types import SessionRecord
+
+    fixture = ev.EvalFixture()
+    target = next(iter(fixture.adoption_candidates))
+    with client(fixture) as c:
+        response = c.post('/api/sessions/adopt', json={'claudeSessionId': target})
+    row = fixture.rows[response.json()['session']['id']]
+    record = SessionRecord.from_dict({**row, 'account': row['accountName'], 'cols': 80, 'rows': 24})
+
+    class OfflineOrchestrator:
+        async def adopt_session(self, sid, identity):
+            if sid != target:
+                raise KeyError(sid)
+            return record, {'resumed': True, 'terminatedPid': 4242}
+
+    # Simulated enabled capability only; never modify Settings or the live gate.
+    monkeypatch.setattr(sessions, '_require_adoption_enabled', lambda: None)
+    monkeypatch.setattr(sessions, '_get_orchestrator', lambda request: OfflineOrchestrator())
+    actual = await sessions.adopt_session_route(
+        sessions.AdoptRequest(claudeSessionId=target), SimpleNamespace(), 'eval')
+    assert actual == response.json()
+    assert next(route for route in sessions.router.routes if route.path == '/api/sessions/adopt').status_code == response.status_code
+    with pytest.raises(HTTPException) as error:
+        await sessions.adopt_session_route(
+            sessions.AdoptRequest(claudeSessionId='missing'), SimpleNamespace(), 'eval')
+    assert error.value.status_code == 409
