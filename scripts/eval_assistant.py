@@ -1039,6 +1039,8 @@ def _instrumented_tools(observed: list[str], *, operator: bool = False,
         original = t.handler
 
         async def wrapped(args: dict[str, Any], _orig=original, _name=t.name) -> dict[str, Any]:
+            if evidence.unexpected_tool or evidence.helper_error:
+                raise EvalIsolationError("evaluation_stopped")
             observed.append(_name)
             invocation = {"index": len(evidence.invocations), "name": _name,
                           "arguments": json.loads(_redacted_json(args)),
@@ -1108,40 +1110,80 @@ async def _evidence_stream(query_fn: Callable[..., Any], *, prompt: str, options
     """Consume only text and tool-name signals; never retain native metadata."""
     from claude_agent_sdk import (AssistantMessage, ResultMessage, ServerToolUseBlock,
                                   SystemMessage, ToolUseBlock)
+    from server.aio import cancel_and_reap
     from server.audit import redact_text
 
-    # Retry messages remain in the trace; a later answer cannot erase earlier actions.
+    # Public SDK query() wraps another async generator without forwarding aclose().
+    # Own its consumer task instead: its ONLY suspension points are inside query(),
+    # so cancellation traverses the SDK's active await chain and runs native cleanup.
+    # Evidence is recorded here synchronously, preserving text/action chronology.
+    # A single event wakes the owner on completion or rejection; no queued backlog.
+    stop = asyncio.Event()
+    error: Exception | None = None
+    result: ResultMessage | None = None
     evidence.final_response = ""
-    async for message in query_fn(prompt=prompt, options=options):
-        if isinstance(message, SystemMessage) and message.subtype == "init":
-            advertised = message.data.get("tools", [])
-            if not isinstance(advertised, list) or any(not isinstance(name, str) or name not in allowed for name in advertised):
-                evidence.unexpected_tool = True
-        if isinstance(message, AssistantMessage):
-            if message.error is not None:
-                evidence.helper_error = True
-            for block in message.content:
-                if isinstance(block, (ToolUseBlock, ServerToolUseBlock)):
-                    if block.name not in allowed:
-                        evidence.unexpected_tool = True
-                    else:
-                        evidence.record({"kind": "tool_requested", "name": block.name})
-                    evidence.final_response = ""
-                text = getattr(block, "text", None)
-                if isinstance(text, str):
-                    event: dict[str, Any] = {"text": redact_text(text), "after_invocations": len(evidence.invocations)}
-                    evidence.text_events.append(event)
-                    evidence.final_response += event["text"]
-                    evidence.record({"kind": "assistant_text", **event})
-        if isinstance(message, ResultMessage):
-            if message.is_error:
-                evidence.helper_error = True
-            elif message.result:
-                evidence.final_response = redact_text(message.result)
-        if evidence.unexpected_tool:
-            evidence.record({"kind": "boundary_failure", "error": "unexpected_native_tool"})
-            raise EvalIsolationError("unexpected_native_tool")
-        yield message
+
+    async def consume() -> None:
+        nonlocal error, result
+        try:
+            async for message in query_fn(prompt=prompt, options=options):
+                if evidence.unexpected_tool or error is not None:
+                    continue  # Await owner cancellation inside query(), never act again.
+                try:
+                    if isinstance(message, SystemMessage) and message.subtype == "init":
+                        advertised = message.data.get("tools", [])
+                        if not isinstance(advertised, list) or any(not isinstance(name, str) or name not in allowed for name in advertised):
+                            evidence.unexpected_tool = True
+                    if isinstance(message, AssistantMessage):
+                        if message.error is not None:
+                            evidence.helper_error = True
+                        for block in message.content:
+                            if isinstance(block, (ToolUseBlock, ServerToolUseBlock)):
+                                if block.name not in allowed:
+                                    evidence.unexpected_tool = True
+                                else:
+                                    evidence.record({"kind": "tool_requested", "name": block.name})
+                                evidence.final_response = ""
+                            text = getattr(block, "text", None)
+                            if isinstance(text, str):
+                                event: dict[str, Any] = {"text": redact_text(text), "after_invocations": len(evidence.invocations)}
+                                evidence.text_events.append(event)
+                                evidence.final_response += event["text"]
+                                evidence.record({"kind": "assistant_text", **event})
+                    if isinstance(message, ResultMessage):
+                        result = message
+                        if message.is_error:
+                            evidence.helper_error = True
+                        elif message.result:
+                            evidence.final_response = redact_text(message.result)
+                    if evidence.unexpected_tool:
+                        evidence.record({"kind": "boundary_failure", "error": "unexpected_native_tool"})
+                        stop.set()
+                except Exception as exc:
+                    # A recorder failure must also unwind through query(), not escape
+                    # its loop body while the SDK's inner generator is suspended.
+                    error = exc
+                    evidence.helper_error = True
+                    stop.set()
+        except Exception as exc:
+            error = exc  # Classify through run_helper_call; never log native diagnostics.
+        finally:
+            stop.set()
+
+    consumer = asyncio.create_task(consume())
+    try:
+        await stop.wait()
+    finally:
+        # Do not return a safety stop or release cwd while the native query is alive.
+        await cancel_and_reap(consumer, phase="eval-assistant.query")
+    if evidence.unexpected_tool:
+        raise EvalIsolationError("unexpected_native_tool")
+    if consumer.cancelled() and error is None:
+        raise asyncio.CancelledError
+    if result is not None:
+        yield result  # Helper classification needs only the native API result status.
+    if error is not None:
+        raise error
 
 
 async def run_turn(

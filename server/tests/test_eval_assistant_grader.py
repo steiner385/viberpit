@@ -519,3 +519,107 @@ def test_run_metadata_has_hashes_models_clock_and_no_auth(tmp_path):
     assert len(metadata['checkout_commit']) == 40
     assert set(metadata) == {'model', 'judge_model', 'fixture_now', 'cases_sha256', 'selected_cases_sha256',
                              'checkout_commit', 'checkout_dirty', 'started_at'}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('consumer', ['assistant', 'judge'])
+@pytest.mark.parametrize('ending', ['normal', 'advertisement', 'tool_use', 'cancel', 'failure'])
+async def test_query_cleanup_is_awaited_before_cwd_removal(isolated_query, consumer, ending):
+    import asyncio
+    from claude_agent_sdk import AssistantMessage, SystemMessage, ToolUseBlock
+
+    source, *_ = isolated_query
+    retained = []
+    entered = asyncio.Event()
+    closed = []
+
+    async def inner(options):
+        try:
+            entered.set()
+            if ending == 'advertisement':
+                yield SystemMessage('init', {'tools': ['Bash']})
+            elif ending == 'tool_use':
+                yield AssistantMessage([ToolUseBlock('x', 'Bash', {})], 'fake')
+            else:
+                yield _message('PASS - evidence supported')
+            if ending in {'advertisement', 'tool_use', 'cancel'}:
+                await asyncio.Event().wait()
+            if ending == 'failure':
+                raise RuntimeError('private native diagnostic')
+        finally:
+            # A real asynchronous cleanup, not a synchronous finally flag or GC check.
+            await asyncio.sleep(0)
+            assert Path(options.cwd).exists()
+            closed.append(options.cwd)
+
+    async def public_query(**kwargs):
+        # Mirrors public SDK query(): its async-for wrapper does NOT aclose inner.
+        stream = inner(kwargs['options'])
+        retained.append(stream)
+        async for message in stream:
+            yield message
+
+    async def run():
+        if consumer == 'assistant':
+            return await eval_assistant.run_turn(_case(), config_dir=str(source), model='sonnet', query_fn=public_query)
+        return await eval_assistant.judge_rubric(_case(rubric='answer'),
+            eval_assistant.TurnEvidence(final_response='answer'), config_dir=str(source), query_fn=public_query)
+
+    if ending == 'cancel':
+        task = asyncio.create_task(run())
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        await run()
+    assert retained
+    assert len(closed) == 1
+    assert not Path(closed[0]).exists()
+
+
+@pytest.mark.asyncio
+async def test_rejected_query_cannot_execute_later_fixture_calls(isolated_query):
+    import asyncio
+    from claude_agent_sdk import SystemMessage
+    source, _, _, _, registry = isolated_query
+    denied = []
+    async def query_fn(**kwargs):
+        yield SystemMessage('init', {'tools': ['Bash']})
+        # Buffered native work can be available before the owner gets its next tick.
+        with pytest.raises(eval_assistant.EvalIsolationError):
+            await registry['list_sessions'].handler({})
+        denied.append(True)
+        await asyncio.Event().wait()
+    evidence, outcome = await eval_assistant.run_turn(_case(), config_dir=str(source), model='sonnet', query_fn=query_fn)
+    assert denied == [True]
+    assert evidence.unexpected_tool and outcome.error is not None
+    assert evidence.invocations == []
+
+
+@pytest.mark.asyncio
+async def test_recorder_failure_also_awaits_nested_query_cleanup(isolated_query):
+    import asyncio
+    source, *_ = isolated_query
+    closed = []
+    retained = []
+    async def inner(options):
+        try:
+            yield _message('visible text')
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            assert Path(options.cwd).exists()
+            closed.append(True)
+    async def query_fn(**kwargs):
+        stream = inner(kwargs['options'])
+        retained.append(stream)
+        async for message in stream:
+            yield message
+    def failed_record(event):
+        raise OSError('private evidence write failure')
+    evidence = eval_assistant.TurnEvidence(emit=failed_record)
+    _, outcome = await eval_assistant.run_turn(_case(), config_dir=str(source), model='sonnet',
+                                              query_fn=query_fn, evidence=evidence)
+    assert retained and closed == [True]
+    assert evidence.helper_error and outcome.error is not None
