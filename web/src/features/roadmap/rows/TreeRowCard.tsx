@@ -13,6 +13,7 @@ import { badgedName } from '@/ui/badgedName'
 import { CAPABILITY, PRODUCT } from '@/features/products/vocab'
 import { TIER_ACCENT, TIER_TONE, tierLabel } from '../roadmapTier'
 import type { TreeRow } from '../treeRows'
+import { needsYouCount } from '../detail/needsYou'
 import { indentClass } from './indent'
 import { TierDot } from './TierDot'
 import { FoldChevron } from './FoldChevron'
@@ -79,9 +80,7 @@ export function TreeRowCard({ row, selected, focusable, onOpen, onToggle, onOpen
   const meta = isProduct
     ? `${row.product.counts.capabilities} ${CAPABILITY.plural.toLowerCase()}`
     : `${row.capability.counts.openIssues} open`
-  const counts = isProduct ? row.product.counts : row.capability.counts
-  // One attention count per row: what needs a human first, else what is stuck.
-  const attention = counts.needsYou || counts.blocked
+  const attention = needsYouCount([row.product], isProduct ? undefined : row.capability)
 
   return (
     <div

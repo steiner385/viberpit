@@ -108,7 +108,7 @@ const mount = (initial = '/roadmap/kindash') =>
 /** The stat tile for a label, matched on its `dt` — the tab strip repeats the
  *  same words, and a plain text match would find the tab instead. */
 const tile = (label: string) =>
-  screen.getAllByText(label).find((el) => el.tagName === 'DT')?.closest('div')
+  screen.getAllByText(label).find((el) => el.closest('dt'))?.closest('div')
 
 beforeEach(() => {
   Object.assign(projectQuery, { data: PROJECT, isLoading: false, isError: false })

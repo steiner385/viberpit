@@ -38,9 +38,9 @@ export function PortfolioDetail({ map }: { map: RoadmapMap }) {
       <StatTiles
         tiles={[
           { label: PRODUCT.plural, value: products.length },
-          { label: TIER_LABEL['in-flight'], value: inFlight, tone: 'success' },
-          { label: TIER_LABEL.blocked, value: blocked, tone: 'danger' },
-          { label: TIER_LABEL['needs-you'], value: needsYou, tone: 'warning' },
+          { label: TIER_LABEL['in-flight'], value: inFlight, tone: 'success', onClick: () => setTab('initiatives') },
+          { label: TIER_LABEL.blocked, value: blocked, tone: 'danger', onClick: () => setTab('needs-you') },
+          { label: TIER_LABEL['needs-you'], value: needsYou, tone: 'warning', onClick: () => setTab('needs-you') },
         ]}
       />
       <Tabs

@@ -115,7 +115,7 @@ function mount(
 /** The stat tile for a label, matched on its `dt` — the tab strip repeats the
  *  same words, and a plain text match would find the tab instead. */
 const tile = (label: string) =>
-  screen.getAllByText(label).find((el) => el.tagName === 'DT')?.closest('div')
+  screen.getAllByText(label).find((el) => el.closest('dt'))?.closest('div')
 
 beforeEach(() => {
   Object.assign(leavesQuery, { data: LEAVES, isLoading: false, isError: false })
@@ -124,6 +124,27 @@ beforeEach(() => {
 })
 
 describe('CapabilityDetail', () => {
+  it('offers a next step from Overview and includes attention issues in Needs you', () => {
+    const attentionCap = cap({ slug: 'auth', title: 'Authentication', tier: 'needs-you', state: 'live',
+      counts: { openIssues: 1, needsYou: 1, blocked: 0, inFlight: 0 } })
+    const attentionProduct = product({ slug: 'kindash', capabilities: [attentionCap] })
+    leavesQuery.data = [leaf({ id: 'attention', number: 42, title: 'Restore login', tier: 'needs-you' })]
+    mount({ product: attentionProduct, capability: attentionCap })
+    expect(tile('Needs you')).toHaveTextContent('1')
+    fireEvent.click(screen.getByRole('button', { name: 'Review what needs you' }))
+    expect(screen.getByRole('tab', { name: /Needs you/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('#42 Restore login')).toBeInTheDocument()
+    expect(screen.queryByText('Nothing needs you')).not.toBeInTheDocument()
+  })
+
+  it('opens the issue list directly from the Overview action', () => {
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Review issues' }))
+    expect(screen.getByRole('tab', { name: /Issues/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('#7 Bulk edit')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /Issues/ })).toHaveFocus()
+  })
+
   it('Overview: state, tier, PR, summary and the feature doc at its SHA', () => {
     mount({ primaryRepo: 'cairnea/KinDash' })
     expect(screen.getByText('Delivering')).toBeInTheDocument()
@@ -202,8 +223,8 @@ describe('CapabilityDetail', () => {
     expect(tile('In flight')).toHaveTextContent('2')
     expect(screen.getByRole('tab', { name: 'In flight (2)' })).toBeInTheDocument()
     expect(tile('Blocked')).toHaveTextContent('2')
-    expect(tile('Needs you')).toHaveTextContent('1')
-    expect(screen.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toBeInTheDocument()
+    expect(tile('Needs you')).toHaveTextContent('3') // one initiative and two blocked issues
+    expect(screen.getByRole('tab', { name: 'Needs you (3, needs attention)' })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Sub-capabilities (1)' })).toBeInTheDocument()
   })
 
@@ -278,9 +299,10 @@ describe('CapabilityDetail', () => {
     // section-header rows, which all share the listitem role but are not leaf rows.
     const items = screen.getAllByRole('listitem')
       .filter((el) => el.closest('[aria-label="Blocked by"]') === null && el.querySelector('h3') === null)
-    expect(items[0]).toHaveTextContent('Bulk edit')
-    expect(items[0]).toHaveTextContent('session')
-    expect(items[0]).toHaveTextContent('6.5')
+    expect(items[0]).toHaveTextContent('Blocked one')
+    expect(items[1]).toHaveTextContent('Bulk edit')
+    expect(items[1]).toHaveTextContent('session')
+    expect(items[1]).toHaveTextContent('6.5')
     expect(screen.getByRole('link', { name: /#7 Bulk edit/ })).toHaveAttribute('href', 'https://x/7')
     expect(screen.getByLabelText('1 blocker')).toBeInTheDocument()
     // Closed leaves are kept, but below a heading that says what they are.
@@ -342,4 +364,29 @@ describe('CapabilityDetail', () => {
     // capability that scoped them in would double-count them on every page.
     expect(screen.queryByText(/awaiting triage/)).toBeNull()
   })
+})
+
+it('explains issue-only attention on Overview and opens its actions', () => {
+  const capability = cap({ slug: 'reauth', title: 'Re-authentication', tier: 'needs-you', counts: { openIssues: 1, needsYou: 1, blocked: 0, inFlight: 0 } })
+  mount({ product: product({ slug: 'p', capabilities: [capability] }), capability })
+  expect(tile('Needs you')).toHaveTextContent('1')
+  expect(screen.getByText(/1 item needs attention/)).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: 'Review what needs you' })).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Needs you: 1' }))
+  expect(screen.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toHaveAttribute('aria-selected', 'true')
+  expect(screen.queryByText('Nothing needs you')).toBeNull()
+})
+
+it('routes descendant-only issue attention to the child and retains a blocked initiative', () => {
+  const child = cap({ slug: 'child', title: 'Child', counts: { openIssues: 1, needsYou: 1, blocked: 0, inFlight: 0 } })
+  const capability = cap({ slug: 'parent', children: [child], counts: { openIssues: 1, needsYou: 1, blocked: 1, inFlight: 0 } })
+  const p = product({ slug: 'p', capabilities: [capability], initiatives: [
+    ini({ slug: 'stalled', title: 'Stalled work', projectSlug: 'p', primaryCapability: 'parent', tier: 'blocked', reason: 'blocked' }),
+    ini({ slug: 'other', title: 'Other work', projectSlug: 'p', primaryCapability: 'elsewhere', tier: 'blocked' }),
+  ] })
+  mount({ product: p, capability }, '/roadmap/p/capabilities/parent?tab=needs-you')
+  expect(screen.getByRole('link', { name: 'Review issues in Child' })).toHaveAttribute('href', '/roadmap/p/capabilities/child?tab=needs-you')
+  expect(screen.getByRole('link', { name: 'Review blocker' })).toHaveAttribute('href', '/initiatives/stalled')
+  expect(screen.queryByText('Other work')).toBeNull()
+  expect(tile('Needs you')).toHaveTextContent('2')
 })

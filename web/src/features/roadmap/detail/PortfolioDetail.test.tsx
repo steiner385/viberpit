@@ -46,7 +46,7 @@ const here = () => screen.getByTestId('here').textContent
 /** The stat tile for a label. Matched on the `dt` because "Needs you" is also a
  *  tab label, and the tab would otherwise match too. */
 const tile = (label: string) =>
-  screen.getAllByText(label).find((el) => el.tagName === 'DT')?.closest('div')
+  screen.getAllByText(label).find((el) => el.closest('dt'))?.closest('div')
 
 describe('PortfolioDetail', () => {
   it('shows stat tiles and the Needs-you tab by default', () => {

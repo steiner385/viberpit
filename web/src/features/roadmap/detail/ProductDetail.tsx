@@ -77,9 +77,9 @@ export function ProductDetail({ product }: { product: ProductNode }) {
           // server's rollup also counts issue tiers, so the tile would read a
           // different number from the tab badge beside it. (The issue-level
           // count belongs to the capability tiles.)
-          { label: TIER_LABEL['in-flight'], value: inFlight.length, tone: 'success' },
-          { label: TIER_LABEL.blocked, value: c.blocked, tone: 'danger' },
-          { label: TIER_LABEL['needs-you'], value: needsYou, tone: 'warning' },
+          { label: TIER_LABEL['in-flight'], value: inFlight.length, tone: 'success', onClick: () => setTab('in-flight') },
+          { label: TIER_LABEL.blocked, value: c.blocked, tone: 'danger', onClick: () => setTab('needs-you') },
+          { label: TIER_LABEL['needs-you'], value: needsYou, tone: 'warning', onClick: () => setTab('needs-you') },
         ]}
       />
       <Tabs
@@ -100,6 +100,7 @@ export function ProductDetail({ product }: { product: ProductNode }) {
           <>
             {/* Below the tiles above: a notice, not a tile, so it does not
                 compete with the counts for the top of the page. */}
+            <NeedsYouList products={[product]} overview />
             <RoadmapHealthCard productSlug={product.slug} />
             {isLoading && !project
               ? <Skeleton lines={3} />

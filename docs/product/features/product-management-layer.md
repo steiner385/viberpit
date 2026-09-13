@@ -100,6 +100,20 @@ under the nav section `roadmap`, on the same master/detail chassis as Sessions:
   their css are deleted. The queue's depth badges the **Roadmap** nav entry, which is what points
   at it from outside the section now that Triage is not a section.
 
+**Acting on attention.** Product and capability overviews show **Next actions** with links to
+initiative decisions, issue lists, and proposal triage. **Needs you** uses the same selection for
+its map badge, summary tile, and tab: initiatives needing input or blocked, direct issue groups
+per capability, and product triage groups. A capability includes attention under its descendants;
+issue groups link to the capability that owns those issues. The selected capability shows its
+attention issues inline, with guidance and actions. Counts include individual attention issues
+plus initiative and product triage rows. Incidents retain their separate live queue.
+
+Click a summary tile to open its corresponding work list. Issues needing input appear before
+blocked and other open issues. An issue that needs a spec explains that its description needs
+clearer requirements and acceptance criteria; blockers retain their Remove action, and rows
+associated with a session offer **View sessions**. GitHub remains the issue discussion and editing
+surface. A **Live** capability can still have outstanding work requiring a decision.
+
 Still owed by that spec: issue leaves and inline overlay edits (phase 4), the Queue scope and the
 Inbox's "Needs a home" Reclassify control (phase 6).
 

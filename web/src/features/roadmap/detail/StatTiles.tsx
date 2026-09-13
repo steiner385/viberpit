@@ -9,6 +9,7 @@ export interface StatTile {
   value: number
   /** Colours the number only; an untoned tile stays in primary ink. */
   tone?: Tone
+  onClick?: () => void
 }
 
 export function StatTiles({ tiles }: { tiles: StatTile[] }) {
@@ -17,8 +18,12 @@ export function StatTiles({ tiles }: { tiles: StatTile[] }) {
     // in 390px without the page scrolling sideways (page contract §2.3).
     <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
       {tiles.map((t) => (
-        <div key={t.label} className="rounded-md border border-edge bg-surface p-3">
-          <dt className="text-xs text-ink-muted">{t.label}</dt>
+        <div key={t.label} className="relative rounded-md border border-edge bg-surface p-3">
+          <dt className="text-xs text-ink-muted">
+            {t.onClick
+              ? <button type="button" onClick={t.onClick} aria-label={`${t.label}: ${t.value}`} className="after:absolute after:inset-0 after:rounded-md hover:text-accent focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-accent">{t.label}</button>
+              : t.label}
+          </dt>
           <dd className={cn('text-2xl font-semibold tabular-nums', t.tone ? TONE_TEXT[t.tone] : 'text-ink')}>
             {t.value}
           </dd>
