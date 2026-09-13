@@ -165,6 +165,9 @@ assistant mutation does not make subsequent harness cleanup safe.
   evaluates the rubric against ordered tool arguments/results and user-visible narration.
   Both model calls use isolated helper configuration and working directories with inherited
   settings disabled; the assistant is restricted to fixture tools and the judge has no tools.
+  Real model runs still need access to the canonical credential store/keyring: preserve the
+  working user D-Bus context and do not carry a fake unit-test `DBUS_SESSION_BUS_ADDRESS` override
+  into a real evaluation.
   Sanitized public summaries get unique `results-<date>-<suffix>.md` filenames. Redacted private
   JSONL traces are flushed incrementally to a unique temporary directory (0700, files 0600),
   whose location is printed at startup; never commit these traces.
