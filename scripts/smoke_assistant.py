@@ -32,9 +32,18 @@ import asyncio
 import json
 import sys
 import time
+from typing import TYPE_CHECKING
 
 import httpx
 import websockets
+
+# Support both direct script execution and package imports in offline tests.
+if TYPE_CHECKING:
+    from scripts.smoke_safety import retention_is_safe
+elif __package__ in (None, ""):
+    from smoke_safety import retention_is_safe
+else:
+    from .smoke_safety import retention_is_safe
 
 PASS = "PASS"
 FAIL = "FAIL"
@@ -94,25 +103,6 @@ async def _read_tool_call_audit(db_url: str, identity: str, tool: str) -> bool:
         await engine.dispose()
 
 
-async def _retention_is_safe(http: httpx.AsyncClient, step: Step) -> bool:
-    """Fail closed: archiving can permanently purge unrelated retained sessions."""
-    try:
-        response = await http.get("/api/settings")
-        response.raise_for_status()
-        settings = response.json()
-    except (httpx.HTTPError, ValueError):
-        step.finish(False, "cannot verify archive retention; no archive cleanup performed")
-        return False
-    safe = (
-        isinstance(settings, dict)
-        and "maxArchivedSessions" in settings
-        and settings["maxArchivedSessions"] is None
-    )
-    step.finish(safe, "unlimited retention verified" if safe else
-                "requires explicit maxArchivedSessions=null; no archive cleanup performed")
-    return safe
-
-
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://127.0.0.1:8787")
@@ -143,7 +133,7 @@ async def main() -> int:
     async with httpx.AsyncClient(base_url=args.base_url, headers=headers, timeout=30.0) as http:
         step = Step("archive retention preflight")
         steps.append(step)
-        if not await _retention_is_safe(http, step):
+        if not await retention_is_safe(http, step):
             return _summarize(steps)
 
         step = Step("create/resume assistant session")
@@ -223,7 +213,7 @@ async def main() -> int:
         # remain mandatory. Never adjust the cap or permanently delete to bypass it.
         step = Step("archive retention cleanup check")
         steps.append(step)
-        if not await _retention_is_safe(http, step):
+        if not await retention_is_safe(http, step):
             print(f"Session {throwaway_id} left intact; inspect the isolated environment manually.")
             return _summarize(steps)
         step = Step("archive owned throwaway session")
