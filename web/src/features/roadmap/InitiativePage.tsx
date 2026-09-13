@@ -1,3 +1,4 @@
+import { IssueDispositionProvider } from './detail/IssueDispositionProvider'
 // `/initiatives/:initiativeSlug` — the initiative level, and the only page in
 // the Roadmap section with its own prefix (roadmap spec §4). It answers the
 // four questions a human has about one initiative: where it is on the track,
@@ -390,6 +391,10 @@ function CapabilitiesTab({ initiative, onEdit }: {
 }
 
 export function InitiativePage() {
+  return <IssueDispositionProvider><InitiativePageContent /></IssueDispositionProvider>
+}
+
+function InitiativePageContent() {
   const { initiativeSlug = '' } = useParams()
   const { data: initiative, isLoading, isError, error } = useInitiative(initiativeSlug || null)
   // The map is the only place the tier/reason is computed (server `pm/tree.py`),

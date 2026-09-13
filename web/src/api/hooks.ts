@@ -37,7 +37,8 @@ import {
   editMapChanges, abandonMapChanges, rebaseMapChanges,
   fetchPolicySchema, updateProductPolicy,
   fetchProjectHealth,
-  fetchOutcomes,
+  fetchOutcomes, fetchWorkItemIssue, dispositionIssue,
+  type WorkItemIssue, type IssueDispositionInput, type IssueDispositionResult,
   type Project, type CreateProjectInput, type OnboardingView,
   type RemoveDependencyInput, type RemoveDependencyResult,
   type CreateEdgeInput, type ProjectEdgeInfo,
@@ -114,6 +115,7 @@ export const QK = {
   roadmapMap: ['pm', 'map'] as const,
   leaves: (scope: string) => ['pm', 'leaves', scope] as const,
   queue: ['pm', 'queue'] as const,
+  workItemIssue: (id: string) => ['pm', 'issue', id] as const,
   project: (slug: string) => ['pm', 'project', slug] as const,
   policySchema: ['pm', 'policy-schema'] as const,
   health: (slug: string) => ['pm', 'health', slug] as const,
@@ -1743,6 +1745,31 @@ export function useLeaves(scope: LeavesScope | null) {
     enabled: scope !== null,
     staleTime: 5_000,
     refetchInterval: 30_000,
+  })
+}
+
+/** Mounted only while reviewing an issue; reading never performs a disposition. */
+export function useWorkItemIssue(itemId: string) {
+  return useQuery<WorkItemIssue>({
+    queryKey: QK.workItemIssue(itemId),
+    queryFn: () => fetchWorkItemIssue(itemId),
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useDispositionIssue(itemId: string) {
+  const qc = useQueryClient()
+  return useMutation<IssueDispositionResult, ApiRequestError, IssueDispositionInput>({
+    mutationFn: (input) => dispositionIssue(itemId, input),
+    onSuccess: (result) => {
+      qc.setQueryData(QK.workItemIssue(itemId), result.item)
+      void qc.invalidateQueries({ queryKey: ['pm', 'leaves'] })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      void qc.invalidateQueries({ queryKey: QK.queue })
+      void qc.invalidateQueries({ queryKey: QK.triage })
+      void qc.invalidateQueries({ queryKey: ['sdlc', 'initiative'] })
+    },
+    meta: PM_MUTATION_META,
   })
 }
 

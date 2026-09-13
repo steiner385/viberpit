@@ -1,0 +1,96 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { IssueDispositionDialog } from './IssueDispositionDialog'
+
+const detail = { id: 'w1', repo: 'o/r', number: 1, title: 'Account warning', body: '**Check credentials** <script>alert(1)</script>', state: 'open', url: 'https://github.com/o/r/issues/1', version: 'v1' }
+const fetchMock = vi.fn()
+beforeEach(() => { vi.stubGlobal('fetch', fetchMock); fetchMock.mockReset() })
+function reply(data: unknown, status = 200) { return { ok: status < 400, status, json: async () => data } }
+function mount() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  const onClose = vi.fn()
+  render(<QueryClientProvider client={qc}><IssueDispositionDialog itemId="w1" onClose={onClose} /></QueryClientProvider>)
+  return { onClose, qc }
+}
+const click = (name: string) => fireEvent.click(screen.getByRole('button', { name }))
+describe('IssueDispositionDialog', () => {
+  it('reads the issue safely without sending a decision', async () => {
+    fetchMock.mockResolvedValue(reply(detail))
+    mount()
+    expect(await screen.findByText('Account warning')).toBeInTheDocument()
+    expect(screen.getByText('Check credentials')).toBeInTheDocument()
+    expect(document.querySelector('script')).toBeNull()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][1].method).toBe('GET')
+  })
+  it.each([['Mark resolved', 'Confirm resolved', 'resolve'], ['Won’t do', 'Confirm won’t do', 'dismiss']])('confirms %s before writing and invalidates affected views', async (label, confirm, action) => {
+    fetchMock.mockResolvedValueOnce(reply(detail)).mockResolvedValueOnce(reply({ ok: true, item: { ...detail, state: 'closed', version: 'v2' } }))
+    const { onClose, qc } = mount()
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    await screen.findByText('Account warning')
+    click(label)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(screen.getByText(/does not repair/)).toBeInTheDocument()
+    click(confirm)
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ action, version: 'v1' })
+    for (const queryKey of [['pm', 'leaves'], ['pm', 'map'], ['pm', 'queue']]) expect(invalidate).toHaveBeenCalledWith({ queryKey })
+  })
+  it('saves title and description in app and keeps the saved issue open for the next decision', async () => {
+    fetchMock.mockResolvedValueOnce(reply(detail)).mockResolvedValueOnce(reply({ ok: true, item: { ...detail, title: 'Clear requirements', body: 'Acceptance criteria', version: 'v2' } }))
+    const { onClose } = mount()
+    await screen.findByText('Account warning')
+    click('Edit details')
+    fireEvent.change(screen.getByLabelText(/Title/), { target: { value: 'Clear requirements' } })
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Acceptance criteria' } })
+    click('Save changes')
+    await screen.findByRole('button', { name: 'Mark resolved' })
+    expect(screen.getByText('Acceptance criteria')).toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Mark resolved' })).toBeInTheDocument()
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ action: 'edit', version: 'v1', title: 'Clear requirements', body: 'Acceptance criteria' })
+  })
+  it('keeps an edit and error visible after a failed save', async () => {
+    fetchMock.mockResolvedValueOnce(reply(detail)).mockResolvedValueOnce(reply({ detail: 'GitHub unavailable' }, 502))
+    const { onClose } = mount()
+    await screen.findByText('Account warning')
+    click('Edit details')
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'New requirements' } })
+    click('Save changes')
+    expect(await screen.findByRole('alert')).toHaveTextContent('GitHub unavailable')
+    expect(screen.getByLabelText('Description')).toHaveValue('New requirements')
+    fireEvent.click(screen.getByTestId('dialog-backdrop'))
+    expect(onClose).not.toHaveBeenCalled()
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ action: 'edit', version: 'v1', title: detail.title, body: 'New requirements' })
+  })
+  it('reloads after a conflict only when explicitly requested', async () => {
+    fetchMock.mockResolvedValueOnce(reply(detail)).mockResolvedValueOnce(reply({ detail: 'Issue changed' }, 409)).mockResolvedValueOnce(reply({ ...detail, title: 'Changed upstream', version: 'v2' }))
+    mount()
+    await screen.findByText('Account warning')
+    click('Mark resolved'); click('Confirm resolved')
+    await screen.findByRole('alert')
+    click('Reload issue')
+    expect(await screen.findByText('Changed upstream')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+  it('prevents dismissing or double submitting while a write is pending', async () => {
+    fetchMock.mockResolvedValueOnce(reply(detail)).mockImplementationOnce(() => new Promise(() => {}))
+    const { onClose } = mount()
+    await screen.findByText('Account warning')
+    click('Mark resolved'); click('Confirm resolved')
+    expect(screen.getByRole('button', { name: 'Confirm resolved' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Close' })).toBeDisabled()
+    fireEvent.click(screen.getByTestId('dialog-backdrop'))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+  })
+  it('does not offer decisions for closed issues', async () => {
+    fetchMock.mockResolvedValue(reply({ ...detail, state: 'closed' }))
+    mount()
+    await screen.findByText('Account warning')
+    expect(screen.queryByRole('button', { name: 'Mark resolved' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Edit details' })).toBeNull()
+  })
+})

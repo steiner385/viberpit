@@ -13,6 +13,11 @@ from dataclasses import dataclass
 from .reconcile_diff import Mutation
 
 MAX_ALIASES = 20
+ISSUE_FIELDS = "id title body state stateReason url"
+
+
+def build_issue_query(node_id: str) -> str:
+    return "query { node(id: %s) { ... on Issue { %s } } }" % (_q(node_id), ISSUE_FIELDS)
 
 
 class UnknownOption(ValueError):
@@ -55,6 +60,18 @@ def _render(m: Mutation, project_node_id: str, field_cache: Mapping[str, dict]) 
     if m.kind == "remove_blocked_by":
         return ("removeBlockedBy(input: {issueId: %s, blockingIssueId: %s}) { clientMutationId }"
                 % (_q(m.target_node_id), _q(m.new_value)))
+    if m.kind in {"update_issue", "close_issue"}:
+        if not isinstance(m.new_value, dict):
+            raise ValueError("issue mutation requires named fields")
+        if m.kind == "update_issue":
+            return ("updateIssue(input: {id: %s, title: %s, body: %s}) { issue { %s } }"
+                    % (_q(m.target_node_id), _q(m.new_value["title"]),
+                       _q(m.new_value["body"]), ISSUE_FIELDS))
+        reason = m.new_value["stateReason"]
+        if reason not in {"COMPLETED", "NOT_PLANNED"}:
+            raise ValueError("unsupported issue close reason")
+        return ("closeIssue(input: {issueId: %s, stateReason: %s}) { issue { %s } }"
+                % (_q(m.target_node_id), reason, ISSUE_FIELDS))
     raise ValueError(f"unknown mutation kind {m.kind!r}")
 
 

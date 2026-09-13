@@ -25,6 +25,7 @@ exclude = [
   "docs/audits/",
   "docs/2026-",
   "specs/",
+  "docs/sdlc/",
   ".superpowers/",
   "server/tests/fixtures/",
   ".brand-ratchet.toml",
@@ -74,7 +75,7 @@ ceiling = 8
 id = "http-auth-compat"
 pattern = '\bccswitch_session\b|X-CCSwitch-|x-ccswitch-'
 issue = 1368
-ceiling = 9
+ceiling = 6
 
 [[allow]]
 id = "browser-storage-keys"
@@ -93,13 +94,13 @@ ceiling = 7
 id = "persisted-keys"
 pattern = '\bccswitch:[a-z][a-z-]*|feature-map-ccswitch|ccswitch-pr-cycle-time'
 issue = 1369
-ceiling = 7
+ceiling = 6
 
 [[allow]]
 id = "branch-prefix"
 pattern = '\bccswitch/'
 issue = 1369
-ceiling = 218
+ceiling = 217
 
 [[allow]]
 id = "repo-namespace"
@@ -111,7 +112,7 @@ ceiling = 43
 id = "env-prefix"
 pattern = '\bCCSWITCH_[A-Z0-9_]*'
 issue = 1591
-ceiling = 2522
+ceiling = 2486
 
 [[allow]]
 id = "host-legacy-aliases"
@@ -123,13 +124,13 @@ ceiling = 173
 id = "host-legacy-names"
 pattern = 'ccswitch-(daemon|deploy|health|mounts|cert-renew|codex-auth|tailnet|controller|deploy-controller|health-check)[A-Za-z0-9.@-]*|\bccswitch\.service|/(etc|run|var/lib|var/log|srv)/ccswitch|\.(cache|local/lib)/ccswitch|"\.cache" / "ccswitch"|bin-ccswitch|ccswitch-archives|cc-account-switcher-deploy|\bccswitch\.env\b|\bccswitch\.(db|jsonl|local)\b|/home/tony/GitHub/ccswitch|"service", "ccswitch"|service ccswitch|ccswitch (master key|oauth token)'
 issue = 1592
-ceiling = 305
+ceiling = 304
 
 [[allow]]
 id = "python-package"
 pattern = '\b(from|import)\s+ccswitch\b|\bccswitch\.[a-z_]+|src/ccswitch\b|src\.ccswitch|__editable__\.ccswitch|name = "ccswitch"|^ccswitch = "|\bccswitch-0\.1\.0|(\.venv/)?bin/ccswitch|version\("ccswitch"\)|ccswitch\[server\]|\bccswitch (accounts|clones|add|crypto|init|link|list|migrate|remove|show|status|use|mcp|ask)\b|\b_?ccswitch_[a-z_]+\b|`ccswitch`\s+(CLI|binary|command|console|entry|proper|package)|(CLI|binary|command|script|entry point|installed as|console script|package)\s+`ccswitch`|--prog ccswitch|prog="ccswitch"|"command": "ccswitch"|Entry points: the `ccswitch` command|logger="ccswitch"|getLogger\("ccswitch"\)'
 issue = 1374
-ceiling = 1463
+ceiling = 1459
 
 [[allow]]
 id = "constitution"

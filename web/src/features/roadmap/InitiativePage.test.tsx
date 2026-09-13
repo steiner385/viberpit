@@ -184,7 +184,7 @@ describe('InitiativePage', () => {
       sessionStatus: null, ghCreatedAt: null,
     }]
     mount('/initiatives/views?tab=epic')
-    expect(screen.getByRole('link', { name: '#1 Child one' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '#1 Child one' })).toBeInTheDocument()
     expect(screen.getByRole('list', { name: 'Blocked by' })).toBeInTheDocument()
   })
 
@@ -231,7 +231,7 @@ describe('InitiativePage', () => {
     expect(screen.getByText('Blocked')).toBeInTheDocument()
     expect(screen.getByText('Needs human')).toBeInTheDocument()
     // The leaves scoped to this program render below the tiles.
-    expect(screen.getByRole('link', { name: '#1 Child one' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '#1 Child one' })).toBeInTheDocument()
   })
 
   it('a phase names the program it is part of, in the header', () => {

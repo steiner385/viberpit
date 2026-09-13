@@ -111,8 +111,12 @@ plus initiative and product triage rows. Incidents retain their separate live qu
 Click a summary tile to open its corresponding work list. Issues needing input appear before
 blocked and other open issues. An issue that needs a spec explains that its description needs
 clearer requirements and acceptance criteria; blockers retain their Remove action, and rows
-associated with a session offer **View sessions**. GitHub remains the issue discussion and editing
-surface. A **Live** capability can still have outstanding work requiring a decision.
+associated with a session offer **View sessions**. The **Review and decide** panel shows the full issue in ViberPit. **Edit details** saves its
+title and description; **Mark resolved** and **Won’t do** close it with the corresponding
+GitHub reason after an explicit confirmation. Closing a report does not repair the underlying
+account or code. Writes use the shared GitHub transport and journal; the local mirror changes
+only after GitHub confirms success. A stale issue prompts a reload, and a failed save preserves
+the draft. The GitHub link remains available as a secondary destination. A **Live** capability can still have outstanding work requiring a decision.
 
 Still owed by that spec: issue leaves and inline overlay edits (phase 4), the Queue scope and the
 Inbox's "Needs a home" Reclassify control (phase 6).
