@@ -254,7 +254,9 @@ def test_count_candidates_gauges_ignore_products_with_dispatch_off(tmp_path):
         eligible, blocked, untriaged, per_product = \
             await orch._backlog_count_candidates()
         assert (eligible, blocked, untriaged) == (1, 0, 0)
-        assert set(per_product) == {"viberpit"}
+        assert set(per_product) == {"viberpit", "kindash"}
+        assert per_product["kindash"]["eligible"] == 0
+        assert per_product["kindash"]["blocked"] == 0
 
     asyncio.run(run())
 

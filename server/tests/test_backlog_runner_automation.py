@@ -57,10 +57,11 @@ def test_retired_keys_cover_the_label_gate_and_the_per_product_knobs():
     assert not set(br.retired_config_keys) & {f.key for f in br.config_schema}
 
 
-def test_status_idle_by_default():
+def test_status_unavailable_without_measurements():
     from server.automations.backlog_runner import BacklogRunner
     s = BacklogRunner().status(ctx=None)
-    assert s.level == "idle"
+    assert s.level == "unknown"
+    assert "unavailable" in s.text
     assert isinstance(s.text, str)
 
 
@@ -209,7 +210,7 @@ def test_status_says_unavailable_when_the_count_read_failed():
         backlog_counts={"in_flight": 2, "eligible": 0, "blocked": 0},
         backlog_products=None)
     status = BacklogRunner().status(ctx)
-    assert status.text == ("2 implementing · product counts unavailable "
+    assert status.text == ("2 work in flight · product counts unavailable "
                            "(the queue read failed)")
     assert status.level == "warn"
     assert status.text != "idle — no product has dispatch on"
@@ -222,7 +223,7 @@ def test_status_without_the_products_cache_is_unchanged():
 
     from server.automations.backlog_runner import BacklogRunner
     ctx = SimpleNamespace(backlog_counts={"in_flight": 1, "eligible": 2, "blocked": 0})
-    assert BacklogRunner().status(ctx).text == "1 implementing, 2 eligible"
+    assert BacklogRunner().status(ctx).text == "1 work in flight, 2 eligible"
 
 
 # --------------------------------------------------------------------------- #
@@ -294,3 +295,16 @@ def test_format_pick_no_score_no_product_no_over():
     from server.automations.backlog_runner import format_pick
     pick = {"ref": "o/r#1", "score": None, "product": None, "over": []}
     assert format_pick(pick) == "picked o/r#1"
+
+
+def test_parked_work_remains_visible_when_no_product_has_dispatch_on():
+    from types import SimpleNamespace
+
+    from server.automations.backlog_runner import BacklogRunner
+    ctx = SimpleNamespace(
+        backlog_counts={"in_flight": 0, "eligible": 0, "needs_human": 2},
+        backlog_products={})
+    status = BacklogRunner().status(ctx)
+    assert status.level == "warn"
+    assert "2 needs-human" in status.text
+    assert "idle" not in status.text

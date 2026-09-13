@@ -3,6 +3,8 @@ states until their effective goal is met. Metadata + config here; the control lo
 (AutopilotLoop) is added in a later task."""
 from __future__ import annotations
 
+from .context import observation_failed, publish_observation
+
 import asyncio
 import logging
 from typing import Awaitable, Callable, cast
@@ -62,7 +64,7 @@ class Autopilot:
         return AutomationStatus(
             text=f"{advancing} advancing" + (f", {escalated} escalated" if escalated else ""),
             level="active" if advancing else ("warn" if escalated else "idle"),
-            counts=counts)
+            counts=counts, waiting_reason="human" if escalated else None)
 
     async def on_state_change(self, *, enabled, mode, config, ctx) -> None:
         # The orchestrator's loop reads mode/config each tick; nothing to start here.
@@ -104,6 +106,7 @@ class AutopilotLoop:
             try:
                 await self._run()
             except Exception:  # pragma: no cover — a tick must never crash the loop
+                observation_failed(self._ctx)
                 log.warning("autopilot.tick_failed", exc_info=True)
 
     def _prune_day(self, now: float) -> None:
@@ -116,14 +119,17 @@ class AutopilotLoop:
         now = self._clock()
         self._prune_day(now)
         advancing = escalated = 0
+        degraded = False
         for sid in await self._list_governed():
             try:
                 acted, esc = await self._advance_one(sid, mode, config, now)
                 advancing += int(acted)
                 escalated += int(esc)
             except Exception:  # one session must never stall the tick
+                degraded = True
                 log.warning("autopilot.session_failed sid=%s", sid, exc_info=True)
-        setattr(self._ctx, "autopilot_counts", {"advancing": advancing, "escalated": escalated})
+        publish_observation(self._ctx, "autopilot_counts", {"advancing": advancing, "escalated": escalated},
+                            degraded=degraded)
 
     async def _advance_one(self, sid: str, mode: str, config: dict, now: float) -> tuple[bool, bool]:
         ctx = await self._get_context(sid)

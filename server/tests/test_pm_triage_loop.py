@@ -491,11 +491,12 @@ async def test_status_counts_are_stashed_on_the_context():
 
 
 @pytest.mark.asyncio
-async def test_off_mode_zeroes_the_status_counts():
+async def test_off_mode_does_not_fabricate_observation():
     ctx = Ctx()
     loop, _rec = _loop(ctx, mode="off", pending=[_item(1)])
     await loop.tick()
-    assert ctx.pm_triage_counts == {"unclassified": 0, "pending": 0, "drift": 0}
+    assert not hasattr(ctx, "pm_triage_counts")
+    assert not hasattr(ctx, "observed_at")
 
 
 @pytest.mark.asyncio

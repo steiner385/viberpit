@@ -1,34 +1,48 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import type { AutomationStatus } from '@/api/automations'
+import type { Automation } from '@/api/automations'
 import { automationTier, automationTierLine } from './automationTier'
 
-// `status` is typed as the full AutomationStatus union (not narrowed to 'idle' via
-// `as const`) so a per-test override can swap in any level without a TS2322.
-const base: { enabled: boolean; status: AutomationStatus; activeSessions: number } = {
-  enabled: true, status: { text: 'Idle', level: 'idle', counts: null }, activeSessions: 0,
+const base: Pick<Automation, 'enabled' | 'status' | 'activeSessions' | 'actionableCount'> = {
+  enabled: true, status: { text: 'Idle', level: 'idle', counts: null }, activeSessions: 0, actionableCount: 0,
 }
-const at = (over: Partial<typeof base>, actionable = 0) => automationTier({ ...base, ...over }, actionable)
 
-describe('automationTier', () => {
-  it('needs-you when there is something to act on or the loop errored', () => {
-    expect(at({}, 2)).toBe('needs-you')
-    expect(at({ status: { text: 'boom', level: 'error', counts: null } })).toBe('needs-you')
+describe('automation attention', () => {
+  it('uses actionable count while distinguishing known zero from unavailable counts', () => {
+    expect(automationTier({ ...base, actionableCount: 2 })).toBe('needs-you')
+    expect(automationTier(base)).toBe('idle')
+    for (const actionableCount of [null, undefined]) {
+      const a = { ...base, actionableCount }
+      expect(automationTier(a)).toBe('needs-you')
+      expect(automationTierLine(automationTier(a), a)).toBe('Actionable count unknown')
+    }
   })
-  it('blocked when enabled but paused/degraded (warn)', () => {
-    expect(at({ status: { text: 'paused — outside scheduled active hours', level: 'warn', counts: null } })).toBe('blocked')
-    expect(at({ enabled: false, status: { text: 'x', level: 'warn', counts: null } })).toBe('idle')
+  it('preserves live sessions during expected schedule pauses without claiming blocked', () => {
+    const a: typeof base = { ...base, activeSessions: 3, status: { text: 'Paused', level: 'warn', waitingReason: 'schedule', counts: null } }
+    expect(automationTier(a)).toBe('in-flight')
+    expect(automationTierLine(automationTier(a), a)).toBe('0 actionable · Waiting for schedule · 3 live sessions')
   })
-  it('in-flight when it has live sessions or is active', () => {
-    expect(at({ activeSessions: 1 })).toBe('in-flight')
-    expect(at({ status: { text: 'scanning', level: 'active', counts: null } })).toBe('in-flight')
+  it('shows warning observations without inventing a blocked state', () => {
+    const a: typeof base = { ...base, status: { text: 'Budget reached', level: 'warn', counts: null } }
+    expect(automationTierLine(automationTier(a), a)).toBe('0 actionable · Notice')
   })
-  it('needs-you outranks everything', () => {
-    expect(at({ activeSessions: 3 }, 1)).toBe('needs-you')
+  it('human waits need attention without being service errors or requiring action buttons', () => {
+    const a: typeof base = { ...base, status: { text: 'Approval required', level: 'idle', waitingReason: 'human', counts: null } }
+    expect(automationTier(a)).toBe('needs-you')
+    expect(automationTierLine(automationTier(a), a)).toBe('0 actionable · Waiting for human')
   })
-  it('line 2 names the tier and the actionable count', () => {
-    expect(automationTierLine('needs-you', { ...base }, 2)).toBe('Needs you · 2 actionable')
-    expect(automationTierLine('in-flight', { ...base, activeSessions: 1 }, 0)).toBe('In flight · 1 live session')
-    expect(automationTierLine('idle', base, 0)).toBe('Idle')
+  it('disabled human decisions still need attention without live sessions or action items', () => {
+    const a: typeof base = { ...base, enabled: false, status: { text: 'Approval required', level: 'idle', waitingReason: 'human', counts: null } }
+    expect(automationTier(a)).toBe('needs-you')
+    expect(automationTierLine(automationTier(a), a)).toContain('Waiting for human')
+    expect(automationTier({ ...a, activeSessions: 1 })).toBe('needs-you')
+    expect(automationTier({ ...a, actionableCount: 1 })).toBe('needs-you')
+  })
+  it.each(['schedule', 'capacity', 'budget'] as const)('%s waits do not imply human attention', (waitingReason) => {
+    expect(automationTier({ ...base, status: { ...base.status, waitingReason } })).toBe('idle')
+  })
+  it('keeps unknown status and true errors visible', () => {
+    expect(automationTier({ ...base, status: { text: 'Unavailable', level: 'unknown', counts: null } })).toBe('needs-you')
+    expect(automationTier({ ...base, status: { text: 'Failed', level: 'error', counts: null } })).toBe('needs-you')
   })
 })

@@ -21,6 +21,8 @@ artifact already exists, so a re-tick never re-proposes.
 """
 from __future__ import annotations
 
+from .context import observation_failed, publish_observation
+
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -93,7 +95,9 @@ class SdlcIntake:
         awaiting = counts.get("awaiting", 0)
         text = f"{pending} pending · {awaiting} awaiting approval"
         return AutomationStatus(text=text, level="active" if pending else "idle",
-                                counts=counts)
+                                counts=counts,
+                                waiting_reason=("human" if awaiting else
+                                                "budget" if counts.get("budget_deferred") else None))
 
     async def on_state_change(self, *, enabled: bool, mode: str | None,
                               config: dict, ctx: Any) -> None:
@@ -149,19 +153,20 @@ class SdlcIntakeLoop:
         try:
             await self._run()
         except Exception:  # pragma: no cover — belt+braces, mirrors the mold
+            observation_failed(self._ctx)
             import logging
             logging.getLogger(__name__).warning("sdlc_intake.tick_error", exc_info=True)
 
     async def _run(self) -> None:
         mode, config = await self._read_config()
         if mode == "off":
-            self._stash_counts(0, 0)
             return
 
         triggers = await self._read_triggers()
         self._prune_day()
         cap = int(config.get("max_spawns_per_day", 10))
         awaiting = 0
+        budget_deferred = 0
 
         for trigger in triggers:
             view, artifacts = await self._ensure_initiative(trigger)
@@ -169,6 +174,7 @@ class SdlcIntakeLoop:
 
             if isinstance(action, engine.Propose) and action.kind == "intent":
                 if len(self._spawns_today) >= cap:
+                    budget_deferred += 1
                     await self._ctx.emit(
                         "info", "daily intent-session cap reached; deferring",
                         kind="ceiling", target=trigger.slug)
@@ -180,7 +186,7 @@ class SdlcIntakeLoop:
             # is not the intake stage's concern — leave it for the human / later
             # stages (Materialize belongs to the synthesizer's plan stage, #992).
 
-        self._stash_counts(len(triggers), awaiting)
+        self._stash_counts(len(triggers), awaiting, budget_deferred)
 
     async def _propose_intent(self, trigger: Trigger) -> None:
         # The intent instructions state a commit trailer, the one engine-specific
@@ -224,6 +230,7 @@ class SdlcIntakeLoop:
         cutoff = self._clock() - _DAY_SECONDS
         self._spawns_today = [t for t in self._spawns_today if t >= cutoff]
 
-    def _stash_counts(self, pending: int, awaiting: int) -> None:
+    def _stash_counts(self, pending: int, awaiting: int, budget_deferred: int = 0) -> None:
         # Surfaced by SdlcIntake.status() on the automation card.
-        self._ctx.sdlc_intake_counts = {"pending": pending, "awaiting": awaiting}
+        publish_observation(self._ctx, "sdlc_intake_counts", { "pending": pending, "awaiting": awaiting,
+            "budget_deferred": budget_deferred})

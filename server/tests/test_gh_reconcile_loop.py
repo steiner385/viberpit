@@ -152,11 +152,12 @@ def test_dry_run_journals_but_never_mutates():
 
 
 def test_kill_switch_and_fence_refuse_the_cycle():
-    for kw, key in (({"enabled": False}, "disabled"), ({"fence": False}, "fenced")):
+    for kw in ({"enabled": False}, {"fence": False}):
         ctx = Ctx(); loop, calls = _loop(ctx, **kw)
         asyncio.run(loop.tick())
         assert calls["record"] == [] and calls["mutate"] == []
-        assert ctx.gh_reconcile_counts[key] == 1
+        assert not hasattr(ctx, "observed_at")
+        assert GhReconcile().status(ctx).level == "warn"
 
 
 def test_freshness_gate_requests_sync_and_skips():
@@ -604,7 +605,8 @@ def test_rate_budget_skips_cycle_when_low():
     asyncio.run(loop.tick())
     assert calls["record"] == []
     assert len(calls["mutate"]) == 1 and _docs(calls)[0].startswith("query { rateLimit")
-    assert ctx.gh_reconcile_counts["skipped_rate"] == 1
+    assert not hasattr(ctx, "observed_at")
+    assert "rate budget" in GhReconcile().status(ctx).text
 
 
 def test_status_card_reads_counts():
@@ -687,3 +689,31 @@ def test_superseded_applied_rows_are_pruned_every_cycle():
     ctx = Ctx(); loop, calls = _loop(ctx)
     asyncio.run(loop.tick())
     assert calls["prune_applied"] == [T - timedelta(days=30)]
+
+
+def test_guards_preserve_last_observation_and_refresh_failure():
+    from server.automations.context import observed_status, observation_failed, publish_observation
+
+    def low_rate(_doc):
+        return {"data": {"rateLimit": {"remaining": 100, "cost": 1, "resetAt": None}}}
+
+    for kwargs in ({"enabled": False}, {"fence": False}, {"mutate": low_rate}):
+        ctx = Ctx()
+        loop, _ = _loop(ctx, **kwargs)
+        publish_observation(ctx, "gh_reconcile_counts", {"planned": 2, "applied": 1})
+        first = ctx.observed_at
+        asyncio.run(loop.tick())
+        assert ctx.observed_at == first
+        assert ctx.gh_reconcile_counts == {"planned": 2, "applied": 1}
+        observation_failed(ctx)
+        failed_at = ctx.last_refresh_failed_at
+        asyncio.run(loop.tick())
+        status = observed_status(ctx, GhReconcile().status(ctx))
+        assert status.level == "unknown" and status.counts is None
+        assert status.observed_at == first
+        assert status.last_refresh_failed_at == failed_at
+        recovered_loop, _ = _loop(ctx)
+        asyncio.run(recovered_loop.tick())
+        assert ctx.last_refresh_failed_at is None
+        assert ctx.gh_reconcile_guard is None
+        assert ctx.observed_at > first

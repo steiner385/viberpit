@@ -1,39 +1,33 @@
-/**
- * An automation's attention tier (finish-line spec §4.4), computed from the
- * list payload plus its actionable-item count. The vocabulary is the roadmap's
- * (`RoadmapTier`) so the row's rail, dot and pill reuse `roadmapTier.ts` and
- * `TIER_LABEL` rather than a second table.
- *
- * `blocked` reads the loop's `warn` level: the loop reports `warn` while paused
- * outside its active hours and while degraded, which is the payload-carried
- * signal closest to "its schedule window is closed" (ruling R2).
- */
+/** Visual attention ordering from the same list snapshot used by navigation. */
 import type { Automation } from '@/api/automations'
 import type { RoadmapTier } from '@/api/roadmap'
 import { TIER_LABEL } from '@/features/products/vocab'
 import { TIER_RANK } from '@/features/roadmap/roadmapTier'
 
-export type AutomationTier = Extract<RoadmapTier, 'needs-you' | 'blocked' | 'in-flight' | 'idle'>
+export type AutomationTier = Extract<RoadmapTier, 'needs-you' | 'in-flight' | 'idle'>
+type TierInput = Pick<Automation, 'enabled' | 'status' | 'activeSessions' | 'actionableCount'>
 
-type TierInput = Pick<Automation, 'enabled' | 'status' | 'activeSessions'>
-
-export function automationTier(a: TierInput, actionable: number): AutomationTier {
-  if (actionable > 0 || a.status.level === 'error') return 'needs-you'
-  if (a.enabled && a.status.level === 'warn') return 'blocked'
+export function automationTier(a: TierInput): AutomationTier {
+  if ((a.actionableCount ?? 0) > 0 || a.status.level === 'error' || a.status.waitingReason === 'human') return 'needs-you'
+  if ((a.enabled || a.activeSessions > 0) && (a.status.level === 'unknown' || a.actionableCount == null)) return 'needs-you'
   if (a.activeSessions > 0 || a.status.level === 'active') return 'in-flight'
   return 'idle'
 }
 
 export const AUTOMATION_TIER_RANK: Record<AutomationTier, number> = {
-  'needs-you': TIER_RANK['needs-you'], blocked: TIER_RANK.blocked, 'in-flight': TIER_RANK['in-flight'], idle: TIER_RANK.idle,
+  'needs-you': TIER_RANK['needs-you'], 'in-flight': TIER_RANK['in-flight'], idle: TIER_RANK.idle,
 }
 
-/** Line 2 of an automation row: the tier word plus the one number it rests on. */
-export function automationTierLine(tier: AutomationTier, a: TierInput, actionable: number): string {
-  const word = TIER_LABEL[tier]
-  if (tier === 'needs-you' && actionable > 0) return `${word} · ${actionable} actionable`
-  if (tier === 'in-flight' && a.activeSessions > 0) {
-    return `${word} · ${a.activeSessions} live ${a.activeSessions === 1 ? 'session' : 'sessions'}`
-  }
-  return word
+/** Keep observation, schedule waits, and activity separate from attention counts. */
+export function automationTierLine(tier: AutomationTier, a: TierInput): string {
+  const parts: string[] = []
+  if (a.status.level === 'unknown') parts.push('Status unknown')
+  if (a.actionableCount == null) parts.push('Actionable count unknown')
+  else if (a.actionableCount > 0) parts.push(`${a.actionableCount} actionable`)
+  else parts.push('0 actionable')
+  if (a.status.waitingReason) parts.push(`Waiting for ${a.status.waitingReason}`)
+  else if (a.status.level === 'warn') parts.push('Notice')
+  if (a.activeSessions > 0) parts.push(`${a.activeSessions} live ${a.activeSessions === 1 ? 'session' : 'sessions'}`)
+  if (parts.length === 1 && a.actionableCount === 0) parts.unshift(TIER_LABEL[tier])
+  return parts.join(' · ')
 }

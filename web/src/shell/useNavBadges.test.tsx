@@ -211,14 +211,32 @@ describe('useNavBadges', () => {
     expect(result.current.sessions).toBe(2)
   })
 
-  it('pipeline counts in-flight PRs; delivery counts live automation sessions', () => {
+  it('pipeline counts in-flight PRs; delivery counts actionable work independently of live sessions', () => {
     const prs: PullRequestInfo[] = [
       { number: 1, url: 'https://example/pr/1', state: 'open', checks: 'pending', title: 't', deployed: false },
     ]
     useAllPrs.mockReturnValue({ data: prs })
-    useAutomations.mockReturnValue({ data: [automation({ activeSessions: 3 })] })
+    useAutomations.mockReturnValue({ data: [automation({ activeSessions: 3, actionableCount: 2 })] })
     const { result } = renderHook(() => useNavBadges())
     expect(result.current.pipeline).toBe(1)
-    expect(result.current.delivery).toBe(3)
+    expect(result.current.delivery).toBe(2)
   })
+})
+
+it('unknown automation counts raise attention without inventing a number', () => {
+  useAutomations.mockReturnValue({ data: [automation({ activeSessions: 8, actionableCount: null })] })
+  const { result } = renderHook(() => useNavBadges())
+  expect(result.current.delivery).toBe(true)
+})
+
+it('disabled services without observations do not create perpetual navigation attention', () => {
+  useAutomations.mockReturnValue({ data: [automation({ enabled: false, activeSessions: 0, actionableCount: null, status: { text: 'No observation yet', level: 'unknown', counts: null } })] })
+  const { result } = renderHook(() => useNavBadges())
+  expect(result.current.delivery).toBeUndefined()
+})
+
+it('an actual automation error remains attention-worthy with zero actionable items', () => {
+  useAutomations.mockReturnValue({ data: [automation({ actionableCount: 0, status: { text: 'Failed', level: 'error', counts: null } })] })
+  const { result } = renderHook(() => useNavBadges())
+  expect(result.current.delivery).toBe(true)
 })

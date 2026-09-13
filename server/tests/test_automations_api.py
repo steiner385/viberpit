@@ -71,7 +71,7 @@ def test_list_status_reflects_live_ctx_counts():
         assert "2" in pd["status"]["text"]
         br = next(a for a in automations if a["id"] == "backlog-runner")
         assert br["status"]["level"] == "active"
-        assert "1 implementing" in br["status"]["text"]
+        assert "1 work in flight" in br["status"]["text"]
 
 
 def test_list_carries_products_for_the_runner_and_null_for_pr_doctor():
@@ -307,3 +307,81 @@ def test_patching_the_engine_on_an_operator_triggered_origin_persists():
         assert c.patch("/api/automations/pm-onboard",
                        json={"config": {"engine": "gemini"}},
                        headers=H).status_code == 422
+
+
+def test_list_disconnected_telemetry_is_unknown_and_count_is_not_zero():
+    from unittest.mock import AsyncMock
+    with _client() as c:
+        with patch.object(c.app.state.sessions, "automation_overview",
+                          new=AsyncMock(side_effect=ConnectionError("private detail"))):
+            response = c.get("/api/automations", headers=H)
+        assert response.status_code == 200
+        for automation in response.json():
+            assert automation["status"]["level"] == "unknown"
+            assert automation["actionableCount"] is None
+            assert "private detail" not in automation["status"]["text"]
+            assert "enabled" in automation and "mode" in automation
+
+
+def test_list_uses_one_overview_for_counts_and_missing_entries_are_unknown():
+    from unittest.mock import AsyncMock
+    with _client() as c:
+        overview = AsyncMock(return_value={
+            "statuses": {"pr-doctor": {"text": "all PRs green", "level": "idle",
+                                       "counts": {"failing": 0}, "products": None}},
+            "actionableCounts": {"pr-doctor": 0, "backlog-runner": 4},
+        })
+        with patch.object(c.app.state.sessions, "automation_overview", new=overview):
+            response = c.get("/api/automations", headers=H)
+        assert response.status_code == 200
+        overview.assert_awaited_once()
+        rows = {a["id"]: a for a in response.json()}
+        assert rows["pr-doctor"]["status"]["level"] == "idle"
+        assert rows["pr-doctor"]["actionableCount"] == 0
+        assert rows["backlog-runner"]["actionableCount"] == 4
+        assert rows["pm-sync"]["status"]["level"] == "unknown"
+        assert rows["pm-sync"]["actionableCount"] is None
+
+
+def test_list_suppresses_obsolete_waits_when_off_without_hiding_human_decisions():
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from server.api.automations import list_automations
+
+    async def check():
+        # Disabling new automation work never resolves an existing human decision.
+        cases = [
+            (False, "auto", "schedule", 0, 0, False),
+            (True, "off", "schedule", 1, 0, False),
+            (False, "auto", "capacity", 1, 0, False),
+            (False, "auto", "human", 0, 0, True),
+            (True, "off", "human", 0, 0, True),
+            (False, "auto", "human", 1, 0, True),
+            (False, "auto", "human", 0, 2, True),
+            (True, "auto", "schedule", 0, 0, True),
+        ]
+        for enabled, mode, reason, live, actionable, expected_wait in cases:
+            observed = {"level": "error", "text": "Observed failure",
+                        "counts": {"failing": 2}, "products": None,
+                        "waitingReason": reason}
+            row = SimpleNamespace(enabled=enabled, mode=mode, config={},
+                                  schedule=None, last_active_at=None)
+            overview = AsyncMock(return_value={"statuses": {"pr-doctor": observed},
+                                               "actionableCounts": {"pr-doctor": actionable}})
+            request = SimpleNamespace(app=SimpleNamespace(
+                state=SimpleNamespace(sessions=SimpleNamespace(automation_overview=overview))))
+            db = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
+                all=lambda: [("pr-doctor", live)])))
+            with patch("server.api.automations._row", new=AsyncMock(return_value=row)):
+                rows = await list_automations(request, _identity="test", db=db)
+            automation = next(a for a in rows if a["id"] == "pr-doctor")
+            assert ("waitingReason" in automation["status"]) is expected_wait
+            assert observed["waitingReason"] == reason  # shared snapshot is untouched
+            assert automation["status"]["counts"] == observed["counts"]
+            assert automation["status"]["text"] == observed["text"]
+            assert automation["status"]["level"] == "error"
+            assert automation["activeSessions"] == live
+            assert automation["actionableCount"] == actionable
+    asyncio.run(check())

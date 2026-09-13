@@ -9,6 +9,8 @@ rule is server/automations/issue_filing.py.
 """
 from __future__ import annotations
 
+from .context import observation_failed, publish_observation
+
 import asyncio
 import logging
 from dataclasses import dataclass
@@ -277,12 +279,12 @@ class DeployMonitorLoop:
             try:
                 await self._run_once()
             except Exception:  # noqa: BLE001 — a tick must never crash the loop
+                observation_failed(self._ctx)
                 log.warning("deploy_monitor.tick_failed", exc_info=True)
 
     async def _run_once(self) -> None:
         mode, config = await self._read_config()
         if mode == "off":
-            self._stash_counts(0, 0, {})
             return
         now = self._clock()
         repos = []
@@ -331,7 +333,8 @@ class DeployMonitorLoop:
                 await self._reconcile(repo, env, key, states.get(key), verdict, mode, config, now, states)
         final_states = await self._ctx.list_target_states()
         await self._sweep_vanished(final_states, fetched, repos_set, seen_envs)
-        self._stash_counts(len(repos), watched, final_states)
+        self._stash_counts(len(repos), watched, final_states,
+                           degraded=any(fetched.get(repo) is None for repo in repos))
 
     async def _sweep_vanished(self, states: dict[str, dict], fetched: dict[str, list[Deployment] | None],
                               repos_set: set[str], seen_envs: set[str]) -> None:
@@ -572,7 +575,8 @@ class DeployMonitorLoop:
                              detail={"url": ci_issues.issue_url(repo, applied.issue_number)})
         return applied.issue_number
 
-    def _stash_counts(self, repos: int, envs: int, states: dict[str, dict]) -> None:
+    def _stash_counts(self, repos: int, envs: int, states: dict[str, dict], *,
+                      degraded: bool = False) -> None:
         # A muted row is excluded from failing/stalled (it must not keep the card
         # red/yellow) but still counts toward the total — an operator silenced it,
         # it did not disappear.
@@ -581,9 +585,9 @@ class DeployMonitorLoop:
         stalled = sum(1 for s in states.values()
                       if s.get("kind") == "stalled" and not s.get("muted"))
         muted = sum(1 for s in states.values() if s.get("muted"))
-        self._ctx.deploy_monitor_counts = {"repos": repos, "envs": envs, "failing": failing,
+        publish_observation(self._ctx, "deploy_monitor_counts", {"repos": repos, "envs": envs, "failing": failing,
                                            "stalled": stalled, "muted": muted,
-                                           "incidents": failing + stalled + muted}
+                                           "incidents": failing + stalled + muted}, degraded=degraded)
 
     # -- card actions ----------------------------------------------------------
     async def actionable_items(self, limit: int = 50) -> list[ActionableItem]:

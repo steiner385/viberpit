@@ -13,14 +13,12 @@ import { automationKey } from '../deliveryNavState'
 
 export interface AutomationRowProps {
   automation: Automation
-  /** Actionable-item count for this automation, from `useAutomationActionableCounts`. */
-  actionable: number
   selected: boolean
   onOpen: (id: string) => void
 }
 
-export function AutomationRow({ automation: a, actionable, selected, onOpen }: AutomationRowProps) {
-  const tier = automationTier(a, actionable)
+export function AutomationRow({ automation: a, selected, onOpen }: AutomationRowProps) {
+  const tier = automationTier(a)
   const key = automationKey(a.id)
   return (
     <div
@@ -42,18 +40,18 @@ export function AutomationRow({ automation: a, actionable, selected, onOpen }: A
           <span className="flex min-w-0 items-center gap-2">
             <TierDot tier={tier} />
             <span className="truncate text-sm font-medium text-ink">{a.name}</span>
-            {a.activeSessions > 0 && <Badge tone="accent" count={a.activeSessions} />}
+            {a.actionableCount != null && a.actionableCount > 0 && <Badge tone="accent" count={a.actionableCount} title="Actionable items" />}
           </span>
         }
         trailing={
           <>
-            <Badge tone={a.enabled ? 'accent' : 'neutral'}>{a.mode ?? 'off'}</Badge>
+            <Badge tone={a.enabled ? 'accent' : 'neutral'}>{(a.operatorTriggered ?? a.modes.length === 0) ? 'Invoked tool' : `Configured mode: ${a.mode ?? 'unknown'}`}</Badge>
             {a.workClass && <Badge tone="neutral">{a.workClass}</Badge>}
           </>
         }
       >
         <span className="block truncate text-xs text-ink-muted">
-          {automationTierLine(tier, a, actionable)} · {a.status.text}
+          {automationTierLine(tier, a)} · {a.status.text}
         </span>
       </CardFrame>
     </div>

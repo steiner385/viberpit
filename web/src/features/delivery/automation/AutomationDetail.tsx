@@ -11,6 +11,7 @@ import { Link } from 'react-router-dom'
 import type { Automation, AutomationStatusProduct } from '@/api/automations'
 import { AUTOMATION_TAB, AUTOMATION_TABS, type AutomationTab } from '@/features/products/vocab'
 import { CheckTable, type Column } from '@/features/delivery/ci/CheckTable'
+import { automationPath } from '../deliveryNavState'
 import { productPath } from '@/features/roadmap/roadmapNavState'
 import { useSearchParamState } from '@/lib/useSearchParamState'
 import { Button } from '@/ui/Button'
@@ -32,8 +33,9 @@ const PRODUCT_COLUMNS: Column<AutomationStatusProduct>[] = [
   { header: 'Bounced', cell: (p) => p.bounced },
 ]
 
-export function AutomationDetail({ automation: a, onOpenSession }: {
+export function AutomationDetail({ automation: a, automations = [], onOpenSession }: {
   automation: Automation
+  automations?: readonly Automation[]
   onOpenSession: (id: string) => void
 }) {
   const operatorTriggered = a.operatorTriggered ?? a.modes.length === 0
@@ -59,6 +61,36 @@ export function AutomationDetail({ automation: a, onOpenSession }: {
             {/* The tier dot and `status.text` are NOT repeated here: the page
                 header carries them (R9), where they stay visible on every tab
                 rather than only on this one. */}
+            {a.oversight ? (
+              <div className="space-y-2 text-sm">
+                <p><strong>Responsibility: </strong>{a.oversight.responsibility.label}</p>
+                <p><strong>Scope: </strong>{a.oversight.scope}</p>
+                {a.oversight.relationships.length > 0 && (
+                  <ul className="space-y-2" aria-label="Relationships">
+                    {a.oversight.relationships.map((relationship) => {
+                      const target = automations.find((item) => item.id === relationship.targetId)
+                      return (
+                        <li key={`${relationship.kind}:${relationship.targetId}`}>
+                          <span className="capitalize">{relationship.kind.replaceAll('_', ' ')}</span>{' '}
+                          <Link className="text-accent hover:underline" to={automationPath(relationship.targetId)}>
+                            {target?.name ?? relationship.targetId}
+                          </Link>
+                          <p className="text-ink-muted">{relationship.description}</p>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </div>
+            ) : <p className="text-sm text-ink-muted">Responsibility and scope unavailable.</p>}
+            {a.id === 'backlog-runner' && (
+              <div className="text-sm text-ink-muted">
+                {a.status.products == null && <p>Product workload unavailable.</p>}
+                {a.status.counts?.unassigned_in_flight == null
+                  ? <p>Unassigned workload unknown.</p>
+                  : a.status.counts.unassigned_in_flight > 0 && <p>{a.status.counts.unassigned_in_flight} in-flight work items are not assigned to a product.</p>}
+              </div>
+            )}
             <AutomationActions automationId={a.id} enabled />
             {a.status.products && a.status.products.length > 0 && (
               <CheckTable<AutomationStatusProduct>

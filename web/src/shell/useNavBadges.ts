@@ -1,3 +1,4 @@
+import { automationTier } from '@/features/delivery/automationTier'
 import type { NavBadgeKey, NavDef } from './navDefs'
 import { useAccounts, useSessions, useAllPrs, useAutomations, useTriage } from '@/api/hooks'
 import { useDeployState } from '@/lib/deployState'
@@ -29,7 +30,7 @@ export type NavBadges = Record<NavBadgeKey, number | boolean | undefined>
 export function useNavBadges(): NavBadges {
   const { data: sessions = [] } = useSessions()
   const { data: prs = [] } = useAllPrs()
-  const { data: automationsData = [] } = useAutomations()
+  const { data: automationsData = [], isError: automationsError } = useAutomations({ poll: true })
   const { data: accounts = [] } = useAccounts()
   // Deliberately UNSCOPED and ungated, unlike the Roadmap column's copy
   // (`useRoadmapWorkspace`, `enabled: active`). A section badge has to be right
@@ -42,7 +43,8 @@ export function useNavBadges(): NavBadges {
   const { data: proposals = [] } = useTriage()
   const deploy = useDeployState()
 
-  const automationsActiveSessions = automationsData.reduce((n, a) => n + a.activeSessions, 0)
+  const automationActions = automationsData.reduce((n, a) => n + (a.actionableCount ?? 0), 0)
+  const automationAttention = automationsError || automationsData.some((a) => automationTier(a) === 'needs-you')
   const hasNeedsReauth = accounts.some(
     (a) => a.status === 'needs-reauth' || a.status === 'needs-relogin',
   )
@@ -50,14 +52,8 @@ export function useNavBadges(): NavBadges {
   return {
     sessions: sessions.filter((s) => !isBackgroundSession(s)).length || undefined,
     pipeline: inFlightPrCount(prs) || undefined,
-    // Live automation sessions — the count the deleted Automations nav row wore.
-    // Automations are the Delivery section's Automations scope now (finish-line
-    // row 4, R3), so the badge follows the rows onto Delivery. This observer of
-    // `QK.automations` is app-wide and ungated; the Delivery list column shares
-    // the key, so it adds an observer rather than a request. `QK.automations`
-    // has a `staleTime` and no `refetchInterval` today — if it gains one, it
-    // goes on THIS observer alone, never on both.
-    delivery: automationsActiveSessions || undefined,
+    // Shared list snapshot; an unknown observation gets a dot, never a fabricated count.
+    delivery: automationActions || automationAttention || undefined,
     // Proposals awaiting a decision — the count the deleted Triage nav row wore.
     // The queue is the Roadmap section's Inbox scope now (finish-line row 3), so
     // the badge follows it onto Roadmap rather than disappearing with the row.

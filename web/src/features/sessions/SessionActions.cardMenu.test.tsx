@@ -49,7 +49,6 @@ vi.mock('@/api/hooks', () => ({
   // The Delivery list column's two reads (finish-line row 4). Gated off on
   // every Sessions route, but the shell calls the hook unconditionally.
   useStageModels: () => ({ data: undefined, isLoading: false, isError: false }),
-  useAutomationActionableCounts: () => ({}),
   usePendingDeploy: () => ({ data: { behind: false, commits: [], ci: 'green' } }),
   useDeployStatus: () => ({ data: { running: false, phases: {} } }),
   useStartDeploy: () => ({ mutate: vi.fn(), isPending: false }),

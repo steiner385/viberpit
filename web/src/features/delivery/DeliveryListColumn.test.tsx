@@ -7,7 +7,6 @@ import { automationKey, ciRepoKey } from './deliveryNavState'
 import { ViewportProvider } from '@/shell/useViewport'
 
 vi.mock('@/api/hooks', () => ({
-  useAutomationActionableCounts: () => ({ 'pr-doctor': 0, 'backlog-runner': 2, 'pm-classify': 0 }),
   useCheckInsights: (repo: string) => ({
     data: repo === 'o/r'
       ? { repo, window: '7d', slowest: [{ check_name: 'e2e', event: 'pull_request', p50: 100, p90: 400, ratio: 4, n: 9 }],
@@ -37,10 +36,16 @@ describe('DeliveryListColumn', () => {
     mount()
     const list = screen.getByRole('list', { name: 'Automations' })
     const names = within(list).getAllByRole('button', { name: /^Open automation/ }).map((b) => b.getAttribute('aria-label'))
-    // backlog-runner has 2 actionable → needs-you first; pr-doctor warn+enabled → blocked; pm-classify idle
+    // backlog-runner has 2 actionable → needs-you first; pr-doctor live session → in-flight; pm-classify idle
     expect(names).toEqual(['Open automation Backlog runner', 'Open automation PR doctor', 'Open automation PM classify'])
-    expect(screen.getByText(/Needs you · 2 actionable/)).toBeInTheDocument()
-    expect(screen.getByText(/Blocked · 2 PRs failing/)).toBeInTheDocument()
+    expect(screen.getByText(/2 actionable/)).toBeInTheDocument()
+    expect(screen.getByText(/Notice · 1 live session · 2 PRs failing/)).toBeInTheDocument()
+  })
+  it('invoked tools are not shown as disabled loops', () => {
+    mount()
+    const row = screen.getByTestId('row-automation:pm-classify')
+    expect(within(row).getByText('Invoked tool')).toBeInTheDocument()
+    expect(within(row).queryByText('off')).not.toBeInTheDocument()
   })
   it('opens an automation and highlights the selected row', () => {
     const { onOpenAutomation } = mount({ selectedKey: automationKey('pr-doctor') })

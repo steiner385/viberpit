@@ -131,6 +131,10 @@ from server.sessions.pr_fix import build_conflict_fix_prompt, build_pr_fix_promp
 
 log = logging.getLogger(__name__)
 
+# List polling shares one bounded daemon-side provider refresh across clients.
+AUTOMATION_ACTIONABLE_TIMEOUT_S = 2.0
+AUTOMATION_ACTIONABLE_CACHE_S = 30.0
+
 _DRIVER_CONTROL_TIMEOUT_S = 5.0
 
 
@@ -5617,31 +5621,28 @@ class SessionOrchestrator:
         queue scoped to the products whose ``dispatch`` is on — so a product this
         runner was never turned on for is never counted against it.
 
-        ``per_product`` adds this product's live in-flight count and its policy cap
-        to that product's row, which is what the card's per-product segments show.
+        ``per_product`` includes each known product and its policy cap, including
+        off products. The loop adds live counts from its single claim snapshot.
         It is ``None`` — not ``{}`` — when the queue read FAILED: an empty map is
         the real, reportable state "no product has dispatch on", so returning it for
         a broken read would tell an operator their policies are unset."""
-        from server.automations.backlog_runner import in_flight_by_product
         _mode, config = await self._backlog_read_config()
         skipped: dict[str, int] = {}
         per_product: dict[str, dict] = {}
         try:
             entries = await self._backlog_query_queue(
                 config, skipped_out=skipped, products_out=per_product)
-        except Exception:  # pragma: no cover — a queue read must not break the tick
+        except Exception:  # a queue read must not break the tick
             log.warning("orchestrator._backlog_count_candidates_failed", exc_info=True)
             return 0, 0, 0, None
-        # In flight PER PRODUCT, by the ONE rule the loop's per-product cap gate
-        # uses, so the card cannot show a number selection does not act on.
-        try:
-            states = await self._backlog_ctx.list_target_states()
-        except Exception:  # pragma: no cover — defensive, matches the loop's guards
-            states = {}
-        in_flight = in_flight_by_product(states)
-        for slug, row in per_product.items():
-            row["in_flight"] = in_flight.get(slug, 0)
-            row["cap"] = self._backlog_last_policies.get(slug, {}).get("max_in_flight", 0)
+        # Include off products so existing claims remain attributable after a
+        # policy change. The loop adds live counts from ONE shared snapshot.
+        for slug, policy in self._backlog_last_policies.items():
+            row = per_product.setdefault(slug, {
+                "dispatch": policy["dispatch"], "eligible": 0,
+                "blocked": 0, "untriaged": 0, "bounced": 0,
+            })
+            row["cap"] = policy.get("max_in_flight", 0)
         return (len(entries), skipped.get("blocked", 0), skipped.get("status", 0),
                 per_product)
 
@@ -6232,11 +6233,9 @@ class SessionOrchestrator:
         from server.sdlc.control_bands import Baseline, Breach, Sample
         from server.sdlc.prompts import build_breach_trigger
 
-        try:
-            items = await triage_store.queued_for_intake()
-        except Exception:  # pragma: no cover — a queue read must not crash the tick
-            log.warning("sdlc_intake.read_triggers_failed", exc_info=True)
-            return []
+        # The loop's failure boundary records unavailable telemetry and keeps
+        # supervision alive. A failed read must not become a measured empty queue.
+        items = await triage_store.queued_for_intake()
 
         triggers = []
         for item in items:
@@ -9783,6 +9782,7 @@ class SessionOrchestrator:
         except Exception:
             return True  # a read failure must never wedge the loop
         if not raw:
+            getattr(self, "_schedule_blocked", {}).pop(automation_id, None)
             return True
         try:
             allowed = should_tick(raw, datetime.now())
@@ -9891,7 +9891,13 @@ class SessionOrchestrator:
 
         if not await self._schedule_allows_tick("pr-doctor"):
             return
-        pairs = await self._pr_doctor_scope_pairs()
+        try:
+            pairs = await self._pr_doctor_scope_pairs()
+        except Exception:
+            from server.automations.context import observation_failed
+            observation_failed(self._pr_doctor_ctx)
+            raise
+        degraded = False
         for repo, branch in pairs:
             info = self.pr_for(repo, branch) or self._pr_population_pr(repo, branch)
             # Reconcile: per-branch cache can lag behind a merge; if population confirms
@@ -9906,6 +9912,7 @@ class SessionOrchestrator:
             try:
                 await self._pr_doctor_step(repo, branch, info, rec=rec)
             except Exception:
+                degraded = True
                 log.warning("orchestrator._pr_doctor_sweep_step_failed", exc_info=True)
         # Stash a live summary on the ctx so ``PrDoctor.status(ctx)`` renders
         # "watching N failing PR(s)" instead of always "idle" (parity with the
@@ -9916,8 +9923,12 @@ class SessionOrchestrator:
             actionable = await self.automation_actionable("pr-doctor")
             # ``setattr`` (not a typed attribute) mirrors the backlog runner's
             # ``_stash_counts`` — the ctx carries dynamic per-automation summaries.
-            setattr(self._pr_doctor_ctx, "pr_doctor_counts", {"failing": len(actionable)})
+            from server.automations.context import publish_observation
+            publish_observation(self._pr_doctor_ctx, "pr_doctor_counts",
+                                {"failing": len(actionable)}, degraded=degraded)
         except Exception:  # pragma: no cover — defensive: never break the sweep
+            from server.automations.context import observation_failed
+            observation_failed(self._pr_doctor_ctx)
             log.debug("pr_doctor.stash_counts_failed", exc_info=True)
 
     async def _pr_doctor_step(
@@ -12074,17 +12085,14 @@ class SessionOrchestrator:
         return fallback
 
     def automation_statuses(self) -> dict[str, dict]:
-        """Rendered live status per automation id, for the automations list.
+        """Render observations without substituting configuration for runtime evidence.
 
-        The HTTP layer talks to an async adapter (or the remote daemon proxy) and
-        cannot reach the in-process ``AutomationContext`` objects where each loop
-        stashes its live ``*_counts`` every tick. So status rendering — which
-        reads those counts — happens HERE, where the ctx objects live, and ships a
-        plain ``{id: status_dict}`` map across the boundary. Without this the list
-        endpoint could only pass ``ctx=None`` and every badge showed a hardcoded
-        "idle". Best-effort per automation: a render error falls back to that
-        automation's idle status so one bad automation can't blank the whole list.
+        Counts are the existing producers' observation seam. A context with no
+        observation yet, or a static description with no runtime data, is unknown.
+        Keep this synchronous seam for existing RPC consumers.
         """
+        from server.automations.base import AutomationStatus, operator_triggered
+        from server.automations.context import observed_status
         from server.automations.registry import registry
         ctxs = {
             "pr-doctor": getattr(self, "_pr_doctor_ctx", None),
@@ -12096,15 +12104,68 @@ class SessionOrchestrator:
             "gh-reconcile": getattr(self, "_gh_reconcile_ctx", None),
             "error-triage": getattr(self, "_error_triage_ctx", None),
             "deploy-monitor": getattr(self, "_deploy_monitor_ctx", None),
+            "sdlc-intake": getattr(self, "_sdlc_intake_ctx", None),
+            "sdlc-synthesizer": getattr(self, "_sdlc_synth_ctx", None),
+            "control-band-monitor": getattr(self, "_control_band_ctx", None),
+            "archive-audit": getattr(self, "_archaudit_ctx", None),
+            "pm-onboard": getattr(self, "_pm_onboard_ctx", None),
+            "pm-classify": getattr(self, "_pm_classify_ctx", None),
         }
         out: dict[str, dict] = {}
         for a in registry.all():
             try:
-                out[a.id] = a.status(ctx=ctxs.get(a.id)).to_dict()
-            except Exception:  # pragma: no cover — one bad automation must not blank the list
+                ctx = ctxs.get(a.id)
+                status = a.status(ctx=ctx)
+                if operator_triggered(a):
+                    status = AutomationStatus("Invoked tool; no continuous loop")
+                elif ctx is None:
+                    status = AutomationStatus("Runtime telemetry unavailable", level="unknown")
+                elif status.counts is None and status.level == "idle":
+                    status = AutomationStatus("No runtime observation available yet", level="unknown")
+                if ctx is not None and not operator_triggered(a):
+                    status = observed_status(ctx, status)
+                if getattr(self, "_schedule_blocked", {}).get(a.id):
+                    # Pausing new scheduled work cannot resolve a human decision
+                    # already waiting; retain its attention priority in the UI.
+                    if status.waiting_reason != "human":
+                        status.waiting_reason = "schedule"
+                    status.text = "Scheduled work paused — outside active hours; " + status.text
+                out[a.id] = status.to_dict()
+            except Exception:
                 log.debug("automation_statuses.render_failed id=%s", a.id, exc_info=True)
-                out[a.id] = a.status(ctx=None).to_dict()
+                out[a.id] = AutomationStatus("Runtime telemetry unavailable", level="unknown").to_dict()
         return out
+
+    async def automation_overview(self) -> dict:
+        """One batched read for rows and navigation, using manual-action providers.
+
+        Cache counts for 30 seconds (including unknown failures), and coalesce
+        concurrent readers. Never allow one slow provider to hold up all rows.
+        Status itself is rendered afresh without external polling.
+        """
+        from server.automations.registry import registry
+
+        if not hasattr(self, "_automation_overview_lock"):
+            self._automation_overview_lock = asyncio.Lock()
+            self._automation_actionable_counts: dict[str, int | None] = {}
+            self._automation_actionable_expires = 0.0
+        async with self._automation_overview_lock:
+            if time.monotonic() >= self._automation_actionable_expires:
+                async def count(automation_id: str) -> tuple[str, int | None]:
+                    try:
+                        async with asyncio.timeout(AUTOMATION_ACTIONABLE_TIMEOUT_S):
+                            items = await self.automation_actionable(automation_id)
+                        return automation_id, len(items)
+                    except Exception:
+                        log.debug("automation_overview.count_failed id=%s", automation_id,
+                                  exc_info=True)
+                        return automation_id, None
+
+                self._automation_actionable_counts = dict(await asyncio.gather(
+                    *(count(a.id) for a in registry.all())))
+                self._automation_actionable_expires = time.monotonic() + AUTOMATION_ACTIONABLE_CACHE_S
+            counts = dict(self._automation_actionable_counts)
+        return {"statuses": self.automation_statuses(), "actionableCounts": counts}
 
     async def automation_actionable(self, automation_id: str) -> list[dict]:
         provider = self._action_providers.get(automation_id)
@@ -12122,7 +12183,12 @@ class SessionOrchestrator:
         if kind not in provider.valid_kinds:
             return {"status": "invalid_kind", "level": "error",
                     "message": f"invalid kind {kind!r}"}
-        return (await provider.trigger(item_id, kind)).to_dict()
+        try:
+            return (await provider.trigger(item_id, kind)).to_dict()
+        finally:
+            # A manual decision invalidates the overview's count snapshot, even
+            # if an external write succeeded before its response failed.
+            self._automation_actionable_expires = 0.0
 
     async def automation_consolidate(self, repo: str, numbers: list[int]) -> dict:
         """Public seam for the consolidate API route — delegates to the

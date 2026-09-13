@@ -644,3 +644,19 @@ async def test_decline_archive_preserves_last_facts_refresh():
     # The decline-archive emit must have happened (proposal to the user)
     assert any(kind == "proposed" for _, _, kind in ctx.emits), (
         "expected a 'proposed' emit from _decline_archive")
+
+
+@pytest.mark.asyncio
+async def test_escalation_observation_preserves_activity_and_clears():
+    from server.automations.autopilot import Autopilot
+    from server.automations.context import publish_observation
+    from types import SimpleNamespace
+
+    ctx = SimpleNamespace()
+    publish_observation(ctx, "autopilot_counts", {"advancing": 2, "escalated": 1})
+    status = Autopilot().status(ctx)
+    assert status.waiting_reason == "human"
+    assert status.level == "active"
+    assert status.counts["advancing"] == 2
+    publish_observation(ctx, "autopilot_counts", {"advancing": 2, "escalated": 0})
+    assert Autopilot().status(ctx).waiting_reason is None

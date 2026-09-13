@@ -5,10 +5,12 @@
  * `features/roadmap/RoadmapPage.tsx`.
  */
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { useAutomationActionable, useAutomations, useStageModels } from '@/api/hooks'
-import { DELIVERY, MODE_DESCRIPTION } from '@/features/products/vocab'
+import { useAutomations, useStageModels } from '@/api/hooks'
+import { DELIVERY } from '@/features/products/vocab'
 import { TierDot } from '@/features/roadmap/rows/TierDot'
 import { useSearchParamState } from '@/lib/useSearchParamState'
+import { useNow } from '@/hooks/useNow'
+import { isValidTimestamp, relTime } from '@/lib/relativeTime'
 import { sessionPath } from '@/session/sessionNavState'
 import { Badge } from '@/ui/Badge'
 import { Banner } from '@/ui/Banner'
@@ -17,7 +19,7 @@ import { EmptyState } from '@/ui/EmptyState'
 import { PageContent } from '@/ui/PageContent'
 import { PageHeader } from '@/ui/PageHeader'
 import { Select } from '@/ui/Select'
-import { automationTier } from './automationTier'
+import { automationTier, automationTierLine } from './automationTier'
 import { AutomationControls } from './automation/AutomationControls'
 import { AutomationDetail } from './automation/AutomationDetail'
 import { engineBadge } from './automation/engineBadge'
@@ -31,11 +33,7 @@ export function DeliveryPage() {
   const item = deliveryOpenItem(useParams())
   const scope = deliveryScope(pathname, search)
 
-  // `poll: false` on the repo set: the shell's list column observes that exact
-  // cache entry and owns the decision not to poll it (`useDeliveryWorkspace`),
-  // and two polling observers of one key are two requests. `useAutomations`
-  // takes no `poll` — that key has a `staleTime` and no interval at all — so
-  // this is a third observer of it, not a third fetch.
+  // The shell navigation owns the list polling interval.
   const automations = useAutomations()
   const repos = useStageModels({ poll: false })
 
@@ -43,10 +41,6 @@ export function DeliveryPage() {
   const automation = automationId
     ? automations.data?.find((a) => a.id === automationId) ?? null
     : null
-  // Shares `QK.automationActionable(id)` with `AutomationDetail`'s copy below,
-  // so the header's tier dot costs no extra request.
-  const actionable = useAutomationActionable(automationId ?? '', automation !== null)
-
   // The window is URL state so a shared link carries it; `replace`, because
   // changing a filter must not grow the Back stack. Declared unconditionally —
   // the CI branch is the only reader.
@@ -71,8 +65,11 @@ export function DeliveryPage() {
     crumbs.push({ label: DELIVERY.ci, to: deliveryPath('ci') }, { label: title })
   }
 
+  const hasObservation = isValidTimestamp(automation?.status.observedAt)
+  const hasRefreshFailure = isValidTimestamp(automation?.status.lastRefreshFailedAt)
+  const now = useNow(60_000, hasObservation || hasRefreshFailure)
   const engine = automation ? engineBadge(automation) : null
-  const mode = automation?.mode ? MODE_DESCRIPTION[automation.mode] : undefined
+  const mode = automation?.mode ? automation.oversight?.modeDescriptions[automation.mode] : undefined
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-page-variant="standard">
@@ -85,9 +82,14 @@ export function DeliveryPage() {
                 text rather than as a dot the reader has to decode. */}
             {automation && (
               <div className="flex flex-wrap items-center gap-2 text-xs text-ink-muted">
-                <TierDot tier={automationTier(automation, actionable.data?.length ?? 0)} />
+                <TierDot tier={automationTier(automation)} />
+                <span>{automationTierLine(automationTier(automation), automation)}</span>
                 <span>{automation.status.text}</span>
-                {mode && <span>{automation.mode} — {mode}</span>}
+                {hasObservation && automation.status.observedAt && <span title={automation.status.observedAt}>Last observed {relTime(automation.status.observedAt, now || undefined)}</span>}
+                {hasRefreshFailure && automation.status.lastRefreshFailedAt && <span title={automation.status.lastRefreshFailedAt}>Refresh failed {relTime(automation.status.lastRefreshFailedAt, now || undefined)}</span>}
+                {(automation.operatorTriggered ?? automation.modes.length === 0)
+                  ? <span>Invoked tool</span>
+                  : <span>Configured mode: {automation.mode ?? 'unknown'} — {mode ?? 'Mode effects unavailable'}</span>}
                 {engine && (
                   <Badge tone="info" title="Agent engine this automation's unattended sessions run on">
                     {engine}
@@ -139,6 +141,7 @@ export function DeliveryPage() {
           <AutomationDetail
             key={automation.id}
             automation={automation}
+            automations={automations.data}
             onOpenSession={(id) => navigate(sessionPath(id))}
           />
         )}

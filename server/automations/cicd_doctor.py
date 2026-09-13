@@ -4,6 +4,8 @@ per-PR (it never touches an individual PR). v1 is propose-only: every verdict
 is a finding row + optional ci-doctor GitHub issue, never a mutation."""
 from __future__ import annotations
 
+from .context import observation_failed, publish_observation
+
 import asyncio
 import logging
 from typing import Any, Awaitable, Callable
@@ -399,6 +401,7 @@ class CicdDoctorLoop:
             try:
                 await self._run()
             except Exception:  # a tick must never crash the loop
+                observation_failed(self._ctx)
                 log.warning("cicd_doctor.tick_failed", exc_info=True)
 
     async def _run(self) -> None:
@@ -417,8 +420,7 @@ class CicdDoctorLoop:
                 errors += 1
                 log.warning("cicd_doctor.repo_failed repo=%s", repo, exc_info=True)
         await self._prune(config)
-        setattr(self._ctx, "cicd_doctor_counts",
-                {"open": open_total, "candidates": candidates, "errors": errors})
+        publish_observation(self._ctx, "cicd_doctor_counts", {"open": open_total, "candidates": candidates, "errors": errors}, degraded=bool(errors))
 
     async def _ingest(self, repo: str) -> None:
         from sqlalchemy import select

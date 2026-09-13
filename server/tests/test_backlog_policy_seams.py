@@ -284,11 +284,15 @@ def test_query_queue_breaks_cross_product_ties_by_issue_age(tmp_path):
     asyncio.run(run())
 
 
-def test_count_candidates_returns_per_product_rows_with_in_flight_and_cap(tmp_path):
+def test_count_candidates_returns_product_policies_without_rereading_claims(tmp_path):
+    from unittest.mock import AsyncMock
+
     async def run():
         await _init(tmp_path, "counts.db")
         await _seed_product("alpha", "o/a",
                             policy={"dispatch": "auto", "max_in_flight": 2})
+        await _seed_product("off", "o/off",
+                            policy={"dispatch": "off", "max_in_flight": 3})
         await _seed_item("o/a", 1, score=5.0)
         await _seed_item("o/a", 2, score=4.0)
         orch = _orch_with_ctx()
@@ -300,12 +304,18 @@ def test_count_candidates_returns_per_product_rows_with_in_flight_and_cap(tmp_pa
         await orch._backlog_ctx.set_target_state(
             "o/a#9", {"claimed": True, "issues": ["o/a#9"], "product": "alpha"})
 
+        orch._backlog_ctx.list_target_states = AsyncMock(
+            side_effect=AssertionError("display claims must use loop snapshot"))
         eligible, blocked, untriaged, per_product = \
             await orch._backlog_count_candidates()
 
         assert (eligible, blocked, untriaged) == (2, 0, 0)
-        assert per_product["alpha"]["in_flight"] == 1
+        assert "in_flight" not in per_product["alpha"]
         assert per_product["alpha"]["cap"] == 2
+        assert per_product["off"]["dispatch"] == "off"
+        assert per_product["off"]["cap"] == 3
+        assert per_product["off"]["eligible"] == 0
+        orch._backlog_ctx.list_target_states.assert_not_awaited()
 
     asyncio.run(run())
 

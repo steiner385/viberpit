@@ -3,6 +3,7 @@ per-target state, and (Task 4) de-duplicated session spawning."""
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -20,7 +21,44 @@ from server.db.models import (
 from server.pm.outcomes import body_fingerprint, project_id_for_slug
 from server.pm.refs import split_ref
 
+from .base import AutomationStatus
+
 log = logging.getLogger(__name__)
+
+
+def publish_observation(ctx: Any, attribute: str, counts: dict, *,
+                        degraded: bool = False) -> None:
+    """Publish a measured summary and its success time as one synchronous update.
+
+    Producers call this only after a real refresh, never for disabled/skipped
+    ticks. Contexts remain duck-typed, as with the existing summary attributes.
+    """
+    setattr(ctx, attribute, counts)
+    ctx.observed_at = datetime.now(timezone.utc).isoformat()
+    ctx.last_refresh_failed_at = None
+    ctx.observation_degraded = degraded
+
+
+def observation_failed(ctx: Any) -> None:
+    """Invalidate current telemetry without losing the last successful timestamp."""
+    ctx.last_refresh_failed_at = datetime.now(timezone.utc).isoformat()
+
+
+def observed_status(ctx: Any, status: AutomationStatus) -> AutomationStatus:
+    """Attach producer evidence without advancing freshness during UI polling."""
+    observed_at = getattr(ctx, "observed_at", None)
+    failed_at = getattr(ctx, "last_refresh_failed_at", None)
+    if failed_at:
+        return AutomationStatus(
+            "Runtime observation unavailable — last refresh failed", level="unknown",
+            observed_at=observed_at, last_refresh_failed_at=failed_at,
+            waiting_reason=status.waiting_reason)
+    if getattr(ctx, "observation_degraded", False):
+        return replace(status, observed_at=observed_at,
+                       level=status.level if status.level in ("error", "unknown") else "warn",
+                       text=status.text + "; some observations unavailable")
+    return replace(status, observed_at=observed_at)
+
 
 # What an automation-spawned session runs as when nothing else says otherwise.
 #

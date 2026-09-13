@@ -59,7 +59,7 @@ describe('AutomationDetail', () => {
   })
   it('controls: mode select and enable switch patch the automation', () => {
     render(<MemoryRouter><AutomationControls automation={prDoctor} /></MemoryRouter>)
-    fireEvent.change(screen.getByRole('combobox', { name: 'Mode' }), { target: { value: 'propose' } })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Configured mode' }), { target: { value: 'propose' } })
     expect(patch).toHaveBeenCalledWith({ id: 'pr-doctor', body: { mode: 'propose' } })
     fireEvent.click(screen.getByRole('switch', { name: 'PR doctor enabled' }))
     expect(patch).toHaveBeenCalledWith({ id: 'pr-doctor', body: { enabled: false } })
@@ -78,6 +78,18 @@ describe('AutomationDetail', () => {
     expect(screen.getByText('1/1')).toBeInTheDocument()
     expect(screen.getByText('12')).toBeInTheDocument()
     expect(screen.getByText('2')).toBeInTheDocument()
+  })
+  it('shows active dispatch-off work and explicitly accounts for unassigned work', () => {
+    mount({ ...AUTOMATIONS[1], status: { text: '3 work items in flight', level: 'active', counts: { unassigned_in_flight: 2 },
+      products: [{ slug: 'paused-product', dispatch: 'off', inFlight: 1, cap: 2, eligible: 0, bounced: 0 }] } })
+    expect(screen.getByText('off')).toBeInTheDocument()
+    expect(screen.getByText('1/2')).toBeInTheDocument()
+    expect(screen.getByText('2 in-flight work items are not assigned to a product.')).toBeInTheDocument()
+  })
+  it('does not turn unavailable product or unassigned workload into zero', () => {
+    mount({ ...AUTOMATIONS[1], status: { text: 'Unavailable', level: 'unknown', counts: null, products: null } })
+    expect(screen.getByText('Product workload unavailable.')).toBeInTheDocument()
+    expect(screen.getByText('Unassigned workload unknown.')).toBeInTheDocument()
   })
   it('Status tab: no per-product table when status.products is null', () => {
     mount(prDoctor)

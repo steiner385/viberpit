@@ -245,6 +245,8 @@ def batch(primary: str, issues=None, product=DEFAULT_PRODUCT) -> Batch:
 # --------------------------------------------------------------------------- #
 
 def test_eligible_reflects_candidate_count_even_when_saturated(tmp_path):
+    from types import SimpleNamespace
+
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'elig.db'}"
 
     async def run():
@@ -253,6 +255,7 @@ def test_eligible_reflects_candidate_count_even_when_saturated(tmp_path):
         loop, rec, ctx = build_loop(
             config=make_config(max_concurrent=1),
             candidates=[batch("r#1")],
+            spawn_result=SimpleNamespace(id="live-session"),
             candidate_count=7,          # GitHub says 7 ready issues exist
         )
         await loop.tick()               # fills the single slot
@@ -2829,3 +2832,114 @@ def test_outcome_fallback_is_none_for_a_claim_that_never_dispatched():
     assert BacklogRunnerLoop._outcome_fallback(
         {"product": "p1", "session_id": "s1", "attempts": 1}) == {
         "product_slug": "p1", "session_id": "s1", "model": None, "attempt_no": 1}
+
+
+def test_display_counts_share_claim_snapshot_and_keep_off_product_work():
+    from unittest.mock import AsyncMock
+
+    from server.automations.backlog_runner import BacklogRunner
+
+    async def run():
+        rows = {"p1": {"dispatch": "off", "eligible": 0, "cap": 2}}
+        loop, _, ctx = build_loop(candidates=[], candidate_count=0, per_product=rows)
+        ctx.list_target_states = AsyncMock(return_value={
+            "proposal": {"product": "p1", "proposed": True},
+            "legacy": {},
+            "deleted-product": {"product": "deleted"},
+            "done": {"product": "p1", "handed_off": True},
+            "parked": {"product": "p1", "gave_up": True},
+        })
+        loop._count_in_flight = AsyncMock(return_value=99)
+        await loop._stash_counts({})
+        status = BacklogRunner().status(ctx)
+        assert status.counts["in_flight"] == 3
+        assert status.counts["unassigned_in_flight"] == 2
+        assert status.products[0]["inFlight"] == 1
+        assert status.products[0]["dispatch"] == "off"
+        assert "3 work in flight" in status.text
+        assert "2 unattributed" in status.text
+        ctx.list_target_states.assert_awaited_once()
+        loop._count_in_flight.assert_not_awaited()
+
+    asyncio.run(run())
+
+
+def test_failed_claim_read_does_not_publish_zero_work():
+    from unittest.mock import AsyncMock
+
+    from server.automations.backlog_runner import BacklogRunner
+
+    async def run():
+        loop, _, ctx = build_loop(candidates=[], candidate_count=0)
+        ctx.list_target_states = AsyncMock(side_effect=RuntimeError("read failed"))
+        await loop._stash_counts({})
+        status = BacklogRunner().status(ctx)
+        assert "in_flight" not in status.counts
+        assert "needs_human" not in status.counts
+        assert "unavailable" in status.text
+        assert "idle" not in status.text
+        assert status.products is None
+
+    asyncio.run(run())
+
+
+def test_unattributed_work_stays_visible_without_opted_in_products():
+    from unittest.mock import AsyncMock
+
+    from server.automations.backlog_runner import BacklogRunner
+
+    async def run():
+        loop, _, ctx = build_loop(candidates=[], candidate_count=0)
+        ctx.list_target_states = AsyncMock(return_value={"legacy": {"proposed": True}})
+        await loop._stash_counts({})
+        status = BacklogRunner().status(ctx)
+        assert status.counts["in_flight"] == status.counts["unassigned_in_flight"] == 1
+        assert status.products == []
+        assert "1 work in flight" in status.text
+        assert "1 unattributed" in status.text
+        assert status.level == "active"
+
+    asyncio.run(run())
+
+
+def test_queue_failure_preserves_measured_workload_but_not_false_queue_zeroes():
+    from unittest.mock import AsyncMock
+
+    from server.automations.backlog_runner import BacklogRunner
+
+    async def run():
+        loop, _, ctx = build_loop(candidates=[], candidate_count=0, count_read_failed=True)
+        ctx.list_target_states = AsyncMock(return_value={"live": {"product": "p1"}})
+        await loop._stash_counts({})
+        status = BacklogRunner().status(ctx)
+        assert status.counts == {"in_flight": 1, "needs_human": 0}
+        assert status.products is None
+        assert "1 work in flight" in status.text
+        assert "queue read failed" in status.text
+
+    asyncio.run(run())
+
+
+def test_wait_reason_uses_refill_decision_and_clears(tmp_path):
+    from server.automations.backlog_runner import BacklogRunner
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'wait.db'}")
+        await _seed_row()
+        cfg = make_config(max_concurrent=2, max_spawns_per_day=1)
+        loop, rec, ctx = build_loop(config=cfg)
+        await loop.tick()
+        assert ctx.backlog_waiting_reason is None  # configured limits aren't waits
+        rec.in_flight = 2
+        await loop.tick()
+        assert ctx.backlog_waiting_reason == "capacity"
+        loop._spawns_today = [loop._clock()]
+        await loop.tick()
+        assert ctx.backlog_waiting_reason == "budget"
+        rec.in_flight = 0
+        loop._spawns_today = []
+        await loop.tick()
+        assert ctx.backlog_waiting_reason is None
+        assert BacklogRunner().status(ctx).waiting_reason is None
+
+    asyncio.run(run())

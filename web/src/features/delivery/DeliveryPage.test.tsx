@@ -3,8 +3,9 @@
 // `ci/CiRepoDetail.test.tsx`); this file is only about which one the page picks,
 // what its header says, and that an address the list does not contain says so.
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { act, render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import type { AutomationStatus } from '@/api/automations'
 import { AUTOMATIONS } from './__fixtures__/automations'
 import { DeliveryPage } from './DeliveryPage'
 import { AUTOMATION_ROUTE, CI_REPO_ROUTE, DELIVERY_PATH } from './deliveryNavState'
@@ -15,13 +16,13 @@ const patch = vi.fn()
 // factory below is only evaluated once (when `@/api/hooks` is first
 // imported), but the arrow functions it returns are re-invoked on every
 // render, so a test can flip these before `mount()` and the component sees it.
-const hookState = { automationsIsError: false, reposIsError: false }
+const hookState: { automationsIsError: boolean; reposIsError: boolean; status?: AutomationStatus } = { automationsIsError: false, reposIsError: false }
 
 // The page's own hooks plus everything the two detail bodies reach for — the
 // same set `AutomationDetail.test.tsx` mocks, so the real panes render.
 vi.mock('@/api/hooks', () => ({
   useAutomations: () => ({
-    data: hookState.automationsIsError ? undefined : AUTOMATIONS,
+    data: hookState.automationsIsError ? undefined : AUTOMATIONS.map((a) => a.id === 'pr-doctor' && hookState.status ? { ...a, status: hookState.status } : a),
     isLoading: false,
     isError: hookState.automationsIsError,
   }),
@@ -104,6 +105,7 @@ function mountWithNav(path: string) {
 afterEach(() => {
   hookState.automationsIsError = false
   hookState.reposIsError = false
+  hookState.status = undefined
 })
 
 const h1 = () => screen.getByRole('heading', { level: 1 })
@@ -130,14 +132,37 @@ describe('DeliveryPage', () => {
     expect(h1()).toHaveTextContent('PR doctor')
     // The header controls (R9): the mode select and the enable switch, beside
     // the name rather than inside the tab panel.
-    expect(screen.getByRole('combobox', { name: 'Mode' })).toHaveValue('auto')
+    expect(screen.getByRole('combobox', { name: 'Configured mode' })).toHaveValue('auto')
     expect(screen.getByRole('switch', { name: 'PR doctor enabled' })).toBeInTheDocument()
     // The status line and the mode description, as visible header text.
     expect(screen.getByText('2 PRs failing')).toBeInTheDocument()
-    expect(screen.getByText(/Acts automatically without confirmation/)).toBeInTheDocument()
+    expect(screen.getByText(/Configured mode: auto — Repairs eligible PRs/)).toBeInTheDocument()
+    expect(screen.getByText('Execute and finish work')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Backlog runner' })).toHaveAttribute('href', '/delivery/automations/backlog-runner')
     expect(screen.getByRole('tab', { name: 'Status', selected: true })).toBeInTheDocument()
   })
 
+  it('distinguishes failed refresh from its last successful observation', () => {
+    hookState.status = { text: 'Status unavailable', level: 'unknown', counts: null,
+      observedAt: '2026-09-12T10:00:00Z', lastRefreshFailedAt: '2026-09-12T10:05:00Z' }
+    mount('/delivery/automations/pr-doctor')
+    expect(screen.getByText(/Last observed/)).toHaveAttribute('title', '2026-09-12T10:00:00Z')
+    expect(screen.getByText(/Refresh failed/)).toHaveAttribute('title', '2026-09-12T10:05:00Z')
+    expect(screen.getByText(/Status unknown/)).toBeInTheDocument()
+  })
+  it('ages the last observation even when no new server data arrives', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-12T10:02:00Z'))
+    hookState.status = { text: 'Status unavailable', level: 'unknown', counts: null, observedAt: '2026-09-12T10:00:00Z' }
+    try {
+      mount('/delivery/automations/pr-doctor')
+      expect(screen.getByText('Last observed 2m ago')).toBeInTheDocument()
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+      expect(screen.getByText('Last observed 3m ago')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
   it('an automation the list does not contain says so and offers the way back', () => {
     mount('/delivery/automations/nope')
     expect(screen.getByText('Automation not found')).toBeInTheDocument()

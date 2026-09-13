@@ -6,7 +6,6 @@
  */
 import type { Automation, AutomationPatch } from '@/api/automations'
 import { usePatchAutomation } from '@/api/hooks'
-import { MODE_DESCRIPTION } from '@/features/products/vocab'
 import { Select } from '@/ui/Select'
 import { Switch } from '@/ui/Switch'
 
@@ -21,10 +20,10 @@ export function AutomationControls({ automation: a }: { automation: Automation }
     <div className="flex items-center gap-3">
       {a.modes.length > 2 && (
         <Select
-          aria-label="Mode"
+          aria-label="Configured mode"
           size="sm"
           value={a.mode ?? ''}
-          title={a.mode ? MODE_DESCRIPTION[a.mode] : undefined}
+          title={a.mode ? a.oversight?.modeDescriptions[a.mode] : undefined}
           onChange={(e) => patch.mutate({ id: a.id, body: { mode: e.target.value } })}
         >
           {a.modes.map((m) => <option key={m} value={m}>{m}</option>)}

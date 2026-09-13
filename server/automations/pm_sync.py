@@ -8,6 +8,8 @@ repo's failure never stalls the others.
 """
 from __future__ import annotations
 
+from .context import observation_failed, publish_observation
+
 import logging
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -200,6 +202,8 @@ class PmSyncLoop:
         # discovery failures so a missing-credential owner doesn't warn every tick.
         self._projects_next_run: datetime | None = None
         self._last_gh_projects: int = 0
+        self._repo_observation_degraded = False
+        self._projects_observation_degraded = False
         self._owner_next_retry: dict[str, datetime] = {}
         self._owner_failing: set[str] = set()
 
@@ -209,18 +213,22 @@ class PmSyncLoop:
         try:
             await self._run()
         except Exception:  # pragma: no cover — belt+braces, mirrors the mold
+            observation_failed(self._ctx)
             log.warning("pm_sync.tick_error", exc_info=True)
 
     async def _run(self) -> None:
         mode, config = await self._read_config()
         if mode == "off":
-            self._stash(0, 0, 0, 0)
             return
+        self._observation_degraded = False
         interval = timedelta(seconds=int(config.get("min_sync_interval_s", 300)))
         now = self._now_utc()
         synced = backfilling = errors = 0
         force_projects = False
-        for view in await self._list_repos():
+        repos = await self._list_repos()
+        refreshed = False
+        projects_next_run = self._projects_next_run
+        for view in repos:
             if view.sync_requested_at is not None:
                 force_projects = True  # a sync-now request bypasses the gate below
             due = (view.sync_requested_at is not None
@@ -229,6 +237,7 @@ class PmSyncLoop:
                    or not view.backfill_done)
             if not due:
                 continue
+            refreshed = True
             try:
                 if view.backfill_done:
                     await self._incremental(view, now)
@@ -240,13 +249,22 @@ class PmSyncLoop:
                     else:
                         backfilling += 1
             except Exception:
+                self._observation_degraded = True
                 errors += 1
                 await self._ctx.emit(
                     "warn", f"sync failed for {view.repo}",
                     kind="sync_error", target=view.repo)
                 log.warning("pm_sync.repo_error repo=%s", view.repo, exc_info=True)
+        if refreshed:
+            self._repo_observation_degraded = self._observation_degraded
+        else:
+            previous = getattr(self._ctx, "pm_sync_counts", None) or {}
+            synced = previous.get("synced", 0)
+            backfilling = previous.get("backfilling", 0)
+            errors = previous.get("errors", 0)
         gh_projects = await self._sync_projects_v2(now, config, force_projects)
-        self._stash(synced, backfilling, errors, gh_projects)
+        if refreshed or self._projects_next_run != projects_next_run:
+            self._stash(synced, backfilling, errors, gh_projects)
 
     async def _sync_projects_v2(self, now: datetime, config: dict,
                                 force: bool) -> int:
@@ -279,6 +297,9 @@ class PmSyncLoop:
         interval = timedelta(
             seconds=int(config.get("projects_sync_interval_s", 300)))
         self._projects_next_run = now + interval
+        # Preserve a failed project refresh until this pass actually completes.
+        self._projects_observation_degraded = True
+        projects_degraded = False
         products = await self._list_products()
         owners = {r.split("/", 1)[0] for p in products for r in p.repos
                   if "/" in r}
@@ -302,6 +323,7 @@ class PmSyncLoop:
                 self._owner_next_retry.pop(owner, None)  # recovered
                 self._owner_failing.discard(owner)
             except Exception:
+                projects_degraded = True
                 self._owner_next_retry[owner] = now + _OWNER_ERROR_BACKOFF
                 if owner not in self._owner_failing:  # warn on onset only (dedup)
                     self._owner_failing.add(owner)
@@ -317,11 +339,13 @@ class PmSyncLoop:
             try:
                 linked += await self._sync_one_product(product, by_title)
             except Exception:
+                projects_degraded = True
                 await self._ctx.emit(
                     "warn", f"project sync failed for {product.project_id}",
                     kind="gh_projects_error", target=product.project_id)
                 log.warning("pm_sync.project_error project=%s",
                             product.project_id, exc_info=True)
+        self._projects_observation_degraded = projects_degraded
         self._last_gh_projects = linked
         return linked
 
@@ -550,6 +574,7 @@ class PmSyncLoop:
         try:
             await self._refresh_map_changes(view.project_id)
         except Exception:
+            self._observation_degraded = True
             log.warning("pm_sync.map_changes_refresh_failed repo=%s",
                         view.repo, exc_info=True)
             await self._ctx.emit(
@@ -567,6 +592,7 @@ class PmSyncLoop:
         try:
             main = await self._read_feature_docs(view.repo)
         except Exception:
+            self._observation_degraded = True
             log.warning("pm_sync.feature_read_failed repo=%s — skipping reindex",
                         view.repo, exc_info=True)
             await self._ctx.emit(
@@ -624,6 +650,7 @@ class PmSyncLoop:
                         docs_by_slug[doc.slug] = (path, doc)
                         proposed[doc.slug] = (pointer.pr_number, pointer.pr_url)
             except Exception:
+                self._observation_degraded = True
                 log.warning("pm_sync.map_changes_read_failed repo=%s",
                             view.repo, exc_info=True)
                 await self._ctx.emit(
@@ -658,9 +685,12 @@ class PmSyncLoop:
 
     def _stash(self, synced: int, backfilling: int, errors: int,
                gh_projects: int = 0) -> None:
-        self._ctx.pm_sync_counts = {
+        publish_observation(self._ctx, "pm_sync_counts", {
             "synced": synced, "backfilling": backfilling, "errors": errors,
-            "gh_projects": gh_projects}
+            "gh_projects": gh_projects},
+                            degraded=bool(errors or self._owner_failing
+                                          or self._repo_observation_degraded
+                                          or self._projects_observation_degraded))
 
 
 def _owner_of(product: ProductSyncView) -> str:

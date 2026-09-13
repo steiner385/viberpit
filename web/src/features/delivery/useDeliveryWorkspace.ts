@@ -25,8 +25,8 @@ export function useDeliveryWorkspace(active: boolean): { list: DeliveryListColum
   // is right while you are looking at another section. Gating it here would not
   // save a request — the column is an OBSERVER of a key that is already live,
   // not a second fetch of it, which is why `useAutomations` has no `enabled`
-  // parameter to express the difference. If that key ever earns a
-  // `refetchInterval`, it belongs on ONE observer (the badge's), never on both.
+  // parameter to express the difference. The badge owns the 30 s polling
+  // interval; this observer uses the shared snapshot without a second timer.
   const automations = useAutomations()
   // `enabled: active` is the gate — nothing else keeps the 30 s repo poll off
   // the four sections that never render this column. `poll: false` is the

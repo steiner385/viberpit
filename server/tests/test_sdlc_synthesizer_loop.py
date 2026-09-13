@@ -320,3 +320,59 @@ def test_automation_contract():
     a = SdlcSynthesizer()
     assert a.id == "sdlc-synthesizer"
     assert a.modes == ("off", "propose", "auto")
+
+@pytest.mark.asyncio
+async def test_observation_reports_gate_then_real_zero_and_failure():
+    from server.automations.context import observed_status
+
+    ctx = Ctx()
+    rec = Recorder([_ini("design")])
+    rec.artifacts["i1"] = [{"kind": "spec", "commit_sha": "merged"}]
+    loop = _loop(rec, ctx)
+    await loop.tick()
+    status = observed_status(ctx, SdlcSynthesizer().status(ctx))
+    assert status.waiting_reason == "human"
+    assert status.level == "idle"
+    assert status.counts["awaiting"] == 1
+    assert status.observed_at
+    rec.initiatives = []
+    await loop.tick()
+    status = SdlcSynthesizer().status(ctx)
+    assert status.waiting_reason is None
+    assert status.counts == {"initiatives": 0, "proposed": 0, "awaiting": 0}
+    timestamp = ctx.observed_at
+
+    async def failed():
+        raise RuntimeError("database unavailable")
+
+    loop._list_initiatives = failed
+    await loop.tick()
+    status = observed_status(ctx, SdlcSynthesizer().status(ctx))
+    assert status.level == "unknown"
+    assert status.observed_at == timestamp
+    assert status.last_refresh_failed_at
+
+
+@pytest.mark.asyncio
+async def test_pending_materialization_is_human_wait_without_respawn():
+    ctx = Ctx()
+    rec = Recorder([_ini("plan")])
+    rec.artifacts["i1"] = [{"kind": "plan", "commit_sha": "merged"}]
+    rec.pending_materialization.add("i1")
+    await _loop(rec, ctx).tick()
+    assert SdlcSynthesizer().status(ctx).waiting_reason == "human"
+    assert rec.materialized == []
+
+
+@pytest.mark.asyncio
+async def test_build_missing_issue_is_human_wait_but_later_stage_handoff_is_not():
+    ctx = Ctx()
+    rec = Recorder([_ini("build")])
+    loop = _loop(rec, ctx)
+    await loop.tick()
+    status = SdlcSynthesizer().status(ctx)
+    assert status.waiting_reason == "human"
+    assert status.counts["awaiting"] == 1
+    rec.initiatives = [_ini("deploy")]
+    await loop.tick()
+    assert SdlcSynthesizer().status(ctx).waiting_reason is None

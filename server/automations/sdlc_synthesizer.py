@@ -15,10 +15,11 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from server.sdlc.engine import (
-    ArtifactView, InitiativeView, Materialize, Propose, next_action)
+    ArtifactView, AwaitApproval, InitiativeView, Materialize, NeedsHuman, Propose, next_action)
 from server.sdlc.prompts import artifact_path
 
 from .base import AutomationStatus, ConfigField
+from .context import observation_failed, publish_observation
 from .model_pick import AUTOMATION_MODEL_CHOICES
 from .engine_policy import EnginePolicy
 
@@ -93,7 +94,15 @@ class SdlcSynthesizer:
     ]
 
     def status(self, ctx: Any) -> AutomationStatus:
-        return AutomationStatus(text="proposes spec/plan artifacts for in-progress initiatives")
+        counts = getattr(ctx, "sdlc_synthesizer_counts", None)
+        if counts is None:
+            return AutomationStatus(text="Initiative observations unavailable", level="unknown")
+        awaiting = counts["awaiting"]
+        proposed = counts["proposed"]
+        return AutomationStatus(
+            text=f"{proposed} proposed this refresh · {awaiting} awaiting human action",
+            level="active" if proposed else "idle", counts=counts,
+            waiting_reason="human" if awaiting else None)
 
     async def on_state_change(self, *, enabled: bool, mode: str | None,
                               config: dict, ctx: Any) -> None:
@@ -151,6 +160,7 @@ class SdlcSynthesizerLoop:
             try:
                 await self._run()
             except Exception:
+                observation_failed(self._ctx)
                 log.warning("sdlc_synthesizer.tick_failed", exc_info=True)
 
     async def _run(self) -> None:
@@ -158,10 +168,15 @@ class SdlcSynthesizerLoop:
         if mode == "off":
             return
         initiatives = await self._list_initiatives()
+        counts = {"initiatives": len(initiatives), "proposed": 0, "awaiting": 0}
         for ini in initiatives:
             artifacts = await self._list_artifacts(ini["id"])
             state, arts = _to_views(ini, artifacts)
             action = next_action(state, arts, mode, config)
+            if isinstance(action, AwaitApproval) or (
+                    isinstance(action, NeedsHuman)
+                    and (state.status == "blocked" or state.stage == "build")):
+                counts["awaiting"] += 1
             if isinstance(action, Propose) and action.kind in ("spec", "plan"):
                 rec = await self._spawn(ini, action.kind)
                 if rec is not None:
@@ -173,11 +188,15 @@ class SdlcSynthesizerLoop:
                         model=getattr(rec, "model", None))
                     await self._set_status(ini["id"], "awaiting_human")
                     await self._emit_proposed(slug, action.kind, rec)
+                    counts["proposed"] += 1
             elif isinstance(action, Materialize):
-                await self._materialize(ini)
+                outcome = await self._materialize(ini)
+                if outcome is not None:
+                    counts[outcome] += 1
             await self._enrich(artifacts)
+        publish_observation(self._ctx, "sdlc_synthesizer_counts", counts)
 
-    async def _materialize(self, ini: dict) -> None:
+    async def _materialize(self, ini: dict) -> str | None:
         """Spawn the decompose session for a merged plan (spec 003 §7b).
 
         The park signal here is NOT ``Initiative.status``: the plan Propose
@@ -199,10 +218,10 @@ class SdlcSynthesizerLoop:
                 await self._emit("warn", f"{slug}: plan is merged but plan "
                                  "materialization is not wired — decompose it by hand",
                                  kind="materialization_unwired", target=slug)
-            return
+            return "awaiting"
         if (self._has_pending_materialization is not None
                 and await self._has_pending_materialization(ini["id"])):
-            return
+            return "awaiting"
         # Attempts are counted only once nothing is pending: a proposal waiting on
         # the human gate is not a spent attempt, it is the outcome this loop wanted.
         if self._materialization_attempts is not None:
@@ -222,14 +241,15 @@ class SdlcSynthesizerLoop:
                 # hands the initiative to a human instead of spending a session a
                 # tick on a plan it cannot decompose.
                 await self._set_status(ini["id"], "blocked")
-                return
+                return "awaiting"
         rec = await self._spawn_materialize(ini)
         if rec is None:  # no headroom / refused launch — retry next tick
-            return
+            return None
         await self._set_status(ini["id"], "awaiting_human")
         sid = getattr(rec, "id", None)
         await self._emit("info", f"decomposing the merged plan for {slug} (session {sid})",
                          kind="materialization_proposed", target=slug, session_id=sid)
+        return "proposed"
 
     async def _enrich(self, artifacts: list[dict]) -> None:
         """Fill pr_number/pr_url once the artifact session's PR exists, and

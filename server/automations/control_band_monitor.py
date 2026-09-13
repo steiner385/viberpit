@@ -35,6 +35,8 @@ Response by tier (bands.yaml):
 """
 from __future__ import annotations
 
+from .context import observation_failed, publish_observation
+
 import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -212,12 +214,12 @@ class ControlBandMonitorLoop:
         try:
             await self._run()
         except Exception:  # pragma: no cover — belt+braces, mirrors the mold
+            observation_failed(self._ctx)
             log.warning("control_band_monitor.tick_error", exc_info=True)
 
     async def _run(self) -> None:
         mode, config = await self._read_config()
         if mode == "off":
-            self._stash_counts(0, 0)
             return
 
         # Deferred incidents come back BEFORE detection runs, so an item whose
@@ -238,7 +240,7 @@ class ControlBandMonitorLoop:
             # watched nothing would look exactly like a healthy system.
             await self._ctx.emit("error", f"bands policy failed to load: {exc}",
                                  kind="bands_invalid")
-            self._stash_counts(0, 0)
+            observation_failed(self._ctx)
             return
 
         allowed_repos = {r for r in (config.get("enabled_repos") or []) if r}
@@ -246,6 +248,7 @@ class ControlBandMonitorLoop:
                    if not allowed_repos or m.repo in allowed_repos]
         self._prune_day()
         breaching = 0
+        self._series_failed = False
 
         for band in metrics:
             breach = await self._evaluate_band(band)
@@ -272,6 +275,7 @@ class ControlBandMonitorLoop:
         try:
             samples = await self._read_series(band)
         except Exception:
+            self._series_failed = True
             log.warning("control_band_monitor.series_error metric=%s", band.id,
                         exc_info=True)
             await self._ctx.emit("warn", f"could not read series for {band.id}",
@@ -362,4 +366,5 @@ class ControlBandMonitorLoop:
 
     def _stash_counts(self, watched: int, breaching: int) -> None:
         # Surfaced by ControlBandMonitor.status() on the automation card.
-        self._ctx.control_band_counts = {"watched": watched, "breaching": breaching}
+        publish_observation(self._ctx, "control_band_counts", {"watched": watched, "breaching": breaching},
+                            degraded=self._series_failed)

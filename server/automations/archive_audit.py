@@ -5,6 +5,8 @@ dependency (gh, unarchive) is injected, so the pipeline is unit-tested with no
 network."""
 from __future__ import annotations
 
+from .context import observation_failed, publish_observation
+
 import asyncio
 import json
 import logging
@@ -86,6 +88,7 @@ class ArchiveAuditLoop:
             try:
                 await self._run()
             except Exception:  # a tick must never crash the loop
+                observation_failed(self._ctx)
                 log.warning("archive_audit.tick_failed", exc_info=True)
 
     async def _run(self) -> None:
@@ -96,8 +99,6 @@ class ArchiveAuditLoop:
         from datetime import datetime, timedelta
         since = datetime.utcfromtimestamp(self._clock()) - timedelta(days=window_days)
         rows = await self._list_rows(since)
-        if not rows:
-            return
         # The gh fetchers are BLOCKING subprocess calls and run_audit calls them
         # inline. Offload the whole classify pass to a thread so the daemon event
         # loop is never blocked. dry_run=True => run_audit does NOT unarchive inside
@@ -123,10 +124,12 @@ class ArchiveAuditLoop:
         counts = Counter(r["bucket"] for r in results)
         # Publish counts on the ctx so ArchiveAudit.status() reflects the last run
         # (mirrors CicdDoctorLoop). status() reads 'total' and 'unarchived'.
-        setattr(self._ctx, "archive_audit_counts", {
+        publish_observation(self._ctx, "archive_audit_counts", {
             "total": len(rows), "unarchived": len(unarchived),
             **{b: counts.get(b, 0) for b in ("legit", "premature", "review", "ambiguous")},
-        })
+        }, degraded=bool(counts.get("ambiguous") or len(unarchived) < len(premature)))
+        if not rows:
+            return
         await self._ctx.emit(
             "info",
             f"re-audit: {len(rows)} recent archives — unarchived {len(unarchived)} premature",
