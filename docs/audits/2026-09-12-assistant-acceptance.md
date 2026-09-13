@@ -1,5 +1,9 @@
 # Assistant acceptance evidence — September 12, 2026
 
+Follow-up: the [September 13 evaluation repair audit](2026-09-13-assistant-evaluation-repairs.md)
+records a new 108/120 (90%) controlled result and its limits. The original results,
+acceptance status, and cleanup incident below remain historical and are not rescored.
+
 This audit separates merged implementation, real model evaluation, and deployed acceptance.
 It does not certify a phase from its closed implementation tracker alone. The requirements
 remain the [v1 plan](../superpowers/plans/2026-09-04-ai-assistant.md),
