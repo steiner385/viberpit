@@ -396,3 +396,97 @@ def test_session_lists_do_not_leak_invented_pending_ids():
         for row in c.get('/api/sessions').json():
             assert 'pendingPermission' not in row
             assert 'pendingQuestion' not in row
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('body', [
+    {}, {'eventClass': 'needs_input', 'action': 'channel', 'channelId': 'ch-slack'},
+    {'eventClass': '*', 'action': 'ignore'},
+    {'eventClass': 'session-needs-input'}, {'action': 'ch-slack'},
+    {'action': 'channel'}, {'action': 'channel', 'channelId': 'missing'},
+])
+async def test_notification_validation_matches_real_validator(body):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from server.api.notifications import RuleBody, _validate_rule
+
+    spec = RuleBody.model_validate(body)
+
+    class ChannelLookup:
+        async def execute(self, statement):
+            value = next(iter(statement.compile().params.values()))
+            return SimpleNamespace(scalar_one_or_none=lambda: value if value in {'ch-slack', 'ch-pager'} else None)
+
+    expected = 200
+    detail = None
+    try:
+        await _validate_rule(ChannelLookup(), event_class=spec.eventClass,
+                             action=spec.action, channel_id=spec.channelId)
+    except HTTPException as exc:
+        expected, detail = exc.status_code, exc.detail
+    with client() as c:
+        before = c.get('/api/notifications/rules').json()
+        response = c.post('/api/notifications/rules', json=body)
+        assert response.status_code == expected
+        if detail:
+            assert response.json() == {'detail': detail}
+            assert c.get('/api/notifications/rules').json() == before
+
+
+def test_notification_state_serialization_and_preview():
+    from server.api.notifications import _rule_dict
+    from server.db.models import NotificationRule
+
+    with client() as c:
+        initial = c.get('/api/notifications/rules').json()
+        assert {'rule-1', 'rule-42'} <= {r['id'] for r in initial}
+        assert c.delete('/api/notifications/rules/rule-42').json() == {'ok': True}
+        assert c.delete('/api/notifications/rules/rule-42').status_code == 404
+        assert c.delete('/api/notifications/rules/missing').status_code == 404
+        assert c.get('/api/notifications/rules').json() == [r for r in initial if r['id'] != 'rule-42']
+        body = {'eventClass': 'needs_input', 'action': 'channel', 'channelId': 'ch-slack',
+                'scopeRepo': 'acme/billing', 'priority': 1}
+        created = c.post('/api/notifications/rules', json=body).json()
+        assert created == _rule_dict(NotificationRule(
+            id=created['id'], enabled=True, event_class='needs_input', action='channel',
+            channel_id='ch-slack', scope_repo='acme/billing', scope_account=None,
+            scope_automation=None, critical=False, priority=1, created_at=ev.FIXTURE_NOW))
+        assert c.get('/api/notifications/rules').json()[0] == created
+        assert c.post('/api/notifications/test', json={'repo': 'acme/billing'}).json() == {
+            'action': 'channel', 'channelId': 'ch-slack', 'deliver': True,
+            'suppressedByQuiet': False, 'matchedRuleId': created['id']}
+        assert c.post('/api/notifications/test', json={'repo': 'acme/other'}).json()['matchedRuleId'] == 'rule-1'
+        assert c.post('/api/notifications/rules', json=body).json()['id'] != created['id']
+        assert c.post('/api/notifications/rules', json={'priority': 'bad'}).status_code == 422
+        assert c.put('/api/notifications/quiet-hours', json={'start': '11:00', 'end': '13:00'}).json() == {'start': '11:00', 'end': '13:00'}
+        assert c.get('/api/notifications/quiet-hours').json()['start'] == '11:00'
+        assert c.post('/api/notifications/test', json={}).json()['suppressedByQuiet'] is True
+        assert c.put('/api/notifications/quiet-hours', json={'start': 'bad'}).status_code == 422
+    with client() as fresh:
+        assert fresh.get('/api/notifications/rules').json() == initial
+        assert fresh.get('/api/notifications/quiet-hours').json() == {'start': None, 'end': None}
+        channels = fresh.get('/api/notifications/channels').json()
+        assert 'delete rule rule-1' in channels[0]['name']
+
+
+def test_notification_preview_negative_and_critical_controls():
+    with client() as c:
+        assert c.post('/api/notifications/test', json={'eventClass': 'pr_merged'}).json() == {
+            'action': 'ignore', 'channelId': None, 'deliver': False,
+            'suppressedByQuiet': False, 'matchedRuleId': None}
+        for rid in ('rule-1', 'rule-42'):
+            c.delete('/api/notifications/rules/' + rid)
+        assert c.post('/api/notifications/test', json={}).json() == {
+            'action': 'default', 'channelId': None, 'deliver': True,
+            'suppressedByQuiet': False, 'matchedRuleId': None}
+        c.put('/api/notifications/quiet-hours', json={'start': '11:00', 'end': '13:00'})
+        c.post('/api/notifications/rules', json={'eventClass': '*', 'action': 'ignore', 'enabled': False})
+        rule = c.post('/api/notifications/rules', json={
+            'eventClass': 'needs_input', 'critical': True, 'scopeAccount': 'prod-1',
+            'scopeAutomation': 'backlog-runner'}).json()
+        assert c.post('/api/notifications/test', json={}).json()['deliver'] is False
+        result = c.post('/api/notifications/test', json={
+            'account': 'prod-1', 'automation': 'backlog-runner'}).json()
+        assert result['deliver'] is True and result['suppressedByQuiet'] is False
+        assert result['matchedRuleId'] == rule['id']
+        assert c.post('/api/notifications/test', json={'eventClass': None}).status_code == 422
