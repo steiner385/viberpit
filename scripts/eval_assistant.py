@@ -560,7 +560,14 @@ class EvalFixture:
         for original, sid, name in ((S7, "99999999-9999-4999-8999-999999999999", "Finished docs cleanup"),
                                     (S5, "10101010-1010-4010-8010-101010101010", "Stalled checkout migration")):
             rows.append({**next(r for r in rows if r["id"] == original), "id": sid, "name": name})
+        for sid, name in (("15151515-1515-4151-8151-151515151515", "Billing retry interrupted"),
+                          ("16161616-1616-4161-8161-161616161616", "Checkout tests interrupted")):
+            rows.append({"id": sid, "name": name, "status": "idle", "repo": "acme/checkout",
+                         "host": "rocky", "accountName": "prod-2", "model": "sonnet", "prs": [],
+                         "interruptedByRestart": True, "interruptedFromStatus": "in_progress",
+                         "summary": "Interrupted mid-turn by the restart; waiting to resume"})
         self.rows = {r["id"]: {**r, "archivedAt": None} for r in rows}
+        self.resume_driver_ids = {sid for sid, row in self.rows.items() if row.get("interruptedByRestart")}
         monday = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now.weekday())
         for sid, name, archived in (
             (S_ARCHIVED, "Build CSV importer", monday - timedelta(days=4) + timedelta(hours=12)),
@@ -589,6 +596,10 @@ class EvalFixture:
                     self.rows[sid]["status"] = "archived" if override["archived"] else "idle"
         self.watches: list[dict[str, Any]] = []
         self.watch_sequence = 0
+        # Existing user-owned watch is part of the baseline scenario, created through
+        # the same canonical mapping and serializer as subsequent fixture writes.
+        self.handle(httpx.Request("POST", "http://eval.local/api/assistant/watches", json={
+            "kind": "pr", "target": "acme/billing", "condition": "breaks"}))
 
     def live(self) -> list[dict[str, Any]]:
         return [r for r in self.rows.values() if r["archivedAt"] is None]
@@ -615,6 +626,7 @@ class EvalFixture:
         from server.api.templates import TemplateRenderBody, _template_to_dict
         from server.assistant.api import WatchBody, _ACCOUNT_WILDCARD_TARGETS, _watch_dict
         from server.assistant.watches import UnknownWatchCondition, resolve
+        from server.sessions.types import RESUME_ELIGIBLE_STATUSES
 
         method, path = request.method, request.url.path
         try:
@@ -701,13 +713,28 @@ class EvalFixture:
         if method == "POST" and path.startswith("/api/sessions/batch/"):
             ids = body.get("ids")
             action = path.rsplit("/", 1)[-1]
-            if action not in {"archive", "unarchive", "rotate", "permanent-delete"}:
+            if action not in {"archive", "unarchive", "rotate", "permanent-delete", "resume"}:
                 return httpx.Response(404)
             if not isinstance(ids, list) or not 1 <= len(ids) <= 200 or any(not isinstance(i, str) for i in ids):
                 return httpx.Response(422, json={"detail": "invalid ids"})
             succeeded, failed = [], []
             for sid in dict.fromkeys(ids):
                 session_row = self.rows.get(sid)
+                if action == "resume":
+                    if session_row is None or session_row["archivedAt"] is not None:
+                        failed.append({"id": sid, "error": "skipped:not-found"})
+                    elif not session_row.get("interruptedByRestart"):
+                        failed.append({"id": sid, "error": "skipped:not-interrupted"})
+                    elif session_row.get("interruptedFromStatus") not in RESUME_ELIGIBLE_STATUSES:
+                        failed.append({"id": sid, "error": "skipped:not-resumable-status"})
+                    elif sid not in self.resume_driver_ids:
+                        failed.append({"id": sid, "error": "no_driver"})
+                    else:
+                        succeeded.append(sid)
+                        session_row.update(status="in_progress", interruptedByRestart=False,
+                                           interruptedFromStatus=None,
+                                           summary="Resumed the interrupted turn")
+                    continue
                 if session_row is None or (action in {"unarchive", "permanent-delete"} and session_row["archivedAt"] is None):
                     failed.append({"id": sid, "error": "not found"})
                 # Only the limited session_rows have a simulated attached driver in this fixture.

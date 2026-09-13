@@ -171,3 +171,48 @@ def test_model_and_threshold_defaults_remain_unchanged():
     judge = ast.parse(inspect.getsource(ev.judge_rubric))
     assert any(kw.arg == "model" and isinstance(kw.value, ast.Constant) and kw.value.value == "haiku"
                for node in ast.walk(judge) if isinstance(node, ast.Call) for kw in node.keywords)
+
+
+def test_seed_watch_is_deletable_and_create_ids_never_reuse():
+    with client() as c:
+        assert c.get("/api/assistant/watches").json()[0]["id"] == "watch-1"
+        assert c.delete("/api/assistant/watches/watch-1").json() == {"ok": True}
+        body = {"kind": "pr", "target": "acme/billing", "condition": "breaks"}
+        first = c.post("/api/assistant/watches", json=body).json()
+        second = c.post("/api/assistant/watches", json=body).json()
+        assert [first["id"], second["id"]] == ["watch-2", "watch-3"]
+        assert len(c.get("/api/assistant/watches").json()) == 2
+
+
+def test_resume_batch_has_realistic_targets_and_idempotent_results():
+    f = ev.EvalFixture()
+    with client(f) as c:
+        eligible = [r for r in c.get("/api/sessions").json() if r.get("interruptedByRestart")]
+        assert len(eligible) >= 2
+        ids = [r["id"] for r in eligible]
+        assert all("restart" in r["summary"] for r in eligible)
+        assert all(c.get("/api/sessions/" + sid).json()["interruptedByRestart"] for sid in ids)
+        result = c.post("/api/sessions/batch/resume", json={"ids": ids + [ev.S1, "missing", ev.S_ARCHIVED]}).json()
+        assert result == {"succeeded": ids, "failed": [
+            {"id": ev.S1, "error": "skipped:not-interrupted"},
+            {"id": "missing", "error": "skipped:not-found"},
+            {"id": ev.S_ARCHIVED, "error": "skipped:not-found"}]}
+        assert c.post("/api/sessions/batch/resume", json={"ids": [ids[0]]}).json() == {
+            "succeeded": [], "failed": [{"id": ids[0], "error": "skipped:not-interrupted"}]}
+        assert not any(r.get("interruptedByRestart") for r in c.get("/api/sessions").json())
+        assert all(c.get("/api/sessions/" + sid).json()["status"] == "in_progress" for sid in ids)
+        assert c.post("/api/sessions/batch/resume", json={"ids": []}).status_code == 422
+    assert any(r.get("interruptedByRestart") for r in ev.EvalFixture().live())
+
+
+def test_resume_does_not_fabricate_success_for_ineligible_or_driver_failure():
+    f = ev.EvalFixture()
+    ids = [r["id"] for r in f.live() if r.get("interruptedByRestart")]
+    f.rows[ids[0]]["interruptedFromStatus"] = "waiting_input"
+    f.resume_driver_ids.remove(ids[1])
+    with client(f) as c:
+        result = c.post("/api/sessions/batch/resume", json={"ids": ids}).json()
+        assert result == {"succeeded": [], "failed": [
+            {"id": ids[0], "error": "skipped:not-resumable-status"},
+            {"id": ids[1], "error": "no_driver"}]}
+        assert all(f.rows[sid]["interruptedByRestart"] for sid in ids)
