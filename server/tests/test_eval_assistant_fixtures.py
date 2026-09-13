@@ -2,6 +2,7 @@
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import httpx
 import pytest
@@ -34,9 +35,20 @@ def test_catalogs_render_and_missing_routes():
         assert c.get("/api/permission-profiles").json()[0]["patterns"]
         assert c.get("/api/templates?tag=bugfix").json()
         assert c.get("/api/templates?tag=missing").json() == []
-        assert c.post("/api/templates/standup/render", json={"variables": {"date": "2026-09-14", "extra": "ignored"}}).json() == {"rendered": "Standup for 2026-09-14: {{updates}}"}
+        templates = c.get("/api/templates").json()
+        assert len({t["id"] for t in templates}) == len(templates)
+        for template in templates:
+            assert str(UUID(template["id"])) == template["id"]
+            assert template["id"] != template["name"]
+            assert c.get("/api/templates/" + template["id"]).json() == template
+            assert c.post("/api/templates/" + template["id"] + "/render", json={}).json() == {"rendered": template["content"]}
+            assert c.get("/api/templates/" + template["name"]).status_code == 404
+            assert c.post("/api/templates/" + template["name"] + "/render", json={}).status_code == 404
+        standup = next(t for t in templates if t["name"] == "standup")
+        render_path = "/api/templates/" + standup["id"] + "/render"
+        assert c.post(render_path, json={"variables": {"date": "2026-09-14", "extra": "ignored"}}).json() == {"rendered": "Standup for 2026-09-14: {{updates}}"}
         assert c.post("/api/templates/missing/render", json={}).status_code == 404
-        assert c.post("/api/templates/standup/render", json={"variables": []}).status_code == 422
+        assert c.post(render_path, json={"variables": []}).status_code == 422
 
 
 def test_watch_contract_state_and_validation():

@@ -820,8 +820,8 @@ class EvalFixture:
         templates = [_template_to_dict(PromptTemplate(id=sid, name=name, content=content,
             variables=variables, tags=tags, created_at=self.now, updated_at=self.now))
             for sid, name, content, variables, tags in (
-                ("standup", "standup", "Standup for {{date}}: {{updates}}", [{"name": "date"}, {"name": "updates"}], ["daily"]),
-                ("bugfix", "Bugfix", "Fix {{issue}}", [{"name": "issue"}], ["bugfix"]))]
+                ("e69c217b-0d6f-4a83-99db-8e12b5786c0a", "standup", "Standup for {{date}}: {{updates}}", [{"name": "date"}, {"name": "updates"}], ["daily"]),
+                ("53d2a641-bf78-45ec-8a39-7f4c20d98b16", "Bugfix", "Fix {{issue}}", [{"name": "issue"}], ["bugfix"]))]
         if method == "GET" and path == "/api/templates":
             tag = request.url.params.get("tag")
             return httpx.Response(200, json=[t for t in templates if not tag or tag in t["tags"]])
