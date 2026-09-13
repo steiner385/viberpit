@@ -63,6 +63,9 @@ def test_every_registered_origin_declares_its_audited_policy():
         # error-triage files issues from its own loop and never spawns an agent
         # session; it declares no policy and inherits the fail-closed default.
         "error-triage": EnginePolicy.CLAUDE_ONLY,
+        # deploy-monitor files issues from its own loop and never spawns an agent
+        # session; it declares no policy and inherits the fail-closed default.
+        "deploy-monitor": EnginePolicy.CLAUDE_ONLY,
     }
 
 

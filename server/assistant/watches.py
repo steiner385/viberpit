@@ -49,6 +49,11 @@ CONDITION_MAP: dict[str, dict[str, tuple[str, str]]] = {
         # "wildcard" meaning scope_matches already gives a None scope field.
         "limited": ("account_limited", "scope_account"),
     },
+    "deploy": {
+        # target is "owner/repo"; fires when one of that repo's deploy environments'
+        # newest GitHub deployment fails or stalls (server/automations/deploy_monitor.py).
+        "fails": ("deploy_failed", "scope_repo"),
+    },
 }
 
 VALID_KINDS: frozenset[str] = frozenset(CONDITION_MAP)

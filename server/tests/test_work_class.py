@@ -43,6 +43,7 @@ def test_every_registered_automation_declares_its_work_class():
         "pm-triage": "maintenance",
         "gh-reconcile": "maintenance",
         "error-triage": "maintenance",
+        "deploy-monitor": "maintenance",
     }
 
 

@@ -57,6 +57,7 @@ const EVENT_CLASSES: { value: string; label: string }[] = [
   { value: 'automation_warn', label: 'Automation warning' },
   { value: 'pr_broke', label: 'PR broke' },
   { value: 'pr_merged', label: 'PR merged' },
+  { value: 'deploy_failed', label: 'Deploy failed' },
 ]
 
 const ACTIONS: { value: string; label: string }[] = [
