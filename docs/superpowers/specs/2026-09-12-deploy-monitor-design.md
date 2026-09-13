@@ -60,7 +60,7 @@ primary daemon, every 120 s
     ├─ fetch_deployments(repos)      ← one GraphQL doc, newest 50 deployments per repo
     ├─ evaluate(env, deployments)    ← pure: healthy | failing | stalled | unknown
     ├─ reconcile per (repo, env)     ← AutomationTargetState "repo#env"
-    │     new incident → emit warn + notify_event("deploy_failed") [+ file issue]
+    │     new incident → emit info + notify_event("deploy_failed") [+ file issue]
     │     ongoing      → comment on issue at most every comment_every_h
     │     recovered    → emit info, close issue with a comment, delete state
     └─ stash counts                  → DeployMonitor.status() on the card
