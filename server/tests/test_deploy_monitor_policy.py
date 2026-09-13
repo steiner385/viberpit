@@ -42,6 +42,16 @@ def test_status_levels_from_counts():
     assert dm.DeployMonitor().status(Ctx()).level == "idle"
 
 
+def test_status_muted_counts_toward_total_but_not_level():
+    """F3: a muted incident must not keep the card red/yellow, but it should
+    still be visible in the total and called out by name."""
+    class Ctx:
+        deploy_monitor_counts = {"repos": 2, "envs": 5, "failing": 0, "stalled": 0,
+                                 "muted": 1, "incidents": 1}
+    s = dm.DeployMonitor().status(Ctx())
+    assert s.level == "active" and "1 incident" in s.text and "(1 muted)" in s.text
+
+
 def test_empty_is_none():
     assert _eval([]) is None
 
@@ -132,3 +142,13 @@ def test_comments():
     assert "4" in c and "aaaaaaaaaa" in c
     r = dm.recovery_comment("kindash / admin", "c" * 40, NOW)
     assert "cccccccccc" in r and "2026-09-12 22:00 UTC" in r
+
+
+def test_recovery_and_dismiss_comments_neutralize_env():
+    # m2: `env` is GitHub-sourced-ish text (the operator can also type/select it
+    # through config), so both comments must pass it through neutralize_markers
+    # the same way issue_body does for other GitHub-sourced fields.
+    r = dm.recovery_comment("evil<!-- x -->env", "c" * 40, NOW)
+    assert "<!--" not in r
+    d = dm.dismiss_comment("evil<!-- x -->env")
+    assert "<!--" not in d and "no longer reports" in d

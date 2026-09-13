@@ -143,27 +143,41 @@ Transitions per tick for each `(repo, env)`:
 
 | state row | verdict | action |
 |---|---|---|
-| none | failing/stalled | create row; `emit("warn", kind="incident")`; `notify_event("deploy_failed", …, repo=, url=, fanout_when_unconfigured=True)`; in `file` mode, file issue |
+| none | failing/stalled | create row; `emit("info", kind="incident")`; `notify_event("deploy_failed", …, repo=, url=, fanout_when_unconfigured=True)`; in `file` mode, file issue |
 | exists | failing/stalled, same `kind` | update `sha`, `streak`, `last_seen_at`; in `file` mode with an open issue, comment at most every `comment_every_h` when `sha` changed since the last comment |
 | exists | failing ⇄ stalled | update `kind`; treated as ongoing (no second alert) |
 | exists | healthy | `emit("info", kind="recovered")`; if the row holds an issue that is not already closed, comment naming the recovering sha and close it — in **any** mode, because the issue exists only because `file` mode or an operator's *File issue* click asked for it; delete row |
 | exists | unknown | untouched |
 | exists, muted | any non-healthy | update measurements only; no comment, no notify |
+| exists | env vanished from an otherwise-successful read, or the repo left the watched set | `emit("info", kind="vanished")` once, guarded by `vanished_noted` (cleared if the env reappears); row is left as-is — no delete, no measurement update, since there is no fresh deployment to measure |
+
+The incident event is `info`, not `warn`: `AutomationContext.emit` fans `warn`/`error` through
+`automation_warn`/`automation_error` too, so emitting the incident at `warn` would double-push a
+wildcard notification rule — one push from that fan-out and one from `notify_event("deploy_failed")`
+**(decision)**. `warn` stays reserved for the loop's own trouble (`fetch_failed`, `file_failed`,
+`close_failed`).
 
 Issue-state sync (learning that a human closed the issue) runs for a repo whenever one of its rows
-holds an open issue, regardless of mode — it is a read. The row also carries `cap_noted` (the
-daily-cap event was already emitted for this incident, so it is not repeated every tick).
+holds an open issue, regardless of mode — it is a read, and it does not skip a *muted* row: a
+manual `mute` action (unlike a `not_planned` close) leaves `issue_closed` false, so without this a
+human closing that issue would never be learned and recovery would try to close it again. The row
+also carries `cap_noted` (the daily-cap event was already emitted for this incident, so it is not
+repeated every tick), `regression_of` (the issue number a pending file is regressing, so a failed
+regression create does not lose the link on retry), and `vanished_noted` (see the table above).
 
-The alert fires **once per incident** (`notified` guards it); `notify_event` uses
-`fanout_when_unconfigured=True` like `pr_broke` **(decision)**: a failing deploy is the class of
-event a user with no rules configured still expects to hear about.
+The alert fires **once per incident** (`notified` guards it, and never at all while `muted`, even
+if the first notify failed before the mute); `notify_event` uses `fanout_when_unconfigured=True`
+like `pr_broke` **(decision)**: a failing deploy is the class of event a user with no rules
+configured still expects to hear about.
 
 ### 5.4 Issue filing (mode `file`)
 
 Reuses `issue_filing.decide/apply` with `Linked(number, closed, closed_reason,
 last_commented_at)` and a per-day cap `daily_cap` (default 10). The day's count is derived from
 `filed_at` on the live incident rows (a row claimed by a failed create counts too, as in Error
-Triage), so a daemon restart does not re-arm the cap:
+Triage), so a daemon restart does not re-arm the cap — but the row being filed excludes ITSELF
+from that count: a retried claim re-stamps its own `filed_at` every attempt, so counting it too
+would starve a retry sitting at the cap's last slot.
 
 - no issue → `file`. Title `[deploy-monitor] <env> deploy failing — <repo> @ <sha10>`
   (`stalled` substitutes the word). Label `deploy-monitor`. Body: table (repo, environment,
@@ -206,13 +220,18 @@ Loop cadence 120 s (module constant, like every other automation).
 
 ### 5.6 Card surface
 
-- `status()`: `"{n} repos · {m} envs watched · {k} failing"`, level `error` when any incident is
-  `failing`, `warn` when only `stalled`, `active` when watching with none, `idle` when off.
+- `status()`: `"{n} repos · {m} envs watched · {k} incident(s)"`, plus `" ({m} muted)"` when any
+  are muted. Level `error` when any **non-muted** incident is `failing`, `warn` when only
+  `stalled`, `active` when watching with none, `idle` when off — a muted incident counts toward
+  the total but never drives the level, since it is deliberately silenced.
 - `actionable()`: one item per incident — title `"<repo> · <env> <kind>"`, subtitle with sha,
-  streak and age, `url` = issue URL if filed else log URL. Actions: `file_now` (when no issue
-  and mode is not off), `mute` (risky), `unmute`.
+  streak and age, `url` = issue URL if filed else log URL. Actions: `file_now` (when no open issue,
+  mode is not off, and the row is not muted), `mute` (risky) / `unmute`, and `dismiss` (risky, on
+  every row): deletes the row, best-effort commenting "Dismissed by operator…" and closing any
+  issue that is not already closed, in any mode.
 - Feed kinds: `incident`, `recovered`, `filed`, `regressed`, `commented`, `closed`,
-  `close_failed`, `file_failed`, `cap`, `fetch_failed`, `fetch_recovered`, `muted`, `unmuted`.
+  `close_failed`, `file_failed`, `cap`, `fetch_failed`, `fetch_recovered`, `muted`, `unmuted`,
+  `vanished`, `dismissed`.
 
 ### 5.7 Notification class
 

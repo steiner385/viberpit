@@ -45,8 +45,11 @@ class DeployMonitor:
     description = ("Watches GitHub deployment statuses per environment. A failing or "
                    "stalled deploy opens an incident, alerts once and — in file mode — "
                    "keeps one issue open in the repo until the environment recovers.")
-    #: ``watch`` detects, feeds and alerts but never writes to GitHub; ``file`` adds
-    #: the issue lifecycle. Turning it on is therefore a reversible, observable step.
+    #: ``watch`` never opens an issue or comments on one; an issue the incident
+    #: already holds (filed earlier in ``file`` mode, or via the card's *File issue*
+    #: action) is still closed with a recovery comment on recovery, and issue state
+    #: is still read. ``file`` adds opening issues and recurrence comments. Turning
+    #: it on is therefore a reversible, observable step.
     modes: tuple[str, ...] = ("off", "watch", "file")
     engine_policy: EnginePolicy = EnginePolicy.CLAUDE_ONLY  # never spawns a session
     config_schema = [
@@ -71,9 +74,15 @@ class DeployMonitor:
             return AutomationStatus(text="idle", level="idle")
         repos, envs = int(counts.get("repos", 0)), int(counts.get("envs", 0))
         failing, stalled = int(counts.get("failing", 0)), int(counts.get("stalled", 0))
-        incidents = int(counts.get("incidents", failing + stalled))
+        muted = int(counts.get("muted", 0))
+        incidents = int(counts.get("incidents", failing + stalled + muted))
         text = (f"{repos} repo{'' if repos == 1 else 's'} · {envs} envs watched · "
                 f"{incidents} incident{'' if incidents == 1 else 's'}")
+        if muted:
+            text += f" ({muted} muted)"
+        # The level is driven by the non-muted counts only: a muted incident is
+        # deliberately silenced by an operator (or an issue closed not_planned) and
+        # must not keep the card red/yellow while it waits for recovery.
         if failing:
             level = "error"
         elif stalled:
@@ -202,7 +211,13 @@ def recurrence_comment(state: dict) -> str:
 
 
 def recovery_comment(env: str, sha: str, now: datetime) -> str:
-    return f"Recovered: `{env}` deployed `{_short(sha)}` successfully at {now.strftime(_TS)}. Closing."
+    return (f"Recovered: `{neutralize_markers(env)}` deployed `{_short(sha)}` successfully "
+            f"at {now.strftime(_TS)}. Closing.")
+
+
+def dismiss_comment(env: str) -> str:
+    return (f"Dismissed by operator; `{neutralize_markers(env)}` no longer reports "
+            f"deployments.")
 
 
 async def notify_deploy_failed(title: str, body: str, *, repo: str, url: str | None) -> None:
@@ -279,6 +294,8 @@ class DeployMonitorLoop:
         fetched = await self._fetch(repos) if repos else {}
         states = await self._ctx.list_target_states()
         watched = 0
+        repos_set = set(repos)
+        seen_envs: set[str] = set()   # keys seen in a SUCCESSFUL read this tick, watched or not
         for repo in repos:
             deps = fetched.get(repo)
             if deps is None:
@@ -303,6 +320,7 @@ class DeployMonitorLoop:
             if mode == "file" or has_open_issue:
                 await self._sync_issue_states(repo, states, now)
             for env, env_deps in by_env(deps).items():
+                seen_envs.add(incident_key(repo, env))
                 if not watched_env(env, config):
                     continue
                 watched += 1
@@ -311,7 +329,34 @@ class DeployMonitorLoop:
                                        stall_min=int(config.get("stall_min", 30)))
                 key = incident_key(repo, env)
                 await self._reconcile(repo, env, key, states.get(key), verdict, mode, config, now, states)
-        self._stash_counts(len(repos), watched, await self._ctx.list_target_states())
+        final_states = await self._ctx.list_target_states()
+        await self._sweep_vanished(final_states, fetched, repos_set, seen_envs)
+        self._stash_counts(len(repos), watched, final_states)
+
+    async def _sweep_vanished(self, states: dict[str, dict], fetched: dict[str, list[Deployment] | None],
+                              repos_set: set[str], seen_envs: set[str]) -> None:
+        """A row whose repo left the watched set, or whose env is missing from an
+        otherwise-successful read (renamed service, rolled out of the 50-deployment
+        window), is never auto-deleted — that would silently drop an ongoing
+        incident on a rename. Emit ``vanished`` once (``vanished_noted`` guards it,
+        cleared if the env reappears) and leave the row for an operator to dismiss."""
+        for key, s in states.items():
+            repo, env = split_key(key)
+            if repo not in repos_set:
+                vanished = True
+            elif fetched.get(repo) is None:
+                vanished = False   # this tick's read failed — leave untouched (spec §7)
+            else:
+                vanished = key not in seen_envs
+            if vanished:
+                if not s.get("vanished_noted"):
+                    s["vanished_noted"] = True
+                    await self._ctx.set_target_state(key, s)
+                    await self._ctx.emit("info", f"{repo} · {env} no longer reports deployments",
+                                         kind="vanished", target=key)
+            elif s.get("vanished_noted"):
+                s["vanished_noted"] = False
+                await self._ctx.set_target_state(key, s)
 
     # -- issue state sync ------------------------------------------------------
     async def _sync_issue_states(self, repo: str, states: dict[str, dict], now: datetime) -> None:
@@ -320,8 +365,12 @@ class DeployMonitorLoop:
         open issue (e.g. an operator's "File issue" card action). ``not_planned``
         mutes the incident until recovery; any other close is an acknowledgment
         of the CURRENT sha (a later sha regresses — spec §5.4)."""
+        # Deliberately NOT filtering out muted rows: a manual ``mute`` action
+        # (unlike a not_planned close) leaves ``issue_closed`` False, so without
+        # this the loop would never learn a human closed that issue — and
+        # ``_recover`` would later PATCH an issue that is already closed.
         keys = [k for k, s in states.items() if split_key(k)[0] == repo
-                and s.get("issue_number") and not s.get("issue_closed") and not s.get("muted")]
+                and s.get("issue_number") and not s.get("issue_closed")]
         if not keys:
             return
         numbers = [int(states[k]["issue_number"]) for k in keys]
@@ -371,12 +420,16 @@ class DeployMonitorLoop:
             "first_sha": d.sha, "first_seen_at": _iso(now), "issue_number": None,
             "filed_at": None, "last_commented_at": None, "last_commented_sha": None,
             "issue_closed": False, "closed_sha": None, "recovery_commented": False,
-            "notified": False, "muted": False,
+            "notified": False, "muted": False, "regression_of": None,
+            "vanished_noted": False,
         }, verdict, now)
         await self._ctx.set_target_state(key, state)
         streak = f" ({verdict.streak} in a row)" if verdict.streak > 1 else ""
         summary = f"{repo} · {env} deploy {verdict.kind} @ {_short(d.sha)}{streak}"
-        await self._ctx.emit("warn", summary, kind="incident", target=key,
+        # Informational, not "warn": ``notify_deploy_failed`` below is the actual
+        # alert (deploy_failed). Emitting this at warn too would double-push a
+        # wildcard notification rule (it also routes through automation_warn).
+        await self._ctx.emit("info", summary, kind="incident", target=key,
                              detail={"sha": d.sha, "kind": verdict.kind, "streak": verdict.streak,
                                      "logUrl": d.log_url})
         await self._notify_once(repo, key, state, summary)
@@ -398,7 +451,11 @@ class DeployMonitorLoop:
         if mode != "file" or state.get("muted"):
             return
         if state.get("issue_number") is None:
-            await self._file(repo, env, key, state, config, now, regression_of=None, states=states)
+            # A retried claim (the previous create failed) may already be a
+            # regression — read the link back off the row rather than passing
+            # None, or a failed regression create's link is lost on retry (m1).
+            await self._file(repo, env, key, state, config, now,
+                             regression_of=state.get("regression_of"), states=states)
             return
         if state.get("issue_closed"):
             if d.sha != state.get("closed_sha"):
@@ -476,9 +533,12 @@ class DeployMonitorLoop:
         daemon restarts on every rollout, and an in-memory counter would re-arm
         the cap on restart (Error Triage precedent, error_triage.py). ``states``
         is updated in place once a row is claimed so envs processed later in the
-        SAME tick still see it."""
-        filed_today = sum(1 for s in states.values()
-                          if (ts := parse_iso(s.get("filed_at"))) and now - ts < _DAY)
+        SAME tick still see it. THIS row (``key``) is excluded from the count —
+        a retried claim re-stamps its own ``filed_at`` every attempt, and Error
+        Triage retries "outside the cap"; without the exclusion a retry at the
+        cap's last slot could never succeed (it would always count itself)."""
+        filed_today = sum(1 for k, s in states.items() if k != key
+                          and (ts := parse_iso(s.get("filed_at"))) and now - ts < _DAY)
         cap_remaining = int(config.get("daily_cap", 10)) - filed_today
         decision = decide(None, cap_remaining=cap_remaining,
                           comment_every=timedelta(hours=1), now=now)
@@ -493,7 +553,7 @@ class DeployMonitorLoop:
             decision = Decision("regress", "closed")
         state.update(filed_at=_iso(now), issue_number=None, issue_closed=False, closed_sha=None,
                      last_commented_at=None, last_commented_sha=None, recovery_commented=False,
-                     cap_noted=False)
+                     cap_noted=False, regression_of=regression_of)
         await self._ctx.set_target_state(key, state)
         states[key] = state
         title = issue_title(repo, env, state)
@@ -513,10 +573,17 @@ class DeployMonitorLoop:
         return applied.issue_number
 
     def _stash_counts(self, repos: int, envs: int, states: dict[str, dict]) -> None:
-        failing = sum(1 for s in states.values() if s.get("kind") == "failing")
-        stalled = sum(1 for s in states.values() if s.get("kind") == "stalled")
+        # A muted row is excluded from failing/stalled (it must not keep the card
+        # red/yellow) but still counts toward the total — an operator silenced it,
+        # it did not disappear.
+        failing = sum(1 for s in states.values()
+                      if s.get("kind") == "failing" and not s.get("muted"))
+        stalled = sum(1 for s in states.values()
+                      if s.get("kind") == "stalled" and not s.get("muted"))
+        muted = sum(1 for s in states.values() if s.get("muted"))
         self._ctx.deploy_monitor_counts = {"repos": repos, "envs": envs, "failing": failing,
-                                           "stalled": stalled, "incidents": failing + stalled}
+                                           "stalled": stalled, "muted": muted,
+                                           "incidents": failing + stalled + muted}
 
     # -- card actions ----------------------------------------------------------
     async def actionable_items(self, limit: int = 50) -> list[ActionableItem]:
@@ -536,6 +603,7 @@ class DeployMonitorLoop:
                 actions = [ActionSpec(kind="mute", label="Mute", style="risky")]
                 if not open_issue and mode != "off":
                     actions.insert(0, ActionSpec(kind="file_now", label="File issue"))
+            actions.append(ActionSpec(kind="dismiss", label="Dismiss", style="risky"))
             items.append(ActionableItem(id=key, title=f"{repo} · {env} {s.get('kind', 'failing')}",
                                         subtitle=subtitle, url=url, actions=actions))
             if len(items) >= limit:
@@ -559,13 +627,25 @@ class DeployMonitorLoop:
             await self._ctx.set_target_state(key, state)
             await self._ctx.emit("info", f"{key} unmuted", kind="unmuted", target=key)
             return "unmuted", None
+        repo, env = split_key(key)
+        if kind == "dismiss":
+            number = state.get("issue_number")
+            if number and not state.get("issue_closed"):
+                await asyncio.to_thread(ci_issues.comment_on_issue, repo, int(number),
+                                        dismiss_comment(env), run=self._run)
+                await asyncio.to_thread(ci_issues.close_issue, repo, int(number), run=self._run)
+            await self._ctx.delete_target_state(key)
+            await self._ctx.emit("info", f"{repo} · {env} incident dismissed by operator",
+                                 kind="dismissed", target=key)
+            return "dismissed", None
         if kind != "file_now":
             return "failed", None
         if mode == "off":
             return "off", None
+        if state.get("muted"):
+            return "failed", None   # not offered on a muted row — mute/unmute/dismiss only
         if state.get("issue_number") and not state.get("issue_closed"):
             return "failed", None
-        repo, env = split_key(key)
         regression_of = int(state["issue_number"]) if state.get("issue_number") else None
         states = await self._ctx.list_target_states()
         number = await self._file(repo, env, key, state, {**config, "daily_cap": 10 ** 6}, now,
@@ -581,6 +661,7 @@ _ACTION_STATUS = {
     "filed": ("ok", "Issue filed"),
     "muted": ("ok", "Muted — no comments or alerts until it recovers"),
     "unmuted": ("ok", "Unmuted"),
+    "dismissed": ("ok", "Incident dismissed"),
     "not_found": ("warn", "That incident no longer exists"),
     "off": ("warn", "Deploy Monitor is off — enable it first"),
     "failed": ("error", "Action failed — see the feed"),
@@ -591,7 +672,7 @@ class DeployMonitorActionProvider:
     """Card actions for deploy-monitor. Reads the loop off the orchestrator lazily —
     the providers dict is built before the loops are (orchestrator.__init__ order)."""
 
-    valid_kinds = frozenset({"file_now", "mute", "unmute"})
+    valid_kinds = frozenset({"file_now", "mute", "unmute", "dismiss"})
 
     def __init__(self, orch: Any) -> None:
         self._orch = orch

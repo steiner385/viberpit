@@ -137,12 +137,13 @@ def test_new_incident_alerts_once_and_files_one_issue():
     assert h.notified[0]["url"] == "https://railway.app/log"
     assert len(h.gh.creates()) == 1 and any("labels[]=deploy-monitor" in c for c in h.gh.creates()[0])
     assert "incident" in h.ctx.kinds() and "filed" in h.ctx.kinds()
-    assert h.ctx.deploy_monitor_counts == {"repos": 1, "envs": 1, "failing": 1, "stalled": 0, "incidents": 1}
+    assert h.ctx.deploy_monitor_counts == {"repos": 1, "envs": 1, "failing": 1, "stalled": 0,
+                                           "muted": 0, "incidents": 1}
     h.tick()   # same sha: nothing new
     assert len(h.notified) == 1 and len(h.gh.creates()) == 1 and not h.gh.comments()
 
 
-def test_watch_mode_alerts_but_never_writes_github():
+def test_watch_mode_alerts_and_opens_no_issue():
     h = Harness(mode="watch")
     h.tick()
     assert len(h.notified) == 1 and h.state()["issue_number"] is None
@@ -320,18 +321,18 @@ def test_actionable_items_and_actions():
     h.tick()
     items = asyncio.run(h.loop.actionable_items())
     assert len(items) == 1 and items[0].id == KEY
-    assert {a.kind for a in items[0].actions} == {"file_now", "mute"}
+    assert {a.kind for a in items[0].actions} == {"file_now", "mute", "dismiss"}
     assert items[0].url == "https://railway.app/log"
 
     assert asyncio.run(h.loop.action_result(KEY, "mute")) == ("muted", None)
     items = asyncio.run(h.loop.actionable_items())
-    assert {a.kind for a in items[0].actions} == {"unmute"}
+    assert {a.kind for a in items[0].actions} == {"unmute", "dismiss"}
     assert asyncio.run(h.loop.action_result(KEY, "unmute")) == ("unmuted", None)
 
     status, number = asyncio.run(h.loop.action_result(KEY, "file_now"))
     assert status == "filed" and number == 101
     items = asyncio.run(h.loop.actionable_items())
-    assert {a.kind for a in items[0].actions} == {"mute"} and items[0].url.endswith("/issues/101")
+    assert {a.kind for a in items[0].actions} == {"mute", "dismiss"} and items[0].url.endswith("/issues/101")
     assert asyncio.run(h.loop.action_result("nope#x", "mute")) == ("not_found", None)
     h.mode = "off"
     assert asyncio.run(h.loop.action_result(KEY, "file_now")) == ("off", None)
@@ -342,7 +343,7 @@ def test_action_provider_maps_statuses():
     h.tick()
     orch = SimpleNamespace(_deploy_monitor_loop=h.loop)
     p = dm.DeployMonitorActionProvider(orch)
-    assert p.valid_kinds == frozenset({"file_now", "mute", "unmute"})
+    assert p.valid_kinds == frozenset({"file_now", "mute", "unmute", "dismiss"})
     r = asyncio.run(p.trigger(KEY, "file_now"))
     assert r.status == "filed" and r.level == "ok" and "#101" in r.message
     r = asyncio.run(p.trigger("nope#x", "mute"))
@@ -434,3 +435,122 @@ def test_daily_cap_persists_across_a_simulated_restart():
                                      run=h.gh, notify=h.loop._notify, clock=lambda: h.now)
     asyncio.run(restarted.tick())
     assert len(h.gh.creates()) == 1
+
+
+# -- fix round 2 (final review) -----------------------------------------------
+
+def test_daily_cap_does_not_starve_a_capped_retry():
+    """F1: ``filed_today`` used to sum over ALL live rows, including the row
+    being filed. A row claimed by a failed create re-stamps its own ``filed_at``
+    every attempt, so at the cap's last slot it counted itself and could never
+    be retried."""
+    h = Harness(config={"daily_cap": 1})
+    h.gh.fail_create = True
+    h.tick()
+    assert h.state()["issue_number"] is None
+    h.gh.fail_create = False
+    h.tick()
+    assert h.state()["issue_number"] == 101 and len(h.gh.creates()) == 2   # failed attempt + retry
+    assert h.ctx.kinds().count("cap") == 0
+
+
+def test_vanished_env_emits_once_then_clears_on_reappearance():
+    """F2(a): a successful read that no longer contains the row's env (renamed
+    service, rolled out of the deployment window) must not silently drop the
+    incident — it is noted once and left for an operator, not auto-deleted."""
+    h = Harness()
+    h.tick()
+    h.deployments = {REPO: []}   # successful read, but the env is gone from it
+    h.tick()
+    assert h.ctx.kinds().count("vanished") == 1
+    assert h.state()["vanished_noted"] is True
+    h.tick()   # still gone this tick — no duplicate
+    assert h.ctx.kinds().count("vanished") == 1
+    h.deployments = {REPO: [_dep()]}
+    h.tick()
+    assert h.state()["vanished_noted"] is False
+
+
+def test_dismiss_closes_open_issue_and_deletes_row():
+    """F2(b): dismiss is a best-effort close (comment + close) of whatever issue
+    the row holds, then the row is gone regardless of mode."""
+    h = Harness()
+    h.tick()
+    status, number = asyncio.run(h.loop.action_result(KEY, "dismiss"))
+    assert status == "dismissed" and number is None
+    assert h.state() is None
+    assert len(h.gh.comments()) == 1 and len(h.gh.closes()) == 1
+    assert "dismissed" in h.ctx.kinds()
+
+
+def test_dismiss_with_no_issue_in_watch_mode_writes_nothing():
+    h = Harness(mode="watch")
+    h.tick()
+    status, _ = asyncio.run(h.loop.action_result(KEY, "dismiss"))
+    assert status == "dismissed"
+    assert h.state() is None and not h.gh.calls
+
+
+def test_muted_incident_counts_separately_and_drives_active_level():
+    """F3: a muted incident must not keep the card at error/warn level, but it
+    is still visible in the total."""
+    h = Harness()
+    h.tick()
+    asyncio.run(h.loop.action_result(KEY, "mute"))
+    h.tick()   # re-run so _stash_counts reflects the mute
+    counts = h.ctx.deploy_monitor_counts
+    assert counts["failing"] == 0 and counts["muted"] == 1 and counts["incidents"] == 1
+    status = dm.DeployMonitor().status(h.ctx)
+    assert status.level == "active" and "(1 muted)" in status.text
+
+
+def test_incident_alert_is_info_level_not_warn():
+    """F5: `warn` also routes through automation_warn, so emitting the incident
+    at warn would double-push a wildcard notification rule — deploy_failed
+    (via ``notify``) is the actual alert."""
+    h = Harness()
+    h.tick()
+    incident_events = [e for e in h.ctx.events if e["kind"] == "incident"]
+    assert incident_events and all(e["level"] == "info" for e in incident_events)
+
+
+def test_regression_retried_after_a_failed_create_keeps_the_link():
+    """m1: a failed regression create used to lose ``regression_of`` on retry —
+    the row's ``issue_number`` was cleared to None but nothing remembered which
+    issue it was regressing, so the retry filed as a fresh incident."""
+    h = Harness()
+    h.tick()
+    h.gh.closed = {101: "completed"}
+    h.now = T0 + timedelta(hours=1)
+    h.tick()   # acknowledged at the closing sha
+    h.deployments = {REPO: [_dep(sha="b" * 40), _dep()]}
+    h.gh.closed = {}
+    h.gh.fail_create = True
+    h.now = T0 + timedelta(hours=2)
+    h.tick()   # regression create attempt fails
+    assert h.state()["issue_number"] is None
+    assert h.state()["regression_of"] == 101
+    h.gh.fail_create = False
+    h.now = T0 + timedelta(hours=3)
+    h.tick()   # retried — must still carry the regression link
+    assert h.state()["issue_number"] == 102
+    last_create = h.gh.creates()[-1]
+    body_arg = next(a for a in last_create if a.startswith("body="))
+    assert "Regression of" in body_arg and "#101" in body_arg
+    assert "regressed" in h.ctx.kinds()
+
+
+def test_sync_issue_states_learns_closure_on_a_manually_muted_row():
+    """m4: a manual ``mute`` action (unlike a not_planned close) leaves
+    ``issue_closed`` False. Sync must still learn the issue was closed, or
+    ``_recover`` will later PATCH an issue a human already closed."""
+    h = Harness()
+    h.tick()
+    asyncio.run(h.loop.action_result(KEY, "mute"))
+    h.gh.closed = {101: "completed"}
+    h.now = T0 + timedelta(hours=1)
+    h.tick()
+    assert h.state()["issue_closed"] is True
+    h.deployments = {REPO: [_dep(state="SUCCESS")]}
+    h.tick()
+    assert h.state() is None and not h.gh.closes()
