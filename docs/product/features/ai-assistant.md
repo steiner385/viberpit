@@ -72,7 +72,8 @@ identity. A separate identity, fresh session or alternate edge sharing the usual
 database does not isolate cleanup. Provision that test environment with unlimited archive
 retention and keep its configuration stable throughout the run.
 
-The harness reads `GET /api/settings` before creating or resuming any session and accepts
+Both this harness and the Codex interactive smoke use `scripts/smoke_safety.py` for the
+same fail-closed check. The assistant harness reads `GET /api/settings` before creating or resuming any session and accepts
 only an explicit `maxArchivedSessions: null`. Finite limits (even with apparent headroom),
 missing or malformed settings, and failed reads stop the run before any session mutation.
 It repeats the check before archiving its owned coding session; if unsafe, it reports a
