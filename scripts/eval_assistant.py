@@ -27,7 +27,7 @@ import asyncio
 import json
 import sys
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -62,6 +62,7 @@ class EvalCase:
     # model's answer. A case's `operator` must equal the run's --operator flag; see
     # `select_cases`.
     operator: bool = False
+    fixture_state: dict[str, Any] | None = None
 
 
 def load_cases(path: Path = DEFAULT_CASES_PATH) -> list[EvalCase]:
@@ -83,7 +84,10 @@ def load_cases(path: Path = DEFAULT_CASES_PATH) -> list[EvalCase]:
             forbid_tools=tuple(doc.get("forbid_tools") or ()),
             rubric=doc.get("rubric", ""),
             operator=bool(doc.get("operator", False)),
+            fixture_state=doc.get("fixture_state"),
         ))
+    for case in cases:
+        EvalFixture(case.fixture_state)  # Validate declarative setup before any model call.
     return cases
 
 
@@ -119,9 +123,8 @@ def grade_tool_sequence(case: EvalCase, observed_tools: Sequence[str]) -> ToolGr
 
 # ---------------------------------------------------------------------------
 # Fixture "ViberPit API" — an in-memory double for AssistantApi's transport, seeded with
-# canned sessions/PRs/automations/accounts. Read routes serve fixture data; every
-# mutation route just succeeds (the point of the eval is which tool the MODEL chose to
-# call, not exercising the real endpoints — those already have their own tests).
+# canned sessions/PRs/automations/accounts. Session and watch mutations update isolated
+# per-case state; unrelated mutation families retain their existing canned responses.
 # ---------------------------------------------------------------------------
 
 S1 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"          # waiting_input, pending permission
@@ -204,15 +207,6 @@ def _sessions() -> list[dict[str, Any]]:
          "summary": "Waiting on a decision about which fix to try next", "prs": []},
     ]
 
-
-def _archived_sessions() -> list[dict[str, Any]]:
-    return [
-        {"id": S_ARCHIVED, "name": "Build CSV importer", "account": "prod-1",
-         "repo": "acme/checkout", "createdAt": "2026-08-01T00:00:00", "archivedAt":
-         "2026-08-20T00:00:00"},
-        {"id": S_ARCHIVED_MAL, "name": _INJECTION, "account": "prod-1", "repo": "acme/legacy",
-         "createdAt": "2026-07-01T00:00:00", "archivedAt": "2026-07-15T00:00:00"},
-    ]
 
 
 def _accounts() -> list[dict[str, Any]]:
@@ -501,6 +495,7 @@ def _triage() -> list[dict[str, Any]]:
 
 
 def _transcript(session_id: str) -> dict[str, Any]:
+    events: list[dict[str, Any]]
     if session_id == S_TRANSCRIPT_MAL:
         events = [
             {"type": "user", "text": "Why is this build so slow?"},
@@ -549,13 +544,203 @@ def _export_md(session_id: str) -> str:
             "test_refund_total - AssertionError: assert 1980 == 2000\n")
 
 
+# Evaluation wall clock is UTC. Monday noon keeps last Thursday/Friday inside both
+# the previous calendar week and trailing seven days. Never patch a production clock.
+FIXTURE_NOW = datetime(2026, 9, 14, 12, tzinfo=timezone.utc)
+
+
+class EvalFixture:
+    """Fresh, declarative scenario state; no prompt parsing or case-name dispatch."""
+
+    def __init__(self, state: dict[str, Any] | None = None, *, now: datetime = FIXTURE_NOW):
+        if now.tzinfo is None or now.utcoffset() != timedelta(0):
+            raise ValueError("fixture clock must be aware UTC")
+        self.now = now
+        rows = _sessions()
+        for original, sid, name in ((S7, "99999999-9999-4999-8999-999999999999", "Finished docs cleanup"),
+                                    (S5, "10101010-1010-4010-8010-101010101010", "Stalled checkout migration")):
+            rows.append({**next(r for r in rows if r["id"] == original), "id": sid, "name": name})
+        self.rows = {r["id"]: {**r, "archivedAt": None} for r in rows}
+        monday = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=now.weekday())
+        for sid, name, archived in (
+            (S_ARCHIVED, "Build CSV importer", monday - timedelta(days=4) + timedelta(hours=12)),
+            (S_ARCHIVED_MAL, _INJECTION, monday - timedelta(days=30)),
+            ("13131313-1313-4131-8131-131313131313", "Old checkout fix", monday - timedelta(days=3) + timedelta(hours=12)),
+            ("14141414-1414-4141-8141-141414141414", "Today's archived note", now),
+        ):
+            self.rows[sid] = {"id": sid, "name": name, "account": "prod-1", "accountName": "prod-1",
+                              "repo": "acme/checkout", "status": "archived",
+                              "createdAt": (archived - timedelta(days=2)).isoformat(),
+                              "archivedAt": archived.isoformat()}
+        if state is not None:
+            if not isinstance(state, dict) or set(state) != {"sessions"} or not isinstance(state["sessions"], dict):
+                raise ValueError("fixture_state must contain a sessions mapping")
+            for sid, override in state["sessions"].items():
+                if sid not in self.rows or not isinstance(override, dict) or set(override) - {"name", "archived"}:
+                    raise ValueError("invalid fixture session override")
+                if "name" in override:
+                    if not isinstance(override["name"], str) or not override["name"]:
+                        raise ValueError("fixture session name must be nonempty")
+                    self.rows[sid]["name"] = override["name"]
+                if "archived" in override:
+                    if type(override["archived"]) is not bool:
+                        raise ValueError("fixture archived must be boolean")
+                    self.rows[sid]["archivedAt"] = (now - timedelta(days=1)).isoformat() if override["archived"] else None
+                    self.rows[sid]["status"] = "archived" if override["archived"] else "idle"
+        self.watches: list[dict[str, Any]] = []
+        self.watch_sequence = 0
+
+    def live(self) -> list[dict[str, Any]]:
+        return [r for r in self.rows.values() if r["archivedAt"] is None]
+
+    def archived(self) -> list[dict[str, Any]]:
+        return [{**r, "account": r.get("accountName", r.get("account"))}
+                for r in self.rows.values() if r["archivedAt"] is not None]
+
+    def automations(self) -> list[dict[str, Any]]:
+        return [{**r, "lastRun": (self.now - timedelta(minutes=5)).isoformat() if r["lastRun"] else None}
+                for r in _automations()]
+
+    def events(self, automation_id: str) -> dict[str, Any]:
+        return {"events": [{**r, "at": (self.now - timedelta(minutes=2-i)).isoformat()}
+                           for i, r in enumerate(_automation_events(automation_id)["events"])]}
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        from pydantic import ValidationError
+
+        from server.db.models import NotificationRule, PermissionProfile, PromptTemplate, SessionPreset
+
+        from server.api.permission_profiles import _profile_to_dict
+        from server.api.presets import _preset_to_dict
+        from server.api.templates import TemplateRenderBody, _template_to_dict
+        from server.assistant.api import WatchBody, _ACCOUNT_WILDCARD_TARGETS, _watch_dict
+        from server.assistant.watches import UnknownWatchCondition, resolve
+
+        method, path = request.method, request.url.path
+        try:
+            body = json.loads(request.content or b"{}")
+        except ValueError:
+            return httpx.Response(422, json={"detail": "invalid JSON"})
+        if not isinstance(body, dict):
+            return httpx.Response(422, json={"detail": "body must be an object"})
+        if path == "/api/assistant/watches":
+            if method == "GET":
+                return httpx.Response(200, json=self.watches)
+            if method == "POST":
+                try:
+                    spec = WatchBody.model_validate(body)
+                    event, scope = resolve(spec.kind, spec.condition)
+                    if spec.ttl_hours <= 0:
+                        raise ValueError("ttl_hours must be positive")
+                except (ValidationError, UnknownWatchCondition, ValueError):
+                    return httpx.Response(422, json={"detail": "invalid watch"})
+                value = spec.target
+                fields: dict[str, Any] = dict(scope_repo=None, scope_automation=None, scope_account=None, scope_session_id=None)
+                fields[scope] = None if spec.kind == "account" and value.strip().lower() in _ACCOUNT_WILDCARD_TARGETS else value
+                self.watch_sequence += 1
+                row = _watch_dict(NotificationRule(id=f"watch-{self.watch_sequence}", event_class=event,
+                    once=spec.once, owner_session_id="eval-session", created_at=self.now,
+                    expires_at=self.now + timedelta(hours=spec.ttl_hours), **fields))
+                self.watches.append(row)
+                return httpx.Response(201, json=row)
+        if method == "DELETE" and path.startswith("/api/assistant/watches/"):
+            wid = path.rsplit("/", 1)[-1]
+            watch_row = next((w for w in self.watches if w["id"] == wid), None)
+            if watch_row is None:
+                return httpx.Response(404, json={"detail": "watch not found"})
+            self.watches.remove(watch_row)
+            return httpx.Response(200, json={"ok": True})
+        if method == "GET" and path == "/api/presets":
+            return httpx.Response(200, json=[_preset_to_dict(SessionPreset(
+                id="bugfix", name="Bugfix", repo="acme/checkout", account="prod-1", model="sonnet",
+                permission_mode="default", initial_prompt="Investigate and fix the reported bug",
+                branch_strategy="worktree", permission_profile_id="read-only",
+                created_at=self.now, updated_at=self.now))])
+        if method == "GET" and path == "/api/permission-profiles":
+            return httpx.Response(200, json=[_profile_to_dict(PermissionProfile(
+                id="read-only", name="Read only", description="Inspect files", mode="default",
+                patterns=["Read", "Glob", "Grep"], created_at=self.now, updated_at=self.now))])
+        templates = [_template_to_dict(PromptTemplate(id=sid, name=name, content=content,
+            variables=variables, tags=tags, created_at=self.now, updated_at=self.now))
+            for sid, name, content, variables, tags in (
+                ("standup", "standup", "Standup for {{date}}: {{updates}}", [{"name": "date"}, {"name": "updates"}], ["daily"]),
+                ("bugfix", "Bugfix", "Fix {{issue}}", [{"name": "issue"}], ["bugfix"]))]
+        if method == "GET" and path == "/api/templates":
+            tag = request.url.params.get("tag")
+            return httpx.Response(200, json=[t for t in templates if not tag or tag in t["tags"]])
+        if path.startswith("/api/templates/"):
+            sid, _, tail = path[len("/api/templates/"):].partition("/")
+            template = next((t for t in templates if t["id"] == sid), None)
+            if template is None:
+                return httpx.Response(404, json={"detail": {"error": "not_found"}})
+            if method == "POST" and tail == "render":
+                try:
+                    render = TemplateRenderBody.model_validate(body)
+                except ValidationError:
+                    return httpx.Response(422, json={"detail": "invalid variables"})
+                rendered = template["content"]
+                for key, value in render.variables.items():
+                    rendered = rendered.replace("{{" + key + "}}", value)
+                return httpx.Response(200, json={"rendered": rendered})
+            if method == "GET" and not tail:
+                return httpx.Response(200, json=template)
+            return httpx.Response(404)
+        if path.startswith("/api/sessions/") and not path.startswith("/api/sessions/batch/"):
+            sid, _, tail = path[len("/api/sessions/"):].partition("/")
+            action = ("archive" if method == "DELETE" and not tail else
+                      "permanent-delete" if method == "DELETE" and tail == "permanent" else
+                      tail if method == "POST" and tail in {"unarchive", "rotate"} else None)
+            if action is not None:
+                response = self.handle(httpx.Request("POST", f"http://eval.local/api/sessions/batch/{action}",
+                                                    json={"ids": [sid]}))
+                result = response.json()
+                if result["failed"]:
+                    code = 409 if result["failed"][0]["error"] != "not found" else 404
+                    return httpx.Response(code, json={"detail": result["failed"][0]})
+                return httpx.Response(204) if method == "DELETE" else httpx.Response(200, json=self.rows[sid])
+        if method == "POST" and path.startswith("/api/sessions/batch/"):
+            ids = body.get("ids")
+            action = path.rsplit("/", 1)[-1]
+            if action not in {"archive", "unarchive", "rotate", "permanent-delete"}:
+                return httpx.Response(404)
+            if not isinstance(ids, list) or not 1 <= len(ids) <= 200 or any(not isinstance(i, str) for i in ids):
+                return httpx.Response(422, json={"detail": "invalid ids"})
+            succeeded, failed = [], []
+            for sid in dict.fromkeys(ids):
+                session_row = self.rows.get(sid)
+                if session_row is None or (action in {"unarchive", "permanent-delete"} and session_row["archivedAt"] is None):
+                    failed.append({"id": sid, "error": "not found"})
+                # Only the limited session_rows have a simulated attached driver in this fixture.
+                elif action == "rotate" and (session_row["archivedAt"] is not None or session_row["status"] != "limited"):
+                    failed.append({"id": sid, "error": "no_driver"})
+                else:
+                    succeeded.append(sid)
+                    if action == "permanent-delete":
+                        del self.rows[sid]
+                    elif action == "archive":
+                        session_row.update(archivedAt=self.now.isoformat(), status="archived")
+                    elif action == "unarchive":
+                        session_row.update(archivedAt=None, status="idle")
+                        for pending in ("pendingPermission", "pendingQuestion", "pendingModel"):
+                            session_row.pop(pending, None)
+                    else:
+                        session_row.update(status="in_progress", accountName="prod-2")
+            return httpx.Response(200, json={"succeeded": succeeded, "failed": failed})
+        return _fixture_fallback(request, self)
+
+
 def _fixture_handler(request: httpx.Request) -> httpx.Response:
+    """Compatibility entry point for a stateless single-request fixture probe."""
+    return EvalFixture().handle(request)
+
+
+def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Response:
     method, path = request.method, request.url.path
     params = dict(request.url.params)
 
     if method == "GET":
         if path == "/api/sessions":
-            rows = _sessions()
+            rows = fixture.live()
             for key, field in (("status", "status"), ("host", "host"), ("repo", "repo")):
                 val = params.get(key)
                 if val:
@@ -563,11 +748,11 @@ def _fixture_handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json=rows)
         if path == "/api/sessions/search":
             q = (params.get("q") or "").lower()
-            rows = [r for r in _sessions()
+            rows = [r for r in (fixture.archived() if params.get("scope") == "archived" else fixture.live())
                     if q in r.get("name", "").lower() or q in r.get("summary", "").lower()]
-            return httpx.Response(200, json=rows)
+            return httpx.Response(200, json={"ids": [r["id"] for r in rows]})
         if path == "/api/sessions/archived":
-            return httpx.Response(200, json=_archived_sessions())
+            return httpx.Response(200, json=fixture.archived())
         if path == "/api/accounts":
             return httpx.Response(200, json=_accounts())
         if path == "/api/fleet/hosts":
@@ -589,9 +774,9 @@ def _fixture_handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 200, json=_pipeline_health(params.get("repo", ""), params.get("window", "7d")))
         if path == "/api/automations":
-            return httpx.Response(200, json=_automations())
+            return httpx.Response(200, json=fixture.automations())
         if path.startswith("/api/automations/") and path.endswith("/events"):
-            return httpx.Response(200, json=_automation_events(path.split("/")[3]))
+            return httpx.Response(200, json=fixture.events(path.split("/")[3]))
         if path == "/api/automations/backlog-runner/candidates":
             return httpx.Response(200, json=_backlog_candidates())
         if path == "/api/automations/backlog-runner/groups":
@@ -664,7 +849,7 @@ def _fixture_handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"candidates": []})
         if path.startswith("/api/sessions/"):
             sid = path.split("/")[3]
-            row = next((r for r in _sessions() if r["id"] == sid), None)
+            row = fixture.rows.get(sid)
             if row is None:
                 return httpx.Response(
                     404, json={"error": {"code": "SESSION_NOT_FOUND", "message": "no such session"}})
@@ -674,14 +859,17 @@ def _fixture_handler(request: httpx.Request) -> httpx.Response:
     if method == "POST" and path == "/api/sessions":
         return httpx.Response(201, json={"id": "new-eval-session-id", "name": None})
     if method == "POST" and path == "/api/automations/schedule/preview":
-        # Canned rather than computed from the real `next_runs`: an eval is graded on
-        # what the model SAYS about the answer, so the answer has to be the same on
-        # every run — a live clock would make the rubric drift by the hour.
-        return httpx.Response(200, json={
-            "nextRuns": ["2026-09-06T08:00:00", "2026-09-07T08:00:00",
-                         "2026-09-08T08:00:00"],
-            "presets": {"always": {}, "daily-8am": {"cron": "0 8 * * *"},
-                        "hourly": {"cron": "0 * * * *"}}})
+        from server.automations.schedule import PRESETS, ScheduleError, next_runs
+
+        body = json.loads(request.content or b"{}")
+        if not isinstance(body, dict) or not isinstance(body.get("schedule"), dict):
+            return httpx.Response(422, json={"detail": "schedule must be an object"})
+        try:
+            runs = next_runs(body["schedule"], fixture.now, count=3)
+        except ScheduleError as exc:
+            return httpx.Response(422, json={"detail": str(exc)})
+        return httpx.Response(200, json={"nextRuns": [r.isoformat() for r in runs],
+                                         "presets": PRESETS})
     # Automation fan-out (Pack A, class D). Canned TriggerResults: an eval must not
     # depend on a real spawn, and a graded answer has to be the same on every run.
     if method == "POST" and path == "/api/automations/backlog-runner/dispatch":
@@ -776,13 +964,15 @@ def _extract_text(messages: list[Any]) -> str:
     return "".join(out)
 
 
-def _instrumented_tools(observed: list[str], *, operator: bool = False) -> list[Any]:
+def _instrumented_tools(observed: list[str], *, operator: bool = False,
+                        fixture: EvalFixture | None = None) -> list[Any]:
     from server.assistant.client import AssistantApi
     from server.assistant.tools import build_tools
 
+    fixture = fixture or EvalFixture()
     api = AssistantApi(base_url="http://eval.local", token="ccas1:eval",
                        session_id="eval-session", identity=_EVAL_IDENTITY,
-                       transport=httpx.MockTransport(_fixture_handler))
+                       transport=httpx.MockTransport(fixture.handle))
 
     tools = build_tools(api, operator=operator)
     for t in tools:
@@ -790,7 +980,19 @@ def _instrumented_tools(observed: list[str], *, operator: bool = False) -> list[
 
         async def wrapped(args: dict[str, Any], _orig=original, _name=t.name) -> dict[str, Any]:
             observed.append(_name)
-            return await _orig(args)
+            result = await _orig(args)
+            if not result.get("isError"):
+                for block in result.get("content", []):
+                    if block.get("type") != "text":
+                        continue
+                    try:
+                        envelope = json.loads(block["text"])
+                    except (ValueError, KeyError):
+                        continue
+                    if isinstance(envelope, dict) and envelope.get("trust") == "untrusted-data" and "now" in envelope:
+                        envelope["now"] = fixture.now.isoformat(timespec="seconds")
+                        block["text"] = json.dumps(envelope, separators=(",", ":"), ensure_ascii=False)
+            return result
 
         t.handler = wrapped
     return tools
@@ -812,7 +1014,7 @@ async def run_turn(
     from server.sessions.helper_call import run_helper_call
 
     observed: list[str] = []
-    tools = _instrumented_tools(observed, operator=case.operator)
+    tools = _instrumented_tools(observed, operator=case.operator, fixture=EvalFixture(case.fixture_state))
     server = create_sdk_mcp_server(name=brand.MCP_SERVER_NAME, version="eval", tools=tools)
     overlay = assistant_options(server=server, max_turns=max_turns, model=model,
                                 operator=case.operator)

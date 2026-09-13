@@ -1,0 +1,173 @@
+"""Offline fixture contracts and immutable benchmark criteria."""
+import hashlib
+import json
+from datetime import datetime, timedelta, timezone
+
+import httpx
+import pytest
+
+from scripts import eval_assistant as ev
+
+
+def client(fixture=None):
+    return httpx.Client(base_url="http://eval.local", transport=httpx.MockTransport(
+        (fixture or ev.EvalFixture()).handle))
+
+
+# Full case SHA before metadata repair: b5ca691336d554d80b63a8b46843ccd56f4a1c3cdeed260c432b293be0ac4288
+# After setup-only repair: b224764dd87ceb21761e4f026cd9c858209a7a9f87847363f61d527cfb0d75ae
+def test_semantic_projection_unchanged():
+    rows = [json.loads(s) for s in ev.DEFAULT_CASES_PATH.read_text().splitlines() if s.strip()]
+    keys = ("id", "prompt", "route", "rubric", "expect_tools", "forbid_tools", "operator")
+    projection = [{k: r.get(k, False if k == "operator" else [] if k.endswith("tools") else "")
+                   for k in keys} for r in rows]
+    digest = hashlib.sha256(json.dumps(projection, sort_keys=True,
+                                      separators=(",", ":")).encode()).hexdigest()
+    assert digest == "db4445721e49cce3cdc8670da408943fb460b6daf3d05b45af3634d14155120b"
+    assert len(rows) == 125
+    assert sum(bool(r.get("operator")) for r in rows) == 5
+
+
+def test_catalogs_render_and_missing_routes():
+    with client() as c:
+        assert c.get("/api/presets").json()[0]["permissionMode"]
+        assert c.get("/api/permission-profiles").json()[0]["patterns"]
+        assert c.get("/api/templates?tag=bugfix").json()
+        assert c.get("/api/templates?tag=missing").json() == []
+        assert c.post("/api/templates/standup/render", json={"variables": {"date": "2026-09-14", "extra": "ignored"}}).json() == {"rendered": "Standup for 2026-09-14: {{updates}}"}
+        assert c.post("/api/templates/missing/render", json={}).status_code == 404
+        assert c.post("/api/templates/standup/render", json={"variables": []}).status_code == 422
+
+
+def test_watch_contract_state_and_validation():
+    with client() as c:
+        before = c.get("/api/assistant/watches").json()
+        response = c.post("/api/assistant/watches", json={"kind": "account", "target": "any", "condition": "limited"})
+        assert response.status_code == 201
+        watch = response.json()
+        assert watch["eventClass"] == "account_limited"
+        assert watch["scopeAccount"] is None
+        assert set(watch) == {"id", "eventClass", "scopeRepo", "scopeAutomation", "scopeAccount", "scopeSessionId", "once", "ownerSessionId", "expiresAt", "createdAt"}
+        assert len(c.get("/api/assistant/watches").json()) == len(before) + 1
+        assert c.delete("/api/assistant/watches/" + watch["id"]).json() == {"ok": True}
+        assert c.get("/api/assistant/watches").json() == before
+        assert c.delete("/api/assistant/watches/" + watch["id"]).status_code == 404
+        assert c.post("/api/assistant/watches", json={"kind": "account", "target": "any", "condition": "invented"}).status_code == 422
+        assert c.post("/api/assistant/watches", json={}).status_code == 422
+
+
+def test_batches_are_stateful_and_partial_failures_are_visible():
+    fixture = ev.EvalFixture()
+    with client(fixture) as c:
+        rows = c.get("/api/sessions").json()
+        done = [r["id"] for r in rows if r["status"] == "done"]
+        limited = [r["id"] for r in rows if r["status"] == "limited"]
+        assert len(done) >= 2 and len(limited) >= 2
+        result = c.post("/api/sessions/batch/archive", json={"ids": done}).json()
+        assert result == {"succeeded": done, "failed": []}
+        assert set(done) <= {r["id"] for r in c.get("/api/sessions/archived").json()}
+        result = c.post("/api/sessions/batch/unarchive", json={"ids": [done[0], ev.S1, "missing"]}).json()
+        assert result["succeeded"] == [done[0]]
+        assert len(result["failed"]) == 2
+        assert c.get("/api/sessions/" + done[0]).json()["archivedAt"] is None
+        assert c.post("/api/sessions/batch/rotate", json={"ids": limited}).json()["succeeded"] == limited
+        assert c.post("/api/sessions/batch/unarchive", json={"ids": [done[1]]}).json() == {"succeeded": [done[1]], "failed": []}
+        assert c.post("/api/sessions/batch/unarchive", json={"ids": []}).status_code == 422
+    assert any(r["id"] == done[0] for r in ev.EvalFixture().live())
+
+
+def test_declarative_restore_setup_and_no_leakage():
+    case = next(c for c in ev.load_cases() if c.id == "unarchive-sessions-batch")
+    with client(ev.EvalFixture(case.fixture_state)) as c:
+        assert not {ev.S1, ev.S2} & {r["id"] for r in c.get("/api/sessions").json()}
+        assert c.get("/api/sessions/" + ev.S1).json()["name"] == "Fix auth"
+        assert c.post("/api/sessions/batch/unarchive", json={"ids": [ev.S1, ev.S2]}).json() == {"succeeded": [ev.S1, ev.S2], "failed": []}
+        assert {ev.S1, ev.S2} <= {r["id"] for r in c.get("/api/sessions").json()}
+    assert ev.EvalFixture().rows[ev.S1]["name"] == "Refactor billing auth"
+    with pytest.raises(ValueError):
+        ev.EvalFixture({"sessions": {ev.S1: {"instructions": "pass"}}})
+
+
+@pytest.mark.parametrize("anchor", [datetime(2026, 9, 14, 12, tzinfo=timezone.utc), datetime(2026, 9, 21, 0, tzinfo=timezone.utc)])
+def test_clock_dates_and_schedule_boundaries(anchor):
+    f = ev.EvalFixture(now=anchor)
+    with client(f) as c:
+        dates = [datetime.fromisoformat(r["archivedAt"]) for r in c.get("/api/sessions/archived").json()]
+        monday = anchor.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=anchor.weekday())
+        assert sum(monday - timedelta(days=7) <= d < monday for d in dates) >= 2
+        assert any(d >= monday for d in dates)
+        assert any(d < monday - timedelta(days=7) for d in dates)
+        runs = c.post("/api/automations/schedule/preview", json={"schedule": {"cron": "0 8 * * *"}}).json()["nextRuns"]
+        assert all(datetime.fromisoformat(d) > anchor and datetime.fromisoformat(d).hour == 8 for d in runs)
+        assert c.post("/api/automations/schedule/preview", json={"schedule": {"cron": "bad"}}).status_code == 422
+        assert c.post("/api/notifications/test", json={}).json()["deliver"] is True
+
+
+@pytest.mark.asyncio
+async def test_clock_instrumentation_changes_only_success_envelope(monkeypatch):
+    from copy import deepcopy
+    from types import SimpleNamespace
+
+    from server.assistant import tools
+
+    before = datetime.now(timezone.utc)
+    envelope = json.loads(tools.wrap_untrusted({"safe": "value"}, truncated=2))
+    success = {"content": [{"type": "text", "text": json.dumps(envelope)}]}
+    error = {"isError": True, "content": [{"type": "text", "text": "failure"}]}
+
+    async def ok(args):
+        return deepcopy(success)
+
+    async def fail(args):
+        return deepcopy(error)
+
+    monkeypatch.setattr(tools, "build_tools", lambda *args, **kwargs: [
+        SimpleNamespace(name="ok", handler=ok), SimpleNamespace(name="fail", handler=fail)])
+    first = ev.EvalFixture()
+    second = ev.EvalFixture(now=first.now + timedelta(days=7))
+    wrapped = ev._instrumented_tools([], fixture=first)
+    alternate = ev._instrumented_tools([], fixture=second)
+    result = await wrapped[0].handler({})
+    changed = json.loads(result["content"][0]["text"])
+    assert changed == {**envelope, "now": first.now.isoformat(timespec="seconds")}
+    assert json.loads((await alternate[0].handler({}))["content"][0]["text"])["now"] == second.now.isoformat(timespec="seconds")
+    assert await wrapped[1].handler({}) == error
+    after = json.loads(tools.wrap_untrusted({}))
+    assert datetime.fromisoformat(after["now"]) >= before.replace(microsecond=0)
+    assert json.loads(success["content"][0]["text"]) == envelope
+
+
+def test_singular_mutations_share_batch_state_and_search_scope():
+    with client() as c:
+        assert c.delete("/api/sessions/" + ev.S7).status_code == 204
+        assert ev.S7 not in c.get("/api/sessions/search?q=Old&scope=live").json()["ids"]
+        assert ev.S7 in c.get("/api/sessions/search?q=Old&scope=archived").json()["ids"]
+        assert c.post("/api/sessions/" + ev.S7 + "/unarchive").status_code == 200
+        assert c.post("/api/sessions/" + ev.S7 + "/unarchive").status_code == 404
+        assert c.delete("/api/sessions/" + ev.S7 + "/permanent").status_code == 404
+        assert c.get("/api/sessions/" + ev.S7).status_code == 200
+        assert c.delete("/api/sessions/missing").status_code == 404
+
+
+def test_case_loader_rejects_unknown_setup_before_running(tmp_path):
+    path = tmp_path / "cases.jsonl"
+    path.write_text(json.dumps({"id": "arbitrary", "prompt": "anything", "route": "/sessions",
+                                "fixture_state": {"sessions": {"unknown": {"archived": True}}}}))
+    with pytest.raises(ValueError, match="override"):
+        ev.load_cases(path)
+
+
+def test_model_and_threshold_defaults_remain_unchanged():
+    import ast
+    import inspect
+
+    module = ast.parse(inspect.getsource(ev))
+    defaults = {node.args[0].value: next((kw.value.value for kw in node.keywords if kw.arg == "default" and isinstance(kw.value, ast.Constant)), None)
+                for node in ast.walk(module) if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute) and node.func.attr == "add_argument"
+                and node.args and isinstance(node.args[0], ast.Constant)}
+    assert defaults["--model"] == "sonnet"
+    assert defaults["--threshold"] == 0.90
+    judge = ast.parse(inspect.getsource(ev.judge_rubric))
+    assert any(kw.arg == "model" and isinstance(kw.value, ast.Constant) and kw.value.value == "haiku"
+               for node in ast.walk(judge) if isinstance(node, ast.Call) for kw in node.keywords)
