@@ -144,8 +144,8 @@ def test_singular_mutations_share_batch_state_and_search_scope():
         assert ev.S7 in c.get("/api/sessions/search?q=Old&scope=archived").json()["ids"]
         assert c.post("/api/sessions/" + ev.S7 + "/unarchive").status_code == 200
         assert c.post("/api/sessions/" + ev.S7 + "/unarchive").status_code == 404
-        assert c.delete("/api/sessions/" + ev.S7 + "/permanent").status_code == 404
-        assert c.get("/api/sessions/" + ev.S7).status_code == 200
+        assert c.delete("/api/sessions/" + ev.S7 + "/permanent").status_code == 204
+        assert c.get("/api/sessions/" + ev.S7).status_code == 404
         assert c.delete("/api/sessions/missing").status_code == 404
 
 
@@ -216,3 +216,62 @@ def test_resume_does_not_fabricate_success_for_ineligible_or_driver_failure():
             {"id": ids[0], "error": "skipped:not-resumable-status"},
             {"id": ids[1], "error": "no_driver"}]}
         assert all(f.rows[sid]["interruptedByRestart"] for sid in ids)
+
+
+@pytest.mark.parametrize("sid", [ev.S7, ev.S_ARCHIVED])
+def test_permanent_delete_accepts_live_and_archived_records(sid):
+    # Production test_archive::test_permanent_delete_live_session_archives_then_deletes
+    # establishes that the client need not archive a known live session first.
+    with client() as c:
+        assert c.delete(f"/api/sessions/{sid}/permanent").status_code == 204
+        assert c.get(f"/api/sessions/{sid}").status_code == 404
+        assert c.delete(f"/api/sessions/{sid}/permanent").status_code == 404
+        assert c.get(f"/api/sessions/{ev.S1}").status_code == 200
+
+
+def test_permanent_delete_batch_mixed_states_and_missing():
+    with client() as c:
+        assert c.post("/api/sessions/batch/permanent-delete", json={"ids": [ev.S7, ev.S_ARCHIVED, "missing"]}).json() == {
+            "succeeded": [ev.S7, ev.S_ARCHIVED], "failed": [{"id": "missing", "error": "not found"}]}
+        for route in ("/api/sessions", "/api/sessions/archived"):
+            assert not {ev.S7, ev.S_ARCHIVED} & {r["id"] for r in c.get(route).json()}
+        assert c.get(f"/api/sessions/{ev.S1}").status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_automation_event_contract_matches_canonical_serializer(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from server.automations import context
+
+    with client() as c:
+        rows = c.get("/api/automations/backlog-runner/events").json()
+    assert isinstance(rows, list)
+    db_rows = [SimpleNamespace(ts=datetime.fromisoformat(r["ts"]), level=r["level"], kind=r["kind"],
+                              summary=r["summary"], target=r["target"], session_id=r["sessionId"]) for r in rows]
+
+    @asynccontextmanager
+    async def fake_db():
+        async def execute(_statement):
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: db_rows))
+        yield SimpleNamespace(execute=execute)
+
+    monkeypatch.setattr(context, "db_session", fake_db)
+    assert await context.AutomationContext("backlog-runner").list_events() == rows
+    assert rows[0]["summary"] == ev._INJECTION
+    assert all(datetime.fromisoformat(r["ts"]) < ev.FIXTURE_NOW for r in rows)
+    assert rows[0]["ts"] > rows[1]["ts"]
+
+
+def test_event_filters_limits_empty_and_unknown():
+    with client() as c:
+        rows = c.get("/api/automations/backlog-runner/events").json()
+        assert c.get("/api/automations/backlog-runner/events?limit=1").json() == rows[:1]
+        assert c.get("/api/automations/backlog-runner/events?limit=0").json() == []
+        assert c.get("/api/automations/backlog-runner/events?limit=bad").status_code == 422
+        assert c.get("/api/automations/backlog-runner/events?kind=claim").json() == [rows[1]]
+        assert c.get("/api/automations/backlog-runner/events?target=acme/billing%231201").json() == [rows[1]]
+        assert c.get("/api/automations/backlog-runner/events?kind=absent").json() == []
+        assert c.get("/api/automations/pr-doctor/events").json() == []
+        assert c.get("/api/automations/unknown/events").status_code == 404

@@ -277,15 +277,6 @@ def _automations() -> list[dict[str, Any]]:
     ]
 
 
-def _automation_events(automation_id: str) -> dict[str, Any]:
-    if automation_id != "backlog-runner":
-        return {"events": []}
-    return {"events": [
-        {"id": "ev1", "type": "claim", "detail": "Claimed issue #1201", "at":
-         "2026-09-05T00:04:00"},
-        {"id": "ev2", "type": "note", "detail": _INJECTION, "at": "2026-09-05T00:05:00"},
-    ]}
-
 
 def _actionable(automation_id: str) -> list[dict[str, Any]]:
     if automation_id != "pr-doctor":
@@ -621,9 +612,19 @@ class EvalFixture:
         return [{**r, "lastRun": (self.now - timedelta(minutes=5)).isoformat() if r["lastRun"] else None}
                 for r in _automations()]
 
-    def events(self, automation_id: str) -> dict[str, Any]:
-        return {"events": [{**r, "at": (self.now - timedelta(minutes=2-i)).isoformat()}
-                           for i, r in enumerate(_automation_events(automation_id)["events"])]}
+    def events(self, automation_id: str) -> list[dict[str, Any]]:
+        # AutomationContext.list_events owns the wire shape. Its serializer is
+        # inline in the DB method; the offline contract test executes that method
+        # against fake rows to ensure this fixture stays aligned without a DB.
+        if automation_id != "backlog-runner":
+            return []
+        return [
+            {"ts": (self.now - timedelta(minutes=1)).isoformat(), "level": "info",
+             "kind": "note", "summary": _INJECTION, "target": None, "sessionId": None},
+            {"ts": (self.now - timedelta(minutes=2)).isoformat(), "level": "info",
+             "kind": "claim", "summary": "Claimed issue #1201", "target": "acme/billing#1201",
+             "sessionId": S1},
+        ]
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         from pydantic import ValidationError
@@ -744,7 +745,7 @@ class EvalFixture:
                                            interruptedFromStatus=None,
                                            summary="Resumed the interrupted turn")
                     continue
-                if session_row is None or (action in {"unarchive", "permanent-delete"} and session_row["archivedAt"] is None):
+                if session_row is None or (action == "unarchive" and session_row["archivedAt"] is None):
                     failed.append({"id": sid, "error": "not found"})
                 # Only the limited session_rows have a simulated attached driver in this fixture.
                 elif action == "rotate" and (session_row["archivedAt"] is not None or session_row["status"] != "limited"):
@@ -812,7 +813,23 @@ def _fixture_fallback(request: httpx.Request, fixture: EvalFixture) -> httpx.Res
         if path == "/api/automations":
             return httpx.Response(200, json=fixture.automations())
         if path.startswith("/api/automations/") and path.endswith("/events"):
-            return httpx.Response(200, json=fixture.events(path.split("/")[3]))
+            from server.automations.registry import registry
+
+            automation_id = path.split("/")[3]
+            try:
+                registry.get(automation_id)
+            except KeyError:
+                return httpx.Response(404, json={"detail": "unknown automation"})
+            try:
+                limit = int(params.get("limit", "100"))
+            except ValueError:
+                return httpx.Response(422, json={"detail": "limit must be an integer"})
+            events = fixture.events(automation_id)
+            for field in ("target", "kind"):
+                if field in params:
+                    events = [event for event in events if event[field] == params[field]]
+            # SQLite's negative LIMIT means unlimited, matching the eval DB dialect.
+            return httpx.Response(200, json=events if limit < 0 else events[:limit])
         if path == "/api/automations/backlog-runner/candidates":
             return httpx.Response(200, json=_backlog_candidates())
         if path == "/api/automations/backlog-runner/groups":
