@@ -459,8 +459,9 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
                and (not args.get("repo") or s.get("repo") == args["repo"])]
         return out
 
-    @spec_tool("get_session", "Full record for one session id, including pending permission and "
-               "question ids, queue position and any parked model approval.", {"id": str})
+    @spec_tool("get_session", "Record for one session id, including status, queue position and "
+               "any parked model approval. Does not include pending permission or question ids.",
+               {"id": str})
     @guarded
     async def get_session(args: dict[str, Any]) -> Any:
         return await api.get(f"/api/sessions/{args['id']}")
@@ -599,10 +600,9 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.get("/api/github/branches", params={"repo": args["repo"]})
 
     @spec_tool("list_stage_models",
-               "For 'what regressed in CI recently': per-repository CI stage model — which "
-               "checks run, typical durations and each repo's regressedChecks (not the "
-               "CI/CD doctor's own findings — that's get_cicd_findings). Pair with "
-               "get_pipeline_health for a window.", {})
+               "Per-repository structural CI stage models: ordered nodes identify checks "
+               "and pipeline stages. For check durations, flakiness and regressions, use "
+               "get_pipeline_health with a repository and time window.", {})
     @guarded
     async def list_stage_models(args: dict[str, Any]) -> Any:
         return await api.get("/api/pipeline/repos")
@@ -965,8 +965,9 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
         return await api.post(f"/api/sessions/{args['id']}/interrupt")
 
     @spec_tool("answer_question",
-               "Answer a session's pending question. `selected` holds the chosen option labels "
-               "— read them off the pending question in get_session first.",
+               "Answer a session's pending question using its question_id and chosen option "
+               "labels in `selected`. If the question id or option labels are unavailable, "
+               "ask the user for them; get_session does not return them.",
                _schema(("id", "question_id", "selected"), id=str, question_id=str,
                        selected=_STR_ARRAY))
     @guarded

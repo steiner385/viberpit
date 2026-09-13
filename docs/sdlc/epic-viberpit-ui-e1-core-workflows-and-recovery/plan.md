@@ -54,7 +54,7 @@ implementation time, not taken from the spec's numbers.
 - Gates for every child PR: `ruff check src/ server/`, `mypy server/ --ignore-missing-imports`,
   `pytest tests/`, `pytest server/tests/`, `npm run typecheck`, `npm run lint --max-warnings 0`,
   `npm run test`, `npm run build` (AC-X.1/X.2). None of these six children touch `server/` or
-  `src/ccswitch/` — the Python gates are expected to be no-op passes, not skipped.
+  `src/` — the Python gates are expected to be no-op passes, not skipped.
 
 ## 2. Plan-stage resolutions of the spec's open questions
 
@@ -354,8 +354,8 @@ than done silently as part of G02.
 9. Run `npm run test` (full suite — this touches a hook and a component imported widely).
 10. Manually verify in a browser: type in New Session, navigate to Pipeline, return — text persists;
     refresh — text persists; force a dispatch failure (e.g. block the network tab) — text persists and
-    the failure is visible; succeed — the field clears and, per AC-G06.3, no *other* `ccswitch.draft.*`
-    key changed (check via DevTools → Application → Local Storage before/after).
+    the failure is visible; succeed — the field clears and, per AC-G06.3, no *other* draft key built
+    by `storageKey('draft.<sessionId>')` changed (check via DevTools → Application → Local Storage before/after).
 11. Commit, push, open PR.
 
 **Tests**
@@ -366,7 +366,7 @@ than done silently as part of G02.
 - A storage-namespace assertion (AC-G06.7) — this repo already has a row-7b namespace lint/test per
   the spec; extend it rather than writing a second one (grep for it before adding).
 - AC-G06.3's "no other draft key touched" assertion belongs in `DispatchBar.test.tsx` or a
-  `PromptDock.test.tsx` integration test: seed two `ccswitch.draft.*` keys, dispatch successfully,
+  `PromptDock.test.tsx` integration test: seed `storageKey('draft.s1')` and `storageKey('draft.s2')`, dispatch successfully,
   assert only the new-draft key was removed.
 
 **Risks**

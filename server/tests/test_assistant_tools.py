@@ -1473,3 +1473,17 @@ def test_github_write_tools_are_mutation_class():
     what puts a confirmation card in front of a public post."""
     for name in ("comment_on_pr", "create_issue"):
         assert TOOL_SPECS[name].tool_class is ToolClass.MUTATION
+
+
+def test_pipeline_and_session_descriptions_match_available_data():
+    tools = build_tools(_api(lambda _: httpx.Response(200, json={})))
+    stages = _tool(tools, "list_stage_models").description
+    assert "structural" in stages
+    assert "typical durations" not in stages
+    assert "regressedChecks" not in stages
+    assert "get_pipeline_health" in stages
+    detail = _tool(tools, "get_session").description
+    assert "Does not include pending permission or question ids" in detail
+    question = _tool(tools, "answer_question").description
+    assert "get_session does not return them" in question
+    assert "ask the user" in question
