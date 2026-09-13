@@ -1,19 +1,12 @@
 """The operational smoke must not mutate an edge with unsafe archive retention."""
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
-_SPEC = importlib.util.spec_from_file_location(
-    "smoke_assistant", Path(__file__).resolve().parents[2] / "scripts/smoke_assistant.py"
-)
-assert _SPEC and _SPEC.loader
-smoke = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(smoke)
+from scripts import smoke_assistant as smoke
 
 
 @pytest.mark.asyncio

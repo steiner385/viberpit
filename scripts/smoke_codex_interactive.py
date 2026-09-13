@@ -7,12 +7,13 @@ whose output is pasted into
 `docs/superpowers/spikes/2026-09-04-codex-interactive-acceptance.md`.
 
 **It starts real model turns and spends real quota.** It therefore refuses to run
-unless BOTH gates are set explicitly — there is no default account, and no
-default repo:
+unless the model opt-in and disposable-environment acknowledgement are explicit.
+Use a dedicated isolated edge, daemon and DB with stable unlimited archive
+retention; never a shared fleet. There is no default account or repo:
 
-    CCSWITCH_TEST_CODEX_INTERACTIVE=1 \\
+    VIBERPIT_TEST_CODEX_INTERACTIVE=1 \\
     python scripts/smoke_codex_interactive.py \\
-        --account <the-smoke-openai-account> --repo <owner/name>
+        --account <the-smoke-openai-account> --repo <owner/name> --disposable-environment
 
 The prompts are deliberately trivial and tool-free ("Reply with the single word
 READY") so a pass costs a handful of tokens, and so a failure is attributable to
@@ -46,10 +47,18 @@ import re
 import subprocess
 import sys
 import time
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import httpx
 import websockets
+
+# Support both direct script execution and package imports in offline tests.
+if TYPE_CHECKING:
+    from scripts.smoke_safety import retention_is_safe
+elif __package__ in (None, ""):
+    from smoke_safety import retention_is_safe
+else:
+    from .smoke_safety import retention_is_safe
 
 PASS = "PASS"
 FAIL = "FAIL"
@@ -167,12 +176,20 @@ async def main() -> int:
                         default="/var/lib/ccswitch/state/ccswitch/codex")
     parser.add_argument("--approvals", action="store_true",
                         help="also drive a command-approval decline (non-deterministic)")
+    parser.add_argument("--disposable-environment", action="store_true",
+                        help="Acknowledge a dedicated disposable edge, daemon and DB with "
+                             "stable unlimited archive retention; never a shared fleet.")
     args = parser.parse_args()
+    if not args.disposable_environment:
+        print("--disposable-environment is required: use a dedicated isolated edge, daemon "
+              "and DB with stable unlimited archive retention", file=sys.stderr)
+        return 2
 
-    if os.environ.get("CCSWITCH_TEST_CODEX_INTERACTIVE") != "1":
+    if os.environ.get("VIBERPIT_TEST_CODEX_INTERACTIVE",
+                      os.environ.get("CCSWITCH_TEST_CODEX_INTERACTIVE")) != "1":
         print(
             "refusing to run: this starts REAL model turns on a REAL account.\n"
-            "Set CCSWITCH_TEST_CODEX_INTERACTIVE=1 and pass --account/--repo "
+            "Set VIBERPIT_TEST_CODEX_INTERACTIVE=1 and pass --account/--repo "
             "explicitly.",
             file=sys.stderr,
         )
@@ -189,23 +206,26 @@ async def main() -> int:
         steps.append(s)
         return s
 
-    # -- 0. Preflight ------------------------------------------------------
-    s = step("doctor reports no failing check")
-    ok, detail = _doctor(args.python)
-    s.finish(ok, detail)
-    if not ok:
-        return _summarize(steps)
-
-    s = step("no auth.json under any runner CODEX_HOME")
-    found = []
-    for root, _dirs, files in os.walk(args.runner_home_base):
-        if "auth.json" in files:
-            found.append(os.path.join(root, "auth.json"))
-    s.finish(not found, f"found {found}" if found else "runner holds no credential")
-
     async with httpx.AsyncClient(
         base_url=args.base_url, headers=headers, timeout=60.0
     ) as http:
+        if not await retention_is_safe(http, step("archive retention preflight")):
+            return _summarize(steps)
+
+        # -- 0. Preflight ------------------------------------------------------
+        s = step("doctor reports no failing check")
+        ok, detail = _doctor(args.python)
+        s.finish(ok, detail)
+        if not ok:
+            return _summarize(steps)
+
+        s = step("no auth.json under any runner CODEX_HOME")
+        found = []
+        for root, _dirs, files in os.walk(args.runner_home_base):
+            if "auth.json" in files:
+                found.append(os.path.join(root, "auth.json"))
+        s.finish(not found, f"found {found}" if found else "runner holds no credential")
+
         # -- 1. Account is present, OpenAI, and reports quota ---------------
         s = step("account reads back as an OpenAI account with quota")
         r = await http.get("/api/accounts")
@@ -252,7 +272,7 @@ async def main() -> int:
             r = await http.post("/api/sessions", json=body)
             if r.status_code != 201:
                 s.finish(False, f"session {index}: HTTP {r.status_code}: {r.text[:200]}")
-                await _cleanup(http, created)
+                await _cleanup(http, created, steps)
                 return _summarize(steps)
             created.append(r.json()["id"])
         s.finish(True, f"ids={created}")
@@ -283,7 +303,7 @@ async def main() -> int:
                 events = await _drain_until(ws, lambda e: e.get("type") == "turnEnd")
             except TimeoutError as exc:
                 s.finish(False, str(exc))
-                await _cleanup(http, created)
+                await _cleanup(http, created, steps)
                 return _summarize(steps)
             gathered.add("turn events", [e.get("type") for e in events])
             s.finish("READY" in _text_of(events).upper(), "assistant replied")
@@ -349,7 +369,7 @@ async def main() -> int:
         r = await http.post(f"/api/accounts/{args.account}/refresh")
         await asyncio.sleep(2.0)
         r = await http.get("/api/accounts")
-        after = next((a for a in r.json() if a.get("name") == args.account), {})
+        after: dict[str, Any] = next((a for a in r.json() if a.get("name") == args.account), {})
         gathered.add("GET /api/accounts (after refresh)", after)
         quota_after = (after.get("usage") or {}).get("fetchedAt")
         s.finish(
@@ -358,12 +378,7 @@ async def main() -> int:
         )
 
         # -- 7. Archive ------------------------------------------------------
-        s = step("archive both sessions")
-        outcomes = []
-        for sid in created:
-            r = await http.post(f"/api/sessions/{sid}/archive")
-            outcomes.append(r.status_code)
-        s.finish(all(c in (200, 202, 204) for c in outcomes), f"status={outcomes}")
+        await _cleanup(http, created, steps)
 
     # -- 8. The one secret scan over everything gathered -------------------
     s = step("no secret-shaped value in anything this run gathered")
@@ -381,12 +396,22 @@ async def main() -> int:
     return _summarize(steps)
 
 
-async def _cleanup(http: httpx.AsyncClient, session_ids: list[str]) -> None:
-    for sid in session_ids:
+async def _cleanup(http: httpx.AsyncClient, session_ids: list[str], steps: list[Step]) -> None:
+    """Archive only owned sessions, checking retention immediately before each request."""
+    for index, sid in enumerate(session_ids):
+        safety = Step("archive retention cleanup check")
+        steps.append(safety)
+        if not await retention_is_safe(http, safety):
+            print(f"Sessions {session_ids[index:]} left intact; "
+                  "inspect the isolated environment manually.")
+            return
+        archive = Step("archive owned session")
+        steps.append(archive)
         try:
-            await http.post(f"/api/sessions/{sid}/archive")
-        except Exception:  # noqa: BLE001 -- best effort; the sessions are throwaway
-            pass
+            response = await http.delete(f"/api/sessions/{sid}")
+            archive.finish(response.status_code == 204, f"HTTP {response.status_code}")
+        except httpx.HTTPError:
+            archive.finish(False, "cleanup request failed; inspect the isolated environment manually")
 
 
 def _summarize(steps: list[Step]) -> int:

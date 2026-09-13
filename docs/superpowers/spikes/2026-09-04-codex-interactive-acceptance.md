@@ -88,18 +88,36 @@ host row. It is now shape-scrubbed and length-capped at the probe.
 
 **None of these rows has been run.** Fill each in with a date and a verdict.
 
-Run the scripted portion on **each** runner host:
+Run the scripted portion only on dedicated disposable test runner hosts:
 
 ```bash
-CCSWITCH_TEST_CODEX_INTERACTIVE=1 \
+VIBERPIT_TEST_CODEX_INTERACTIVE=1 \
 python scripts/smoke_codex_interactive.py \
-    --account <smoke-account> --repo <owner/name> [--approvals]
+    --account <smoke-account> --repo <owner/name> --disposable-environment [--approvals]
 ```
 
-It refuses to start without that variable *and* an explicit `--account`/`--repo`:
+It refuses to start without that variable, the disposable-environment acknowledgement,
+and an explicit `--account`/`--repo`:
 it spends real quota, so there is no default. Prompts are trivial and tool-free so
 a pass costs a handful of tokens and a failure is attributable to the transport
 rather than to model behaviour.
+
+Use an isolated edge **and daemon and database**, a disposable repo, and a test account;
+an alternate edge attached to a shared daemon or DB is insufficient. Provision unlimited
+archive retention (`maxArchivedSessions: null`) and keep settings stable throughout the
+run. The shared `scripts/smoke_safety.py` check runs before doctor/account/model requests,
+thread creation, model turns, or account refresh. Finite limits (even with headroom),
+missing or malformed settings, and failed reads stop the run.
+
+Normal completion and early cleanup both recheck retention before **each** owned session's
+`DELETE /api/sessions/{id}` archive request. Unsafe retention leaves the remaining owned
+sessions intact and fails the run. No setting is changed and permanent deletion is never
+used as a workaround. The acknowledgement and client checks cannot prevent settings from
+changing between a check and archive; isolation and stable settings remain prerequisites.
+Inspect sessions left behind by failures in that disposable environment. The quota refresh
+still acts on the explicitly selected test account, so that account must also be isolated
+from unrelated work. See the [assistant smoke safety guidance](../../product/features/ai-assistant.md#running-the-operational-smoke-safely)
+for the shared retention failure pattern.
 
 ### Scripted
 
