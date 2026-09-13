@@ -39,6 +39,7 @@ from server.db.models import (
 from server.pm.desired_state import STATUS_READY
 from server.pm.featuredoc import FeatureLinkRef
 from server.pm.health import roadmap_health
+from server.pm.issue_disposition import IssueDecision
 from server.pm.map_changes import NoOpenMapChanges, NoPrimaryRepo, NotBehind
 from server.pm.map_changes_gh import GhWriteError
 from server.pm.map_changes_ops import MapOp, MapOpError
@@ -1449,4 +1450,34 @@ async def delete_work_item_dep(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={
             "error": "dep_remove_failed", "step": result.get("step"),
             "message": str(result.get("error") or "dependency removal failed")})
+    return result
+
+
+@router.get("/work-items/{item_id}/issue")
+async def get_work_item_issue(item_id: str, _identity: str = Depends(current_identity),
+                              db=Depends(get_db)) -> dict:
+    from server.pm.issue_disposition import detail
+    wi = await db.get(WorkItem, item_id)
+    if wi is None or wi.kind != "issue":
+        raise HTTPException(status_code=404, detail={"error": "issue_not_found"})
+    return detail(wi)
+
+
+@router.post("/work-items/{item_id}/issue")
+async def decide_work_item_issue(item_id: str, body: IssueDecision, request: Request,
+                                 identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
+    wi = await db.get(WorkItem, item_id)
+    if wi is None or wi.kind != "issue":
+        raise HTTPException(status_code=404, detail={"error": "issue_not_found"})
+    result = await request.app.state.sessions.pm_issue_decision(item_id, body.model_dump())
+    await record_audit(db=db, type="pm.workitem.issue_decision", identity=identity,
+                       detail={"workItemId": item_id, "action": body.action,
+                               "ok": bool(result.get("ok")), "step": result.get("step")})
+    if not result.get("ok"):
+        await db.commit()
+        code = 409 if result.get("step") == "conflict" else 502
+        if result.get("step") == "load":
+            code = 404
+        raise HTTPException(status_code=code, detail={"error": "issue_decision_failed",
+            "step": result.get("step"), "message": result.get("error") or "Issue decision failed"})
     return result

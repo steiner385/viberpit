@@ -2,7 +2,7 @@
 // work actually is. Open first and closed below it, because "what is left" is
 // the question the list is opened with; the closed rows stay because they are
 // the evidence a capability is finished (finish-line spec §7).
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { Leaf, LeavesScope, ProductNode, CapabilityNode } from '@/api/roadmap'
 import { useLeaves, useRemoveDependency } from '@/api/hooks'
@@ -21,6 +21,7 @@ import { flattenCapabilities } from '../lookup'
 import { LeafScoreButton, LeafCapabilityChip } from './LeafEditors'
 import { leafRows, type LeafListRow } from './leafRows'
 import { leafNeedsAttention } from './leafAttention'
+import { IssueDispositionContext } from './IssueDispositionContext'
 
 /** `owner/repo#N` → `#N` when it is the leaf's own repo; the full ref otherwise. */
 function shortRef(ref: string, ownRepo: string): string {
@@ -60,29 +61,22 @@ function BlockerRow({ leaf, blockerRef }: { leaf: Leaf; blockerRef: string }) {
   )
 }
 
-function LeafRow({ leaf, capabilities }: { leaf: Leaf; capabilities: { node: CapabilityNode; depth: number }[] }) {
+function LeafRow({ leaf, capabilities, onReview }: { leaf: Leaf; capabilities: { node: CapabilityNode; depth: number }[]; onReview: (id: string) => void }) {
   const blockers = leaf.blockedBy.length
   const needsAttention = leafNeedsAttention(leaf)
   return (
     <div className="flex flex-col gap-1 rounded-md border border-edge bg-surface p-2 text-sm">
       <div className="flex flex-wrap items-center gap-2">
         <TierDot tier={leaf.tier} />
-        {/* GitHub owns the issue; the row links out rather than pretending to a
-            detail page ViberPit does not have. A mirrored row can be missing its
-            URL, and a dead anchor is worse than plain text — it is focusable,
-            announced as a link and goes nowhere. */}
-        {leaf.url
-          ? (
-            <a
-              href={leaf.url}
-              target="_blank"
-              rel="noreferrer"
-              className="min-w-0 flex-1 basis-48 truncate text-ink hover:underline"
-            >
-              #{leaf.number} {leaf.title ?? leaf.ref}
-            </a>
-          )
-          : <span className="min-w-0 flex-1 basis-48 truncate text-ink">#{leaf.number} {leaf.title ?? leaf.ref}</span>}
+        {leaf.kind === 'issue' ? <button
+          type="button"
+          className="min-w-0 flex-1 basis-48 truncate text-left text-ink hover:underline focus-visible:outline-accent"
+          onClick={() => onReview(leaf.id)}
+        >
+          #{leaf.number} {leaf.title ?? leaf.ref}
+        </button> : leaf.url ? (
+          <a href={leaf.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 basis-48 truncate text-ink hover:underline">#{leaf.number} {leaf.title ?? leaf.ref}</a>
+        ) : <span className="min-w-0 flex-1 basis-48 truncate text-ink">#{leaf.number} {leaf.title ?? leaf.ref}</span>}
         {/* The dot is decorative, so the tier is said in words for a screen
             reader — the same words the pills elsewhere use. */}
         <span className="sr-only">{tierLabel(leaf.tier)}</span>
@@ -100,7 +94,7 @@ function LeafRow({ leaf, capabilities }: { leaf: Leaf; capabilities: { node: Cap
         <LeafCapabilityChip leaf={leaf} capabilities={capabilities} />
         <LeafScoreButton leaf={leaf} />
       </div>
-      {needsAttention && (
+      {needsAttention && leaf.kind === 'issue' && (
         <div className="flex flex-col gap-1 pl-6 text-xs text-ink-muted">
           <p>
             {leaf.reason === 'needs_spec'
@@ -108,22 +102,21 @@ function LeafRow({ leaf, capabilities }: { leaf: Leaf; capabilities: { node: Cap
               : leaf.tier === 'blocked'
                 ? blockers > 0
                   ? 'Resolve the blocking issues below, or remove a dependency if it no longer applies.'
-                  : 'This issue is marked blocked. Review its discussion and status on GitHub to identify what must change.'
-                : 'A decision or input is needed. Review the issue discussion for the request; if a session is waiting, respond in Sessions.'}
+                  : 'This issue is marked blocked. Review its details, clarify what must change, or close it if no work remains.'
+                : 'Read the issue, update its details, or close it as resolved or won’t do. If a session needs input, respond in Sessions.'}
           </p>
           {leaf.tier === 'needs-you' && leaf.sessionStatus && leaf.reason !== 'needs_spec' && (
             <a href={SESSIONS_PATH} className="text-accent hover:underline">View sessions</a>
           )}
-          {leaf.url
-            ? <a href={leaf.url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
-                {leaf.reason === 'needs_spec' ? 'Edit issue description on GitHub' : 'Review issue on GitHub'}
-              </a>
-            : <span>Issue link unavailable; find {leaf.ref} in its repository.</span>}
+
         </div>
       )}
+      <div className="flex flex-wrap items-center gap-3 pl-6">
+        {leaf.kind === 'issue' && <Button variant="secondary" size="sm" onClick={() => onReview(leaf.id)}>{leaf.state === 'open' ? 'Review and decide' : 'View issue'}</Button>}
+        {leaf.url && <a href={leaf.url} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">View on GitHub</a>}
+      </div>
       {leaf.state === 'open' && blockers > 0 && (
-        // GitHub owns the edge, but removing it is the one disposition a blocked
-        // leaf has, so the row offers it instead of pointing at a blocker count.
+        // Removing a dependency remains available alongside issue decisions.
         <ul aria-label="Blocked by" className="flex flex-wrap gap-x-4 gap-y-1 pl-6 text-xs text-ink-muted">
           {leaf.blockedBy.map((blockerRef) => <BlockerRow key={blockerRef} leaf={leaf} blockerRef={blockerRef} />)}
         </ul>
@@ -157,6 +150,7 @@ const OVERSCAN = 10
 
 function VirtualRows({ rows, capabilities }: { rows: LeafListRow[]; capabilities: { node: CapabilityNode; depth: number }[] }) {
   const listRef = useRef<HTMLDivElement>(null)
+  const reviewIssue = useContext(IssueDispositionContext)
   // How far the list starts down the SCROLL CONTAINER's content — the offset the
   // virtualizer subtracts from the page's scrollTop. It has to be measured:
   // `offsetTop` is relative to the nearest positioned ancestor, and nothing
@@ -211,7 +205,7 @@ function VirtualRows({ rows, capabilities }: { rows: LeafListRow[]; capabilities
           >
             {row.kind === 'header'
               ? <h3 className="mb-1 text-xs font-medium uppercase text-ink-muted">{row.label}</h3>
-              : <LeafRow leaf={row.leaf} capabilities={capabilities} />}
+              : <LeafRow leaf={row.leaf} capabilities={capabilities} onReview={(id) => reviewIssue?.(id)} />}
           </div>
         )
       })}

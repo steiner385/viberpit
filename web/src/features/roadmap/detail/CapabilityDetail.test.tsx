@@ -303,7 +303,9 @@ describe('CapabilityDetail', () => {
     expect(items[1]).toHaveTextContent('Bulk edit')
     expect(items[1]).toHaveTextContent('session')
     expect(items[1]).toHaveTextContent('6.5')
-    expect(screen.getByRole('link', { name: /#7 Bulk edit/ })).toHaveAttribute('href', 'https://x/7')
+    expect(within(items[1]).getByRole('button', { name: /#7 Bulk edit/ })).toBeEnabled()
+    expect(within(items[1]).getByRole('button', { name: 'Review and decide' })).toBeEnabled()
+    expect(within(items[1]).getByRole('link', { name: 'View on GitHub' })).toHaveAttribute('href', 'https://x/7')
     expect(screen.getByLabelText('1 blocker')).toBeInTheDocument()
     // Closed leaves are kept, but below a heading that says what they are.
     expect(screen.getByRole('heading', { name: /Open · 3/ })).toBeInTheDocument()

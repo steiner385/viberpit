@@ -393,58 +393,103 @@ test.describe('Roadmap — phone', () => {
   })
 })
 
-// A capability can need a human solely because of an issue, with no initiative.
-// Keep this flow at both sizes: the screenshot's attention must lead somewhere
-// useful even when the map column is hidden on a phone.
+// Mutable API fixture: assertions below observe real in-app mutation requests,
+// rather than considering an external link a completed disposition flow.
+async function attentionIssueApi(page: Page) {
+  await interceptApi(page)
+  let item = {
+    id: 'w42', repo: 'steiner385/kindash', number: 42,
+    title: 'Clarify remote login recovery',
+    body: 'The account usage report is unavailable. **Check authentication** before retrying.',
+    state: 'open', url: 'https://github.com/steiner385/kindash/issues/42', version: 'v1',
+  }
+  const writes: Record<string, unknown>[] = []
+  await page.route('**/api/pm/map', (route) => {
+    const attention = item.state === 'open' ? 1 : 0
+    return route.fulfill({ json: {
+      generatedAt: MAP.generatedAt,
+      products: [product({
+        slug: 'kindash', name: 'KinDash', tier: attention ? 'needs-you' : 'live',
+        counts: { inFlight: 0, blocked: 0, needsYou: attention, capabilities: 1, awaitingTriage: 0, needsHome: 0 },
+        capabilities: [cap({
+          slug: 'account-reauthentication', title: 'Account Re-Authentication', tier: attention ? 'needs-you' : 'live',
+          summary: 'Restore an expired account to service.',
+          counts: { openIssues: attention, inFlight: 0, blocked: 0, needsYou: attention },
+        })],
+      })],
+    } })
+  })
+  await page.route('**/api/pm/leaves?*', (route) => route.fulfill({ json: { items: [{
+    ...item, ref: 'steiner385/kindash#42', kind: 'issue', triageState: 'needs_human',
+    score: null, reach: null, impact: null, effort: null, confidence: null,
+    tier: item.state === 'open' ? 'needs-you' : 'live', blockedBy: [], parentRef: null,
+    featureId: 'f-account-reauthentication', sessionStatus: null, ghCreatedAt: null,
+    reason: null, bounces: 0,
+  }] } }))
+  await page.route('**/api/pm/work-items/w42/issue', async (route) => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: item })
+    const body = route.request().postDataJSON() as Record<string, unknown>
+    writes.push(body)
+    if (body.version !== item.version) return route.fulfill({ status: 409, json: { detail: { message: 'Issue changed. Reload it before deciding.' } } })
+    item = {
+      ...item,
+      ...(body.action === 'edit'
+        ? { title: String(body.title), body: String(body.body) }
+        : { state: 'closed' }),
+      version: `v${writes.length + 1}`,
+    }
+    return route.fulfill({ json: { ok: true, item } })
+  })
+  return writes
+}
+
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
-  test.describe(`Roadmap issue attention — ${viewport.width}px`, () => {
+  test.describe(`Roadmap issue disposition — ${viewport.width}px`, () => {
     test.use({ viewport })
 
-    test('leads from attention to the issue that can be resolved', async ({ page }, testInfo) => {
-      await interceptApi(page)
-      await page.route('**/api/pm/map', (route) => route.fulfill({ json: {
-        generatedAt: MAP.generatedAt,
-        products: [product({
-          slug: 'kindash', name: 'KinDash', tier: 'needs-you',
-          counts: { inFlight: 0, blocked: 0, needsYou: 1, capabilities: 1, awaitingTriage: 0, needsHome: 0 },
-          capabilities: [cap({
-            slug: 'account-reauthentication', title: 'Account Re-Authentication', tier: 'needs-you',
-            summary: 'Restore an expired account to service.',
-            counts: { openIssues: 1, inFlight: 0, blocked: 0, needsYou: 1 },
-          })],
-        })],
-      } }))
-      await page.route('**/api/pm/leaves?*', (route) => route.fulfill({ json: { items: [{
-        id: 'w42', ref: 'steiner385/kindash#42', repo: 'steiner385/kindash', number: 42,
-        kind: 'issue', title: 'Clarify remote login recovery',
-        url: 'https://github.com/steiner385/kindash/issues/42', state: 'open',
-        triageState: 'accepted', score: null, reach: null, impact: null, effort: null,
-        confidence: null, tier: 'needs-you', blockedBy: [], parentRef: null,
-        featureId: 'f-account-reauthentication', sessionStatus: null, ghCreatedAt: null,
-        reason: 'needs_spec', bounces: 2,
-      }] } }))
+    test('reads, edits and resolves an issue without leaving the app', async ({ page }, testInfo) => {
+      const writes = await attentionIssueApi(page)
       await page.goto('/roadmap/kindash/capabilities/account-reauthentication')
-      await expect(page.getByRole('heading', { level: 1 })).toHaveText('Account Re-Authentication')
-      await expect(page.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toBeVisible()
       await expect(page.getByRole('heading', { name: 'Next actions' })).toBeVisible()
-      await page.screenshot({ path: testInfo.outputPath('overview.png') })
       await page.getByRole('button', { name: 'Needs you: 1', exact: true }).click()
-      await expect(page.getByText('Nothing needs you', { exact: true })).toHaveCount(0)
-      await expect(page.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toHaveAttribute('aria-selected', 'true')
-      // The issue action is available directly here, without another Issues tab hop.
-      const action = page.getByRole('link', { name: 'Edit issue description on GitHub' })
-      await expect(action).toBeVisible()
-      await expect(action).toHaveAttribute('href', 'https://github.com/steiner385/kindash/issues/42')
-      await expect(page.getByRole('link', { name: '#42 Clarify remote login recovery' })).toHaveAttribute(
-        'href', 'https://github.com/steiner385/kindash/issues/42',
-      )
-      await expect(page.getByText(/needs spec/)).toBeVisible()
-      await page.getByRole('tab', { name: 'Overview', exact: true }).click()
+      await page.getByRole('button', { name: 'Review and decide', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: 'Review and decide' })
+      await expect(dialog.getByText(/The account usage report is unavailable/)).toBeVisible()
+      expect(writes).toHaveLength(0)
+      await page.screenshot({ path: testInfo.outputPath('review-decision.png') })
+      await dialog.getByRole('button', { name: 'Edit details', exact: true }).click()
+      await dialog.getByRole('textbox', { name: 'Description', exact: true }).fill('Confirm the login flow restores quota reporting after authentication.')
+      await dialog.getByRole('button', { name: 'Save changes', exact: true }).click()
+      await expect.poll(() => writes.length).toBe(1)
+      expect(writes[0]).toMatchObject({ action: 'edit', version: 'v1', body: 'Confirm the login flow restores quota reporting after authentication.' })
+      await expect(dialog.getByText('Confirm the login flow restores quota reporting after authentication.', { exact: true })).toBeVisible()
+      await dialog.getByRole('button', { name: 'Mark resolved', exact: true }).click()
+      expect(writes).toHaveLength(1)
+      await dialog.getByRole('button', { name: 'Confirm resolved', exact: true }).click()
+      await expect.poll(() => writes.length).toBe(2)
+      expect(writes[1]).toMatchObject({ action: 'resolve', version: 'v2' })
+      await expect(page.getByRole('button', { name: 'Needs you: 0', exact: true })).toBeVisible()
+      await expect(page.getByText('Nothing needs you', { exact: true })).toBeVisible()
+      expect(pathOf(page)).toBe('/roadmap/kindash/capabilities/account-reauthentication')
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+      await page.screenshot({ path: testInfo.outputPath('resolved.png') })
+    })
+
+    test('can cancel or confirm a won’t-do decision', async ({ page }) => {
+      const writes = await attentionIssueApi(page)
+      await page.goto('/roadmap/kindash/capabilities/account-reauthentication')
       await page.getByRole('button', { name: 'Review what needs you', exact: true }).click()
       await expect(page.getByRole('tab', { name: 'Needs you (1, needs attention)' })).toBeFocused()
-      await expect(action).toBeVisible()
-      await page.screenshot({ path: testInfo.outputPath('issue-action.png') })
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+      await page.getByRole('button', { name: 'Review and decide', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: 'Review and decide' })
+      await dialog.getByRole('button', { name: 'Won’t do', exact: true }).click()
+      await dialog.getByRole('button', { name: 'Go back', exact: true }).click()
+      expect(writes).toHaveLength(0)
+      await dialog.getByRole('button', { name: 'Won’t do', exact: true }).click()
+      await dialog.getByRole('button', { name: 'Confirm won’t do', exact: true }).click()
+      await expect.poll(() => writes.length).toBe(1)
+      expect(writes[0]).toMatchObject({ action: 'dismiss', version: 'v1' })
+      await expect(page.getByRole('button', { name: 'Needs you: 0', exact: true })).toBeVisible()
     })
   })
 }

@@ -8510,6 +8510,25 @@ class SessionOrchestrator:
                     DbSession.status.not_in(INACTIVE_SESSION_STATUSES)))).first()
         return (str(row[0]), str(row[1] or "")) if row is not None else None
 
+    async def _pm_issue_decision(self, work_item_id: str, decision: dict) -> dict:
+        from server.db.models import WorkItem
+        from server.pm.issue_disposition import IssueDecision, apply
+        # Serialize decisions on one issue within the authority, including the
+        # preflight. A queued request then sees the updated mirrored version.
+        locks = getattr(self, "_issue_decision_locks", None)
+        if locks is None:
+            from weakref import WeakValueDictionary
+            self._issue_decision_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+            locks = self._issue_decision_locks
+        lock = locks.setdefault(work_item_id, asyncio.Lock())
+        async with lock, db_session() as db:
+            src = await db.get(WorkItem, work_item_id)
+            if src is None or src.kind != "issue":
+                return {"ok": False, "step": "load", "error": "Issue not found"}
+            return await apply(db, src=src, decision=IssueDecision.model_validate(decision),
+                               fetch=self._pm_sync_fetch_projects,
+                               mutate=self._pm_reconcile_mutate, now=self._pm_sync_now_utc())
+
     async def _pm_remove_dependency(self, work_item_id: str, blocker_ref: str) -> dict:
         """Delete one blocked-by edge on GitHub (roadmap spec §8, #1472).
 

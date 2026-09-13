@@ -312,3 +312,26 @@ export function removeDependency({ workItemId, blocker }: RemoveDependencyInput)
   return api.del<RemoveDependencyResult>(
     `/pm/work-items/${encodeURIComponent(workItemId)}/deps?blocker=${encodeURIComponent(blocker)}`)
 }
+
+/** Full mirrored issue content and the opaque revision required for a decision. */
+export interface WorkItemIssue {
+  id: string
+  repo: string
+  number: number
+  title: string
+  body: string
+  state: string
+  url: string | null
+  version: string
+}
+export type IssueDispositionInput = { version: string } & (
+  | { action: 'edit'; title: string; body: string }
+  | { action: 'resolve' | 'dismiss' }
+)
+export interface IssueDispositionResult { ok: true; item: WorkItemIssue }
+export function fetchWorkItemIssue(itemId: string): Promise<WorkItemIssue> {
+  return api.get(`/pm/work-items/${encodeURIComponent(itemId)}/issue`)
+}
+export function dispositionIssue(itemId: string, input: IssueDispositionInput): Promise<IssueDispositionResult> {
+  return api.post(`/pm/work-items/${encodeURIComponent(itemId)}/issue`, input)
+}

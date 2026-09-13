@@ -1,3 +1,4 @@
+import { IssueDispositionProvider } from './detail/IssueDispositionProvider'
 import { useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useProject, useRoadmapMap, useSyncProject, useTriage } from '@/api/hooks'
@@ -27,6 +28,10 @@ import { ProposalDetail } from './inbox/ProposalDetail'
  *  one routed page, three detail levels chosen by the params (spec §7), plus the
  *  Inbox scope (`?scope=inbox`), whose detail level is one proposal (§12). */
 export function RoadmapPage() {
+  return <IssueDispositionProvider><RoadmapPageContent /></IssueDispositionProvider>
+}
+
+function RoadmapPageContent() {
   const { search } = useLocation()
   const navigate = useNavigate()
   const item = roadmapOpenItem(useParams(), new URLSearchParams(search))

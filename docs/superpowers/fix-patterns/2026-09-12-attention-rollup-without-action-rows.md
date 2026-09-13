@@ -12,7 +12,7 @@ The tree rolls up issue, initiative, and descendant attention, while the action-
 
 Derive attention groups and their badge count through the same selector. For a capability, subtract immediate child rollups and primary non-program initiatives from each attention tier to find its direct issue count. Include blocked issues because the attention list includes stalls a human can clear. Render issue groups at portfolio/product scope and actual actionable issue rows at the selected capability, with links to descendant capabilities. Keep the full product tree for issue reassignment.
 
-Pair status with a visible review action and guidance based on known issue fields. Preserve the canonical issue owner: a labeled GitHub link leads to issue edits and closure, while existing dependency controls remain inline. Hide attention actions on closed issues.
+Pair status with a visible review action and guidance based on known issue fields. Preserve the canonical issue data owner by writing through the shared GitHub transport, while keeping edits and disposition inside the application. A link to the external tracker is supplemental, not a substitute for an in-app action. Existing dependency controls remain inline. Hide attention actions on closed issues.
 
 ## Where to look
 
@@ -23,3 +23,13 @@ Regression protection: selector tests for nested counts, primary versus touching
 Tracking: steiner385/viberpit#1608 and #1609.
 
 Browser verification must bind an isolated preview server to the checkout under test. A shared default port with `reuseExistingServer` can silently test another worktree and produce misleading results.
+
+## Verified user correction: navigation is not disposition
+
+The first fix exposed issues and labeled a GitHub link as a next action; the user still could
+not decide anything in Roadmap. The source-of-truth boundary governs where state is persisted,
+not where the user must interact. A review/disposition request needs the report content and
+concrete controls that execute a decision, show errors, and update the visible queue. Browser
+regressions should assert mutation requests and resulting state, rather than merely asserting
+that an external link exists. The follow-up adds in-app edit, resolved, and not-planned decisions
+with journaled upstream writes, stale-data guards, and explicit closure semantics. Tracking: #1625.
