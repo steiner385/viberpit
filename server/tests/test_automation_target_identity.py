@@ -177,3 +177,47 @@ async def test_pr_resolution_includes_cross_repo_closing_issue_and_refuses_trunc
     with pytest.raises(TargetIdentityError, match="complete PR linkage"):
         await resolve_targets(["owner/current#2"], kind="pr", fetch=fetch,
                               include_linked_issues=True)
+
+
+@pytest.mark.asyncio
+async def test_repository_snapshot_deduplicates_case_and_preserves_alias_evidence():
+    from server.automations.target_identity import resolve_repositories
+    fetch = AsyncMock(return_value={"data": {
+        "r0": {"nameWithOwner": "Owner/current"},
+        "r1": {"nameWithOwner": "Owner/current"},
+    }})
+    result = await resolve_repositories(
+        ["owner/old", "OWNER/OLD", "owner/current", "invalid"], fetch=fetch)
+    assert result == {"owner/old": "Owner/current", "OWNER/OLD": "Owner/current",
+                      "owner/current": "Owner/current", "invalid": None}
+    assert fetch.await_count == 1
+    assert fetch.await_args.args[0] == "owner"
+    assert "r2:" not in fetch.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_repository_snapshot_partial_or_failed_chunks_remain_unknown():
+    from server.automations.target_identity import resolve_repositories
+    fetch = AsyncMock(side_effect=[
+        {"data": {"r0": {"nameWithOwner": "a/good"},
+                  "r1": {"nameWithOwner": "bad/path/extra"}}},
+        RuntimeError("secret"),
+        {"data": {"r0": {"nameWithOwner": "c/good"}}, "errors": [{"message": "secret"}]},
+    ])
+    assert await resolve_repositories(
+        ["a/good", "a/bad", "a/missing", "b/private", "c/good"], fetch=fetch
+    ) == {"a/good": "a/good", "a/bad": None, "a/missing": None,
+          "b/private": None, "c/good": None}
+
+
+@pytest.mark.asyncio
+async def test_repository_snapshot_bounds_chunks_and_propagates_cancellation():
+    import asyncio
+    from server.automations.target_identity import resolve_repositories
+    fetch = AsyncMock(return_value={"data": {}})
+    result = await resolve_repositories([f"a/r{i}" for i in range(101)], fetch=fetch)
+    assert len(result) == 101 and set(result.values()) == {None}
+    assert fetch.await_count == 3
+    assert all("r50:" not in call.args[1] for call in fetch.await_args_list)
+    with pytest.raises(asyncio.CancelledError):
+        await resolve_repositories(["a/b"], fetch=AsyncMock(side_effect=asyncio.CancelledError))

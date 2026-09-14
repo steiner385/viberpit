@@ -35,7 +35,7 @@ import {
   fetchOnboarding, proposeMap, runClassify, advanceMap, advanceLive,
   removeDependency, createEdge, deleteEdge,
   editMapChanges, abandonMapChanges, rebaseMapChanges,
-  fetchPolicySchema, updateProductPolicy,
+  fetchPolicySchema, updateProductPolicy, fetchProductPolicyCoverage,
   fetchProjectHealth,
   fetchOutcomes, fetchWorkItemIssue, dispositionIssue,
   type WorkItemIssue, type IssueDispositionInput, type IssueDispositionResult,
@@ -118,6 +118,7 @@ export const QK = {
   workItemIssue: (id: string) => ['pm', 'issue', id] as const,
   project: (slug: string) => ['pm', 'project', slug] as const,
   policySchema: ['pm', 'policy-schema'] as const,
+  policyCoverage: (slug: string) => ['pm', 'project', slug, 'policy-coverage'] as const,
   health: (slug: string) => ['pm', 'health', slug] as const,
   outcomes: (workItemId: string) => ['pm', 'outcomes', workItemId] as const,
 }
@@ -1837,6 +1838,16 @@ export function usePolicySchema() {
     queryKey: QK.policySchema,
     queryFn: fetchPolicySchema,
     staleTime: Infinity,
+  })
+}
+
+/** Repository registration evidence; never a cached permit for an action. */
+export function useProductPolicyCoverage(slug: string) {
+  return useQuery({
+    queryKey: QK.policyCoverage(slug),
+    queryFn: () => fetchProductPolicyCoverage(slug),
+    enabled: slug !== '',
+    staleTime: 30_000,
   })
 }
 

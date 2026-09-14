@@ -20,7 +20,8 @@ from server.auth.middleware import current_identity
 from server.automations.base import validate_config
 from server.automations.product_policy import (
     PRODUCT_POLICY_SCHEMA, effective_policy, policies_by_slug)
-from server.db import get_db
+from server.automations.target_identity import resolve_repositories
+from server.db import db_session, get_db
 from server.db.models import (
     PROJECT_EDGE_KINDS,
     WORK_ITEM_TRIAGE_STATES,
@@ -47,7 +48,7 @@ from server.pm.mirror_store import deps_in_repos
 from server.pm.outcomes import list_outcomes_stmt, outcome_to_dict
 from server.pm.queue import MIN_STATUS_OPTIONS, rank, rank_key
 from server.pm.queue_store import load_queue_rows, runner_row_maps
-from server.pm.repo_project import owning_projects_by_repo
+from server.pm.repo_project import owning_projects_by_repo, resolve_repo_ownership
 from server.pm.score import RICE_FIELDS, validate_rice
 from server.pm.sync_request import request_project_sync
 # The accept write path and the undo-snapshot format live in server/pm/triage_accept.py
@@ -337,6 +338,46 @@ async def get_project(
 ) -> dict:
     p = await _load_project(db, slug)
     return await _project_detail_dict(db, p)
+
+
+@router.get("/projects/{slug}/policy/coverage")
+async def project_policy_coverage(
+    slug: str,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    # Do not hold even a read transaction across GitHub. A subsequent read uses
+    # the evidence snapshot; new registrations absent from it remain unresolved.
+    async with db_session() as db:
+        project = await _load_project(db, slug)
+        project_id = project.id
+        registrations = (await db.execute(
+            select(ProjectRepo.project_id, ProjectRepo.repo))).all()
+        requested = sorted({repo for pid, repo in registrations
+                            if pid == project_id and repo})
+        candidates = sorted({repo for _, repo in registrations if repo})
+    snapshot = await resolve_repositories(candidates) if requested else {}
+    async with db_session() as db:
+        coverage = await resolve_repo_ownership(db, requested, canonical_repos=snapshot)
+    return {
+        "projectSlug": slug,
+        "observedAt": datetime.now(timezone.utc).isoformat(),
+        "scope": "repository-coverage",
+        "explanation": (
+            "Repository coverage compares current GitHub identity evidence with registered "
+            "products. Unavailable identities remain unresolved; registration alone does "
+            "not verify coverage. This preview is not permission to start work."),
+        "repositories": [{
+            "requestedRepo": item.requested_repo,
+            "canonicalRepo": item.canonical_repo,
+            "state": item.state,
+            "owner": ({"id": item.owner.project_id, "slug": item.owner.slug}
+                      if item.owner else None),
+            "candidates": [{"id": owner.project_id, "slug": owner.slug}
+                           for owner in item.candidates],
+            "unresolvedRepos": list(item.unresolved_repos),
+            "reason": item.reason,
+        } for item in coverage.values()],
+    }
 
 
 @router.patch("/projects/{slug}/policy")
