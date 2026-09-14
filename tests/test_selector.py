@@ -247,6 +247,47 @@ class TestSelector(unittest.TestCase):
         self.assertFalse(exhausted(usage(session=10.0, weekly=100.0, extra=True), 100.0,
                                    extra_usage_allowed=True))
 
+    # --- model-scoped windows (per-model limits) ---
+
+    def _kindash_like(self):
+        """weekly 91% / Fable weekly 100%: usable for Sonnet, exhausted for Fable."""
+        from ccswitch.quota import QuotaWindow, SCOPE_MODEL, anthropic_snapshot
+        fable_reset = self.now + timedelta(hours=8)
+        fable = QuotaWindow(key="weekly:fable", label="Fable weekly", used_pct=100.0,
+                            resets_at=fable_reset, duration_seconds=7 * 24 * 3600,
+                            scope=SCOPE_MODEL, applies_to_models=("fable",))
+        return anthropic_snapshot(3.0, self.now + timedelta(hours=1), 91.0,
+                                  self.now + timedelta(days=2),
+                                  model_windows=[fable]), fable_reset
+
+    def test_model_scoped_ceiling_excludes_only_that_model(self):
+        from ccswitch.selector import select_best, AllAccountsBusy
+        u, fable_reset = self._kindash_like()
+        self.assertEqual(select_best({"k": u}, set(), self.cfg, self.now, model="sonnet"), "k")
+        with self.assertRaises(AllAccountsBusy) as ctx:
+            select_best({"k": u}, set(), self.cfg, self.now, model="fable")
+        self.assertEqual(ctx.exception.earliest_reset, fable_reset)
+
+    def test_unknown_model_treats_a_model_scoped_ceiling_as_binding(self):
+        """Pinned on purpose: a caller that names no model must not be handed an
+        account that 429s on its first turn if that turn happens to be Fable."""
+        from ccswitch.selector import select_best, AllAccountsBusy
+        u, _ = self._kindash_like()
+        with self.assertRaises(AllAccountsBusy):
+            select_best({"k": u}, set(), self.cfg, self.now, model=None)
+
+    def test_unknown_scoped_bucket_never_matches_a_known_tier(self):
+        from ccswitch.quota import QuotaWindow, SCOPE_MODEL, anthropic_snapshot
+        from ccswitch.selector import select_best, AllAccountsBusy
+        promo = QuotaWindow(key="weekly:promo", label="Promo weekly", used_pct=100.0,
+                            resets_at=self.now + timedelta(days=1), scope=SCOPE_MODEL,
+                            applies_to_models=("promo",))
+        u = anthropic_snapshot(3.0, self.now + timedelta(hours=1), 10.0,
+                               self.now + timedelta(days=2), model_windows=[promo])
+        self.assertEqual(select_best({"k": u}, set(), self.cfg, self.now, model="fable"), "k")
+        with self.assertRaises(AllAccountsBusy):   # model-blind caller: conservative
+            select_best({"k": u}, set(), self.cfg, self.now, model=None)
+
 
 # --- rank_accounts() tests ---
 

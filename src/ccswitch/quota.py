@@ -223,9 +223,12 @@ class QuotaSnapshot:
         """
         if not self.windows:
             return None
-        if len(self.windows) == 1:
-            return self.windows[0]
-        timed = [w for w in self.windows if w.duration_seconds is not None]
+        # A reserve protects the ACCOUNT's long-horizon allowance; a window that
+        # meters one model (a Fable weekly) is never the thing it measures.
+        candidates = [w for w in self.windows if w.scope == SCOPE_ACCOUNT] or list(self.windows)
+        if len(candidates) == 1:
+            return candidates[0]
+        timed = [w for w in candidates if w.duration_seconds is not None]
         if not timed:
             return None
         return max(timed, key=lambda w: w.duration_seconds or 0)

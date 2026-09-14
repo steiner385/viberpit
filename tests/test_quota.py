@@ -139,3 +139,11 @@ def test_anthropic_snapshot_appends_model_windows_after_the_account_pair():
     again = QuotaSnapshot.from_dict(u.to_dict())
     assert again.window("weekly:fable").applies_to_models == ("fable",)
     assert u.to_dict()["v"] == quota.QUOTA_BLOB_VERSION == 2
+
+
+def test_reserve_window_ignores_model_scoped_windows():
+    fable = QuotaWindow(key="weekly:fable", label="Fable weekly", used_pct=100.0,
+                        resets_at=NOW, duration_seconds=7 * 24 * 3600,
+                        scope=SCOPE_MODEL, applies_to_models=("fable",))
+    u = anthropic_snapshot(3.0, NOW, 91.0, NOW, fetched_at=NOW, model_windows=[fable])
+    assert u.reserve_window().key == "weekly"
