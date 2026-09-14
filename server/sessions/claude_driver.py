@@ -228,6 +228,7 @@ class ClaudeAgentDriver:
         self._clock = clock or time.time
         self._last_progress_at: float = self._clock()
         self._last_rate_reset: int | None = None  # resets_at (epoch s) from a RateLimitEvent
+        self._last_rate_limit_type: str | None = None  # rate_limit_type from a RateLimitEvent
         self._factory = sdk_factory
         # The loopback HTTP client an assistant-kind session's MCP tools call
         # ViberPit's own API through (server/assistant/client.py). None for every
@@ -1009,8 +1010,13 @@ class ClaudeAgentDriver:
         retry_after = failure.retry_after
         if retry_after is None and self._last_rate_reset is not None:
             retry_after = max(0.0, float(self._last_rate_reset) - self._clock())
+        limit_type = self._last_rate_limit_type if failure.kind == "rate_limit" else None
         self._emit(ev.TurnFailure(
-            kind=failure.kind, account=self.account, retry_after=retry_after))
+            kind=failure.kind, account=self.account, retry_after=retry_after,
+            limit_type=limit_type))
+        if limit_type:
+            log.info("driver.rate_limit session=%s account=%s bucket=%s retry_after=%s",
+                     self.session_id, self.account, limit_type, retry_after)
         if self._on_recoverable_failure is not None:
             try:
                 await self._on_recoverable_failure(self.session_id, failure.kind, retry_after)
@@ -1052,6 +1058,7 @@ class ClaudeAgentDriver:
         for e in self._tr.feed(msg):
             if isinstance(e, ev.RateLimit):
                 # Internal: stash the reset for retry timing; don't forward.
+                self._last_rate_limit_type = e.rate_limit_type
                 if e.resets_at is not None:
                     self._last_rate_reset = e.resets_at
                 continue

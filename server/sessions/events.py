@@ -263,8 +263,10 @@ class Rotated:
 class RateLimit:
     """Decoded SDK RateLimitEvent. Internal carrier only: the driver consumes it for
     retry timing (resets_at, epoch seconds) and never forwards it, so it has no
-    wire form."""
+    wire form. ``rate_limit_type`` names the bucket (five_hour, seven_day,
+    seven_day_opus, …) so a model-scoped 429 is distinguishable in the logs."""
     resets_at: int | None = None; status: str | None = None
+    rate_limit_type: str | None = None
 
 @dataclass
 class ApiRetry:
@@ -288,10 +290,13 @@ class Condensing:
 @dataclass
 class TurnFailure:
     """A turn failed with a recoverable kind (rate_limit / auth_401). Informational
-    for the UI; the orchestrator drives the actual recovery off the same signal."""
+    for the UI; the orchestrator drives the actual recovery off the same signal.
+    ``limit_type`` is the SDK bucket that tripped (rate_limit only), for display."""
     kind: str; account: str; retry_after: float | None = None
+    limit_type: str | None = None
     def to_wire(self): return {"type": "turnFailure", "kind": self.kind,
-                               "account": self.account, "retryAfter": self.retry_after}
+                               "account": self.account, "retryAfter": self.retry_after,
+                               "limitType": self.limit_type}
 
 @dataclass
 class ErrorEvent:

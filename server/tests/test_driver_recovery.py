@@ -15,8 +15,8 @@ def _factory(msgs):
     return make
 
 
-def _rate_limit(resets_at):
-    info = RateLimitInfo(status="rejected", resets_at=resets_at, rate_limit_type="five_hour",
+def _rate_limit(resets_at, rate_limit_type="five_hour"):
+    info = RateLimitInfo(status="rejected", resets_at=resets_at, rate_limit_type=rate_limit_type,
                          utilization=1.0, overage_status=None, overage_resets_at=None,
                          overage_disabled_reason=None, raw={})
     return RateLimitEvent(rate_limit_info=info, uuid="u", session_id="sess-1")
@@ -68,6 +68,20 @@ def test_retry_after_derived_from_rate_limit_reset():
     _, calls = _run(msgs, clock=lambda: 1000.0)
     assert calls and calls[0][1] == "rate_limit"
     assert calls[0][2] == 12.0
+
+
+def test_turn_failure_carries_rate_limit_type():
+    # A RateLimitEvent naming a model-scoped bucket (seven_day_opus) observed mid-turn
+    # should surface on the emitted TurnFailure so the UI/logs can distinguish which
+    # window tripped.
+    msgs = [f.sys_init("sess-1"), f.stream_start(uuid="t1"),
+            _rate_limit(resets_at=1012, rate_limit_type="seven_day_opus"),
+            f.result(session_id="sess-1", uuid="t1", is_error=True, api_error_status=429)]
+    seen, calls = _run(msgs, clock=lambda: 1000.0)
+    assert calls and calls[0][1] == "rate_limit"
+    tf = [e for e in seen if isinstance(e, ev.TurnFailure)]
+    assert tf and tf[0].limit_type == "seven_day_opus"
+    assert tf[0].to_wire()["limitType"] == "seven_day_opus"
 
 
 def test_successful_turn_does_not_invoke_callback():
