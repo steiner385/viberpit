@@ -81,3 +81,78 @@ class InspectTests(unittest.TestCase):
     def test_ref_names(self) -> None:
         self.assertEqual(wt.head_ref("s-1"), "refs/viberpit/transfer/s-1/head")
         self.assertEqual(wt.branch_ref("s-1", "feat/x"), "refs/viberpit/transfer/s-1/branches/feat/x")
+
+
+class ExportTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.clone = _make_origin_and_clone(self.root)
+        self.info = worktrees.create_worktree(str(self.clone), "main", "bbbb2222-0000", str(self.root))
+        self.cwd = self.info.path
+        self.origin = str(self.root / "origin.git")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _origin_ref(self, ref: str) -> str | None:
+        r = subprocess.run(["git", "-C", self.origin, "rev-parse", "--verify", "--quiet", ref],
+                           capture_output=True, text=True)
+        return r.stdout.strip() or None
+
+    def test_clean_export_pushes_head_without_wip(self) -> None:
+        head = _git("rev-parse", "HEAD", cwd=self.cwd)
+        b = wt.export(self.cwd, "bbbb2222-0000", carry_dirty=False)
+        self.assertFalse(b.wip_commit)
+        self.assertEqual(b.head_sha, head)
+        self.assertEqual(b.base_sha, head)
+        self.assertEqual(b.branch, self.info.branch)
+        self.assertEqual(self._origin_ref(wt.head_ref("bbbb2222-0000")), head)
+
+    def test_dirty_without_consent_refuses_and_touches_nothing(self) -> None:
+        (Path(self.cwd) / "x.txt").write_text("x\n")
+        with self.assertRaises(wt.TransferError) as ctx:
+            wt.export(self.cwd, "bbbb2222-0000", carry_dirty=False)
+        self.assertEqual(ctx.exception.code, "dirty_worktree")
+        self.assertIsNone(self._origin_ref(wt.head_ref("bbbb2222-0000")))
+        self.assertTrue(wt.inspect(self.cwd).dirty)
+
+    def test_dirty_with_consent_ships_a_wip_commit(self) -> None:
+        base = _git("rev-parse", "HEAD", cwd=self.cwd)
+        (Path(self.cwd) / "x.txt").write_text("x\n")
+        b = wt.export(self.cwd, "bbbb2222-0000", carry_dirty=True)
+        self.assertTrue(b.wip_commit)
+        self.assertEqual(b.base_sha, base)
+        self.assertNotEqual(b.head_sha, base)
+        self.assertEqual(self._origin_ref(wt.head_ref("bbbb2222-0000")), b.head_sha)
+        subj = subprocess.run(["git", "-C", self.origin, "log", "-1", "--format=%s", b.head_sha],
+                              capture_output=True, text=True).stdout.strip()
+        self.assertEqual(subj, wt.WIP_SUBJECT.format(session_id="bbbb2222-0000"))
+        parent = subprocess.run(["git", "-C", self.origin, "rev-parse", f"{b.head_sha}^"],
+                                capture_output=True, text=True).stdout.strip()
+        self.assertEqual(parent, base)
+
+    def test_unpushed_authored_branch_is_carried(self) -> None:
+        _git("checkout", "-q", "-b", "feat/extra", cwd=self.cwd)
+        (Path(self.cwd) / "e.txt").write_text("e\n")
+        _git("add", "-A", cwd=self.cwd)
+        _git("commit", "-q", "-m", "extra", cwd=self.cwd)
+        extra = _git("rev-parse", "HEAD", cwd=self.cwd)
+        _git("checkout", "-q", self.info.branch, cwd=self.cwd)
+        b = wt.export(self.cwd, "bbbb2222-0000", carry_dirty=False)
+        self.assertEqual(b.branches, {"feat/extra": extra})
+        self.assertEqual(self._origin_ref(wt.branch_ref("bbbb2222-0000", "feat/extra")), extra)
+
+    def test_push_failure_undoes_the_wip_commit(self) -> None:
+        base = _git("rev-parse", "HEAD", cwd=self.cwd)
+        (Path(self.cwd) / "x.txt").write_text("x\n")
+        _git("remote", "set-url", "origin", str(self.root / "does-not-exist.git"), cwd=self.cwd)
+        with self.assertRaises(wt.TransferError) as ctx:
+            wt.export(self.cwd, "bbbb2222-0000", carry_dirty=True)
+        self.assertEqual(ctx.exception.code, "push_failed")
+        self.assertEqual(_git("rev-parse", "HEAD", cwd=self.cwd), base)
+        self.assertTrue(wt.inspect(self.cwd).dirty)
+
+    def test_bundle_round_trips_through_dict(self) -> None:
+        b = wt.Bundle("s", "br", "h", "b", True, {"feat/x": "sha"})
+        self.assertEqual(wt.Bundle.from_dict(b.to_dict()), b)

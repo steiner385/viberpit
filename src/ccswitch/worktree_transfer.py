@@ -96,3 +96,76 @@ def inspect(cwd: str) -> WorktreeState:
             unpushed.append(b)
     return WorktreeState(dirty=bool(lines), dirty_files=len(lines), branch=branch,
                          head_sha=head, unpushed=tuple(unpushed))
+
+
+@dataclass(frozen=True)
+class Bundle:
+    """What the source pushed and the target must fetch. Crosses hosts as a dict
+    inside the transfer manifest, so every field is a JSON scalar."""
+
+    session_id: str
+    branch: str | None
+    head_sha: str        # the commit the target checks out (the WIP commit when wip_commit)
+    base_sha: str        # the agent's real tip; == head_sha unless wip_commit
+    wip_commit: bool
+    branches: dict[str, str] = field(default_factory=dict)  # other unpushed branches → sha
+
+    def to_dict(self) -> dict:
+        return {"sessionId": self.session_id, "branch": self.branch, "headSha": self.head_sha,
+                "baseSha": self.base_sha, "wipCommit": self.wip_commit,
+                "branches": dict(self.branches)}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Bundle":
+        return cls(session_id=d["sessionId"], branch=d.get("branch"), head_sha=d["headSha"],
+                   base_sha=d["baseSha"], wip_commit=bool(d.get("wipCommit", False)),
+                   branches=dict(d.get("branches") or {}))
+
+
+def export(cwd: str, session_id: str, *, carry_dirty: bool) -> Bundle:
+    """Push *cwd*'s HEAD and unpushed authored branches to the transfer namespace.
+
+    A dirty tree is refused unless ``carry_dirty`` (the user ticked the consent
+    box; the rebalancer never passes True). With consent the edits become one WIP
+    commit on top of HEAD, pushed as the transfer head; on a push failure that
+    commit is undone (``reset --mixed``) so the worktree is exactly as found.
+    """
+    top = _repo_top(cwd)
+    url = _origin_url(top)
+    if not url:
+        raise TransferError("no_origin", f"{top} has no origin remote")
+    _try_fetch_origin(top)  # best-effort: makes `unpushed` accurate against a fresh origin
+    state = inspect(cwd)
+    if state.dirty and not carry_dirty:
+        raise TransferError("dirty_worktree", f"{state.dirty_files} uncommitted change(s)")
+    base_sha = state.head_sha
+    head_sha = base_sha
+    wip = False
+    if state.dirty:
+        add = _run(["git", "-C", cwd, "add", "-A"])
+        commit = _run(["git", *_WIP_IDENTITY, "-C", cwd, "commit", "-q", "--no-verify",
+                       "-m", WIP_SUBJECT.format(session_id=session_id)])
+        if add.returncode != 0 or commit.returncode != 0:
+            raise TransferError("wip_commit_failed", (add.stderr + commit.stderr).strip())
+        head_sha = _rev(cwd, "HEAD") or base_sha
+        wip = True
+    refspecs = [f"+{head_sha}:{head_ref(session_id)}"]
+    branches: dict[str, str] = {}
+    for b in state.unpushed:
+        if b == state.branch:
+            continue
+        sha = _rev(cwd, f"refs/heads/{b}")
+        if sha is None:
+            continue
+        branches[b] = sha
+        refspecs.append(f"+{sha}:{branch_ref(session_id, b)}")
+    r = _run(["git", "-C", cwd, "push", "-q", "--no-verify", "origin", *refspecs],
+             env=git_env_for_remote(url))
+    if r.returncode != 0:
+        if wip:
+            _run(["git", "-C", cwd, "reset", "-q", "--mixed", base_sha])
+        raise TransferError("push_failed", r.stderr.strip())
+    log.info("transfer.export session=%s head=%s wip=%s branches=%d",
+             session_id, head_sha[:12], wip, len(branches))
+    return Bundle(session_id=session_id, branch=state.branch, head_sha=head_sha,
+                  base_sha=base_sha, wip_commit=wip, branches=branches)
