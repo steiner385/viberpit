@@ -13,8 +13,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .base import AutomationStatus
+from .base import AutomationStatus, ConfigField
 from .engine_policy import EnginePolicy
+from .model_pick import AUTOMATION_MODEL_CHOICES
 
 
 class PmClassify:
@@ -38,7 +39,13 @@ class PmClassify:
     #
     # `codex_allowed` grants the option, not the traffic — see `pm_onboard.py`.
     engine_policy: EnginePolicy = EnginePolicy.CODEX_ALLOWED
-    config_schema: list = []
+    config_schema: list = [
+        ConfigField("default_model", "Session model", "enum", "default",
+                    choices=list(AUTOMATION_MODEL_CHOICES),
+                    help="Model for spawned classification sessions. 'default' "
+                         "uses the account's default model; 'auto' assesses each "
+                         "chunk's complexity and picks a tier."),
+    ]
 
     def status(self, ctx: Any) -> AutomationStatus:
         return AutomationStatus(text="operator-triggered", level="idle")
