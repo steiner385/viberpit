@@ -50,6 +50,7 @@ from server.sdlc.slug import slugify
 
 from .base import AutomationStatus, ConfigField
 from .engine_policy import EnginePolicy
+from .model_pick import AUTOMATION_MODEL_CHOICES
 
 log = logging.getLogger(__name__)
 
@@ -141,6 +142,11 @@ class ControlBandMonitor:
         ConfigField("max_open_incidents", "Max incidents queued for intake", "int", 3,
                     help="Ceiling on triage items simultaneously queued for SDLC "
                          "Intake. A metric storm must not open a dozen intent PRs."),
+        ConfigField("default_model", "Session model", "enum", "default",
+                    choices=list(AUTOMATION_MODEL_CHOICES),
+                    help="Model for spawned 2σ diagnosis sessions. 'default' uses "
+                         "the account's default model; 'auto' assesses each "
+                         "breach's complexity and picks a tier."),
     ]
 
     def status(self, ctx: Any) -> AutomationStatus:

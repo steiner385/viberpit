@@ -26,13 +26,18 @@ model/effort catalog instead — reasoning effort is Codex's own
 complexity/cost dial, the direct counterpart of a Claude tier alias. Neither
 function ever returns a value the caller did not hand it in ``efforts``, so a
 Claude alias structurally cannot reach a Codex dispatch through this module.
+
+The engine branch itself — "Claude assessor or Codex effort catalog?" — is NOT
+here: it needs the orchestrator's live Codex client, so it lives at
+``SessionOrchestrator._resolve_spawn_model``, the one place every automation
+spawn site asks. ``SpawnModelChoice`` below is its answer type.
 """
 from __future__ import annotations
 
 import logging
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from server.sessions.account_auth import helper_env
 from server.sessions.claude_bin import cli_path_kwargs
@@ -180,6 +185,28 @@ class ModelPick:
     floor: str | None      # the floor handed in (None when not an "auto" pick)
     applied: str | None    # what create_session gets (None = account default)
     source: str | None     # "pinned" | "auto" | "auto+floor" | None
+
+
+@dataclass(frozen=True)
+class SpawnModelChoice:
+    """The whole model answer for ONE automation spawn, after the engine branch.
+
+    ``model`` and ``reasoning_effort`` are mutually exclusive create kwargs: a
+    Claude alias never rides along with a Codex effort (issue #1289). ``detail``
+    is the spawned-event payload this choice contributes, so what a session runs
+    on and what the activity feed says about why are decided in one place rather
+    than reassembled at each spawn site.
+
+    ``pick`` is the Claude ``ModelPick`` behind the choice (``None`` for a Codex
+    spawn, or when the config never asked for one) — the backlog runner audits
+    it, which is the only reason the full provenance survives the trip.
+    """
+
+    model: str | None = None
+    reasoning_effort: str | None = None
+    source: str | None = None
+    pick: ModelPick | None = None
+    detail: dict[str, str] = field(default_factory=dict)
 
 
 async def pick_model(

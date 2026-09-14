@@ -32,6 +32,7 @@ from server.sdlc.prompts import artifact_path, build_intent_prompt
 
 from .base import AutomationStatus, ConfigField
 from .engine_policy import EnginePolicy
+from .model_pick import AUTOMATION_MODEL_CHOICES
 
 # A trigger's per-day spawn ceiling is enforced over a rolling 24h window.
 _DAY_SECONDS = 24 * 60 * 60
@@ -85,6 +86,11 @@ class SdlcIntake:
                     help="Repositories this intake automation may open intent PRs in."),
         ConfigField("max_spawns_per_day", "Max intent sessions / day", "int", 10,
                     help="Safety cap on intent-generation sessions spawned per rolling 24h."),
+        ConfigField("default_model", "Session model", "enum", "default",
+                    choices=list(AUTOMATION_MODEL_CHOICES),
+                    help="Model for spawned intent sessions. 'default' uses the "
+                         "account's default model; 'auto' assesses each trigger's "
+                         "complexity and picks a tier."),
     ]
 
     def status(self, ctx: Any) -> AutomationStatus:

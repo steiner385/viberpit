@@ -20,8 +20,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .base import AutomationStatus
+from .base import AutomationStatus, ConfigField
 from .engine_policy import EnginePolicy
+from .model_pick import AUTOMATION_MODEL_CHOICES
 
 
 class PmOnboard:
@@ -46,7 +47,15 @@ class PmOnboard:
     # answers Claude, and both `CCSWITCH_CODEX_AUTOMATIONS_ENABLED` and #1263's
     # network-egress opt-in ship off.
     engine_policy: EnginePolicy = EnginePolicy.CODEX_ALLOWED
-    config_schema: list = []
+    #: One setting for both sessions this origin spawns (synthesis and its
+    #: critic), the way sdlc-synthesizer covers spec/plan/decompose with one.
+    config_schema: list = [
+        ConfigField("default_model", "Session model", "enum", "default",
+                    choices=list(AUTOMATION_MODEL_CHOICES),
+                    help="Model for spawned feature-map synthesis and critic "
+                         "sessions. 'default' uses the account's default model; "
+                         "'auto' assesses each job's complexity and picks a tier."),
+    ]
 
     def status(self, ctx: Any) -> AutomationStatus:
         return AutomationStatus(text="operator-triggered", level="idle")

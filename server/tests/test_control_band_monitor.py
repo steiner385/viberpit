@@ -390,7 +390,8 @@ def test_the_automation_surface_is_claude_only_and_defaults_off():
     assert a.modes == ("off", "monitor", "propose")
     assert a.engine_policy is EnginePolicy.CLAUDE_ONLY
     assert {f.key for f in a.config_schema} == {
-        "enabled_repos", "max_diagnoses_per_day", "max_open_incidents"}
+        "enabled_repos", "max_diagnoses_per_day", "max_open_incidents",
+        "default_model"}
 
 
 def test_status_reports_watched_and_breaching_counts():
