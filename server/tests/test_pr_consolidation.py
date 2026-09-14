@@ -21,9 +21,16 @@ def consolidation_github(monkeypatch, github_identity):
             CanonicalTarget("PR_" + ref.split("#")[1], ref),
             CanonicalTarget("I_" + ref.split("#")[1], ref.replace("#", "#10"))))
 
-    monkeypatch.setattr("server.automations.target_identity.resolve_targets", resolve)
+    resolver = AsyncMock(side_effect=resolve)
+    monkeypatch.setattr("server.automations.target_identity.resolve_targets", resolver)
+    # The legacy guard binds this function on import, which may precede this
+    # fixture (and may occur under another test's identity fake).
+    monkeypatch.setattr("server.automations.ownership_reconciliation.resolve_targets", resolver)
+    monkeypatch.setattr("server.automations.target_identity._fetch", AsyncMock(
+        side_effect=AssertionError("consolidation unit tests must not contact GitHub")))
     monkeypatch.setattr("server.sessions.orchestrator.SessionOrchestrator._sdlc_default_branch",
                         AsyncMock(return_value="main"))
+    return resolver
 
 
 def _pr(n, *, title="fix(deploy): x", state="open", is_draft=False,
@@ -151,7 +158,7 @@ async def test_consolidate_too_few_and_not_actionable(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_consolidate_duplicate_when_live_session_exists(tmp_path, monkeypatch):
+async def test_consolidate_duplicate_when_live_session_exists(tmp_path, consolidation_github):
     from server.db import db_session
     from server.db.models import Session
     await _init_db(tmp_path)
@@ -161,6 +168,14 @@ async def test_consolidate_duplicate_when_live_session_exists(tmp_path, monkeypa
                        cwd=".", origin="pr-doctor", origin_ref="consolidate:o/r#1+2"))
     status, sid = await orch._pr_doctor_consolidate("o/r", [1, 2])
     assert status == "duplicate" and sid is None
+    # New claims and the legacy guard must see the same external identities,
+    # regardless of which test first imported the guard on this worker.
+    from unittest.mock import call
+    assert consolidation_github.await_args_list == [
+        call(["o/r#1", "o/r#2"], kind="pr", include_linked_issues=True),
+        call(["o/r#1", "o/r#2"], kind="pr", include_linked_issues=True),
+    ]
+    assert not orch._consolidation_tasks
     events = await orch._pr_doctor_ctx.list_events()
     assert any(e["kind"] == "ownership_wait" for e in events)
 

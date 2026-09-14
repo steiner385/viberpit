@@ -26,6 +26,7 @@ def github_identity(monkeypatch):
         return tuple(CanonicalTarget("PR_" + ref.replace("/", "_").replace("#", "_"), ref) for ref in refs)
 
     monkeypatch.setattr("server.automations.target_identity.resolve_targets", resolve)
+    monkeypatch.setattr("server.automations.ownership_reconciliation.resolve_targets", resolve)
     from unittest.mock import AsyncMock
     monkeypatch.setattr("server.automations.model_pick.assess_model", AsyncMock(return_value=None))
 
