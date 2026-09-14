@@ -9,6 +9,8 @@ links:
     - server/automations/autopilot_decider.py
     - server/automations/autopilot_policy.py
     - server/automations/backlog_runner.py
+    - server/automations/ownership.py
+    - server/automations/target_identity.py
     - server/automations/backlog_selection.py
     - server/automations/backlog_grouping.py
     - server/automations/backlog_github.py
@@ -82,9 +84,10 @@ PR linkage, never on labels alone.
   blocks, #639) > open-unarmed PR (nudge to arm) > pr_resolution claim > explicit
   `--squash --auto` instruction > no-PR-nudge; research/Q&A goals may complete with no PR.
   Manual unarchives are respected and learned from (#469).
-- Backlog runner (`backlog_runner.py`) refills slots under a single lock by
+- Backlog runner (`backlog_runner.py`) refills slots through shared ownership by
   select → claim → spawn, and sweeps for merged PRs (close-out), handoff readiness (free the
-  slot once auto-merge is armed), and terminal sessions (charge an attempt, give up at max).
+  slot after the implementation stops and effective PR recovery accepts ownership), and
+  terminal sessions (charge an attempt, give up at max).
   Candidates come from the **global priority queue** over the mirrored Projects v2 boards
   (spec 003 §7a, `server/pm/queue.py`) — the same ranking `GET /api/pm/queue` renders, so
   what the operator sees is what agents do next.
@@ -227,21 +230,35 @@ PR linkage, never on labels alone.
   ordering supports balanced / priority / weighted / concurrency-cap strategies (#773) for
   per-repo fairness (#771) — `priority` now serves the ON products' repos oldest-first by
   `Project.created_at`, the deterministic stand-in for the retired hand-ordered `enabled_repos`
-  list. A **claim is the runner's durable target-state row** (#994): writing
-  the row is what takes the issue out of the pool, the session it spawns is what the reconciler
-  renders as board Status `In progress`, and the issue comment that follows is the claim's
-  human-visible trace only — a failed comment cannot lose a claim. Reconciliation heals dangling
-  claims (row, no session) by deleting the row, which IS the release; the GitHub-truth orphan
-  sweep went away with the label search it diffed against (Phase D decision D-5), leaving the
-  row and the board as the only claim state there is.
+  list. **Conflicting work shares one durable ownership store** (`ownership.py`, #1611).
+  Canonical GitHub node IDs identify every issue in a batch and every PR plus its verified
+  linked issues. Automatic and manual dispatch, PR repair, consolidation, and map branch
+  updates acquire their complete target set together. Repository aliases and overlapping
+  batches cannot create separate owners for the same work. Target-state rows retain workflow
+  attempts and outcomes; an issue comment remains a human-visible trace, never ownership.
+
+  Launches reserve a session UUID before external work. A repeated request recovers that
+  session or reports uncertainty. A missing driver, expired timer, or completed status alone
+  cannot release ownership: managed native work and known children need stopped evidence,
+  and later execution must pass the same ownership check. Unresolved legacy work also blocks
+  conflicting dispatch. This guarantee covers ViberPit-managed work, not arbitrary external
+  actors or detached commands outside its managed execution boundary.
+
+  Pending proposals and no-account waits remain discoverable as complete batches in the
+  action list. GitHub accepting a branch update is distinct from its completion; observation
+  must establish the requested update before releasing its targets. Failed or partial issue
+  closes retain ownership and a review reason. Recovery observes completed effects without
+  automatically replaying an uncertain mutation. Mixed batches with intentionally open
+  members can still require operator review after an uncertain close; broader recovery
+  controls belong to the later recovery phase of #1611.
   A **give-up is the same row marked `gave_up` and stamped
   `needs_human_at`**, which replaces the claim (a target waiting on a human holds no slot): the
   reconciler turns it into board Status `Needs human` and the queue into a cooldown that expires
-  after `needs_human_retry_days`, at which point the runner deletes the row (before refill, so
-  the same tick can re-pick the issue) and the issue is retried — or never, when that setting is
-  0. A human takes an issue back from a give-up by **dispatching it manually**
+  after `needs_human_retry_days`. Once ownership permits release, the runner removes the
+  expired workflow row before refill so the issue can be retried. A value of 0 disables this
+  automatic expiry. A human takes an issue back from a give-up by **dispatching it manually**
   (`POST /api/automations/backlog-runner/dispatch`, or the card's dispatch action), which
-  replaces the give-up row with a fresh claim; moving the board card alone does not shorten the
+  requests a fresh claim after prior ownership is safely reconciled; moving the board card alone does not shorten the
   cooldown (follow-up #1540). Backoff + disk-exhaustion circuit breaker in #626/#683.
 - The runner had to learn to see its own PRs (#546 sweep-time resolution) and to fail-closed
   on PR↔issue linkage before closing (#643), and not to auto-close action-required /

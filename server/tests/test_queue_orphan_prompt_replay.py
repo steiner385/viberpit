@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from server.db.models import Session as DbSession
 from server.db.models import SessionQueue
 
@@ -369,19 +371,37 @@ def test_queue_cancel_persists_ended_before_removing_the_queue_entry(tmp_path):
 # 3. The runner must not escalate a session that never ran a turn
 # ---------------------------------------------------------------------------
 
-def _runner(*, ran: bool | None, calls: dict):
-    """A BacklogRunnerLoop wired with stub seams, tracking the give-up path."""
+async def _runner(tmp_path, *, ran: bool | None, calls: dict, target: str):
+    """Exercise real claims with native stopped/never-entered evidence."""
     from server.automations.backlog_runner import BacklogRunnerLoop
+    from server.automations.context import AutomationContext
+    from server.automations.ownership import (
+        CanonicalTarget, acquire, begin_session_execution,
+        attest_session_stopped, session_execution,
+    )
+    from server.db import db_session, init_db
+    from server.db.models import Automation, Session
 
-    class _Ctx:
-        async def emit(self, *a, **k):
-            calls.setdefault("emits", []).append(k.get("kind"))
-
-        async def delete_target_state(self, target):
-            calls["deleted"] = target
-
-        async def set_target_state(self, target, st):
-            calls["state"] = st
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'runner.db'}")
+    async with db_session() as db:
+        db.add(Automation(id="backlog-runner"))
+    ctx = AutomationContext("backlog-runner")
+    async with acquire([CanonicalTarget("I_1", target)], owner=ctx.automation_id,
+                       source="fixture", reason="attempt under test",
+                       provenance={"origin_ref": target}) as tx:
+        sid = tx.reserve_session()
+        token = tx.token
+        tx.db.add(Session(id=sid, name="attempt", cwd="/tmp", account_name="a",
+                          origin=ctx.automation_id, origin_ref=target, status="ended",
+                          engine_session_id="native-1" if ran else None))
+        tx.bind_session(sid)
+    if ran is not False:
+        await begin_session_execution(sid)
+    association = await session_execution(sid)
+    assert association is not None and association[1] is not None
+    assert await attest_session_stopped(token, association[1])
+    state = {"session_id": sid, "attempts": 2, "ownership_token": token, "claimed": True}
+    await ctx.set_target_state(target, state)
 
     async def _needs_human(target, reason):
         calls["needs_human"] = target
@@ -393,7 +413,11 @@ def _runner(*, ran: bool | None, calls: dict):
     async def _session_ended(_sid):
         return True
 
-    async def _unused(*a, **k):  # seams the sweep never reaches
+    async def _work_stopped(_sid):
+        evidence = await session_execution(_sid)
+        return evidence is not None and evidence[1] is not None and evidence[1] == evidence[2]
+
+    async def _unused(*a, **k):
         raise AssertionError("refill seam called from a sweep test")
 
     async def _pr_doctor_active(_repo):
@@ -405,57 +429,70 @@ def _runner(*, ran: bool | None, calls: dict):
             return ran
         kwargs["session_ran"] = _session_ran
 
-    return BacklogRunnerLoop(
-        _Ctx(),  # type: ignore[arg-type]  # only ctx.emit / *_target_state are reached
-        select_batch=_unused, announce=_unused, spawn=_unused,
+    loop = BacklogRunnerLoop(
+        ctx, select_batch=_unused, announce=_unused, spawn=_unused,
         count_in_flight=_unused, healthy_account=_unused,
         pr_status_for=_pr_status_for, pr_doctor_active=_pr_doctor_active,
         read_config=_unused, clock=lambda: 0.0,
-        needs_human=_needs_human, session_ended=_session_ended, **kwargs)
+        needs_human=_needs_human, session_ended=_session_ended,
+        session_work_stopped=_work_stopped, **kwargs)
+    return loop, ctx, state
 
 
-def test_give_up_releases_instead_of_escalating_when_the_session_never_ran():
-    """A session with no engine_session_id never ran — needs-human parks it for days."""
+def test_give_up_releases_instead_of_escalating_when_the_session_never_ran(tmp_path):
+    """A durably cancelled launch that never entered native work can be released."""
     async def run():
+        from server.automations.ownership import StaleOwnership, owned
         calls: dict = {}
-        loop = _runner(ran=False, calls=calls)
-        await loop._sweep_one("acme/repo#1", {"session_id": "s1", "attempts": 2},
-                              set())
-
-        assert "needs_human" not in calls, (
-            "escalated an issue whose session never ran a single turn — it is now "
-            "parked for needs_human_retry_days for no reason")
-        # Deleting the row IS the release (Phase D): it returns the issue to the
-        # pool without parking it behind a needs-human cooldown.
-        assert calls.get("deleted") == "acme/repo#1"
-
+        target = "acme/repo#1"
+        loop, ctx, state = await _runner(tmp_path, ran=False, calls=calls, target=target)
+        await loop._sweep_one(target, state, set())
+        assert "needs_human" not in calls
+        assert await ctx.get_target_state(target) == {}
+        with pytest.raises(StaleOwnership):
+            async with owned(state["ownership_token"]):
+                pass
     asyncio.run(run())
 
 
-def test_give_up_still_escalates_when_the_session_actually_ran():
-    """The normal give-up path is untouched: a real attempt still reaches a human."""
+def test_give_up_still_escalates_when_the_session_actually_ran(tmp_path):
+    """A stopped real attempt reaches a human while retaining owned history."""
     async def run():
+        from server.automations.ownership import owned
         calls: dict = {}
-        loop = _runner(ran=True, calls=calls)
-        await loop._sweep_one("acme/repo#2", {"session_id": "s2", "attempts": 2},
-                              set())
-
-        assert calls.get("needs_human") == "acme/repo#2"
-        assert "deleted" not in calls, "a give-up keeps its row — it IS the handoff"
-
+        target = "acme/repo#2"
+        loop, ctx, state = await _runner(tmp_path, ran=True, calls=calls, target=target)
+        await loop._sweep_one(target, state, set())
+        assert calls.get("needs_human") == target
+        parked = await ctx.get_target_state(target)
+        assert parked["gave_up"] and parked["ownership_token"] == state["ownership_token"]
+        async with owned(state["ownership_token"]) as tx:
+            assert tx.operation.session_id == state["session_id"]
     asyncio.run(run())
 
 
-def test_give_up_escalates_when_no_ran_probe_is_wired():
-    """Unknown → escalate: the probe must never silently disable the give-up path."""
+def test_give_up_escalates_when_no_ran_probe_is_wired(tmp_path):
+    """Unknown turn history still escalates after native stopped evidence."""
     async def run():
         calls: dict = {}
-        loop = _runner(ran=None, calls=calls)
-        await loop._sweep_one("acme/repo#3", {"session_id": "s3", "attempts": 2},
-                              set())
+        target = "acme/repo#3"
+        loop, ctx, state = await _runner(tmp_path, ran=None, calls=calls, target=target)
+        await loop._sweep_one(target, state, set())
+        assert calls.get("needs_human") == target
+        assert (await ctx.get_target_state(target))["gave_up"]
+    asyncio.run(run())
 
-        assert calls.get("needs_human") == "acme/repo#3"
 
+def test_give_up_retains_legacy_state_without_ownership_proof(tmp_path):
+    async def run():
+        calls: dict = {}
+        target = "acme/repo#4"
+        loop, ctx, state = await _runner(tmp_path, ran=None, calls=calls, target=target)
+        legacy = {k: v for k, v in state.items() if k != "ownership_token"}
+        await ctx.set_target_state(target, legacy)
+        await loop._sweep_one(target, legacy, set())
+        assert "needs_human" not in calls
+        assert await ctx.get_target_state(target) == legacy
     asyncio.run(run())
 
 

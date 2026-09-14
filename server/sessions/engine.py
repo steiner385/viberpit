@@ -121,6 +121,7 @@ class AgentDriver(Protocol):
     """Actual common runtime surface consumed by orchestration and WebSocket code."""
 
     session_id: str
+    automation_execution_id: str | None
     account: str
     cwd: str
     config_dir: str
@@ -151,6 +152,7 @@ class AgentDriver(Protocol):
 
     async def start(self) -> None: ...
     async def aclose(self) -> None: ...
+    async def automation_work_stopped(self) -> bool: ...
     async def send_prompt(
         self,
         text: str,
@@ -217,6 +219,9 @@ class AgentDriverConfig:
     #: sets it at thread-start time does not have to re-read the DB. Engines without
     #: the capability ignore it.
     reasoning_effort: str | None = None
+    before_execution: Callable[[], Awaitable[bool | None]] | None = None
+    automation_execution_id: str | None = None
+    after_execution_close: Callable[[AgentDriver], Awaitable[None]] | None = None
     on_engine_session_id: Callable[[str, str], Awaitable[None]] | None = None
     on_sync_back: Callable[[], None] | None = None
     on_status: Callable[[str, str], Awaitable[str | None]] | None = None

@@ -79,7 +79,7 @@ async def test_backlog_spawn_passes_pinned_model(tmp_path, monkeypatch):
     _patch_git(monkeypatch, tmp_path)
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct", default_model="sonnet")
+    await orch._backlog_spawn(_BATCH, "acct", default_model="sonnet", ownership_token="test-token")
     assert captured["model"] == "sonnet"
     # `engine` joins the detail in Phase 7: a spawn record has to say which agent
     # ran it, or a mixed-engine backlog is unreadable after the fact.
@@ -105,7 +105,7 @@ async def test_backlog_spawn_resolves_the_default_branch_through_the_one_resolve
         return "trunk"
 
     orch._sdlc_default_branch = fake_default_branch  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct", default_model="auto")
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto", ownership_token="test-token")
     assert seen == {"repo": "o/r"}
     assert "trunk" in captured["initial_prompt"]
 
@@ -137,7 +137,7 @@ async def test_backlog_spawn_auto_assesses_issue_titles(tmp_path, monkeypatch):
     _patch_git(monkeypatch, tmp_path)
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct", default_model="auto")
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto", ownership_token="test-token")
     assert "fix the frobnicator" in seen["summary"]  # titles reach the assessor
     assert captured["model"] == "haiku"
     assert captured["detail"]["model_source"] == "auto"
@@ -149,7 +149,7 @@ async def test_backlog_spawn_default_keeps_account_default(tmp_path, monkeypatch
     _patch_git(monkeypatch, tmp_path)
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct", default_model="default")
+    await orch._backlog_spawn(_BATCH, "acct", default_model="default", ownership_token="test-token")
     assert captured["model"] is None
     # No model keys — but the engine is always recorded (Phase 7).
     assert captured["detail"] == {"issues": ["o/r#7"], "engine": "claude_code"}
@@ -223,7 +223,7 @@ async def test_backlog_spawn_raises_an_auto_pick_to_the_capabilitys_floor(
     _patch_git(monkeypatch, tmp_path)
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct", default_model="auto")
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto", ownership_token="test-token")
 
     # The floor is looked up for the PRIMARY issue's capability, in the batch's product.
     assert seen == {"product": "widget", "ref": "o/r#7"}
@@ -245,7 +245,7 @@ async def test_backlog_spawn_audits_an_auto_model_pick(isolated_db, tmp_path,
     _patch_git(monkeypatch, tmp_path)
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct", default_model="auto")
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto", ownership_token="test-token")
 
     rows = await _audit_model_picks()
     assert len(rows) == 1
@@ -271,7 +271,7 @@ async def test_backlog_spawn_that_produces_no_session_is_unaudited(
     async def refuse(**kw):
         return None
     orch._backlog_ctx.spawn_session = refuse  # type: ignore[method-assign]
-    assert await orch._backlog_spawn(_BATCH, "acct", default_model="auto") is None
+    assert await orch._backlog_spawn(_BATCH, "acct", default_model="auto", ownership_token="test-token") is None
     assert await _audit_model_picks() == []
 
 
@@ -284,7 +284,7 @@ async def test_backlog_spawn_pinned_model_is_untouched_by_a_floor_and_unaudited(
     _patch_git(monkeypatch, tmp_path)
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct", default_model="sonnet")
+    await orch._backlog_spawn(_BATCH, "acct", default_model="sonnet", ownership_token="test-token")
 
     assert captured["model"] == "sonnet"
     assert captured["detail"] == {"issues": ["o/r#7"], "model": "sonnet",
@@ -307,7 +307,7 @@ async def test_backlog_spawn_survives_a_failing_floor_lookup(tmp_path, monkeypat
     _patch_git(monkeypatch, tmp_path)
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct", default_model="auto")
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto", ownership_token="test-token")
 
     assert captured["model"] == "sonnet"
     assert captured["detail"]["model_source"] == "auto"
@@ -316,24 +316,50 @@ async def test_backlog_spawn_survives_a_failing_floor_lookup(tmp_path, monkeypat
 
 @pytest.mark.asyncio
 async def test_tap_dispatch_applies_the_floor_through_the_one_spawn_path(
-        tmp_path, monkeypatch):
+        isolated_db, tmp_path, monkeypatch):
     """Both taps funnel through ``_backlog_spawn``, so a manual dispatch gets the
     floor exactly as the loop's own spawn does — there is no second model-pick
     path to keep in sync."""
     import server.automations.model_pick as model_pick
     monkeypatch.setattr(model_pick, "assess_model", _assess_returning("haiku"))
 
-    orch = _build_backlog_orch({}, tier_floor="opus")
+    orch = _build_backlog_orch(
+        {"max_concurrent": 1, "max_spawns_per_day": 10}, tier_floor="opus")
     _patch_git(monkeypatch, tmp_path)
     captured: dict = {}
-    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    from server.automations.ownership import CanonicalTarget, owned
+    from server.db import db_session
+    from server.db.models import Automation, Session, DispatchOutcome
+    from unittest.mock import AsyncMock
+    from sqlalchemy import select
+
+    async with db_session() as db:
+        db.add(Automation(id="backlog-runner"))
+
+    async def resolve(refs, *, kind):
+        assert kind == "issue"
+        return tuple(CanonicalTarget("I_" + ref.split("#")[1], ref) for ref in refs)
+
+    monkeypatch.setattr("server.automations.target_identity.resolve_targets", resolve)
+    # Explicit empty legacy population; the actual claim and state transaction run.
+    monkeypatch.setattr("server.automations.ownership_reconciliation.reconcile_legacy_targets",
+                        AsyncMock())
+
+    async def launch(**kw):
+        captured.update(kw)
+        async with owned(kw["ownership_token"]) as tx:
+            sid = tx.reserve_session()
+            session = Session(id=sid, name="applied floor", cwd="/tmp", account_name="acct",
+                              origin="backlog-runner", origin_ref="o/r#7", model=kw["model"])
+            tx.db.add(session)
+            tx.bind_session(sid)
+        return session
+
+    orch._backlog_ctx.spawn_session = launch  # type: ignore[method-assign]
 
     async def query_queue(config):
         return [{"ref": "o/r#7", "repo": "o/r", "title": "fix the frobnicator",
                  "product": "widget"}]
-
-    async def get_state(ref):
-        return {}
 
     async def noop(*a, **kw):
         return None
@@ -344,17 +370,27 @@ async def test_tap_dispatch_applies_the_floor_through_the_one_spawn_path(
     orch._backlog_query_queue = query_queue  # type: ignore[method-assign]
     orch._backlog_announce = noop            # type: ignore[method-assign]
     orch._automation_account_for = account_for  # type: ignore[method-assign]
-    orch._backlog_ctx.get_target_state = get_state  # type: ignore[method-assign]
-    orch._backlog_ctx.set_target_state = noop       # type: ignore[method-assign]
-    orch._backlog_ctx.record_outcome = noop         # type: ignore[method-assign]
     orch._backlog_ctx.emit = noop                   # type: ignore[method-assign]
 
+    from server.automations.backlog_runner import BacklogRunnerLoop
+
+    orch._backlog_count_in_flight = AsyncMock(return_value=0)
+    orch._backlog_loop = BacklogRunnerLoop(
+        orch._backlog_ctx, select_batch=noop, spawn=orch._backlog_spawn,
+        count_in_flight=orch._backlog_count_in_flight, healthy_account=noop,
+        pr_status_for=noop, pr_doctor_active=noop, read_config=orch._backlog_read_config,
+        clock=lambda: 1)
     res = await orch.backlog_runner_dispatch(["o/r#7"])
 
     assert res["status"] == "spawned"
     assert captured["model"] == "opus"
     assert captured["detail"]["model_source"] == "auto+floor"
     assert captured["detail"]["assessed"] == "haiku"
+
+    async with db_session() as db:
+        outcome = await db.scalar(select(DispatchOutcome).where(
+            DispatchOutcome.target_ref == "o/r#7"))
+        assert outcome is not None and outcome.model == "opus"
 
 
 # --------------------------------------------------------------------------- #
@@ -384,7 +420,7 @@ async def test_backlog_spawn_codex_auto_uses_codex_assessor(tmp_path, monkeypatc
 
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct", default_model="auto")
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto", ownership_token="test-token")
 
     assert seen["account"] == "acct"
     assert "fix the frobnicator" in seen["summary"]
@@ -411,7 +447,7 @@ async def test_backlog_spawn_codex_assessment_failure_falls_back(tmp_path, monke
 
     captured: dict = {}
     orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
-    await orch._backlog_spawn(_BATCH, "acct", default_model="auto")
+    await orch._backlog_spawn(_BATCH, "acct", default_model="auto", ownership_token="test-token")
 
     assert captured["model"] is None
     assert captured["reasoning_effort"] is None
@@ -553,7 +589,11 @@ _INFO = PullRequestInfo(number=11, url="https://x/11", state="open",
 
 
 @pytest.mark.asyncio
-async def test_pr_fix_spawn_passes_pinned_model():
+async def test_pr_fix_spawn_passes_pinned_model(isolated_db, monkeypatch):
+    from server.tests.test_pr_doctor_step import github_identity
+    github_identity.__wrapped__(monkeypatch)
+    from server.automations.registry import registry
+    await registry.ensure_rows()
     orch = _full_orch()
 
     async def config():
@@ -572,7 +612,11 @@ async def test_pr_fix_spawn_passes_pinned_model():
 
 
 @pytest.mark.asyncio
-async def test_pr_fix_spawn_auto_fails_open_without_model_access():
+async def test_pr_fix_spawn_auto_fails_open_without_model_access(isolated_db, monkeypatch):
+    from server.tests.test_pr_doctor_step import github_identity
+    github_identity.__wrapped__(monkeypatch)
+    from server.automations.registry import registry
+    await registry.ensure_rows()
     # Default config resolves to "auto"; with no reachable assessor (the
     # conftest no-real-model guard = production's SDK-unavailable degraded
     # mode) the spawn proceeds on the account default instead of failing.
@@ -610,6 +654,6 @@ async def test_backlog_spawn_that_dedupes_onto_an_existing_session_is_unaudited(
     async def dedupe(**kw):
         return existing
     orch._backlog_ctx.spawn_session = dedupe  # type: ignore[method-assign]
-    rec = await orch._backlog_spawn(_BATCH, "acct", default_model="auto")
+    rec = await orch._backlog_spawn(_BATCH, "acct", default_model="auto", ownership_token="test-token")
     assert rec is existing
     assert await _audit_model_picks() == []

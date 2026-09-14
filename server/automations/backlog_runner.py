@@ -42,17 +42,6 @@ SPAWN_CIRCUIT_COOLDOWN_S = 1800.0   # breaker-open duration before a half-open p
 # ``propose_groups`` call has its own per-account helper-layer circuit breaker,
 # so a short cadence can't cause runaway model spend during a sustained outage.
 GROUP_REFRESH_BACKOFF_S = 120.0
-# How long a freshly written claim is trusted to be MID-SPAWN rather than leaked.
-# ``_reconcile_dangling`` reads "claimed, no session_id" as the
-# crash-between-claim-and-spawn leak, which is sound for this loop (claim and
-# spawn happen in one tick that cannot interleave with itself) but NOT for
-# ``backlog_runner_dispatch``: a manual dispatch is a separate task, so a tick
-# firing during its spawn would reap a live claim — the dispatch's own state
-# UPDATE then matches 0 rows (``StaleDataError`` → 500) or, worse, the issue
-# returns to the pool and a later tick double-spawns it. The window only has to
-# cover one spawn (account health check + worktree setup), and its whole cost is
-# that a genuinely crashed claim holds its concurrency slot this much longer.
-CLAIM_GRACE_S = 120.0
 
 
 def _max_spawn_backoff_s() -> float:
@@ -191,6 +180,12 @@ def fold_global_mode(mode: str) -> str:
     stored value so the fold stops being load-bearing). A stored ``off`` survives
     verbatim: it is a human's explicit "parked"."""
     return "on" if mode in LEGACY_GLOBAL_MODES else mode
+
+
+def is_pending_dispatch(state: dict) -> bool:
+    """A durable batch which a deliberate tap may continue through claim validation."""
+    return bool(state.get("proposed") or (state.get("waiting_account")
+                                         and state.get("ownership_token")))
 
 
 def is_in_flight(state: dict) -> bool:
@@ -407,7 +402,7 @@ class Spawn(Protocol):
     the only place that knows which snapshot governed this claim."""
 
     def __call__(self, batch: "Batch", account: str, *,
-                 default_model: str) -> Awaitable[Any]: ...
+                 default_model: str, ownership_token: str) -> Awaitable[Any]: ...
 
 
 CountInFlight = Callable[[], Awaitable[int]]
@@ -540,6 +535,9 @@ class BacklogRunnerLoop:
         needs_human: NeedsHuman | None = None,
         session_ended: SessionEnded | None = None,
         session_ran: SessionRan | None = None,
+        session_work_stopped: SessionEnded | None = None,
+        handoff: Callable[[str, dict, PullRequestInfo], Awaitable[bool]] | None = None,
+        closeout_completed: Callable[[str, dict], Awaitable[bool]] | None = None,
         pr_doctor_attempts_for: PrDoctorAttemptsFor | None = None,
         count_candidates: CountCandidates | None = None,
         close_out: CloseOut | None = None,
@@ -571,6 +569,9 @@ class BacklogRunnerLoop:
         self._wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
         self._needs_human = needs_human or _stub_needs_human  # announce the handoff
         self._session_ended = session_ended         # (session_id) -> bool | None
+        self._closeout_completed = closeout_completed
+        self._handoff = handoff
+        self._session_work_stopped = session_work_stopped
         self._session_ran = session_ran             # (session_id) -> bool | None
         self._pr_doctor_attempts_for = pr_doctor_attempts_for  # (repo#N) -> int | None
         self._count_candidates = count_candidates    # -> int (true eligible backlog size)
@@ -584,6 +585,7 @@ class BacklogRunnerLoop:
         self._group_refresh_failed_emitted = False      # debounce the failure event
         self._last_groups_emitted: int | None = None    # debounce the refreshed event
         self._lock = asyncio.Lock()
+        self._accounted_dispatches: set[str] = set()
         self._spawns_today: list[float] = []        # spawn timestamps within the rolling day
         self._circuit_open_emitted = False          # debounce the circuit_open event
         self._spawn_backoff: dict[str, tuple[int, float]] = {}  # target → (fails, retry_at)
@@ -679,10 +681,13 @@ class BacklogRunnerLoop:
         # group until the next grouping refresh. Expiring first lets the same
         # tick spawn it.
         await self._expire_give_ups(config)
+        # Recover admitted launches before checking the daily dispatch budget.
+        await self._reconcile_dangling()
         if mode != "off" and policies_known:
             # The grouping optimizer runs BEFORE refill so a cold start (or a
             # just-consumed plan) can produce groups and spawn in the same tick.
             await self._maybe_refresh_groups(config)
+            await self._refresh_dispatch_budget()
             self._prune_day()
             if len(self._spawns_today) < config["max_spawns_per_day"]:
                 self._circuit_open_emitted = False
@@ -695,8 +700,6 @@ class BacklogRunnerLoop:
                                          kind="circuit_open")
         # handoff + terminal-watch runs every tick, regardless of mode.
         await self._sweep()
-        # Return orphaned claims to the pool (crash-between-claim-and-spawn leak).
-        await self._reconcile_dangling()
         # Stash live counts on the ctx so ``BacklogRunner.status(ctx)`` renders
         # "N work in flight, M eligible, K needs-human" from measured claims.
         await self._stash_counts(config)
@@ -788,42 +791,51 @@ class BacklogRunnerLoop:
         setattr(self._ctx, "backlog_last_pick", self._last_pick)
 
     async def _reconcile_dangling(self) -> None:
-        """Delete claim rows that leaked (row written, session never came up).
+        """Recover a reserved Session identity without guessing that work stopped.
 
-        The claim IS the row (Phase D): deleting it is what returns the issue to
-        the pool, because the priority queue excludes every ref a claim row
-        holds. A claimed row that never recorded a ``session_id`` (the
-        crash-between-claim-and-spawn leak) is a dangler; a row whose spawn
-        succeeded (has a ``session_id``) is owned by the sweep's give-up /
-        handoff bookkeeping and must be left alone so reconciliation never races
-        the attempt counting. A ``handed_off`` row is likewise sweep-owned — its
-        session is gone by design (PR Doctor carries the PR), so it must never
-        read as a dangler; nor may a propose-mode ``proposed`` row, which is an
-        intentional pending-tap claim.
+        A timer or a missing Session row cannot distinguish a crashed launcher
+        from a slow remote one. Retain both current and legacy claims until their
+        lifecycle can be reconciled from durable evidence.
+        """
+        from server.db.models import AutomationTargetState, Session as DbSession
+        from .ownership import StaleOwnership, owned
 
-        Nor, finally, may a claim written within ``CLAIM_GRACE_S``: that one is
-        mid-spawn, and the spawn racing it may belong to another task entirely
-        (``backlog_runner_dispatch``). A MISSING or unreadable ``claimed_at`` is
-        reaped exactly as before — rows predating the stamp must stay
-        collectable, or a single legacy leak would hold its slot forever."""
-        try:
-            states = await self._ctx.list_target_states()
-        except Exception:  # pragma: no cover — a state read must not stall the tick
-            return
-        for target, st in states.items():
-            if not st.get("claimed"):
+        for target, st in (await self._ctx.list_target_states()).items():
+            token = st.get("ownership_token")
+            if not token or st.get("session_id") or st.get("proposed"):
                 continue
-            if (st.get("session_id") is not None or st.get("handed_off")
-                    or st.get("proposed")):
+            try:
+                async with owned(token) as tx:
+                    operation = tx.operation
+                    if (operation.owner != self._ctx.automation_id
+                            or operation.provenance.get("origin_ref") != target):
+                        continue
+                    state_row = await tx.db.get(
+                        AutomationTargetState, (self._ctx.automation_id, target))
+                    if state_row is None or state_row.state != st:
+                        continue  # a human/other decision changed the original snapshot
+                    sid = operation.session_id or operation.reserved_session_id
+                    if sid is None:
+                        continue
+                    session = await tx.db.get(DbSession, sid)
+                    if (session is None or session.origin != operation.owner
+                            or session.origin_ref != target or session.parent_session_id is not None):
+                        continue  # missing or unrelated rows never establish launch identity
+                    if operation.session_id is None:
+                        if operation.phase not in {"launching", "uncertain"}:
+                            continue
+                        tx.bind_session(sid)
+                    # Recover association and the runner snapshot atomically. This
+                    # makes native evidence observable to the next sweep; neither
+                    # persistence nor terminal status is itself a stopped proof.
+                    if operation.provenance.get("runner_dispatch"):
+                        await self._settle_dispatch(tx, target, sid, session.branch)
+                    else:
+                        state_row.state = {**st, "session_id": sid,
+                                           "branch": session.branch or st.get("branch")}
+                await self._refresh_dispatch_budget()
+            except StaleOwnership:
                 continue
-            claimed_at = parse_iso_utc(st.get("claimed_at"))
-            if (claimed_at is not None
-                    and self._wall_clock() - claimed_at
-                    < timedelta(seconds=CLAIM_GRACE_S)):
-                continue
-            # A leaked row holds a concurrency slot forever (count_in_flight
-            # counts active rows), so dropping it is the whole release.
-            await self._ctx.delete_target_state(target)
 
     async def _maybe_refresh_groups(self, config: dict) -> None:
         """Run the grouping optimizer when due: on the first enabled tick, every
@@ -967,7 +979,7 @@ class BacklogRunnerLoop:
             per_product = in_flight_by_product(await self._ctx.list_target_states())
         except Exception:  # pragma: no cover — a state read must not stall the tick
             log.warning("backlog_runner.in_flight_by_product_failed", exc_info=True)
-            per_product = {}
+            return  # unknown capacity must not grant another dispatch
         free = config["max_concurrent"] - in_flight
         if free <= 0:
             self._waiting_reason = "capacity"
@@ -1049,152 +1061,163 @@ class BacklogRunnerLoop:
                 # plan on what is usually one GitHub hiccup. The slot waits a
                 # tick instead; the group returns at the next grouping refresh.
                 break
-            # Propose-vs-auto is the PRODUCT's call now (spec §5): one enabled
-            # runner can announce for a product still being trusted and spawn for
-            # one that is, on the same tick. Spawning is the branch that needs an
-            # explicit ``auto``, never the fallthrough: announcing where a spawn
-            # was wanted costs a tap, spawning where an announce was wanted is the
-            # unattended session the operator asked not to have.
-            if dispatch != "auto":
-                # The row IS the claim (Phase D): writing it is what takes the
-                # issue out of the pool, and the announce that follows is only its
-                # human-visible trace — it cannot fail the claim, so there is no
-                # race to lose here. The ``proposed`` flag marks this as an
-                # intentional pending-tap claim, distinguishing it from the
-                # crash-between-claim-and-spawn leak (no session_id, no proposed)
-                # which reconciliation treats as a dangler and deletes.
-                await self._ctx.set_target_state(batch.primary, {
-                    "repo": batch.repo,
-                    "product": batch.product,
-                    "attempts": st.get("attempts", 0),
-                    "issues": batch.issues,
-                    "claimed": True,
-                    "proposed": True,
-                })
-                if batch.product:
-                    per_product[batch.product] = per_product.get(batch.product, 0) + 1
-                await self._announce_claim(batch)
-                await self._ctx.emit("info", f"claimed {batch.primary}",
-                                     kind="claimed", target=batch.primary,
-                                     detail={"issues": batch.issues})
-                await self._ctx.emit("info", f"ready to implement {batch.primary}",
-                                     kind="selected", target=batch.primary,
-                                     detail={"issues": batch.issues})
-                continue  # spawn happens on a user tap (Plan B endpoint)
-
-            # RECORDS-BEFORE-ANYTHING: the durable row (issues + a ``claimed``
-            # marker) IS the claim, so it is written before the announce and
-            # before the spawn — a crash anywhere after this leaves a recoverable
-            # row, and a row with no live session is the dangling case
-            # reconciliation clears.
-            await self._ctx.set_target_state(batch.primary, {
-                "repo": batch.repo,
-                # The product is recorded ON THE CLAIM so the sweep can read this
-                # target's policy back (its attempt cap) long after the queue read
-                # that produced the batch is gone.
-                "product": batch.product,
-                "attempts": st.get("attempts", 0),
-                "issues": batch.issues,
-                "claimed": True,
-                "claimed_at": self._wall_clock().isoformat(),
-            })
-            await self._announce_claim(batch)
-            await self._ctx.emit("info", f"claimed {batch.primary}",
-                                 kind="claimed", target=batch.primary,
-                                 detail={"issues": batch.issues})
-            try:
-                # The product's session model rides along from THIS tick's policy
-                # snapshot — the same one that just decided this batch may spawn.
-                rec = await self._spawn(batch, account,
-                                        default_model=policy["default_model"])
-            except Exception as exc:
-                # Spawn/clone failed → RELEASE the claim (delete the row — that IS
-                # the release; NO give-up row) and do NOT consume an attempt or a
-                # daily-cap slot (the batch re-enters the pool for a later tick).
-                # A claimed batch must never leak on failure — but it must also not be retried
-                # every tick: back off per target, and open the global breaker on
-                # disk exhaustion (retrying ENOSPC is guaranteed-futile churn) or
-                # repeated consecutive failures.
-                log.warning("backlog_runner.spawn_failed target=%s", batch.primary,
-                            exc_info=True)
-                fails = self._spawn_backoff.get(batch.primary, (0, 0.0))[0] + 1
-                delay = _spawn_backoff_delay(fails)
-                self._spawn_backoff[batch.primary] = (fails, self._clock() + delay)
-                self._consec_spawn_failures += 1
-                msg = str(exc)
-                disk = any(m in msg for m in DISK_EXHAUSTION_MARKERS)
-                if disk or self._consec_spawn_failures >= SPAWN_CIRCUIT_THRESHOLD:
-                    self._spawn_circuit_until = self._clock() + SPAWN_CIRCUIT_COOLDOWN_S
-                    reason = ("disk exhaustion" if disk else
-                              f"{self._consec_spawn_failures} consecutive spawn failures")
-                    await self._ctx.emit(
-                        "warn",
-                        f"spawn circuit open ({reason}) — pausing spawns "
-                        f"{int(SPAWN_CIRCUIT_COOLDOWN_S // 60)}m: {msg.splitlines()[0][:200]}",
-                        kind="spawn_circuit_open")
-                await self._ctx.emit(
-                    "info",
-                    f"released {batch.primary} (spawn failed; retry in {int(delay)}s)",
-                    kind="unclaimed", target=batch.primary)
-                await self._ctx.delete_target_state(batch.primary)
-                if self._spawn_circuit_until is not None:
-                    break
-                continue
-            if rec is None:
-                # REFUSED, not failed: the spawn helper declined before creating
-                # anything (engine policy, or an engine/permission-mode pair that
-                # could never push a branch — see
-                # ``engine_policy.unattended_launch_blocker``). The context has
-                # already recorded why, so the only thing owed here is to undo the
-                # claim — otherwise the state row holds a concurrency slot forever
-                # and a later sweep escalates the target to ``needs-human`` on the
-                # evidence of a session that never existed.
-                #
-                # A refusal is a configuration answer, not a fault: it consumes no
-                # attempt and no daily-cap slot, and it does NOT count toward the
-                # consecutive-failure breaker (which would also block the Claude
-                # fallback an operator reaches for to fix it). It IS origin-wide,
-                # so the remaining free slots would refuse identically — back the
-                # target off and stop refilling this tick.
-                fails = max(1, self._spawn_backoff.get(batch.primary, (0, 0.0))[0])
-                self._spawn_backoff[batch.primary] = (
-                    fails, self._clock() + _spawn_backoff_delay(fails))
-                await self._ctx.emit(
-                    "info", f"released {batch.primary} (launch refused)",
-                    kind="unclaimed", target=batch.primary)
-                await self._ctx.delete_target_state(batch.primary)
-                break
-            self._spawn_backoff.pop(batch.primary, None)
-            if self._queue_tail is not None:
-                await self._emit_pick(batch)
-            self._consec_spawn_failures = 0
-            self._spawns_today.append(self._clock())
-            if batch.product:
+            result = await self.dispatch_batch(
+                batch, source="automatic", account=account,
+                default_model=policy["default_model"], propose=dispatch != "auto")
+            if result["status"] in {"spawned", "proposed"} and batch.product:
                 per_product[batch.product] = per_product.get(batch.product, 0) + 1
-            # The dispatch is real now, so it gets its durable ``running`` row
-            # (spec §6). Written HERE — after the spawn succeeded, before the
-            # claim row is finalised — so a refusal/failure above (which costs no
-            # attempt) leaves no history, and a crash below still leaves a row the
-            # sweep can finalise. The model recorded is the one the session will
-            # actually run under: the record's own, else this tick's policy.
-            await self._record_outcome(
-                batch.primary, product_slug=batch.product,
-                session_id=getattr(rec, "id", None),
-                model=getattr(rec, "model", None) or policy["default_model"],
-                attempt_no=st.get("attempts", 0))
-            # NB: ``attempts`` is charged when a session ENDS without a mergeable
-            # PR (see ``_sweep_one``), never at spawn time — a successful handoff
-            # deletes the state row, so success costs no attempt. Update the
-            # earlier-written claim row with the spawned session id/branch.
-            await self._ctx.set_target_state(batch.primary, {
-                "session_id": getattr(rec, "id", None),
-                "repo": batch.repo,
-                "product": batch.product,
-                "branch": getattr(rec, "branch", None),
-                "attempts": st.get("attempts", 0),
-                "issues": batch.issues,
-                "claimed": True,
-            })
+            if result["status"] in {"refused", "uncertain"} or self._spawn_circuit_until:
+                break
+
+    async def dispatch_batch(self, batch: Batch, *, source: str,
+                             account: str | None, default_model: str,
+                             propose: bool = False) -> dict:
+        """One durable all-target dispatch path for automatic, manual and taps."""
+        from .ownership import OwnershipConflict, ReleaseProof, StaleOwnership, owned
+
+        def result(status: str, rec=None) -> dict:
+            return {"status": status, "session_id": getattr(rec, "id", None),
+                    "session_name": getattr(rec, "name", None)}
+
+        previous = await self._ctx.get_target_state(batch.primary)
+        state = {"repo": batch.repo, "product": batch.product,
+                 "attempts": previous.get("attempts", 0), "issues": batch.issues,
+                 "titles": batch.titles,
+                 "claimed": True, "claimed_at": self._wall_clock().isoformat()}
+        if propose:
+            state["proposed"] = True
+        elif account is None:
+            state["waiting_account"] = True
+        try:
+            state = await self._ctx.claim_target_state(
+                batch.primary, state, expected=previous, source=source,
+                work_stopped=await self._work_stopped(previous))
+        except (OwnershipConflict, StaleOwnership) as exc:
+            await self._ctx.emit("info", f"{batch.primary}: waiting for existing work",
+                                 kind="ownership_wait", target=batch.primary,
+                                 detail={"reason": str(exc)})
+            return result("busy")
+        await self._announce_claim(batch)
+        await self._ctx.emit("info", f"claimed {batch.primary}", kind="claimed",
+                             target=batch.primary, detail={"issues": batch.issues})
+        if propose:
+            await self._ctx.emit("info", f"ready to implement {batch.primary}",
+                                 kind="selected", target=batch.primary,
+                                 detail={"issues": batch.issues})
+            return result("proposed")
+        if account is None:
+            # An intentional dispatch can retry this same unstarted operation.
+            # Keep all targets reserved, including every secondary batch issue.
+            return result("no_account")
+        token = state["ownership_token"]
+        async with owned(token) as tx:
+            tx.operation.provenance = {**tx.operation.provenance, "runner_dispatch": {
+                "expected": state, "model": default_model, "accounted_at": None}}
+        try:
+            rec = await self._spawn(batch, account, default_model=default_model,
+                                    ownership_token=token)
+        except Exception as exc:
+            # Only the store's still-claimed phase proves no launch occurred.
+            # A generic error after reservation is ambiguous, never a retry.
+            safe = False
+            async with owned(token) as tx:
+                safe = tx.operation.phase == "claimed"
+            if not safe:
+                await self._ctx.emit("warn", f"{batch.primary}: launch outcome unknown",
+                                     kind="ownership_wait", target=batch.primary,
+                                     detail={"reason": str(exc)})
+                return result("uncertain")
+            await self._ctx.compare_target_state(
+                batch.primary, state, None, release_proof=ReleaseProof.NOT_STARTED,
+                reason="launch failed before session reservation")
+            fails = self._spawn_backoff.get(batch.primary, (0, 0.0))[0] + 1
+            delay = _spawn_backoff_delay(fails)
+            self._spawn_backoff[batch.primary] = (fails, self._clock() + delay)
+            self._consec_spawn_failures += 1
+            disk = any(m in str(exc) for m in DISK_EXHAUSTION_MARKERS)
+            if disk or self._consec_spawn_failures >= SPAWN_CIRCUIT_THRESHOLD:
+                self._spawn_circuit_until = self._clock() + SPAWN_CIRCUIT_COOLDOWN_S
+                await self._ctx.emit("warn", f"spawn circuit open: {exc}",
+                                     kind="spawn_circuit_open")
+            await self._ctx.emit("info", f"released {batch.primary} (spawn failed)",
+                                 kind="unclaimed", target=batch.primary)
+            return result("failed")
+        if rec is None:
+            fails = max(1, self._spawn_backoff.get(batch.primary, (0, 0.0))[0])
+            self._spawn_backoff[batch.primary] = (fails, self._clock() + _spawn_backoff_delay(fails))
+            await self._ctx.compare_target_state(
+                batch.primary, state, None, release_proof=ReleaseProof.NOT_STARTED,
+                reason="launch refused before session reservation")
+            await self._ctx.emit("info", f"released {batch.primary} (launch refused)",
+                                 kind="unclaimed", target=batch.primary)
+            return result("refused")
+        try:
+            async with owned(token) as tx:
+                acknowledged = await self._settle_dispatch(
+                    tx, batch.primary, getattr(rec, "id", None), getattr(rec, "branch", None),
+                    model=getattr(rec, "model", None))
+        except StaleOwnership:
+            acknowledged = False
+        await self._refresh_dispatch_budget()
+        if not acknowledged:
+            return result("busy", rec)
+        self._spawn_backoff.pop(batch.primary, None)
+        self._consec_spawn_failures = 0
+        if self._queue_tail is not None:
+            await self._emit_pick(batch)
+        return result("spawned", rec)
+
+    async def _settle_dispatch(self, tx, target: str, sid: str | None,
+                               branch: str | None, *, model: str | None = None) -> bool:
+        """Observer and callback acknowledge one persisted dispatch intent."""
+        from server.db.models import AutomationTargetState, Session as DbSession
+
+        intent = tx.operation.provenance.get("runner_dispatch")
+        if not intent:
+            return False
+        if intent.get("accounted_at"):
+            return intent.get("session_id") == sid
+        row = await tx.db.get(AutomationTargetState, (self._ctx.automation_id, target))
+        if row is None or row.state != intent["expected"]:
+            return False
+        session = await tx.db.get(DbSession, sid) if sid else None
+        model = (session.model if session is not None else None) or model or intent["model"]
+        state = dict(intent["expected"])
+        state.update(session_id=sid, branch=branch)
+        state.pop("proposed", None)
+        try:
+            async with tx.db.begin_nested():
+                await self._ctx.record_outcome(
+                    target, _db=tx.db, product_slug=state.get("product"), session_id=sid,
+                    model=model, attempt_no=state.get("attempts", 0))
+        except Exception:
+            log.warning("backlog_runner.outcome_start_failed target=%s", target, exc_info=True)
+        row.state = state
+        tx.operation.provenance = {**tx.operation.provenance, "runner_dispatch": {
+            **intent, "model": model, "session_id": sid,
+            "accounted_at": self._wall_clock().isoformat()}}
+        return True
+
+    async def _refresh_dispatch_budget(self) -> None:
+        """Recover admitted dispatches even if their callback or process died."""
+        from sqlalchemy import select
+        from server.db import db_session
+        from server.db.models import AutomationOperation
+
+        now = self._wall_clock()
+        async with db_session() as db:
+            operations = (await db.scalars(select(AutomationOperation).where(
+                AutomationOperation.owner == self._ctx.automation_id,
+                AutomationOperation.updated_at >= (now - timedelta(days=1)).replace(tzinfo=None),
+            ))).all()
+            for operation in operations:
+                stamp = operation.provenance.get("runner_dispatch", {}).get("accounted_at")
+                if not stamp or operation.token in self._accounted_dispatches:
+                    continue
+                age = (now - datetime.fromisoformat(stamp)).total_seconds()
+                if age < _DAY_SECONDS:
+                    self._spawns_today.append(self._clock() - max(0, age))
+                self._accounted_dispatches.add(operation.token)
 
     def _prune_day(self) -> None:
         """Drop spawn timestamps older than one rolling day (injected clock)."""
@@ -1229,7 +1252,8 @@ class BacklogRunnerLoop:
                 continue
             at = parse_iso_utc(st.get("needs_human_at"))
             if at is None or self._wall_clock() - at >= timedelta(days=retry_days):
-                await self._ctx.delete_target_state(target)
+                if not await self._write_state(target, st, None):
+                    continue
                 await self._ctx.emit(
                     "info", f"{target}: needs-human window passed — back in the pool",
                     kind="needs_human_expired", target=target)
@@ -1258,17 +1282,6 @@ class BacklogRunnerLoop:
     # swallows its own DB failures, and these wrappers guard the seam itself, so a
     # broken history writer can never cost a spawn or strand a claim mid-sweep.
 
-    async def _record_outcome(self, target: str, *, product_slug: str | None,
-                              session_id: str | None, model: str | None,
-                              attempt_no: int) -> None:
-        try:
-            await self._ctx.record_outcome(
-                target, product_slug=product_slug, session_id=session_id,
-                model=model, attempt_no=attempt_no)
-        except Exception:
-            log.warning("backlog_runner.record_outcome_failed target=%s", target,
-                        exc_info=True)
-
     @staticmethod
     def _outcome_fallback(st: dict) -> "dict | None":
         """The claim's own facts, for spec §13's recovery insert: when the
@@ -1283,25 +1296,11 @@ class BacklogRunnerLoop:
         claim, or one the reaper caught before the spawn record). Nothing ran, so
         there is no lost history to recover — an insert here would count a bounce
         against an issue body no session ever attempted."""
-        if not st.get("session_id"):
+        if not (st.get("implementation_session_id") or st.get("session_id")):
             return None
-        return {"product_slug": st.get("product"), "session_id": st.get("session_id"),
+        return {"product_slug": st.get("product"),
+                "session_id": st.get("implementation_session_id") or st.get("session_id"),
                 "model": st.get("model"), "attempt_no": st.get("attempts", 0)}
-
-    async def _finalize_outcome(self, target: str, *, outcome: str,
-                                cause: str | None = None, pr_number: int | None = None,
-                                pr_url: str | None = None,
-                                first_pass_merge: bool | None = None,
-                                upgrade_from: tuple[str, ...] = (),
-                                fallback: dict | None = None) -> None:
-        try:
-            await self._ctx.finalize_outcome(
-                target, outcome=outcome, cause=cause, pr_number=pr_number,
-                pr_url=pr_url, first_pass_merge=first_pass_merge,
-                upgrade_from=upgrade_from, fallback=fallback)
-        except Exception:
-            log.warning("backlog_runner.finalize_outcome_failed target=%s", target,
-                        exc_info=True)
 
     async def _pr_doctor_attempts(self, pr_ref: str) -> int | None:
         """PR Doctor's session-fix count for *pr_ref*, or None when unknown.
@@ -1317,29 +1316,57 @@ class BacklogRunnerLoop:
                         exc_info=True)
             return None
 
-    async def _give_up(self, target: str, st: dict, reason: str) -> None:
-        """Hand the target to a human: announce it (comment, best-effort) and keep a
-        durable ``gave_up`` row stamped ``needs_human_at``. The row is the ONLY carrier
-        of the signal now (Phase D): the reconciler turns it into board Status
-        ``Needs human`` and the queue into a cooldown; ``_sweep`` deletes it once
-        ``needs_human_retry_days`` has passed so the issue is retried (never, when 0).
+    async def _work_stopped(self, st: dict) -> bool:
+        sid = st.get("session_id")
+        if st.get("handed_off") or st.get("closeout_started"):
+            from .ownership import StaleOwnership, owned
+            try:
+                async with owned(st["ownership_token"]) as tx:
+                    sid = tx.operation.session_id or tx.operation.reserved_session_id
+                    if tx.operation.phase in {"claimed", "completed"} and sid is None:
+                        return True  # successor has not started any external effect
+            except StaleOwnership:
+                return False
+        if not sid or self._session_work_stopped is None:
+            return False
+        try:
+            return bool(await self._session_work_stopped(sid))
+        except Exception:
+            return False
 
-        The row REPLACES the claim row — a target waiting on a human holds no claim
-        and no concurrency slot.
+    async def _write_state(self, target: str, st: dict, state: dict | None, *,
+                           outcome: dict | None = None, action_completed: bool = False) -> bool:
+        """Fence the original read, keeping unknown actor ownership intact."""
+        from .ownership import ReleaseProof
 
-        ROW BEFORE ANNOUNCE, and the announce swallows its own failures: the
-        announce is a best-effort side channel (a ``gh`` comment), while the row is
-        the signal. Announcing first, unguarded, would let a GitHub hiccup abort
-        this into ``_sweep``'s per-target guard with the claim row still in place —
-        the target would sit claimed at max attempts, hold a concurrency slot and
-        re-emit ``gave_up`` on every sweep, forever."""
-        await self._ctx.set_target_state(target, {
-            "repo": st.get("repo"),
-            "issues": st.get("issues") or [target],
-            "gave_up": True,
-            "needs_human_at": self._wall_clock().isoformat(),
-            "reason": reason,
-        })
+        release = state is None
+        proof = ReleaseProof.WORK_STOPPED
+        if release and st.get("handed_off"):
+            from .ownership import StaleOwnership, owned
+            try:
+                async with owned(st["ownership_token"]) as tx:
+                    if tx.operation.phase == "claimed":
+                        proof = ReleaseProof.NOT_STARTED
+            except StaleOwnership:
+                return False
+        if release and not action_completed and not await self._work_stopped(st):
+            return False
+        return await self._ctx.compare_target_state(
+            target, st, state, outcome=outcome, action_completed=action_completed,
+            release_proof=proof if release else None,
+            reason="current actor observed stopped or not started" if release else "")
+
+    async def _give_up(self, target: str, st: dict, reason: str, *,
+                       outcome: dict | None = None, action_completed: bool = False) -> None:
+        # Retain attempt/session provenance and durable exclusion while the human
+        # decides. The operational slot can free without permitting a new actor.
+        parked = {**st, "claimed": False, "gave_up": True,
+                  "needs_human_at": self._wall_clock().isoformat(), "reason": reason}
+        if not await self._write_state(target, st, parked, outcome=outcome,
+                                       action_completed=action_completed):
+            return
+        await self._ctx.emit("warn", f"{target}: {reason} — needs human",
+                             kind="gave_up", target=target)
         try:
             await self._needs_human(target, reason)
         except Exception:
@@ -1348,163 +1375,101 @@ class BacklogRunnerLoop:
 
     async def _sweep_one(self, target: str, st: dict,
                          gave_up_targets: set[str]) -> None:
-        repo = target.split("#", 1)[0]
+        if not st.get("ownership_token") or st.get("proposed"):
+            return
+        if st.get("closeout_started"):
+            # Observe terminal effects after a lost response/restart. Never replay
+            # the mutation; missing or partial GitHub evidence retains ownership.
+            if self._closeout_completed is not None and await self._closeout_completed(target, st):
+                await self._write_state(target, st, None, action_completed=True, outcome={
+                    "outcome": "merged", "pr_number": st.get("closing_pr"),
+                    "fallback": self._outcome_fallback(st)})
+            return
         info = await self._pr_status_for(target)
-
-        # A PR that already failed close-out linkage verification (#642): the
-        # branch→PR association is a shared-clone misattribution, so the PR is
-        # NOT this batch's — treat it as "no PR at all" for every decision
-        # below (close-out, give-up, handoff).
         if info is not None and info.number in (st.get("unlinked_prs") or []):
             info = None
-
-        # PR merged → the work landed; close out the batch's issues (the PR may
-        # not have carried a `Fixes #N`, leaving them open forever), then free the
-        # slot and drop the guard row. The close-out verifies PR↔issue linkage and
-        # FAILS CLOSED (#642).
+        # A terminal UI status or an armed PR does not prove the native actor
+        # stopped. Keep both the operation and the original state when unknown.
+        if not await self._work_stopped(st):
+            return
+        fallback = self._outcome_fallback(st)
         if info is not None and info.state == "merged":
-            outcome = "closed"
-            if self._close_out is not None:
-                outcome = await self._close_out(target, info) or "closed"
+            # Transfer to an exclusive terminal actor before touching GitHub.
+            # A PR worker's old token cannot start/inject after this commit.
+            closing = await self._ctx.reserve_target_action(
+                target, st, source="terminal-closeout", reason="merged PR close-out",
+                state={**st, "closing_pr": info.number, "closeout_started": True})
+            if closing is None:
+                return
+            st = closing
+            try:
+                outcome = await self._close_out(target, info) if self._close_out else "closed"
+            except Exception:
+                await self._ctx.compare_target_state(target, st, {
+                    **st, "ownership_wait_reason": "close-out outcome unknown; review required"})
+                raise
             if outcome == "retry":
-                return  # linkage unverifiable this sweep — try again next tick
+                await self._ctx.compare_target_state(target, st, {
+                    **st, "ownership_wait_reason": "close-out incomplete; review required"})
+                return  # keep the operation; never replay an uncertain external effect
             if outcome == "escalated":
-                # The human gate fired for every issue (#784): the PR merged but a
-                # human has to finish and close the work. That is a handoff, not a
-                # completion — keep a stamped ``gave_up`` row instead of deleting
-                # the row as if the batch were done.
                 reason = "human gate: merged PR needs a human close-out"
-                await self._ctx.emit("warn", f"{target}: {reason} — needs human",
-                                     kind="gave_up", target=target)
-                await self._finalize_outcome(target, outcome="needs_human",
-                                             cause=reason, pr_number=info.number,
-                                             pr_url=info.url,
-                                             fallback=self._outcome_fallback(st))
-                await self._give_up(target, st, reason)
+                await self._give_up(target, st, reason, action_completed=True, outcome={
+                    "outcome": "needs_human", "cause": reason,
+                    "pr_number": info.number, "pr_url": info.url, "fallback": fallback})
                 return
             if outcome == "unlinked":
-                # Verified misattribution: purge the poisoned branch snapshot
-                # and denylist the PR number, or the stale association would
-                # re-trigger this bogus close-out on every sweep and re-claim
-                # (the #642 30-second re-close loop). The row survives — the
-                # batch is not done.
-                new_st = {k: v for k, v in st.items() if k != "branch"}
-                bad = list(new_st.get("unlinked_prs") or [])
-                if info.number not in bad:
-                    bad.append(info.number)
-                new_st["unlinked_prs"] = bad
-                await self._ctx.set_target_state(target, new_st)
-                await self._ctx.emit(
-                    "warn",
-                    f"{target}: merged PR #{info.number} has no linkage to the "
-                    f"batch — ignored (misattributed branch)",
-                    kind="unlinked_pr", target=target)
+                new_st = {k: v for k, v in st.items() if k not in {"branch", "closing_pr", "closeout_started"}}
+                new_st["unlinked_prs"] = list(dict.fromkeys([
+                    *(st.get("unlinked_prs") or []), info.number]))
+                if await self._write_state(target, st, new_st, action_completed=True):
+                    await self._ctx.emit("warn", f"{target}: merged PR has no batch linkage",
+                                         kind="unlinked_pr", target=target)
                 return
-            await self._ctx.emit("info", f"{target} merged", kind="merged", target=target)
-            # ``first_pass_merge`` is only knowable while PR Doctor still has a row
-            # for this PR; an unknown count stays None rather than claiming a clean
-            # first pass (R3-4).
-            attempts = await self._pr_doctor_attempts(f"{repo}#{info.number}")
-            await self._finalize_outcome(
-                target, outcome="merged", pr_number=info.number, pr_url=info.url,
-                first_pass_merge=(attempts == 0) if attempts is not None else None,
-                fallback=self._outcome_fallback(st))
-            await self._ctx.delete_target_state(target)
+            attempts = await self._pr_doctor_attempts(
+                f"{target.split('#', 1)[0]}#{info.number}")
+            if await self._write_state(target, st, None, action_completed=True, outcome={
+                    "outcome": "merged", "pr_number": info.number, "pr_url": info.url,
+                    "first_pass_merge": attempts == 0 if attempts is not None else None,
+                    "fallback": fallback}):
+                await self._ctx.emit("info", f"{target} merged", kind="merged", target=target)
             return
-
-        # PR-Doctor gave up on this target, or the PR closed unmerged → give up.
-        closed_unmerged = info is not None and info.state == "closed"
-        if target in gave_up_targets or closed_unmerged:
+        if target in gave_up_targets or (info is not None and info.state == "closed"):
             doctor_gave_up = target in gave_up_targets
             reason = "pr-doctor gave up" if doctor_gave_up else "PR closed unmerged"
-            await self._ctx.emit("warn", f"{target}: {reason} — needs human",
-                                 kind="gave_up", target=target)
-            await self._finalize_outcome(
-                target, outcome="pr_gave_up" if doctor_gave_up else "abandoned",
-                cause=reason,
-                pr_number=info.number if info is not None else None,
-                pr_url=info.url if info is not None else None,
-                fallback=self._outcome_fallback(st))
-            await self._give_up(target, st, reason)
+            await self._give_up(target, st, reason, outcome={
+                "outcome": "pr_gave_up" if doctor_gave_up else "abandoned", "cause": reason,
+                "pr_number": info.number if info else None,
+                "pr_url": info.url if info else None, "fallback": fallback})
             return
-
-        # PR reached the handoff point (PR Doctor carries it to auto-merge).
-        # Mark the row handed_off instead of deleting it: the merged close-out
-        # above must still run when the PR lands. Deleting here left the batch's
-        # issues open whenever the merged PR lacked a closing keyword — nothing
-        # was left to close them. The slot still frees now: the orchestrator's
-        # in-flight count skips handed_off rows.
         if info is not None:
-            active = await self._pr_doctor_active(repo)
-            if should_free_slot(info, active):
-                if not st.get("handed_off"):
-                    new_st = dict(st)
-                    new_st["handed_off"] = True
-                    await self._ctx.set_target_state(target, new_st)
+            active = await self._pr_doctor_active(target.split("#", 1)[0])
+            if (self._handoff is not None and should_free_slot(info, active)
+                    and not st.get("handed_off")):
+                if await self._handoff(target, st, info):
                     await self._ctx.emit("info", f"{target} handed off to PR Doctor",
                                          kind="handoff", target=target)
+            return
+        if st.get("handed_off") or await self._session_alive(st):
+            return
+        attempts = st.get("attempts", 0) + 1
+        if attempts >= self._policy_for(st.get("product"))["max_attempts"]:
+            if not await self._session_ever_ran(st):
+                if await self._write_state(target, st, None, outcome={
+                        "outcome": "abandoned", "cause": "session never ran a turn",
+                        "upgrade_from": ("no_pr",), "fallback": fallback}):
+                    await self._ctx.emit("info", f"released {target} (session never ran a turn)",
+                                         kind="unclaimed", target=target)
                 return
-
-        # No mergeable PR and the runner session ended → count an attempt; give up
-        # once we've burned through max_attempts. The attempt is charged HERE (on
-        # a session ending without a mergeable PR), never at spawn time. A
-        # handed_off row is exempt: its session is long gone by design, and a
-        # transient PR-lookup miss must not read as "ended with no PR".
-        if info is None and not st.get("handed_off") and not await self._session_alive(st):
-            attempts = st.get("attempts", 0) + 1
-            # The attempt cap is the PRODUCT's, read back through the claim's
-            # recorded product (a claim written before the flip carries none and
-            # falls back to the schema default).
-            if attempts >= self._policy_for(st.get("product"))["max_attempts"]:
-                if not await self._session_ever_ran(st):
-                    # The session never ran a single turn (no engine_session_id) —
-                    # its queue entry was lost and the reaper ended it, or it died
-                    # before turn one (#1100). Escalating that to ``needs-human``
-                    # parks a perfectly good issue for ``needs_human_retry_days`` on
-                    # evidence of nothing: no diff was attempted, no failure was
-                    # observed. RELEASE the claim instead — deleting the row is what
-                    # returns the issue to the fresh pool for a real attempt.
-                    await self._ctx.emit(
-                        "info",
-                        f"released {target} (session never ran a turn — not escalating)",
-                        kind="unclaimed", target=target)
-                    # The cap is reached a sweep AFTER the bounce that carried the
-                    # dispatch to it, and nothing re-dispatches in between — so
-                    # the row this closes is the ``no_pr`` that sweep already
-                    # wrote, upgraded in place rather than left as the bounce it
-                    # no longer is (R3-7).
-                    await self._finalize_outcome(
-                        target, outcome="abandoned",
-                        cause="session never ran a turn",
-                        upgrade_from=("no_pr",),
-                        fallback=self._outcome_fallback(st))
-                    await self._ctx.delete_target_state(target)
-                    return
-                reason = f"max attempts ({attempts}) reached with no mergeable PR"
-                await self._ctx.emit("warn", f"{target}: {reason} — giving up",
-                                     kind="gave_up", target=target)
-                # Same sweep-late verdict as the release path above: this
-                # escalation belongs to the dispatch the previous sweep closed as
-                # ``no_pr``, so it upgrades that row instead of finding nothing.
-                await self._finalize_outcome(target, outcome="needs_human",
-                                             cause=reason,
-                                             upgrade_from=("no_pr",),
-                                             fallback=self._outcome_fallback(st))
-                await self._give_up(target, st, reason)
-            else:
-                # Charge the attempt and mark this session consumed so we don't
-                # re-count the SAME ended session on every subsequent sweep; a
-                # later re-arm / retry path re-spawns and clears ``_ended``.
-                # THIS dispatch is over either way — the row closes as ``no_pr``
-                # (a bounce), and the next spawn opens a fresh one.
-                await self._finalize_outcome(
-                    target, outcome="no_pr",
-                    cause="session ended without a mergeable PR",
-                    fallback=self._outcome_fallback(st))
-                new_st = dict(st)
-                new_st["attempts"] = attempts
-                new_st["_ended"] = True
-                await self._ctx.set_target_state(target, new_st)
+            reason = f"max attempts ({attempts}) reached with no mergeable PR"
+            await self._give_up(target, st, reason, outcome={
+                "outcome": "needs_human", "cause": reason,
+                "upgrade_from": ("no_pr",), "fallback": fallback})
+            return
+        await self._write_state(target, st, {**st, "attempts": attempts, "_ended": True},
+                                outcome={"outcome": "no_pr",
+                                         "cause": "session ended without a mergeable PR",
+                                         "fallback": fallback})
 
     async def _session_ever_ran(self, st: dict) -> bool:
         """Whether this target's session ever started turn one.

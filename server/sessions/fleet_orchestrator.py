@@ -279,6 +279,12 @@ class FleetOrchestrator:
             except Exception as e:  # spawn/clone/account errors → try next ranked host
                 last_exc = e
                 continue
+            if kwargs.get("ownership_token") is not None:
+                # The selected daemon may have JOINED an earlier reserved launch
+                # on another host. Its persisted host is authoritative; stamping
+                # this RPC's destination would route later prompts to the wrong daemon.
+                self._host_cache[rec.id] = rec.host or self._primary
+                return rec
             self._host_cache[rec.id] = host
             await self._stamp_host(rec.id, host)
             try:

@@ -17,6 +17,7 @@ import logging
 import pytest
 
 from server.sessions.permissions import PermissionRegistry
+from server.sessions.types import AUTO_ARCHIVE_OPT_OUT_CREATE
 from server.tests.test_session_queue_drain import _make_orch, _stop_orch
 
 
@@ -44,7 +45,11 @@ def test_driver_rebuilt_after_complete_keeps_the_spawn_permission_mode(tmp_path)
         db_url = f"sqlite+aiosqlite:///{tmp_path / 'p.db'}"
         orch = await _make_orch(db_url=db_url, tmp_path=tmp_path, max_active_sessions=3)
         try:
-            rec = await orch.create_session("probe", permission_mode="full-auto")
+            # Rebuild needs a retained completed session; opt out of the independent
+            # archive task so it cannot remove the record while the driver closes.
+            rec = await orch.create_session(
+                "probe", permission_mode="full-auto",
+                auto_archive_opt_out_reason=AUTO_ARCHIVE_OPT_OUT_CREATE)
             assert orch.driver(rec.id).mode == "full-auto"
             # Exactly what a mark_complete signal does: persist `complete`, which pops
             # and releases the live driver while the record stays registered.

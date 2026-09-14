@@ -24,13 +24,16 @@ claim is the durable row, and the only GitHub writes are comments.
 """
 from __future__ import annotations
 
+from server.tests.test_backlog_runner_loop import (
+    isolated_ownership_identity as isolated_ownership_identity,
+)
+
 import asyncio
 import subprocess
 from datetime import datetime, timedelta, timezone
 
 from server.automations import backlog_github
 from server.automations.backlog_runner import (
-    CLAIM_GRACE_S,
     BacklogRunnerLoop,
     select_batch,
 )
@@ -133,10 +136,17 @@ class Harness:
             clock=clock,
             needs_human=self._needs_human,
             session_ended=self._session_ended,
+            session_work_stopped=self._session_ended,
+            handoff=self._handoff,
             refresh_groups=self._refresh_groups,
         )
         self.needs_humaned: list[str] = []
         self.needs_human_reasons: list[str] = []
+
+    async def _handoff(self, target, st, info):
+        # Loop composition tests abstract the PR actor; real expanded successor
+        # ownership and effective coverage are covered by PR integration tests.
+        return await self.ctx.compare_target_state(target, st, {**st, "handed_off": True})
 
     async def _read_config(self):
         return "on", self.config
@@ -203,20 +213,26 @@ class Harness:
         # de-dups on (origin, origin_ref) and emits `spawned` with detail.issues.
         return await self.ctx.spawn_session(
             origin_ref=batch.primary, dedupe_key=batch.primary,
+            ownership_token=_kw["ownership_token"],
             repo=batch.repo, cwd="/tmp", account=account,
             name=f"backlog {batch.primary}", initial_prompt="do it",
             detail={"issues": batch.issues})
 
-    async def _create_session(self, *, origin, origin_ref, **kw):
-        async with db_session() as db:
-            row = DbSession(name=kw.get("name", origin_ref), account_name="acct",
+    async def _create_session(self, *, origin, origin_ref, ownership_token, **kw):
+        from server.automations.ownership import owned, begin_session_execution
+        async with owned(ownership_token) as tx:
+            sid = tx.reserve_session()
+        async with owned(ownership_token) as tx:
+            row = DbSession(id=sid, name=kw.get("name", origin_ref), account_name="acct",
                             cwd="/tmp", status="idle", repo=kw.get("repo"),
                             branch=kw.get("branch") or "backlog/branch",
                             origin=origin, origin_ref=origin_ref)
-            db.add(row)
-            await db.flush()
-            self.created.append({"id": row.id, "ref": origin_ref})
-            return row
+            tx.db.add(row)
+            tx.bind_session(sid)
+            await tx.db.flush()
+        await begin_session_execution(sid)
+        self.created.append({"id": row.id, "ref": origin_ref})
+        return row
 
     async def _count_in_flight(self) -> int:
         from sqlalchemy import func, select
@@ -235,7 +251,15 @@ class Harness:
         return self._pr_doctor_active
 
     async def _session_ended(self, session_id: str) -> bool:
-        return session_id in self.ended_ids
+        if session_id not in self.ended_ids:
+            return False
+        from server.automations.ownership import session_execution, attest_session_stopped
+        association = await session_execution(session_id)
+        assert association is not None, "the fixture launch must have an owned operation"
+        token, generation, _ = association
+        assert generation is not None, "the fixture native execution must have started"
+        await attest_session_stopped(token, generation)
+        return True
 
     async def end_session(self, ref: str) -> None:
         """Mark the runner session for *ref* ended (status + probe)."""
@@ -378,6 +402,7 @@ def test_pr_doctor_gave_up_target_needs_human(tmp_path):
         h = Harness(config=make_config(max_concurrent=1), clock=FakeClock(),
                     candidate_refs=[("o/r", 1, "one")], pr_status={})
         await h.loop.tick()                  # spawn o/r#1
+        await h.end_session("o/r#1")          # observed native work has stopped
         await h.loop.tick()                  # sweep sees pr-doctor gave_up → give up
         assert "o/r#1" in h.needs_humaned
         assert [b for _ref, b in h.gh.comments if "Handed to a human" in b]
@@ -575,8 +600,8 @@ def test_sweep_reconciles_dangling_claim(tmp_path):
             "repo": "o/r", "issues": ["o/r#5"], "claimed": True, "attempts": 0})
         # Drive only the reconciliation path (sweep runs it every tick).
         await h.loop._reconcile_dangling()
-        assert await h.ctx.get_target_state("o/r#5") == {}, \
-            "dangling claim row should be deleted (that IS the release)"
+        assert (await h.ctx.get_target_state("o/r#5"))["claimed"], \
+            "unknown legacy launch must retain exclusion"
         assert h.gh.calls == [], "reconciliation makes no GitHub writes"
 
     run(go())
@@ -625,9 +650,8 @@ def test_reconcile_leaves_in_flight_claim_alone(tmp_path):
     run(go())
 
 
-def test_reconcile_reaps_claim_past_grace(tmp_path):
-    """Past the grace window the same row is a real crash-between-claim-and-spawn
-    leak, and deleting it is still what returns the issue to the pool."""
+def test_reconcile_retains_claim_past_grace(tmp_path):
+    """A launch may still be running after the old grace window expires."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'recg.db'}"
 
     async def go():
@@ -635,13 +659,13 @@ def test_reconcile_reaps_claim_past_grace(tmp_path):
         await _seed_rows()
         h = Harness(config=make_config(max_concurrent=1), clock=FakeClock(),
                     candidate_refs=[("o/r", 1, "one")])
-        stale = datetime.now(timezone.utc) - timedelta(seconds=CLAIM_GRACE_S + 60)
+        stale = datetime.now(timezone.utc) - timedelta(days=30)
         await h.ctx.set_target_state("o/r#5", {
             "repo": "o/r", "issues": ["o/r#5"], "claimed": True, "attempts": 0,
             "claimed_at": stale.isoformat()})
         await h.loop._reconcile_dangling()
-        assert await h.ctx.get_target_state("o/r#5") == {}, \
-            "a claim older than the grace window is a dangler"
+        assert (await h.ctx.get_target_state("o/r#5"))["claimed"], \
+            "age alone cannot release unknown work"
 
     run(go())
 

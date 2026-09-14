@@ -201,6 +201,8 @@ async def test_ci_run_job_test_result_ids_survive_int64_on_postgres(pg_engine):
 # Values for NOT NULL columns that have neither a default nor are one of the
 # DateTime/FK columns handled generically below. Keyed by table name.
 _REQUIRED_EXTRAS: dict[str, dict[str, object]] = {
+    "automation_operations": {"token": "dtcheck-operation", "owner": "dtcheck-host",
+                              "source": "dtcheck-runner", "reason": "datetime sweep"},
     "sessions": {"name": "dtcheck", "account_name": "dtcheck", "cwd": "/tmp/dtcheck"},
     "app_sessions": {"identity": "dtcheck@example.invalid"},
     "audit_events": {"type": "dtcheck.event", "identity": "dtcheck@example.invalid"},

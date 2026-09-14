@@ -7,11 +7,29 @@ emitted activity feed + the spawn/claim recorders.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+
+import pytest
+from unittest.mock import AsyncMock
 from datetime import datetime, timedelta, timezone
 
 from server.automations.backlog_selection import Batch
 from server.automations.context import AutomationContext
 from server.db import db_session, init_db
+
+
+@pytest.fixture(autouse=True)
+def isolated_ownership_identity(monkeypatch):
+    """The loop harness has synthetic refs and no GitHub/legacy population."""
+    from server.automations.ownership import CanonicalTarget
+
+    async def resolve(refs, *, kind, include_linked_issues=False):
+        return tuple(CanonicalTarget("I_" + hashlib.sha256(ref.encode()).hexdigest(), ref)
+                     for ref in refs)
+
+    monkeypatch.setattr("server.automations.target_identity.resolve_targets", resolve)
+    monkeypatch.setattr("server.automations.ownership_reconciliation.reconcile_legacy_targets",
+                        AsyncMock())
 
 
 # --------------------------------------------------------------------------- #
@@ -84,6 +102,26 @@ async def _outcomes(target: str) -> list:
             .order_by(DispatchOutcome.created_at))).scalars().all())
 
 
+async def _set_owned_state(ctx, target, state):
+    """Seed current ownership metadata for policy tests, retaining existing tokens."""
+    from server.automations.ownership import acquire
+    from server.automations.target_identity import resolve_targets
+
+    if ctx.automation_id != "backlog-runner":
+        await ctx.set_target_state(target, state)
+        return
+    previous = await ctx.get_target_state(target)
+    if previous.get("ownership_token"):
+        state = {**state, "ownership_token": previous["ownership_token"]}
+        await ctx.set_target_state(target, state)
+        return
+    targets = await resolve_targets(state.get("issues") or [target], kind="issue")
+    async with acquire(targets, owner="backlog-runner", source="test", reason="fixture",
+                       provenance={"origin_ref": target}) as tx:
+        token = tx.token
+    await ctx.set_target_state(target, {**state, "ownership_token": token})
+
+
 async def _mark_session_ended(ctx, target: str, *, attempts: int | None = None) -> None:
     """Flip the claim row to "the session is over" (and optionally park it one
     attempt below the cap), the way a real ``session_ended`` probe would."""
@@ -91,7 +129,7 @@ async def _mark_session_ended(ctx, target: str, *, attempts: int | None = None) 
     st["_ended"] = True
     if attempts is not None:
         st["attempts"] = attempts
-    await ctx.set_target_state(target, st)
+    await _set_owned_state(ctx, target, st)
 
 
 def build_loop(*, mode="on", config=None, clock=None,
@@ -233,6 +271,14 @@ def build_loop(*, mode="on", config=None, clock=None,
         queue_tail=queue_tail,
         wall_clock=wall_clock,   # None → the loop's real UTC clock
     )
+    # These policy/outcome tests model an observed stopped actor. Native proof
+    # and unknown lifecycles are exercised by test_backlog_ownership.py.
+    loop._work_stopped = AsyncMock(return_value=True)
+
+    async def handoff(target, st, _info):
+        return await ctx.compare_target_state(target, st, {**st, "handed_off": True})
+
+    loop._handoff = handoff
     return loop, rec, ctx
 
 
@@ -537,7 +583,7 @@ def test_give_up_keeps_a_row_with_needs_human_at(tmp_path):
                                     wall_clock=lambda: at,
                                     config=make_config())
         # A spawned target whose session ended with no PR, one attempt short of max.
-        await ctx.set_target_state("o/r#7", {
+        await _set_owned_state(ctx, "o/r#7", {
             "session_id": "s1", "repo": "o/r", "issues": ["o/r#7", "o/r#8"],
             "claimed": True, "attempts": 1, "_ended": True})
 
@@ -569,7 +615,7 @@ def test_give_up_row_is_stamped_even_when_the_announce_fails(tmp_path):
         loop, rec, ctx = build_loop(candidates=[], pr_status={},
                                     wall_clock=lambda: at, needs_human_raises=True,
                                     config=make_config())
-        await ctx.set_target_state("o/r#7", {
+        await _set_owned_state(ctx, "o/r#7", {
             "session_id": "s1", "repo": "o/r", "issues": ["o/r#7"],
             "claimed": True, "attempts": 1, "_ended": True})
 
@@ -599,7 +645,7 @@ def test_sweep_expires_gave_up_rows_after_retry_days(tmp_path):
         loop, _rec, ctx = build_loop(candidates=[],
                                      wall_clock=lambda: at + timedelta(days=8),
                                      config=make_config(needs_human_retry_days=7))
-        await ctx.set_target_state("o/r#7", {"repo": "o/r", "issues": ["o/r#7"],
+        await _set_owned_state(ctx, "o/r#7", {"repo": "o/r", "issues": ["o/r#7"],
                                              "gave_up": True,
                                              "needs_human_at": at.isoformat(),
                                              "reason": "x"})
@@ -611,7 +657,7 @@ def test_sweep_expires_gave_up_rows_after_retry_days(tmp_path):
         assert len(events) == 1
 
         # retry_days = 0 → permanent handoff: never expired.
-        await ctx.set_target_state("o/r#8", {"repo": "o/r", "issues": ["o/r#8"],
+        await _set_owned_state(ctx, "o/r#8", {"repo": "o/r", "issues": ["o/r#8"],
                                              "gave_up": True,
                                              "needs_human_at": at.isoformat(),
                                              "reason": "x"})
@@ -625,7 +671,7 @@ def test_sweep_expires_gave_up_rows_after_retry_days(tmp_path):
         # on: the queue already treats it as no cooldown, so a row the sweep kept
         # would park the issue in the card's needs-human gauge forever while it
         # was in fact being picked again.
-        await ctx.set_target_state("o/r#9", {"repo": "o/r", "issues": ["o/r#9"],
+        await _set_owned_state(ctx, "o/r#9", {"repo": "o/r", "issues": ["o/r#9"],
                                              "gave_up": True,
                                              "needs_human_at": "not-a-date"})
         loop3, _, ctx3 = build_loop(candidates=[],
@@ -651,11 +697,12 @@ def test_gave_up_row_inside_the_window_is_left_alone(tmp_path):
                                     config=make_config(needs_human_retry_days=7))
         row = {"repo": "o/r", "issues": ["o/r#7"], "gave_up": True,
                "needs_human_at": at.isoformat(), "reason": "x"}
-        await ctx.set_target_state("o/r#7", row)
+        await _set_owned_state(ctx, "o/r#7", row)
 
         await loop.tick()
 
-        assert await ctx.get_target_state("o/r#7") == row
+        assert {k: v for k, v in (await ctx.get_target_state("o/r#7")).items()
+                if k != "ownership_token"} == row
         assert await ctx.list_events(kind="needs_human_expired") == []
         assert rec.needs_humans == []
 
@@ -679,7 +726,7 @@ def test_expiry_runs_before_refill_so_the_tick_that_frees_a_ref_spawns_it(tmp_pa
             candidates=[batch("o/r#7")],
             wall_clock=lambda: at + timedelta(days=8),
             config=make_config(needs_human_retry_days=7))
-        await ctx.set_target_state("o/r#7", {"repo": "o/r", "issues": ["o/r#7"],
+        await _set_owned_state(ctx, "o/r#7", {"repo": "o/r", "issues": ["o/r#7"],
                                              "gave_up": True,
                                              "needs_human_at": at.isoformat(),
                                              "reason": "x"})
@@ -742,7 +789,7 @@ def test_merged_pr_closes_out_issues_then_frees_slot(tmp_path):
         merged = PullRequestInfo(number=42, url="", state="merged",
                                  checks="none", title="", merged=True)
         loop, rec, ctx = build_loop(pr_status={"r#1": merged})
-        await ctx.set_target_state(
+        await _set_owned_state(ctx,
             "r#1", {"session_id": "s1", "issues": ["r#1", "r#2"], "claimed": True})
 
         await loop.tick()
@@ -768,7 +815,7 @@ def test_merged_pr_that_fails_linkage_is_denylisted_not_closed(tmp_path):
                                  checks="none", title="", merged=True)
         loop, rec, ctx = build_loop(pr_status={"r#1": merged},
                                     close_out_result="unlinked")
-        await ctx.set_target_state(
+        await _set_owned_state(ctx,
             "r#1", {"session_id": "s1", "branch": "stale-branch",
                     "issues": ["r#1", "r#2"], "claimed": True})
 
@@ -790,9 +837,8 @@ def test_merged_pr_that_fails_linkage_is_denylisted_not_closed(tmp_path):
     asyncio.run(run())
 
 
-def test_close_out_retry_keeps_row_for_next_sweep(tmp_path):
-    """An unverifiable linkage check (gh down) is retried: row untouched, no
-    delete, no denylist — the next sweep runs close-out again."""
+def test_close_out_unknown_keeps_exclusive_claim_without_replay(tmp_path):
+    """An ambiguous close-out keeps ownership and needs explicit reconciliation."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'ul2.db'}"
 
     async def run():
@@ -805,14 +851,16 @@ def test_close_out_retry_keeps_row_for_next_sweep(tmp_path):
                                     close_out_result="retry")
         state = {"session_id": "s1", "branch": "b1",
                  "issues": ["r#1", "r#2"], "claimed": True}
-        await ctx.set_target_state("r#1", state)
+        await _set_owned_state(ctx, "r#1", state)
 
         await loop.tick()
         assert [t for t, _ in rec.close_outs] == ["r#1"]
-        assert await ctx.get_target_state("r#1") == state, "row untouched"
+        assert {k: v for k, v in (await ctx.get_target_state("r#1")).items()
+                if k not in {"ownership_token", "closing_pr", "closeout_started",
+                             "ownership_wait_reason"}} == state, "claim retained"
 
         await loop.tick()
-        assert [t for t, _ in rec.close_outs] == ["r#1", "r#1"], "retried"
+        assert [t for t, _ in rec.close_outs] == ["r#1"], "unknown external work is not replayed"
 
     asyncio.run(run())
 
@@ -834,7 +882,7 @@ def test_close_out_escalated_leaves_a_gave_up_row(tmp_path):
         loop, rec, ctx = build_loop(pr_status={"r#1": merged},
                                     close_out_result="escalated",
                                     wall_clock=lambda: at)
-        await ctx.set_target_state("r#1", {"session_id": "s1", "repo": "r",
+        await _set_owned_state(ctx, "r#1", {"session_id": "s1", "repo": "r",
                                            "issues": ["r#1"], "claimed": True})
 
         await loop.tick()
@@ -870,24 +918,21 @@ def test_announce_failure_never_blocks_the_spawn(tmp_path):
     asyncio.run(run())
 
 
-def test_reconcile_deletes_dangling_claim_rows(tmp_path):
-    """A claimed row that never recorded a session_id (crash between claim and
-    spawn) must be deleted by reconciliation — deleting the row IS the release
-    now (Phase D), and a row left behind holds a concurrency slot forever
-    (KinDash#9957 sat for 6 days)."""
+def test_reconcile_retains_unresolved_claim_rows(tmp_path):
+    """A missing session ID cannot prove a remote launch never started."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'h.db'}"
 
     async def run():
         await init_db(db_url=db_url)
         await _seed_row()
         loop, rec, ctx = build_loop(mode="off")
-        await ctx.set_target_state("r#1", {"claimed": True})                    # dangler
-        await ctx.set_target_state("r#2", {"claimed": True, "session_id": "s2"})  # live
+        await _set_owned_state(ctx, "r#1", {"claimed": True})                    # dangler
+        await _set_owned_state(ctx, "r#2", {"claimed": True, "session_id": "s2"})  # live
 
         await loop.tick()
 
         states = await ctx.list_target_states()
-        assert "r#1" not in states, "dangling claim row must be deleted"
+        assert "r#1" in states, "missing session is not proof a launch never started"
         assert "r#2" in states, "a row with a spawned session must survive"
 
     asyncio.run(run())
@@ -1056,7 +1101,7 @@ def test_a_failed_policy_read_with_no_snapshot_skips_refill_but_still_sweeps(tmp
         # A dangling claim row (claimed, no session id, no proposed flag): the
         # sweep's reconciliation is what deletes it, so its absence afterwards
         # proves the sweep half of the tick ran.
-        await ctx.set_target_state("o/x#9", {"repo": "o/x", "claimed": True,
+        await _set_owned_state(ctx, "o/x#9", {"repo": "o/x", "claimed": True,
                                              "issues": ["o/x#9"]})
 
         await loop.tick()
@@ -1069,7 +1114,7 @@ def test_a_failed_policy_read_with_no_snapshot_skips_refill_but_still_sweeps(tmp
         # through the fail-safe dispatch-off branch, one consumed group each.
         assert selections == []
         assert await ctx.list_events(kind="skipped_dispatch_off") == []
-        assert await ctx.get_target_state("o/x#9") == {}      # the sweep ran
+        assert (await ctx.get_target_state("o/x#9"))["claimed"] is True  # unknown launch retained
         assert getattr(ctx, "backlog_counts", {}).get("eligible") == 3
 
     asyncio.run(run())
@@ -1189,7 +1234,7 @@ def test_the_spawn_gets_the_products_model_from_this_ticks_snapshot(tmp_path):
     async def run():
         seen: list = []
 
-        async def spawn(b, account, *, default_model):
+        async def spawn(b, account, *, default_model, ownership_token):
             seen.append((b.primary, default_model))
             return object()
 
@@ -1242,7 +1287,7 @@ def test_max_attempts_is_read_from_the_products_policy(tmp_path):
             candidates=[], pr_status={},
             policies={"p1": policy(max_attempts=1), "p2": policy(max_attempts=2)})
         for target, product in (("o/r#1", "p1"), ("o/k#2", "p2")):
-            await ctx.set_target_state(target, {
+            await _set_owned_state(ctx, target, {
                 "session_id": f"s-{target}", "repo": target.split("#")[0],
                 "issues": [target], "claimed": True, "attempts": 0,
                 "product": product, "_ended": True})
@@ -1348,7 +1393,7 @@ def test_a_pre_flip_claim_without_a_product_keeps_the_default_attempt_cap(tmp_pa
         await init_db(db_url=db_url)
         await _seed_row()
         loop, rec, ctx = build_loop(candidates=[], pr_status={}, policies={})
-        await ctx.set_target_state("o/r#1", {
+        await _set_owned_state(ctx, "o/r#1", {
             "session_id": "s-1", "repo": "o/r", "issues": ["o/r#1"],
             "claimed": True, "attempts": 1, "_ended": True})   # no "product"
 
@@ -1404,16 +1449,16 @@ def test_propose_mode_row_not_treated_as_dangler(tmp_path):
         await _seed_row()
         loop, rec, ctx = build_loop(mode="off")
         # A pending-tap proposed row
-        await ctx.set_target_state("r#1", {"claimed": True, "proposed": True,
+        await _set_owned_state(ctx, "r#1", {"claimed": True, "proposed": True,
                                             "issues": ["r#1"]})
         # A real crash-between-claim-and-spawn dangler (no proposed, no session_id)
-        await ctx.set_target_state("r#2", {"claimed": True, "issues": ["r#2"]})
+        await _set_owned_state(ctx, "r#2", {"claimed": True, "issues": ["r#2"]})
 
         await loop.tick()
 
         states = await ctx.list_target_states()
         assert "r#1" in states, "proposed row must survive reconciliation"
-        assert "r#2" not in states, "dangling row must be deleted"
+        assert "r#2" in states, "unresolved launch must survive reconciliation"
 
     asyncio.run(run())
 
@@ -1471,7 +1516,7 @@ def test_handed_off_row_with_no_session_id_is_not_reconciled_away(tmp_path):
         loop, rec, ctx = build_loop(mode="on", candidates=[])
         # Seed a handed_off row with no session_id (e.g. from a prior worktree
         # that handed off before recording the spawn, or a direct DB seed).
-        await ctx.set_target_state("r#1", {
+        await _set_owned_state(ctx, "r#1", {
             "claimed": True,
             "handed_off": True,
             "issues": ["r#1"],
@@ -2485,7 +2530,7 @@ def test_a_doctor_rescued_merge_is_not_a_first_pass_merge(tmp_path):
             # Exactly what _pr_doctor_step persists after a real injection.
             st = engine.record_attempt(st, engine.SessionFix(kind="failing_ci"), "sha1")
             st["attempted"] = True
-        await ctx.set_target_state("o/r#12", st)
+        await _set_owned_state(ctx, "o/r#12", st)
 
         # The fix lands and CI turns green — the recovery clear fires here.
         await orch._on_pr_change("o/r", "feat/x", "failing", "passing")
@@ -2495,7 +2540,7 @@ def test_a_doctor_rescued_merge_is_not_a_first_pass_merge(tmp_path):
 
         # The next poll cycle re-arms the still-open, now-green PR.
         green = _info(checks="passing", head_sha="sha2")
-        await ctx.set_target_state(
+        await _set_owned_state(ctx,
             "o/r#12", engine.apply_rearm(await ctx.get_target_state("o/r#12"), green))
 
         merged = PullRequestInfo(number=12, url="https://example/pr/12",

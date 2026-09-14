@@ -2,6 +2,7 @@ import os
 from unittest.mock import patch
 
 import pytest
+from server.tests.test_pr_doctor_step import github_identity as github_identity
 
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.selection import AllAccountsBusy
@@ -10,7 +11,9 @@ from server.tests.fakes.fake_factory import fake_sdk_factory
 
 
 @pytest.mark.asyncio
-async def test_session_fix_returns_ceiling_when_all_accounts_busy():
+async def test_session_fix_returns_ceiling_when_all_accounts_busy(isolated_db):
+    from server.automations.registry import registry
+    await registry.ensure_rows()
     with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:",
                                  "CCSWITCH_DEV": "1"}):
         orch = SessionOrchestrator(sdk_factory=fake_sdk_factory())

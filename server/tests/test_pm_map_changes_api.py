@@ -957,7 +957,23 @@ def test_delete_closes_the_pr_deletes_the_branch_and_abandons_the_row():
 def test_rebase_is_409_until_the_pr_is_behind_then_updates_the_branch():
     gh = FakeGh([
         *_first_create_answers(),
+        (json.dumps({"data": {"r0": {"nameWithOwner": REPO, "item": {
+            "__typename": "PullRequest", "id": "PR_map", "number": 12,
+            "url": f"https://github.com/{REPO}/pull/12", "repository": {"nameWithOwner": REPO},
+            "closingIssuesReferences": {"pageInfo": {"hasNextPage": False}, "nodes": []}}}}}), 0, ""),
+        (json.dumps({**_pr_json(), "head": {"sha": "a" * 40},
+                     "base": {"sha": "b" * 40, "repo": {"full_name": REPO}}}), 0, ""),
         _OK,  # PUT pulls/12/update-branch
+        (json.dumps({"data": {"r0": {"nameWithOwner": REPO, "item": {
+            "__typename": "PullRequest", "id": "PR_map", "number": 12,
+            "url": f"https://github.com/{REPO}/pull/12", "repository": {"nameWithOwner": REPO},
+            "closingIssuesReferences": {"pageInfo": {"hasNextPage": False}, "nodes": []}}}}}), 0, ""),
+        (json.dumps({**_pr_json(), "head": {"sha": "c" * 40},
+                     "base": {"sha": "b" * 40, "repo": {"full_name": REPO}}}), 0, ""),
+        (json.dumps({"status": "ahead", "base_commit": {"sha": "a" * 40},
+                     "merge_base_commit": {"sha": "a" * 40}}), 0, ""),
+        (json.dumps({"status": "ahead", "base_commit": {"sha": "b" * 40},
+                     "merge_base_commit": {"sha": "b" * 40}}), 0, ""),
     ])
     with _seeded(gh) as c:
         assert _edit(c, op="create", slug="payments", title="Payments").status_code == 200
@@ -971,10 +987,15 @@ def test_rebase_is_409_until_the_pr_is_behind_then_updates_the_branch():
         _set_behind(c, True)
         r = c.post(f"/api/pm/projects/{SLUG}/map-changes/rebase", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
-        assert r.json()["pointer"]["behind"] is False
-        assert _argv(gh)[first][:4] == ["api", "-X", "PUT", f"repos/{REPO}/pulls/12/update-branch"]
+        assert r.json()["pointer"]["behind"] is True  # accepted, not yet completed
+        assert _argv(gh)[first + 2][:6] == ["api", "--hostname", "github.com", "-X", "PUT", f"repos/{REPO}/pulls/12/update-branch"]
+        assert "expected_head_sha=" + "a" * 40 in _argv(gh)[first + 2]
         assert _audits(c, "pm.map_changes.rebase") == [
             {"slug": SLUG, "branch": BRANCH, "prNumber": 12}]
+        _set_behind(c, False)
+        r = c.post(f"/api/pm/projects/{SLUG}/map-changes/rebase", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text  # pending action reconciles despite cached clean
+        assert sum("PUT" in argv for argv in _argv(gh)) == 1
 
 
 def test_rebase_without_a_pointer_is_404():

@@ -307,13 +307,17 @@ async def test_run_command_unknown_over_uds_surfaces_keyerror():
 
 
 @pytest.mark.asyncio
-async def test_request_pr_fix_over_uds():
+async def test_request_pr_fix_over_uds(isolated_db, monkeypatch):
     """Manual 'Fix PR #N' tap routes through the daemon to the real orchestrator.
 
     Regression: RemoteOrchestrator had no request_pr_fix proxy, so the deployed
     (daemon-mode) /fix-pr endpoint 500'd with AttributeError.
     """
     from server.github.pr_status import PullRequestInfo
+    from server.tests.test_pr_doctor_step import github_identity
+    from server.automations.registry import registry
+    github_identity.__wrapped__(monkeypatch)
+    await registry.ensure_rows()
     app, orch = _build_app()
     orch._records["s1"] = SessionRecord(
         id="s1", name="S1", account="acct", engine=AgentEngine.CLAUDE_CODE, engine_session_id="cs", cols=80, rows=24,
@@ -322,6 +326,7 @@ async def test_request_pr_fix_over_uds():
     orch._pr_poller.cached = lambda repo, br: (
         PullRequestInfo(7, "u7", "open", "passing", "T") if (repo, br) == ("o/r", "feat/a") else None
     )
+    orch._drivers["s1"] = object()
     with mock.patch.object(orch, "send_prompt", new=mock.AsyncMock(return_value="sent")) as sp:
         async with serve_daemon_uds(app) as sock:
             ro = RemoteOrchestrator(DaemonClient(sock))
@@ -330,9 +335,11 @@ async def test_request_pr_fix_over_uds():
                 no_pr = await ro.request_pr_fix("s1", 999)
             finally:
                 await ro.aclose()
-    assert sent == "sent"
+    assert sent == "transient"
     assert no_pr == "no_pr"
-    sp.assert_awaited_once()
+    sp.assert_not_awaited()
+    events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
+    assert any(e["kind"] == "ownership_wait" for e in events)
 
 
 @pytest.mark.asyncio

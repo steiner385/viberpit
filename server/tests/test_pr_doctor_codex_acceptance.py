@@ -22,6 +22,8 @@ prompt it injects must still name the RIGHT engine's commit trailer, which is
 what section 1b covers.
 """
 from __future__ import annotations
+from server.tests.test_pr_doctor_step import github_identity as github_identity
+
 
 import asyncio
 
@@ -221,7 +223,6 @@ def _build_orch(pr):
     orch._drivers = {}
     orch._pr_doctor_ctx = AutomationContext("pr-doctor", create_session=_fake_create_session)
     orch._pr_population = type("P", (), {"cached": staticmethod(lambda repo: [pr])})()
-    orch._consolidation_inflight = set()
     return orch
 
 
@@ -281,12 +282,12 @@ async def test_a_refused_consolidation_spawn_emits_no_phantom_attempted_event(
     monkeypatch.setattr(orch_mod.gitrepos, "list_remote_branches",
                         lambda repo: {"default": "main"}, raising=True)
 
-    await orch._pr_doctor_consolidate_spawn("o/r", "consolidate:1-2", [pr1, pr2])
+    state = await orch._pr_doctor_claim("o/r", [1, 2], "consolidate:1-2")
+    await orch._pr_doctor_consolidate_spawn("o/r", "consolidate:1-2", [pr1, pr2], state)
 
     events = await orch._pr_doctor_ctx.list_events(target="consolidate:1-2")
     assert not any(e["kind"] == "attempted" for e in events)
     assert any(e["kind"] == "engine_launch_refused" for e in events)
-    assert orch._consolidation_inflight == set()  # guard always released
 
 
 @pytest.mark.asyncio

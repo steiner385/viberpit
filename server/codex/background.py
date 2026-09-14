@@ -129,3 +129,36 @@ def to_open_task(terminal: schema.ThreadBackgroundTerminal) -> OpenBgTask:
         description=terminal.command,
         replayable=False,
     )
+
+
+async def managed_thread_tree_stopped(client, thread_id: str) -> bool:
+    """A complete native observation of a thread and every known collaborator.
+
+    The caller must fence new root execution and verify the same native client
+    still owns the observation before publishing a durable stop attestation.
+    Unknown/partial reads raise or return False; historical status is insufficient.
+    """
+    pending, seen = [thread_id], set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        response = await client.read_thread(schema.ThreadReadParams(current, include_turns=True))
+        thread = response.thread
+        if (thread.id != current or thread.status.type != "idle" or not thread.turns
+                or any(turn.status == schema.TurnStatus.IN_PROGRESS for turn in thread.turns)):
+            return False
+        for turn in thread.turns:
+            for item in turn.items:
+                if isinstance(item, schema.CollabAgentToolCallItem):
+                    pending.extend(item.receiver_thread_ids)
+                elif isinstance(item, schema.SubAgentActivityItem):
+                    pending.append(item.agent_thread_id)
+        # A final empty page is a complete empty observation. The UI listing's
+        # capped pagination intentionally returns partial results, so is not proof.
+        terminals = await client.list_background_terminals(
+            schema.ThreadBackgroundTerminalsListParams(thread_id=current))
+        if terminals.data or terminals.next_cursor:
+            return False
+    return True

@@ -238,6 +238,41 @@ class MapChangesService:
 
     # -- reads ----------------------------------------------------------------
 
+    async def reconcile_updates(self) -> None:
+        """Observe retained manual effects even after the map pointer is terminal.
+
+        This is read-only at GitHub and independent of new-work policy. The
+        stored repository selects the same owner credentials as the submission;
+        neither credentials nor an enabled PR Doctor are required in the row.
+        """
+        from server.automations.mechanical_update import observe, release_manual
+        from server.automations.ownership import StaleOwnership
+        from server.db import db_session
+        from server.db.models import AutomationOperation
+
+        async with db_session() as db:
+            operations = (await db.scalars(select(AutomationOperation).where(
+                AutomationOperation.owner == "map-changes",
+                AutomationOperation.phase.in_(("active", "uncertain", "completed"))))).all()
+            pending = [(op.token, dict(op.provenance)) for op in operations]
+        for token, provenance in pending:
+            repo = provenance.get("repo")
+            if not isinstance(repo, str) or provenance.get("mechanical_kind") != "update_branch":
+                continue
+            try:
+                gh = await asyncio.to_thread(self._gh_factory, repo)
+
+                async def transport(_repo, args):
+                    return await asyncio.to_thread(gh.recovery_request, args)
+
+                if not await observe(token, transport=transport):
+                    continue
+                await release_manual(token)
+            except StaleOwnership:
+                continue  # Another observer or the request tail already settled it.
+            except Exception:
+                log.warning("map_changes.reconcile_failed token=%s", token, exc_info=True)
+
     async def open_pointer(self, db, project: Project) -> FeatureMapChange | None:
         """The product's open pointer row, if any — :func:`open_pointer_row` is
         the one definition of that lookup, shared with the sync-loop seam and
@@ -611,13 +646,35 @@ class MapChangesService:
         pointer = await self.open_pointer(db, project)
         if pointer is None:
             raise NoOpenMapChanges(f"product '{project.slug}' has no open map-changes PR")
-        if not pointer.behind or not pointer.pr_number:
-            raise NotBehind(f"map-changes PR for '{project.slug}' is not behind its base")
         repo = pointer.repo or await self._primary_repo(db, project)
-        gh = await asyncio.to_thread(self._gh_factory, repo)   # token mint blocks
-        await asyncio.to_thread(gh.update_branch, pointer.pr_number)
-        # GitHub has merged the base in; the next PR read re-derives the truth.
-        pointer.behind = False
+        if not pointer.pr_number:
+            raise NotBehind(f"map-changes PR for '{project.slug}' is not behind its base")
+        if not pointer.behind:
+            # A subsequent poll may already report clean while a previously
+            # accepted update still owns its targets. Reconcile that request.
+            from server.db.models import AutomationOperation
+            pending = await db.scalars(select(AutomationOperation).where(
+                AutomationOperation.owner == "map-changes",
+                AutomationOperation.phase.in_(("active", "uncertain", "completed"))))
+            if not any(op.provenance.get("repo") == repo
+                       and op.provenance.get("pr_number") == pointer.pr_number for op in pending):
+                raise NotBehind(f"map-changes PR for '{project.slug}' is not behind its base")
+        from server.automations.mechanical_update import manual_update
+        from server.automations.ownership import OwnershipConflict, StaleOwnership
+        from server.automations.target_identity import TargetIdentityError
+        gh = await asyncio.to_thread(self._gh_factory, repo)
+
+        async def transport(_repo, args):
+            return await asyncio.to_thread(gh.recovery_request, args)
+
+        try:
+            outcome = await manual_update(repo, pointer.pr_number, transport=transport,
+                                          allow_start=bool(pointer.behind))
+        except (OwnershipConflict, StaleOwnership, TargetIdentityError, ValueError) as exc:
+            raise GhWriteError("update_branch", str(exc), conflict=True) from exc
+        if outcome in ("rejected", "unknown"):
+            raise GhWriteError("update_branch", f"GitHub update {outcome}; retry reconciles ownership")
+        # Accepted means queued, not completed; the next PR read derives behind.
         await db.flush()
         await record_audit(
             db=db, type="pm.map_changes.rebase", identity=identity,

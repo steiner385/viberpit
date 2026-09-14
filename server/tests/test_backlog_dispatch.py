@@ -4,9 +4,11 @@ from __future__ import annotations
 import os
 import tempfile
 from contextlib import contextmanager
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
+import pytest_asyncio
 
 H = {"Tailscale-User-Login": "testuser@example.com"}
 
@@ -14,8 +16,20 @@ H = {"Tailscale-User-Login": "testuser@example.com"}
 # Unit tests for SessionOrchestrator.backlog_runner_dispatch
 # ---------------------------------------------------------------------------
 
-@pytest.fixture()
-def dispatch_orch(tmp_path):
+@pytest.fixture(autouse=True)
+def isolated_identity(monkeypatch):
+    from server.automations.ownership import CanonicalTarget
+
+    async def resolve(refs, *, kind):
+        return tuple(CanonicalTarget("I_" + ref.split("#")[1], ref) for ref in refs)
+
+    monkeypatch.setattr("server.automations.target_identity.resolve_targets", resolve)
+    monkeypatch.setattr("server.automations.ownership_reconciliation.reconcile_legacy_targets",
+                        AsyncMock())
+
+
+@pytest_asyncio.fixture()
+async def dispatch_orch(tmp_path, monkeypatch):
     """SessionOrchestrator with mocked backlog seams — no network, no LLM."""
     db_url = f"sqlite+aiosqlite:///{tmp_path}/test.db"
     with patch.dict(os.environ, {"CCSWITCH_DB_URL": db_url, "CCSWITCH_DEV": "1",
@@ -32,22 +46,21 @@ def dispatch_orch(tmp_path):
         ))
         orch._backlog_announce = AsyncMock(return_value=None)
         orch._backlog_healthy_account = AsyncMock(return_value="acct-1")
-        rec = MagicMock()
-        rec.id = "sess-42"
-        rec.name = "backlog o/r#7"
-        rec.branch = "backlog/o-r-7"
+        rec = SimpleNamespace(id="sess-42", name="backlog o/r#7",
+                              branch="backlog/o-r-7", model=None)
         orch._backlog_spawn = AsyncMock(return_value=rec)
         # The candidate pool is the priority-queue read the loop itself selects
         # from — dispatch resolves repo/title through the same seam.
         orch._backlog_query_queue = AsyncMock(return_value=_CANDIDATES)
-        # Patch _backlog_ctx so no DB initialisation is needed in unit tests
-        ctx = MagicMock()
-        ctx.get_target_state = AsyncMock(return_value={})
-        ctx.set_target_state = AsyncMock()
-        ctx.delete_target_state = AsyncMock()
-        ctx.record_outcome = AsyncMock()
-        ctx.emit = AsyncMock()
-        orch._backlog_ctx = ctx
+        from server.db import db_session, init_db
+        from server.db.models import Automation
+        await init_db(db_url=db_url)
+        async with db_session() as db:
+            db.add(Automation(id="backlog-runner"))
+
+        orch._backlog_count_in_flight = AsyncMock(return_value=0)
+        orch._backlog_loop._announce = lambda batch: orch._backlog_announce(batch)
+        orch._backlog_ctx.record_outcome = AsyncMock()
         return orch
 
 
@@ -153,10 +166,7 @@ def test_candidates_returns_list():
 
 
 def test_dispatch_api_happy_path():
-    rec = MagicMock()
-    rec.id = "sess-1"
-    rec.name = "backlog o/r#7"
-    rec.branch = "b"
+    rec = SimpleNamespace(id="sess-1", name="backlog o/r#7", branch="b", model=None)
 
     def patch_orch(orch):
         orch._backlog_read_config = AsyncMock(return_value=("auto", {
@@ -226,3 +236,51 @@ def _seed(c) -> None:
     """
     assert c.portal is not None
     c.portal.call(_seed_automation)
+
+
+@pytest.mark.asyncio
+async def test_proposal_tap_uses_stored_entire_batch_outside_candidate_pool(dispatch_orch):
+    ctx = dispatch_orch._backlog_ctx
+    proposal = await ctx.claim_target_state("o/r#7", {
+        "issues": ["o/r#7", "o/r#8"], "repo": "o/r", "claimed": True,
+        "proposed": True, "titles": {"o/r#7": "Seven", "o/r#8": "Eight"},
+        "attempts": 2}, expected={}, source="automatic")
+    dispatch_orch._backlog_query_queue = AsyncMock(return_value=[])
+    assert await dispatch_orch.backlog_runner_implement_core("o/r#7") == "spawned"
+    batch = dispatch_orch._backlog_spawn.call_args[0][0]
+    assert batch.issues == ["o/r#7", "o/r#8"]
+    assert batch.titles == {"o/r#7": "Seven", "o/r#8": "Eight"}
+    state = await ctx.get_target_state("o/r#7")
+    assert state["ownership_token"] == proposal["ownership_token"] and state["attempts"] == 2
+
+
+@pytest.mark.asyncio
+async def test_public_proposal_retry_after_no_account_restores_all_issues(dispatch_orch):
+    from server.automations.action_providers import BacklogRunnerActionProvider
+    provider = BacklogRunnerActionProvider(dispatch_orch)
+    ctx = dispatch_orch._backlog_ctx
+    original = await ctx.claim_target_state("o/r#7", {
+        "issues": ["o/r#7", "o/r#8"], "repo": "o/r", "claimed": True,
+        "proposed": True, "titles": {"o/r#7": "Seven", "o/r#8": "Eight"},
+        "attempts": 2}, expected={}, source="automatic")
+    dispatch_orch._backlog_query_queue = AsyncMock(return_value=[])
+    assert await dispatch_orch.backlog_candidates() == []  # no claimed subset in batch picker
+    offered = await provider.actionable()
+    assert [item.id for item in offered] == ["o/r#7"]
+    assert offered[0].title == "Seven"
+    dispatch_orch._backlog_healthy_account = AsyncMock(return_value=None)
+    assert (await provider.trigger("o/r#7", "implement")).status == "no_account"
+    waiting = await ctx.get_target_state("o/r#7")
+    assert waiting["waiting_account"] and "proposed" not in waiting
+    offered = await provider.actionable()
+    assert [item.id for item in offered] == ["o/r#7"]
+    assert offered[0].actions[0].label == "Retry implementation"
+    dispatch_orch._backlog_healthy_account = AsyncMock(return_value="acct-1")
+    assert (await provider.trigger("o/r#7", "implement")).status == "spawned"
+    spawned_batch = dispatch_orch._backlog_spawn.call_args[0][0]
+    assert spawned_batch.issues == ["o/r#7", "o/r#8"]
+    assert spawned_batch.titles == {"o/r#7": "Seven", "o/r#8": "Eight"}
+    state = await ctx.get_target_state("o/r#7")
+    assert state["ownership_token"] == original["ownership_token"]
+    assert state["attempts"] == 2 and not state.get("waiting_account")
+    assert await provider.actionable() == []

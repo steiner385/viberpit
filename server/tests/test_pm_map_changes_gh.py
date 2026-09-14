@@ -12,6 +12,7 @@ import pytest
 from server.pm.map_changes_gh import GhWrite, GhWriteError
 
 REPO = "cairnea/KinDash"
+PAT_ENV = {"CCSWITCH_GH_PROJECT_TOKEN": "pat-tok"}
 
 
 class FakeGh:
@@ -30,7 +31,7 @@ class FakeGh:
 def _gh(answers, *, app_token="app-tok", env=None):
     fake = FakeGh(answers)
     gh = GhWrite(REPO, run=fake, app_token=lambda repo: app_token,
-                 env=env if env is not None else {"CCSWITCH_GH_PROJECT_TOKEN": "pat-tok"})
+                 env=env if env is not None else PAT_ENV)
     return gh, fake
 
 
@@ -151,8 +152,8 @@ def test_open_read_close_pr_update_branch_and_delete_branch():
     assert read.conflicting is True and read.head_sha == "new1"
     gh.close_pr(12)
     assert fake.calls[2][0][:4] == ["api", "-X", "PATCH", f"repos/{REPO}/pulls/12"] and "state=closed" in fake.calls[2][0]
-    gh.update_branch(12)
-    assert fake.calls[3][0][:4] == ["api", "-X", "PUT", f"repos/{REPO}/pulls/12/update-branch"]
+    gh.recovery_request(["-X", "PUT", f"repos/{REPO}/pulls/12/update-branch", "-f", "expected_head_sha=abc"])
+    assert fake.calls[3][0][:6] == ["api", "--hostname", "github.com", "-X", "PUT", f"repos/{REPO}/pulls/12/update-branch"]
     gh.delete_branch("pm/map-changes-kindash")
     assert fake.calls[4][0][:4] == ["api", "-X", "DELETE", f"repos/{REPO}/git/refs/heads/pm/map-changes-kindash"]
 
