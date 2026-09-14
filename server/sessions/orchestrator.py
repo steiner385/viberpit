@@ -528,18 +528,21 @@ async def _lease_state(session_id: str):
         return None
 
 
-def _limiting_window(usage, ceiling: float):
-    """The window that is actually holding this account back, or None.
+def _limiting_window(usage, ceiling: float, model: str | None = None):
+    """The window that is actually holding *model* back on this account, or None.
 
-    The FIRST window at/over *ceiling* in provider order — for Anthropic that is
-    session before weekly, which is exactly what the pair math it replaced did
+    The FIRST window at/over *ceiling* in provider order among those that meter
+    *model* — for Anthropic that is session, weekly, then any model-scoped window —
+    which is exactly what the pair math it replaced did
     (``session_pct >= ceiling ? session : weekly``). Falls back to the binding
     window so a caller below the ceiling still gets the constraining one.
+
+    *model* is the ``quota_model`` key; None applies every window.
     """
     if usage is None:
         return None
-    over = usage.windows_at_or_over(ceiling)
-    return over[0] if over else usage.binding_window()
+    over = usage.windows_at_or_over(ceiling, model)
+    return over[0] if over else usage.binding_window(model)
 
 
 def daemon_role() -> str:
@@ -10641,7 +10644,7 @@ class SessionOrchestrator:
                 return None
         return await generate_title(prompts, config_dir=str(compose(account)), cwd=cwd)
 
-    def _account_limited(self, account: str) -> bool:
+    def _account_limited(self, account: str, model: str | None = None) -> bool:
         """True if *account*'s last-known usage has no headroom left.
 
         "No headroom" is the shared ``selector.at_ceiling`` definition — ANY
@@ -10657,12 +10660,14 @@ class SessionOrchestrator:
         Best-effort: an unknown account (no cached usage, or a snapshot whose
         availability is not ``available``) is treated as not limited — a doomed
         title query would just degrade silently anyway.
+
+        *model* is the ``quota_model`` key; None applies every window.
         """
         usage = self._poller.cached(account)
         return (
             usage is not None
             and usage_known(usage)
-            and at_ceiling(usage, _ROTATION_CEILING)
+            and at_ceiling(usage, _ROTATION_CEILING, model)
         )
 
     async def _generate_fallback_title(self, rec: SessionRecord, path: str) -> str | None:
@@ -14953,8 +14958,13 @@ class SessionOrchestrator:
         Also handles accounts that become persistently unreachable (usage=None for
         _UNREACHABLE_ROTATION_THRESHOLD consecutive polls) — the canonical case is a
         Copilot proxy that exits when its premium-request quota is exhausted. Fires
-        `account_limited` (#1354 kind="account" watch) once per account entering either
-        branch, debounced via `_account_limited_notified` and cleared on recovery.
+        `account_limited` (#1354 kind="account" watch) once per account entering the
+        unreachable branch and once per (account, window) entering the usage-ceiling
+        one, debounced via `_account_limited_notified` and cleared on recovery.
+
+        Exhaustion is judged PER SESSION: a window that meters one model (a Fable
+        weekly) only moves the sessions running that model — the Sonnet session on
+        the same account still has headroom and stays put.
         """
         q = self._poller.subscribe()
         try:
@@ -14962,6 +14972,7 @@ class SessionOrchestrator:
                 event = await q.get()
                 account: str = event.get("account", "")
                 usage = event.get("usage")
+                extra_allowed = False
 
                 if usage is None:
                     # Transient fetch hiccup vs. persistently dead proxy — only act
@@ -14971,30 +14982,50 @@ class SessionOrchestrator:
                         continue
                     reason = "account_unreachable"
                     session_pct = 0.0  # unknown; treat as ceiling for rotation logic
+                    # #1354 kind="account" watch: an unreachable account has no window
+                    # to name, so it debounces under the bare account key.
+                    if account not in self._account_limited_notified:
+                        self._account_limited_notified.add(account)
+                        await push_mod.notify_event(
+                            "account_limited", f"{brand.NAME} — account limited",
+                            f"{account}: {reason.replace('_', ' ')}",
+                            account=account, orch=self)
                 else:
-                    if not exhausted(usage, _ROTATION_CEILING,
-                                     extra_usage_allowed=self._extra_usage_allowed(account)):
-                        # Either genuine headroom, or at-ceiling with paid overflow the
-                        # selector would still hand out (rank_accounts' extra_paid tier).
-                        # Rotating off such an account finds no better target and parks
-                        # the session as needs_attention for nothing.
+                    over = usage.windows_at_or_over(_ROTATION_CEILING)
+                    if not over:
+                        # Nothing at ceiling for ANY model: recovery branch.
                         self._maybe_sweep_on_recovery()
-                        self._account_limited_notified.discard(account)
+                        self._account_limited_notified = {
+                            k for k in self._account_limited_notified
+                            if not (k == account or k.startswith(f"{account}:"))}
                         continue
-                    limiting = _limiting_window(usage, _ROTATION_CEILING)
-                    session_pct = limiting.used_pct if limiting is not None else 0.0
-                    reason = (f"{limiting.label} limit reached" if limiting is not None
-                              else "usage limit reached")
-
-                # #1354 kind="account" watch: fire once per account entering this branch
-                # (unreachable proxy or usage-ceiling exhaustion), cleared on the recovery
-                # continue above so a later re-exhaustion re-fires.
-                if account not in self._account_limited_notified:
-                    self._account_limited_notified.add(account)
-                    await push_mod.notify_event(
-                        "account_limited", f"{brand.NAME} — account limited",
-                        f"{account}: {reason.replace('_', ' ')}",
-                        account=account, orch=self)
+                    extra_allowed = self._extra_usage_allowed(account)
+                    if not exhausted(usage, _ROTATION_CEILING,
+                                     extra_usage_allowed=extra_allowed):
+                        # At ceiling but with paid overflow the selector would still hand
+                        # out (rank_accounts' extra_paid tier): rotating off such an
+                        # account finds no better target and parks the session as
+                        # needs_attention for nothing.
+                        self._maybe_sweep_on_recovery()
+                        continue
+                    # Notify once per (account, window): a Fable exhaustion and a later
+                    # account-wide one are different news. Drop keys for windows that
+                    # fell back under the ceiling so a re-exhaustion re-fires.
+                    over_keys = {f"{account}:{w.key}" for w in over}
+                    self._account_limited_notified = {
+                        k for k in self._account_limited_notified
+                        if not k.startswith(f"{account}:") or k in over_keys}
+                    for w in over:
+                        key = f"{account}:{w.key}"
+                        if key in self._account_limited_notified:
+                            continue
+                        self._account_limited_notified.add(key)
+                        await push_mod.notify_event(
+                            "account_limited", f"{brand.NAME} — account limited",
+                            f"{account}: {w.label} limit reached",
+                            account=account, orch=self)
+                    reason = "usage limit reached"   # refined per session below
+                    session_pct = 0.0
 
                 # Find all live sessions on this account and rotate them.
                 enabled_hosts = await self._enabled_host_names()
@@ -15016,6 +15047,18 @@ class SessionOrchestrator:
                         log.debug("rotation.skip_foreign session=%s host=%s",
                                   record.id, record.host)
                         continue
+                    m = None
+                    if usage is not None:
+                        # Per-session judgement: only the windows that meter THIS
+                        # session's model can be what is holding it back.
+                        m = quota_model(record.model, engine=record.engine)
+                        if not exhausted(usage, _ROTATION_CEILING,
+                                         extra_usage_allowed=extra_allowed, model=m):
+                            continue   # this session's model still has headroom here
+                        limiting = _limiting_window(usage, _ROTATION_CEILING, m)
+                        session_pct = limiting.used_pct if limiting is not None else 0.0
+                        reason = (f"{limiting.label} limit reached" if limiting is not None
+                                  else "usage limit reached")
                     if record.id not in self._drivers:
                         # Driver died separately from any turn (e.g. proxy crash while
                         # session was idle).  Restart on a new account so the session
@@ -15034,7 +15077,7 @@ class SessionOrchestrator:
                         # they need to unpin before the session can auto-rotate.
                         log.info("rotation.skip_pinned session=%s account=%s", record.id, account)
                         record.paused_reason = "pinned_account_limited"
-                        _lim = _limiting_window(usage, _ROTATION_CEILING)
+                        _lim = _limiting_window(usage, _ROTATION_CEILING, m)
                         record.paused_until = _naive_utc(
                             _lim.resets_at if _lim is not None else None)
                         record.status = "limited"
@@ -15079,16 +15122,19 @@ class SessionOrchestrator:
             log.debug("rotation.extra_usage_read_failed account=%s", account, exc_info=True)
             return False
 
-    def _account_is_dead(self, account: str) -> bool:
+    def _account_is_dead(self, account: str, model: str | None = None) -> bool:
         """True when the account is at usage ceiling OR persistently unreachable.
 
         Used by crash recovery to decide whether to rotate away rather than
         rebuilding the driver on the same broken account.
+
+        *model* is the ``quota_model`` key; None applies every window.
         """
         usage = self._poller.cached(account)
         if usage is not None and usage_known(usage):
             return exhausted(usage, _ROTATION_CEILING,
-                             extra_usage_allowed=self._extra_usage_allowed(account))
+                             extra_usage_allowed=self._extra_usage_allowed(account),
+                             model=model)
         # usage=None: distinguish "not yet polled" from "persistently failing"
         return self._poller.consecutive_failures(account) >= _UNREACHABLE_ROTATION_THRESHOLD
 
@@ -15139,7 +15185,8 @@ class SessionOrchestrator:
                 if (
                     usage is None
                     or not usage_known(usage)
-                    or at_ceiling(usage, _ROTATION_CEILING)
+                    or at_ceiling(usage, _ROTATION_CEILING,
+                                  quota_model(record.model, engine=record.engine))
                 ):
                     continue
                 log.info("stuck-sweep.limit_reset session=%s account=%s",
@@ -15241,7 +15288,9 @@ class SessionOrchestrator:
             # When the account is dead (usage ceiling or persistently unreachable
             # proxy — the Copilot quota-exhaustion case), retrying on the same
             # account just crashes again.  Quarantine it and rotate away instead.
-            if self._account_is_dead(record.account):
+            if self._account_is_dead(
+                    record.account,
+                    model=quota_model(record.model, engine=record.engine)):
                 self._recovery.quarantine(record.account, until=now + QUARANTINE_429)
                 await self._rotate_away(record, reason="process_crash_account_exhausted")
                 return

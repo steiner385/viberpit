@@ -492,3 +492,103 @@ def test_account_is_dead_true_at_ceiling_extra_usage_provider_disabled():
     o = _orch_with_poller(cached_usage=_at_ceiling_usage(False))
     o._extra_usage_allowed = lambda account: True
     assert o._account_is_dead("copilot_acct") is True
+
+
+# ---------------------------------------------------------------------------
+# Per-model windows: only sessions whose model the exhausted window meters move
+# ---------------------------------------------------------------------------
+
+from datetime import datetime, timedelta, timezone
+from ccswitch.quota import QuotaWindow, SCOPE_MODEL
+
+_NOW = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
+
+
+def _fable_exhausted_snapshot():
+    """weekly 91% / Fable weekly 100% — the live 2026-09-14 kindash shape."""
+    fable = QuotaWindow(key="weekly:fable", label="Fable weekly", used_pct=100.0,
+                        resets_at=_NOW + timedelta(hours=8), duration_seconds=7 * 24 * 3600,
+                        scope=SCOPE_MODEL, applies_to_models=("fable",))
+    return anthropic_snapshot(3.0, _NOW + timedelta(hours=1), 91.0, _NOW + timedelta(days=2),
+                              fetched_at=_NOW, model_windows=[fable])
+
+
+def _two_recs(o, account="copilot_acct"):
+    fab = SessionRecord(id="fab", name="f", account=account, engine=AgentEngine.CLAUDE_CODE,
+                        engine_session_id="c1", cols=80, rows=24, cwd="/tmp/x",
+                        status="idle", model="fable")
+    son = SessionRecord(id="son", name="s", account=account, engine=AgentEngine.CLAUDE_CODE,
+                        engine_session_id="c2", cols=80, rows=24, cwd="/tmp/x",
+                        status="idle", model="sonnet")
+    for r in (fab, son):
+        o._records[r.id] = r
+        o._drivers[r.id] = object()
+        o._last_prompt[r.id] = "go"
+    return fab, son
+
+
+@pytest.mark.asyncio
+async def test_model_scoped_ceiling_rotates_only_sessions_on_that_model(monkeypatch):
+    o = _make_orch()
+    _two_recs(o)
+    o._poller = _poller_with_failures(0)
+    sent = []
+
+    async def fake_notify(kind, title, body, **kw):
+        sent.append((kind, body))
+    monkeypatch.setattr(orch_mod.push_mod, "notify_event", fake_notify)
+
+    async def spy_do_rotate(record, *, reason):
+        o.calls.append(("do_rotate", record.id, reason))
+    o._do_rotate = spy_do_rotate
+
+    await _run_monitor_one_event(o, {"account": "copilot_acct",
+                                     "usage": _fable_exhausted_snapshot()})
+    assert ("do_rotate", "fab", "Fable weekly limit reached") in o.calls
+    assert not any(c[1] == "son" for c in o.calls)
+    assert sent == [("account_limited", "copilot_acct: Fable weekly limit reached")]
+    assert "copilot_acct:weekly:fable" in o._account_limited_notified
+
+
+@pytest.mark.asyncio
+async def test_pinned_fable_session_parks_with_the_scoped_window_reset(monkeypatch):
+    o = _make_orch()
+    fab, _son = _two_recs(o)
+    fab.account_pinned = True
+    o._poller = _poller_with_failures(0)
+
+    async def fake_notify(*a, **kw):
+        return None
+    monkeypatch.setattr(orch_mod.push_mod, "notify_event", fake_notify)
+    persisted = []
+
+    async def spy_persist(sid, status):
+        persisted.append((sid, status))
+    o._persist_status = spy_persist
+
+    await _run_monitor_one_event(o, {"account": "copilot_acct",
+                                     "usage": _fable_exhausted_snapshot()})
+    assert persisted == [("fab", "limited")]
+    assert fab.paused_reason == "pinned_account_limited"
+    assert fab.paused_until == (_NOW + timedelta(hours=8)).replace(tzinfo=None)
+
+
+def test_account_is_dead_and_limited_are_model_aware():
+    o = _make_orch()
+    o._poller = _poller_with_failures(0, cached_usage=_fable_exhausted_snapshot())
+    assert o._account_is_dead("copilot_acct", model="fable") is True
+    assert o._account_is_dead("copilot_acct", model="sonnet") is False
+    assert o._account_is_dead("copilot_acct") is True          # unknown model: conservative
+    assert o._account_limited("copilot_acct", model="sonnet") is False
+    assert o._account_limited("copilot_acct", model="fable") is True
+
+
+@pytest.mark.asyncio
+async def test_crash_on_a_fable_exhausted_account_rebuilds_a_sonnet_session_in_place():
+    o = _make_orch()
+    rec = _rec(o, account="copilot_acct")
+    rec.model = "sonnet"
+    o._poller = _poller_with_failures(0, cached_usage=_fable_exhausted_snapshot())
+    await o._recover_session(rec, "process_crash", None)
+    assert ("reassign", "s1", "copilot_acct", "process_crash") in o.calls
+    assert not any(c[0] == "rotate" for c in o.calls)
