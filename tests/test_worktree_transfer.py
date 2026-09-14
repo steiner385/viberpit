@@ -1,9 +1,10 @@
-"""Tests for ccswitch.worktree_transfer — carrying a worktree between hosts via git."""
+"""Tests for worktree_transfer — carrying a worktree between hosts via git."""
 import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ccswitch import worktree_transfer as wt, worktrees
 
@@ -52,7 +53,7 @@ class InspectTests(unittest.TestCase):
         self.assertFalse(st.dirty)
         self.assertEqual(st.dirty_files, 0)
         self.assertEqual(st.head_sha, _git("rev-parse", "HEAD", cwd=self.cwd))
-        # child branch ccswitch/main-aaaa1111 exists only locally → unpushed
+        # the per-session child branch exists only locally → unpushed
         self.assertEqual(st.branch, self.info.branch)
         self.assertIn(self.info.branch, st.unpushed)
 
@@ -131,6 +132,23 @@ class ExportTests(unittest.TestCase):
         parent = subprocess.run(["git", "-C", self.origin, "rev-parse", f"{b.head_sha}^"],
                                 capture_output=True, text=True).stdout.strip()
         self.assertEqual(parent, base)
+
+    def test_commit_failure_is_rolled_back(self) -> None:
+        base = _git("rev-parse", "HEAD", cwd=self.cwd)
+        (Path(self.cwd) / "x.txt").write_text("x\n")
+        real_run = wt._run
+
+        def fake_run(args, env=None):
+            if "commit" in args:
+                return subprocess.CompletedProcess(args, 1, "", "hook refused")
+            return real_run(args, env)
+
+        with mock.patch.object(wt, "_run", side_effect=fake_run):
+            with self.assertRaises(wt.TransferError) as ctx:
+                wt.export(self.cwd, "bbbb2222-0000", carry_dirty=True)
+        self.assertEqual(ctx.exception.code, "wip_commit_failed")
+        self.assertEqual(_git("rev-parse", "HEAD", cwd=self.cwd), base)
+        self.assertTrue(wt.inspect(self.cwd).dirty)
 
     def test_unpushed_authored_branch_is_carried(self) -> None:
         _git("checkout", "-q", "-b", "feat/extra", cwd=self.cwd)

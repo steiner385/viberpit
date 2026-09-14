@@ -17,8 +17,8 @@ import logging
 import os
 from dataclasses import dataclass, field
 
-from ccswitch.gitrepos import git_env_for_remote
-from ccswitch.worktrees import (
+from .gitrepos import git_env_for_remote
+from .worktrees import (
     WorktreeInfo, _origin_url, _run, _short, _try_fetch_origin, authored_branches,
     clear_stale_registration, current_branch, lock_worktree, remove_worktree,
     worktrees_base,
@@ -143,10 +143,13 @@ def export(cwd: str, session_id: str, *, carry_dirty: bool) -> Bundle:
     wip = False
     if state.dirty:
         add = _run(["git", "-C", cwd, "add", "-A"])
+        if add.returncode != 0:
+            raise TransferError("wip_commit_failed", add.stderr.strip())
         commit = _run(["git", *_WIP_IDENTITY, "-C", cwd, "commit", "-q", "--no-verify",
                        "-m", WIP_SUBJECT.format(session_id=session_id)])
-        if add.returncode != 0 or commit.returncode != 0:
-            raise TransferError("wip_commit_failed", (add.stderr + commit.stderr).strip())
+        if commit.returncode != 0:
+            _run(["git", "-C", cwd, "reset", "-q", "--mixed", base_sha])
+            raise TransferError("wip_commit_failed", commit.stderr.strip())
         head_sha = _rev(cwd, "HEAD") or base_sha
         wip = True
     refspecs = [f"+{head_sha}:{head_ref(session_id)}"]
@@ -159,7 +162,7 @@ def export(cwd: str, session_id: str, *, carry_dirty: bool) -> Bundle:
             continue
         branches[b] = sha
         refspecs.append(f"+{sha}:{branch_ref(session_id, b)}")
-    r = _run(["git", "-C", cwd, "push", "-q", "--no-verify", "origin", *refspecs],
+    r = _run(["git", "-C", cwd, "push", "-q", "--no-verify", "--atomic", "origin", *refspecs],
              env=git_env_for_remote(url))
     if r.returncode != 0:
         if wip:
