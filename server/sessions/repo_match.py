@@ -28,6 +28,7 @@ from server.pm.fenced_json import FencedJsonError, extract_fenced_json
 from server.sessions.account_auth import helper_env
 from server.sessions.claude_bin import cli_path_kwargs
 from server.sessions.helper_call import helper_cwd, pick_helper_config_dir, run_helper_call
+from server.sessions.types import ASSISTANT_KIND
 
 log = logging.getLogger(__name__)
 
@@ -101,7 +102,9 @@ async def recent_repo_vocabulary(
                     Session.repo.is_not(None),
                     Session.repo != "",
                     Session.created_at >= cutoff,
-                    or_(Session.kind.is_(None), Session.kind != "assistant"),
+                    # NULL kind is the ordinary coding session; SQL `!=` against a
+                    # NULL column yields NULL, not true, so it needs its own leg.
+                    or_(Session.kind.is_(None), Session.kind != ASSISTANT_KIND),
                 )
                 .order_by(Session.created_at.desc())
                 # A hint never justifies scanning the whole table: the newest
