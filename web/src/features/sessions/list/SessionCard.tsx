@@ -670,7 +670,7 @@ export function SessionCard({ session, account, selected = false, listMode = fal
             dimension named "session" that a single-allowance provider does not
             have. */}
         {(() => {
-          const w = bindingWindow(account?.usage)
+          const w = bindingWindow(account?.usage, session.model)
           return w ? (
             <span data-testid="card-usage" className="hidden @md:inline-flex items-center flex-shrink-0">
               <UsageBadge

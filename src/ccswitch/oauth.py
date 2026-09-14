@@ -2,6 +2,7 @@
 import importlib.metadata
 import json
 import random
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -9,7 +10,8 @@ import urllib.request
 from datetime import datetime, timezone
 
 from . import brand
-from .quota import QuotaSnapshot, anthropic_snapshot
+from .quota import (QuotaSnapshot, QuotaWindow, SCOPE_MODEL, anthropic_snapshot,
+                    _FIVE_HOURS_S, _SEVEN_DAYS_S)
 
 try:
     _VERSION = importlib.metadata.version("ccswitch")
@@ -178,6 +180,90 @@ def _parse_iso(s: str | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+_MODEL_ID_TIER = re.compile(r"^claude-([a-z]+)-")
+
+_GROUP_DURATION_S = {"weekly": _SEVEN_DAYS_S, "session": _FIVE_HOURS_S}
+
+
+def _scoped_model_key(scope: object) -> tuple[str, str] | None:
+    """``(model_key, display_name)`` for a ``limits[]`` entry's ``scope``, or None.
+
+    Anthropic names the scoped model by ``display_name`` with a null ``id`` (verified
+    2026-09-14). The key is the lowercase tier token the server's
+    ``model_catalog.model_tier`` produces for the same model, so a window keyed
+    ``fable`` matches a session on ``fable``, ``fable[1m]`` or ``claude-fable-5-1``.
+    An ``id``, when present, wins over the display name.
+    """
+    if not isinstance(scope, dict):
+        return None
+    model = scope.get("model")
+    if not isinstance(model, dict):
+        return None
+    display = str(model.get("display_name") or "").strip()
+    model_id = str(model.get("id") or "").strip().lower()
+    m = _MODEL_ID_TIER.match(model_id) if model_id else None
+    if m:
+        return m.group(1), display or m.group(1).capitalize()
+    if display:
+        return display.split()[0].lower(), display
+    return None
+
+
+def _model_window(group: str, key: str, display: str, percent: object,
+                  resets_at: object) -> QuotaWindow | None:
+    try:
+        pct = float(percent)  # type: ignore[arg-type]
+        reset = _parse_iso(resets_at if isinstance(resets_at, str) else None)
+    except (TypeError, ValueError):
+        # A malformed percent OR resets_at must not raise out of _model_windows —
+        # one odd bucket must not blank an account's usage.
+        return None
+    return QuotaWindow(
+        key=f"{group}:{key}", label=f"{display} {group}", used_pct=pct,
+        resets_at=reset,
+        duration_seconds=_GROUP_DURATION_S.get(group),
+        scope=SCOPE_MODEL, applies_to_models=(key,),
+    )
+
+
+def _model_windows(payload: dict) -> list[QuotaWindow]:
+    """The model-scoped windows in *payload*, in payload order.
+
+    Reads ``limits[]`` entries whose ``scope.model`` is set. When the payload has no
+    ``limits`` list at all (older shape), falls back to the top-level
+    ``seven_day_<model>`` objects — the same fallback the account-wide pair has.
+    A scoped entry with no active window (``resets_at`` null, 0%) is still emitted:
+    the badge should show it, and ``QuotaWindow`` models a None reset as "not
+    perishable yet". A malformed entry is skipped, never raised — one odd bucket
+    must not blank an account's usage.
+    """
+    limits = payload.get("limits")
+    out: list[QuotaWindow] = []
+    if isinstance(limits, list):
+        for entry in limits:
+            if not isinstance(entry, dict):
+                continue
+            scoped = _scoped_model_key(entry.get("scope"))
+            if scoped is None:
+                continue
+            key, display = scoped
+            w = _model_window(str(entry.get("group") or "weekly"), key, display,
+                              entry.get("percent"), entry.get("resets_at"))
+            if w is not None:
+                out.append(w)
+        return out
+    for name, obj in payload.items():
+        if not (isinstance(name, str) and name.startswith("seven_day_")
+                and isinstance(obj, dict)):
+            continue
+        key = name[len("seven_day_"):]
+        w = _model_window("weekly", key, key.capitalize(),
+                          obj.get("utilization"), obj.get("resets_at"))
+        if w is not None:
+            out.append(w)
+    return out
+
+
 def parse_usage(payload: dict, *, fetched_at: datetime | None = None) -> QuotaSnapshot:
     """Map the Anthropic usage payload onto the canonical two-window snapshot.
 
@@ -209,7 +295,8 @@ def parse_usage(payload: dict, *, fetched_at: datetime | None = None) -> QuotaSn
         weekly_reset = _parse_iso(sd.get("resets_at"))
     extra = bool((payload.get("extra_usage") or {}).get("is_enabled", False))
     return anthropic_snapshot(session_pct, session_reset, weekly_pct, weekly_reset,
-                              extra, fetched_at=fetched_at)
+                              extra, fetched_at=fetched_at,
+                              model_windows=_model_windows(payload))
 
 
 def fetch_usage(access_token: str, *, max_retries: int = _DEFAULT_MAX_RETRIES,

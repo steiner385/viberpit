@@ -101,6 +101,25 @@ def launch_model(model: str | None, *,
     return model
 
 
+def quota_model(model: str | None, *,
+                engine: AgentEngine | str = AgentEngine.CLAUDE_CODE) -> str | None:
+    """The key quota windows are matched against for a session that runs *model*.
+
+    The ONE place a session model becomes a ``QuotaWindow.applies_to_models`` key;
+    every selection / rotation call site passes this and nothing re-derives it.
+
+    Claude: the tier of the model the session will ACTUALLY launch on —
+    ``launch_model`` resolves ``default``/None to the inherited settings model, so a
+    "Default" session is judged on the fleet default the binary would pick. None when
+    the tier is indeterminate (``best``, an unknown id, nothing pinned) or the engine
+    is not Claude: the selector then applies EVERY window, which is the conservative
+    direction (``QuotaWindow.applies_to``).
+    """
+    if str(getattr(engine, "value", engine)) != AgentEngine.CLAUDE_CODE.value:
+        return None
+    return model_tier(launch_model(model, engine=engine))
+
+
 async def resolve_model_policy(db, *, model: str | None, account: str | None = None) -> str:
     """Return "allow" | "require_approval" | "block" for *model* on *account*.
 

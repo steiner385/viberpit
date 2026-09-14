@@ -21,7 +21,8 @@ def select_account(exclude: frozenset[str] = frozenset(),
                    load: dict[str, float] | None = None,
                    *, reserve: bool = True,
                    soft_exclude: frozenset[str] = frozenset(),
-                   engine: AgentEngine = AgentEngine.CLAUDE_CODE) -> Picked:
+                   engine: AgentEngine = AgentEngine.CLAUDE_CODE,
+                   model: str | None = None) -> Picked:
     """Select the best available account, skipping any in *exclude*.
 
     *exclude* is HARD: no fallback tier may hand back an account listed there.
@@ -38,6 +39,9 @@ def select_account(exclude: frozenset[str] = frozenset(),
     per-account weighted live-session count; accounts already carrying load are
     discounted so new sessions spread out (avoids 429s).
 
+    *model*: the quota key from ``model_policy.quota_model``; None applies every
+    window.
+
     Raises:
         AllAccountsBusy: when every account is at or above the usage ceiling.
             The exception carries ``.earliest_reset`` (datetime | None).
@@ -51,4 +55,5 @@ def select_account(exclude: frozenset[str] = frozenset(),
         soft_exclude=set(soft_exclude),
         require_engine=engine.value,
         default_engine=AgentEngine.CLAUDE_CODE.value,
+        model=model,
     )

@@ -127,7 +127,7 @@ def test_rotate_away_pauses_when_all_accounts_busy(monkeypatch):
     from datetime import datetime, timezone
     reset = datetime(2026, 6, 23, tzinfo=timezone.utc)
     def boom(exclude=frozenset(), load=None, *, soft_exclude=frozenset(),
-             engine=AgentEngine.CLAUDE_CODE):
+             engine=AgentEngine.CLAUDE_CODE, model=None):
         assert engine is AgentEngine.CLAUDE_CODE
         raise AllAccountsBusy(reset)
     monkeypatch.setattr(orch_mod, "select_account", boom)
@@ -157,7 +157,7 @@ def test_rotate_away_excludes_quarantined_and_reassigns(monkeypatch):
     o._recovery.quarantine("secondary", until=2000.0)
     seen_exclude = {}
     def pick(exclude=frozenset(), load=None, *, soft_exclude=frozenset(),
-             engine=AgentEngine.CLAUDE_CODE):
+             engine=AgentEngine.CLAUDE_CODE, model=None):
         assert engine is AgentEngine.CLAUDE_CODE
         seen_exclude["v"] = set(exclude)
         seen_exclude["soft"] = set(soft_exclude)

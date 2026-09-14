@@ -262,7 +262,8 @@ class Translator:
             # when a hard 429 lands this turn. Internal — not forwarded to the UI.
             info = getattr(msg, "rate_limit_info", None)
             return [ev.RateLimit(resets_at=getattr(info, "resets_at", None),
-                                 status=getattr(info, "status", None))]
+                                 status=getattr(info, "status", None),
+                                 rate_limit_type=getattr(info, "rate_limit_type", None))]
 
         if isinstance(msg, ResultMessage):
             self.session_id = msg.session_id or self.session_id

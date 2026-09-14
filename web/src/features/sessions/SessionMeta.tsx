@@ -16,17 +16,10 @@ import { formatResetTime } from '@/lib/formatReset'
 import { contextSeverity } from '@/lib/contextWindow'
 import type { SubAgent, SubAgentStatus } from '@/session/selectors'
 import { engineBadge, modelName } from '@/session/modelName'
+import { windowLabel } from '@/lib/usageWindows'
 import { SubAgentList } from './SubAgentList'
 import { STATUS_TONE } from './subAgentStatus'
 import type { AgentEngine, UsageWindow } from '@/api/types'
-
-/** Compact labels for the strip, which is tight on horizontal space. Falls back
- *  to the provider's own window key when it is not one we abbreviate. */
-const QUOTA_ABBR: Record<string, string> = {
-  session: 'sess',
-  weekly: 'wk',
-  premium: 'prem',
-}
 
 /** Tooltip copy for a quota window: spell out the abbreviation + reset time. */
 function quotaTitle(window: string, resetsAt: string | null): string {
@@ -257,7 +250,7 @@ export function SessionMeta({ sessionId, account, engine = null, host = null, di
                   title={quotaTitle(w.label, w.resetsAt)}
                   aria-label={`${w.label} usage: ${w.pct}% — ${quotaTitle(w.label, w.resetsAt)}`}
                 >
-                  {QUOTA_ABBR[w.key] ?? w.key} {w.pct}%
+                  {windowLabel(w)} {w.pct}%
                 </span>
               </Fragment>
             ))}
