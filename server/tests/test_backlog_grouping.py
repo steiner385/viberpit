@@ -78,18 +78,46 @@ def test_parse_truncates_oversize_groups_to_max_k():
     assert {"refs": ["o/r#9"], "rationale": None} in plan
 
 
-def test_parse_appends_unplaced_candidates_as_singletons():
+def test_parse_appends_unplaced_candidates_in_the_ranked_order_they_arrived():
+    """Leftovers keep the POOL's order, which is the queue's ranking.
+
+    ``candidates`` arrives sorted by ``server.pm.queue.rank_key``. Re-sorting
+    leftovers by issue number here was a second definition of priority, in a
+    consumer, that outranked the canonical one — see the module comment.
+    """
     raw = _plan_json([{"refs": ["o/r#9"], "rationale": "top"}])
     plan = parse_group_plan(raw, C, 3)
     assert plan[0]["refs"] == ["o/r#9"]
-    # Leftovers in ascending issue-number order.
-    assert [g["refs"] for g in plan[1:]] == [["o/r#2"], ["o/r#5"]]
+    assert [g["refs"] for g in plan[1:]] == [["o/r#5"], ["o/r#2"]]
 
 
-def test_parse_garbage_degrades_to_all_singletons():
-    """Unparseable model output → one issue per PR (the SAFE direction)."""
+def test_parse_garbage_degrades_to_all_singletons_still_in_ranked_order():
+    """Unparseable model output → one issue per PR (the SAFE direction), and
+    still in the queue's order.
+
+    This is the path the live runner actually takes: every group in the
+    production plan has a null rationale, i.e. the model places nothing and the
+    whole pool falls through here. So this ordering, not the model's, is what
+    decides what gets worked on.
+    """
     plan = parse_group_plan("sorry, I cannot help with that", C, 3)
-    assert [g["refs"] for g in plan] == [["o/r#2"], ["o/r#5"], ["o/r#9"]]
+    assert [g["refs"] for g in plan] == [["o/r#5"], ["o/r#2"], ["o/r#9"]]
+
+
+def test_leftover_order_preserves_score_and_age_not_just_urgency():
+    """#1698 floated urgent groups to the front, which fixes the incident case.
+
+    The cause was wider: the number re-sort discarded the ranking for EVERY
+    row, so a groomed, high-score issue still lost its place to whichever issue
+    happened to be filed first. Here the pool is ranked #900 → #100 (a human
+    scored #900 above), and issue-number order would exactly invert it.
+    """
+    ranked = [
+        {"ref": "o/r#900", "number": 900, "repo": "o/r", "title": "scored top", "body": ""},
+        {"ref": "o/r#100", "number": 100, "repo": "o/r", "title": "unscored", "body": ""},
+    ]
+    plan = parse_group_plan("not json", ranked, 3)
+    assert [g["refs"] for g in plan] == [["o/r#900"], ["o/r#100"]]
 
 
 def test_parse_accepts_top_level_list():
