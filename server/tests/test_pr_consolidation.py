@@ -226,25 +226,31 @@ async def test_consolidate_inflight_second_call_is_duplicate(tmp_path, monkeypat
     orch = _build_orch([_pr(1), _pr(2)])
 
     gate = asyncio.Event()
+    first_returned = False
+    spawn_after_return: list[bool] = []
     calls: list[dict] = []
 
     spawn = _install_spawn_recorder(orch, calls)
 
     async def gated_spawn(**kw):
-        await gate.wait()
+        spawn_after_return.append(first_returned)
+        # An inline-spawn regression must fail structurally rather than hang
+        # on this gate. Database scheduling latency is not part of this contract.
+        if first_returned:
+            await gate.wait()
         return await spawn(**kw)
 
     orch._pr_doctor_ctx.spawn_session = gated_spawn  # type: ignore[assignment]
-    # wait_for: if consolidate regresses to awaiting the spawn inline, this
-    # fails fast instead of deadlocking the suite on the gate.
-    first, _ = await asyncio.wait_for(
-        orch._pr_doctor_consolidate("o/r", [1, 2]), timeout=5)
-    second, _ = await asyncio.wait_for(
-        orch._pr_doctor_consolidate("o/r", [1, 2]), timeout=5)
-    assert first == "spawning"
-    assert second == "duplicate"
-    gate.set()
-    await _drain_consolidations(orch)
+    try:
+        first, _ = await orch._pr_doctor_consolidate("o/r", [1, 2])
+        first_returned = True
+        second, _ = await orch._pr_doctor_consolidate("o/r", [1, 2])
+        assert first == "spawning"
+        assert second == "duplicate"
+    finally:
+        gate.set()
+        await _drain_consolidations(orch)
+    assert spawn_after_return == [True]
     assert len(calls) == 1
 
 

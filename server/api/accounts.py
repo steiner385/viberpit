@@ -549,7 +549,7 @@ async def get_accounts(
     Never includes token or credential material.
     """
     orch = _get_orchestrator(request)
-    accounts_info = list_accounts()
+    accounts_info = await asyncio.to_thread(list_accounts)
 
     # Codex is the one quota source that is async and app-server-backed. Read it
     # first: the daemon persists the canonical snapshot into the ledger, after
@@ -661,7 +661,8 @@ async def refresh_account(
         usage, stale_as_of = await _safe_usage(orch, name, USAGE_FETCH_TIMEOUT)
 
     # Ledger-backed fields (status, nickname, reserve, defaults, toggles).
-    acct = next((a for a in list_accounts() if a["name"] == name), None)
+    accounts_info = await asyncio.to_thread(list_accounts)
+    acct = next((a for a in accounts_info if a["name"] == name), None)
 
     counts = await orch.live_session_counts()
     live = counts.get(name) or {"active": 0, "idle": 0}
@@ -838,7 +839,7 @@ async def update_account(
             clear_env_overrides="envOverrides" in body.model_fields_set and body.envOverrides is None,
         )
 
-    for acct in list_accounts():
+    for acct in await asyncio.to_thread(list_accounts):
         if acct["name"] == name:
             return _account_response_from_info(acct)
     return _account_response(name, "unknown", None, None)
@@ -890,7 +891,7 @@ async def set_enabled(
         detail={"account": name, "enabled": body.enabled},
     )
 
-    for acct in list_accounts():
+    for acct in await asyncio.to_thread(list_accounts):
         if acct["name"] == name:
             return _account_response_from_info(acct)
     return _account_response(name, "unknown", None, None, enabled=body.enabled)

@@ -63,3 +63,19 @@ async def test_slow_account_does_not_block_another_account():
         release.set()
         await slow_task
         await p.stop()
+
+
+@pytest.mark.asyncio
+async def test_all_reads_accounts_off_event_loop(monkeypatch):
+    loop_thread = threading.get_ident()
+
+    def accounts():
+        assert threading.get_ident() != loop_thread
+        return [{"name": "enabled"}, {"name": "disabled", "enabled": False}]
+
+    monkeypatch.setattr("server.usage.poller.list_accounts", accounts)
+    p = UsagePoller(usage_fn=lambda account: None)
+    try:
+        assert await p.all() == {"enabled": None}
+    finally:
+        await p.stop()
