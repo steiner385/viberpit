@@ -12,7 +12,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from fastapi.testclient import TestClient
 
-from tests.helpers import temp_env
+from tests.helpers import temp_env, usage as make_usage
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
@@ -31,10 +31,19 @@ def _seed_slot(name: str) -> None:
 
 
 def _make_client():
+    # usage_fn is NOT optional here. UsagePoller._loop sweeps once immediately
+    # before its first sleep, so poll_interval only spaces out sweeps 2..N — it
+    # never suppresses the startup sweep. Without a fake, that sweep runs the real
+    # ccswitch.accounts.usage_for against the seeded slots on a detached thread
+    # pool that stop() tears down with wait=False, so the fetch outlives the
+    # TestClient. ccswitch.paths.root() reads CCSWITCH_HOME at call time, so the
+    # straggler then writes ledger/slot state into the NEXT test's temp_env while
+    # rmtree is deleting it — "OSError: [Errno 39] Directory not empty" (#1647).
     from server.sessions.orchestrator import SessionOrchestrator
     from server.app import create_app
     orch = SessionOrchestrator(
         sdk_factory=fake_sdk_factory(),
+        usage_fn=lambda name: make_usage(session=10.0),
         poll_interval=9999.0,
     )
     app = create_app(orchestrator=orch)

@@ -119,6 +119,11 @@ def _make_client(reauth_manager: FakeReauthManager | None = None) -> TestClient:
     with patch.dict(os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}):
         orch = SessionOrchestrator(
             sdk_factory=fake_sdk_factory(),
+            # None is what the real usage_for returned here anyway (the seeded
+            # slot's token is fabricated), minus the network round-trip and the
+            # store write that outlives the client — see _make_client in
+            # test_accounts_model_approval.py for why that write is a flake (#1647).
+            usage_fn=lambda name: None,
             poll_interval=9999.0,
         )
         app = create_app(orchestrator=orch)
