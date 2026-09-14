@@ -385,3 +385,64 @@ def test_list_suppresses_obsolete_waits_when_off_without_hiding_human_decisions(
             assert automation["activeSessions"] == live
             assert automation["actionableCount"] == actionable
     asyncio.run(check())
+
+
+# --- enabled_repos is stored canonical, never as a rename alias -------------
+# GitHub forwards a renamed repo forever, so an operator (or a config written
+# before the rename) can persist a slug that silently becomes a SECOND identity
+# for a repo already in the list. pr-doctor keys its jobs on "owner/repo#N", so
+# the duplicate spawned two concurrent sessions on one PR. Canonicalize on the
+# write path and the alias can never be stored in the first place.
+
+from server.github import repo_canon  # noqa: E402  (module-level block above is fixtures)
+
+
+def _fake_gh(mapping):
+    """A ``gh`` stub answering the aliased canonical-name query it was given."""
+    import json as _json
+    import re as _re
+
+    field = _re.compile(r'(r\d+): repository\(owner: "([^"]+)", name: "([^"]+)"\)')
+
+    def run(args, **kw):
+        data = {}
+        for alias, owner, name in field.findall(kw.get("input") or ""):
+            canonical = mapping.get(f"{owner}/{name}")
+            data[alias] = {"nameWithOwner": canonical} if canonical else None
+
+        class P:
+            returncode = 0
+            stdout = _json.dumps({"data": data})
+            stderr = ""
+
+        return P()
+
+    return run
+
+
+def test_patching_enabled_repos_stores_the_canonical_name_not_the_alias():
+    gh = _fake_gh({"acme/old-name": "acme/new-name",
+                   "acme/new-name": "acme/new-name",
+                   "cairnea/KinDash": "cairnea/KinDash"})
+    with _client() as c, patch.object(repo_canon.gitrepos, "_run_gh", gh):
+        r = c.patch("/api/automations/pr-doctor", headers=H, json={"config": {
+            "enabled_repos": ["acme/old-name", "cairnea/KinDash",
+                              "acme/new-name"]}})
+        assert r.status_code == 200
+        assert r.json()["config"]["enabled_repos"] == [
+            "acme/new-name", "cairnea/KinDash"]
+
+
+def test_an_unreachable_github_still_persists_the_operators_repo_list():
+    """Fail OPEN: canonicalization is a correction, not a gate. A config write
+    that 500s (or silently drops repos) because GitHub blipped is far worse than
+    an alias that gets corrected on the next write."""
+    def boom(args, **kw):
+        raise OSError("network down")
+
+    repos = ["acme/old-name", "cairnea/KinDash"]
+    with _client() as c, patch.object(repo_canon.gitrepos, "_run_gh", boom):
+        r = c.patch("/api/automations/pr-doctor", headers=H,
+                    json={"config": {"enabled_repos": list(repos)}})
+        assert r.status_code == 200
+        assert r.json()["config"]["enabled_repos"] == repos

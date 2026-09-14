@@ -21,6 +21,7 @@ Mode resolution differs between automations, so it stays explicit rather than in
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Sequence
 from typing import Any
@@ -102,3 +103,51 @@ async def read_effective_config(automation_id: str) -> dict:
         return {}
     _mode, config = await read_automation_config(automation, modes=automation.modes)
     return config
+
+
+async def reconcile_enabled_repos(*, gh_run=None) -> int:
+    """Retire every rename alias stored in an ``enabled_repos``. Returns rows changed.
+
+    Canonicalizing on the write path stops a NEW alias from being persisted, but
+    the rows that predate a rename are the ones doing damage: GitHub forwards a
+    renamed repository forever, so a stale slug keeps resolving and simply becomes
+    a SECOND string key for one repo. pr-doctor keys its jobs on ``"owner/repo#N"``
+    — two keys meant two concurrent sessions on the same pull request, on the same
+    branch, neither aware of the other.
+
+    One query for the union of every row's slugs, not one per row. Fails OPEN and
+    idempotent: an unreachable GitHub resolves nothing, so nothing is rewritten and
+    the next startup tries again. Runs at startup; the caller owns the scheduling.
+    """
+    from sqlalchemy import select as sa_select
+
+    from server.db import db_session
+    from server.db.models import Automation as AutomationRow
+    from server.github.repo_canon import apply_canonical, canonical_slugs
+
+    async with db_session() as db:
+        rows = list((await db.execute(sa_select(AutomationRow))).scalars())
+        stored = {r.id: list((r.config or {}).get("enabled_repos") or [])
+                  for r in rows
+                  if isinstance((r.config or {}).get("enabled_repos"), list)}
+        union = sorted({slug for repos in stored.values() for slug in repos})
+        if not union:
+            return 0
+        mapping = await asyncio.to_thread(canonical_slugs, union, gh_run=gh_run)
+        if not mapping:  # lookup failed entirely — change nothing, retry next start
+            return 0
+
+        changed = 0
+        for row in rows:
+            before = stored.get(row.id)
+            if before is None:
+                continue
+            after = apply_canonical(before, mapping)
+            if after != before:
+                # Reassign the whole dict: a mutated-in-place JSON column is not
+                # seen as dirty by SQLAlchemy and would never be flushed.
+                row.config = {**(row.config or {}), "enabled_repos": after}
+                changed += 1
+                log.info("automations.enabled_repos.reconciled id=%s %s -> %s",
+                         row.id, before, after)
+        return changed
