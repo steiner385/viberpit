@@ -112,7 +112,7 @@ ceiling = 43
 id = "env-prefix"
 pattern = '\bCCSWITCH_[A-Z0-9_]*'
 issue = 1591
-ceiling = 2485
+ceiling = 2484
 
 [[allow]]
 id = "host-legacy-aliases"
@@ -130,7 +130,7 @@ ceiling = 304
 id = "python-package"
 pattern = '\b(from|import)\s+ccswitch\b|\bccswitch\.[a-z_]+|src/ccswitch\b|src\.ccswitch|__editable__\.ccswitch|name = "ccswitch"|^ccswitch = "|\bccswitch-0\.1\.0|(\.venv/)?bin/ccswitch|version\("ccswitch"\)|ccswitch\[server\]|\bccswitch (accounts|clones|add|crypto|init|link|list|migrate|remove|show|status|use|mcp|ask)\b|\b_?ccswitch_[a-z_]+\b|`ccswitch`\s+(CLI|binary|command|console|entry|proper|package)|(CLI|binary|command|script|entry point|installed as|console script|package)\s+`ccswitch`|--prog ccswitch|prog="ccswitch"|"command": "ccswitch"|Entry points: the `ccswitch` command|logger="ccswitch"|getLogger\("ccswitch"\)'
 issue = 1374
-ceiling = 1459
+ceiling = 1358
 
 [[allow]]
 id = "constitution"

@@ -1,27 +1,37 @@
 import unittest
 from datetime import datetime, timedelta, timezone
+
 from tests.helpers import temp_env, usage
+
+from ccswitch import selector
+from ccswitch.config import Config, load_config
+from ccswitch.quota import QuotaWindow, SCOPE_MODEL, anthropic_snapshot, copilot_snapshot
+from ccswitch.selector import (
+    AllAccountsBusy,
+    Picked,
+    at_ceiling,
+    exhausted,
+    rank_accounts,
+    select_best,
+    select_picked,
+)
 
 
 class TestSelector(unittest.TestCase):
     def setUp(self):
         with temp_env():
-            from ccswitch.config import load_config
             self.cfg = load_config()
         self.now = datetime.now(timezone.utc)
 
     def test_picks_lowest_session_utilization(self):
-        from ccswitch.selector import select_best
         usages = {"alpha": usage(session=80.0), "beta": usage(session=10.0), "gamma": usage(session=40.0)}
         self.assertEqual(select_best(usages, set(), self.cfg, self.now), "beta")
 
     def test_weekly_breaks_ties(self):
-        from ccswitch.selector import select_best
         usages = {"alpha": usage(session=10.0, weekly=90.0), "beta": usage(session=10.0, weekly=20.0)}
         self.assertEqual(select_best(usages, set(), self.cfg, self.now), "beta")
 
     def test_excludes_at_ceiling_and_reserved_and_reauth(self):
-        from ccswitch.selector import select_best
         usages = {
             "alpha": usage(session=100.0),       # at session ceiling
             "beta": usage(session=10.0, weekly=100.0),  # at weekly ceiling
@@ -32,7 +42,6 @@ class TestSelector(unittest.TestCase):
         self.assertEqual(select_best(usages, {"delta"}, self.cfg, self.now), "echo")
 
     def test_all_busy_raises_with_earliest_reset(self):
-        from ccswitch.selector import select_best, AllAccountsBusy
         usages = {"alpha": usage(session=100.0, mins=60), "beta": usage(session=100.0, mins=30)}
         with self.assertRaises(AllAccountsBusy) as ctx:
             select_best(usages, set(), self.cfg, self.now)
@@ -42,8 +51,6 @@ class TestSelector(unittest.TestCase):
         # Session is fine (10%, resets soon) but weekly is at ceiling (100%, resets far out).
         # The earliest_reset must reflect the WEEKLY reset (the dimension actually at ceiling),
         # NOT the sooner session reset — otherwise --wait sleeps until the wrong time and busy-loops.
-        from ccswitch.quota import anthropic_snapshot
-        from ccswitch.selector import select_best, AllAccountsBusy
         session_reset = self.now + timedelta(minutes=30)
         weekly_reset = self.now + timedelta(days=2)
         u = anthropic_snapshot(
@@ -60,8 +67,6 @@ class TestSelector(unittest.TestCase):
     def test_prefers_soon_resetting_at_equal_usage(self):
         # Equal usage on both accounts; the one whose window resets sooner has the more
         # "perishable" capacity, so we should drain it first to not waste that quota.
-        from ccswitch.quota import anthropic_snapshot
-        from ccswitch.selector import select_best
         soon = self.now + timedelta(minutes=20)
         later = self.now + timedelta(hours=5)
         usages = {
@@ -73,8 +78,6 @@ class TestSelector(unittest.TestCase):
     def test_fresh_account_saved_for_last(self):
         # A fully fresh account (no active window) has no perishable capacity, so an account
         # with real usage that resets soon should be preferred — even though it has *more* usage.
-        from ccswitch.quota import anthropic_snapshot
-        from ccswitch.selector import select_best
         soon = self.now + timedelta(minutes=30)
         usages = {
             "fresh": anthropic_snapshot(0.0, None, 0.0, None, False),
@@ -85,8 +88,6 @@ class TestSelector(unittest.TestCase):
     def test_weekly_can_be_the_binding_perishable_dimension(self):
         # Session has tons of headroom & resets soon, but weekly is the tighter constraint and
         # resets sooner-relative-to-its-headroom — the binding dimension must drive the score.
-        from ccswitch.quota import anthropic_snapshot
-        from ccswitch.selector import select_best
         soon = self.now + timedelta(hours=1)
         far = self.now + timedelta(days=3)
         usages = {
@@ -100,7 +101,6 @@ class TestSelector(unittest.TestCase):
     def test_degrades_to_lowest_usage_when_resets_far_and_equal(self):
         # When every reset is far out and identical, perishability ranking collapses to
         # "most remaining headroom" == lowest usage == the legacy behavior.
-        from ccswitch.selector import select_best
         usages = {
             "high": usage(session=80.0, mins=300),
             "low": usage(session=10.0, mins=300),
@@ -110,16 +110,12 @@ class TestSelector(unittest.TestCase):
 
     def test_all_fresh_is_deterministic(self):
         # All candidates fresh (None resets): no perishability signal -> deterministic name order.
-        from ccswitch.quota import anthropic_snapshot
-        from ccswitch.selector import select_best
         usages = {"b": anthropic_snapshot(0.0, None, 0.0, None, False),
                   "a": anthropic_snapshot(0.0, None, 0.0, None, False),
                   "c": anthropic_snapshot(0.0, None, 0.0, None, False)}
         self.assertEqual(select_best(usages, set(), self.cfg, self.now), "a")
 
     def test_identical_accounts_tiebreak_by_name(self):
-        from ccswitch.quota import anthropic_snapshot
-        from ccswitch.selector import select_best
         soon = self.now + timedelta(minutes=45)
         usages = {"zulu": anthropic_snapshot(30.0, soon, 10.0, soon, False),
                   "alpha": anthropic_snapshot(30.0, soon, 10.0, soon, False),
@@ -128,8 +124,6 @@ class TestSelector(unittest.TestCase):
 
     def test_toggle_off_reproduces_legacy_lowest_usage(self):
         # With prefer_soon_reset disabled, reset time is ignored: equal usage -> name tiebreak.
-        from ccswitch.quota import anthropic_snapshot
-        from ccswitch.selector import select_best
         self.cfg.prefer_soon_reset = False
         soon = self.now + timedelta(minutes=20)
         later = self.now + timedelta(hours=5)
@@ -143,8 +137,6 @@ class TestSelector(unittest.TestCase):
 
     def test_load_demotes_busy_perishable_account(self):
         # Two equally-perishable accounts; the one already carrying live load is demoted.
-        from ccswitch.quota import anthropic_snapshot
-        from ccswitch.selector import select_best
         soon = self.now + timedelta(minutes=30)
         usages = {
             "busy": anthropic_snapshot(40.0, soon, 20.0, soon, False),
@@ -155,8 +147,6 @@ class TestSelector(unittest.TestCase):
 
     def test_empty_load_reproduces_legacy_order(self):
         # load={} must rank identically to the no-load call (regression guard).
-        from ccswitch.quota import anthropic_snapshot
-        from ccswitch.selector import select_best
         soon = self.now + timedelta(minutes=20)
         later = self.now + timedelta(hours=5)
         usages = {
@@ -169,7 +159,6 @@ class TestSelector(unittest.TestCase):
 
     def test_load_breaks_ties_when_perishability_off(self):
         # prefer_soon_reset off -> all composite scores 0; load (fewest sessions) decides.
-        from ccswitch.selector import select_best
         self.cfg.prefer_soon_reset = False
         usages = {"alpha": usage(session=30.0), "beta": usage(session=30.0)}
         self.assertEqual(
@@ -179,8 +168,6 @@ class TestSelector(unittest.TestCase):
     def test_heavier_load_loses_even_with_better_usage(self):
         # 'low' has better usage but heavy load; 'high' is idle and resets equally soon.
         # The load discount must outweigh the small usage edge.
-        from ccswitch.quota import anthropic_snapshot
-        from ccswitch.selector import select_best
         soon = self.now + timedelta(minutes=30)
         usages = {
             "low": anthropic_snapshot(20.0, soon, 10.0, soon, False),
@@ -191,8 +178,6 @@ class TestSelector(unittest.TestCase):
 
     def test_large_load_is_bounded_no_crash(self):
         # A huge load value must not raise / produce NaN; it just sorts last.
-        from ccswitch.quota import anthropic_snapshot
-        from ccswitch.selector import select_best
         soon = self.now + timedelta(minutes=30)
         usages = {
             "swamped": anthropic_snapshot(40.0, soon, 20.0, soon, False),
@@ -203,47 +188,38 @@ class TestSelector(unittest.TestCase):
                         load={"swamped": 1e9}), "calm")
 
     def test_at_ceiling_session_dimension(self):
-        from ccswitch.selector import at_ceiling
         self.assertTrue(at_ceiling(usage(session=100.0, weekly=10.0), 100.0))
 
     def test_at_ceiling_weekly_dimension(self):
-        from ccswitch.selector import at_ceiling
         self.assertTrue(at_ceiling(usage(session=0.0, weekly=100.0), 100.0))
 
     def test_at_ceiling_false_below_both(self):
-        from ccswitch.selector import at_ceiling
         self.assertFalse(at_ceiling(usage(session=99.0, weekly=99.0), 100.0))
 
     def test_at_ceiling_respects_lower_ceiling(self):
-        from ccswitch.selector import at_ceiling
         self.assertTrue(at_ceiling(usage(session=90.0, weekly=10.0), 90.0))
 
     # --- exhausted(): at_ceiling minus the paid-overflow escape rank_accounts honours ---
 
     def test_exhausted_below_ceiling_is_false(self):
-        from ccswitch.selector import exhausted
         self.assertFalse(exhausted(usage(session=50.0, weekly=20.0), 100.0,
                                    extra_usage_allowed=False))
 
     def test_exhausted_at_ceiling_without_extra_usage(self):
-        from ccswitch.selector import exhausted
         self.assertTrue(exhausted(usage(session=100.0, weekly=20.0), 100.0,
                                   extra_usage_allowed=True))
 
     def test_exhausted_at_ceiling_with_extra_usage_opted_in_is_false(self):
         """rank_accounts still hands this account out (extra_paid tier), so the
         rotation monitor must not call it dead."""
-        from ccswitch.selector import exhausted
         self.assertFalse(exhausted(usage(session=100.0, weekly=20.0, extra=True), 100.0,
                                    extra_usage_allowed=True))
 
     def test_exhausted_extra_usage_enabled_but_not_opted_in(self):
-        from ccswitch.selector import exhausted
         self.assertTrue(exhausted(usage(session=100.0, weekly=20.0, extra=True), 100.0,
                                   extra_usage_allowed=False))
 
     def test_exhausted_weekly_dimension_with_extra_usage_is_false(self):
-        from ccswitch.selector import exhausted
         self.assertFalse(exhausted(usage(session=10.0, weekly=100.0, extra=True), 100.0,
                                    extra_usage_allowed=True))
 
@@ -251,7 +227,6 @@ class TestSelector(unittest.TestCase):
 
     def _kindash_like(self):
         """weekly 91% / Fable weekly 100%: usable for Sonnet, exhausted for Fable."""
-        from ccswitch.quota import QuotaWindow, SCOPE_MODEL, anthropic_snapshot
         fable_reset = self.now + timedelta(hours=8)
         fable = QuotaWindow(key="weekly:fable", label="Fable weekly", used_pct=100.0,
                             resets_at=fable_reset, duration_seconds=7 * 24 * 3600,
@@ -261,7 +236,6 @@ class TestSelector(unittest.TestCase):
                                   model_windows=[fable]), fable_reset
 
     def test_model_scoped_ceiling_excludes_only_that_model(self):
-        from ccswitch.selector import select_best, AllAccountsBusy
         u, fable_reset = self._kindash_like()
         self.assertEqual(select_best({"k": u}, set(), self.cfg, self.now, model="sonnet"), "k")
         with self.assertRaises(AllAccountsBusy) as ctx:
@@ -271,14 +245,11 @@ class TestSelector(unittest.TestCase):
     def test_unknown_model_treats_a_model_scoped_ceiling_as_binding(self):
         """Pinned on purpose: a caller that names no model must not be handed an
         account that 429s on its first turn if that turn happens to be Fable."""
-        from ccswitch.selector import select_best, AllAccountsBusy
         u, _ = self._kindash_like()
         with self.assertRaises(AllAccountsBusy):
             select_best({"k": u}, set(), self.cfg, self.now, model=None)
 
     def test_unknown_scoped_bucket_never_matches_a_known_tier(self):
-        from ccswitch.quota import QuotaWindow, SCOPE_MODEL, anthropic_snapshot
-        from ccswitch.selector import select_best, AllAccountsBusy
         promo = QuotaWindow(key="weekly:promo", label="Promo weekly", used_pct=100.0,
                             resets_at=self.now + timedelta(days=1), scope=SCOPE_MODEL,
                             applies_to_models=("promo",))
@@ -293,8 +264,6 @@ class TestSelector(unittest.TestCase):
 
 import pytest
 
-from ccswitch.config import Config
-from ccswitch.quota import anthropic_snapshot
 
 NOW = datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc)
 SOON = NOW + timedelta(minutes=30)
@@ -305,7 +274,6 @@ def _cfg(**kw):
 
 
 def test_rank_accounts_orders_like_select_best():
-    from ccswitch.selector import rank_accounts, select_best
     usages = {
         "a": anthropic_snapshot(40.0, SOON, 20.0, SOON, False),
         "b": anthropic_snapshot(10.0, SOON, 5.0, SOON, False),
@@ -318,7 +286,6 @@ def test_rank_accounts_orders_like_select_best():
 
 
 def test_rank_accounts_excludes_at_ceiling_and_reports_reset():
-    from ccswitch.selector import rank_accounts
     reset = NOW + timedelta(hours=2)
     usages = {
         "busy": anthropic_snapshot(100.0, reset, 50.0, reset, False),
@@ -330,7 +297,6 @@ def test_rank_accounts_excludes_at_ceiling_and_reports_reset():
 
 
 def test_rank_accounts_all_busy_returns_empty_with_earliest():
-    from ccswitch.selector import rank_accounts
     reset = NOW + timedelta(hours=1)
     usages = {"x": anthropic_snapshot(100.0, reset, 0.0, None, False)}
     ranked, earliest = rank_accounts(usages, set(), _cfg(), NOW)
@@ -339,21 +305,18 @@ def test_rank_accounts_all_busy_returns_empty_with_earliest():
 
 
 def test_rank_reason_perishable_lowest_load():
-    from ccswitch.selector import rank_accounts
     usages = {"a": anthropic_snapshot(40.0, SOON, 20.0, SOON, False)}
     ranked, _ = rank_accounts(usages, set(), _cfg(), NOW, load={})
     assert ranked[0].reason == "perishable quota, lowest load"
 
 
 def test_rank_reason_perishable_sharing_load():
-    from ccswitch.selector import rank_accounts
     usages = {"a": anthropic_snapshot(40.0, SOON, 20.0, SOON, False)}
     ranked, _ = rank_accounts(usages, set(), _cfg(), NOW, load={"a": 2.0})
     assert ranked[0].reason == "perishable quota, sharing live load"
 
 
 def test_rank_reason_fresh_saved_for_last():
-    from ccswitch.selector import rank_accounts
     # No reset window on the binding dimension -> composite 0 -> "fresh".
     usages = {"a": anthropic_snapshot(0.0, None, 0.0, None, False)}
     ranked, _ = rank_accounts(usages, set(), _cfg(), NOW)
@@ -362,7 +325,6 @@ def test_rank_reason_fresh_saved_for_last():
 
 def test_select_best_still_raises_all_busy():
     import pytest
-    from ccswitch.selector import select_best, AllAccountsBusy
     reset = NOW + timedelta(hours=1)
     usages = {"x": anthropic_snapshot(100.0, reset, 0.0, None, False)}
     with pytest.raises(AllAccountsBusy) as ei:
@@ -373,28 +335,24 @@ def test_select_best_still_raises_all_busy():
 # --- optimistic fallback + kind (new) ---
 
 def test_select_picked_readable_is_not_optimistic():
-    from ccswitch.selector import select_picked, Picked
     usages = {"a": anthropic_snapshot(10.0, SOON, 5.0, SOON, False)}
     assert select_picked(usages, set(), _cfg(), NOW) == Picked(name="a", optimistic=False)
 
 
 def test_optimistic_fallback_off_excludes_none_usage():
     # Legacy behavior: with the flag off, an all-None set has no candidates.
-    from ccswitch.selector import rank_accounts
     ranked, earliest = rank_accounts({"a": None, "b": None}, set(), _cfg(), NOW)
     assert ranked == []
     assert earliest is None
 
 
 def test_optimistic_fallback_picks_least_load_when_all_unreadable():
-    from ccswitch.selector import select_picked, Picked
     picked = select_picked({"a": None, "b": None}, set(), _cfg(), NOW,
                            load={"a": 2.0, "b": 0.0}, optimistic_fallback=True)
     assert picked == Picked(name="b", optimistic=True)
 
 
 def test_optimistic_fallback_skips_unhealthy():
-    from ccswitch.selector import select_picked, AllAccountsBusy
     import pytest
     with pytest.raises(AllAccountsBusy) as ei:
         select_picked({"a": None}, set(), _cfg(), NOW,
@@ -404,14 +362,12 @@ def test_optimistic_fallback_skips_unhealthy():
 
 
 def test_readable_outranks_optimistic():
-    from ccswitch.selector import select_picked, Picked
     picked = select_picked({"a": anthropic_snapshot(10.0, SOON, 5.0, SOON, False), "b": None},
                            set(), _cfg(), NOW, optimistic_fallback=True)
     assert picked == Picked(name="a", optimistic=False)
 
 
 def test_mixed_ceiling_plus_unreadable_picks_optimistic():
-    from ccswitch.selector import select_picked, Picked
     reset = NOW + timedelta(hours=2)
     picked = select_picked({"a": anthropic_snapshot(100.0, reset, 0.0, None, False), "b": None},
                            set(), _cfg(), NOW, optimistic_fallback=True)
@@ -419,7 +375,6 @@ def test_mixed_ceiling_plus_unreadable_picks_optimistic():
 
 
 def test_all_at_ceiling_raises_at_ceiling_kind():
-    from ccswitch.selector import select_picked, AllAccountsBusy
     import pytest
     reset = NOW + timedelta(hours=1)
     with pytest.raises(AllAccountsBusy) as ei:
@@ -430,7 +385,6 @@ def test_all_at_ceiling_raises_at_ceiling_kind():
 
 
 def test_optimistic_ranked_after_readable_in_list():
-    from ccswitch.selector import rank_accounts
     ranked, _ = rank_accounts({"a": anthropic_snapshot(10.0, SOON, 5.0, SOON, False), "b": None},
                               set(), _cfg(), NOW, optimistic_fallback=True)
     assert [r.name for r in ranked] == ["a", "b"]
@@ -443,7 +397,6 @@ LATER = NOW + timedelta(hours=5)
 
 
 def test_reserve_demotes_over_reserve_account_to_last():
-    from ccswitch.selector import rank_accounts
     # Perishability = binding-dimension headroom / hours-to-reset (higher = pick first).
     usages = {
         "hot": anthropic_snapshot(10.0, SOON, 91.0, SOON, False),    # weekly binding: 9%/0.5h = 18/h
@@ -461,7 +414,6 @@ def test_reserve_demotes_over_reserve_account_to_last():
 
 
 def test_reserve_boundary_is_inclusive():
-    from ccswitch.selector import rank_accounts
     # "at" (20/h) outranks "under" (2.02/h) without reserves; with weekly_pct == reserve
     # it must be blocked (>= semantics), flipping the order.
     usages = {
@@ -477,7 +429,6 @@ def test_reserve_boundary_is_inclusive():
 
 
 def test_reserve_soft_fallback_picks_least_weekly_used():
-    from ccswitch.selector import select_picked, Picked
     usages = {
         "worse": anthropic_snapshot(10.0, SOON, 97.0, SOON, False),
         "better": anthropic_snapshot(10.0, SOON, 92.0, SOON, False),
@@ -488,7 +439,6 @@ def test_reserve_soft_fallback_picks_least_weekly_used():
 
 
 def test_reserve_hard_ceiling_still_excludes_outright():
-    from ccswitch.selector import rank_accounts
     reset = NOW + timedelta(hours=2)
     usages = {
         "maxed": anthropic_snapshot(10.0, SOON, 100.0, reset, False),  # at ceiling — NOT fallback
@@ -501,7 +451,6 @@ def test_reserve_hard_ceiling_still_excludes_outright():
 
 
 def test_optimistic_tier_outranks_reserve_blocked():
-    from ccswitch.selector import rank_accounts
     usages = {"r": anthropic_snapshot(10.0, SOON, 95.0, SOON, False), "o": None}
     ranked, _ = rank_accounts(usages, set(), _cfg(), NOW,
                               optimistic_fallback=True, reserves={"r": 90.0})
@@ -509,7 +458,6 @@ def test_optimistic_tier_outranks_reserve_blocked():
 
 
 def test_no_reserves_behavior_unchanged():
-    from ccswitch.selector import rank_accounts
     usages = {
         "a": anthropic_snapshot(40.0, SOON, 20.0, SOON, False),
         "b": anthropic_snapshot(10.0, SOON, 95.0, SOON, False),
@@ -531,7 +479,6 @@ EXTRA_REASON = "at ceiling — burning extra usage credits"
 
 
 def test_extra_usage_opt_in_demotes_at_ceiling_account_to_last():
-    from ccswitch.selector import rank_accounts
     usages = {
         "maxed": anthropic_snapshot(100.0, SOON, 20.0, SOON, True),   # at session ceiling, extra ON upstream
         "ok": anthropic_snapshot(10.0, LATER, 20.0, LATER, False),
@@ -555,7 +502,6 @@ def test_extra_usage_requires_upstream_enabled():
     """Opting in cannot conjure credits: if Anthropic reports extra usage OFF for the
     account, it stays excluded. Otherwise the selector would hand out a session that
     immediately dies on rate limits."""
-    from ccswitch.selector import rank_accounts, select_best, AllAccountsBusy
     usages = {"maxed": anthropic_snapshot(100.0, SOON, 20.0, SOON, False)}  # extra OFF upstream
     ranked, earliest = rank_accounts(usages, set(), _cfg(), NOW,
                                      extra_usage_allowed={"maxed"})
@@ -568,7 +514,6 @@ def test_extra_usage_requires_upstream_enabled():
 def test_extra_usage_without_opt_in_stays_excluded():
     """The upstream flag alone is not consent — ViberPit must not spend money on an
     account the user never toggled on."""
-    from ccswitch.selector import rank_accounts
     usages = {"maxed": anthropic_snapshot(100.0, SOON, 20.0, SOON, True)}  # extra ON upstream, not opted in
     ranked, earliest = rank_accounts(usages, set(), _cfg(), NOW)
     assert ranked == []
@@ -577,7 +522,6 @@ def test_extra_usage_without_opt_in_stays_excluded():
 
 def test_extra_usage_tier_is_below_reserve_and_optimistic():
     """Full tier order: normal → optimistic → over-reserve → extra-usage."""
-    from ccswitch.selector import rank_accounts
     usages = {
         "normal": anthropic_snapshot(10.0, SOON, 20.0, SOON, False),
         "optimistic": None,
@@ -592,7 +536,6 @@ def test_extra_usage_tier_is_below_reserve_and_optimistic():
 
 
 def test_extra_usage_selected_only_when_nothing_else_left():
-    from ccswitch.selector import select_picked, Picked
     at_ceiling = anthropic_snapshot(100.0, SOON, 20.0, SOON, True)
     free = anthropic_snapshot(90.0, SOON, 20.0, SOON, False)  # nearly maxed, but still under ceiling
     # A free account, however hot, beats spending credits.
@@ -605,7 +548,6 @@ def test_extra_usage_selected_only_when_nothing_else_left():
 
 def test_extra_usage_weekly_ceiling_also_qualifies():
     """Either dimension hitting the ceiling routes to the tier, not just session."""
-    from ccswitch.selector import rank_accounts
     usages = {"maxed": anthropic_snapshot(10.0, SOON, 100.0, SOON, True)}
     ranked, _ = rank_accounts(usages, set(), _cfg(), NOW, extra_usage_allowed={"maxed"})
     assert [r.name for r in ranked] == ["maxed"]
@@ -615,7 +557,6 @@ def test_extra_usage_weekly_ceiling_also_qualifies():
 def test_extra_usage_respects_exclude_and_reserved():
     """The tier is a demotion, not an escape hatch: an explicitly excluded or
     session-reserved account must stay out however its credits are configured."""
-    from ccswitch.selector import rank_accounts
     usages = {
         "excluded": anthropic_snapshot(100.0, SOON, 20.0, SOON, True),
         "held": anthropic_snapshot(100.0, SOON, 20.0, SOON, True),
@@ -628,7 +569,6 @@ def test_extra_usage_respects_exclude_and_reserved():
 def test_extra_usage_partial_opt_in_leaves_others_busy():
     """One opted-in account does not rescue its at-ceiling neighbours, and the
     earliest_reset still reports the accounts that really are stuck."""
-    from ccswitch.selector import rank_accounts
     stuck_reset = NOW + timedelta(hours=3)
     usages = {
         "opted": anthropic_snapshot(100.0, SOON, 20.0, SOON, True),
@@ -642,7 +582,6 @@ def test_extra_usage_partial_opt_in_leaves_others_busy():
 
 def test_no_extra_usage_behavior_unchanged():
     """Default/empty/irrelevant opt-in sets must all reproduce the legacy ranking."""
-    from ccswitch.selector import rank_accounts
     usages = {
         "a": anthropic_snapshot(40.0, SOON, 20.0, SOON, True),
         "b": anthropic_snapshot(10.0, SOON, 95.0, SOON, True),
@@ -668,8 +607,6 @@ def test_mixed_provider_tie_break_is_fixed_width_and_provider_independent():
     so the number of windows a provider happens to report cannot influence
     ranking and only the name breaks a genuine tie.
     """
-    from ccswitch import selector
-    from ccswitch.quota import copilot_snapshot
 
     def _fleet(copilot_name, anthropic_name):
         return {

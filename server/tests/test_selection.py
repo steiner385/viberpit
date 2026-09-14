@@ -19,8 +19,12 @@ from unittest.mock import patch
 import pytest
 
 from tests.helpers import temp_env
-from ccswitch.quota import QuotaSnapshot, anthropic_snapshot
 from server.sessions.engine import AgentEngine
+
+from ccswitch import account_registry, paths
+from ccswitch.creds import write_json_secure
+from ccswitch.quota import QuotaSnapshot, anthropic_snapshot
+from ccswitch.selector import Picked
 
 
 # ---------------------------------------------------------------------------
@@ -29,8 +33,6 @@ from server.sessions.engine import AgentEngine
 
 def _seed_account(name: str) -> None:
     """Write a minimal credential slot so pick_account can find the account."""
-    from ccswitch import paths
-    from ccswitch.creds import write_json_secure
     now_ms = int(time.time() * 1000)
     write_json_secure(paths.slot_path(name), {
         "accessToken": f"{name}-tok",
@@ -88,7 +90,6 @@ def test_sequential_calls_return_different_accounts():
 
 def test_selection_never_crosses_the_requested_engine():
     """Engine eligibility is applied before quota I/O and optimistic fallback."""
-    from ccswitch import account_registry
     from server.sessions.selection import select_account
 
     with temp_env():
@@ -299,7 +300,6 @@ def test_select_account_forwards_model(monkeypatch):
     def fake_pick(cfg, *, exclude, load, reserve, soft_exclude, require_engine,
                   default_engine, model=None):
         seen["model"] = model
-        from ccswitch.selector import Picked
         return Picked(name="alpha", optimistic=False)
 
     monkeypatch.setattr(selection, "pick_account_detailed", fake_pick)
@@ -316,7 +316,6 @@ def test_select_account_model_defaults_to_none(monkeypatch):
     def fake_pick(cfg, *, exclude, load, reserve, soft_exclude, require_engine,
                   default_engine, model=None):
         seen["model"] = model
-        from ccswitch.selector import Picked
         return Picked(name="alpha", optimistic=False)
 
     monkeypatch.setattr(selection, "pick_account_detailed", fake_pick)

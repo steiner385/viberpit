@@ -6,6 +6,8 @@ import pytest
 from server.sessions.engine import AgentEngine
 from server.sessions.model_policy import quota_model
 
+from ccswitch import paths
+
 
 @pytest.mark.parametrize("model, expected", [
     ("fable", "fable"),
@@ -28,7 +30,6 @@ def test_default_resolves_to_the_inherited_fleet_model(monkeypatch, tmp_path):
     exhausted account must not receive a Default session."""
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
     (tmp_path / "settings.json").write_text(json.dumps({"model": "fable"}))
-    from ccswitch import paths
     monkeypatch.setattr(paths, "shared_base", lambda: tmp_path)
     assert quota_model(None) == "fable"
     assert quota_model("default") == "fable"
@@ -36,7 +37,6 @@ def test_default_resolves_to_the_inherited_fleet_model(monkeypatch, tmp_path):
 
 def test_default_with_nothing_pinned_is_indeterminate(monkeypatch, tmp_path):
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
-    from ccswitch import paths
     monkeypatch.setattr(paths, "shared_base", lambda: tmp_path)   # no settings files
     assert quota_model(None) is None
 

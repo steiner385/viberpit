@@ -4,13 +4,14 @@ from unittest.mock import patch
 
 from tests.helpers import temp_env, usage
 
+from ccswitch import accounts
+from ccswitch.config import load_config
+from ccswitch.selector import Picked
+
 
 class TestPickModel(unittest.TestCase):
     def test_model_reaches_select_picked(self):
         with temp_env():
-            from ccswitch import accounts
-            from ccswitch.config import load_config
-            from ccswitch.selector import Picked
             cfg = load_config()
             seen = {}
 
@@ -30,13 +31,10 @@ class TestPickModel(unittest.TestCase):
 
     def test_pick_account_forwards_model(self):
         with temp_env():
-            from ccswitch import accounts
-            from ccswitch.config import load_config
             cfg = load_config()
             seen = {}
 
             def fake_detailed(cfg_, exclude=frozenset(), load=None, **kw):
-                from ccswitch.selector import Picked
                 seen["model"] = kw.get("model")
                 return Picked(name="alpha", optimistic=False)
 
