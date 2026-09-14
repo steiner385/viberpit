@@ -74,3 +74,26 @@ retry in `src/ccswitch/oauth.py`; reservations, reserve thresholds, and usage ca
 (self-heal sessions on dead/exhausted accounts), #534 (auto-recover needs_attention on free-up),
 #540/#539 (ledger-shared usage-fetch backoff), #680 (short-circuit on 400 refresh failure), #90
 (session/weekly window labels + reset tooltips).
+
+## Per-model windows (2026-09-14)
+
+Anthropic meters some models separately from the account-wide 5-hour and 7-day
+windows. The usage payload carries them as `limits[]` entries with
+`kind: "weekly_scoped"` and `scope.model.display_name` (the `id` is null); e.g. an
+account can read weekly 91% but Fable 100%.
+
+- **Parsing.** `oauth.parse_usage` emits one `QuotaWindow` per scoped entry after the
+  account-wide pair: key `"<group>:<tier>"` (`weekly:fable`), `scope = "model"`,
+  `applies_to_models = ("fable",)`. The tier token is what
+  `server/sessions/model_catalog.model_tier` yields for the session's model.
+- **Selection.** `select_account(..., model=quota_model(...))`: the selector applies
+  only the windows that meter that tier, so a Fable-exhausted account still serves
+  Sonnet. A caller that names no model (CLI launchers, non-Claude engines, `best`)
+  gets **every** window applied — conservative by design.
+- **Rotation.** The poller-driven monitor moves only sessions whose model the
+  exhausted window meters; the reason and the `account_limited` push name the window
+  ("Fable weekly limit reached"), once per account+window.
+- **Display.** Every window is a badge on the Accounts page; session cards bind on
+  the session's own model (`lib/usageWindows.ts:windowsFor`).
+- **Not done here:** downgrading a session's model when every account is exhausted
+  for it (a policy decision), per-model reserves, Codex per-model selection.
