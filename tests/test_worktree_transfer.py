@@ -260,3 +260,38 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(listed.strip(), "")
         local = _git("for-each-ref", f"{wt.TRANSFER_REF_NS}/{self.sid}/", cwd=str(self.dst))
         self.assertEqual(local, "")
+
+    def test_dest_occupied_with_different_head_is_refused(self) -> None:
+        b = wt.export(self.cwd, self.sid, carry_dirty=False)
+        other = worktrees.create_worktree(str(self.dst), "main", self.sid, str(self.dst_root))
+        (Path(other.path) / "occupied.txt").write_text("occupied\n")
+        _git("add", "-A", cwd=other.path)
+        _git("commit", "-q", "-m", "occupied", cwd=other.path)
+        with self.assertRaises(wt.TransferError) as ctx:
+            wt.import_(b, str(self.dst), str(self.dst_root))
+        self.assertEqual(ctx.exception.code, "dest_occupied")
+
+    def test_fetch_failure_is_reported(self) -> None:
+        b = wt.export(self.cwd, self.sid, carry_dirty=False)
+        _git("remote", "set-url", "origin", str(self.root / "missing.git"), cwd=str(self.dst))
+        with self.assertRaises(wt.TransferError) as ctx:
+            wt.import_(b, str(self.dst), str(self.dst_root))
+        self.assertEqual(ctx.exception.code, "fetch_failed")
+        self.assertFalse(self._dest().exists())
+
+    def test_worktree_add_failure_restores_branch_pointer(self) -> None:
+        _git("branch", self.info.branch, "origin/main", cwd=str(self.dst))
+        prev = _git("rev-parse", f"refs/heads/{self.info.branch}", cwd=str(self.dst))
+        b = wt.export(self.cwd, self.sid, carry_dirty=False)
+        real_run = wt._run
+
+        def fake_run(args, env=None):
+            if "worktree" in args and "add" in args:
+                return subprocess.CompletedProcess(args, 1, "", "disk full")
+            return real_run(args, env)
+
+        with mock.patch.object(wt, "_run", side_effect=fake_run):
+            with self.assertRaises(wt.TransferError) as ctx:
+                wt.import_(b, str(self.dst), str(self.dst_root))
+        self.assertEqual(ctx.exception.code, "worktree_add_failed")
+        self.assertEqual(_git("rev-parse", f"refs/heads/{self.info.branch}", cwd=str(self.dst)), prev)

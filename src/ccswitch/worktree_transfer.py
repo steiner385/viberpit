@@ -218,17 +218,24 @@ def import_(bundle: Bundle, repo_path: str, repo_root: str) -> WorktreeInfo:
     if bundle.branch is None:
         add = _run(["git", "-C", top, "worktree", "add", "-q", "--detach", str(dest),
                     "--", bundle.head_sha])
+        if add.returncode != 0:
+            raise TransferError("worktree_add_failed", add.stderr.strip())
     else:
         busy = _branch_checked_out_at(top, bundle.branch)
         if busy:
             raise TransferError("branch_busy_on_target",
                                 f"{bundle.branch} is checked out at {busy}")
+        prev = _rev(top, f"refs/heads/{bundle.branch}")
         br = _run(["git", "-C", top, "branch", "-f", bundle.branch, bundle.head_sha])
         if br.returncode != 0:
             raise TransferError("branch_failed", br.stderr.strip())
         add = _run(["git", "-C", top, "worktree", "add", "-q", str(dest), "--", bundle.branch])
-    if add.returncode != 0:
-        raise TransferError("worktree_add_failed", add.stderr.strip())
+        if add.returncode != 0:
+            if prev is not None:
+                _run(["git", "-C", top, "branch", "-f", bundle.branch, prev])
+            else:
+                _run(["git", "-C", top, "branch", "-D", bundle.branch])
+            raise TransferError("worktree_add_failed", add.stderr.strip())
     if bundle.wip_commit:
         rs = _run(["git", "-C", str(dest), "reset", "-q", "--mixed", bundle.base_sha])
         if rs.returncode != 0:
