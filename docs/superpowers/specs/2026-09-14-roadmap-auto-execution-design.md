@@ -48,7 +48,7 @@ unscored, so a freshly approved plan's tasks rank *last* in the queue.
 | D3 | **The dial and the front-chain cap join `PRODUCT_POLICY_SCHEMA`.** `risk_tolerance` (enum, default `cautious`) and `max_initiatives_in_flight` (int, default 2 **[decided]**, min 0). Stored in the existing `Project.automation_policy` blob, edited on the product Overview card by the generic renderer. | Constitution VI: one schema, one editor, one validated reading (`effective_policy`). A product without a policy is `cautious`: behaviour-preserving at the flip. |
 | D4 | **An auto-resolved gate calls the same function the human button calls**, stamped `decided_by="auto"`, audited, and recorded on the initiative so the roadmap can show what the machine did with the reverse action inline. | The D6 pattern from the automation-policy spec (`apply_accept`). No second write path per gate. |
 | D5 | **The reverse action is the existing one; there is no new undo mechanism.** Advance is reversed by Step back; a merged artifact by a revert; an accepted materialization by closing the issues; a model upgrade by switching back. The roadmap shows the chip "auto · <what> · <reverse>" for `AUTO_RESOLVED_VISIBLE_S` (24 h). | Every gate already has a human reverse; adding an undo table would be a second truth about the same state. |
-| D6 | **[decided] Initiative priority is derived, never stored:** the epic issue's own RICE score when it is classified, else the highest score among its open sub-issues, else `None`. Materialization seeds each new sub-issue's RICE from the epic issue's. | Evidence the triage layer already produces; no fifth priority vocabulary. Seeding fixes the rank-last inversion for approved plans. |
+| D6 | **[decided] Initiative priority is derived, never stored:** the epic issue's own RICE score when it is classified, else the highest score among its open sub-issues, else `None`. Materialization seeds each new sub-issue's RICE from the initiative's *source issue* (`origin_ref`, the intake or adopted issue) when that issue is mirrored and fully scored; the epic itself does not exist until the apply creates it. | Evidence the triage layer already produces; no fifth priority vocabulary. Seeding fixes the rank-last inversion for approved plans. |
 | D7 | **The synthesizer executes in priority order under a per-product cap.** Initiatives are visited highest priority first (ties: oldest first); new artifact sessions spawn only while the product has fewer than `max_initiatives_in_flight` initiatives *actively producing* an artifact. Gate resolutions (merge, advance, accept) are never capped: they finish work. | "Execute through the roadmap" means one or two things at a time in the order that matters, not everything at once. |
 | D8 | **The synthesizer's modes fold to `off | on`; the dead `propose_only` seam is deleted.** Whether a gate auto-resolves is the product's tolerance, not a global mode. | Same fold the runner took in the automation-policy spec (D1/D10). Two dials for one decision is the bug shape named first. |
 | D9 | **A process-wide kill switch, `CCSWITCH_GATE_AUTORESOLVE_ENABLED` (default true), forces `cautious` everywhere without touching any policy.** | The C4 lesson (no kill switch for materialize) cost a recovery. One env var, read through `server/config.py`, is cheap insurance. |
@@ -132,10 +132,14 @@ key it ever read was `propose_only`, which is deleted (D8). New pure actions:
   `epic_total > 0 and epic_done >= epic_total` and `stage.advance_built` auto-resolves →
   `Advance("deploy")`; otherwise today's `HandoffToBuild` / `NeedsHuman`.
 
-`mode` keeps only `off | on` (`off` → `NeedsHuman("SDLC automation is off")`); a stored
-`propose`/`auto` folds to `on` through one `fold_global_mode` shared with the read path, the way
-the runner's does. The engine stays a total function over plain views: the tolerance is a string
-it is handed, never something it looks up.
+`mode` keeps only `off | on` (`off` → `NeedsHuman("SDLC automation is off")`, anything else
+proceeds); the synthesizer's stored `propose`/`auto` folds to `on` through one
+`fold_synth_mode`, shared by its read path and a one-shot row rewrite on the first tick, the
+way the runner's `fold_global_mode` does. SDLC Intake keeps its own modes and only ever
+proposes intents, so it calls `next_action` with `tolerance="cautious"`; the synthesizer is the
+one loop that resolves gates, for every artifact kind including intent, exactly as it already
+owns enrichment for every kind. The engine stays a total function over plain views: the
+tolerance is a string it is handed, never something it looks up.
 
 ## 6. The synthesizer loop
 
@@ -191,9 +195,11 @@ identity)` moves the body of `POST /initiatives/{slug}/materialization/accept` (
 re-read-under-lock shape `pending_proposal_stmt` established for triage: a human accept and the
 loop must not both apply one proposal.
 
-Materialization seeding (D6): `materialize_apply.py` copies `reach/impact/effort/confidence` from
-the epic issue's `WorkItem` when all four are set, `classified_by="materialize"` as today; when the
-epic is unscored the sub-issues stay unscored (no invented numbers).
+Materialization seeding (D6): `materialize_apply.py` copies `reach/impact/effort/confidence` onto
+each created sub-issue from the `WorkItem` mirroring the initiative's `origin_ref` when all four
+are set, `classified_by="materialize"` as today; when there is no source issue or it is unscored
+the sub-issues stay unscored (no invented numbers). The new epic's own score arrives through the
+normal mirror and triage path.
 
 ## 8. Recording an auto-resolution
 
