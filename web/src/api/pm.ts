@@ -78,6 +78,27 @@ export function fetchPolicySchema(): Promise<ConfigField[]> {
   return api.get<ConfigField[]>('/pm/policy-schema')
 }
 
+/** Read-only registration evidence, not an automation authorization decision. */
+export interface ProductPolicyCoverage {
+  projectSlug: string
+  observedAt: string
+  scope: 'repository-coverage'
+  explanation: string
+  repositories: {
+    requestedRepo: string
+    canonicalRepo: string | null
+    state: 'unique' | 'ambiguous' | 'missing' | 'unresolved'
+    owner: { id: string; slug: string } | null
+    candidates: { id: string; slug: string }[]
+    unresolvedRepos: string[]
+    reason: string
+  }[]
+}
+
+export function fetchProductPolicyCoverage(slug: string): Promise<ProductPolicyCoverage> {
+  return api.get<ProductPolicyCoverage>(`/pm/projects/${encodeURIComponent(slug)}/policy/coverage`)
+}
+
 /** Whole-object replace: the server validates and stores the FULL policy, never
  *  a partial patch (`server/api/pm.py:update_project_policy`). `null` clears it
  *  (opts the product back out). Returns the full project detail so the card's

@@ -1,12 +1,4 @@
-"""``server/pm/repo_project.py`` — THE repo→project resolver.
-
-Both the PM API (``server/api/pm.py``) and the daemon-side pm-triage seams
-(``server/sessions/orchestrator.py``) route through this one function; it used
-to be implemented twice, once per layer, with a hand-maintained promise in a
-docstring that the two tie-breaks agreed. These tests pin the tie-break itself
-(lowest ``Project.slug``, stable across insertion order) and the batch shape
-(ONE query for N repos — the loop resolves a whole classify batch at once).
-"""
+"""One batched repository ownership authority; ambiguous evidence never wins."""
 from __future__ import annotations
 
 import os
@@ -17,7 +9,7 @@ import pytest
 
 from server.db import db_session, init_db
 from server.db.models import Project, ProjectRepo
-from server.pm.repo_project import RepoOwner, owning_projects_by_repo
+from server.pm.repo_project import RepoOwner, owning_projects_by_repo, resolve_repo_ownership
 
 REPO = "steiner385/viberpit"
 OTHER_REPO = "steiner385/kindash"
@@ -73,16 +65,13 @@ async def test_single_owner_returns_id_and_slug(db_env):
     [("alpha", REPO), ("zeta", REPO)],
     [("zeta", REPO), ("alpha", REPO)],
 ])
-async def test_two_owners_lowest_slug_wins_whatever_the_insertion_order(
+async def test_two_owners_refused_whatever_the_insertion_order(
         db_env, order):
-    """A repo CAN legally sit under two projects (``ProjectRepo`` is unique on
-    ``(project_id, repo)`` and registration does no cross-project check). The
-    winner must not depend on row order, or the inbox's ``projectSlug`` and the
-    loop's classify scoping disagree between a request and a tick."""
-    ids = await _seed(db_env, order)
+    """Ownership ambiguity is independent of row or slug ordering."""
+    await _seed(db_env, order)
     async with db_session() as db:
         owners = await owning_projects_by_repo(db, {REPO})
-    assert owners[REPO] == RepoOwner(project_id=ids["alpha"], slug="alpha")
+    assert owners == {}
 
 
 @pytest.mark.asyncio
@@ -128,3 +117,130 @@ async def test_batch_of_repos_is_one_query_not_n(db_env):
         OTHER_REPO: RepoOwner(project_id=ids["kindash"], slug="kindash"),
         "steiner385/infra": RepoOwner(project_id=ids["infra"], slug="infra"),
     }
+
+
+@pytest.mark.asyncio
+async def test_verified_aliases_coalesce_within_product(db_env):
+    alias = "steiner385/old-name"
+    ids = await _seed(db_env, [("product", alias), ("product", REPO.upper())])
+    async with db_session() as db:
+        counter = _CountingExecute(db)
+        with patch.object(db, "execute", counter):
+            result = await resolve_repo_ownership(
+                db, [REPO, alias.upper()], canonical_repos={alias: REPO, REPO: REPO})
+    assert counter.calls == 1
+    for resolution in result.values():
+        assert resolution.state == "unique"
+        assert resolution.canonical_repo == REPO
+        assert resolution.owner == RepoOwner(ids["product"], "product")
+        assert resolution.candidates == (resolution.owner,)
+
+
+@pytest.mark.asyncio
+async def test_verified_aliases_across_products_ambiguous(db_env):
+    alias = "steiner385/old-name"
+    ids = await _seed(db_env, [("alpha", alias), ("zeta", REPO)])
+    async with db_session() as db:
+        result = (await resolve_repo_ownership(
+            db, [REPO], canonical_repos={alias: REPO, REPO: REPO}))[REPO]
+    assert result.state == "ambiguous"
+    assert result.owner is None
+    assert {o.project_id for o in result.candidates} == set(ids.values())
+
+
+@pytest.mark.asyncio
+async def test_missing_requires_verified_request_and_coverage(db_env):
+    await _seed(db_env, [("product", REPO)])
+    async with db_session() as db:
+        result = await resolve_repo_ownership(
+            db, [OTHER_REPO], canonical_repos={REPO: REPO, OTHER_REPO: OTHER_REPO})
+        unknown = await resolve_repo_ownership(db, [OTHER_REPO])
+    assert result[OTHER_REPO].state == "missing"
+    assert unknown[OTHER_REPO].state == "unresolved"
+    assert unknown[OTHER_REPO].canonical_repo is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identity", [None, "malformed", "/", "owner/..", "owner/repo/extra"])
+async def test_unavailable_registration_blocks_unique_without_guessing_alias(db_env, identity):
+    alias = "someone/old-name"
+    await _seed(db_env, [("product", REPO), ("other", alias)])
+    async with db_session() as db:
+        result = (await resolve_repo_ownership(
+            db, [REPO], canonical_repos={REPO: REPO, alias: identity}))[REPO]
+    assert result.state == "unresolved"
+    assert result.owner is None
+    assert result.unresolved_repos == (alias,)
+    assert len(result.candidates) == 1
+
+
+@pytest.mark.asyncio
+async def test_null_slug_is_unresolved_not_missing_or_unique(db_env):
+    await _seed(db_env, [("product", REPO)])
+    async with db_session() as db:
+        p = Project(slug=None, name="Unnameable")
+        db.add(p)
+        await db.flush()
+        db.add(ProjectRepo(project_id=p.id, repo=REPO))
+    async with db_session() as db:
+        result = (await resolve_repo_ownership(
+            db, [REPO], canonical_repos={REPO: REPO}))[REPO]
+        assert await owning_projects_by_repo(db, [REPO]) == {}
+    assert result.state == "unresolved"
+    assert result.owner is None
+    assert result.unresolved_repos == (REPO,)
+
+
+@pytest.mark.asyncio
+async def test_unrelated_verified_registration_does_not_block(db_env):
+    ids = await _seed(db_env, [("product", REPO), ("other", OTHER_REPO)])
+    async with db_session() as db:
+        result = (await resolve_repo_ownership(
+            db, [REPO.upper()], canonical_repos={REPO: REPO, OTHER_REPO: OTHER_REPO}))[REPO.upper()]
+    assert result.state == "unique"
+    assert result.owner == RepoOwner(ids["product"], "product")
+
+
+@pytest.mark.asyncio
+async def test_partial_request_snapshot_is_explicit(db_env):
+    await _seed(db_env, [("product", REPO)])
+    async with db_session() as db:
+        result = await resolve_repo_ownership(
+            db, [REPO, OTHER_REPO], canonical_repos={REPO: REPO})
+    assert result[REPO].state == "unique"
+    assert result[OTHER_REPO].state == "unresolved"
+    assert result[OTHER_REPO].unresolved_repos == (OTHER_REPO,)
+
+
+@pytest.mark.asyncio
+async def test_conflicting_casefold_snapshot_cannot_choose_evidence(db_env):
+    await _seed(db_env, [("product", REPO)])
+    async with db_session() as db:
+        result = (await resolve_repo_ownership(
+            db, [REPO], canonical_repos={REPO: REPO, REPO.upper(): OTHER_REPO}))[REPO]
+    assert result.state == "unresolved"
+    assert result.canonical_repo is None
+    assert result.owner is None
+
+
+@pytest.mark.asyncio
+async def test_empty_database_requires_verified_identity_for_missing(db_env):
+    await _seed(db_env, [])
+    async with db_session() as db:
+        assert await resolve_repo_ownership(db, [""]) == {}
+        verified = (await resolve_repo_ownership(
+            db, [REPO], canonical_repos={REPO: REPO}))[REPO]
+        unverified = (await resolve_repo_ownership(db, [REPO], canonical_repos={}))[REPO]
+    assert verified.state == "missing"
+    assert unverified.state == "unresolved"
+    assert unverified.unresolved_repos == (REPO,)
+
+
+@pytest.mark.asyncio
+async def test_registration_case_variants_preserve_local_evidence_only(db_env):
+    ids = await _seed(db_env, [("product", REPO), ("product", REPO.upper())])
+    async with db_session() as db:
+        result = (await resolve_repo_ownership(db, [REPO]))[REPO]
+    assert result.state == "unique"
+    assert result.owner == RepoOwner(ids["product"], "product")
+    assert result.canonical_repo is None

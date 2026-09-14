@@ -15,6 +15,7 @@ from ccswitch import gitrepos
 
 from server.automations.ownership import CanonicalTarget
 from server.pm.gh_mutations import payload_from_gh
+from server.pm.github_sync import canonical_repo_name
 from server.pm.refs import split_ref
 
 
@@ -34,10 +35,61 @@ async def _fetch(owner: str, query: str) -> dict:
     return payload_from_gh(proc, partial_ok=False)
 
 
-def _repo(value: object) -> bool:
+def valid_repo_name(value: object) -> bool:
     return (isinstance(value, str)
             and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+", value) is not None
             and value.partition("/")[2] not in {".", ".."})
+
+
+async def resolve_repositories(
+    repos: Sequence[str], *,
+    fetch: Callable[[str, str], Awaitable[dict]] | None = None,
+) -> dict[str, str | None]:
+    """Evaluation-scoped GitHub repository evidence, including explicit unknowns.
+
+    Preserve requested spellings while deduplicating case variants. Credential
+    owners and 50-repository chunks share the existing target transport. Failed
+    chunks remain unknown; a malformed/missing item cannot acquire an identity
+    from another item. No alias is inferred from its spelling.
+    """
+    result: dict[str, str | None] = dict.fromkeys(repos)
+    spellings: dict[str, list[str]] = {}
+    groups: dict[str, list[str]] = {}
+    for repo in result:
+        if not valid_repo_name(repo):
+            continue
+        key = repo.casefold()
+        if key not in spellings:
+            groups.setdefault(repo.partition("/")[0].casefold(), []).append(repo)
+        spellings.setdefault(key, []).append(repo)
+    for owner, items in groups.items():
+        for start in range(0, len(items), 50):
+            chunk = items[start:start + 50]
+            aliases = []
+            for index, repo in enumerate(chunk):
+                login, _, name = repo.partition("/")
+                aliases.append(
+                    f"r{index}: repository(owner: {json.dumps(login)}, "
+                    f"name: {json.dumps(name)}) {{ nameWithOwner }}")
+            try:
+                payload = await (fetch or _fetch)(owner, "query { " + " ".join(aliases) + " }")
+            except Exception:
+                continue
+            if not isinstance(payload, dict) or payload.get("errors"):
+                continue
+            data = payload.get("data")
+            if not isinstance(data, dict):
+                continue
+            for index, repo in enumerate(chunk):
+                repository = data.get(f"r{index}")
+                if not isinstance(repository, dict):
+                    continue
+                canonical = canonical_repo_name({"data": {"repository": repository}})
+                if not valid_repo_name(canonical):
+                    continue
+                for spelling in spellings[repo.casefold()]:
+                    result[spelling] = canonical
+    return result
 
 
 async def resolve_targets(
@@ -65,7 +117,7 @@ async def resolve_targets(
             parsed = split_ref(ref)
         except ValueError:
             parsed = None
-        if (parsed is None or not _repo(parsed[0]) or parsed[1] <= 0
+        if (parsed is None or not valid_repo_name(parsed[0]) or parsed[1] <= 0
                 or parsed[1] > 2**31 - 1
                 or not re.fullmatch(r"[0-9]+", ref.rpartition("#")[2])):
             raise TargetIdentityError("invalid target reference")
@@ -105,7 +157,7 @@ async def resolve_targets(
                     raise TargetIdentityError("target identity unavailable")
                 canonical_repo = repository.get("nameWithOwner")
                 item = repository.get("item")
-                if not _repo(canonical_repo) or not isinstance(item, dict):
+                if not valid_repo_name(canonical_repo) or not isinstance(item, dict):
                     raise TargetIdentityError("target identity unavailable")
                 if (item.get("__typename") != typename
                         or type(item.get("number")) is not int or item["number"] != number
@@ -134,7 +186,7 @@ async def resolve_targets(
                         linked_repo = (linked_repository.get("nameWithOwner")
                                        if isinstance(linked_repository, dict) else None)
                         linked_number = linked.get("number")
-                        if (linked.get("__typename") != "Issue" or not _repo(linked_repo)
+                        if (linked.get("__typename") != "Issue" or not valid_repo_name(linked_repo)
                                 or type(linked_number) is not int or linked_number <= 0
                                 or linked.get("url") !=
                                 f"https://github.com/{linked_repo}/issues/{linked_number}"
