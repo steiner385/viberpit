@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
     from server.assistant.client import AssistantApi
     from server.automations.completion_bar import PrFacts
+    from server.automations.model_pick import SpawnModelChoice
     from server.codex.driver import CodexAgentDriver
     from server.codex.replay import CodexThreadReplay
     from server.github.merge_queue import QueueEntry
@@ -5961,7 +5962,6 @@ class SessionOrchestrator:
         tap paths read it through ``_backlog_policy_model``. Keyword-only and
         required so no spawn site can silently fall back to a different model."""
         from server.automations.backlog_prompt import build_implement_prompt
-        from server.automations.model_pick import pick_model
         # Engine FIRST, before any network or disk work: the seed prompt states a
         # commit trailer so it has to be built for the engine that will actually
         # run (Phase 7, Task 7.1) — and a refusal must cost nothing, which it did
@@ -5981,43 +5981,27 @@ class SessionOrchestrator:
         # instead of growing a second way to be told which model to use.
         config = {**config, "default_model": default_model}
         detail: dict = {"issues": batch.issues, "engine": engine.value}
-        model = model_source = reasoning_effort = None
-        audit_pick = None      # set for an `auto` Claude pick — audited after the spawn
         summary = "\n".join(
             f"{ref}  {batch.titles.get(ref) or '(no title)'}" for ref in batch.issues)
+        # The capability's own merge history (D9) floors an `auto` pick, so a
+        # capability whose issues only ever landed first-pass at a higher tier is
+        # not re-guessed down to a cheaper one every dispatch. Best-effort by spec
+        # §13: a failed history read costs the FLOOR, never the spawn. Claude-only
+        # input, but computed here because only this origin has the evidence.
+        floor = None
         if engine is AgentEngine.CLAUDE_CODE:
-            # `pick_model` is a Claude complexity assessor returning Claude
-            # catalog aliases. Skipping it for another engine is the audit Task
-            # 7.1 asks for: not a wasted Haiku call whose answer is then dropped.
-            #
-            # The capability's own merge history (D9) floors an `auto` pick, so a
-            # capability whose issues only ever landed first-pass at a higher tier
-            # is not re-guessed down to a cheaper one every dispatch. Best-effort
-            # by spec §13: a failed history read costs the FLOOR, never the spawn.
             try:
                 floor = await self._backlog_tier_floor(batch.product, batch.primary)
             except Exception:
                 log.warning("backlog_runner.tier_floor_failed target=%s",
                             batch.primary, exc_info=True)
-                floor = None
-            pick = await pick_model(config, summary, floor=floor)
-            model, model_source = pick.applied, pick.source
-            if model is not None:
-                detail.update(model=model, model_source=model_source)
-                # The pick's provenance. Omitted rather than stamped ``None`` for
-                # a pinned model, which has no assessment and no floor.
-                detail.update({k: v for k, v in (("assessed", pick.assessed),
-                                                 ("floor", pick.floor))
-                               if v is not None})
-            audit_pick = pick if config.get("default_model") == "auto" else None
-        elif engine is AgentEngine.CODEX:
-            # Codex-aware counterpart (issue #1289): the same complexity
-            # judgment, mapped onto the account's live model/effort catalog
-            # instead of a Claude alias.
-            reasoning_effort, model_source = await self._resolve_codex_auto_effort(
-                account, config, summary)
-            if reasoning_effort is not None:
-                detail.update(reasoning_effort=reasoning_effort, model_source=model_source)
+        choice = await self._resolve_spawn_model(engine, account, config, summary,
+                                                 floor=floor)
+        model, reasoning_effort = choice.model, choice.reasoning_effort
+        detail.update(choice.detail)
+        # Audited after the spawn: an `auto` config's pick is the metric for
+        # whether the assessor and the capability's own history agree.
+        audit_pick = choice.pick if config.get("default_model") == "auto" else None
         # Snapshot the key's current holder so a de-duped spawn is recognisable
         # afterwards. Best-effort: a failed read only costs the dedupe check.
         try:
@@ -6405,6 +6389,13 @@ class SessionOrchestrator:
             except Exception:
                 log.warning("sdlc_intake.spawn.clone_failed repo=%s", trigger.repo,
                             exc_info=True)
+        _mode, config = await self._sdlc_intake_read_config()
+        detail: dict = {"slug": trigger.slug, "kind": "intent",
+                        "engine": engine.value}
+        choice = await self._resolve_spawn_model(
+            engine, account, config,
+            f"{trigger.title or trigger.slug}  (write intent.md)")
+        detail.update(choice.detail)
         return await self._sdlc_intake_ctx.spawn_session(
             origin_ref=f"{trigger.slug}:intent",
             dedupe_key=f"{trigger.slug}:intent",
@@ -6414,8 +6405,9 @@ class SessionOrchestrator:
             engine=engine,
             name=f"sdlc intake {trigger.slug}",
             initial_prompt=prompt,
-            detail={"slug": trigger.slug, "kind": "intent",
-                    "engine": engine.value},
+            model=choice.model,
+            reasoning_effort=choice.reasoning_effort,
+            detail=detail,
         )
 
     async def _sdlc_intake_tick_loop(self, interval: float) -> None:
@@ -6580,7 +6572,7 @@ class SessionOrchestrator:
         plan = await self._control_band_ctx.launch_plan_or_refuse(origin_ref)
         if plan is None:
             return None
-        launch_engine, _config = plan
+        launch_engine, config = plan
         account = await self._automation_account_for(
             self._control_band_ctx, origin_ref, engine=launch_engine)
         cwd = None
@@ -6593,6 +6585,13 @@ class SessionOrchestrator:
             except Exception:
                 log.warning("control_band.spawn.clone_failed repo=%s", band.repo,
                             exc_info=True)
+        detail: dict = {"itemId": item_id, "metric": band.id, "tier": tier.name,
+                        "automation": ControlBandMonitor.id}
+        choice = await self._resolve_spawn_model(
+            launch_engine, account, config,
+            f"diagnose a control-band breach of {band.id} in "
+            f"{band.repo or 'this fleet'} ({tier.name})")
+        detail.update(choice.detail)
         return await self._control_band_ctx.spawn_session(
             origin_ref=origin_ref,
             dedupe_key=origin_ref,
@@ -6603,8 +6602,9 @@ class SessionOrchestrator:
             permission_mode=tier.permission_mode,
             name=f"diagnose {band.id}",
             initial_prompt=prompt,
-            detail={"itemId": item_id, "metric": band.id, "tier": tier.name,
-                    "automation": ControlBandMonitor.id},
+            model=choice.model,
+            reasoning_effort=choice.reasoning_effort,
+            detail=detail,
         )
 
     async def _control_band_tick_loop(self, interval: float) -> None:
@@ -7809,7 +7809,7 @@ class SessionOrchestrator:
         plan = await self._pm_onboard_ctx.launch_plan_or_refuse(origin_ref)
         if plan is None:
             return None
-        engine, _launch_config = plan
+        engine, config = plan
         account = await self._automation_account_for(
             self._pm_onboard_ctx, origin_ref, engine=engine)
         if account is None:
@@ -7824,11 +7824,18 @@ class SessionOrchestrator:
             scope=scope, suggestion=suggestion, item_numbers=item_numbers,
             engine=engine, branch=map_branch)
         detail["engine"] = engine.value
+        choice = await self._resolve_spawn_model(
+            engine, account, config,
+            f"synthesise the feature map for {slug} from {repo} "
+            f"({open_count} open / {closed_count} closed items)")
+        detail.update(choice.detail)
         rec = await self._pm_onboard_ctx.spawn_session(
             origin_ref=origin_ref,
             dedupe_key=origin_ref,
             repo=repo, cwd=cwd, account=account, engine=engine,
-            name=name, initial_prompt=prompt, detail=detail)
+            name=name, initial_prompt=prompt,
+            model=choice.model, reasoning_effort=choice.reasoning_effort,
+            detail=detail)
         if rec is not None and scope == "initial":
             async with db_session() as db:
                 proj = (await db.execute(select(Project).where(
@@ -7856,7 +7863,7 @@ class SessionOrchestrator:
         plan = await self._pm_onboard_ctx.launch_plan_or_refuse(origin_ref)
         if plan is None:
             return None
-        engine, _launch_config = plan
+        engine, config = plan
         account = await self._automation_account_for(
             self._pm_onboard_ctx, origin_ref, engine=engine)
         if account is None:
@@ -7868,12 +7875,18 @@ class SessionOrchestrator:
         prompt = build_coverage_critic_prompt(
             slug=slug, repo=repo, default_branch=default_branch, branch=branch,
             open_count=0, closed_count=0, engine=engine)
+        detail: dict = {"slug": slug, "kind": "feature-map-critic",
+                        "branch": branch, "engine": engine.value}
+        choice = await self._resolve_spawn_model(
+            engine, account, config,
+            f"critique the feature-map PR on {branch} in {repo} for completeness")
+        detail.update(choice.detail)
         return await self._pm_onboard_ctx.spawn_session(
             origin_ref=origin_ref, dedupe_key=origin_ref, repo=repo, cwd=cwd,
             account=account, engine=engine, name=f"pm map-critic {slug}",
             initial_prompt=prompt,
-            detail={"slug": slug, "kind": "feature-map-critic", "branch": branch,
-                    "engine": engine.value})
+            model=choice.model, reasoning_effort=choice.reasoning_effort,
+            detail=detail)
 
     async def _pm_onboard_chain_critic(self, slug: str, repo: str, branch: str, *,
                                        attempts: int = 30, delay: float = 30.0):
@@ -7967,7 +7980,7 @@ class SessionOrchestrator:
         plan = await self._pm_classify_ctx.launch_plan_or_refuse(origin_ref)
         if plan is None:
             return 0
-        engine, _launch_config = plan
+        engine, config = plan
         account = await self._automation_account_for(
             self._pm_classify_ctx, origin_ref, engine=engine)
         if account is None:
@@ -7978,13 +7991,20 @@ class SessionOrchestrator:
             url = f"https://github.com/{repo}.git"
             cwd = await asyncio.to_thread(
                 gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
+        detail: dict = {"slug": slug, "kind": "classify", "count": len(chunk),
+                        "engine": engine.value}
+        choice = await self._resolve_spawn_model(
+            engine, account, config,
+            f"classify {len(chunk)} backlog items in {repo or slug} against "
+            f"{len(feat_briefs)} features")
+        detail.update(choice.detail)
         rec = await self._pm_classify_ctx.spawn_session(
             origin_ref=origin_ref,
             dedupe_key=origin_ref,
             repo=repo or None, cwd=cwd, account=account, engine=engine,
             name=f"pm classify {slug}", initial_prompt=prompt,
-            detail={"slug": slug, "kind": "classify", "count": len(chunk),
-                    "engine": engine.value})
+            model=choice.model, reasoning_effort=choice.reasoning_effort,
+            detail=detail)
         if rec is None:
             return 0
         async with db_session() as db:
@@ -8295,11 +8315,10 @@ class SessionOrchestrator:
         the upstream artifact's committed content read off ``origin/<default>``.
 
         Mirrors ``_backlog_spawn``: healthy-account gate, ensure_clone off the
-        loop, ``resolve_model`` for the model, and the same create-kwargs shape
+        loop, ``_resolve_spawn_model`` for the model, and the same create-kwargs shape
         through the de-dup-safe context spawner (origin_ref=``<slug>:<kind>``).
         Returns the SessionRecord or None when no account has headroom (retry
         next tick)."""
-        from server.automations.model_pick import resolve_model
         from server.sdlc.prompts import (
             artifact_path, build_plan_prompt, build_spec_prompt)
         repo = str(ini.get("repo") or "")
@@ -8343,21 +8362,10 @@ class SessionOrchestrator:
 
         prompt = await asyncio.to_thread(build, cwd, default_branch)
         detail: dict = {"initiative": slug, "kind": kind, "engine": engine.value}
-        model = model_source = reasoning_effort = None
         summary = f"{ini.get('title') or slug}  ({kind})"
-        if engine is AgentEngine.CLAUDE_CODE:
-            # Claude-only complexity assessor picking Claude catalog aliases —
-            # not consulted for another engine (Task 7.1 helper-call audit).
-            model, model_source = await resolve_model(config, summary)
-            if model is not None:
-                detail.update(model=model, model_source=model_source)
-        elif engine is AgentEngine.CODEX:
-            # Codex-aware counterpart (issue #1289): same complexity judgment,
-            # mapped onto the account's live model/effort catalog.
-            reasoning_effort, model_source = await self._resolve_codex_auto_effort(
-                account, config, summary)
-            if reasoning_effort is not None:
-                detail.update(reasoning_effort=reasoning_effort, model_source=model_source)
+        choice = await self._resolve_spawn_model(engine, account, config, summary)
+        model, reasoning_effort = choice.model, choice.reasoning_effort
+        detail.update(choice.detail)
         return await self._sdlc_synth_ctx.spawn_session(
             origin_ref=f"{slug}:{kind}",
             dedupe_key=f"{slug}:{kind}",
@@ -8394,7 +8402,6 @@ class SessionOrchestrator:
         into a byte-identical pending proposal, so the rejection never stuck. A
         new attempt gets a new key, while a still-running attempt dedupes exactly
         as before because the live check and the spawn use the SAME key."""
-        from server.automations.model_pick import resolve_model
         from server.pm.materialize import build_materialize_prompt
         from server.sdlc.prompts import artifact_path
         repo = str(ini.get("repo") or "")
@@ -8479,20 +8486,12 @@ class SessionOrchestrator:
         )
         detail: dict = {"initiative": slug, "kind": "materialize",
                         "engine": engine.value}
-        model = model_source = reasoning_effort = None
         summary = f"{ini.get('title') or slug}  (decompose)"
         # Same model policy as the spec/plan sessions — one `default_model`
         # setting covers every session this automation spawns.
-        if engine is AgentEngine.CLAUDE_CODE:
-            model, model_source = await resolve_model(config, summary)
-            if model is not None:
-                detail.update(model=model, model_source=model_source)
-        elif engine is AgentEngine.CODEX:
-            reasoning_effort, model_source = await self._resolve_codex_auto_effort(
-                account, config, summary)
-            if reasoning_effort is not None:
-                detail.update(reasoning_effort=reasoning_effort,
-                              model_source=model_source)
+        choice = await self._resolve_spawn_model(engine, account, config, summary)
+        model, reasoning_effort = choice.model, choice.reasoning_effort
+        detail.update(choice.detail)
         rec = await self._sdlc_synth_ctx.spawn_session(
             origin_ref=origin_ref,
             dedupe_key=origin_ref,
@@ -10239,28 +10238,19 @@ class SessionOrchestrator:
                 kind="spawn_failed", target=target)
             return "clone_failed", None
         phase("assessing")
-        model = model_source = None
         detail: dict = {"engine": eng.value}
-        if eng is AgentEngine.CLAUDE_CODE:
-            # `resolve_model` is a Claude complexity assessor returning Claude
-            # catalog aliases — skip it for another engine rather than making the
-            # call and dropping the answer (Phase 7, Task 7.1).
-            from server.automations.model_pick import resolve_model
-            failing = ", ".join(
-                d.name for d in info.checks_detail if d.conclusion == "failure")
-            model, model_source = await resolve_model(
-                await self._pr_doctor_config(),
-                f"{kind} fix for PR {target}: {info.title}"
-                + (f"\nfailing checks: {failing}" if failing else ""))
-            if model is not None:
-                detail.update(model=model, model_source=model_source)
-        # Codex auto-effort assessment (mirrors _backlog_spawn's Codex branch) is
-        # skipped here: unlike backlog-runner, PR Doctor does not pre-resolve an
-        # account (create_session picks a healthy one below), and the assessor
-        # needs a resolved account to query that account's live model catalog. A
-        # Codex spawn therefore runs on the account's/engine's own default model
-        # rather than an auto-picked effort tier — refining that is a follow-up,
-        # not a blocker for widening the ceiling.
+        failing = ", ".join(
+            d.name for d in info.checks_detail if d.conclusion == "failure")
+        # ``account=None``: PR Doctor does not pre-resolve an account
+        # (``create_session`` picks a healthy one below), so a Codex spawn has no
+        # live catalog to map an effort onto and takes the engine's own default.
+        # See ``_resolve_spawn_model``.
+        choice = await self._resolve_spawn_model(
+            eng, None, await self._pr_doctor_config(),
+            f"{kind} fix for PR {target}: {info.title}"
+            + (f"\nfailing checks: {failing}" if failing else ""))
+        model = choice.model
+        detail.update(choice.detail)
         phase("spawning")
         try:
             rec2 = await self._pr_doctor_ctx.spawn_session(
@@ -10481,18 +10471,14 @@ class SessionOrchestrator:
                     "error", f"clone failed for {target}: {exc}",
                     kind="spawn_failed", target=target)
                 return
-            model = model_source = None
             detail: dict = {"engine": eng.value}
-            if eng is AgentEngine.CLAUDE_CODE:
-                # See _pr_doctor_session_fix: skip the Claude complexity assessor
-                # for another engine rather than making the call and dropping it.
-                from server.automations.model_pick import resolve_model
-                model, model_source = await resolve_model(
-                    await self._pr_doctor_config(),
-                    f"consolidate {len(prs)} PRs in {repo}:\n"
-                    + "\n".join(f"#{p.number}  {p.title}" for p in prs))
-                if model is not None:
-                    detail.update(model=model, model_source=model_source)
+            # ``account=None`` for the same reason as the fix path above.
+            choice = await self._resolve_spawn_model(
+                eng, None, await self._pr_doctor_config(),
+                f"consolidate {len(prs)} PRs in {repo}:\n"
+                + "\n".join(f"#{p.number}  {p.title}" for p in prs))
+            model = choice.model
+            detail.update(choice.detail)
             try:
                 rec = await self._pr_doctor_ctx.spawn_session(
                     origin_ref=target, dedupe_key=target, repo=repo,
@@ -12751,6 +12737,65 @@ class SessionOrchestrator:
             )
             self._codex_model_catalog = catalog
         return catalog
+
+    async def _resolve_spawn_model(
+        self,
+        engine: AgentEngine,
+        account: str | None,
+        config: dict,
+        task_summary: str,
+        *,
+        floor: str | None = None,
+        _assess=None,
+    ) -> "SpawnModelChoice":
+        """THE model decision for an automation spawn: *config*'s
+        ``default_model`` plus the resolved *engine*, as one answer.
+
+        Every spawning origin asks here, so the Claude/Codex split is made once.
+        It was copied verbatim at five spawn sites and a sixth was due — the
+        shape where the two legs drift apart and a Claude alias reaches a Codex
+        dispatch (issue #1289).
+
+        - Claude → ``pick_model``, whose alias becomes ``create_session(model=)``.
+          *floor* raises an ``auto`` assessment to a tier the caller's evidence
+          requires (the backlog runner's D9 capability floor).
+        - Codex → ``_resolve_codex_auto_effort``, whose value becomes
+          ``create_session(reasoning_effort=)``. Skipped without a resolved
+          *account*: PR Doctor lets ``create_session`` pick one, so there is no
+          account whose live model catalog could be read, and the engine's own
+          default is the right answer rather than a call with ``None``.
+
+        Fail-open throughout (``model_pick``'s invariant): every failure path
+        resolves to an empty choice — the account/engine default — so this can
+        only ever refine a spawn, never block one. ``_assess`` is a test seam
+        forwarded to ``pick_model``.
+        """
+        from server.automations.model_pick import SpawnModelChoice, pick_model
+
+        if engine is AgentEngine.CLAUDE_CODE:
+            pick = await pick_model(config, task_summary, floor=floor, _assess=_assess)
+            if pick.applied is None:
+                # No model to apply, but the pick still travels: an `auto` config
+                # whose assessment failed is an audited outcome, not a non-event.
+                return SpawnModelChoice(pick=pick)
+            detail = {"model": pick.applied, "model_source": pick.source or ""}
+            # Provenance, omitted rather than stamped ``None`` for a pinned model
+            # (which has no assessment and no floor).
+            detail.update({k: v for k, v in (("assessed", pick.assessed),
+                                             ("floor", pick.floor)) if v is not None})
+            return SpawnModelChoice(model=pick.applied, source=pick.source,
+                                    pick=pick, detail=detail)
+        if engine is AgentEngine.CODEX:
+            if account is None:
+                return SpawnModelChoice()
+            effort, source = await self._resolve_codex_auto_effort(
+                account, config, task_summary)
+            if effort is None:
+                return SpawnModelChoice()
+            return SpawnModelChoice(
+                reasoning_effort=effort, source=source,
+                detail={"reasoning_effort": effort, "model_source": source or ""})
+        return SpawnModelChoice()
 
     async def _resolve_codex_auto_effort(
         self, account: str, config: dict, task_summary: str,

@@ -75,6 +75,32 @@ Active scope only.
 - Provenance labels (`originLabel`, `assistedByLabel`) are the registry's display names,
   published on the session; the card's hand-copied id→name map is gone.
 
+## Which model a spawned session runs on
+
+Every automation in the table above that spawns sessions carries a **Session model**
+(`default_model`) setting on its own config row, so the tier can follow the *kind* of work an
+origin does — a bulk classification chunk and a merge-conflict rescue need not share one answer.
+The choices are the model catalog's own aliases (`server/automations/model_pick.py`
+`AUTOMATION_MODEL_CHOICES`, derived from the binary's `/model` picker so a new alias appears in
+every dropdown at once) plus `auto`, with `default` — the account's own model — as the shipped
+value, which is exactly the pre-setting behaviour. `auto` runs a one-shot Haiku complexity
+assessment of that job's summary and picks a tier.
+
+`SessionOrchestrator._resolve_spawn_model` is the ONE place the answer is computed, and the only
+place that branches on engine: a Claude launch receives a catalog alias as `model=`, a Codex launch
+receives a reasoning effort read from that account's live model catalog as `reasoning_effort=`
+(never a Claude alias — #1289), and the resulting `model` / `model_source` (plus `assessed` /
+`floor` when an assessment was raised) are stamped into the `spawned` event so the activity feed
+shows *why* a session got its tier. The resolver is fail-open throughout: a failed assessment, an
+unreadable catalog or an unknown alias resolves to the account default rather than blocking a
+spawn. Two origins are deliberately not on this contract — backlog-runner, whose model moved to the
+narrower PRODUCT policy (`server/automations/product_policy.py`), and an ad-hoc recurring
+automation, whose cron spec already carries its own `model`.
+
+`server/tests/test_automation_spawn_model_coverage.py` sweeps the orchestrator's own AST for this:
+a new spawn site that omits `model=`, or a spawning origin with no `default_model` field, fails
+there rather than silently inheriting whatever `~/.claude/settings.json` last said.
+
 ## Notifications
 
 The `needs_input`, `session_ended` and `pr_broke` pushes carry the session's `account`,

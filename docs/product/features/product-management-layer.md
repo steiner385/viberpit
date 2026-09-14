@@ -445,6 +445,14 @@ session — a refused launch costs nothing and advances no onboarding state. Liv
 bounded classification batch and for synthesis/critic review separation on the real `codex` binary:
 `server/tests/test_pm_codex_live.py` (opt-in, `CCSWITCH_TEST_CODEX_LIVE=1`).
 
+Both origins also carry the fleet-wide `default_model` setting every spawning automation has: one
+enum per origin (`default` — the account's own model — through `auto` and each catalog alias), so
+`pm-onboard`'s synthesis and critic share a tier and `pm-classify`'s chunk sessions get their own.
+The value is resolved at the spawn site by `SessionOrchestrator._resolve_spawn_model`, the ONE
+place that branches on engine: a Claude launch gets a catalog alias in `model=`, a Codex launch gets
+a reasoning effort from that account's live catalog in `reasoning_effort=` (never a Claude alias —
+#1289), and every failure path falls open to the account default rather than blocking the spawn.
+
 **Evidence** — `server/pm/onboarding.py` (pure onboarding state machine + `next_onboarding_action`);
 `server/pm/classification.py` (`build_map_synthesis_prompt` archaeology + drift prompts,
 `build_classification_prompt`, RICE-lite parse, `FEATURE_DOCS_DIR = "docs/product/features"`);
