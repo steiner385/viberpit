@@ -856,6 +856,14 @@ export interface AssessResponse {
   refined_prompt: string | null
 }
 
+// Dispatch wrong-repository check — `POST /api/dispatch/repo-check`.
+// `suggested_repo` is non-null only when the server is confident the prompt
+// belongs to a different repo than the one it was asked about.
+export interface RepoCheckResponse {
+  suggested_repo: string | null
+  reason: string | null
+}
+
 // Permission Profile (#600)
 export interface PermissionProfile {
   id: string
