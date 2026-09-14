@@ -463,6 +463,90 @@ def test_adoption_picks_the_newest_reaped_thread(tmp_path):
     asyncio.run(run())
 
 
+async def _stamp_host(session_id: str, host: str) -> None:
+    from sqlalchemy import update as sa_update
+    from server.db import db_session
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        await db.execute(sa_update(DbSession).where(DbSession.id == session_id)
+                         .values(host=host))
+        await db.commit()
+
+
+def test_primary_never_adopts_a_reaped_thread_stamped_for_another_live_host(tmp_path):
+    """2026-09-14: the drawer spun on "waking session…" forever. The newest 'ended'
+    assistant row for the identity was stamped host=rocky (created there before the
+    primary pin). The primary adopted it into _records, the mirror sweep evicted it
+    ten seconds later as a foreign inactive row (adopt/evict ping-pong on every
+    status poll), and the prompt's per-session ensure_driver was routed to rocky —
+    whose worker never rehydrates an ended row — so it answered None and the edge
+    emitted SESSION_NOT_FOUND. Adoption must respect the same ownership rule as
+    every other acting loop (_owns_record): a row another ENABLED host owns is not
+    ours to adopt, even when it is the newest."""
+    async def run():
+        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'foreign.db'}",
+                                tmp_path=tmp_path)
+        try:
+            mine = await orch.create_session(name="Assistant", cwd=str(tmp_path),
+                                             identity="u@x", kind=ASSISTANT_KIND,
+                                             owner_identity="u@x")
+            await _park_as_reaped(mine.id, engine_session_id="cli-mine")
+            await _stamp_host(mine.id, "dobby")
+            await _backdate(mine.id, hours=1)
+            orch._records.clear()
+            orch._drivers.clear()
+            theirs = await orch.create_session(name="Assistant", cwd=str(tmp_path),
+                                               identity="u@x", kind=ASSISTANT_KIND,
+                                               owner_identity="u@x")
+            await _park_as_reaped(theirs.id, engine_session_id="cli-theirs")
+            await _stamp_host(theirs.id, "rocky")   # newest, but a live worker's
+            orch._records.clear()
+            orch._drivers.clear()
+
+            hosts = patch.object(orch, "_enabled_host_names",
+                                 return_value=frozenset({"dobby", "rocky"}))
+            me = patch("server.sessions.orchestrator.self_host_name", return_value="dobby")
+            with hosts, me:
+                found = await orch.find_assistant("u@x")
+            # Falls through to the newest row THIS daemon owns — not None (which would
+            # mint a brand-new thread and orphan cli-mine), and never the foreign one.
+            assert found is not None and found.id == mine.id
+            assert found.engine_session_id == "cli-mine"
+            assert theirs.id not in orch._records
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
+def test_primary_adopts_a_reaped_thread_whose_host_left_the_registry(tmp_path):
+    """The flip side of the ownership rule: a stamp for a host that is no longer
+    enabled is an orphan the primary adopts (same as _owns_record for every other
+    loop), so decommissioning a worker does not strand its assistant history."""
+    async def run():
+        orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'orphan.db'}",
+                                tmp_path=tmp_path)
+        try:
+            a = await orch.create_session(name="Assistant", cwd=str(tmp_path),
+                                          identity="u@x", kind=ASSISTANT_KIND,
+                                          owner_identity="u@x")
+            await _park_as_reaped(a.id)
+            await _stamp_host(a.id, "retired-worker")
+            orch._records.clear()
+            orch._drivers.clear()
+
+            hosts = patch.object(orch, "_enabled_host_names",
+                                 return_value=frozenset({"dobby"}))
+            me = patch("server.sessions.orchestrator.self_host_name", return_value="dobby")
+            with hosts, me:
+                found = await orch.find_assistant("u@x")
+            assert found is not None and found.id == a.id
+        finally:
+            await _stop_orch(orch)
+
+    asyncio.run(run())
+
+
 def test_assistant_session_never_queues_even_at_the_cap(tmp_path):
     async def run():
         orch = await _make_orch(db_url=f"sqlite+aiosqlite:///{tmp_path / 'c.db'}",

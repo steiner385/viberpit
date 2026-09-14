@@ -412,6 +412,12 @@ _MIRROR_EVICT_STRIKES: int = 2
 # task and its own (faster) cadence, independent of how slow any automation tick is.
 _MIRROR_RECONCILE_INTERVAL_S: float = 10.0
 
+# How many newest 'ended' assistant rows `_adopt_reaped_assistant` scans for one this
+# daemon owns before giving up. One identity rarely has more than a couple of reaped
+# threads (each pre-#1123 restart minted one), and the scan must stop somewhere so a
+# pathological history cannot turn a status poll into a table walk.
+_ASSISTANT_ADOPT_SCAN: int = 8
+
 # Opening of the text `_sdlc_show_committed_file` seeds when it cannot read the artifact
 # out of the clone. One constant because a caller that must NOT seed the fallback (the
 # decompose session — it would invent a plan) tests for it; a literal on both sides would
@@ -11744,36 +11750,45 @@ class SessionOrchestrator:
         would pull every closed coding session back into ``_records`` (dashboard,
         sweeps, capacity). Here only ``ended`` rows are eligible (the one status
         rehydrate skips and the one ``POST /api/assistant/session`` already branches on
-        to resume), only for this owner, and only the newest — one row, materialised
-        lazily, from which ``ensure_driver`` resumes exactly as it does for any other
-        detached session.
+        to resume), only for this owner, and only the newest row THIS daemon owns —
+        one row, materialised lazily, from which ``ensure_driver`` resumes exactly as
+        it does for any other detached session.
+
+        Ownership is ``_owns_record`` (#852), the same rule every acting loop applies,
+        not a worker-only host check. The 2026-09-14 "waking session…" hang was the
+        primary adopting the newest ended row even though it was stamped for a live
+        worker (rocky, from before the primary pin): the mirror sweep evicted it ten
+        seconds later as a foreign inactive row, the edge routed the prompt's
+        ``ensure_driver`` to rocky by that stamp, rocky's worker never rehydrates an
+        ended row and answered None, and the drawer got SESSION_NOT_FOUND for a thread
+        the status endpoint had just vouched for. A foreign stamp is skipped, and the
+        scan continues to the newest row that IS ours rather than returning None —
+        None would mint a brand-new thread and strand this daemon's own history.
         """
         from sqlalchemy import select as sa_select
+        enabled_hosts = await self._enabled_host_names()
         async with db_session() as db:
-            row = (await db.execute(
+            rows = (await db.execute(
                 sa_select(DbSession)
                 .where(DbSession.kind == ASSISTANT_KIND,
                        DbSession.owner_identity == owner_identity,
                        DbSession.status == "ended")
                 .order_by(DbSession.created_at.desc())
-                .limit(1))).scalars().first()
-        if row is None:
-            return None
-        # Host partition (#852), same rule as rehydrate: a worker never owns a row
-        # stamped for another host. The assistant is pinned to the primary anyway
-        # (FleetOrchestrator.create_session), so this only guards a misroute.
-        if daemon_role() == "worker" and row.host != self_host_name():
-            return None
-        # Another caller may have adopted (or the owner respawned) it while we awaited
-        # the DB — never overwrite a live record with a stale row.
-        existing = self._records.get(row.id)
-        if existing is not None:
-            return self._sync_detached(existing)
-        rec = self._record_from_row(row)
-        self._records[row.id] = rec
-        log_event(log, logging.INFO, "session.reattach", session_id=row.id,
-                  **{"from": "ended", "to": "ended", "reason": "assistant_adopt"})
-        return self._sync_detached(rec)
+                .limit(_ASSISTANT_ADOPT_SCAN))).scalars().all()
+        for row in rows:
+            rec = self._record_from_row(row)
+            if not self._owns_record(rec, enabled_hosts):
+                continue
+            # Another caller may have adopted (or the owner respawned) it while we
+            # awaited the DB — never overwrite a live record with a stale row.
+            existing = self._records.get(row.id)
+            if existing is not None:
+                return self._sync_detached(existing)
+            self._records[row.id] = rec
+            log_event(log, logging.INFO, "session.reattach", session_id=row.id,
+                      **{"from": "ended", "to": "ended", "reason": "assistant_adopt"})
+            return self._sync_detached(rec)
+        return None
 
     async def post_notice(self, identity: str, notice: dict) -> bool:
         """Deliver a proactive watch notice into *identity*'s assistant drawer

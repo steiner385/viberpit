@@ -88,6 +88,16 @@ describe('useSessionRuntime — pending prompt feedback', () => {
     expect(pendingTurns(r)[0].pending).toBe('delivered')
   })
 
+  it('moves a "resuming" bubble to "failed" when the edge could not wake the session', () => {
+    // The receipt ack promised a wake; the failed ack retracts it. Forward on the
+    // stage ladder, so the ordinary monotonic gate lets it through.
+    const r = render()
+    act(() => { r.result.current.onPrompt('wake up', []) })
+    act(() => { handlers.promptAck?.({ type: 'promptAck', sessionId: 's1', stage: 'resuming' }) })
+    act(() => { handlers.promptAck?.({ type: 'promptAck', sessionId: 's1', stage: 'failed' }) })
+    expect(pendingTurns(r)[0].pending).toBe('failed')
+  })
+
   it('ignores an ack addressed to a different session', () => {
     const r = render()
     act(() => { r.result.current.onPrompt('go', []) })

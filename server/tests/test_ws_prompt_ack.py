@@ -109,3 +109,43 @@ def test_a_refused_prompt_is_not_acked_as_delivered(ws_env):
     assert "delivered" not in stages, (
         f"claimed delivery of a prompt the server refused; acks={stages!r}")
     assert any(f.get("type") == "promptRejected" for f in frames)
+
+
+def test_a_failed_wake_acks_the_prompt_as_failed(ws_env):
+    """The wake itself can fail (SESSION_NOT_FOUND / SESSION_START_FAILED /
+    SESSION_RESUME_TIMEOUT). The receipt ack already promised "resuming", and
+    until now nothing ever contradicted it: the error frame is a banner, not a
+    stage, so the bubble under the prompt spun on "waking session…" forever
+    (2026-09-14, the assistant drawer). The terminal stage must ride the SAME
+    promptAck channel as every other stage — one vocabulary, no error-code list
+    for the browser to keep in sync with the edge."""
+    _app, orch, client = ws_env([])
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        # Never attached, unknown to the orchestrator: _ensure_live's resume path
+        # runs and ensure_driver answers None.
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": "ghost", "text": "hello"}))
+        # Two-phase drain, so a MISSING ack fails instead of hanging: receive_text()
+        # blocks and the drain's timeout only ticks between frames. Phase 1 stops at
+        # the replayComplete every attach failure pays. The failed ack is sent by the
+        # same chain task immediately after, so by the time this client has read
+        # replayComplete, round-tripped a sentinel, and the receive loop has answered
+        # it, that ack is long since on the wire — phase 2 stops at the sentinel's
+        # INVALID_JSON reply, which the failed ack precedes.
+        frames = _drain_events(ws, until_type="replayComplete")
+        ws.send_text("not json")
+        frames += _drain_events(
+            ws, until=lambda f: f.get("type") == "error" and f.get("code") == "INVALID_JSON")
+
+    stages = [f["stage"] for f in _acks(frames)]
+    assert stages and stages[0] == "resuming", stages
+    assert stages[-1] == "failed", (
+        f"a wake that failed left the prompt in flight; acks={stages!r}")
+    assert "delivered" not in stages, stages
+    codes = [f.get("code") for f in frames if f.get("type") == "error"]
+    assert "SESSION_NOT_FOUND" in codes, codes
+    # The error explains WHY; the failed ack must not overtake it.
+    err_idx = next(i for i, f in enumerate(frames) if f.get("type") == "error")
+    failed_idx = next(i for i, f in enumerate(frames)
+                      if f.get("type") == "promptAck" and f.get("stage") == "failed")
+    assert err_idx < failed_idx, [f.get("type") for f in frames]
