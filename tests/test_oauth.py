@@ -131,6 +131,24 @@ class TestOAuth(unittest.TestCase):
         u = parse_usage(payload)
         self.assertEqual([w.key for w in u.windows], ["session", "weekly"])
 
+    def test_parse_usage_scoped_window_with_malformed_reset_is_skipped(self):
+        """A malformed resets_at on a scoped entry must not raise out of parse_usage —
+        it is skipped like any other malformed entry, and other windows still parse."""
+        from ccswitch.oauth import parse_usage
+        payload = dict(self.SCOPED_PAYLOAD)
+        payload["limits"] = self.SCOPED_PAYLOAD["limits"][:2] + [
+            {"kind": "weekly_scoped", "group": "weekly", "percent": 40,
+             "resets_at": "not-a-date",
+             "scope": {"model": {"id": None, "display_name": "Opus"}, "surface": None}},
+            {"kind": "weekly_scoped", "group": "weekly", "percent": 40,
+             "resets_at": "2026-09-14T19:59:59Z",
+             "scope": {"model": {"id": None, "display_name": "Sonnet"}, "surface": None}},
+        ]
+        u = parse_usage(payload)
+        self.assertEqual([w.key for w in u.windows], ["session", "weekly", "weekly:sonnet"])
+        self.assertEqual(u.window("session").used_pct, 3.0)
+        self.assertEqual(u.window("weekly").used_pct, 91.0)
+
     def test_parse_usage_without_limits_reads_legacy_seven_day_model_keys(self):
         from ccswitch.oauth import parse_usage
         payload = {k: v for k, v in self.SCOPED_PAYLOAD.items() if k != "limits"}

@@ -213,11 +213,14 @@ def _model_window(group: str, key: str, display: str, percent: object,
                   resets_at: object) -> QuotaWindow | None:
     try:
         pct = float(percent)  # type: ignore[arg-type]
+        reset = _parse_iso(resets_at if isinstance(resets_at, str) else None)
     except (TypeError, ValueError):
+        # A malformed percent OR resets_at must not raise out of _model_windows —
+        # one odd bucket must not blank an account's usage.
         return None
     return QuotaWindow(
         key=f"{group}:{key}", label=f"{display} {group}", used_pct=pct,
-        resets_at=_parse_iso(resets_at if isinstance(resets_at, str) else None),
+        resets_at=reset,
         duration_seconds=_GROUP_DURATION_S.get(group),
         scope=SCOPE_MODEL, applies_to_models=(key,),
     )
