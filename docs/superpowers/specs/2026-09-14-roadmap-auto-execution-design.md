@@ -52,6 +52,7 @@ unscored, so a freshly approved plan's tasks rank *last* in the queue.
 | D7 | **The synthesizer executes in priority order under a per-product cap.** Initiatives are visited highest priority first (ties: oldest first); new artifact sessions spawn only while the product has fewer than `max_initiatives_in_flight` initiatives *actively producing* an artifact. Gate resolutions (merge, advance, accept) are never capped: they finish work. | "Execute through the roadmap" means one or two things at a time in the order that matters, not everything at once. |
 | D8 | **The synthesizer's modes fold to `off | on`; the dead `propose_only` seam is deleted.** Whether a gate auto-resolves is the product's tolerance, not a global mode. | Same fold the runner took in the automation-policy spec (D1/D10). Two dials for one decision is the bug shape named first. |
 | D9 | **A process-wide kill switch, `CCSWITCH_GATE_AUTORESOLVE_ENABLED` (default true), forces `cautious` everywhere without touching any policy.** | The C4 lesson (no kill switch for materialize) cost a recovery. One env var, read through `server/config.py`, is cheap insurance. |
+| D11 | **[decided] Model capability is a risk mitigation the product owner can buy.** A per-product `unattended_model_floor` (enum `none` or a tier from `MODEL_TIERS`) is the minimum model for any session whose output a covered gate will consume *without a human read*: spec/plan sessions when `artifact.merge` auto-resolves, decompose sessions when `materialization.accept` auto-resolves. Under `cautious` the floor is inert, because a human reads the output. | Raising the tolerance removes a human review; a stronger model is the substitute the owner chooses explicitly, per product, instead of an implicit tier hidden inside each level. Composes with D9's history floor (take the higher). |
 | D10 | **The gate registry is display-truthful:** `GET /api/pm/policy-schema` publishes the gate table (id, label, risk, reverse) beside the schema so the product card can explain what each level unlocks. | The operator should read what `balanced` does from the app, not from this document. |
 
 ## 3. Use cases
@@ -225,6 +226,30 @@ human-amended drop) run first and are unchanged; a `block` from the tier denylis
 block. A session with no owning product parks as today. The kill switch
 `CCSWITCH_SELF_MODEL_SWITCH_ENABLED=false` still wins.
 
+## 9b. Unattended model floor (D11)
+
+Where the synthesizer spawns a spec, plan or decompose session (`_sdlc_spawn_synth`,
+`_sdlc_spawn_materialize`), it resolves the model through the existing `resolve_model(config,
+summary, floor=…)` with
+
+```
+floor = highest_tier(history_floor, unattended_floor)
+unattended_floor = policy["unattended_model_floor"] if the gate that will consume this
+                   output auto-resolves under the product's effective tolerance else None
+```
+
+- The consuming gate is `artifact.merge` for spec/plan sessions and `materialization.accept`
+  for decompose sessions. Under `cautious`, or with the kill switch off, `unattended_floor` is
+  `None` and nothing changes.
+- Unlike D9's history floor, the unattended floor raises a **pinned** lower `default_model`
+  too: the owner set both knobs, and "this output ships unread" is the stricter statement.
+- The floor is capped by the model-approval policy: a floor tier the denylist would `block` or
+  park for approval (`resolve_model_policy` ≠ `allow`) is lowered to the highest allowed tier,
+  because a parked launch is the idle wait this spec exists to remove. Audit `sdlc.spawn`
+  detail carries `{assessed, pinned, history_floor, unattended_floor, applied, capped}`.
+- Backlog Runner dispatches are not covered: a coding session's output is a PR that CI and the
+  merge gate review, and D9 already floors it from evidence. **[default]**
+
 ## 10. Priority
 
 `server/pm/priority.py`: `initiative_priority(epic_score: float | None, open_leaf_scores:
@@ -252,7 +277,8 @@ Nothing is stored.
 ## 12. Data model and API summary
 
 - `PRODUCT_POLICY_SCHEMA` + `risk_tolerance` (enum `cautious | balanced | bold`, default
-  `cautious`) + `max_initiatives_in_flight` (int, default 2, min 0).
+  `cautious`) + `max_initiatives_in_flight` (int, default 2, min 0) + `unattended_model_floor`
+  (enum `none | haiku | sonnet | opus | fable`, choices from `MODEL_TIERS`, default `none`).
 - `Initiative.last_auto_gate` JSON nullable; `InitiativeArtifact.auto_merge_armed_at` datetime
   nullable. Migration recorded; reconcile applies.
 - `GET /api/pm/policy-schema` gains `gates: [{id, label, risk, action, reverse}]`.
@@ -264,16 +290,18 @@ Nothing is stored.
 
 ## 13. Phasing
 
-1. **Substrate, behaviour-preserving at the flip.** `gates.py`, the two policy keys, the engine
+1. **Substrate, behaviour-preserving at the flip.** `gates.py`, the three policy keys, the engine
    signature change with `MergeArtifact`/`Advance` actions, mode fold and `propose_only`
    deletion, `priority.py` + sorted loader + cap counting + `queued` count, RICE seeding in
    materialize, `priority` in the API/map, the kill switch. With every product `cautious`
    nothing auto-resolves; the only visible change is order, the cap, and priority numbers.
 2. **Low-risk gates.** `arm_auto_merge` seam (live-verified), `auto_merge_armed_at`,
    `stage.advance` and `stage.advance_built` execution, `last_auto_gate`, audits/events, the
-   roadmap chip, the Synthesizer card lines, the gate table on the product card.
+   roadmap chip, the Synthesizer card lines, the gate table on the product card, and the
+   unattended model floor on spec/plan spawns (§9b).
 3. **Medium-risk gates.** `materialize_accept.py` extraction and the loop's accept step with the
-   rejected-before rule; the `model.upgrade` path in the orchestrator.
+   rejected-before rule; the `model.upgrade` path in the orchestrator; the unattended floor on
+   decompose spawns.
 
 Not in this spec (follow-ons): deploy/maintain/done automation, an LLM disposition agent for the
 `high` gates (approach 3 in the brainstorm, a later `bold` extension), per-product notification
@@ -290,7 +318,10 @@ digests, a manual priority override on initiatives.
   materialization auto-accept happens once, never while a rejected proposal exists for the
   initiative, never at `balanced`.
 - Orchestrator seams: `arm_auto_merge` argv shape against a fake `_run_gh`; the model-upgrade
-  path approves under `bold`, parks under `balanced`/no product/kill switch.
+  path approves under `bold`, parks under `balanced`/no product/kill switch; the unattended
+  floor raises `auto` and a pinned lower alias under `balanced`, is inert under `cautious`,
+  takes the higher of itself and the history floor, and is lowered to the highest allowed tier
+  when the denylist would park it.
 - API: policy PATCH accepts the new keys and rejects garbage; `policy-schema` carries the gate
   table; the accept route still audits `decided_by="human"`; initiatives carry `priority`.
 - Postgres suite for the two new nullable columns (no `_REQUIRED_EXTRAS` change).
@@ -325,7 +356,9 @@ digests, a manual priority override on initiatives.
 Answered by Tony on 2026-09-14: (1) approach 1, the gate registry plus one tolerance dial;
 (2) three named levels with risk classes in code, not per-gate toggles; (3) materialization
 accept is medium risk (`bold` only); (4) initiative priority is derived from RICE, no manual
-field; (5) `max_initiatives_in_flight` defaults to 2. Drafted under that outline and open to
+field; (5) `max_initiatives_in_flight` defaults to 2; (6) model capability is an explicit risk
+mitigation, added as the per-product `unattended_model_floor` (D11, §9b) after Tony's follow-up
+"we could also allow choosing model type as a way to mitigate risk". Drafted under that outline and open to
 objection: the deploy-and-beyond boundary (§4), no direct-merge fallback when GitHub refuses
 auto-merge (§6), the rejected-before rule for materialization (§6), the 24 h chip window (D5),
 and the lowered-dial semantics (§15).

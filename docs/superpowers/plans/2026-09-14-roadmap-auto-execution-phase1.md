@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Land the behaviour-preserving substrate for executing the roadmap's front chain under a per-product risk tolerance: the gate registry and kill switch, the two policy keys, the tolerance-aware stage engine, the synthesizer's mode fold, derived initiative priority, priority-ordered visiting under a per-product front-chain cap, and RICE seeding at materialization. With every product at the default `cautious`, nothing auto-resolves; only visiting order, the cap and the priority numbers change.
+**Goal:** Land the behaviour-preserving substrate for executing the roadmap's front chain under a per-product risk tolerance: the gate registry and kill switch, the three policy keys, the tolerance-aware stage engine, the synthesizer's mode fold, derived initiative priority, priority-ordered visiting under a per-product front-chain cap, and RICE seeding at materialization. With every product at the default `cautious`, nothing auto-resolves; only visiting order, the cap and the priority numbers change.
 
 **Architecture:** Pure modules first (`server/sdlc/gates.py`, `server/pm/priority.py`), then the pure engine gains a `tolerance` axis and two new actions (`MergeArtifact`, `Advance`) that Phase 2 will execute. The synthesizer loop keeps its injected-seam shape: the orchestrator's loader grows `project_slug`, `priority`, `epic_total`, `epic_done` and sorts; the loop reads product policies through one new seam for the cap. The roadmap map and the initiatives API carry `priority` computed once, in the shared epic-progress helper. The web shows the number and sorts by it inside a tier.
 
@@ -30,7 +30,7 @@
 |---|---|
 | `server/sdlc/gates.py` (new) | `RISK_CLASSES`, `RISK_TOLERANCES`, `GateSpec`, `GATES`, `auto_resolves()`, `effective_tolerance()` |
 | `server/config.py` | `gate_autoresolve_enabled` (`CCSWITCH_GATE_AUTORESOLVE_ENABLED`, default true), both settings shapes |
-| `server/automations/product_policy.py` | + `risk_tolerance`, + `max_initiatives_in_flight` |
+| `server/automations/product_policy.py` | + `risk_tolerance`, + `max_initiatives_in_flight`, + `unattended_model_floor` (stored only; applied in phase 2) |
 | `server/sdlc/engine.py` | `next_action(..., tolerance)`; + `MergeArtifact`, + `Advance`; `InitiativeView.epic_total/epic_done`; `propose_only` gone |
 | `server/api/sdlc.py` | detail route passes `"cautious"`; `_action_to_dict` covers the new actions; epic entries carry `priority`; initiative dicts carry `priority` |
 | `server/automations/sdlc_intake.py` | passes `"cautious"` |
@@ -266,7 +266,7 @@ git commit -q -F /tmp/c1.txt
 
 ---
 
-### Task 2: The two policy keys
+### Task 2: The three policy keys
 
 **Files:**
 - Modify: `server/automations/product_policy.py:34-79` (append two fields)
@@ -274,7 +274,7 @@ git commit -q -F /tmp/c1.txt
 
 **Interfaces:**
 - Consumes: `RISK_TOLERANCES` from Task 1.
-- Produces: policy keys `risk_tolerance` (enum, default `"cautious"`) and `max_initiatives_in_flight` (int, default `2`, min `0`), present in every `effective_policy()` result.
+- Produces: policy keys `risk_tolerance` (enum, default `"cautious"`), `max_initiatives_in_flight` (int, default `2`, min `0`) and `unattended_model_floor` (enum `none` + `MODEL_TIERS`, default `"none"`), present in every `effective_policy()` result.
 
 - [ ] **Step 1: Update and add the failing tests**
 
@@ -286,13 +286,14 @@ def test_schema_keys_and_defaults():
     assert keys == ["dispatch", "queue_min_status", "max_in_flight", "weight",
                     "max_attempts", "give_up_after_bounces", "default_model",
                     "respect_dependencies", "triage_auto_accept",
-                    "risk_tolerance", "max_initiatives_in_flight"]
+                    "risk_tolerance", "max_initiatives_in_flight", "unattended_model_floor"]
     assert DISPATCH_MODES == ("off", "propose", "auto")
     assert effective_policy(None) == {
         "dispatch": "off", "queue_min_status": "Ready", "max_in_flight": 1, "weight": 1,
         "max_attempts": 2, "give_up_after_bounces": 2, "default_model": "auto",
         "respect_dependencies": True, "triage_auto_accept": "off",
-        "risk_tolerance": "cautious", "max_initiatives_in_flight": 2}
+        "risk_tolerance": "cautious", "max_initiatives_in_flight": 2,
+        "unattended_model_floor": "none"}
 ```
 
 Append:
@@ -318,6 +319,19 @@ def test_max_initiatives_in_flight_defaults_to_two_and_zero_pauses():
     assert field.min == 0
     assert effective_policy({"max_initiatives_in_flight": 0})["max_initiatives_in_flight"] == 0
     assert effective_policy({"max_initiatives_in_flight": -1})["max_initiatives_in_flight"] == 2
+
+
+def test_unattended_model_floor_is_none_or_a_model_tier():
+    """Spec 2026-09-14 D11: the tier vocabulary comes from
+    server/sessions/model_request.py:MODEL_TIERS, never retyped (constitution VI).
+    Schema only in phase 1; phase 2 applies it to unattended spawns."""
+    from server.sessions.model_request import MODEL_TIERS
+    field = {f.key: f for f in PRODUCT_POLICY_SCHEMA}["unattended_model_floor"]
+    assert field.type == "enum"
+    assert field.default == "none"
+    assert field.choices == ["none", *MODEL_TIERS]
+    assert effective_policy({"unattended_model_floor": "opus"})["unattended_model_floor"] == "opus"
+    assert effective_policy({"unattended_model_floor": "gpt-5"})["unattended_model_floor"] == "none"
 ```
 
 In `server/tests/test_pm_api.py` after line 119 (`assert fields["max_attempts"]["min"] == 1`), add:
@@ -325,6 +339,7 @@ In `server/tests/test_pm_api.py` after line 119 (`assert fields["max_attempts"][
 ```python
         assert fields["risk_tolerance"]["choices"] == ["cautious", "balanced", "bold"]
         assert fields["max_initiatives_in_flight"]["min"] == 0
+        assert fields["unattended_model_floor"]["default"] == "none"
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -351,9 +366,16 @@ In `server/automations/product_policy.py`, add the import `from server.sdlc.gate
                 default=2, min=0,
                 help="How many of this product's initiatives may be producing a spec or "
                      "plan at once. 0 pauses new artifact sessions."),
+    # Spec 2026-09-14 D11: model capability as a risk mitigation. Phase 1 stores it;
+    # phase 2 applies it as the floor for sessions whose output a covered gate will
+    # consume without a human read (inert under `cautious`).
+    ConfigField(key="unattended_model_floor", label="Unattended model floor", type="enum",
+                default="none", choices=["none", *MODEL_TIERS],
+                help="Minimum model for a spec, plan or decompose session whose output will "
+                     "be merged or accepted without a human read. Inert under cautious."),
 ```
 
-Update the module docstring's second paragraph to mention both keys joined in the 2026-09-14 spec's phase 1.
+Add `from server.sessions.model_request import MODEL_TIERS` beside the other imports (`model_request` is a pure vocabulary module; confirm it imports nothing from `server.automations` with `grep -n "^from\|^import" server/sessions/model_request.py`). Update the module docstring's second paragraph to mention the three keys joined in the 2026-09-14 spec's phase 1.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -363,7 +385,7 @@ Run both pytest commands. Expected: PASS. Also run `… $PY -m pytest server/tes
 
 ```bash
 cat > /tmp/c2.txt <<'EOF'
-feat(pm): risk_tolerance and max_initiatives_in_flight join the product policy
+feat(pm): risk_tolerance, max_initiatives_in_flight and unattended_model_floor join the product policy
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 EOF
