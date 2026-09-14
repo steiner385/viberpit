@@ -5082,20 +5082,23 @@ class SessionOrchestrator:
         quota while OpenAI's went unread. The selector's own engine filter is
         metadata-driven and fails closed, so an account with no engine mapping is
         simply not a candidate."""
+        # No per-dispatch model here: judge a Default launch on the model the binary
+        # would inherit, which is what quota_model(None) resolves. Computed ONCE and
+        # used for both halves — picking for the fleet model and then gating on every
+        # window would reject the very account the selector just judged usable.
+        probe_model = quota_model(None, engine=engine)
         try:
             # reserve=False: this is a read-only availability probe. Reserving here
             # would consume the picked account's reservation window without starting
             # a session, starving the real spawn (and interactive creates) when only
             # one account has headroom.
-            # No per-dispatch model here: judge a Default launch on the model the
-            # binary would inherit, which is what quota_model(None) resolves.
             picked = select_account(
                 exclude=self._recovery.quarantined(now=self._clock()),
                 load=self.live_session_load(), reserve=False, engine=engine,
-                model=quota_model(None, engine=engine))
+                model=probe_model)
         except AllAccountsBusy:
             return None
-        if self._account_limited(picked.name):
+        if self._account_limited(picked.name, model=probe_model):
             return None
         return picked.name
 
@@ -14991,13 +14994,19 @@ class SessionOrchestrator:
                             f"{account}: {reason.replace('_', ' ')}",
                             account=account, orch=self)
                 else:
+                    # The account ANSWERED, so it is no longer unreachable: drop the bare
+                    # key on EVERY usage branch below. Leaving it set would swallow the
+                    # next `account_unreachable` push as already-notified — which is how
+                    # the alert for a proxy that flaps (dead → paid-overflow → dead) went
+                    # missing. Per-window keys are pruned separately, by window.
+                    self._account_limited_notified.discard(account)
                     over = usage.windows_at_or_over(_ROTATION_CEILING)
                     if not over:
                         # Nothing at ceiling for ANY model: recovery branch.
                         self._maybe_sweep_on_recovery()
                         self._account_limited_notified = {
                             k for k in self._account_limited_notified
-                            if not (k == account or k.startswith(f"{account}:"))}
+                            if not k.startswith(f"{account}:")}
                         continue
                     extra_allowed = self._extra_usage_allowed(account)
                     if not exhausted(usage, _ROTATION_CEILING,
@@ -15005,7 +15014,8 @@ class SessionOrchestrator:
                         # At ceiling but with paid overflow the selector would still hand
                         # out (rank_accounts' extra_paid tier): rotating off such an
                         # account finds no better target and parks the session as
-                        # needs_attention for nothing.
+                        # needs_attention for nothing. The per-window keys stay — those
+                        # windows are still at ceiling.
                         self._maybe_sweep_on_recovery()
                         continue
                     # Notify once per (account, window): a Fable exhaustion and a later

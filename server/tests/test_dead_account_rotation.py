@@ -11,6 +11,7 @@ fetch usage (returns None / fail_count rises), and driver subprocesses start
 crashing when they try to connect.
 """
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -20,7 +21,8 @@ from server.sessions.orchestrator import SessionOrchestrator, _ROTATION_CEILING
 from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.usage.poller import UsagePoller
-from ccswitch.quota import QuotaSnapshot, anthropic_snapshot
+from ccswitch.quota import (QuotaSnapshot, QuotaWindow, SCOPE_MODEL,
+                            anthropic_snapshot)
 
 
 # ---------------------------------------------------------------------------
@@ -498,9 +500,6 @@ def test_account_is_dead_true_at_ceiling_extra_usage_provider_disabled():
 # Per-model windows: only sessions whose model the exhausted window meters move
 # ---------------------------------------------------------------------------
 
-from datetime import datetime, timedelta, timezone
-from ccswitch.quota import QuotaWindow, SCOPE_MODEL
-
 _NOW = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
 
 
@@ -581,6 +580,78 @@ def test_account_is_dead_and_limited_are_model_aware():
     assert o._account_is_dead("copilot_acct") is True          # unknown model: conservative
     assert o._account_limited("copilot_acct", model="sonnet") is False
     assert o._account_limited("copilot_acct", model="fable") is True
+
+
+def _two_windows_over(fable_pct: float):
+    """session 100% (account-wide) plus a Fable weekly at *fable_pct*."""
+    fable = QuotaWindow(key="weekly:fable", label="Fable weekly", used_pct=fable_pct,
+                        resets_at=_NOW + timedelta(hours=8), duration_seconds=7 * 24 * 3600,
+                        scope=SCOPE_MODEL, applies_to_models=("fable",))
+    return anthropic_snapshot(100.0, _NOW + timedelta(hours=1), 40.0, _NOW + timedelta(days=2),
+                              fetched_at=_NOW, model_windows=[fable])
+
+
+@pytest.mark.asyncio
+async def test_window_keys_are_pruned_per_window_so_each_re_exhaustion_re_fires(monkeypatch):
+    """Debouncing is per (account, window): a window that falls back under the ceiling
+    drops ITS key while the still-exhausted one keeps its own."""
+    o = _make_orch()
+    o._poller = _poller_with_failures(0)
+    sent = []
+
+    async def fake_notify(kind, title, body, **kw):
+        sent.append(body)
+    monkeypatch.setattr(orch_mod.push_mod, "notify_event", fake_notify)
+
+    await _run_monitor_one_event(o, {"account": "copilot_acct",
+                                     "usage": _two_windows_over(100.0)})
+    assert sent == ["copilot_acct: session limit reached",
+                    "copilot_acct: Fable weekly limit reached"]
+    assert o._account_limited_notified == {"copilot_acct:session",
+                                           "copilot_acct:weekly:fable"}
+
+    # Fable recovers, session does not: only the Fable key is dropped, and neither
+    # window re-notifies (session is still the same news it already sent).
+    await _run_monitor_one_event(o, {"account": "copilot_acct",
+                                     "usage": _two_windows_over(10.0)})
+    assert o._account_limited_notified == {"copilot_acct:session"}
+    assert len(sent) == 2
+
+    # Fable hits the ceiling again — that IS new news, session still is not.
+    await _run_monitor_one_event(o, {"account": "copilot_acct",
+                                     "usage": _two_windows_over(100.0)})
+    assert sent[2:] == ["copilot_acct: Fable weekly limit reached"]
+
+
+@pytest.mark.asyncio
+async def test_a_reachable_account_re_arms_the_unreachable_alert(monkeypatch):
+    """dead → reachable-but-at-ceiling-with-paid-overflow → dead must alert TWICE.
+
+    The paid-overflow branch sends no push of its own, so if it left the bare account
+    key set the second `account_unreachable` push would be swallowed as already-sent
+    and a genuinely dead proxy would go unannounced.
+    """
+    o = _make_orch()
+    o._poller = _poller_with_failures(orch_mod._UNREACHABLE_ROTATION_THRESHOLD)
+    o._extra_usage_allowed = lambda account: True
+    sent = []
+
+    async def fake_notify(kind, title, body, **kw):
+        sent.append(body)
+    monkeypatch.setattr(orch_mod.push_mod, "notify_event", fake_notify)
+
+    await _run_monitor_one_event(o, {"account": "copilot_acct", "usage": None})
+    assert sent == ["copilot_acct: account unreachable"]
+
+    # The account answers — at ceiling, but with paid overflow the selector still
+    # hands it out, so nothing rotates and nothing is pushed.
+    await _run_monitor_one_event(
+        o, {"account": "copilot_acct", "usage": _at_ceiling_usage(True)})
+    assert sent == ["copilot_acct: account unreachable"]
+    assert "copilot_acct" not in o._account_limited_notified
+
+    await _run_monitor_one_event(o, {"account": "copilot_acct", "usage": None})
+    assert sent == ["copilot_acct: account unreachable"] * 2
 
 
 @pytest.mark.asyncio
