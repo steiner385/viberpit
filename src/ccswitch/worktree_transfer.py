@@ -249,6 +249,24 @@ def import_(bundle: Bundle, repo_path: str, repo_root: str) -> WorktreeInfo:
     return WorktreeInfo(str(dest), bundle.branch, is_child=False, repo=top)
 
 
+def finalize(bundle: Bundle, worktree_path: str) -> bool:
+    """Source-side cleanup after a successful import elsewhere.
+
+    The WIP commit was a transport artifact: put the branch tip back at the base
+    (``reset --soft`` keeps the edits staged so nothing is lost if the removal below
+    is refused), then remove the worktree with force — its contents now live on
+    the target. Returns True iff the directory was removed. Safe to call twice.
+    """
+    if not os.path.isdir(worktree_path):
+        return False
+    if bundle.wip_commit and _rev(worktree_path, "HEAD") == bundle.head_sha:
+        _run(["git", "-C", worktree_path, "reset", "-q", "--soft", bundle.base_sha])
+    removed = remove_worktree(worktree_path, force=True)
+    log.info("transfer.finalize session=%s removed=%s path=%s",
+             bundle.session_id, removed, worktree_path)
+    return removed
+
+
 def delete_transfer_refs(repo_path: str, session_id: str) -> None:
     """Drop the session's transfer namespace locally and on origin. Best-effort."""
     top = _repo_top(repo_path)

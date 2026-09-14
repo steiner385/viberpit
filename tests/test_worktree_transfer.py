@@ -295,3 +295,38 @@ class ImportTests(unittest.TestCase):
                 wt.import_(b, str(self.dst), str(self.dst_root))
         self.assertEqual(ctx.exception.code, "worktree_add_failed")
         self.assertEqual(_git("rev-parse", f"refs/heads/{self.info.branch}", cwd=str(self.dst)), prev)
+
+
+class FinalizeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.clone = _make_origin_and_clone(self.root)
+        self.sid = "dddd4444-0000"
+        self.info = worktrees.create_worktree(str(self.clone), "main", self.sid, str(self.root))
+        self.cwd = self.info.path
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_finalize_after_wip_export_restores_branch_tip_and_removes_dir(self) -> None:
+        base = _git("rev-parse", "HEAD", cwd=self.cwd)
+        (Path(self.cwd) / "x.txt").write_text("x\n")
+        b = wt.export(self.cwd, self.sid, carry_dirty=True)
+        self.assertTrue(wt.finalize(b, self.cwd))
+        self.assertFalse(os.path.isdir(self.cwd))
+        # the child branch was deleted by remove_worktree; no ref may still point at the WIP
+        r = subprocess.run(["git", "-C", str(self.clone), "branch", "--contains", b.head_sha],
+                           capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), "")
+        self.assertIsNotNone(base)
+
+    def test_finalize_clean_removes_dir(self) -> None:
+        b = wt.export(self.cwd, self.sid, carry_dirty=False)
+        self.assertTrue(wt.finalize(b, self.cwd))
+        self.assertFalse(os.path.isdir(self.cwd))
+
+    def test_finalize_is_idempotent(self) -> None:
+        b = wt.export(self.cwd, self.sid, carry_dirty=False)
+        self.assertTrue(wt.finalize(b, self.cwd))
+        self.assertFalse(wt.finalize(b, self.cwd))
