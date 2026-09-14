@@ -71,9 +71,10 @@ def _selector(monkeypatch, available: set[str], earliest=None):
     seen = {}
 
     def fake(exclude=frozenset(), load=None, *, reserve=True,
-             soft_exclude=frozenset(), engine=None):
+             soft_exclude=frozenset(), engine=None, model=None):
         seen["exclude"] = frozenset(exclude)
         seen["soft_exclude"] = frozenset(soft_exclude)
+        seen["model"] = model
         for name in sorted(available):
             if name not in exclude:
                 return Picked(name=name, optimistic=False)

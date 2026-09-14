@@ -135,10 +135,11 @@ async def test_rotate_away_clears_pin(monkeypatch):
     async def _persist_pin(self, sid, pinned): rec.account_pinned = pinned
     monkeypatch.setattr(SessionOrchestrator, "_reassign", _reassign)
     monkeypatch.setattr(SessionOrchestrator, "_persist_pin", _persist_pin)
-    # select_account gained a load-aware `load=` kwarg (master #137); accept it.
+    # select_account gained a load-aware `load=` kwarg (master #137) and a
+    # per-model quota key `model=`; accept both.
     monkeypatch.setattr("server.sessions.orchestrator.select_account",
                         lambda exclude=frozenset(), load=None, soft_exclude=frozenset(),
-                        engine=AgentEngine.CLAUDE_CODE: Picked("b"))
+                        engine=AgentEngine.CLAUDE_CODE, model=None: Picked("b"))
 
     await orch._rotate_away(rec, reason="auth_401")
     assert rec.account_pinned is False  # hard-failure recovery overrides the pin

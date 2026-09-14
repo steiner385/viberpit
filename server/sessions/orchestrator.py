@@ -90,6 +90,7 @@ from server.sessions.engine import (
     SuggestionProvider,
     parse_agent_engine,
 )
+from server.sessions.model_policy import quota_model
 from server.sessions import orphan_cli as _orphan_cli
 from server.sessions.orphaned_asks import orphaned_answer_prompt, orphaned_ask_kind
 from server.sessions.permissions import PermissionRegistry, resolve_permission_mode
@@ -3558,7 +3559,8 @@ class SessionOrchestrator:
             # doesn't land on an account we already know is struggling.
             picked = select_account(
                 exclude=self._recovery.quarantined(now=self._clock()),
-                load=self.live_session_load(), engine=selected_engine)
+                load=self.live_session_load(), engine=selected_engine,
+                model=quota_model(model, engine=selected_engine))
             account = picked.name
             usage_unverified = picked.optimistic
         else:
@@ -5082,9 +5084,12 @@ class SessionOrchestrator:
             # would consume the picked account's reservation window without starting
             # a session, starving the real spawn (and interactive creates) when only
             # one account has headroom.
+            # No per-dispatch model here: judge a Default launch on the model the
+            # binary would inherit, which is what quota_model(None) resolves.
             picked = select_account(
                 exclude=self._recovery.quarantined(now=self._clock()),
-                load=self.live_session_load(), reserve=False, engine=engine)
+                load=self.live_session_load(), reserve=False, engine=engine,
+                model=quota_model(None, engine=engine))
         except AllAccountsBusy:
             return None
         if self._account_limited(picked.name):
@@ -12911,7 +12916,8 @@ class SessionOrchestrator:
             new_account = select_account(
                 exclude=frozenset({record.account}),
                 soft_exclude=self._recovery.quarantined(now=now),
-                load=self.live_session_load(), engine=record.engine
+                load=self.live_session_load(), engine=record.engine,
+                model=quota_model(record.model, engine=record.engine),
             ).name
         except AllAccountsBusy as e:
             if is_usage_stalled(record.status, record.paused_reason):
@@ -15327,7 +15333,8 @@ class SessionOrchestrator:
             new_account = select_account(
                 exclude=frozenset({old}),
                 soft_exclude=self._recovery.quarantined(now=now),
-                load=self.live_session_load(), engine=record.engine
+                load=self.live_session_load(), engine=record.engine,
+                model=quota_model(record.model, engine=record.engine),
             ).name
         except AllAccountsBusy as e:
             await self._pause_session(record, reason="all_accounts_busy",

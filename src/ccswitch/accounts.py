@@ -566,7 +566,8 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
                           *, reserve: bool = True,
                           soft_exclude: set[str] = frozenset(),
                           require_engine: str | None = AgentEngine.CLAUDE_CODE.value,
-                          default_engine: str | None = AgentEngine.CLAUDE_CODE.value) -> Picked:
+                          default_engine: str | None = AgentEngine.CLAUDE_CODE.value,
+                          model: str | None = None) -> Picked:
     """Select the best available account.
 
     Two kinds of exclusion, and the difference between them is the whole point:
@@ -594,6 +595,9 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
     reserving on a check consumes the account's reservation window without
     creating a session, which — when only one account has headroom — starves both
     real spawns and interactive creates for the full reservation TTL.
+
+    ``model`` is the ``QuotaWindow.applies_to_models`` key of the model the session
+    will run; None applies every window (conservative).
     """
     names = _account_names()
     providers: dict[str, str] | None = None
@@ -635,7 +639,8 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
                                  extra_usage_allowed=extra_allowed,
                                  providers=providers, engines=engines,
                                  require_engine=require_engine,
-                                 default_engine=default_engine)
+                                 default_engine=default_engine,
+                                 model=model)
         hard = set(exclude)
         soft = set(soft_exclude) - hard
         try:
@@ -667,9 +672,10 @@ def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
 
 
 def pick_account(cfg: Config, exclude: set[str] = frozenset(),
-                 load: dict[str, float] | None = None) -> str:
+                 load: dict[str, float] | None = None, *,
+                 model: str | None = None) -> str:
     """Pick for the legacy Claude launchers; never cross into Codex accounts."""
-    return pick_account_detailed(cfg, exclude, load).name
+    return pick_account_detailed(cfg, exclude, load, model=model).name
 
 
 def codex_cli_launch_gate(cfg: Config, prog: str) -> int:

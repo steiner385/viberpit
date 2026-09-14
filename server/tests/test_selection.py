@@ -281,3 +281,45 @@ def test_quarantined_last_resort_still_raises_when_all_at_ceiling():
 
             with pytest.raises(AllAccountsBusy):
                 select_account(exclude=frozenset({"limited1"}))
+
+
+# ---------------------------------------------------------------------------
+# Per-model quota windows: the model reaches pick_account_detailed
+# ---------------------------------------------------------------------------
+
+def test_select_account_forwards_model(monkeypatch):
+    """*model* is plumbed straight through to the core picker.
+
+    Without it every window meters every session and a Fable-exhausted account
+    looks exhausted for Sonnet too.
+    """
+    from server.sessions import selection
+    seen = {}
+
+    def fake_pick(cfg, *, exclude, load, reserve, soft_exclude, require_engine,
+                  default_engine, model=None):
+        seen["model"] = model
+        from ccswitch.selector import Picked
+        return Picked(name="alpha", optimistic=False)
+
+    monkeypatch.setattr(selection, "pick_account_detailed", fake_pick)
+    with temp_env():
+        assert selection.select_account(model="sonnet").name == "alpha"
+    assert seen["model"] == "sonnet"
+
+
+def test_select_account_model_defaults_to_none(monkeypatch):
+    """No model given -> None, i.e. every window applies (conservative)."""
+    from server.sessions import selection
+    seen = {}
+
+    def fake_pick(cfg, *, exclude, load, reserve, soft_exclude, require_engine,
+                  default_engine, model=None):
+        seen["model"] = model
+        from ccswitch.selector import Picked
+        return Picked(name="alpha", optimistic=False)
+
+    monkeypatch.setattr(selection, "pick_account_detailed", fake_pick)
+    with temp_env():
+        selection.select_account()
+    assert seen["model"] is None
