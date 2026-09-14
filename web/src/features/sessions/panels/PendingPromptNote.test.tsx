@@ -34,6 +34,14 @@ describe('PendingPromptNote', () => {
     expect(screen.getByText(/no response from the server/i)).toBeInTheDocument()
   })
 
+  it('drops the spinner and says the prompt was not delivered once the wake failed', () => {
+    // 2026-09-14: the drawer spun on "waking session…" forever after the edge had
+    // already given up (SESSION_NOT_FOUND). A terminal stage must read as one.
+    render(<PendingPromptNote stage="failed" />)
+    expect(screen.queryByTestId('pending-prompt-spinner')).not.toBeInTheDocument()
+    expect(screen.getByText(/not delivered/i)).toBeInTheDocument()
+  })
+
   it('announces the stage to assistive tech politely', () => {
     render(<PendingPromptNote stage="resuming" />)
     expect(screen.getByRole('status')).toHaveTextContent(/waking session/i)

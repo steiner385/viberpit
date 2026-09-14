@@ -99,4 +99,19 @@ describe('AssistantSheet', () => {
     expect(screen.getByText('What needs my attention?')).toBeInTheDocument()
     expect(screen.getByText(/AI-generated/)).toBeInTheDocument()
   })
+
+  it('surfaces a session-level error frame inside the drawer', () => {
+    // 2026-09-14: the edge answered a prompt with SESSION_NOT_FOUND and the drawer
+    // showed nothing — only SessionBody rendered `state.error`, so the failure was
+    // dropped on the floor and the bubble spun on "waking session…" indefinitely.
+    vi.mocked(useAssistantStatus).mockReturnValue(
+      { data: { enabled: true, sessionId: 'a1', model: 'sonnet' }, isLoading: false } as never,
+    )
+    const rt = fakeRuntime()
+    rt.state.error = { code: 'SESSION_NOT_FOUND', message: "Session 'a1' not found", resetsAt: null } as never
+    vi.mocked(useSessionRuntimeContext).mockReturnValue(rt as never)
+    renderApp({ path: '/sessions?drawer=assistant', mode: 'desktop' })
+    const dlg = screen.getByRole('dialog', { name: /assistant/i })
+    expect(within(dlg).getByRole('alert')).toHaveTextContent(/not found/i)
+  })
 })
