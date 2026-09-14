@@ -1,6 +1,9 @@
 """Automation registry API — list/read/configure code-defined automations."""
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -23,6 +26,9 @@ from server.db.models import (
     Automation as AutomationRow,
     Session as DbSession,
 )
+from server.github.repo_canon import canonicalize_repo_list
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/automations", tags=["automations"])
 
@@ -173,6 +179,28 @@ async def spawned_sessions(automation_id: str, _identity: str = Depends(current_
             for s in rows]
 
 
+async def _canonicalize_enabled_repos(config: dict | None) -> dict | None:
+    """*config* with ``enabled_repos`` rewritten to GitHub's canonical names.
+
+    The write path is where a rename alias has to be stopped. GitHub forwards a
+    renamed repository forever, so a slug entered (or stored) before a rename
+    keeps resolving — it just becomes a SECOND string key for one repo, and
+    pr-doctor keys its jobs on ``"owner/repo#N"``. Two keys meant two concurrent
+    sessions on the same pull request, on the same branch.
+
+    Fails open: :func:`canonicalize_repo_list` returns the list untouched when the
+    lookup cannot be made, so an operator's save is never blocked by a GitHub blip.
+    """
+    repos = (config or {}).get("enabled_repos")
+    if not isinstance(repos, list) or not repos:
+        return config
+    # ``_run_gh`` is a blocking subprocess; keep it off the event loop.
+    canonical = await asyncio.to_thread(canonicalize_repo_list, repos)
+    if canonical != repos:
+        log.info("automations.enabled_repos.canonicalized %s -> %s", repos, canonical)
+    return {**(config or {}), "enabled_repos": canonical}
+
+
 @router.patch("/{automation_id}")
 async def patch_automation(automation_id: str, body: PatchBody,
                            _identity: str = Depends(current_identity), db=Depends(get_db)) -> dict:
@@ -205,6 +233,7 @@ async def patch_automation(automation_id: str, body: PatchBody,
                                          retired=retired_config_keys_of(automation))
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
+        row.config = await _canonicalize_enabled_repos(row.config)
     if body.schedule is not None:
         try:
             parse_schedule(body.schedule)  # validate; reject a bad cron/window

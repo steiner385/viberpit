@@ -245,6 +245,24 @@ async def _lifespan(app: FastAPI):
             "startup: automation ensure_rows failed", exc_info=True
         )
 
+    # Retire any repo-rename alias stored in an `enabled_repos` (must follow
+    # ensure_rows — it reads those rows). GitHub forwards a renamed repo forever,
+    # so a stale slug keeps resolving and becomes a second string key for one
+    # repo: pr-doctor keys jobs on "owner/repo#N", and the duplicate spawned two
+    # concurrent sessions on the same PR. Bounded and fail-open — a slow or
+    # unreachable `gh` must never hold up a boot, and the next start retries.
+    try:
+        from server.automations.config_store import reconcile_enabled_repos
+        _n = await asyncio.wait_for(reconcile_enabled_repos(), timeout=30)
+        if _n:
+            _logging.getLogger("server").info(
+                "startup: canonicalized enabled_repos on %d automation row(s)", _n
+            )
+    except Exception:
+        _logging.getLogger("server").warning(
+            "startup: enabled_repos reconcile failed", exc_info=True
+        )
+
     from server.db import db_session as _db_session_factory
     from server.usage.auth_failure_audit import AuthFailureAuditor
     _auth_auditor = AuthFailureAuditor(identity="system", session_factory=_db_session_factory)
@@ -732,10 +750,10 @@ def create_app(
     if not getattr(app.state, "remote_mode", False) and orchestrator is not None:
         from server.sessions.copilot_proxy import build_copilot_proxy_manager
         from server.sessions.copilot_auth import CopilotAuthManager
-        from ccswitch import paths as _ccswitch_paths
+        from ccswitch import paths as _cc_paths
         orchestrator._copilot = build_copilot_proxy_manager(_gs())
         orchestrator._copilot_auth = CopilotAuthManager(
-            token_dir_for=_ccswitch_paths.copilot_token_dir
+            token_dir_for=_cc_paths.copilot_token_dir
         )
 
     # Reauth ALWAYS runs here, on the master — never proxied to a worker daemon.
