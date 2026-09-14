@@ -185,6 +185,22 @@ def test_manual_unarchive_opt_out_blocks_any_origin():
     asyncio.run(run())
 
 
+def test_create_time_opt_out_blocks_completion_autoarchive():
+    """The per-session "Auto-archive" toggle unticked at dispatch lands on the same
+    sticky column as a manual unarchive, so the completion path leaves the session
+    alone — no archive, no nudge — without a second gate."""
+    async def run():
+        from server.sessions.types import AUTO_ARCHIVE_OPT_OUT_CREATE
+        rec = _rec("s1", origin=None)
+        rec.auto_archive_opt_out_reason = AUTO_ARCHIVE_OPT_OUT_CREATE
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=_armed_pr())
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _drain()
+        assert archived == []
+        assert nudged == []
+    asyncio.run(run())
+
+
 def test_repeated_not_ready_completes_stop_nudging_after_cap():
     """An agent that keeps re-signalling complete without arming its PR is nudged up to
     the cap, then left alone (no infinite nudge loop)."""

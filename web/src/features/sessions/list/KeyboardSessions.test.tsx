@@ -444,7 +444,7 @@ describe('Task 6 — dispatch create-and-open', () => {
     expect(createMutate).toHaveBeenCalledWith(
       // `engine` is always sent, even for the default: it is what makes the
       // optimistic placeholder card carry the right agent (Task 5.2).
-      { initialPrompt: 'add a button', repo: 'acme/web', branch: 'main', engine: 'claude_code' },
+      { initialPrompt: 'add a button', repo: 'acme/web', branch: 'main', engine: 'claude_code', autopilot: true, autoArchive: true },
       expect.anything(),
     )
     // The prompt is forwarded so the conversation can show it immediately on
@@ -463,7 +463,7 @@ describe('Task 6 — dispatch create-and-open', () => {
     await user.type(box, 'hello')
     await user.keyboard('{Enter}')
     expect(createMutate).toHaveBeenCalledWith(
-      { initialPrompt: 'hello', repo: undefined, branch: undefined, engine: 'claude_code' },
+      { initialPrompt: 'hello', repo: undefined, branch: undefined, engine: 'claude_code', autopilot: true, autoArchive: true },
       expect.anything(),
     )
     expect(app.path()).toBe('/sessions/n2')

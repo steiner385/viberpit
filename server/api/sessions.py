@@ -28,7 +28,9 @@ from ccswitch import gitrepos
 from server.auth.middleware import current_client_node, current_identity
 from server.automations.registry import assisted_by_label, origin_label, work_class_for_origin
 from server.sessions.search import parse_terms, session_matches
-from server.sessions.types import ASSISTANT_KIND, RESUME_ELIGIBLE_STATUSES, is_assistant
+from server.sessions.types import (
+    ASSISTANT_KIND, AUTO_ARCHIVE_OPT_OUT_CREATE, RESUME_ELIGIBLE_STATUSES, is_assistant,
+)
 from server.sessions.usage_stall import is_usage_stalled
 from server.audit import record_audit
 from server.config import get_settings
@@ -100,6 +102,13 @@ class CreateSessionRequest(BaseModel):
     display: Literal["auto", "native", "virtual"] | None = None
     presetId: str | None = None
     permissionProfileId: str | None = None
+    # Per-session opt-outs. None / True = governed by the global autopilot mode and
+    # the app-wide auto-archive setting (the pre-toggle behaviour); False = this
+    # session only. They land on the EXISTING `autopilot_paused` /
+    # `auto_archive_opt_out_reason` columns (see the handler) — no parallel
+    # "enabled" columns, so the governance and completion gates need no new branch.
+    autopilot: bool | None = None
+    autoArchive: bool | None = None
 
 
 class RenameSessionRequest(BaseModel):
@@ -744,6 +753,16 @@ async def create_session(
         _resolved_model = verdict.get("model", _resolved_model)
         _resolved_effort = verdict.get("effort", _resolved_effort)
 
+    # Per-session toggles → the existing opt-out columns. Sent ONLY when a toggle
+    # is off so the governed-by-default request stays byte-identical: a daemon that
+    # predates the toggles binds create_session(**params) and would TypeError on an
+    # unknown key (same rolling-upgrade posture as client_node/display).
+    _toggle_kwargs: dict = {}
+    if body.autopilot is False:
+        _toggle_kwargs["autopilot_paused"] = True
+    if body.autoArchive is False:
+        _toggle_kwargs["auto_archive_opt_out_reason"] = AUTO_ARCHIVE_OPT_OUT_CREATE
+
     try:
         record = await orch.create_session(
             prefer=getattr(body, "host", None),
@@ -763,6 +782,7 @@ async def create_session(
             display=body.display,
             **({"reasoning_effort": _resolved_effort}
                if _resolved_effort is not None else {}),
+            **_toggle_kwargs,
         )
     except UnknownHost as exc:
         return JSONResponse(

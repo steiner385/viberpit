@@ -2381,8 +2381,16 @@ class SessionOrchestrator:
         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
         client_node: str | None = None,
         display: str | None = None,
+        autopilot_paused: bool = False,
+        auto_archive_opt_out_reason: str | None = None,
     ) -> SessionRecord:
         """Pick an account, start an AgentDriver, persist a DB row, return a SessionRecord.
+
+        *autopilot_paused* / *auto_archive_opt_out_reason* are the per-session opt-outs
+        the dispatch form's "Autopilot" / "Auto-archive" toggles map onto — the same
+        columns the card-menu pause and a manual unarchive write, so every path that
+        births a row (spawn, queue, approval hold) persists them and every path that
+        re-spawns one (queue drain, approve) carries them through.
 
         *kind* is ``ASSISTANT_KIND`` for the AI-drawer meta-assistant and None for every
         coding session; *owner_identity* is the identity that owns an assistant thread
@@ -2459,6 +2467,8 @@ class SessionOrchestrator:
                 reasoning_effort=reasoning_effort, kind=kind,
                 owner_identity=owner_identity, engine=selected_engine,
                 client_node=client_node, display=display,
+                autopilot_paused=autopilot_paused,
+                auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                 model_reason=INHERITED_DEFAULT_REASON if gate_model != model else None)
 
         # Global active-session cap: at/over the cap the session is created as a
@@ -2476,7 +2486,9 @@ class SessionOrchestrator:
                 name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref,
                 model=model, reasoning_effort=reasoning_effort, kind=kind,
                 owner_identity=owner_identity, engine=selected_engine,
-                client_node=client_node, display=display)
+                client_node=client_node, display=display,
+                autopilot_paused=autopilot_paused,
+                auto_archive_opt_out_reason=auto_archive_opt_out_reason)
         return await self._spawn_session(
             session_id, name=name, account=account, initial_prompt=initial_prompt,
             cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
@@ -2485,7 +2497,9 @@ class SessionOrchestrator:
             origin=origin, origin_ref=origin_ref, model=model,
             reasoning_effort=reasoning_effort, kind=kind,
             owner_identity=owner_identity, engine=selected_engine,
-            client_node=client_node, display=display)
+            client_node=client_node, display=display,
+            autopilot_paused=autopilot_paused,
+            auto_archive_opt_out_reason=auto_archive_opt_out_reason)
 
     def _consumes_capacity_slot(self, record) -> bool:
         """Does *record* occupy a runtime slot? The ONE definition (constitution VI).
@@ -2559,7 +2573,10 @@ class SessionOrchestrator:
                                name_is_auto, origin, origin_ref, model,
                                client_node=None, display=None,
                                reasoning_effort=None, kind=None, owner_identity=None,
-                               engine=AgentEngine.CLAUDE_CODE) -> SessionRecord:
+                               engine=AgentEngine.CLAUDE_CODE,
+                               autopilot_paused: bool = False,
+                               auto_archive_opt_out_reason: str | None = None,
+                               ) -> SessionRecord:
         from datetime import datetime
         from server.sessions import session_queue as sq
         now = datetime.utcnow()
@@ -2592,7 +2609,9 @@ class SessionOrchestrator:
                 origin=origin, origin_ref=origin_ref, model=model,
                 initial_prompt=initial_prompt, host=host,
                 kind=kind, owner_identity=owner_identity,
-                display_mode=display_mode))
+                display_mode=display_mode,
+                autopilot_paused=autopilot_paused or None,
+                auto_archive_opt_out_reason=auto_archive_opt_out_reason))
         params: dict = {
             "name": name, "account": account, "initial_prompt": initial_prompt,
             "cols": cols, "rows": rows, "cwd": cwd, "branch": branch,
@@ -2620,6 +2639,12 @@ class SessionOrchestrator:
             params["kind"] = kind
         if owner_identity is not None:
             params["owner_identity"] = owner_identity
+        # Same mixed-version hazard: the per-session toggles are additive kwargs,
+        # written only when set so a governed-by-default entry replays on any daemon.
+        if autopilot_paused:
+            params["autopilot_paused"] = True
+        if auto_archive_opt_out_reason is not None:
+            params["auto_archive_opt_out_reason"] = auto_archive_opt_out_reason
         priority = await sq.enqueue(session_id, params)
         rec = SessionRecord(
             id=session_id, name=name, account=account or "", engine=selected_engine,
@@ -2629,7 +2654,9 @@ class SessionOrchestrator:
             created_at=now, updated_at=now, origin=origin, origin_ref=origin_ref,
             model=model, reasoning_effort=reasoning_effort, host=host,
             kind=kind, owner_identity=owner_identity,
-            display_mode=display_mode, permission_mode=permission_mode)
+            display_mode=display_mode, permission_mode=permission_mode,
+            autopilot_paused=autopilot_paused,
+            auto_archive_opt_out_reason=auto_archive_opt_out_reason)
         self._records[session_id] = rec
         log.info("session.queued id=%s priority=%d origin=%s",
                  session_id, priority, origin)
@@ -2642,6 +2669,8 @@ class SessionOrchestrator:
                                  client_node=None, display=None,
                                  reasoning_effort=None, kind=None, owner_identity=None,
                                  engine=AgentEngine.CLAUDE_CODE,
+                                 autopilot_paused: bool = False,
+                                 auto_archive_opt_out_reason: str | None = None,
                                  model_reason: str | None = None) -> SessionRecord:
         """Park a model-gated session at 'pending_approval': persist a driverless row
         with the requested model in `pending_model`, no queue entry, no capacity slot.
@@ -2679,7 +2708,9 @@ class SessionOrchestrator:
                 pending_model_requested_by=identity, pending_model_requested_at=now,
                 initial_prompt=initial_prompt, host=host,
                 kind=kind, owner_identity=owner_identity,
-                display_mode=display_mode))
+                display_mode=display_mode,
+                autopilot_paused=autopilot_paused or None,
+                auto_archive_opt_out_reason=auto_archive_opt_out_reason))
             await record_audit(db, type="model_approval.requested", identity=identity,
                                detail={"session_id": session_id, "model": model,
                                        "account": account,
@@ -2692,7 +2723,9 @@ class SessionOrchestrator:
             permission_mode=permission_mode, attachment_ids=attachment_ids,
             name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref, model=model,
             reasoning_effort=reasoning_effort, kind=kind,
-            owner_identity=owner_identity, engine=selected_engine)
+            owner_identity=owner_identity, engine=selected_engine,
+            autopilot_paused=autopilot_paused,
+            auto_archive_opt_out_reason=auto_archive_opt_out_reason)
         rec = SessionRecord(
             id=session_id, name=name, account=account or "", engine=selected_engine,
             engine_session_id="",
@@ -2702,7 +2735,9 @@ class SessionOrchestrator:
             model=None, reasoning_effort=reasoning_effort, pending_model=model, host=host,
             pending_model_reason=model_reason,
             kind=kind, owner_identity=owner_identity,
-            display_mode=display_mode, permission_mode=permission_mode)
+            display_mode=display_mode, permission_mode=permission_mode,
+            autopilot_paused=autopilot_paused,
+            auto_archive_opt_out_reason=auto_archive_opt_out_reason)
         self._records[session_id] = rec
         log.info("session.pending_approval id=%s model=%s origin=%s",
                  session_id, model, origin)
@@ -2976,7 +3011,9 @@ class SessionOrchestrator:
                     initial_prompt=kwargs.get("initial_prompt"), host=host,
                     kind=kwargs.get("kind"),
                     owner_identity=kwargs.get("owner_identity"),
-                    display_mode=prior_mode))
+                    display_mode=prior_mode,
+                    autopilot_paused=kwargs.get("autopilot_paused") or None,
+                    auto_archive_opt_out_reason=kwargs.get("auto_archive_opt_out_reason")))
             restored = dict(kwargs)
             restored["model"] = model
             self._pending_approvals[session_id] = restored
@@ -2995,7 +3032,9 @@ class SessionOrchestrator:
                 kind=kwargs.get("kind"),
                 owner_identity=kwargs.get("owner_identity"),
                 display_mode=prior_mode,
-                permission_mode=kwargs.get("permission_mode") or "interactive")
+                permission_mode=kwargs.get("permission_mode") or "interactive",
+                autopilot_paused=bool(kwargs.get("autopilot_paused")),
+                auto_archive_opt_out_reason=kwargs.get("auto_archive_opt_out_reason"))
         except Exception:
             # Never let the recovery path mask the real spawn error.
             log.exception("session.model_approval_hold_restore_failed id=%s",
@@ -3449,6 +3488,8 @@ class SessionOrchestrator:
         engine: AgentEngine | str = AgentEngine.CLAUDE_CODE,
         client_node: str | None = None,
         display: str | None = None,
+        autopilot_paused: bool = False,
+        auto_archive_opt_out_reason: str | None = None,
     ) -> SessionRecord:
         """Start an AgentDriver, persist/update a DB row, return a SessionRecord.
 
@@ -3577,8 +3618,19 @@ class SessionOrchestrator:
                 "already has one; resuming instead of discarding it",
                 session_id, _prior_csid)
             resume = _prior_csid
+        # Per-session opt-outs survive the queue/hold → spawn hand-off the same way
+        # created_at and lineage do: explicit kwargs win (fresh spawn, queue replay,
+        # approve), else the prior queued/held record's values. The fallback is what
+        # keeps a card-menu pause applied WHILE QUEUED from vanishing off the live
+        # record when the slot frees (the row already has it; the record would not).
+        autopilot_paused = autopilot_paused or bool(getattr(_prior, "autopilot_paused", False))
+        auto_archive_opt_out_reason = (
+            auto_archive_opt_out_reason
+            or getattr(_prior, "auto_archive_opt_out_reason", None))
         _pre_record = SessionRecord(
             id=session_id, name=name, account=account,
+            autopilot_paused=autopilot_paused,
+            auto_archive_opt_out_reason=auto_archive_opt_out_reason,
             engine=selected_engine,
             engine_session_id=resume or "",
             cols=cols, rows=rows, cwd=cwd, repo=repo, branch=branch_name,
@@ -3719,6 +3771,8 @@ class SessionOrchestrator:
                         kind=kind,
                         owner_identity=owner_identity,
                         display_mode=display_mode,
+                        autopilot_paused=autopilot_paused or None,
+                        auto_archive_opt_out_reason=auto_archive_opt_out_reason,
                     )
                     db.add(row)
             row_persisted = True

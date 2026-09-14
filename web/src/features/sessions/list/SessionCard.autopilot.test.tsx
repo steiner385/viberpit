@@ -55,6 +55,14 @@ describe('SessionCard autopilot toggle', () => {
     expect(badge.tagName).toBe('SPAN')
   })
 
+  it('words the auto-archive badge for a dispatch-time opt-out rather than an unarchive', () => {
+    renderCard({ ...base, autoArchiveOptOut: 'create-opt-out' })
+    const badge = screen.getByTestId('card-no-autoarchive-badge')
+    expect(badge).toHaveTextContent('Auto-archive off')
+    expect(badge).toHaveAttribute('title', expect.stringMatching(/when this session was created/i))
+    expect(badge).toHaveAttribute('title', expect.not.stringMatching(/unarchived/i))
+  })
+
   it('omits the auto-archive badge when the session is still eligible', () => {
     renderCard({ ...base, autoArchiveOptOut: null })
     expect(screen.queryByTestId('card-no-autoarchive-badge')).toBeNull()

@@ -17,6 +17,7 @@ import { AttachmentChips } from '@/features/sessions/composer/AttachmentChips'
 import { MicButton } from '@/features/sessions/composer/MicButton'
 import { useDictationField } from '@/lib/useDictationField'
 import { DispatchError } from './dispatchError'
+import { Checkbox } from '@/ui/Checkbox'
 
 export interface DispatchBarProps {
   repos: GithubRepo[]
@@ -41,6 +42,9 @@ export interface DispatchBarProps {
    * `account`/`model`/`host`/`reasoningEffort` are already normalized: null means
    * "let the backend decide" (Auto-select account / account-default model /
    * auto-rank runner / model-default effort). `engine` is always concrete.
+   * `autopilot`/`autoArchive` are the per-session opt-outs: true (the default)
+   * leaves the session governed by the global settings, false pins this one
+   * session to manual / never-auto-archived.
    * Reject with a `DispatchError` to have the bar show its message inline.
    */
   onDispatch: (input: {
@@ -52,6 +56,8 @@ export interface DispatchBarProps {
     attachmentIds: string[]
     engine: AgentEngine
     reasoningEffort: string | null
+    autopilot: boolean
+    autoArchive: boolean
   }) => Promise<void>
   /**
    * The engine/account the model list must be fetched for.
@@ -146,6 +152,12 @@ export function DispatchBar({
   // "chose Claude", and an unoffered persisted choice must fall back rather than
   // be honoured.
   const [engineChoice, setEngineChoice] = useState<AgentEngine | null>(() => getPreferredEngine())
+  // Per-session opt-outs. On = governed by the global autopilot mode / auto-archive
+  // setting; off = this session only. Deliberately NOT persisted like repo/engine
+  // and reset after every successful dispatch: the choice is about the session
+  // being created, and a sticky "off" would silently un-govern the next one.
+  const [autopilot, setAutopilot] = useState(true)
+  const [autoArchive, setAutoArchive] = useState(true)
   // Mobile-only disclosure for the Account/Model selects; desktop always shows all three.
   const [showMore, setShowMore] = useState(false)
   const [assessing, setAssessing] = useState(false)
@@ -266,10 +278,15 @@ export function DispatchBar({
         engine,
         // '' ⇒ null so the engine keeps the model's own default effort.
         reasoningEffort: reasoning || null,
+        autopilot,
+        autoArchive,
       })
       setText('')
       setRefinedPrompt(null)
       att.clear()
+      // The opt-outs were for THAT session; the next one starts governed.
+      setAutopilot(true)
+      setAutoArchive(true)
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto'
       }
@@ -433,7 +450,9 @@ export function DispatchBar({
     account !== '' ||
     model !== 'default' ||
     host !== '' ||
-    (reasoning !== '' && reasoning !== (selectedModel?.defaultReasoningEffort ?? ''))
+    (reasoning !== '' && reasoning !== (selectedModel?.defaultReasoningEffort ?? '')) ||
+    !autopilot ||
+    !autoArchive
 
   // Built from the ids actually rendered: a dangling `aria-controls` target is
   // an a11y violation, and the Reasoning/Runner selects are conditional.
@@ -443,6 +462,7 @@ export function DispatchBar({
     'dispatch-bar-model',
     showReasoning && 'dispatch-bar-reasoning',
     showRunner && 'dispatch-bar-runner',
+    'dispatch-bar-toggles',
   ].filter((id): id is string => typeof id === 'string')
 
   // One column per rendered select (plus the repo cell). Literal class names so
@@ -544,7 +564,7 @@ export function DispatchBar({
                   className="absolute top-1 right-1 h-2 w-2 rounded-full bg-accent"
                 />
                 <span className="sr-only">
-                  Non-default agent, account, model, reasoning, or runner selected
+                  Non-default agent, account, model, reasoning, or runner selected, or autopilot or auto-archive off
                 </span>
               </>
             )}
@@ -670,6 +690,25 @@ export function DispatchBar({
             </select>
           </div>
         )}
+
+        {/* Per-session opt-outs. Both default ON (= governed by the global
+            autopilot mode / auto-archive setting); unticking pins THIS session
+            only. Grouped in one grid cell beside the selects; behind the
+            same mobile disclosure as the rest of the advanced picks. */}
+        <div
+          id="dispatch-bar-toggles"
+          role="group"
+          aria-labelledby="dispatch-bar-toggles-label"
+          className={cn('flex-col gap-1 min-w-0', showMore ? 'flex' : 'hidden sm:flex')}
+        >
+          <span id="dispatch-bar-toggles-label" className={selectLabelClass}>For this session</span>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <Checkbox id="dispatch-bar-autopilot" label="Autopilot"
+              checked={autopilot} onChange={setAutopilot} />
+            <Checkbox id="dispatch-bar-auto-archive" label="Auto-archive"
+              checked={autoArchive} onChange={setAutoArchive} />
+          </div>
+        </div>
       </div>
 
       <AttachmentChips attachments={att.attachments} onRemove={att.remove} />

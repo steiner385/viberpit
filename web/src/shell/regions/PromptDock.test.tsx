@@ -302,6 +302,30 @@ describe('PromptDock — the engine-aware launch path', () => {
     })
   })
 
+  it('threads the per-session Autopilot / Auto-archive opt-outs into POST /sessions', async () => {
+    const user = userEvent.setup()
+    renderAt('/sessions')
+    await screen.findByLabelText('Repository')
+    await user.click(screen.getByLabelText('Autopilot'))
+    await user.click(screen.getByLabelText('Auto-archive'))
+    await user.type(screen.getByLabelText('New session prompt'), 'ship it')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0].body).toMatchObject({ autopilot: false, autoArchive: false })
+  })
+
+  it('sends the toggles as governed (true) when the user leaves them alone', async () => {
+    const user = userEvent.setup()
+    renderAt('/sessions')
+    await screen.findByLabelText('Repository')
+    await user.type(screen.getByLabelText('New session prompt'), 'ship it')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0].body).toMatchObject({ autopilot: true, autoArchive: true })
+  })
+
   it('says why a Codex launch had no runner, instead of the usage banner', async () => {
     const user = userEvent.setup()
     const onAllLimited = vi.fn()
