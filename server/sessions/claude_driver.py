@@ -10,7 +10,9 @@ import os
 import time
 import uuid
 from typing import Callable
-from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny, ResultMessage
+from claude_agent_sdk import (PermissionResultAllow, PermissionResultDeny, ResultMessage,
+                              TaskStartedMessage, TaskUpdatedMessage, TaskNotificationMessage,
+                              TERMINAL_TASK_STATUSES)
 from claude_agent_sdk._errors import CLIConnectionError
 from ccswitch import brand
 from ccswitch import copilot as _copilot_mod
@@ -20,6 +22,8 @@ from server.assistant.context import PromptContext, render_context_header
 from server.hostname import self_host_name
 from server.mcp_spec import is_mcp_tool
 from server.obs.metrics import assistant_sessions_live, assistant_ttft_ms, assistant_turn_ms
+from .automation_execution import AutomationExecutionFence
+from .background_tasks import _AGENT_TOOLS, _is_background_launch
 from . import events as ev
 from .driver_stream import _STREAM_DONE, DriverStream
 from .failure import classify, TurnFailure
@@ -183,7 +187,17 @@ class ClaudeAgentDriver:
                  on_session_id=None, on_sync_back: Callable[[], None] | None = None,
                  on_status=None, on_record_condense_ms=None, get_condense_estimate=None,
                  on_recoverable_failure=None, on_context_usage=None, clock=None, suggester=None,
-                 assistant_api=None, on_sub_agents_changed=None):
+                 assistant_api=None, on_sub_agents_changed=None, before_execution=None,
+                 automation_execution_id=None, after_execution_close=None):
+        self.automation_execution_id = automation_execution_id
+        self._automation_fence = AutomationExecutionFence(before_execution, after_execution_close)
+        self._automation_tasks: set[str] = set()
+        self._automation_task_tools: dict[str, str] = {}
+        self._automation_background_tools: set[str] = set()
+        self._automation_observation_complete = resume is None
+        self._automation_terminal_observed = False
+        self._automation_close_ok = False
+        self._automation_predecessor_unknown = False
         self.session_id = session_id
         self.account = account
         self.cwd = cwd
@@ -789,6 +803,10 @@ class ClaudeAgentDriver:
             message=self._reg.take_deny_reason(perm_id) or "denied by user")
 
     async def start(self):
+        if await self._automation_fence.enter():
+            # A durable close proof for the previous driver establishes that no
+            # managed historical task survived into this resumed execution.
+            self._automation_observation_complete = True
         # A turn interrupted mid-tool-call (manual Stop, stall-watchdog, or a deploy
         # drain that cancels the drain before the CLI writes its synthetic
         # "[Request interrupted by user for tool use]" result) leaves an ORPHANED
@@ -821,6 +839,7 @@ class ClaudeAgentDriver:
         immediately: a follow-up sent while the assistant is still working is a normal
         interaction, and it must not lose its header or its chip. Rendering and dedupe
         happen in ``_start_turn`` when the turn actually starts, never here."""
+        await self._automation_fence.enter()
         if self._client is None:
             raise RuntimeError("ClaudeAgentDriver.send_prompt called before start()")
         images = images or []
@@ -923,6 +942,8 @@ class ClaudeAgentDriver:
         immediately. The emitted UserMessage always carries the original ``text`` plus
         the raw ``context`` dict, so the transcript and the chip stay independent of
         what the model sees."""
+        await self._automation_fence.enter()
+        self._automation_terminal_observed = False
         images = images or []
         sdk_text = text
         if context is not None:
@@ -940,6 +961,7 @@ class ClaudeAgentDriver:
         self._last_assistant_parts = []
         self._turn_buffer = []
         self._turn_produced_output = False
+        self._automation_terminal_observed = False
         # Forget the previous turn's bucket: unlike _last_rate_reset (a timestamp the
         # max(0.0, resets_at - now) clamp neutralises once it's past), a bucket name
         # has no decay — a stale "five_hour" from an old warning would otherwise be
@@ -1060,7 +1082,24 @@ class ClaudeAgentDriver:
     async def _handle_msg(self, msg) -> None:
         """Route ONE SDK message through the translator and the per-event side effects.
         Shared by the prompt pump and the idle listener — one turn semantics."""
+        if isinstance(msg, TaskStartedMessage):
+            self._automation_tasks.add(msg.task_id)
+            if msg.tool_use_id:
+                self._automation_task_tools[msg.task_id] = msg.tool_use_id
+        elif isinstance(msg, (TaskUpdatedMessage, TaskNotificationMessage)):
+            if msg.status in TERMINAL_TASK_STATUSES:
+                self._automation_tasks.discard(msg.task_id)
+                tool_id = self._automation_task_tools.pop(msg.task_id, None)
+                tool_id = tool_id or getattr(msg, "tool_use_id", None)
+                if tool_id:
+                    self._automation_background_tools.discard(tool_id)
+        if isinstance(msg, ResultMessage):
+            self._automation_terminal_observed = True
         for e in self._tr.feed(msg):
+            if isinstance(e, ev.ToolCall) and (
+                e.name in _AGENT_TOOLS or _is_background_launch(e.name, e.input)
+            ):
+                self._automation_background_tools.add(e.tool_id)
             if isinstance(e, ev.RateLimit):
                 # Internal: stash the reset for retry timing; don't forward.
                 self._last_rate_limit_type = e.rate_limit_type
@@ -1154,6 +1193,7 @@ class ClaudeAgentDriver:
         placeholder (e.g. a dead token or a closed subprocess is exactly what the user
         needs to act on; redaction scrubs any secret-shaped substrings downstream), mark
         the turn failed and signal recovery."""
+        self._automation_terminal_observed = False
         detail = str(exc).strip() or "no detail"
         full = f"{type(exc).__name__}: {detail}"
         self._emit(ev.ErrorEvent(
@@ -1237,6 +1277,7 @@ class ClaudeAgentDriver:
         self._last_assistant_parts = []
         self._turn_buffer = []
         self._turn_produced_output = False
+        self._automation_terminal_observed = False
         # Forget the previous turn's bucket: unlike _last_rate_reset (a timestamp the
         # max(0.0, resets_at - now) clamp neutralises once it's past), a bucket name
         # has no decay — a stale "five_hour" from an old warning would otherwise be
@@ -1627,6 +1668,10 @@ class ClaudeAgentDriver:
         clearing == dropping the resume handle and reconnecting. Resets per-turn
         and titling state so the new session behaves like a brand-new one.
         """
+        await self._automation_fence.enter()
+        predecessor_unknown = self._automation_predecessor_unknown
+        # A cancelled/failed replacement must never erase the old native lifetime.
+        self._automation_predecessor_unknown = True
         grace = getattr(self, "_close_grace", _CLOSE_GRACE_SEC)
         self._closing = True
         await self._stop_listener()
@@ -1642,9 +1687,12 @@ class ClaudeAgentDriver:
             await self._source.aclose(grace, phase=f"driver.reconnect-source:{self.session_id}")
             self._source = None
         if self._client is not None:
-            await bounded_wait(self._client.__aexit__(None, None, None),
-                               timeout=_CLOSE_AEXIT_TIMEOUT_S,
-                               phase=f"driver.reconnect-aexit:{self.session_id}")
+            closing = asyncio.ensure_future(self._client.__aexit__(None, None, None))
+            completed = await bounded_wait(closing, timeout=_CLOSE_AEXIT_TIMEOUT_S,
+                                           phase=f"driver.reconnect-aexit:{self.session_id}")
+            if (completed and closing.done() and not closing.cancelled()
+                    and closing.exception() is None):
+                self._automation_predecessor_unknown = predecessor_unknown
             await self._call_sync_back()
         self.resume = None
         self._engine_session_id = None
@@ -1667,6 +1715,26 @@ class ClaudeAgentDriver:
 
     def resolve_permission(self, perm_id, decision, identity) -> bool:
         return self._reg.resolve(perm_id, decision, identity)
+
+    async def automation_work_stopped(self) -> bool:
+        """Close an observed terminal execution, never infer stop from UI status.
+
+        Resumed transcripts lack a complete live task history, so remain unknown.
+        Public SDK task lifecycle messages include Bash/Monitor as well as agents.
+        """
+        if (self._automation_predecessor_unknown
+                or not self._automation_observation_complete or not self._automation_terminal_observed
+                or self._turn_live() or self._queue or self._automation_tasks
+                or self._automation_background_tools):
+            return False
+        self._automation_fence.frozen = True
+        if not self._closing:
+            await self.aclose()
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise asyncio.CancelledError
+        return (self._automation_close_ok and not self._automation_tasks
+                and not self._automation_background_tools)
 
     async def aclose(self):
         # No more listening: an idle driver's listener is parked on the cursor and
@@ -1708,9 +1776,12 @@ class ClaudeAgentDriver:
         if self._source is not None:
             await self._source.aclose(grace, phase=f"driver.source:{self.session_id}")
         if self._client:
-            await bounded_wait(self._client.__aexit__(None, None, None),
-                               timeout=_CLOSE_AEXIT_TIMEOUT_S,
-                               phase=f"driver.aexit:{self.session_id}")
+            closing = asyncio.ensure_future(self._client.__aexit__(None, None, None))
+            completed = await bounded_wait(closing, timeout=_CLOSE_AEXIT_TIMEOUT_S,
+                                           phase=f"driver.aexit:{self.session_id}")
+            self._automation_close_ok = (completed and closing.done()
+                                         and not closing.cancelled()
+                                         and closing.exception() is None)
         # Final sync_back: capture any token rotation that occurred during the
         # session (e.g. a long-running session where the SDK refreshed but the
         # drain's finally sync_back already ran before the close was requested).
@@ -1722,6 +1793,7 @@ class ClaudeAgentDriver:
                 assistant_sessions_live.dec()
         for q in self._subscribers:
             q.put_nowait(_STREAM_DONE)
+        await self._automation_fence.closed(self)
 
 
 class ClaudeAgentDriverFactory(AgentDriverFactory):
@@ -1759,4 +1831,7 @@ class ClaudeAgentDriverFactory(AgentDriverFactory):
             clock=config.clock,
             suggester=config.suggester,
             assistant_api=config.assistant_api,
+            before_execution=config.before_execution,
+            automation_execution_id=config.automation_execution_id,
+            after_execution_close=config.after_execution_close,
         )

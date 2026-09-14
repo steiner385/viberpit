@@ -17,6 +17,10 @@ remain refused before spending a session.
 """
 from __future__ import annotations
 
+from server.tests.test_backlog_runner_loop import (
+    isolated_ownership_identity as isolated_ownership_identity,
+)
+
 import asyncio
 
 import pytest
@@ -323,26 +327,12 @@ def test_a_successful_codex_spawn_records_the_session_and_holds_the_slot(
 # 4b. The two human-triggered spawn paths report a refusal honestly.           #
 # --------------------------------------------------------------------------- #
 
-def _orch_with_refusing_spawn(monkeypatch):
-    """A SessionOrchestrator shell whose ``_backlog_spawn`` refuses, with the
-    announce/state seams stubbed — enough to exercise the two tap paths."""
+async def _orch_with_refusing_spawn(tmp_path, monkeypatch):
+    """Use real durable ownership/state with an external launch refusal."""
     from server.sessions.orchestrator import SessionOrchestrator
 
     orch = SessionOrchestrator.__new__(SessionOrchestrator)
-    state: dict[str, dict] = {}
-
-    class Ctx:
-        async def get_target_state(self, target):
-            return state.get(target, {})
-
-        async def set_target_state(self, target, st):
-            state[target] = st
-
-        async def delete_target_state(self, target):
-            state.pop(target, None)
-
-        async def emit(self, *a, **k):
-            return None
+    ctx = await _codex_runner_ctx(tmp_path, "cx_manual_refusal.db", monkeypatch)
 
     async def read_config():
         return "on", _CONFIG
@@ -356,13 +346,16 @@ def _orch_with_refusing_spawn(monkeypatch):
     async def spawn(_batch, _account, **_kw):
         return None
 
-    monkeypatch.setattr(orch, "_backlog_ctx", Ctx(), raising=False)
+    monkeypatch.setattr(orch, "_backlog_ctx", ctx, raising=False)
     monkeypatch.setattr(orch, "_backlog_read_config", read_config, raising=False)
     monkeypatch.setattr(orch, "_backlog_announce", announce, raising=False)
     monkeypatch.setattr(orch, "_automation_account_for", account, raising=False)
     monkeypatch.setattr(orch, "_backlog_spawn", spawn, raising=False)
     monkeypatch.setattr(orch, "_gh_run", lambda *a, **k: "", raising=False)
-    return orch, state
+    from unittest.mock import AsyncMock
+    orch._backlog_count_in_flight = AsyncMock(return_value=0)
+    orch._backlog_loop = _loop(orch._backlog_ctx, spawn=spawn)[0]
+    return orch, ctx
 
 
 def _queue_of(monkeypatch, orch, candidates: list[dict]) -> None:
@@ -374,24 +367,38 @@ def _queue_of(monkeypatch, orch, candidates: list[dict]) -> None:
     monkeypatch.setattr(orch, "_backlog_query_queue", _queue, raising=False)
 
 
-def test_the_propose_tap_reports_a_refusal_instead_of_a_phantom_spawn(monkeypatch):
-    """``backlog_runner_implement_core`` returned ``"spawned"`` with a null session
-    id, so the dashboard said "Spawned implementation session" for a session that
-    does not exist — and the claim row stayed behind holding a slot."""
-    orch, state = _orch_with_refusing_spawn(monkeypatch)
-    _queue_of(monkeypatch, orch, [{"ref": "o/r#1", "repo": "o/r", "title": "one"}])
-    status = asyncio.run(orch.backlog_runner_implement_core("o/r#1"))
-    assert status == "refused"
-    assert state == {}, "a refused tap must not leave a claim row behind"
+def test_the_propose_tap_reports_a_refusal_instead_of_a_phantom_spawn(tmp_path, monkeypatch):
+    """A refused tap must report refusal and release its durable batch claim."""
+    async def run():
+        orch, ctx = await _orch_with_refusing_spawn(tmp_path, monkeypatch)
+        _queue_of(monkeypatch, orch, [{"ref": "o/r#1", "repo": "o/r", "title": "one"}])
+        status = await orch.backlog_runner_implement_core("o/r#1")
+        assert status == "refused"
+        assert await ctx.list_target_states() == {}, "a refused tap must not retain its claim"
+        assert orch._backlog_loop._spawns_today == []
+        from sqlalchemy import select
+        from server.db.models import AutomationOwnedTarget
+        async with db_session() as db:
+            assert list(await db.scalars(select(AutomationOwnedTarget).where(
+                AutomationOwnedTarget.operation_token.is_not(None)))) == []
+    asyncio.run(run())
 
 
-def test_manual_dispatch_reports_a_refusal_instead_of_a_phantom_spawn(monkeypatch):
-    orch, state = _orch_with_refusing_spawn(monkeypatch)
-    _queue_of(monkeypatch, orch, [{"ref": "o/r#1", "repo": "o/r", "title": "one"}])
-    out = asyncio.run(orch.backlog_runner_dispatch(["o/r#1"]))
-    assert out["status"] == "refused"
-    assert out["session_id"] is None
-    assert state == {}
+def test_manual_dispatch_reports_a_refusal_instead_of_a_phantom_spawn(tmp_path, monkeypatch):
+    async def run():
+        orch, ctx = await _orch_with_refusing_spawn(tmp_path, monkeypatch)
+        _queue_of(monkeypatch, orch, [{"ref": "o/r#1", "repo": "o/r", "title": "one"}])
+        out = await orch.backlog_runner_dispatch(["o/r#1"])
+        assert out["status"] == "refused"
+        assert out["session_id"] is None
+        assert await ctx.list_target_states() == {}
+        assert orch._backlog_loop._spawns_today == []
+        from sqlalchemy import select
+        from server.db.models import AutomationOwnedTarget
+        async with db_session() as db:
+            assert list(await db.scalars(select(AutomationOwnedTarget).where(
+                AutomationOwnedTarget.operation_token.is_not(None)))) == []
+    asyncio.run(run())
 
 
 def test_the_dashboard_has_a_message_for_a_refused_action():

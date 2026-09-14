@@ -138,6 +138,10 @@ def _consolidate_result(status: str) -> TriggerResult:
 _BACKLOG_STATUS_MAP = {
     "spawned": ("ok", "Spawned implementation session"),
     "exists": ("warn", "Already running"),
+    "busy": ("warn", "Waiting for existing work on this batch — see the feed"),
+    "capacity": ("warn", "Implementation capacity is full — wait for a slot"),
+    "budget": ("warn", "Daily implementation budget reached — try later"),
+    "uncertain": ("warn", "Launch outcome unknown; targets remain reserved — see the feed"),
     "no_account": ("warn", "All accounts at/above usage ceiling — try later"),
     "unknown": ("warn", "No longer a current candidate"),
     # The launch was declined before a session existed — an engine the origin is
@@ -156,11 +160,13 @@ class BacklogRunnerActionProvider:
 
     async def actionable(self) -> list[ActionableItem]:
         items: list[ActionableItem] = []
-        for c in await self._orch.backlog_candidates():
+        for c in await self._orch.backlog_candidates(include_pending=True):
             items.append(ActionableItem(
                 id=c["ref"], title=c.get("title") or c["ref"], subtitle=c.get("repo"),
                 url=c.get("url"),
-                actions=[ActionSpec(kind="implement", label="Implement", style="default")]))
+                actions=[ActionSpec(kind="implement",
+                                    label="Retry implementation" if c.get("waiting_account") else "Implement",
+                                    style="default")]))
         return items
 
     async def trigger(self, item_id: str, kind: str) -> TriggerResult:

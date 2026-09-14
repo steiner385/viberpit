@@ -87,6 +87,7 @@ from server.codex.translator import TRANSLATED_NOTIFICATIONS, CodexEventTranslat
 from server.obs.context import log_event
 from server.sessions import events as ev
 from server.sessions.background_tasks import OpenBgTask
+from server.sessions.automation_execution import AutomationExecutionFence
 from server.sessions.driver_stream import _STREAM_DONE, DriverStream
 from server.sessions.engine import (
     AgentDriverConfig,
@@ -312,6 +313,9 @@ class CodexAgentDriver:
         resume: str | None = None,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        before_execution: Any = None,
+        automation_execution_id: str | None = None,
+        after_execution_close: Any = None,
         on_engine_session_id: Any = None,
         on_status: Any = None,
         on_recoverable_failure: Any = None,
@@ -320,6 +324,9 @@ class CodexAgentDriver:
         assistant_overlay: CodexAssistantOverlay | None = None,
         session_tools: CodexSessionTools | None = None,
     ) -> None:
+        self.automation_execution_id = automation_execution_id
+        self._automation_fence = AutomationExecutionFence(before_execution, after_execution_close)
+        self._automation_terminal_observed = False
         self.session_id = session_id
         self.account = account
         self.cwd = cwd
@@ -580,6 +587,7 @@ class CodexAgentDriver:
 
     async def start(self) -> None:
         """Open (or resume) this session's thread and subscribe to its streams."""
+        await self._automation_fence.enter()
         client = self._client()
         profile = self._profile
         overlay = self._assistant
@@ -695,6 +703,25 @@ class CodexAgentDriver:
                 await self._on_engine_session_id(self.session_id, thread_id)
             self._published_thread_id = thread_id
 
+    async def automation_work_stopped(self) -> bool:
+        """Observe native idle/terminal state and no managed work before detaching.
+
+        Every discovered collaborator is read recursively; any active or unknown
+        descendant retains ownership. The root fence prevents future managed sends.
+        """
+        if not self._automation_terminal_observed or self._turn_active or self._queue:
+            return False
+        client = self._client()
+        thread_id = self._require_thread()
+        if not await background.managed_thread_tree_stopped(client, thread_id):
+            return False
+        if self._client() is not client or self._turn_active or self._queue:
+            return False
+        self._automation_fence.frozen = True
+        if not self._closing:
+            await self.aclose()
+        return True
+
     async def aclose(self) -> None:
         """Release the thread. The manager owns the process — nothing is killed."""
         self._closing = True
@@ -715,6 +742,7 @@ class CodexAgentDriver:
         log_event(
             logger, logging.INFO, "codex.driver.closed", session=self.session_id
         )
+        await self._automation_fence.closed(self)
 
     async def archive(self) -> None:
         """Archive the thread upstream, then close.
@@ -738,34 +766,41 @@ class CodexAgentDriver:
         A conversation's history IS its thread, so clearing means abandoning the
         thread handle — exactly as the Claude driver drops its resume handle.
         """
-        old = self._thread_id
-        if old is not None:
-            self._manager.unregister_thread(self.account, old)
-        # The inbox pump belongs to the thread subscription being replaced. If it
-        # survives, start() creates a second consumer for the same queue and live
-        # notifications are split nondeterministically between them. Retire it and
-        # discard any already-queued frames from the abandoned thread before the
-        # fresh thread registers.
-        pump, self._pump = self._pump, None
-        await cancel_and_reap(
-            pump,
-            phase=f"codex.driver.reconnect-pump:{self.session_id}",
-            timeout=_CLOSE_GRACE_S,
-        )
-        self._inbox = asyncio.Queue()
-        self._dismiss_pending_prompts()
-        self._finish_turn()
-        self._queue.clear()
-        self._turn_active = False
-        self._turn_started_at = None
-        self._turn_id = None
-        self._turn_buffer = []
-        self._titled = False
-        self.resume = None
-        self._thread_may_have_history = False
-        self._pending_engine_session_id = None
-        self._thread_id = None
-        self._published_thread_id = None
+        await self._automation_fence.enter()
+        self._automation_fence.frozen = True
+        try:
+            old = self._thread_id
+            if old is not None:
+                await self._check_policy_replacement_state()
+                self._manager.unregister_thread(self.account, old)
+            # The inbox pump belongs to the thread subscription being replaced. If it
+            # survives, start() creates a second consumer for the same queue and live
+            # notifications are split nondeterministically between them. Retire it and
+            # discard any already-queued frames from the abandoned thread before the
+            # fresh thread registers.
+            pump, self._pump = self._pump, None
+            await cancel_and_reap(
+                pump,
+                phase=f"codex.driver.reconnect-pump:{self.session_id}",
+                timeout=_CLOSE_GRACE_S,
+            )
+            self._inbox = asyncio.Queue()
+            self._dismiss_pending_prompts()
+            self._finish_turn()
+            self._queue.clear()
+            self._automation_terminal_observed = False
+            self._turn_active = False
+            self._turn_started_at = None
+            self._turn_id = None
+            self._turn_buffer = []
+            self._titled = False
+            self.resume = None
+            self._thread_may_have_history = False
+            self._pending_engine_session_id = None
+            self._thread_id = None
+            self._published_thread_id = None
+        finally:
+            self._automation_fence.frozen = False
         await self.start()
 
     # -- turns -------------------------------------------------------------
@@ -786,6 +821,7 @@ class CodexAgentDriver:
         cannot silently swallow it. ``interrupt`` stops the live turn and runs
         this prompt next, ahead of anything queued.
         """
+        await self._automation_fence.enter()
         self._require_thread()
         images = images or []
         # Validate attachments BEFORE any state change: a rejected prompt must
@@ -845,6 +881,8 @@ class CodexAgentDriver:
         self, entry: _QueuedPrompt, inputs: tuple[schema.UserInput, ...]
     ) -> None:
         """Open a new turn for *entry*, fenced to the current runner generation."""
+        await self._automation_fence.enter()
+        self._automation_terminal_observed = False
         await self._apply_pending_profile()
         thread_id = self._require_thread()
         self._thread_may_have_history = True
@@ -1709,10 +1747,12 @@ class CodexAgentDriver:
             # the old turn's completion end that one would kill a running turn.
             self._emit(event)
             return
+        self._automation_terminal_observed = True
         outcome = event.outcome
         if self._finish_turn() is TurnOutcome.INDETERMINATE:
             # The process that was running this turn is gone; whether the model
             # finished is unknowable, so it is never reported as a success.
+            self._automation_terminal_observed = False
             outcome = "interrupted"
             self._last_turn_outcome = "failed"
         else:
@@ -2111,6 +2151,7 @@ class CodexAgentDriver:
         no history. A persisted thread instead forks its transcript under the
         requested policy; never restart the account's shared app-server.
         """
+        await self._automation_fence.enter()
         response: schema.ThreadStartResponse | schema.ThreadResumeResponse
         if not self._thread_may_have_history:
             # An empty thread cannot be resumed by the pinned server. Check
@@ -2162,23 +2203,32 @@ class CodexAgentDriver:
         return response
 
     async def _check_policy_replacement_state(self) -> None:
+        """Preserve the old native handle until all its managed work is stopped."""
         thread_id = self._thread_id
         assert thread_id is not None
-        # A thread that has never received a turn cannot have spawned terminals.
-        # Native background listing also rejects such unpersisted threads.
-        if (self._thread_may_have_history
-                and await background.open_background_terminals(self._client(), thread_id)):
+        client = self._client()
+        if self._turn_active or self._queue:
             raise CodexPolicyTransitionBlocked(
-                "Finish the session's background terminals before changing its Codex policy."
-            )
-        goal = await self._client().get_thread_goal(
-            schema.ThreadGoalGetParams(thread_id=thread_id),
-        )
+                "Wait for this session's active managed work to stop before replacing its Codex thread.")
+        # A fresh thread with no accepted turn cannot have spawned native work;
+        # the native read/list APIs reject such unpersisted threads.
+        if self._thread_may_have_history:
+            try:
+                stopped = await background.managed_thread_tree_stopped(client, thread_id)
+            except Exception as exc:
+                raise CodexPolicyTransitionBlocked(
+                    "Could not verify that the old Codex thread's managed work stopped. Try again after it finishes.") from exc
+            if not stopped:
+                raise CodexPolicyTransitionBlocked(
+                    "Finish the session's managed work and background terminals before replacing its Codex thread.")
+        goal = await client.get_thread_goal(schema.ThreadGoalGetParams(thread_id=thread_id))
         if goal.has_goal:
             raise CodexPolicyTransitionBlocked(
-                "This Codex thread has a native goal. Changing its policy would lose "
-                "the goal and its accounting. Keep the current mode or clear the goal first."
-            )
+                "This Codex thread has a native goal. Keep the current thread or clear the goal first.")
+        if (self._client() is not client or self._thread_id != thread_id
+                or self._turn_active or self._queue):
+            raise CodexPolicyTransitionBlocked(
+                "The old Codex thread changed while checking its managed work. Try again.")
 
     async def _persist_policy_thread(self) -> None:
         thread_id = self._pending_engine_session_id
@@ -2388,6 +2438,9 @@ class CodexAgentDriverFactory(AgentDriverFactory):
             resume=config.resume,
             model=model,
             reasoning_effort=config.reasoning_effort,
+            before_execution=config.before_execution,
+            automation_execution_id=config.automation_execution_id,
+            after_execution_close=config.after_execution_close,
             on_engine_session_id=config.on_engine_session_id,
             on_status=config.on_status,
             on_recoverable_failure=config.on_recoverable_failure,

@@ -3,10 +3,33 @@ Uses the __new__ + injected-fakes harness from test_pr_doctor_step.py."""
 from __future__ import annotations
 
 import asyncio
-import types
 import pytest
 
 from server.github.pr_status import PullRequestInfo
+from server.tests.test_pr_doctor_step import github_identity as github_identity
+from server.tests.test_pr_doctor_step import _install_spawn_recorder
+
+
+@pytest.fixture(autouse=True)
+def consolidation_github(monkeypatch, github_identity):
+    from unittest.mock import AsyncMock
+    from server.automations.ownership import CanonicalTarget
+
+    async def resolve(refs, *, kind, include_linked_issues=False):
+        assert kind == "pr" and include_linked_issues
+        return tuple(target for ref in refs for target in (
+            CanonicalTarget("PR_" + ref.split("#")[1], ref),
+            CanonicalTarget("I_" + ref.split("#")[1], ref.replace("#", "#10"))))
+
+    resolver = AsyncMock(side_effect=resolve)
+    # One seam covers every consumer, the legacy guard included: it reaches the
+    # resolver through this module rather than binding it at import.
+    monkeypatch.setattr("server.automations.target_identity.resolve_targets", resolver)
+    monkeypatch.setattr("server.automations.target_identity._fetch", AsyncMock(
+        side_effect=AssertionError("consolidation unit tests must not contact GitHub")))
+    monkeypatch.setattr("server.sessions.orchestrator.SessionOrchestrator._sdlc_default_branch",
+                        AsyncMock(return_value="main"))
+    return resolver
 
 
 def _pr(n, *, title="fix(deploy): x", state="open", is_draft=False,
@@ -42,7 +65,6 @@ def _build_orch(prs):
     orch._drivers = {}
     orch._pr_population = _Population(prs)          # type: ignore[assignment]
     orch._pr_doctor_ctx = AutomationContext("pr-doctor")
-    orch._consolidation_inflight = set()
     orch._consolidation_tasks = set()
     return orch
 
@@ -86,60 +108,48 @@ async def test_candidates_reports_active_consolidations(tmp_path):
 
 @pytest.mark.asyncio
 async def test_consolidate_spawns_one_deduped_session(tmp_path, monkeypatch):
-    from ccswitch import gitrepos
     await _init_db(tmp_path)
     orch = _build_orch([_pr(1), _pr(2)])
-    monkeypatch.setattr(gitrepos, "ensure_clone", lambda root, repo, url: str(tmp_path))
 
-    spawned = {}
-
-    async def fake_spawn(**kw):
-        spawned.update(kw)
-        return types.SimpleNamespace(id="new-sess")
-
-    orch._pr_doctor_ctx.spawn_session = fake_spawn  # type: ignore[assignment]
+    spawns = []
+    _install_spawn_recorder(orch, spawns)
     # The RPC-facing call answers immediately; clone/model/spawn run in a
     # background task so the edge RPC can never time out into a 503 (issue #567).
     status, sid = await orch._pr_doctor_consolidate("o/r", [2, 1])
     assert status == "spawning" and sid is None
     await _drain_consolidations(orch)
-    assert spawned["dedupe_key"] == "consolidate:o/r#1+2"   # sorted, namespaced
-    assert "Closes #1" in spawned["initial_prompt"]
-    assert "Closes #2" in spawned["initial_prompt"]
+    assert spawns[0]["dedupe_key"] == "consolidate:o/r#1+2"   # sorted, namespaced
+    assert "Closes #1" in spawns[0]["initial_prompt"]
+    assert "Closes #2" in spawns[0]["initial_prompt"]
+    from server.automations.ownership import owned
+    async with owned(spawns[0]["ownership_token"]) as tx:
+        assert set(tx.operation.targets) == {"github:PR_1", "github:PR_2", "github:I_1", "github:I_2"}
+
 
 
 @pytest.mark.asyncio
 async def test_consolidate_passes_pinned_session_model(tmp_path, monkeypatch):
-    from ccswitch import gitrepos
     await _init_db(tmp_path)
     orch = _build_orch([_pr(1), _pr(2)])
-    monkeypatch.setattr(gitrepos, "ensure_clone", lambda root, repo, url: str(tmp_path))
 
     async def config():
         return {"default_model": "fable"}
     orch._pr_doctor_config = config  # type: ignore[method-assign]
 
-    spawned = {}
-
-    async def fake_spawn(**kw):
-        spawned.update(kw)
-        return types.SimpleNamespace(id="new-sess")
-
-    orch._pr_doctor_ctx.spawn_session = fake_spawn  # type: ignore[assignment]
+    spawns = []
+    _install_spawn_recorder(orch, spawns)
     status, _ = await orch._pr_doctor_consolidate("o/r", [1, 2])
     assert status == "spawning"
     await _drain_consolidations(orch)
-    assert spawned["model"] == "fable"
-    assert spawned["detail"] == {
+    assert spawns[0]["model"] == "fable"
+    assert spawns[0]["detail"] == {
         "engine": "claude_code", "model": "fable", "model_source": "pinned"}
 
 
 @pytest.mark.asyncio
 async def test_consolidate_too_few_and_not_actionable(tmp_path, monkeypatch):
-    from ccswitch import gitrepos
     await _init_db(tmp_path)
     orch = _build_orch([_pr(1), _pr(2)])
-    monkeypatch.setattr(gitrepos, "ensure_clone", lambda root, repo, url: str(tmp_path))
     status, _ = await orch._pr_doctor_consolidate("o/r", [1])
     assert status == "too_few"
     status2, _ = await orch._pr_doctor_consolidate("o/r", [1, 999])
@@ -147,45 +157,64 @@ async def test_consolidate_too_few_and_not_actionable(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_consolidate_duplicate_when_live_session_exists(tmp_path, monkeypatch):
-    from ccswitch import gitrepos
+async def test_consolidate_duplicate_when_live_session_exists(tmp_path, consolidation_github):
     from server.db import db_session
     from server.db.models import Session
     await _init_db(tmp_path)
     orch = _build_orch([_pr(1), _pr(2)])
-    monkeypatch.setattr(gitrepos, "ensure_clone", lambda root, repo, url: str(tmp_path))
     async with db_session() as db:
         db.add(Session(id="existing", name="c", account_name="a", status="idle",
                        cwd=".", origin="pr-doctor", origin_ref="consolidate:o/r#1+2"))
     status, sid = await orch._pr_doctor_consolidate("o/r", [1, 2])
-    assert status == "duplicate" and sid == "existing"
+    assert status == "duplicate" and sid is None
+    # New claims and the legacy guard must see the same external identities,
+    # regardless of which test first imported the guard on this worker.
+    from unittest.mock import call
+    assert consolidation_github.await_args_list == [
+        call(["o/r#1", "o/r#2"], kind="pr", include_linked_issues=True),
+        call(["o/r#1", "o/r#2"], kind="pr", include_linked_issues=True),
+    ]
+    assert not orch._consolidation_tasks
+    events = await orch._pr_doctor_ctx.list_events()
+    assert any(e["kind"] == "ownership_wait" for e in events)
 
 
 @pytest.mark.asyncio
 async def test_consolidate_respawns_when_prior_session_archived(tmp_path, monkeypatch):
     """An archived consolidation session for the same PR set must not count as a
     live duplicate — regression for archived leftovers blocking re-spawn."""
-    from ccswitch import gitrepos
     from server.db import db_session
     from server.db.models import Session
     await _init_db(tmp_path)
     orch = _build_orch([_pr(1), _pr(2)])
-    monkeypatch.setattr(gitrepos, "ensure_clone", lambda root, repo, url: str(tmp_path))
     async with db_session() as db:
         db.add(Session(id="old", name="c", account_name="a", status="archived",
                        cwd=".", origin="pr-doctor", origin_ref="consolidate:o/r#1+2"))
 
-    spawned = {}
-
-    async def fake_spawn(**kw):
-        spawned.update(kw)
-        return types.SimpleNamespace(id="new-sess")
-
-    orch._pr_doctor_ctx.spawn_session = fake_spawn  # type: ignore[assignment]
+    spawns = []
+    _install_spawn_recorder(orch, spawns)
     status, sid = await orch._pr_doctor_consolidate("o/r", [1, 2])
     assert status == "spawning" and sid is None
     await _drain_consolidations(orch)
-    assert spawned["dedupe_key"] == "consolidate:o/r#1+2"
+    assert spawns[0]["dedupe_key"] == "consolidate:o/r#1+2"
+
+    # Unlike inactive legacy history, the new canonical actor needs native proof.
+    from server.automations.ownership import begin_session_execution, execution_snapshot, attest_session_stopped
+    from server.tests.test_pr_doctor_step import _make_record
+    state = await orch._pr_doctor_ctx.get_target_state("consolidate:o/r#1+2")
+    launched_id = state["session_id"]
+    await begin_session_execution(launched_id)
+    record = _make_record(launched_id)
+    record.status = "archived"
+    orch._records[launched_id] = record
+    assert (await orch._pr_doctor_consolidate("o/r", [1, 2]))[0] == "duplicate"
+    proof = await execution_snapshot(launched_id)
+    assert proof is not None and proof.generation is not None
+    assert await attest_session_stopped(proof.token, proof.generation, session_id=launched_id)
+    assert (await orch._pr_doctor_consolidate("o/r", [1, 2]))[0] == "spawning"
+    await _drain_consolidations(orch)
+    assert len(spawns) == 2
+    assert spawns[1]["ownership_token"] != spawns[0]["ownership_token"]
 
 
 @pytest.mark.asyncio
@@ -193,18 +222,17 @@ async def test_consolidate_inflight_second_call_is_duplicate(tmp_path, monkeypat
     """While the background clone/spawn for a PR set is still running (no DB row
     yet), a second consolidate for the same set must return `duplicate`, and
     exactly one session may spawn — the in-flight guard behind issue #567."""
-    from ccswitch import gitrepos
     await _init_db(tmp_path)
     orch = _build_orch([_pr(1), _pr(2)])
-    monkeypatch.setattr(gitrepos, "ensure_clone", lambda root, repo, url: str(tmp_path))
 
     gate = asyncio.Event()
     calls: list[dict] = []
 
+    spawn = _install_spawn_recorder(orch, calls)
+
     async def gated_spawn(**kw):
         await gate.wait()
-        calls.append(kw)
-        return types.SimpleNamespace(id="s1")
+        return await spawn(**kw)
 
     orch._pr_doctor_ctx.spawn_session = gated_spawn  # type: ignore[assignment]
     # wait_for: if consolidate regresses to awaiting the spawn inline, this
@@ -224,10 +252,8 @@ async def test_consolidate_inflight_second_call_is_duplicate(tmp_path, monkeypat
 async def test_consolidate_background_failure_releases_inflight(tmp_path, monkeypatch):
     """A failed background spawn must release the in-flight guard so the user
     can retry — otherwise one failure wedges the PR set forever."""
-    from ccswitch import gitrepos
     await _init_db(tmp_path)
     orch = _build_orch([_pr(1), _pr(2)])
-    monkeypatch.setattr(gitrepos, "ensure_clone", lambda root, repo, url: str(tmp_path))
 
     async def boom(**kw):
         raise RuntimeError("boom")
@@ -236,6 +262,8 @@ async def test_consolidate_background_failure_releases_inflight(tmp_path, monkey
     status, _ = await orch._pr_doctor_consolidate("o/r", [1, 2])
     assert status == "spawning"
     await _drain_consolidations(orch)
-    assert orch._consolidation_inflight == set()
+    state = await orch._pr_doctor_ctx.get_target_state("consolidate:o/r#1+2")
+    assert not state.get("ownership_token")
     retry, _ = await orch._pr_doctor_consolidate("o/r", [1, 2])
-    assert retry == "spawning"                       # not wedged as duplicate
+    assert retry == "spawning"                       # definitely never started
+    await _drain_consolidations(orch)

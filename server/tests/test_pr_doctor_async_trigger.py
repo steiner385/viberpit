@@ -7,6 +7,8 @@ The point of the feature is that the trigger returns a job id *immediately* and
 the slow pipeline runs in the background, so we assert both.
 """
 from __future__ import annotations
+from server.tests.test_pr_doctor_step import github_identity as github_identity
+
 
 import asyncio
 
@@ -36,7 +38,9 @@ def _orch():
 
 
 @pytest.mark.asyncio
-async def test_async_trigger_runs_phases_then_settles_ready(monkeypatch):
+async def test_async_trigger_runs_phases_then_settles_ready(monkeypatch, isolated_db):
+    from server.automations.registry import registry
+    await registry.ensure_rows()
     orch = _orch()
     phases: list[str] = []
 
@@ -74,7 +78,7 @@ async def test_async_trigger_runs_phases_then_settles_ready(monkeypatch):
     # Drain the background task, then assert the terminal state.
     await asyncio.gather(*list(orch._pr_doctor_job_tasks))
 
-    assert phases == ["cloning", "assessing", "spawning"]
+    assert phases == ["assessing", "spawning"]
     job = orch.pr_doctor_job(job_id)
     assert (job["status"], job["phase"], job["level"]) == ("ready", "ready", "ok")
     assert job["session_id"] == "sess-new"
@@ -82,7 +86,9 @@ async def test_async_trigger_runs_phases_then_settles_ready(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_async_trigger_records_clone_failure_phase(monkeypatch):
+async def test_async_trigger_records_clone_failure_phase(monkeypatch, isolated_db):
+    from server.automations.registry import registry
+    await registry.ensure_rows()
     orch = _orch()
 
     async def _root():
@@ -91,7 +97,9 @@ async def test_async_trigger_records_clone_failure_phase(monkeypatch):
 
     def _boom(root, repo, url):
         raise gitrepos.CloneError("network down")
-    monkeypatch.setattr(gitrepos, "ensure_clone", _boom)
+    async def failed_spawn(**kwargs):
+        raise gitrepos.CloneError("network down")
+    monkeypatch.setattr(orch._pr_doctor_ctx, "spawn_session", failed_spawn)
 
     async def _emit(*a, **k):
         return None
@@ -101,8 +109,8 @@ async def test_async_trigger_records_clone_failure_phase(monkeypatch):
     await asyncio.gather(*list(orch._pr_doctor_job_tasks))
 
     job = orch.pr_doctor_job(job_id)
-    assert (job["status"], job["error_phase"], job["level"]) == ("error", "cloning", "error")
-    assert "Clone failed" in job["message"]
+    assert (job["status"], job["error_phase"], job["level"]) == ("error", "spawning", "error")
+    assert "failed" in job["message"].lower()
 
 
 @pytest.mark.asyncio

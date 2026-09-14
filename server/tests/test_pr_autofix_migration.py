@@ -12,6 +12,7 @@ Follows the suite's sync ``asyncio.run(run())`` + ``tmp_path`` file-DB pattern
 from __future__ import annotations
 
 import asyncio
+from server.tests.test_pr_doctor_step import github_identity as github_identity
 
 from sqlalchemy import select
 
@@ -62,7 +63,7 @@ async def _init_db(tmp_path, name: str) -> None:
             sa_update(Automation).where(Automation.id == "pr-doctor").values(enabled=True))
 
 
-def _build_orch(pr: PullRequestInfo, *, has_driver: bool = True):
+def _build_orch(pr: PullRequestInfo, *, has_driver: bool = False):
     """Build a minimal orch + a no-network notify shim. ``pushed`` collects the
     notify titles; the caller is responsible for swapping notify in (done here on
     the module so the module-level ``push_mod.notify`` call in _on_pr_change hits
@@ -92,38 +93,31 @@ def _build_orch(pr: PullRequestInfo, *, has_driver: bool = True):
 
     # No-driver SessionFix now spawns a fresh de-duped session; record spawns so
     # no real create_session runs. Exposed on the orch for the tests that inspect.
-    import types as _types
+    from server.tests.test_pr_doctor_step import _install_spawn_recorder
     spawns: list[dict] = []
-    _seen: dict[str, object] = {}
-
-    async def fake_spawn(*, origin_ref, dedupe_key=None, **kwargs):
-        key = dedupe_key or origin_ref
-        if key in _seen:
-            return _seen[key]
-        rec = _types.SimpleNamespace(id="spawned-1")
-        _seen[key] = rec
-        spawns.append({"origin_ref": origin_ref, "dedupe_key": dedupe_key, **kwargs})
-        return rec
-
-    orch._pr_doctor_ctx.spawn_session = fake_spawn  # type: ignore[method-assign]
-    orch._test_spawns = spawns  # type: ignore[attr-defined]
-
-    # Resolve the clone cwd off a fake so the no-driver spawn path runs without
-    # real git/gh; restored alongside notify below.
-    def _fake_ensure_clone(repo_root, name_with_owner, url):
-        return "/fake/clone/o__r"
-
-    _orig_ensure_clone = orch_mod.gitrepos.ensure_clone
-    orch_mod.gitrepos.ensure_clone = _fake_ensure_clone  # type: ignore[attr-defined]
+    _install_spawn_recorder(orch, spawns)
+    setattr(orch, "_test_spawns", spawns)
 
     _orig_notify = orch_mod.push_mod.notify
     orch_mod.push_mod.notify = fake_notify  # type: ignore[attr-defined]
 
     def restore():
         orch_mod.push_mod.notify = _orig_notify  # type: ignore[attr-defined]
-        orch_mod.gitrepos.ensure_clone = _orig_ensure_clone  # type: ignore[attr-defined]
 
     return orch, sent, pushed, restore
+
+
+async def _stop_repair(orch):
+    from server.automations.ownership import begin_session_execution, execution_snapshot, attest_session_stopped
+    state = await orch._pr_doctor_ctx.get_target_state("o/r#7")
+    sid = state["session_id"]
+    await begin_session_execution(sid)
+    snapshot = await execution_snapshot(sid)
+    assert snapshot is not None and snapshot.generation is not None
+    rec = _make_record(sid)
+    rec.status = "complete"
+    orch._records[sid] = rec
+    assert await attest_session_stopped(snapshot.token, snapshot.generation, session_id=sid)
 
 
 async def _set_mode(mode: str) -> None:
@@ -195,10 +189,10 @@ def test_one_attempt_per_failure_event(tmp_path):
         orch, sent, _pushed, restore = _build_orch(_pr())
 
         await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
-        assert len(sent) == 1
+        assert len(orch._test_spawns) == 1
         # Second failing without recovery → guard holds, no second injection.
         await orch._on_pr_change("o/r", "feat/x", "failing", "failing")
-        assert len(sent) == 1
+        assert len(orch._test_spawns) == 1
 
         restore()
 
@@ -213,10 +207,10 @@ def test_no_rearm_on_pending(tmp_path):
         orch, sent, _pushed, restore = _build_orch(_pr())
 
         await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
-        assert len(sent) == 1
+        assert len(orch._test_spawns) == 1
         await orch._on_pr_change("o/r", "feat/x", "failing", "pending")
         await orch._on_pr_change("o/r", "feat/x", "pending", "failing")
-        assert len(sent) == 1  # pending must NOT re-arm
+        assert len(orch._test_spawns) == 1  # pending must NOT re-arm
 
         restore()
 
@@ -231,10 +225,12 @@ def test_rearm_on_passing(tmp_path):
         orch, sent, _pushed, restore = _build_orch(_pr())
 
         await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
-        assert len(sent) == 1
+        assert len(orch._test_spawns) == 1
+        if (await orch._pr_doctor_ctx.get_target_state("o/r#7")).get("session_id"):
+            await _stop_repair(orch)
         await orch._on_pr_change("o/r", "feat/x", "failing", "passing")
         await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
-        assert len(sent) == 2
+        assert len(orch._test_spawns) == 2
 
         restore()
 
@@ -261,11 +257,13 @@ def test_recovery_clear_resets_the_budget_but_keeps_the_lifetime_counts(tmp_path
         orch, sent, _pushed, restore = _build_orch(_pr())
 
         await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
-        assert len(sent) == 1
+        assert len(orch._test_spawns) == 1
         st = await orch._pr_doctor_ctx.get_target_state("o/r#7")
         assert st["total_attempts"] == 1 and st["attempted"] is True
 
         # The fix lands: CI recovers → the clear fires.
+        if (await orch._pr_doctor_ctx.get_target_state("o/r#7")).get("session_id"):
+            await _stop_repair(orch)
         await orch._on_pr_change("o/r", "feat/x", "failing", "passing")
         cleared = await orch._pr_doctor_ctx.get_target_state("o/r#7")
         assert cleared == {"lifetime_attempts": 1, "lifetime_mechanical": 0}
@@ -274,7 +272,7 @@ def test_recovery_clear_resets_the_budget_but_keeps_the_lifetime_counts(tmp_path
         # ``total_attempts``, which the clear dropped), and the re-arm carries the
         # lifetime count through untouched.
         await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
-        assert len(sent) == 2
+        assert len(orch._test_spawns) == 2
         st = await orch._pr_doctor_ctx.get_target_state("o/r#7")
         assert st["total_attempts"] == 1        # re-counted from zero, not 2
         assert st["lifetime_attempts"] == 1     # provenance survived
@@ -298,6 +296,8 @@ def test_a_recovery_the_doctor_never_acted_on_still_clears_to_nothing(tmp_path):
         # Seed the legacy back-compat marker alone: the clear fires, but there is
         # nothing to carry.
         await orch._pr_doctor_ctx.set_target_state("o/r#7", {"attempted": True})
+        if (await orch._pr_doctor_ctx.get_target_state("o/r#7")).get("session_id"):
+            await _stop_repair(orch)
         await orch._on_pr_change("o/r", "feat/x", "failing", "passing")
         assert await orch._pr_doctor_ctx.get_target_state("o/r#7") == {}
 
@@ -319,8 +319,10 @@ def test_the_terminal_clear_carries_the_lifetime_counts_too(tmp_path):
 
         # One real injection (the doctor acted), then the PR lands.
         await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
-        assert len(sent) == 1
+        assert len(orch._test_spawns) == 1
 
+        if (await orch._pr_doctor_ctx.get_target_state("o/r#7")).get("session_id"):
+            await _stop_repair(orch)
         merged = _pr(state="merged", checks="failing")
         took = await orch._pr_doctor_step("o/r", "feat/x", merged,
                                           rec=orch._records["sess1"])
@@ -346,6 +348,8 @@ def test_a_terminal_pr_the_doctor_never_acted_on_still_clears_to_nothing(tmp_pat
 
         # The re-armable guard keys alone — no ``total_*`` the doctor ever counted.
         await orch._pr_doctor_ctx.set_target_state("o/r#7", {"attempts": 2})
+        if (await orch._pr_doctor_ctx.get_target_state("o/r#7")).get("session_id"):
+            await _stop_repair(orch)
         merged = _pr(state="merged", checks="failing")
         took = await orch._pr_doctor_step("o/r", "feat/x", merged,
                                           rec=orch._records["sess1"])
@@ -394,7 +398,7 @@ def test_attempted_flag_persisted_in_target_state(tmp_path):
         orch, sent, _pushed, restore = _build_orch(_pr())
 
         await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
-        assert len(sent) == 1
+        assert len(orch._test_spawns) == 1
         from server.db import db_session
         from server.db.models import AutomationTargetState
         async with db_session() as db:

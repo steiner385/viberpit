@@ -178,7 +178,7 @@ class Harness:
 
         self.server.rule(schema.METHOD_THREAD_START, result=configured_thread)
         self.server.rule(schema.METHOD_THREAD_RESUME, result=configured_thread)
-        self.server.rule(schema.METHOD_THREAD_READ, result={"thread": thread_payload()})
+        self.server.rule(schema.METHOD_THREAD_READ, result=lambda params: {"thread": {**thread_payload(params["threadId"]), "turns": [turn_payload("turn-1", status="completed")]}})
         self.server.rule(schema.METHOD_THREAD_BACKGROUND_TERMINALS_LIST,
                          result={"data": [], "nextCursor": None})
         self.server.rule(schema.METHOD_THREAD_GOAL_GET, result={"goal": None})
@@ -1183,6 +1183,8 @@ async def test_reconnect_starts_a_fresh_thread(harness):
     driver = await harness.boot()
     old_pump = driver._pump
     await harness.run_turn("hello")
+    harness.notify_turn_completed()
+    await harness.settle()
     harness.server.rule(
         schema.METHOD_THREAD_START, result=thread_config("thread-2")
     )
@@ -1851,3 +1853,61 @@ async def test_native_id_publication_serializes_response_and_notice(harness):
         await prompt
     await harness.settle()
     assert harness.engine_ids == [(SESSION, THREAD)]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_retains_active_predecessor_thread(harness):
+    driver = await harness.boot()
+    await harness.run_turn("hello")
+    with pytest.raises(CodexPolicyTransitionBlocked, match="managed work"):
+        await driver.reconnect()
+    assert driver.engine_session_id == THREAD
+    assert len(harness.frames(schema.METHOD_THREAD_START)) == 1
+    assert not await driver.automation_work_stopped()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_active", [False, True])
+async def test_reconnect_refuses_unknown_native_history(harness, native_active):
+    driver = await harness.boot()
+    await harness.run_turn("hello")
+    harness.notify_turn_completed()
+    await harness.settle()
+    payload = thread_payload()
+    if native_active:
+        payload["status"] = {"type": "active", "activeFlags": []}
+        payload["turns"] = [turn_payload("old-active")]
+    harness.server.rule(schema.METHOD_THREAD_READ, result={"thread": payload})
+    with pytest.raises(CodexPolicyTransitionBlocked, match="managed work"):
+        await driver.reconnect()
+    assert driver.engine_session_id == THREAD
+    assert len(harness.frames(schema.METHOD_THREAD_START)) == 1
+
+
+@pytest.mark.asyncio
+async def test_reconnect_allows_unused_native_thread(harness):
+    driver = await harness.boot()
+    harness.server.rule(schema.METHOD_THREAD_START, result=thread_config("thread-2"))
+    await driver.reconnect()
+    assert driver.engine_session_id == "thread-2"
+    assert not harness.frames(schema.METHOD_THREAD_READ)
+
+
+@pytest.mark.asyncio
+async def test_clear_fences_send_during_native_observation(harness, monkeypatch):
+    driver = await harness.boot(resume=THREAD)
+    entered, proceed = asyncio.Event(), asyncio.Event()
+    async def observe(*args):
+        entered.set()
+        await proceed.wait()
+        return True
+    monkeypatch.setattr("server.codex.background.managed_thread_tree_stopped", observe)
+    clearing = asyncio.create_task(driver.reconnect())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        with pytest.raises(RuntimeError, match="closed for ownership"):
+            await driver.send_prompt("racing clear")
+        assert not harness.frames(schema.METHOD_TURN_START)
+    finally:
+        proceed.set()
+        await clearing

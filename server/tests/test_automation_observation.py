@@ -93,7 +93,7 @@ async def test_pr_doctor_failed_actionable_read_invalidates_previous_count():
     from server.sessions.orchestrator import SessionOrchestrator
 
     orch = object.__new__(SessionOrchestrator)
-    orch._pr_doctor_ctx = SimpleNamespace()
+    orch._pr_doctor_ctx = SimpleNamespace(list_target_states=AsyncMock(return_value={}))
     orch._schedule_allows_tick = AsyncMock(return_value=True)
     orch._pr_doctor_scope_pairs = AsyncMock(return_value=[])
     orch.automation_actionable = AsyncMock(return_value=[{"id": "p"}])

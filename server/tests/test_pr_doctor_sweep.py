@@ -12,6 +12,8 @@ Mirrors the ``_build_orch``/``_StubPoller``/``asyncio.run(run())`` + ``tmp_path`
 file-DB pattern from ``test_pr_doctor_step.py`` / ``test_pr_doctor_poll_reach.py``.
 """
 from __future__ import annotations
+from server.tests.test_pr_doctor_step import github_identity as github_identity
+
 
 import asyncio
 import types
@@ -26,7 +28,7 @@ from server.sessions.types import SessionRecord
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _pr(number=7, state="open", checks="passing", *, head_sha="sha1",
+def _pr(number=7, state="open", checks="passing", *, head_sha="a" * 40,
         merge_state_status="", mergeable="UNKNOWN", is_draft=False):
     return PullRequestInfo(
         number=number,
@@ -105,7 +107,6 @@ def _build_orch(cache, pairs, *, records=None, drivers=None, population=None):
     ``_pr_doctor_scope_pairs`` widens the set to repo-wide open PRs.
     """
     import server.sessions.orchestrator as orch_mod
-    from ccswitch import gitrepos
     from server.automations.context import AutomationContext
     from server.automations.action_providers import PrDoctorActionProvider
 
@@ -116,7 +117,7 @@ def _build_orch(cache, pairs, *, records=None, drivers=None, population=None):
     orch._pr_poller = _StubPoller(cache)  # type: ignore[assignment]
     orch._pr_population = _StubPopulation(population)  # type: ignore[assignment]
     orch._drivers = drivers if drivers is not None else {"sess1": object()}
-    orch._gh_run = gitrepos._run_gh
+    orch._gh_run = orch_mod.gitrepos._run_gh
     orch._action_providers = {"pr-doctor": PrDoctorActionProvider(orch)}
 
     async def _pairs():
@@ -128,6 +129,12 @@ def _build_orch(cache, pairs, *, records=None, drivers=None, population=None):
 
 async def _set_mode(monkeypatch, mode: str) -> None:
     import server.sessions.orchestrator as orch_mod
+    from server.db import db_session
+    from server.db.models import Automation
+    async with db_session() as db:
+        row = await db.get(Automation, "pr-doctor")
+        assert row is not None
+        row.mode = mode
 
     async def _m(self_):
         return mode
@@ -198,6 +205,8 @@ def test_sweep_out_of_date_fires_mechanical_without_checks_transition(monkeypatc
             gh_calls.append(list(args))
             return types.SimpleNamespace(returncode=0)
 
+        from server.tests.test_pr_doctor_step import _mechanical_boundary
+        _mechanical_boundary(monkeypatch, orch)
         orch._gh_run = fake_gh_run  # type: ignore[assignment]
 
         sent: list[str] = []
@@ -224,7 +233,6 @@ def test_sweep_merge_conflict_dispatches_session_path(monkeypatch, tmp_path):
     the sweep dispatches the session path (inject the conflict prompt)."""
 
     async def run():
-        from server.sessions.pr_fix import build_conflict_fix_prompt
         await _init_pr_doctor_db(tmp_path)
         await _set_mode(monkeypatch, "auto")
         await _set_config({"auto_resolve_conflicts": True})
@@ -243,11 +251,11 @@ def test_sweep_merge_conflict_dispatches_session_path(monkeypatch, tmp_path):
 
         await orch._pr_doctor_sweep()
 
-        assert len(sent) == 1
-        assert sent[0] == build_conflict_fix_prompt("o/r", pr)
-        assert "conflict" in sent[0].lower()
+        assert sent == []
+        events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
+        assert any(e["kind"] == "ownership_wait" for e in events)
         st = await orch._pr_doctor_ctx.get_target_state("o/r#7")
-        assert st.get("attempts") == 1
+        assert st.get("attempts", 0) == 0
 
     asyncio.run(run())
 

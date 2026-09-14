@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from server.tests.test_pr_doctor_step import github_identity as github_identity
 from server.github.pr_status import PullRequestInfo
 from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
@@ -91,7 +92,7 @@ async def _init_pr_doctor_db(tmp_path) -> None:
     from server.db.models import Automation
     async with db_session() as db:
         await db.execute(
-            sa_update(Automation).where(Automation.id == "pr-doctor").values(enabled=True))
+            sa_update(Automation).where(Automation.id == "pr-doctor").values(enabled=True, mode="auto"))
 
 
 # ---------------------------------------------------------------------------
@@ -177,26 +178,9 @@ def orch_with_failing_pr_no_driver(monkeypatch):
     # No live driver → the SessionFix branch now spawns a fresh de-duped session.
     # Record spawns (returning a fake record with an id) so no real create_session
     # / worktree runs.
-    import types as _types
+    from server.tests.test_pr_doctor_step import _install_spawn_recorder
     spawns: list[dict] = []
-    _seen: dict[str, object] = {}
-
-    async def fake_spawn(*, origin_ref, dedupe_key=None, **kwargs):
-        key = dedupe_key or origin_ref
-        if key in _seen:
-            return _seen[key]
-        rec = _types.SimpleNamespace(id="spawned-1")
-        _seen[key] = rec
-        spawns.append({"origin_ref": origin_ref, "dedupe_key": dedupe_key, **kwargs})
-        return rec
-
-    orch._pr_doctor_ctx.spawn_session = fake_spawn  # type: ignore[method-assign]
-
-    # Resolve the clone cwd off a fake so the spawn path runs without real git/gh.
-    def _fake_ensure_clone(repo_root, name_with_owner, url):
-        return "/fake/clone/o__r"
-
-    monkeypatch.setattr(orch_mod.gitrepos, "ensure_clone", _fake_ensure_clone, raising=True)
+    _install_spawn_recorder(orch, spawns)
 
     # Default mode: propose (tests override to "auto" as needed).
     async def _mode_propose(self_):
@@ -212,12 +196,14 @@ def orch_with_failing_pr_no_driver(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_request_pr_fix_injects_for_actionable_failing(orch_with_failing_pr):
+async def test_request_pr_fix_waits_for_live_predecessor(orch_with_failing_pr, tmp_path):
+    await _init_pr_doctor_db(tmp_path)
     orch, sent = orch_with_failing_pr
     result = await orch.request_pr_fix("sess1", 7)
-    assert result == "sent"
-    assert len(sent) == 1
-    assert "gh pr checkout 7" in sent[0]
+    assert result == "transient"
+    assert sent == []
+    events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
+    assert any(e["kind"] == "ownership_wait" for e in events)
 
 
 @pytest.mark.asyncio
@@ -247,7 +233,7 @@ async def test_request_pr_fix_unknown_session(orch_with_failing_pr):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_auto_mode_injects_once_per_failure_event(orch_with_failing_pr, monkeypatch, tmp_path):
+async def test_auto_mode_live_predecessor_wait_survives_recovered_checks(orch_with_failing_pr, monkeypatch, tmp_path):
     import server.sessions.orchestrator as orch_mod
 
     await _init_pr_doctor_db(tmp_path)
@@ -261,20 +247,22 @@ async def test_auto_mode_injects_once_per_failure_event(orch_with_failing_pr, mo
 
     # First failure → one auto-attempt.
     await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
-    assert len(sent) == 1
+    assert sent == []
 
     # Second failing signal without recovery → NO second attempt (guard holds).
     await orch._on_pr_change("o/r", "feat/x", "failing", "failing")
-    assert len(sent) == 1
+    assert sent == []
 
     # Recovery clears the guard; a fresh break re-attempts.
     await orch._on_pr_change("o/r", "feat/x", "failing", "passing")
     await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
-    assert len(sent) == 2
+    assert sent == []
+    events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
+    assert any(e["kind"] == "ownership_wait" for e in events)
 
 
 @pytest.mark.asyncio
-async def test_auto_mode_pending_interloper_does_not_re_arm(orch_with_failing_pr, monkeypatch, tmp_path):
+async def test_auto_mode_live_predecessor_wait_survives_pending_checks(orch_with_failing_pr, monkeypatch, tmp_path):
     """A transient failing→pending→failing CI cycle (the real path while a pushed
     fix re-runs) must NOT re-arm the guard — only a genuine ``passing`` does.
     Otherwise a PR the agent can't fix loops on every CI run."""
@@ -290,18 +278,20 @@ async def test_auto_mode_pending_interloper_does_not_re_arm(orch_with_failing_pr
 
     # First failure → one auto-attempt.
     await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
-    assert len(sent) == 1
+    assert sent == []
 
     # Pushed fix re-runs CI: failing → pending → failing. The ``pending`` hop
     # must NOT clear the guard, so the second ``failing`` does NOT re-attempt.
     await orch._on_pr_change("o/r", "feat/x", "failing", "pending")
     await orch._on_pr_change("o/r", "feat/x", "pending", "failing")
-    assert len(sent) == 1
+    assert sent == []
 
     # Only a real green re-arms.
     await orch._on_pr_change("o/r", "feat/x", "failing", "passing")
     await orch._on_pr_change("o/r", "feat/x", "passing", "failing")
-    assert len(sent) == 2
+    assert sent == []
+    events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
+    assert any(e["kind"] == "ownership_wait" for e in events)
 
 
 @pytest.mark.asyncio

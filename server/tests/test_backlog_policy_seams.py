@@ -10,6 +10,10 @@ A real (SQLite) mirror is seeded and read — no GitHub call is involved.
 """
 from __future__ import annotations
 
+from server.tests.test_backlog_runner_loop import (
+    isolated_ownership_identity as isolated_ownership_identity,
+)
+
 import asyncio
 
 from server.db import db_session, init_db
@@ -909,7 +913,7 @@ def test_both_tap_spawn_paths_record_a_running_outcome(tmp_path):
         orch = _orch_with_ctx()
 
         async def read_config():
-            return "on", _config()
+            return "on", {**_config(), "max_concurrent": 10, "max_spawns_per_day": 10}
         orch._backlog_read_config = read_config
 
         async def query_queue(_config, **_kw):
@@ -921,7 +925,7 @@ def test_both_tap_spawn_paths_record_a_running_outcome(tmp_path):
 
         async def load_policies():
             return {"widget": effective_policy({"dispatch": "auto",
-                                                "default_model": "opus"})}
+                                                "default_model": "opus", "max_in_flight": 2})}
         orch._backlog_load_policies = load_policies
 
         async def announce(_batch):
@@ -934,10 +938,18 @@ def test_both_tap_spawn_paths_record_a_running_outcome(tmp_path):
 
         spawned: list = []
 
-        async def spawn(batch, account, *, default_model):
+        async def spawn(batch, account, *, default_model, ownership_token):
             spawned.append((batch.primary, account, default_model))
             return SimpleNamespace(id=f"sess-{len(spawned)}", branch="b")
         orch._backlog_spawn = spawn
+        from unittest.mock import AsyncMock
+        from server.automations.backlog_runner import BacklogRunnerLoop
+        orch._backlog_count_in_flight = AsyncMock(return_value=0)
+        orch._backlog_loop = BacklogRunnerLoop(
+            orch._backlog_ctx, select_batch=AsyncMock(return_value=None), spawn=spawn,
+            count_in_flight=orch._backlog_count_in_flight, healthy_account=AsyncMock(),
+            pr_status_for=AsyncMock(), pr_doctor_active=AsyncMock(),
+            read_config=read_config, clock=lambda: 1)
 
         # The claim the tap spawns for already carries one spent attempt.
         await orch._backlog_ctx.set_target_state("o/r#1", {

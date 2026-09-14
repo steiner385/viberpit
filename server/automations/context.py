@@ -3,6 +3,7 @@ per-target state, and (Task 4) de-duplicated session spawning."""
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -241,6 +242,154 @@ class AutomationContext:
                 AutomationTargetState.automation_id == self.automation_id,
                 AutomationTargetState.target == target))
 
+    async def claim_target_state(self, target: str, state: dict, *,
+                                 expected: dict, source: str,
+                                 work_stopped: bool = False) -> dict:
+        """Acquire every canonical batch target and persist retry state atomically.
+
+        A deliberate tap may continue an unstarted proposal/no-account claim.
+        Active or ambiguous launches are joined by their existing operation, never
+        replaced. Legacy coverage is reconciled before entering the transaction.
+        """
+        from .ownership import OwnershipConflict, ReleaseProof, StaleOwnership, acquire, owned
+        from .ownership_reconciliation import reconcile_legacy_targets
+        from .target_identity import resolve_targets
+
+        targets = await resolve_targets(state.get("issues") or [target], kind="issue")
+        token = expected.get("ownership_token")
+        if token:
+            async with owned(token) as tx:
+                row = await tx.db.get(AutomationTargetState, (self.automation_id, target))
+                if row is None or row.state != expected:
+                    raise StaleOwnership("target changed while dispatch was deciding")
+                if (set(tx.operation.targets) != {t.key for t in targets}
+                        or tx.operation.owner != self.automation_id
+                        or tx.operation.provenance.get("origin_ref") != target):
+                    raise OwnershipConflict("existing work owns this batch")
+                if work_stopped and (expected.get("_ended") or expected.get("gave_up")):
+                    token = await tx.transfer(
+                        owner=self.automation_id, source=source,
+                        proof=ReleaseProof.WORK_STOPPED, reason="retry after observed stopped work",
+                        provenance={"origin_ref": target})
+                elif (source == "automatic"
+                      or not (expected.get("proposed") or expected.get("waiting_account"))
+                      or tx.operation.phase != "claimed"):
+                    raise OwnershipConflict("existing work owns this batch")
+                result = {**state, "ownership_token": token}
+                row.state = result
+            return result
+        if expected.get("proposed"):
+            existing_targets = await resolve_targets(expected.get("issues") or [target], kind="issue")
+            if {t.key for t in existing_targets} != {t.key for t in targets}:
+                raise OwnershipConflict("proposal covers a different batch")
+        await reconcile_legacy_targets(targets)
+        async with acquire(targets, owner=self.automation_id, source=source,
+                           reason="issue implementation requested",
+                           provenance={"origin_ref": target}) as tx:
+            row = await tx.db.get(AutomationTargetState, (self.automation_id, target))
+            if (dict(row.state) if row else {}) != expected:
+                raise StaleOwnership("target changed while dispatch was deciding")
+            # An old claimed row may hide a live native actor. Migration must
+            # establish its owner, not overwrite it with a fresh dispatch.
+            if ((expected.get("claimed") or expected.get("session_id"))
+                    and not expected.get("gave_up")
+                    and not (expected.get("proposed") and source != "automatic")):
+                raise OwnershipConflict("legacy work needs ownership reconciliation")
+            result = {**state, "ownership_token": tx.token}
+            if row is None:
+                tx.db.add(AutomationTargetState(
+                    automation_id=self.automation_id, target=target, state=result))
+            else:
+                row.state = result
+        return result
+
+    async def reserve_target_action(self, target: str, expected: dict, *,
+                                    source: str, reason: str, state: dict) -> dict | None:
+        """Fence the previous actor before a workflow's external terminal action."""
+        from .ownership import ReleaseProof, StaleOwnership, owned
+
+        try:
+            async with owned(expected["ownership_token"]) as tx:
+                row = await tx.db.get(AutomationTargetState, (self.automation_id, target))
+                if row is None or row.state != expected:
+                    return None
+                if tx.operation.owner == "pr-doctor" and self.automation_id != "pr-doctor":
+                    from .pr_accounting import detach
+                    if not await detach(tx):
+                        return None
+                proof = (ReleaseProof.NOT_STARTED if tx.operation.phase == "claimed"
+                         else ReleaseProof.WORK_STOPPED)
+                token = await tx.transfer(
+                    owner=self.automation_id, source=source, proof=proof, reason=reason,
+                    provenance={"origin_ref": target,
+                                "implementation_session_id": expected.get("implementation_session_id")
+                                or expected.get("session_id")}, action_started=True)
+                result = {**state, "ownership_token": token}
+                row.state = result
+            return result
+        except StaleOwnership:
+            return None
+
+    async def compare_target_state(self, target: str, expected: dict,
+                                   state: dict | None, *,
+                                   release_proof=None, reason: str = "",
+                                   outcome: dict | None = None,
+                                   started: dict | None = None,
+                                   action_completed: bool = False) -> bool:
+        """Commit a sweep/dispatch result only for its original fenced snapshot.
+
+        No-token legacy records remain intact until reconciled. A lost operation
+        is an ordinary stale decision; a database error propagates fail closed.
+        """
+        from .ownership import StaleOwnership, owned
+
+        token = expected.get("ownership_token")
+        if not token:
+            return False
+        try:
+            async with owned(token) as tx:
+                row = await tx.db.get(AutomationTargetState, (self.automation_id, target))
+                if row is None or row.state != expected:
+                    return False
+                if release_proof is not None and tx.operation.owner == "pr-doctor":
+                    if self.automation_id != "pr-doctor":
+                        from .pr_accounting import detach
+                        if not await detach(tx):
+                            return False
+                    elif tx.operation.provenance.get("pr_attempt"):
+                        from .pr_accounting import account
+                        if not await account(tx, tx.operation.provenance["origin_ref"]):
+                            return False
+                        if row.state != expected:
+                            return False  # Accounting committed; refresh the decision.
+                if started is not None:
+                    try:
+                        async with tx.db.begin_nested():
+                            await self.record_outcome(target, _db=tx.db, **started)
+                    except Exception:
+                        log.warning("automation_context.outcome_start_failed target=%s", target,
+                                    exc_info=True)
+                if outcome is not None:
+                    try:
+                        async with tx.db.begin_nested():
+                            await self.finalize_outcome(target, _db=tx.db, **outcome)
+                    except Exception:
+                        # History is best-effort; a savepoint prevents its DB
+                        # failure from poisoning the fenced state transaction.
+                        log.warning("automation_context.outcome_failed target=%s", target,
+                                    exc_info=True)
+                if action_completed:
+                    tx.complete_action()
+                if release_proof is not None:
+                    tx.release(release_proof, reason)
+                if state is None:
+                    await tx.db.delete(row)
+                else:
+                    row.state = {**state, "ownership_token": token}
+            return True
+        except StaleOwnership:
+            return False
+
     async def list_target_states(self) -> dict[str, dict]:
         """All durable target states for this automation, keyed by target."""
         async with db_session() as db:
@@ -250,7 +399,7 @@ class AutomationContext:
 
     async def record_outcome(self, target: str, *, product_slug: str | None,
                              session_id: str | None, model: str | None,
-                             attempt_no: int) -> None:
+                             attempt_no: int, _db=None) -> None:
         """Insert the ``running`` outcome row for a dispatch (spec §6). Best-effort:
         history must never block a spawn (§13).
 
@@ -266,7 +415,7 @@ class AutomationContext:
         the method would escape the ``try`` below, and "best effort" has to mean
         the whole write."""
         try:
-            async with db_session() as db:
+            async with (db_session() if _db is None else nullcontext(_db)) as db:
                 now = datetime.now(timezone.utc)
                 stale = (await db.execute(select(DispatchOutcome).where(
                     DispatchOutcome.automation_id == self.automation_id,
@@ -285,6 +434,8 @@ class AutomationContext:
                     model=model, attempt_no=attempt_no,
                     started_at=datetime.now(timezone.utc), outcome="running"))
         except Exception:
+            if _db is not None:
+                raise
             log.warning("automation_context.record_outcome_failed target=%s", target,
                         exc_info=True)
 
@@ -292,7 +443,7 @@ class AutomationContext:
                                pr_number: int | None = None, pr_url: str | None = None,
                                first_pass_merge: bool | None = None,
                                upgrade_from: tuple[str, ...] = (),
-                               fallback: dict | None = None) -> None:
+                               fallback: dict | None = None, _db=None) -> None:
         """Finalise the newest ``running`` row for *target* (spec §6). An unknown
         outcome is a programming error and raises; a DB failure is logged and
         swallowed (§13).
@@ -324,7 +475,7 @@ class AutomationContext:
         if outcome not in DISPATCH_OUTCOMES:
             raise ValueError(f"unknown dispatch outcome {outcome!r}")
         try:
-            async with db_session() as db:
+            async with (db_session() if _db is None else nullcontext(_db)) as db:
                 # ``id`` breaks a created_at TIE deterministically: two dispatches
                 # of one target can overlap (a propose tap racing the loop's own
                 # spawn, or a double tap), and without a tiebreak which of two
@@ -400,6 +551,8 @@ class AutomationContext:
                     row.ended_at = now
                     row.duration_s = _elapsed_s(row.started_at, now)
         except Exception:
+            if _db is not None:
+                raise
             log.warning("automation_context.finalize_outcome_failed target=%s", target,
                         exc_info=True)
 
@@ -467,6 +620,7 @@ class AutomationContext:
 
     async def spawn_session(self, *, origin_ref: str, dedupe_key: str | None = None,
                             detail: dict | None = None, engine: Any = None,
+                            ownership_token: str | None = None,
                             **create_kwargs) -> Any:
         """Find-or-create a session for this automation. If a NON-terminal session
         with the same (origin, dedupe_key) already exists, return it and emit a
@@ -480,9 +634,16 @@ class AutomationContext:
         refuses the launch, or when the resolved engine/permission-mode pair
         could not complete an automation's contract (see
         ``unattended_launch_blocker``). Every caller must treat ``None`` as
-        "no session exists" and release whatever it claimed."""
+        "no session exists" and release only a proven unstarted claim.
+
+        With ``ownership_token``, the create boundary joins only the operation's
+        reserved session. Exceptions can mean a launch is still running: retain
+        the claim for reconciliation, never release it based on a missing row.
+        """
         key = dedupe_key or origin_ref
-        existing = await self._existing_session(key)
+        # Claimed launches are joined only by the durable reserved UUID at the
+        # create_session boundary, never by the historical origin/ref lookup.
+        existing = await self._existing_session(key) if ownership_token is None else None
         if existing is not None:
             await self.emit("info", f"skipped duplicate spawn for {key}",
                             kind="skipped_duplicate", target=key, session_id=existing.id)
@@ -529,6 +690,8 @@ class AutomationContext:
                             kind="engine_launch_refused", target=origin_ref,
                             detail={"engine": engine.value, "permissionMode": mode})
             return None
+        if ownership_token is not None:
+            create_kwargs["ownership_token"] = ownership_token
         rec = await self._create_session(origin=self.automation_id, origin_ref=origin_ref,
                                          **create_kwargs)
         await self.emit("info", f"spawned session for {origin_ref}",

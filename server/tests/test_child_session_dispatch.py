@@ -54,11 +54,11 @@ def test_dispatch_enforces_cap_depth_and_switch(tmp_path):
             parent = await orch.create_session(name="P", cwd=str(tmp_path), identity="u@x")
             with patch.dict(os.environ, {"CCSWITCH_CHILD_SESSION_CAP": "1",
                                          "CCSWITCH_CHILD_SESSION_MAX_DEPTH": "1"}):
-                c1 = await orch.dispatch_child_session(parent.id, name="child one", prompt="x",
+                c1 = await orch.dispatch_child_session(parent.id, name="child one", prompt="",
                                                        model=None, permission_mode=None, identity="u@x")
-                # The fake SDK answers the child's initial prompt instantly, so the child
-                # is already `done` (not live). Pin it live: the cap counts live children.
-                orch._records[c1["id"]].status = "in_progress"
+                # Leave a real idle child: a fake turn's pending completion callback
+                # could overwrite a manually pinned status during the next dispatch.
+                assert orch._records[c1["id"]].status == "idle"
                 with pytest.raises(ChildSessionLimit, match="cap 1"):
                     await orch.dispatch_child_session(parent.id, name="child two", prompt="x",
                                                       model=None, permission_mode=None, identity="u@x")

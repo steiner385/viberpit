@@ -185,18 +185,22 @@ def test_explicit_missing_cwd_still_raises_and_skips_repo_resolution(orch_setup,
 # ---------------------------------------------------------------------------
 
 
-def test_clone_failure_propagates_in_process(orch_setup):
+@pytest.mark.parametrize("error_type", [gitrepos.CloneError, gitrepos.GhError])
+def test_clone_failure_propagates_in_process(orch_setup, isolated_db, error_type):
     orch, _repo_root, _db_url = orch_setup
 
     import asyncio
 
     async def _run():
-        # No init_db needed: ensure_clone raises before create_session touches
-        # the DB (session_id/DB row creation happens after cwd resolution).
+        # Launch policy and ownership checks use the initialized daemon DB before
+        # clone resolution. A clone failure must still prevent native creation.
         with patch("ccswitch.gitrepos.ensure_clone",
-                   side_effect=gitrepos.CloneError("boom")):
-            with pytest.raises(gitrepos.CloneError):
+                   side_effect=error_type("boom")), \
+                patch.object(orch, "_create_driver") as create_driver:
+            with pytest.raises(error_type, match="boom"):
                 await orch.create_session("clone-fail", repo="acme/widget")
+            create_driver.assert_not_called()
+            assert not orch._drivers
 
     asyncio.run(_run())
 

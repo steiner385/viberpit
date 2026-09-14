@@ -17,11 +17,43 @@ from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
+@pytest.fixture(autouse=True)
+def github_identity(monkeypatch):
+    """Stable external identities; ownership and reconciliation use real SQL."""
+    from server.automations.ownership import CanonicalTarget
+
+    async def resolve(refs, **kwargs):
+        return tuple(CanonicalTarget("PR_" + ref.replace("/", "_").replace("#", "_"), ref) for ref in refs)
+
+    monkeypatch.setattr("server.automations.target_identity.resolve_targets", resolve)
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr("server.automations.model_pick.assess_model", AsyncMock(return_value=None))
+
+
+def _mechanical_boundary(monkeypatch, orch):
+    from server.automations import mechanical_update
+
+    async def snapshot(repo, number, **kwargs):
+        return dict(repo=repo, pr_number=number, expected_head_sha="a" * 40,
+                    requested_base_sha="b" * 40, mechanical_kind="update_branch")
+
+    async def request(repo, args):
+        result = orch._gh_run(args)
+        if not hasattr(result, "stdout"):
+            result.stdout = ""
+        if not hasattr(result, "stderr"):
+            result.stderr = ""
+        return result
+
+    monkeypatch.setattr(mechanical_update, "snapshot", snapshot)
+    monkeypatch.setattr(mechanical_update, "request", request)
+
+
 # ---------------------------------------------------------------------------
 # Helpers (mirror test_pr_autofix.py harness)
 # ---------------------------------------------------------------------------
 
-def _pr(number=7, state="open", checks="failing", *, head_sha="sha1",
+def _pr(number=7, state="open", checks="failing", *, head_sha="a" * 40,
         merge_state_status="", mergeable="UNKNOWN", is_draft=False):
     return PullRequestInfo(
         number=number,
@@ -95,7 +127,6 @@ async def _set_enabled(enabled: bool) -> None:
 
 def _build_orch(pr, *, has_driver=True):
     import server.sessions.orchestrator as orch_mod
-    from ccswitch import gitrepos
     from server.automations.context import AutomationContext
     from server.automations.action_providers import PrDoctorActionProvider
     from server.automations.pr_doctor_jobs import JobStore
@@ -107,7 +138,7 @@ def _build_orch(pr, *, has_driver=True):
     orch._pr_poller = _StubPoller(pr)  # type: ignore[assignment]
     orch._pr_population = _StubPopulation()  # type: ignore[assignment]
     orch._drivers = {"sess1": object()} if has_driver else {}  # type: ignore[dict-item]
-    orch._gh_run = gitrepos._run_gh  # replaced by a recorder per-test
+    orch._gh_run = orch_mod.gitrepos._run_gh  # replaced by a recorder per-test
     orch._action_providers = {"pr-doctor": PrDoctorActionProvider(orch)}
     orch._pr_doctor_jobs = JobStore()
     orch._pr_doctor_job_tasks: set[asyncio.Task] = set()
@@ -116,6 +147,12 @@ def _build_orch(pr, *, has_driver=True):
 
 async def _set_mode(monkeypatch, mode: str) -> None:
     import server.sessions.orchestrator as orch_mod
+    from server.db import db_session
+    from server.db.models import Automation
+    async with db_session() as db:
+        row = await db.get(Automation, "pr-doctor")
+        assert row is not None
+        row.mode = mode
 
     async def _m(self_):
         return mode
@@ -145,6 +182,7 @@ async def test_out_of_date_auto_reaches_mechanical_branch(monkeypatch, tmp_path)
         gh_calls.append(list(args))
         return types.SimpleNamespace(returncode=0)
 
+    _mechanical_boundary(monkeypatch, orch)
     orch._gh_run = fake_gh_run  # type: ignore[assignment]
     sent: list[str] = []
 
@@ -165,9 +203,8 @@ async def test_out_of_date_auto_reaches_mechanical_branch(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_failing_ci_auto_live_driver_injects(monkeypatch, tmp_path):
-    """failing_ci + auto + live driver → inject via request_pr_fix, attempt
-    recorded, `attempted` emitted, took_action True. (Behaviour preserved.)"""
+async def test_failing_ci_auto_live_driver_waits(monkeypatch, tmp_path):
+    """A live predecessor defers CI recovery without consuming an attempt."""
     await _init_pr_doctor_db(tmp_path)
     await _set_mode(monkeypatch, "auto")
 
@@ -182,16 +219,14 @@ async def test_failing_ci_auto_live_driver_injects(monkeypatch, tmp_path):
     orch.send_prompt = fake_send  # type: ignore[method-assign]
 
     took = await orch._pr_doctor_step("o/r", "feat/x", pr, rec=orch._records["sess1"])
-    assert took is True
-    assert len(sent) == 1
-    assert "gh pr checkout 7" in sent[0]
+    assert took is False
+    assert sent == []
 
     st = await orch._pr_doctor_ctx.get_target_state("o/r#7")
-    assert st.get("attempts") == 1
-    assert st.get("last_action_sha") == "sha1"
+    assert st.get("attempts", 0) == 0
 
     events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
-    assert any(e["kind"] == "attempted" for e in events)
+    assert any(e["kind"] == "ownership_wait" for e in events)
 
 
 @pytest.mark.asyncio
@@ -252,10 +287,14 @@ def _install_spawn_recorder(orch, spawns, *, session_id="spawned-1"):
     seen: dict[str, object] = {}
 
     async def fake_spawn(*, origin_ref, dedupe_key=None, **kwargs):
-        key = dedupe_key or origin_ref
+        key = kwargs["ownership_token"]
         if key in seen:
             return seen[key]
-        rec = _types.SimpleNamespace(id=session_id)
+        from server.automations.ownership import owned
+        async with owned(kwargs["ownership_token"]) as tx:
+            sid = tx.reserve_session()
+            tx.bind_session(sid)
+        rec = _types.SimpleNamespace(id=sid)
         seen[key] = rec
         spawns.append({"origin_ref": origin_ref, "dedupe_key": dedupe_key, **kwargs})
         return rec
@@ -295,9 +334,8 @@ async def test_failing_ci_auto_no_driver_spawns_deduped(monkeypatch, tmp_path):
     assert spawns[0]["dedupe_key"] == "o/r#7"
     # The clone cwd was resolved and forwarded to the spawn (NOT None), plus the
     # PR branch — so create_session builds a real worktree, not an empty scratch.
-    assert len(clone_calls) == 1
-    assert clone_calls[0][1] == "o/r"
-    assert spawns[0]["cwd"] == "/fake/clone/o__r"
+    assert clone_calls == []  # create_session owns clone after reservation
+    assert spawns[0]["repo"] == "o/r"
     assert spawns[0]["branch"] == "feat/x"
     # The seeded first prompt is the CI-fix prompt.
     assert spawns[0]["initial_prompt"] == build_pr_fix_prompt("o/r", pr)
@@ -352,7 +390,7 @@ async def test_merge_conflict_auto_no_driver_spawns_conflict_prompt(monkeypatch,
     assert sent == []
     assert len(spawns) == 1
     assert spawns[0]["origin_ref"] == "o/r#7"
-    assert spawns[0]["cwd"] == "/fake/clone/o__r"
+    assert spawns[0]["repo"] == "o/r"
     prompt = spawns[0]["initial_prompt"]
     assert prompt == build_conflict_fix_prompt("o/r", pr)
     assert prompt != build_pr_fix_prompt("o/r", pr)
@@ -364,13 +402,7 @@ async def test_merge_conflict_auto_no_driver_spawns_conflict_prompt(monkeypatch,
 
 @pytest.mark.asyncio
 async def test_failing_ci_no_driver_clone_failure_does_not_consume_attempt(monkeypatch, tmp_path):
-    """failing_ci + auto + NO live driver + ensure_clone raises CloneError →
-    - a spawn_failed / error event is emitted
-    - spawn_session is NOT called
-    - the attempt is NOT consumed (total_attempts / attempts stay 0)
-    - took_action False → falls through to notify (target re-arms for a retry)
-    """
-    from ccswitch import gitrepos
+    """A failed session launch consumes no attempt; the caller does not clone."""
     await _init_pr_doctor_db(tmp_path)
     await _set_mode(monkeypatch, "auto")
 
@@ -384,12 +416,14 @@ async def test_failing_ci_no_driver_clone_failure_does_not_consume_attempt(monke
 
     orch.send_prompt = fake_send  # type: ignore[method-assign]
     spawns: list[dict] = []
-    _install_spawn_recorder(orch, spawns)
-    clone_calls = _patch_ensure_clone(monkeypatch, raises=gitrepos.CloneError("boom"))
+    async def failed_spawn(**kwargs):
+        raise RuntimeError("boom")
+    orch._pr_doctor_ctx.spawn_session = failed_spawn
+    clone_calls = _patch_ensure_clone(monkeypatch, raises=RuntimeError("boom"))
 
     took = await orch._pr_doctor_step("o/r", "feat/x", pr, rec=orch._records["sess1"])
     assert took is False           # fell through to notify
-    assert len(clone_calls) == 1   # the clone was attempted
+    assert len(clone_calls) == 0   # the clone was attempted
     assert spawns == []            # spawn NOT reached
     assert sent == []              # no inject
 
@@ -405,10 +439,8 @@ async def test_failing_ci_no_driver_clone_failure_does_not_consume_attempt(monke
 
 
 @pytest.mark.asyncio
-async def test_merge_conflict_auto_live_driver_injects_conflict_prompt(monkeypatch, tmp_path):
-    """merge_conflict + auto + auto_resolve_conflicts=True + LIVE driver →
-    inject the CONFLICT prompt via send_prompt, attempt consumed, no spawn."""
-    from server.sessions.pr_fix import build_conflict_fix_prompt
+async def test_merge_conflict_auto_live_driver_waits(monkeypatch, tmp_path):
+    """A live predecessor also defers conflict recovery without competing work."""
     await _init_pr_doctor_db(tmp_path)
     await _set_mode(monkeypatch, "auto")
 
@@ -436,14 +468,12 @@ async def test_merge_conflict_auto_live_driver_injects_conflict_prompt(monkeypat
     _install_spawn_recorder(orch, spawns)
 
     took = await orch._pr_doctor_step("o/r", "feat/x", pr, rec=orch._records["sess1"])
-    assert took is True
-    assert spawns == []  # live driver → inject, not spawn
-    assert len(sent) == 1
-    assert sent[0] == build_conflict_fix_prompt("o/r", pr)
-    assert "conflict" in sent[0].lower()
+    assert took is False
+    assert spawns == []  # live predecessor blocks both effects
+    assert sent == []
 
     st = await orch._pr_doctor_ctx.get_target_state("o/r#7")
-    assert st.get("attempts") == 1
+    assert st.get("attempts", 0) == 0
 
 
 @pytest.mark.asyncio
@@ -475,12 +505,8 @@ async def test_failing_ci_auto_no_driver_does_not_inject(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_async_inject_loop_gives_up_and_emits_gave_up(monkeypatch, tmp_path):
-    """End-to-end async-inject regression: each failing poll carries a DIFFERENT
-    head_sha (the agent's fix pushed a new commit that stays red). apply_rearm
-    keeps re-arming the per-head guard, but after `max_attempts` (3) injections
-    the target row is sticky-gave_up and a `gave_up` event is emitted; no further
-    inject fires."""
+async def test_repeated_live_predecessor_waits_do_not_consume_retry_budget(monkeypatch, tmp_path):
+    """Repeated failing heads preserve the live predecessor and the retry budget."""
     await _init_pr_doctor_db(tmp_path)
     await _set_mode(monkeypatch, "auto")
 
@@ -499,25 +525,25 @@ async def test_async_inject_loop_gives_up_and_emits_gave_up(monkeypatch, tmp_pat
         orch._pr_poller = _StubPoller(pr)  # type: ignore[assignment]
         await orch._pr_doctor_step("o/r", "feat/x", pr, rec=orch._records["sess1"])
 
-    # max_attempts (default 3) injections, then give-up halts further injects.
-    assert len(sent) == 3
+    # Waiting is not an attempted repair.
+    assert sent == []
 
     st = await orch._pr_doctor_ctx.get_target_state("o/r#7")
-    assert st.get("gave_up") is True
-    assert st.get("total_attempts") == 3
+    assert not st.get("gave_up")
+    assert st.get("total_attempts", 0) == 0
 
     events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
-    assert any(e["kind"] == "gave_up" for e in events)
+    assert any(e["kind"] == "ownership_wait" for e in events)
 
 
 @pytest.mark.asyncio
 async def test_failing_ci_one_attempt_per_head(monkeypatch, tmp_path):
-    """Two failing polls on the SAME head → exactly one inject (guard holds)."""
+    """Two polls of the same head spawn one fenced repair session."""
     await _init_pr_doctor_db(tmp_path)
     await _set_mode(monkeypatch, "auto")
 
     pr = _pr(checks="failing", head_sha="sha1")
-    orch = _build_orch(pr, has_driver=True)
+    orch = _build_orch(pr, has_driver=False)
     sent: list[str] = []
 
     async def fake_send(session_id, text):
@@ -525,15 +551,18 @@ async def test_failing_ci_one_attempt_per_head(monkeypatch, tmp_path):
         return "sent"
 
     orch.send_prompt = fake_send  # type: ignore[method-assign]
+    spawns = []
+    _install_spawn_recorder(orch, spawns)
 
     await orch._pr_doctor_step("o/r", "feat/x", pr, rec=orch._records["sess1"])
     await orch._pr_doctor_step("o/r", "feat/x", pr, rec=orch._records["sess1"])
-    assert len(sent) == 1
+    assert sent == []
+    assert len(spawns) == 1
 
 
 @pytest.mark.asyncio
-async def test_external_push_re_arms_second_attempt(monkeypatch, tmp_path):
-    """An external push (new head_sha) re-arms → a second inject fires."""
+async def test_external_push_does_not_override_live_predecessor(monkeypatch, tmp_path):
+    """A changed head does not authorize injection into a live predecessor."""
     await _init_pr_doctor_db(tmp_path)
     await _set_mode(monkeypatch, "auto")
 
@@ -550,7 +579,9 @@ async def test_external_push_re_arms_second_attempt(monkeypatch, tmp_path):
     await orch._pr_doctor_step("o/r", "feat/x", pr1, rec=orch._records["sess1"])
     pr2 = _pr(checks="failing", head_sha="sha2")  # external push
     await orch._pr_doctor_step("o/r", "feat/x", pr2, rec=orch._records["sess1"])
-    assert len(sent) == 2
+    assert sent == []
+    events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
+    assert any(e["kind"] == "ownership_wait" for e in events)
 
 
 @pytest.mark.asyncio
@@ -620,7 +651,7 @@ async def test_terminal_pr_clears_state(monkeypatch, tmp_path):
     st = await orch._pr_doctor_ctx.get_target_state("o/r#7")
     assert st == {}
     events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
-    assert any(e["kind"] == "terminal" for e in events)
+    assert not any(e["kind"] == "attempted" for e in events)
 
 
 @pytest.mark.asyncio
@@ -689,6 +720,7 @@ async def test_out_of_date_mechanical_success(monkeypatch, tmp_path):
         gh_calls.append(list(args))
         return types.SimpleNamespace(returncode=0)
 
+    _mechanical_boundary(monkeypatch, orch)
     orch._gh_run = fake_gh_run  # type: ignore[assignment]
 
     sent: list[str] = []
@@ -745,6 +777,7 @@ async def test_out_of_date_mechanical_gh_failure(monkeypatch, tmp_path):
     def fake_gh_run_fail(args):
         return types.SimpleNamespace(returncode=1)
 
+    _mechanical_boundary(monkeypatch, orch)
     orch._gh_run = fake_gh_run_fail  # type: ignore[assignment]
 
     sent: list[str] = []
@@ -799,6 +832,7 @@ async def test_pr_doctor_fix_out_of_date_runs_mechanical(monkeypatch, tmp_path):
         gh_calls.append(list(args))
         return types.SimpleNamespace(returncode=0)
 
+    _mechanical_boundary(monkeypatch, orch)
     orch._gh_run = fake_gh_run  # type: ignore[assignment]
 
     result = await orch.automation_trigger("pr-doctor", "o/r#7", "out_of_date")
@@ -808,10 +842,8 @@ async def test_pr_doctor_fix_out_of_date_runs_mechanical(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_pr_doctor_fix_failing_ci_injects_live_driver(monkeypatch, tmp_path):
-    """automation_trigger(failing_ci) with a live owning driver → trigger returns
-    'queued' immediately; after the background task drains, the job settles 'ready'
-    and send_prompt was called with the fix text (live driver path)."""
+async def test_pr_doctor_fix_live_driver_settles_waiting(monkeypatch, tmp_path):
+    """Manual repair returns a job, then reports the live ownership wait."""
     await _init_pr_doctor_db(tmp_path)
 
     pr = _pr(checks="failing", head_sha="sha1")
@@ -832,11 +864,12 @@ async def test_pr_doctor_fix_failing_ci_injects_live_driver(monkeypatch, tmp_pat
 
     # Drain the background task, then check that send_prompt was called.
     await asyncio.gather(*list(orch._pr_doctor_job_tasks))
-    assert len(sent) == 1
-    assert "gh pr checkout 7" in sent[0]
+    assert sent == []
     job = orch.pr_doctor_job(result["job_id"])
     assert job is not None
-    assert job["status"] == "ready"
+    assert job["status"] == "deferred"
+    events = await orch._pr_doctor_ctx.list_events(target="o/r#7")
+    assert any(e["kind"] == "ownership_wait" for e in events)
 
 
 @pytest.mark.asyncio
@@ -933,7 +966,7 @@ async def test_behind_pr_in_merge_queue_is_no_op(monkeypatch, tmp_path):
     # BEHIND but already in_merge_queue → classify() should return None
     pr = PullRequestInfo(
         number=7, url="https://x/pull/7", state="open", checks="passing",
-        title="t", head_sha="sha1", is_draft=False, mergeable="MERGEABLE",
+        title="t", head_sha="a" * 40, is_draft=False, mergeable="MERGEABLE",
         merge_state_status="BEHIND", in_merge_queue=True,
     )
     orch = _build_orch(pr, has_driver=True)
@@ -975,9 +1008,10 @@ async def test_update_branch_no_new_commits_consumes_attempt(monkeypatch, tmp_pa
         return types.SimpleNamespace(
             returncode=1,
             stdout='{"message":"There are no new commits on the base branch."}',
-            stderr="",
+            stderr="gh: no new commits (HTTP 422)",
         )
 
+    _mechanical_boundary(monkeypatch, orch)
     orch._gh_run = fake_gh_no_new  # type: ignore[assignment]
 
     took = await orch._pr_doctor_step("o/r", "feat/x", pr, rec=orch._records["sess1"])

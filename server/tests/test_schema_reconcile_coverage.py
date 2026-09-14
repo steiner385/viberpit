@@ -22,6 +22,10 @@ from server.db.models import Base
 # so they don't need a reconcile-compatible default. Adding any NEW column here requires
 # a real Alembic migration.
 RECONCILE_EXEMPT: set[str] = {
+    # New tables in 0045_automation_ownership; required provenance at first INSERT.
+    "automation_operations.owner",
+    "automation_operations.source",
+    "automation_operations.reason",
     "sessions.name",           # required at session create; no sane default
     "sessions.account_name",   # required at session create; no sane default
     "sessions.cwd",            # required at session create; no sane default

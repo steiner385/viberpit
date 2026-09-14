@@ -621,22 +621,17 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
 
     Returns the close-out outcome for the sweep:
 
-    - ``"closed"``   — the PR is the batch's (≥1 issue verifiably linked) and at
-      least one issue was closed. Linked issues are closed with a linking comment
-      (best-effort: an individual failure is logged and the rest still close)
-      UNLESS the human gate (:func:`_human_gate_reason`, #784) says a merged PR
-      can't legitimately complete them — an action/ops issue, or a non-doc issue
-      with a docs-only diff — in which case they are left OPEN with an explaining
-      comment. Verified-unlinked issues are left OPEN with a comment; the runner's
-      row is what returns them to the pool.
-    - ``"escalated"`` — the human gate fired and NOTHING was closed: the merge
-      landed but a human has to finish and close the work. The sweep turns this
-      into a durable ``gave_up`` row (Phase D's needs-human signal) instead of
-      deleting the row as a completion.
+    - ``"closed"`` — every intended issue close succeeded. Explicitly excluded
+      tracking and verified-unlinked issues remain open by policy; their comments
+      are best-effort and are not completion authority.
+    - ``"escalated"`` — all intended closes succeeded, but at least one issue
+      still needs the explicit human gate. Keep the durable human handoff even
+      when other members of this batch closed successfully.
     - ``"unlinked"`` — every issue is verified-unlinked: a misattributed PR.
       Nothing is closed; the caller must ignore/denylist the PR.
-    - ``"retry"``    — linkage unverifiable (lookups failed) for at least one
-      issue and none verified linked: decide nothing, retry next sweep.
+    - ``"retry"`` — at least one linkage or intended close outcome is unknown
+      or failed. Keep ownership; the sweep reconciles terminal facts read-only
+      rather than assuming completion or replaying uncertain external effects.
     """
     pr_number = int(getattr(info, "number", 0) or 0)
     repo = getattr(batch, "repo", "") or (
@@ -662,7 +657,7 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
     # the whole batch), then gate each linked issue on its own signals.
     docs_only = _is_docs_only(_pr_changed_files(repo, pr_number, gh_run=gh_run))
     escalated = False
-    any_closed = False
+    incomplete = any(verdict is None for verdict in verdicts.values())
     for ref in linked:
         signals = _issue_signals(ref, gh_run=gh_run)
         open_children = (signals or {}).get("open_sub_issues") or 0
@@ -677,8 +672,8 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
                      ref, pr_number, reason)
             _escalate_issue(ref, reason, pr_link, gh_run=gh_run)
             escalated = True
-        elif _close_issue(ref, comment, gh_run=gh_run):
-            any_closed = True
+        elif not _close_issue(ref, comment, gh_run=gh_run):
+            incomplete = True
     # The PR is the batch's, but it never referenced these issues — closing
     # them would be exactly the #642 bug. Leave them open and say so; the
     # runner's row is what returns them to the pool.
@@ -688,6 +683,9 @@ def close_batch_issues(batch, info, *, gh_run: GhRun = gitrepos._run_gh) -> str:
             f"Batch PR {pr_link} merged without referencing this issue — "
             f"returned to the backlog pool (left open) by {brand.NAME} Backlog Runner.",
             gh_run=gh_run)
-    # Nothing closed and the human gate fired: this merge is a handoff, not a
-    # completion, and the sweep must keep a row rather than free the target.
-    return "escalated" if escalated and not any_closed else "closed"
+    # A successful sibling never proves a failed or unobserved write completed.
+    # Keep uncertain ownership ahead of human/terminal reporting; reconciliation
+    # can later establish that every intended target reached a terminal result.
+    if incomplete:
+        return "retry"
+    return "escalated" if escalated else "closed"

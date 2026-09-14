@@ -654,6 +654,48 @@ class AutomationTargetState(Base):
         DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
 
+class AutomationOperation(Base):
+    """Durable mutation attempt; its opaque token fences all owned-target writes.
+
+    Retained after release/transfer for correlation and provenance. This is live
+    exclusion, while AutomationTargetState remains workflow retry/outcome history.
+    """
+
+    __tablename__ = "automation_operations"
+
+    token: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
+    owner: Mapped[str] = mapped_column(String, nullable=False)
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    targets: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    display_refs: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    provenance: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    phase: Mapped[str] = mapped_column(String, nullable=False, default="claimed")
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    # The Session primary key is the launch correlation. No new Session column;
+    # no FK here because this reservation must survive before session creation.
+    reserved_session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    execution_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stopped_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    execution_sessions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    predecessor_token: Mapped[str | None] = mapped_column(
+        String, ForeignKey("automation_operations.token"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
+class AutomationOwnedTarget(Base):
+    """Permanent canonical lock row, including while unowned. Never TTL-expired."""
+
+    __tablename__ = "automation_owned_targets"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    operation_token: Mapped[str | None] = mapped_column(
+        String, ForeignKey("automation_operations.token"), nullable=True, index=True)
+
+
 # Dispatch outcome vocabulary (spec 2026-09-12 product automation policy §6).
 # ``reverted`` is reserved — nothing writes it in v1. ``superseded`` is the row a
 # NEW dispatch closed because it replaced it (a double tap, or a manual dispatch

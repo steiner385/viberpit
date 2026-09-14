@@ -109,7 +109,7 @@ class _FakeBacklogOrch:
         self.dispatch_calls.append(refs)
         return {"status": self._status, "session_id": "s-1", "session_name": "backlog"}
 
-    async def backlog_candidates(self):
+    async def backlog_candidates(self, *, include_pending=False):
         return [{"ref": "cairnea/KinDash#42", "repo": "cairnea/KinDash",
                  "title": "add rate limiter",
                  "url": "https://github.com/cairnea/KinDash/issues/42"}]

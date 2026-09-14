@@ -331,6 +331,10 @@ def _rethread_identity(driver, identity: str) -> None:
         driver.identity = identity
 
 
+class AutomationLaunchUncertain(RuntimeError):
+    """A reserved launch may have effects; retry must not start another session."""
+
+
 class ModelBlockedError(Exception):
     """A model whose approval policy is 'block' was requested at create_session.
 
@@ -974,11 +978,7 @@ class SessionOrchestrator:
         from server.automations.context import AutomationContext
         self._pr_doctor_ctx = AutomationContext(
             "pr-doctor", create_session=self.create_session)
-        # Consolidations whose clone/model/spawn tail is still running in a
-        # background task (no DB row yet, so spawn_session's DB de-dup can't see
-        # them): the consolidate fast path answers `duplicate` for these. Task
-        # refs are held so in-flight tasks aren't GC'd.
-        self._consolidation_inflight: set[str] = set()
+        # Keep background tasks alive; durable target ownership excludes overlaps.
         self._consolidation_tasks: set[asyncio.Task] = set()
         # Async manual pr-doctor triggers (issue #668): the slow clone→assess→
         # spawn pipeline runs in a background task that advances a job here; the
@@ -1012,7 +1012,7 @@ class SessionOrchestrator:
             self._backlog_ctx,
             select_batch=self._backlog_select_batch,
             announce=self._backlog_announce,
-            spawn=self._backlog_spawn,
+            spawn=lambda batch, account, **kw: self._backlog_spawn(batch, account, **kw),
             count_in_flight=self._backlog_count_in_flight,
             count_candidates=self._backlog_count_candidates,
             healthy_account=self._backlog_loop_healthy_account,
@@ -1026,6 +1026,9 @@ class SessionOrchestrator:
             needs_human=self._backlog_needs_human,
             session_ended=self._backlog_session_ended,
             session_ran=self._backlog_session_ran,
+            session_work_stopped=self._automation_session_work_stopped,
+            handoff=self._backlog_handoff,
+            closeout_completed=self._backlog_closeout_completed,
             close_out=self._backlog_close_out,
             refresh_groups=self._backlog_refresh_groups,
             credential_alerts=self._backlog_credential_alerts,
@@ -1724,6 +1727,107 @@ class SessionOrchestrator:
         configdir.trust_project(account, cwd)
         return str(self._isolated_dir_for(cfg_dir, kind))
 
+    async def _automation_before_execution(self, session_id: str, *, execution_id: str | None = None) -> bool:
+        from server.automations.ownership import begin_session_execution, execution_snapshot
+        record = self._records.get(session_id)
+        parent = getattr(record, "parent_session_id", None)
+        prior = await execution_snapshot(session_id, parent_session_id=parent)
+        known = bool(prior and prior.generation is not None
+                     and prior.generation == prior.stopped_generation)
+        await begin_session_execution(session_id, parent_session_id=parent, execution_id=execution_id)
+        return known
+
+    async def _automation_driver_closed(self, driver: AgentDriver, *, session_id: str,
+                                         execution_id: str) -> None:
+        """Retain a driver's own stopped evidence even during a nonterminal rebuild."""
+        from server.automations.ownership import attest_session_stopped, execution_snapshot
+        snapshot = await execution_snapshot(session_id, execution_id=execution_id)
+        if snapshot is None or snapshot.generation is None:
+            return
+        if await driver.automation_work_stopped():
+            await attest_session_stopped(snapshot.token, snapshot.generation, session_id=session_id,
+                                         execution_id=execution_id, allow_tree_stop=False)
+
+    async def _close_automation_driver(self, driver: AgentDriver, session_id: str) -> None:
+        """Terminal close retains each child proof until the whole managed tree stops."""
+        from server.automations.ownership import (
+            StaleOwnership, attest_session_stopped, execution_snapshot,
+        )
+        try:
+            snapshot = await execution_snapshot(
+                session_id, execution_id=getattr(driver, "automation_execution_id", None))
+        except Exception:
+            log.warning("automation close association unknown session=%s", session_id, exc_info=True)
+            snapshot = None
+        await driver.aclose()
+        if snapshot is None or snapshot.generation is None:
+            return
+        probe = getattr(driver, "automation_work_stopped", None)
+        if not callable(probe):
+            return
+        try:
+            if await probe():
+                await attest_session_stopped(snapshot.token, snapshot.generation, session_id=session_id,
+                                             execution_id=snapshot.execution_id)
+        except StaleOwnership:
+            pass
+        except Exception:
+            log.warning("automation native close proof unknown session=%s", session_id, exc_info=True)
+
+    async def _automation_session_work_stopped(self, session_id: str) -> bool:
+        """Whole managed-tree proof, never a UI status or an expired host lease."""
+        from server.automations.ownership import (
+            StaleOwnership, attest_session_stopped, execution_snapshot, session_execution,
+        )
+        snapshot = await execution_snapshot(session_id)
+        if snapshot is None or snapshot.tree_generation is None:
+            return False
+        record = self._records.get(session_id)
+        status: str | None
+        if record is not None:
+            status = record.status
+        else:
+            async with db_session() as db:
+                row = await db.get(DbSession, session_id)
+                status = row.status if row is not None else None
+        if status not in ("complete", "ended", "archived"):
+            return False
+        if snapshot.tree_stopped_generation == snapshot.tree_generation:
+            return True
+        if snapshot.generation is not None and (
+            snapshot.stopped_generation == snapshot.generation
+            or (snapshot.execution_id == "pending" and snapshot.generation == 0)
+        ):
+            # A queued child may since have been cancelled without ever entering
+            # native execution. Reconcile the tree using the retained LOCAL proof.
+            try:
+                await attest_session_stopped(snapshot.token, snapshot.generation, session_id=session_id,
+                                             execution_id=snapshot.execution_id)
+            except StaleOwnership:
+                return False
+            association = await session_execution(session_id)
+            return bool(association and association[1] is not None and association[1] == association[2])
+        record = self._records.get(session_id)
+        if record is None or record.status not in ("complete", "ended", "archived"):
+            return False
+        driver = self._drivers.get(session_id)
+        probe = getattr(driver, "automation_work_stopped", None)
+        if not callable(probe) or snapshot.generation is None:
+            return False
+        try:
+            if not await probe():
+                return False
+            await attest_session_stopped(snapshot.token, snapshot.generation, session_id=session_id,
+                                             execution_id=snapshot.execution_id)
+            association = await session_execution(session_id)
+            return bool(association and association[1] is not None
+                        and association[1] == association[2])
+        except StaleOwnership:
+            return False
+        except Exception:
+            log.warning("automation native quiescence unknown session=%s", session_id, exc_info=True)
+            return False
+
     def _create_driver(
         self,
         *,
@@ -1741,6 +1845,7 @@ class SessionOrchestrator:
         assistant_api: AsyncCloser | None = None,
     ) -> AgentDriver:
         """Build one driver through the canonical engine registry."""
+        execution_id = uuid.uuid4().hex
         return self._engine_registry.create(engine, AgentDriverConfig(
             session_id=session_id,
             account=account,
@@ -1750,6 +1855,11 @@ class SessionOrchestrator:
             identity=identity,
             resume=resume,
             reasoning_effort=reasoning_effort,
+            before_execution=functools.partial(self._automation_before_execution, session_id,
+                                               execution_id=execution_id),
+            automation_execution_id=execution_id,
+            after_execution_close=functools.partial(self._automation_driver_closed,
+                                                    session_id=session_id, execution_id=execution_id),
             # Bound to the identity of the driver being built, not to the session id
             # alone: the callback fires from whichever driver happens to be running,
             # and a superseded one reporting late must not overwrite the live handle.
@@ -2388,6 +2498,8 @@ class SessionOrchestrator:
         display: str | None = None,
         autopilot_paused: bool = False,
         auto_archive_opt_out_reason: str | None = None,
+        ownership_token: str | None = None,
+        parent_session_id: str | None = None,
     ) -> SessionRecord:
         """Pick an account, start an AgentDriver, persist a DB row, return a SessionRecord.
 
@@ -2417,29 +2529,10 @@ class SessionOrchestrator:
         # default explicitly.
         selected_engine = self._engine_registry.require(parse_agent_engine(engine))
 
-        # Resolve cwd: if given, it MUST be an existing directory
-        if cwd is not None:
-            if not os.path.isdir(cwd):
-                raise ValueError(f"cwd does not exist: {cwd}")
-        elif repo is not None:
-            # No explicit cwd — resolve the repo (nameWithOwner) into a
-            # ViberPit-owned clone path, cloning on first use.  This MUST run
-            # in this process: gitrepos.ensure_clone owns the on-disk clone
-            # registry, and in a dual-host deployment (edge on one host, this
-            # orchestrator running in the session daemon on another) only the
-            # daemon's filesystem is where the session will actually execute.
-            # The edge used to resolve this itself and hand over a `cwd` —
-            # cross-host that path doesn't exist here. Mirrors the daemon's
-            # other ensure_clone call sites (_backlog_spawn, _pr_doctor_step,
-            # _pr_doctor_consolidate_spawn). The user's real ~/GitHub checkouts
-            # are never touched — all clone + worktree activity lives under
-            # <repo_root>/.ccswitch/.
-            url = f"https://github.com/{repo}.git"
-            cwd = await asyncio.to_thread(
-                gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
-
-        session_id = str(uuid.uuid4())
-
+        # Trusted internal launch correlation; deliberately absent from HTTP input.
+        # Engine and hard refusals precede the durable start transition.
+        if cwd is not None and not os.path.isdir(cwd):
+            raise ValueError(f"cwd does not exist: {cwd}")
         # Model-approval gate. The single chokepoint for BOTH the API and
         # automations (which call this method directly). A gated model is parked
         # here (status 'pending_approval', no driver, no capacity slot) rather than
@@ -2462,49 +2555,111 @@ class SessionOrchestrator:
             _policy = await resolve_model_policy(_db, model=gate_model, account=account)
         if _policy == "block":
             raise ModelBlockedError(gate_model)
-        if _policy == "require_approval":
-            return await self._hold_for_approval(
+
+        from server.automations.ownership import owned
+
+        if ownership_token is None:
+            session_id = str(uuid.uuid4())
+        else:
+            async with owned(ownership_token) as tx:
+                if (tx.operation.owner != origin
+                        or tx.operation.provenance.get("origin_ref") != origin_ref
+                        or origin is None or origin_ref is None):
+                    raise ValueError("ownership does not match the requested launch")
+                if tx.operation.phase != "claimed":
+                    # A persisted UUID is sufficient to JOIN, never to launch again.
+                    # Rebuild without adopting it: another host may own its driver.
+                    reserved = tx.operation.reserved_session_id
+                    row = await tx.db.get(DbSession, reserved) if reserved else None
+                    if row is not None:
+                        return self._record_from_row(row)
+                    raise AutomationLaunchUncertain(
+                        "automation launch outcome is uncertain; reconcile reserved session")
+                session_id = tx.reserve_session()
+
+        if parent_session_id is not None:
+            from server.automations.ownership import register_child_execution
+            await register_child_execution(session_id, parent_session_id)
+
+        async def launch() -> SessionRecord:
+            nonlocal cwd
+            if cwd is None and repo is not None:
+                # No explicit cwd — resolve the repo (nameWithOwner) into a
+                # ViberPit-owned clone path, cloning on first use.  This MUST run
+                # in this process: gitrepos.ensure_clone owns the on-disk clone
+                # registry, and in a dual-host deployment (edge on one host, this
+                # orchestrator running in the session daemon on another) only the
+                # daemon's filesystem is where the session will actually execute.
+                # The edge used to resolve this itself and hand over a `cwd` —
+                # cross-host that path doesn't exist here. Automation callers also
+                # pass repo so their ownership reservation precedes this clone.
+                # The user's real ~/GitHub checkouts
+                # are never touched — all clone + worktree activity lives under
+                # <repo_root>/.ccswitch/.
+                url = f"https://github.com/{repo}.git"
+                cwd = await asyncio.to_thread(
+                    gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
+
+            if _policy == "require_approval":
+                return await self._hold_for_approval(
+                    session_id, name=name, account=account, initial_prompt=initial_prompt,
+                    cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
+                    identity=identity, permission_mode=permission_mode,
+                    attachment_ids=attachment_ids, name_is_auto=name_is_auto,
+                    origin=origin, origin_ref=origin_ref, model=gate_model,
+                    reasoning_effort=reasoning_effort, kind=kind,
+                    owner_identity=owner_identity, engine=selected_engine,
+                    client_node=client_node, display=display, parent_session_id=parent_session_id,
+                    autopilot_paused=autopilot_paused,
+                    auto_archive_opt_out_reason=auto_archive_opt_out_reason,
+                    model_reason=INHERITED_DEFAULT_REASON if gate_model != model else None)
+
+            # Global active-session cap: at/over the cap the session is created as a
+            # queued row (real session, no worktree/account/driver yet) and started
+            # later by _maybe_start_queued in (priority, enqueued_at) order. Applies
+            # to EVERY origin — automations included (their claims simply wait).
+            # Exception: the assistant (see the docstring) neither counts nor queues.
+            if (not is_assistant_kind(kind)
+                    and self._active_session_count() >= await self._max_active_sessions()):
+                return await self._enqueue_session(
+                    session_id, name=name, account=account,
+                    initial_prompt=initial_prompt, cols=cols, rows=rows, cwd=cwd,
+                    branch=branch, repo=repo, identity=identity,
+                    permission_mode=permission_mode, attachment_ids=attachment_ids,
+                    name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref,
+                    model=model, reasoning_effort=reasoning_effort, kind=kind,
+                    owner_identity=owner_identity, engine=selected_engine,
+                    client_node=client_node, display=display, parent_session_id=parent_session_id,
+                    autopilot_paused=autopilot_paused,
+                    auto_archive_opt_out_reason=auto_archive_opt_out_reason)
+            return await self._spawn_session(
                 session_id, name=name, account=account, initial_prompt=initial_prompt,
                 cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
                 identity=identity, permission_mode=permission_mode,
                 attachment_ids=attachment_ids, name_is_auto=name_is_auto,
-                origin=origin, origin_ref=origin_ref, model=gate_model,
+                origin=origin, origin_ref=origin_ref, model=model,
                 reasoning_effort=reasoning_effort, kind=kind,
                 owner_identity=owner_identity, engine=selected_engine,
-                client_node=client_node, display=display,
-                autopilot_paused=autopilot_paused,
-                auto_archive_opt_out_reason=auto_archive_opt_out_reason,
-                model_reason=INHERITED_DEFAULT_REASON if gate_model != model else None)
-
-        # Global active-session cap: at/over the cap the session is created as a
-        # queued row (real session, no worktree/account/driver yet) and started
-        # later by _maybe_start_queued in (priority, enqueued_at) order. Applies
-        # to EVERY origin — automations included (their claims simply wait).
-        # Exception: the assistant (see the docstring) neither counts nor queues.
-        if (not is_assistant_kind(kind)
-                and self._active_session_count() >= await self._max_active_sessions()):
-            return await self._enqueue_session(
-                session_id, name=name, account=account,
-                initial_prompt=initial_prompt, cols=cols, rows=rows, cwd=cwd,
-                branch=branch, repo=repo, identity=identity,
-                permission_mode=permission_mode, attachment_ids=attachment_ids,
-                name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref,
-                model=model, reasoning_effort=reasoning_effort, kind=kind,
-                owner_identity=owner_identity, engine=selected_engine,
-                client_node=client_node, display=display,
+                client_node=client_node, display=display, parent_session_id=parent_session_id,
                 autopilot_paused=autopilot_paused,
                 auto_archive_opt_out_reason=auto_archive_opt_out_reason)
-        return await self._spawn_session(
-            session_id, name=name, account=account, initial_prompt=initial_prompt,
-            cols=cols, rows=rows, cwd=cwd, branch=branch, repo=repo,
-            identity=identity, permission_mode=permission_mode,
-            attachment_ids=attachment_ids, name_is_auto=name_is_auto,
-            origin=origin, origin_ref=origin_ref, model=model,
-            reasoning_effort=reasoning_effort, kind=kind,
-            owner_identity=owner_identity, engine=selected_engine,
-            client_node=client_node, display=display,
-            autopilot_paused=autopilot_paused,
-            auto_archive_opt_out_reason=auto_archive_opt_out_reason)
+
+        if ownership_token is None:
+            return await launch()
+        try:
+            rec = await launch()
+            async with owned(ownership_token) as tx:
+                tx.bind_session(rec.id)
+            return rec
+        except BaseException:
+            # Cancellation propagates unchanged. Failure to record the explanation
+            # still leaves the committed launching reservation blocking retries.
+            try:
+                async with owned(ownership_token) as tx:
+                    tx.mark_uncertain("session creation did not return a confirmed result")
+            except Exception:
+                log.exception("automation.launch_uncertainty_record_failed")
+            raise
 
     def _consumes_capacity_slot(self, record) -> bool:
         """Does *record* occupy a runtime slot? The ONE definition (constitution VI).
@@ -2576,7 +2731,7 @@ class SessionOrchestrator:
                                initial_prompt, cols, rows, cwd, branch, repo,
                                identity, permission_mode, attachment_ids,
                                name_is_auto, origin, origin_ref, model,
-                               client_node=None, display=None,
+                               client_node=None, display=None, parent_session_id=None,
                                reasoning_effort=None, kind=None, owner_identity=None,
                                engine=AgentEngine.CLAUDE_CODE,
                                autopilot_paused: bool = False,
@@ -2607,6 +2762,7 @@ class SessionOrchestrator:
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
+                parent_session_id=parent_session_id,
                 engine=selected_engine.value, engine_session_id=None,
                 reasoning_effort=reasoning_effort, status="queued", pid=None,
                 cwd=cwd or "", repo=repo, branch=None,
@@ -2650,9 +2806,12 @@ class SessionOrchestrator:
             params["autopilot_paused"] = True
         if auto_archive_opt_out_reason is not None:
             params["auto_archive_opt_out_reason"] = auto_archive_opt_out_reason
+        if parent_session_id is not None:
+            params["parent_session_id"] = parent_session_id
         priority = await sq.enqueue(session_id, params)
         rec = SessionRecord(
             id=session_id, name=name, account=account or "", engine=selected_engine,
+            parent_session_id=parent_session_id,
             engine_session_id="",
             cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
             status="queued", name_is_auto=name_is_auto,
@@ -2671,7 +2830,7 @@ class SessionOrchestrator:
                                  initial_prompt, cols, rows, cwd, branch, repo,
                                  identity, permission_mode, attachment_ids,
                                  name_is_auto, origin, origin_ref, model,
-                                 client_node=None, display=None,
+                                 client_node=None, display=None, parent_session_id=None,
                                  reasoning_effort=None, kind=None, owner_identity=None,
                                  engine=AgentEngine.CLAUDE_CODE,
                                  autopilot_paused: bool = False,
@@ -2703,6 +2862,7 @@ class SessionOrchestrator:
         async with db_session() as db:
             db.add(DbSession(
                 id=session_id, name=name, account_name=account or "",
+                parent_session_id=parent_session_id,
                 engine=selected_engine.value, engine_session_id=None,
                 reasoning_effort=reasoning_effort,
                 status="pending_approval", pid=None,
@@ -2728,11 +2888,12 @@ class SessionOrchestrator:
             permission_mode=permission_mode, attachment_ids=attachment_ids,
             name_is_auto=name_is_auto, origin=origin, origin_ref=origin_ref, model=model,
             reasoning_effort=reasoning_effort, kind=kind,
-            owner_identity=owner_identity, engine=selected_engine,
+            owner_identity=owner_identity, engine=selected_engine, parent_session_id=parent_session_id,
             autopilot_paused=autopilot_paused,
             auto_archive_opt_out_reason=auto_archive_opt_out_reason)
         rec = SessionRecord(
             id=session_id, name=name, account=account or "", engine=selected_engine,
+            parent_session_id=parent_session_id,
             engine_session_id="",
             cols=cols, rows=rows, cwd=cwd or "", repo=repo, branch=None,
             status="pending_approval", name_is_auto=name_is_auto,
@@ -2943,7 +3104,7 @@ class SessionOrchestrator:
           ``branch=None``; only a real spawn fills it), so a replay starts from the
           repo's default branch. Automation sessions pass no branch to begin with.
         """
-        return dict(
+        kwargs = dict(
             name=row.name, account=row.account_name or None,
             initial_prompt=row.initial_prompt, cols=80, rows=24,
             cwd=row.cwd or None, branch=row.branch, repo=row.repo,
@@ -2955,6 +3116,13 @@ class SessionOrchestrator:
             reasoning_effort=getattr(row, "reasoning_effort", None),
             kind=getattr(row, "kind", None),
             owner_identity=getattr(row, "owner_identity", None))
+        if getattr(row, "parent_session_id", None) is not None:
+            kwargs["parent_session_id"] = row.parent_session_id
+        if getattr(row, "autopilot_paused", False):
+            kwargs["autopilot_paused"] = True
+        if getattr(row, "auto_archive_opt_out_reason", None) is not None:
+            kwargs["auto_archive_opt_out_reason"] = row.auto_archive_opt_out_reason
+        return kwargs
 
     async def _rebuild_hold_kwargs(self, session_id: str) -> dict:
         """Reconstruct spawn kwargs from the persisted 'pending_approval' row when the
@@ -3002,6 +3170,7 @@ class SessionOrchestrator:
                     kwargs.get("engine"), legacy_default=True)
                 db.add(DbSession(
                     id=session_id, name=kwargs.get("name"),
+                    parent_session_id=kwargs.get("parent_session_id"),
                     account_name=kwargs.get("account") or "",
                     engine=selected_engine.value, engine_session_id=None,
                     reasoning_effort=kwargs.get("reasoning_effort"),
@@ -3495,6 +3664,7 @@ class SessionOrchestrator:
         display: str | None = None,
         autopilot_paused: bool = False,
         auto_archive_opt_out_reason: str | None = None,
+        parent_session_id: str | None = None,
     ) -> SessionRecord:
         """Start an AgentDriver, persist/update a DB row, return a SessionRecord.
 
@@ -3645,7 +3815,7 @@ class SessionOrchestrator:
             # Lineage survives the queue → spawn hand-off (child-session spec §4.1): a
             # child dispatched at capacity is stamped on the queued record, and this
             # fresh record would otherwise drop it until the next restart rehydrates.
-            parent_session_id=getattr(_prior, "parent_session_id", None),
+            parent_session_id=parent_session_id or getattr(_prior, "parent_session_id", None),
             parent_notified_status=getattr(_prior, "parent_notified_status", None),
             updated_at=_now, usage_unverified=usage_unverified,
             origin=origin, origin_ref=origin_ref, model=None,
@@ -3758,6 +3928,7 @@ class SessionOrchestrator:
                     row = DbSession(
                         id=session_id,
                         name=name,
+                        parent_session_id=_pre_record.parent_session_id,
                         account_name=account,
                         engine=selected_engine.value,
                         engine_session_id=None,
@@ -4147,7 +4318,7 @@ class SessionOrchestrator:
         """Stop the driver, clean up the session worktree, mark the row ended."""
         driver = await self._teardown_driver_state(session_id)
         if driver is not None:
-            await driver.aclose()
+            await self._close_automation_driver(driver, session_id)
         record = self._records.get(session_id)
         # A child that is closed is a stop its parent must hear about (child-session
         # spec §4.4); this path never reaches _persist_status, so decide here, BEFORE
@@ -4554,7 +4725,7 @@ class SessionOrchestrator:
                 async def _release(d=live_driver, sid=session_id):
                     try:
                         with contextlib.suppress(Exception):
-                            await d.aclose()
+                            await self._close_automation_driver(d, sid)
                     finally:
                         # Clear only our own entry — never a newer release that
                         # (defensively) replaced this one for the same session_id.
@@ -5205,24 +5376,77 @@ class SessionOrchestrator:
             return False
 
     async def _backlog_pr_doctor_active(self, repo: str) -> bool:
-        """True when PR Doctor is enabled and covers *repo* (empty scope = all).
-
-        Read from the pr-doctor row so ``should_free_slot`` knows whether a safety
-        net exists to carry the PR to auto-merge."""
-        from sqlalchemy import select
+        """Whether recovery can accept autonomous work now, including engine policy."""
+        from datetime import datetime, timezone
+        from server.automations.schedule import should_tick
         from server.db.models import Automation
         try:
-            if not await self._pr_doctor_enabled():
-                return False
             async with db_session() as db:
-                row = (await db.execute(select(Automation).where(
-                    Automation.id == "pr-doctor"))).scalar_one_or_none()
-            if row is None:
+                row = await db.get(Automation, "pr-doctor")
+            if row is None or not row.enabled or row.mode != "auto":
                 return False
             scope = (row.config or {}).get("enabled_repos") or []
-            return not scope or repo in scope
+            if scope and repo not in scope:
+                return False
+            if not should_tick(row.schedule, datetime.now(timezone.utc)):
+                return False
+            return await self._pr_doctor_ctx.launch_plan_or_refuse(repo) is not None
         except Exception:
             log.debug("backlog_runner.pr_doctor_active_failed", exc_info=True)
+            return False
+
+    async def _backlog_handoff(self, target: str, state: dict, info: PullRequestInfo) -> bool:
+        from server.automations import pr_doctor_engine as engine
+        from server.automations.ownership import OwnershipConflict, StaleOwnership, ReleaseProof
+        from server.automations.ownership_handoff import expanded_handoff
+        from server.automations.target_identity import resolve_targets, TargetIdentityError
+        from server.db.models import AutomationTargetState
+        repo = target.rpartition("#")[0]
+        pr_target = f"{repo}#{info.number}"
+        reason = "PR recovery prerequisites are not satisfied"
+        if not await self._backlog_pr_doctor_active(repo):
+            await self._backlog_ctx.emit("info", reason, kind="handoff_wait", target=target)
+            return False
+        pr_state = await self._pr_doctor_ctx.get_target_state(pr_target)
+        config = await self._pr_doctor_config()
+        failure = engine.classify(info)
+        # Healthy/queued work still needs real CI and conflict coverage, otherwise
+        # relinquishing the implementation slot promises recovery it cannot do.
+        failures = [failure] if failure else ["failing_ci", "merge_conflict"]
+        if any(not isinstance(engine.plan_recovery(f, "auto", config, pr_state),
+                              (engine.SessionFix, engine.Mechanical)) for f in failures):
+            await self._backlog_ctx.emit("info", reason, kind="handoff_wait", target=target)
+            return False
+        try:
+            targets = await resolve_targets([pr_target], kind="pr", include_linked_issues=True)
+            async with expanded_handoff(state["ownership_token"], targets) as tx:
+                predecessor = await tx.db.get(AutomationTargetState, ("backlog-runner", target))
+                successor = await tx.db.get(AutomationTargetState, ("pr-doctor", pr_target))
+                if (predecessor is None or predecessor.state != state
+                        or (dict(successor.state) if successor else {}) != pr_state):
+                    raise StaleOwnership("handoff state changed")
+                if not set(tx.operation.targets) <= {t.key for t in targets}:
+                    raise OwnershipConflict("PR does not verify coverage of the full implementation batch")
+                token = await tx.transfer(
+                    owner="pr-doctor", source="runner-handoff", proof=ReleaseProof.WORK_STOPPED,
+                    reason="stopped implementation transferred to authorized PR recovery",
+                    provenance={"origin_ref": pr_target, "runner_target": target,
+                                "implementation_session_id": state.get("session_id")},
+                    successor_targets=targets)
+                predecessor.state = {**state, "ownership_token": token, "handed_off": True,
+                                     "implementation_session_id": state.get("session_id"),
+                                     "session_id": None}
+                next_state = {**pr_state, "ownership_token": token}
+                if successor is None:
+                    tx.db.add(AutomationTargetState(automation_id="pr-doctor", target=pr_target,
+                                                    state=next_state))
+                else:
+                    successor.state = next_state
+            await self._backlog_ctx.emit("info", f"{target} handed off to PR Doctor",
+                                         kind="handoff", target=target)
+            return True
+        except (OwnershipConflict, StaleOwnership, TargetIdentityError, ValueError) as exc:
+            await self._backlog_ctx.emit("info", str(exc), kind="handoff_wait", target=target)
             return False
 
     @staticmethod
@@ -5641,6 +5865,32 @@ class SessionOrchestrator:
         return await asyncio.to_thread(
             backlog_github.close_batch_issues, batch, info, gh_run=self._gh_run)
 
+    async def _backlog_closeout_completed(self, target: str, state: dict) -> bool:
+        """Read-only reconciliation of a lost close-out response by canonical IDs."""
+        from server.automations.ownership import owned
+        from server.automations.target_identity import _fetch, resolve_targets
+        from server.pm.gh_mutations import build_issue_query
+
+        try:
+            async with owned(state["ownership_token"]) as tx:
+                if (tx.operation.owner != "backlog-runner"
+                        or tx.operation.source != "terminal-closeout"):
+                    return False
+                held = set(tx.operation.targets)
+            targets = await resolve_targets(state.get("issues") or [target], kind="issue")
+            if not targets or not {item.key for item in targets}.issubset(held):
+                return False
+            for item in targets:
+                payload = await _fetch(item.display_ref.split("/", 1)[0],
+                                       build_issue_query(item.node_id))
+                node = (payload.get("data") or {}).get("node")
+                if (payload.get("errors") or not isinstance(node, dict)
+                        or node.get("id") != item.node_id or node.get("state") != "CLOSED"):
+                    return False
+            return True
+        except Exception:
+            return False
+
     async def _backlog_session_ended(self, session_id: str) -> bool:
         """True once the runner session *session_id* has reached a terminal state.
 
@@ -5948,14 +6198,14 @@ class SessionOrchestrator:
         async with db_session() as db:
             return await tier_floor_for_dispatch(db, product_slug, primary_ref)
 
-    async def _backlog_spawn(self, batch, account: str, *, default_model: str):
+    async def _backlog_spawn(self, batch, account: str, *, default_model: str,
+                             ownership_token: str):
         """Spawn a de-duped runner session for *batch*, seeded with the implement
         prompt.
 
-        Resolves the repo's ViberPit-owned clone ``cwd`` off the event loop
-        (mirrors PR Doctor's spawn), then spawns via the de-dup-safe context
-        spawner (stamps origin/origin_ref, enforces one session per primary, and
-        emits ``spawned`` with ``detail.issues``). Returns the SessionRecord.
+        Chooses model and prompt before forwarding the durable ownership token
+        to the shared session boundary. That boundary reserves a session UUID
+        before cloning or starting the native driver. Returns the SessionRecord.
 
         *default_model* is the PRODUCT's session model, supplied by the caller —
         the loop hands down the snapshot its dispatch decision was made on, the
@@ -5970,10 +6220,7 @@ class SessionOrchestrator:
         if plan is None:                       # out of policy — the ctx recorded why
             return None
         engine, _launch_config = plan
-        url = f"https://github.com/{batch.repo}.git"
         default_branch = await self._sdlc_default_branch(batch.repo)
-        cwd = await asyncio.to_thread(
-            gitrepos.ensure_clone, await self._effective_repo_root(), batch.repo, url)
         _mode, config = await self._backlog_read_config()
         # The session model is the PRODUCT's (policy phase 1): overlay the caller's
         # answer onto the config the resolvers already take, so ``pick_model`` /
@@ -6012,7 +6259,7 @@ class SessionOrchestrator:
             origin_ref=batch.primary,
             dedupe_key=batch.primary,
             repo=batch.repo,
-            cwd=cwd,
+            ownership_token=ownership_token,
             account=account,
             engine=engine,
             name=f"backlog {batch.primary}",
@@ -6056,93 +6303,55 @@ class SessionOrchestrator:
         de-duped runner session. Returns a status string: ``"spawned"`` /
         ``"unknown"`` (not a current candidate) / ``"no_account"`` /
         ``"refused"``."""
+        from server.automations.backlog_runner import is_pending_dispatch
         from server.automations.backlog_selection import Batch
         _mode, config = await self._backlog_read_config()
         # Read the current queue and pin the batch on the requested primary (the
         # tap targets one issue explicitly; no re-ranking needed).
         candidates = await self._backlog_query_queue(config)
         by_ref = {c["ref"]: c for c in candidates}
-        if primary not in by_ref:
-            return "unknown"
-        batch = Batch(primary=primary, issues=[primary], repo=by_ref[primary]["repo"],
-                      titles={primary: t} if (t := by_ref[primary].get("title")) else {},
-                      product=by_ref[primary].get("product"))
         st = await self._backlog_ctx.get_target_state(primary)
-        already_claimed = bool(st.get("issues"))
-        if not already_claimed:
-            # RECORDS-BEFORE-ANYTHING: the durable row IS the claim (Phase D), so
-            # it is written before the announce and the spawn — reconciliation
-            # sees a claimed ref with no session_id and no proposed flag as a
-            # dangler and releases it by deleting the row.
-            await self._backlog_ctx.set_target_state(primary, {
-                "repo": batch.repo,
-                "product": batch.product,
-                "attempts": st.get("attempts", 0),
-                "issues": batch.issues,
-                "claimed": True,
-            })
-            await self._backlog_announce(batch)
-            await self._backlog_ctx.emit("info", f"claimed {primary}",
-                                         kind="claimed", target=primary,
-                                         detail={"issues": batch.issues})
-        elif st.get("proposed"):
-            # Tapping a propose-mode pending claim: clear the proposed flag so
-            # reconciliation sees a normal claimed row after the session_id is set.
-            new_st = dict(st)
-            new_st.pop("proposed", None)
-            await self._backlog_ctx.set_target_state(primary, new_st)
-        account = await self._automation_account_for(self._backlog_ctx, primary)
-        if account is None:
-            return "no_account"
-        model = await self._backlog_policy_model(batch.product)
-        rec = await self._backlog_spawn(batch, account, default_model=model)
-        if rec is None:
-            # REFUSED before anything was created (engine policy, or an
-            # engine/permission-mode pair that could not open a PR). Reporting
-            # "spawned" here told the dashboard a session exists and left the
-            # claim row holding a concurrency slot forever. Undo the claim and
-            # say so; the spawn path already recorded the reason.
-            await self._backlog_ctx.delete_target_state(primary)
-            return "refused"
-        # A tap IS a dispatch, so it leaves the same ``running`` outcome row the
-        # loop's auto path writes (spec §6) — same place in the sequence: after a
-        # successful spawn, before the claim row is finalised. ``attempt_no`` comes
-        # off the claim this tap is spawning for.
-        try:
-            await self._backlog_ctx.record_outcome(
-                primary, product_slug=batch.product,
-                session_id=getattr(rec, "id", None),
-                model=getattr(rec, "model", None) or model,
-                attempt_no=st.get("attempts", 0))
-        except Exception:  # history is best-effort (spec §13); the claim write below must run
-            log.warning("backlog_runner.tap_record_outcome_failed target=%s", primary, exc_info=True)
-        # A de-dup hit returns the existing row without appending to spawns; treat
-        # a matching origin_ref that already existed as "exists".
-        await self._backlog_ctx.set_target_state(primary, {
-            "session_id": getattr(rec, "id", None),
-            "repo": batch.repo,
-            "product": batch.product,
-            "branch": getattr(rec, "branch", None),
-            "attempts": st.get("attempts", 0),
-            "issues": batch.issues,
-            "claimed": True,
-        })
-        return "spawned"
+        # A no-account tap consumes the proposal flag but keeps its unstarted
+        # owned batch. The queue excludes both kinds of pending claim.
+        pending_batch = is_pending_dispatch(st)
+        if primary not in by_ref and not pending_batch:
+            return "unknown"
+        candidate = by_ref.get(primary, {})
+        titles = dict(st.get("titles") or {})
+        if candidate.get("title"):
+            titles[primary] = candidate["title"]
+        batch = Batch(primary=primary,
+                      issues=(st.get("issues") or [primary]) if pending_batch else [primary],
+                      repo=candidate.get("repo") or st.get("repo") or primary.split("#")[0],
+                      titles=titles, product=candidate.get("product") or st.get("product"))
+        result = await self._backlog_dispatch_batch(batch, source="proposal")
+        return result["status"]
 
-    async def backlog_candidates(self) -> list[dict]:
-        """The runner's current candidate pool, ranked — what the manual-dispatch
-        picker offers. Same queue read the loop selects from, so the picker can
-        never offer work the runner itself would skip."""
+    async def backlog_candidates(self, *, include_pending: bool = False) -> list[dict]:
+        """Ranked eligible work plus durable batches awaiting a deliberate retry.
+
+        Claimed batches are excluded from the automatic queue, but must remain
+        discoverable after a proposal/no-account action list refresh. Execution
+        still validates the current operation and every canonical target.
+        """
+        from server.automations.backlog_runner import is_pending_dispatch
         _mode, config = await self._backlog_read_config()
-        return await self._backlog_query_queue(config)
-
-    @staticmethod
-    def _claim_now_iso() -> str:
-        """The ``claimed_at`` stamp, in the same wall-clock UTC ISO form the
-        backlog loop writes — ``_reconcile_dangling`` parses both with
-        ``parse_iso_utc``, so the two claim sites must not drift."""
-        from datetime import datetime, timezone
-        return datetime.now(timezone.utc).isoformat()
+        candidates = [dict(candidate) for candidate in await self._backlog_query_queue(config)]
+        if not include_pending:
+            return candidates  # the manual batch picker only offers unclaimed work
+        by_ref = {candidate["ref"]: candidate for candidate in candidates}
+        for ref, state in sorted((await self._backlog_ctx.list_target_states()).items()):
+            if not is_pending_dispatch(state):
+                continue
+            candidate = by_ref.get(ref)
+            if candidate is None:
+                candidate = {"ref": ref, "title": (state.get("titles") or {}).get(ref) or ref,
+                             "repo": state.get("repo") or ref.split("#", 1)[0],
+                             "product": state.get("product")}
+                candidates.append(candidate)
+                by_ref[ref] = candidate
+            candidate["waiting_account"] = bool(state.get("waiting_account"))
+        return candidates
 
     async def backlog_runner_dispatch(self, refs: list[str]) -> dict:
         """Manual dispatch: claim + spawn a batch for *refs*.
@@ -6158,64 +6367,44 @@ class SessionOrchestrator:
         _mode, config = await self._backlog_read_config()
         candidates = await self._backlog_query_queue(config)
         by_ref = {c["ref"]: c for c in candidates}
-        repo = by_ref.get(primary, {}).get("repo") or primary.split("#")[0]
-        titles = {r: by_ref[r]["title"]
-                  for r in refs if r in by_ref and by_ref[r].get("title")}
+        previous = await self._backlog_ctx.get_target_state(primary)
+        repo = by_ref.get(primary, {}).get("repo") or previous.get("repo") or primary.split("#")[0]
+        titles = {ref: title for ref, title in (previous.get("titles") or {}).items() if ref in refs}
+        titles.update({r: by_ref[r]["title"]
+                       for r in refs if r in by_ref and by_ref[r].get("title")})
         batch = Batch(primary=primary, issues=list(refs), repo=repo, titles=titles,
-                      product=by_ref.get(primary, {}).get("product"))
-        st = await self._backlog_ctx.get_target_state(primary)
-        already_claimed = bool(st.get("issues"))
-        if not already_claimed:
-            # ``claimed_at`` marks this claim as mid-spawn for CLAIM_GRACE_S. A
-            # dispatch is a separate task from the tick loop, so without it a
-            # concurrent tick's ``_reconcile_dangling`` reads this row (claimed,
-            # no session_id yet) as a crash leak and deletes it during the spawn
-            # below — the finalising write then updates 0 rows and 500s.
-            await self._backlog_ctx.set_target_state(primary, {
-                "repo": batch.repo,
-                "product": batch.product,
-                "attempts": st.get("attempts", 0),
-                "issues": batch.issues,
-                "claimed": True,
-                "claimed_at": self._claim_now_iso(),
-            })
-            await self._backlog_announce(batch)
-            await self._backlog_ctx.emit("info", f"manual dispatch {primary}",
-                                         kind="claimed", target=primary,
-                                         detail={"issues": batch.issues})
-        account = await self._automation_account_for(self._backlog_ctx, primary)
-        if account is None:
-            return {"status": "no_account", "session_id": None,
-                    "session_name": None}
-        model = await self._backlog_policy_model(batch.product)
-        rec = await self._backlog_spawn(batch, account, default_model=model)
-        if rec is None:
-            await self._backlog_ctx.delete_target_state(primary)
-            return {"status": "refused", "session_id": None, "session_name": None}
-        # Manual dispatch is a dispatch too — same ``running`` row, same position
-        # (after the spawn, before the claim row is finalised).
-        try:
-            await self._backlog_ctx.record_outcome(
-                primary, product_slug=batch.product,
-                session_id=getattr(rec, "id", None),
-                model=getattr(rec, "model", None) or model,
-                attempt_no=st.get("attempts", 0))
-        except Exception:  # history is best-effort (spec §13); the claim write below must run
-            log.warning("backlog_runner.tap_record_outcome_failed target=%s", primary, exc_info=True)
-        await self._backlog_ctx.set_target_state(primary, {
-            "session_id": getattr(rec, "id", None),
-            "repo": batch.repo,
-            "product": batch.product,
-            "branch": getattr(rec, "branch", None),
-            "attempts": st.get("attempts", 0),
-            "issues": batch.issues,
-            "claimed": True,
-        })
-        return {
-            "status": "spawned",
-            "session_id": getattr(rec, "id", None),
-            "session_name": getattr(rec, "name", None),
-        }
+                      product=by_ref.get(primary, {}).get("product") or previous.get("product"))
+        return await self._backlog_dispatch_batch(batch, source="manual")
+
+    async def _backlog_dispatch_batch(self, batch, *, source: str) -> dict:
+        """Manual actions share the runner's claims, budget and spawn lifecycle."""
+        loop = self._backlog_loop
+        async with loop._lock:
+            _mode, config = await self._backlog_read_config()
+            await loop._reconcile_dangling()
+            await loop._refresh_dispatch_budget()
+            loop._prune_day()
+            previous = await self._backlog_ctx.get_target_state(batch.primary)
+            # Continuing an unstarted proposal already occupies a slot.
+            existing_slot = bool(previous.get("claimed") and (previous.get("ownership_token")
+                                                               or previous.get("proposed")))
+            if (not existing_slot and await self._backlog_count_in_flight()
+                    >= config["max_concurrent"]):
+                return {"status": "capacity", "session_id": None, "session_name": None}
+            if len(loop._spawns_today) >= config["max_spawns_per_day"]:
+                return {"status": "budget", "session_id": None, "session_name": None}
+            if batch.product and not existing_slot:
+                from server.automations.backlog_runner import in_flight_by_product
+                from server.automations.product_policy import effective_policy
+                policies = await self._backlog_load_policies()
+                policy = effective_policy(policies.get(batch.product))
+                counts = in_flight_by_product(await self._backlog_ctx.list_target_states())
+                if counts.get(batch.product, 0) >= int(policy["max_in_flight"]):
+                    return {"status": "capacity", "session_id": None, "session_name": None}
+            account = await self._automation_account_for(self._backlog_ctx, batch.primary)
+            model = await self._backlog_policy_model(batch.product)
+            return await loop.dispatch_batch(batch, source=source, account=account,
+                                             default_model=model)
 
     async def _backlog_tick_loop(self, interval: float) -> None:
         """Periodic driver for the backlog-runner control loop. Runs a tick every
@@ -7073,6 +7262,12 @@ class SessionOrchestrator:
     async def _pm_sync_tick_once(self) -> None:
         """One pm-sync tick + an enabled-only ``last_active_at`` heartbeat.
         Best-effort — neither the tick nor the heartbeat may crash the loop."""
+        # Accepted manual GitHub effects outlive open map pointers and policy
+        # changes. Observe them without authorizing or replaying any new work.
+        try:
+            await self.pm_map_changes().reconcile_updates()
+        except Exception:
+            log.warning("pm_sync.map_recovery_observation_failed", exc_info=True)
         if not await self._schedule_allows_tick("pm-sync"):
             return
         try:
@@ -9896,8 +10091,7 @@ class SessionOrchestrator:
                     # reads as a first-pass merge.
                     if (state.get("attempted") or state.get("attempts")
                             or state.get("mechanical_attempts")):
-                        await self._pr_doctor_ctx.set_target_state(
-                            target, self._pr_doctor_lifetime_carry(state))
+                        await self._pr_doctor_clear_observed(target, state)
                         await self._pr_doctor_ctx.emit(
                             "info", f"{repo}#{info.number} CI recovered",
                             kind="recovered", target=target)
@@ -9953,6 +10147,19 @@ class SessionOrchestrator:
         """
         from server.automations import pr_doctor_engine as engine
 
+        # Reconcile retained work even after a PR leaves the open population or
+        # its policy/schedule stops authorizing NEW effects. Observation never submits.
+        for target, state in (await self._pr_doctor_ctx.list_target_states()).items():
+            if not state.get("ownership_token"):
+                continue
+            try:
+                await self._pr_doctor_observe_mechanical(target, state)
+                current = await self._pr_doctor_ctx.get_target_state(target)
+                if current.get("ownership_token"):
+                    await self._pr_doctor_clear_observed(target, current, clear_counters=False)
+            except Exception:
+                log.warning("pr_doctor.pending_reconciliation_failed target=%s", target, exc_info=True)
+
         if not await self._schedule_allows_tick("pr-doctor"):
             return
         try:
@@ -9970,7 +10177,7 @@ class SessionOrchestrator:
                 pop = self._pr_population_pr(repo, branch)
                 if pop is not None and engine.target_terminal(pop):
                     info = pop
-            if info is None or engine.target_terminal(info):
+            if info is None:
                 continue
             rec = self._pr_doctor_owning_rec(repo, branch)
             try:
@@ -9995,32 +10202,181 @@ class SessionOrchestrator:
             observation_failed(self._pr_doctor_ctx)
             log.debug("pr_doctor.stash_counts_failed", exc_info=True)
 
+    async def _pr_doctor_clear_observed(self, target: str, state: dict, *, clear_counters: bool = True) -> None:
+        """Clear only stopped work, while fencing the original retry snapshot."""
+        from server.automations.ownership import owned, ReleaseProof
+        from server.db.models import AutomationTargetState, AutomationOperation
+        token = state.get("ownership_token")
+        if not token:
+            repo, _, number = target.rpartition("#")
+            expected = await self._pr_doctor_claim(repo, [int(number)], target)
+            # Re-read acquisition is not permission to clear a newer decision.
+            if {k: v for k, v in expected.items() if k != "ownership_token"} != state:
+                await self._pr_doctor_finish(target, expected, expected)
+                return
+            await self._pr_doctor_finish(target, expected, self._pr_doctor_lifetime_carry(state))
+            return
+        async with db_session() as db:
+            operation = await db.get(AutomationOperation, token)
+            sid = (operation.session_id or operation.reserved_session_id) if operation else None
+        if not sid or not await self._automation_session_work_stopped(sid):
+            return
+        async with owned(token) as tx:
+            row = await tx.db.get(AutomationTargetState, ("pr-doctor", target))
+            if row is None or row.state != state:
+                return
+            tx._validate_release(ReleaseProof.WORK_STOPPED, "observed recovered stopped repair")
+            from server.automations.pr_accounting import account
+            if not await account(tx, target):
+                return
+            state = dict(row.state)
+            carry = (self._pr_doctor_lifetime_carry(state) if clear_counters else
+                     {k: v for k, v in state.items() if k not in ("ownership_token", "session_id")})
+            if tx.operation.provenance.get("runner_target"):
+                row.state = {**carry, "ownership_token": token, "session_id": sid}
+            else:
+                tx.release(ReleaseProof.WORK_STOPPED, "observed stopped standalone PR work")
+                row.state = carry
+
+    async def _pr_doctor_claim(self, repo, numbers, target, *, source="automatic", expected_state=None):
+        """Resolve every PR and verified closing issue before the one DB fence."""
+        from server.automations.ownership import acquire, owned, OwnershipConflict, StaleOwnership
+        from server.automations.ownership_reconciliation import reconcile_legacy_targets
+        from server.automations.target_identity import resolve_targets
+        from server.db.models import AutomationTargetState, AutomationOperation
+
+        targets = await resolve_targets([f"{repo}#{n}" for n in numbers], kind="pr",
+                                        include_linked_issues=True)
+        expected = await self._pr_doctor_ctx.get_target_state(target)
+        if expected_state is not None and expected != expected_state:
+            raise StaleOwnership("PR state changed after recovery decision")
+        token = expected.get("ownership_token")
+        if token:
+            # Settle a predecessor before ANY transfer, not only sweep release.
+            # Commit the accounting even when it invalidates this caller's policy
+            # snapshot; raising within this transaction would roll it back.
+            from server.automations.pr_accounting import account
+            async with owned(token) as tx:
+                row = await tx.db.get(AutomationTargetState, ("pr-doctor", target))
+                if row is None or row.state != expected:
+                    raise StaleOwnership("PR changed before predecessor accounting")
+                await account(tx, target)
+                accounted_state = dict(row.state)
+            if accounted_state != expected:
+                if expected_state is not None:
+                    raise StaleOwnership("Prior attempt accounted; refresh recovery decision")
+                expected = accounted_state
+            await self._pr_doctor_observe_mechanical(target, expected)
+            refreshed = await self._pr_doctor_ctx.get_target_state(target)
+            if refreshed != expected:
+                raise StaleOwnership("Prior GitHub update reconciled; refresh recovery decision")
+            from server.automations.ownership import ReleaseProof
+            async with db_session() as db:
+                operation = await db.get(AutomationOperation, token)
+                sid = (operation.session_id or operation.reserved_session_id) if operation else None
+            stopped = bool(sid and await self._automation_session_work_stopped(sid))
+            async with owned(token) as tx:
+                row = await tx.db.get(AutomationTargetState, ("pr-doctor", target))
+                if row is None or row.state != expected:
+                    raise StaleOwnership("PR state changed during resolution")
+                if (tx.operation.owner != "pr-doctor"
+                        or not {t.key for t in targets} <= set(tx.operation.targets)):
+                    raise OwnershipConflict("PR work already has an active owner")
+                if tx.operation.phase == "claimed" and tx.operation.provenance.get("dispatch_claimed"):
+                    raise OwnershipConflict("PR dispatch already accepted")
+                if tx.operation.phase != "claimed":
+                    if not stopped and tx.operation.phase != "completed":
+                        raise OwnershipConflict("prior PR execution has not stopped")
+                    if tx.operation.provenance.get("pr_attempt", {}).get("accounted") is False:
+                        raise OwnershipConflict("prior PR acceptance needs reconciliation before transfer")
+                    provenance = {k: v for k, v in tx.operation.provenance.items() if k not in ("pr_attempt", "mechanical_outcome", "mechanical_observed_completed")}
+                    provenance["dispatch_claimed"] = True
+                    token = await tx.transfer(owner="pr-doctor", source=tx.operation.source,
+                                              proof=ReleaseProof.WORK_STOPPED,
+                                              reason="previous repair stopped; new recovery attempt",
+                                              provenance=provenance)
+                    expected = {**expected, "ownership_token": token, "session_id": None}
+                    row.state = expected
+                    runner_target = provenance.get("runner_target")
+                    if runner_target:
+                        runner = await tx.db.get(AutomationTargetState, ("backlog-runner", runner_target))
+                        if runner is None or runner.state.get("ownership_token") != tx.operation.token:
+                            raise StaleOwnership("runner monitor no longer owns predecessor")
+                        runner.state = {**runner.state, "ownership_token": token}
+                else:
+                    tx.operation.provenance = {**tx.operation.provenance, "dispatch_claimed": True}
+            return expected
+        await reconcile_legacy_targets(targets)
+        async with acquire(targets, owner="pr-doctor", source=source,
+                           reason="PR recovery requested",
+                           provenance={"origin_ref": target, "dispatch_claimed": True}) as tx:
+            row = await tx.db.get(AutomationTargetState, ("pr-doctor", target))
+            if (dict(row.state) if row else {}) != expected:
+                raise StaleOwnership("PR state changed during acquisition")
+            state = {**expected, "ownership_token": tx.token}
+            if row is None:
+                tx.db.add(AutomationTargetState(automation_id="pr-doctor", target=target, state=state))
+            else:
+                row.state = state
+        return state
+
+    async def _pr_doctor_prepare_attempt(self, target, expected, result, kind):
+        from server.automations.ownership import owned, StaleOwnership
+        from server.db.models import AutomationTargetState
+        async with owned(expected["ownership_token"]) as tx:
+            row = await tx.db.get(AutomationTargetState, ("pr-doctor", target))
+            if row is None or row.state != expected:
+                raise StaleOwnership("PR changed before attempt admission")
+            tx.operation.provenance = {**tx.operation.provenance, "pr_attempt": {
+                "expected": expected, "result": result, "kind": kind, "accounted": False}}
+
+    async def _pr_doctor_finish(self, target, expected, state, *, uncertain=False):
+        from server.automations.ownership import StaleOwnership
+        from server.db.models import AutomationOperation
+        try:
+            return await self._pr_doctor_finish_owned(target, expected, state, uncertain=uncertain)
+        except StaleOwnership:
+            async with db_session() as db:
+                op = await db.get(AutomationOperation, expected["ownership_token"])
+                if op and op.provenance.get("pr_attempt", {}).get("accounted"):
+                    return True
+            raise
+
+    async def _pr_doctor_finish_owned(self, target, expected, state, *, uncertain=False):
+        from server.automations.ownership import owned, ReleaseProof
+        from server.automations.pr_accounting import account
+        from server.db.models import AutomationTargetState, AutomationOperation
+        async with db_session() as db:
+            operation = await db.get(AutomationOperation, expected["ownership_token"])
+            if operation and operation.provenance.get("pr_attempt", {}).get("accounted"):
+                return True  # A durable observer already committed this acknowledgment.
+        async with owned(expected["ownership_token"]) as tx:
+            intent = tx.operation.provenance.get("pr_attempt")
+            if intent and await account(tx, target):
+                return True
+            row = await tx.db.get(AutomationTargetState, ("pr-doctor", target))
+            if row is None or row.state != expected:
+                return False
+            if uncertain and tx.operation.phase != "claimed":
+                tx.mark_uncertain("PR effect outcome unknown; reconciliation required")
+            if tx.operation.phase == "claimed":
+                if tx.operation.provenance.get("runner_target"):
+                    tx.operation.provenance = {**tx.operation.provenance, "dispatch_claimed": False}
+                else:
+                    tx.release(ReleaseProof.NOT_STARTED, "PR action did not start")
+                    state = {k: v for k, v in state.items() if k != "ownership_token"}
+            row.state = state
+        return True
+
     async def _pr_doctor_step(
         self, repo: str, branch: str, info: PullRequestInfo, *, rec=None
     ) -> bool:
-        """Run the pure PR Doctor engine for one poll of a (repo, PR) and dispatch.
-
-        Reads mode + config, applies repo-scope gating, then
-        ``apply_rearm`` → ``classify`` → ``plan_recovery`` and dispatches on the
-        action type. Returns True iff a recovery action was actually taken (a
-        real injection / mechanical update), so ``_on_pr_change`` can skip the
-        redundant break notification. Behaviour-preserving superset of the old
-        failing-CI auto path: one attempt per failure event, no re-arm on
-        transient pending (``apply_rearm`` encodes that), ``record_attempt`` only
-        on a real injection.
-
-        Action dispatch: ``Notify`` (debounced push, handled by the caller),
-        ``Mechanical`` (gh update-branch via ``_pr_doctor_mechanical``),
-        ``Propose`` (observable intent event, no side effect), and ``SessionFix``.
-        ``SessionFix`` injects the kind-appropriate first prompt into a LIVE
-        driver when the owning session is still running; otherwise it resolves the
-        repo's ViberPit clone ``cwd`` (via ``gitrepos.ensure_clone``, exactly like
-        the New-Session API) and spawns a fresh, de-duped session seeded with that
-        prompt against a real repo checkout + the PR branch. A clone or spawn
-        failure emits an error, notifies, and does NOT consume an attempt (the
-        target re-arms for a later retry); only a real inject/spawn consumes one.
-        """
+        """Apply recovery policy to a snapshot; commit effects through shared ownership."""
         from server.automations import pr_doctor_engine as engine
+
+        target = f"{repo}#{info.number}"
+        state = await self._pr_doctor_ctx.get_target_state(target)
+        await self._pr_doctor_observe_mechanical(target, state)
 
         # Enabled gate (single chokepoint for BOTH the per-cycle sweep and the
         # _on_pr_change callback): a disabled automation takes no recovery action,
@@ -10034,182 +10390,94 @@ class SessionOrchestrator:
         config = await self._pr_doctor_config()
         await self._bump_automation_active("pr-doctor")
 
-        # Terminal (merged/closed): clear per-target state and stop. Same carry as
-        # the recovery clear (R3-11) — this wipe lands on a MERGED PR, the exact
-        # row ``_backlog_pr_doctor_attempts_for`` reads to answer whether the
-        # doctor ever acted, so dropping the counts here turns a doctor-rescued
-        # merge's ``first_pass_merge`` into UNKNOWN. The engine reads none of the
-        # ``lifetime_*`` keys, so nothing about terminal behaviour changes.
-        if engine.target_terminal(info):
-            target = f"{repo}#{info.number}"
-            terminal_st = await self._pr_doctor_ctx.get_target_state(target)
-            await self._pr_doctor_ctx.set_target_state(
-                target, self._pr_doctor_lifetime_carry(terminal_st))
-            await self._pr_doctor_ctx.emit(
-                "info", f"{target} {info.state}", kind="terminal", target=target)
-            return False
-
-        # Repo-scope gate: a non-empty allowlist that excludes this repo → off.
         enabled_repos = config.get("enabled_repos") or []
         if enabled_repos and repo not in enabled_repos:
             return False
-
         target = f"{repo}#{info.number}"
-        st = await self._pr_doctor_ctx.get_target_state(target)
-        st = engine.apply_rearm(st, info)
-        fm = engine.classify(info)
-        action = engine.plan_recovery(fm, mode, config, st)
-
-        # One auto-attempt per failure *event*: once an action has run against the
-        # current head, don't re-run it until the PR re-arms (apply_rearm resets
-        # the counter on an external push / changed failure class). This preserves
-        # the old ``attempted`` boolean guard (a repeated failing→failing signal on
-        # the same head does NOT re-inject). ``plan_recovery``'s ``max_attempts``
-        # cap still bounds the total; the re-arm supplies fresh budget per push.
-        already_acted = (
-            st.get("last_action_sha") == info.head_sha
-            and (st.get("mechanical_attempts", 0) if isinstance(action, engine.Mechanical)
-                 else st.get("attempts", 0)) > 0
-        )
-        if already_acted and isinstance(action, (engine.Mechanical, engine.SessionFix)):
-            await self._pr_doctor_ctx.set_target_state(target, st)
+        if engine.target_terminal(info):
+            state = await self._pr_doctor_ctx.get_target_state(target)
+            if state:
+                await self._pr_doctor_clear_observed(target, state)
             return False
-
-        took_action = False
-        if isinstance(action, engine.GiveUp):
-            # Monotonic ceiling reached — stop auto-acting and hand off to a human.
-            # Mark the target sticky-gave_up (persisted below), emit an observable
-            # `gave_up` event carrying the owning session's origin_ref/target so
-            # the Backlog Runner can react, and notify needs-human via the caller's
-            # debounced push. Do NOT re-inject.
-            st["gave_up"] = True
-            await self._pr_doctor_ctx.emit(
-                "warn", f"gave up auto-fixing {target}",
-                kind="gave_up", target=target, detail={"origin_ref": target})
-            took_action = False
-        elif isinstance(action, engine.Notify):
-            # Notify: the caller fires the debounced push (no further auto action).
-            took_action = False
-        elif isinstance(action, engine.Propose):
-            # Propose surface is LIVE: the one-tap action row is served by
-            # ``automation_actionable("pr-doctor")`` and triggered via
-            # ``automation_trigger("pr-doctor", item_id, kind)``. This emitted
-            # ``proposed`` event is observability-only — it records the intent on
-            # the activity feed with no auto side effect (does not consume an
-            # attempt, so it is NOT a "took_action"; the caller still fires the
-            # debounced notify).
-            await self._pr_doctor_ctx.emit(
-                "info", f"proposed {action.kind} fix for {target}",
-                kind="proposed", target=target)
-            took_action = False
-        elif isinstance(action, engine.Mechanical):
-            ok = await self._pr_doctor_mechanical(repo, info, action.kind)
-            if ok:
-                st = engine.record_attempt(st, action, info.head_sha)
-                took_action = True
-            # else: gh failed → attempt NOT consumed; re-arms next poll.
-        elif isinstance(action, engine.SessionFix):
-            # Delegate to the shared inject-or-spawn executor (single source of
-            # truth for both the auto path here and the manual one-tap trigger
-            # via ``automation_trigger("pr-doctor", item_id, kind)``). It returns
-            # ``"sent"``/``"spawned"`` on a real injection (which consumes an
-            # attempt) or a transient/error status.
+        st = await self._pr_doctor_ctx.get_target_state(target)
+        rearmed = engine.apply_rearm(st, info)
+        action = engine.plan_recovery(engine.classify(info), mode, config, rearmed)
+        attempts = (rearmed.get("mechanical_attempts", 0)
+                    if isinstance(action, engine.Mechanical) else rearmed.get("attempts", 0))
+        if rearmed.get("last_action_sha") == info.head_sha and attempts > 0:
+            return False
+        if isinstance(action, (engine.Mechanical, engine.SessionFix)):
+            if not await self._backlog_pr_doctor_active(repo):
+                return False
+        if isinstance(action, engine.Mechanical):
+            return await self._pr_doctor_mechanical(repo, info, action.kind, expected_state=st)
+        if isinstance(action, engine.SessionFix):
             status, _ = await self._pr_doctor_session_fix(
-                repo, branch, info, action.kind, rec)
-            if status in ("sent", "spawned"):
-                st = engine.record_attempt(st, action, info.head_sha)
-                # Back-compat marker: pre-engine rows/tests keyed the guard on
-                # ``attempted``. record_attempt already tracks attempts +
-                # last_action_sha (the real guard); this keeps the old key
-                # present for anything still reading it.
-                st["attempted"] = True
-                took_action = True
-            # else: transient / clone_failed / spawn_failed → no attempt consumed;
-            # apply_rearm will let the next failing poll retry.
+                repo, branch, info, action.kind, rec, expected_state=st)
+            return status in ("sent", "spawned")
+        if isinstance(action, engine.Propose):
+            await self._pr_doctor_ctx.emit("info", f"proposed {action.kind} fix for {target}",
+                                          kind="proposed", target=target)
+        if isinstance(action, engine.GiveUp):
+            # A read-only decision cannot overwrite a concurrently acquired state.
+            token = st.get("ownership_token")
+            if token:
+                await self._pr_doctor_ctx.compare_target_state(target, st,
+                                                               {**rearmed, "gave_up": True})
+            await self._pr_doctor_ctx.emit("warn", f"gave up auto-fixing {target}",
+                                          kind="gave_up", target=target)
+        return False
 
-        await self._pr_doctor_ctx.set_target_state(target, st)
-        return took_action
+    async def _pr_doctor_session_fix(self, repo, branch, info, kind, rec, on_phase=None,
+                                     *, expected_state=None):
+        from server.automations import pr_doctor_engine as engine
+        from server.automations.ownership import OwnershipConflict, StaleOwnership
+        from server.automations.target_identity import TargetIdentityError
+        target = f"{repo}#{info.number}"
+        try:
+            expected = await self._pr_doctor_claim(repo, [info.number], target,
+                                                  source="manual" if on_phase else "automatic",
+                                                  expected_state=expected_state)
+        except (OwnershipConflict, StaleOwnership, TargetIdentityError) as exc:
+            await self._pr_doctor_ctx.emit("warn", str(exc), kind="ownership_wait", target=target)
+            return "transient", None
+        admitted = engine.record_attempt(engine.apply_rearm(expected, info),
+                                         engine.SessionFix(kind), info.head_sha)
+        admitted["attempted"] = True
+        await self._pr_doctor_prepare_attempt(target, expected, admitted, "native")
+        try:
+            status, sid = await self._pr_doctor_session_fix_owned(
+                repo, branch, info, kind, rec, on_phase, ownership_token=expected["ownership_token"])
+        except BaseException:
+            await self._pr_doctor_finish(target, expected, expected, uncertain=True)
+            raise
+        state = expected
+        if status in ("sent", "spawned"):
+            state = engine.record_attempt(engine.apply_rearm(expected, info),
+                                          engine.SessionFix(kind), info.head_sha)
+            state.update(attempted=True, session_id=sid)
+        await self._pr_doctor_finish(target, expected, state,
+                                     uncertain=status not in ("sent", "spawned", "refused"))
+        return status, sid
 
-    async def _pr_doctor_session_fix(
+    async def _pr_doctor_session_fix_owned(
         self, repo: str, branch: str, info: PullRequestInfo, kind: str, rec,
         on_phase: "Callable[[str], None] | None" = None,
+        *, ownership_token: str,
     ) -> tuple[str, str | None]:
-        """Inject-or-spawn a session-driven PR fix — the shared session executor.
-
-        Single source of truth for both the auto path (``_pr_doctor_step``) and
-        the manual one-tap propose action (``automation_trigger("pr-doctor", ...)``). Selects the
-        branch-aware first prompt by *kind*; if the owning session is a LIVE
-        driver it injects via the same send-prompt path (``request_pr_fix`` for
-        failing_ci to preserve the old re-resolve+gate behaviour, direct
-        ``send_prompt`` of the conflict prompt for merge_conflict), otherwise it
-        resolves the ViberPit clone ``cwd`` and spawns a fresh, de-duped session
-        seeded with that prompt. Emits the same ``attempted`` / ``spawn_failed``
-        events as before. Returns ``(status, session_id)`` where status is
-        ``"sent"`` | ``"spawned"`` (real injection) | ``"transient"`` |
-        ``"clone_failed"`` | ``"spawn_failed"`` | ``"refused"`` (fresh-spawn only —
-        the origin's engine policy refused the launch before any clone/model
-        cost was paid). Does NOT touch per-target engine state — the caller
-        records the attempt on a real injection.
-
-        ``on_phase(phase)`` — optional progress hook the async manual trigger
-        (issue #668) uses to advance its job through ``cloning`` → ``assessing``
-        → ``spawning``. Defaults to a no-op so the auto sweep path is unchanged.
-        """
+        """Spawn a fenced successor after policy assessment. A live predecessor requires explicit stopped-work handoff; clone work belongs to create_session."""
         phase = on_phase or (lambda _p: None)
         target = f"{repo}#{info.number}"
 
-        live_rec = rec if (rec is not None and rec.id in self._drivers) else None
-        if live_rec is not None:
-            # Injection into an already-live session reuses THAT session's own
-            # already-resolved engine (decided once, at its original spawn) via
-            # the shared, engine-neutral AgentDriver.send_prompt contract
-            # (request_pr_fix routes through it too) — there is no fresh engine
-            # decision to make here, but the prompt's commit-trailer instruction
-            # still has to name the engine actually running the session.
-            if kind == "merge_conflict":
-                prompt = build_conflict_fix_prompt(repo, info, engine=live_rec.engine)
-            else:  # "failing_ci"
-                prompt = build_pr_fix_prompt(repo, info, engine=live_rec.engine)
-            # LIVE driver → near-instant injection, no clone/assess. Report the
-            # spawning phase so a polling job still sees forward motion.
-            phase("spawning")
-            # LIVE driver → inject the kind-appropriate prompt via the same
-            # send-prompt path request_pr_fix uses. For failing_ci we keep calling
-            # request_pr_fix to preserve the old auto behaviour exactly (it
-            # re-resolves the PR + gates on an actionable state); for
-            # merge_conflict we inject the conflict prompt directly through
-            # send_prompt (the same mechanism).
-            if kind == "merge_conflict":
-                result = await self.send_prompt(live_rec.id, prompt)
-            else:
-                result = await self.request_pr_fix(live_rec.id, info.number)
-            if result == "sent":
-                await self._pr_doctor_ctx.emit(
-                    "info", f"auto-fix injected for {target}",
-                    kind="attempted", target=target, session_id=live_rec.id)
-                return "sent", live_rec.id
-            # Unlike the completion nudge, this call site does NOT need an
-            # ensure_driver: `live_rec` is only set when the session is already in
-            # `self._drivers`, so a released (complete/detached) session takes the
-            # fresh-spawn path below instead of silently dropping the prompt. A
-            # "no_driver" here means the driver was released between that check and
-            # the send — rare, and retried by the next sweep, but never silent.
-            if result == "no_driver":
-                log.warning("pr_doctor: driver for %s vanished mid-inject (target=%s)",
-                            live_rec.id, target)
-            # transient (draining / not actionable) → no attempt consumed.
+        if rec is not None and rec.id in self._drivers:
+            # A fresh recovery cannot borrow a predecessor's live actor. Native
+            # handoff first proves stopped execution, then launches a successor.
+            await self._pr_doctor_ctx.emit(
+                "warn", f"{target} is still attached to session {rec.id}; stop its managed work before recovery",
+                kind="ownership_wait", target=target, session_id=rec.id)
             return "transient", None
 
-        # NO live driver (owning session archived/gone) → spawn a fresh, de-duped
-        # session seeded with the kind-appropriate first prompt. spawn_session
-        # enforces the (origin, dedupe_key) de-dup + stamps provenance and emits
-        # `spawned`; a repeated poll for the same target returns the existing
-        # session instead of a second spawn.
-        #
-        # Engine FIRST, before any network or disk work: the seed prompt states a
-        # commit trailer so it has to be built for the engine that will actually
-        # run (Phase 7, #1267, mirrors _backlog_spawn) — and a refused launch must
-        # cost nothing, not a full clone + model assessment.
+        # Resolve policy before any model or native work. create_session owns cloning.
         plan = await self._pr_doctor_ctx.launch_plan_or_refuse(target)
         if plan is None:                       # out of policy — the ctx recorded why
             return "refused", None
@@ -10219,24 +10487,6 @@ class SessionOrchestrator:
         else:  # "failing_ci"
             prompt = build_pr_fix_prompt(repo, info, engine=eng)
 
-        # Resolve the ViberPit-owned clone `cwd` first (mirrors the New-Session
-        # API): create_session's worktree block only runs when `cwd` is a real git
-        # repo, so without it the spawn falls to an empty scratch dir with
-        # branch=None and the seeded `gh pr checkout` can't work. The user's real
-        # ~/GitHub checkouts are never touched.
-        url = f"https://github.com/{repo}.git"
-        phase("cloning")
-        try:
-            cwd = await asyncio.to_thread(
-                gitrepos.ensure_clone, await self._effective_repo_root(), repo, url
-            )
-        except (gitrepos.CloneError, gitrepos.GhError) as exc:
-            # Clone failed → error + notify, attempt NOT consumed (the target
-            # re-arms so a later poll can retry).
-            await self._pr_doctor_ctx.emit(
-                "error", f"clone failed for {target}: {exc}",
-                kind="spawn_failed", target=target)
-            return "clone_failed", None
         phase("assessing")
         detail: dict = {"engine": eng.value}
         failing = ", ".join(
@@ -10258,7 +10508,7 @@ class SessionOrchestrator:
                 dedupe_key=target,
                 repo=repo,
                 branch=branch,
-                cwd=cwd,
+                ownership_token=ownership_token,
                 account=None,  # create_session picks a healthy account
                 engine=eng,
                 name=f"pr-doctor fix {target}",
@@ -10391,17 +10641,7 @@ class SessionOrchestrator:
     async def _pr_doctor_consolidate(
         self, repo: str, numbers: list[int]
     ) -> tuple[str, str | None]:
-        """Start ONE session consolidating the given PRs; answer immediately.
-
-        Validates the selection against the population cache and de-dups on the
-        sorted number set (live DB row OR an in-flight background spawn), all
-        fast and inline. The slow tail — default-branch lookup, clone, model
-        pick, spawn — runs in a background task (_pr_doctor_consolidate_spawn)
-        so the edge→daemon RPC answers in milliseconds instead of 503ing at its
-        timeout while the daemon spawns anyway (issue #567). Returns
-        ("spawning", None) once the tail is scheduled; its outcome reaches the
-        user through the automation feed events the tail emits."""
-        from sqlalchemy import select
+        """Acquire the complete verified PR/issue set, then schedule the owned spawn tail."""
         from server.automations.consolidation_engine import (
             ConsolidationCandidate, consolidation_target, validate_selection)
 
@@ -10420,37 +10660,28 @@ class SessionOrchestrator:
             return err, None                      # "too_few"
 
         target = consolidation_target(repo, want)
-        # De-dup, cheapest first: a background spawn for this exact set is still
-        # in flight (its DB row doesn't exist yet) → duplicate; then a live
-        # consolidation session in the DB → duplicate. No await between the
-        # in-flight check and the add below, so concurrent RPCs can't both pass.
-        if target in self._consolidation_inflight:
+        from server.automations.ownership import OwnershipConflict, StaleOwnership
+        from server.automations.target_identity import TargetIdentityError
+        try:
+            state = await self._pr_doctor_claim(repo, want, target, source="manual-consolidation")
+        except (OwnershipConflict, StaleOwnership, TargetIdentityError) as exc:
+            await self._pr_doctor_ctx.emit("warn", str(exc), kind="ownership_wait", target=target)
             return "duplicate", None
-        async with db_session() as db:
-            existing = (await db.execute(select(DbSession).where(
-                DbSession.origin == "pr-doctor",
-                DbSession.origin_ref == target,
-                DbSession.status.not_in(INACTIVE_SESSION_STATUSES)))).scalars().first()
-        if existing is not None:
-            return "duplicate", existing.id
 
-        self._consolidation_inflight.add(target)
         task = asyncio.create_task(
-            self._pr_doctor_consolidate_spawn(repo, target, prs),
+            self._pr_doctor_consolidate_spawn(repo, target, prs, state),
             name=f"pr-doctor-consolidate:{target}")
         self._consolidation_tasks.add(task)
         task.add_done_callback(self._consolidation_tasks.discard)
         return "spawning", None
 
-    async def _pr_doctor_consolidate_spawn(self, repo: str, target: str, prs) -> None:
-        """Background tail of _pr_doctor_consolidate: clone, model pick, spawn.
-
-        Every outcome (spawned / ceiling deferral / clone or spawn failure) is
-        emitted to the pr-doctor feed — there is no RPC caller left to return a
-        status to. Always releases the in-flight guard so a failure never wedges
-        the PR set against retries."""
+    async def _pr_doctor_consolidate_spawn(self, repo: str, target: str, prs, state) -> None:
+        """Launch the already-owned consolidation. Ambiguous launch outcomes retain ownership."""
         from server.sessions.pr_fix import build_consolidation_prompt
 
+        await self._pr_doctor_prepare_attempt(target, state, state, "native")
+        accepted = False
+        finished_state = state
         try:
             # Engine FIRST, before any network or disk work — same reasoning as
             # _pr_doctor_session_fix's fresh-spawn branch (Phase 7, #1267): the
@@ -10462,15 +10693,6 @@ class SessionOrchestrator:
             eng, _launch_config = plan
             default_branch = await self._sdlc_default_branch(repo)
             prompt = build_consolidation_prompt(repo, default_branch, prs, engine=eng)
-            url = f"https://github.com/{repo}.git"
-            try:
-                cwd = await asyncio.to_thread(
-                    gitrepos.ensure_clone, await self._effective_repo_root(), repo, url)
-            except (gitrepos.CloneError, gitrepos.GhError) as exc:
-                await self._pr_doctor_ctx.emit(
-                    "error", f"clone failed for {target}: {exc}",
-                    kind="spawn_failed", target=target)
-                return
             detail: dict = {"engine": eng.value}
             # ``account=None`` for the same reason as the fix path above.
             choice = await self._resolve_spawn_model(
@@ -10482,7 +10704,7 @@ class SessionOrchestrator:
             try:
                 rec = await self._pr_doctor_ctx.spawn_session(
                     origin_ref=target, dedupe_key=target, repo=repo,
-                    account=None, cwd=cwd, engine=eng,
+                    account=None, engine=eng, ownership_token=state["ownership_token"],
                     name=f"pr-doctor consolidate {repo} ({len(prs)} PRs)",
                     initial_prompt=prompt,
                     model=model,
@@ -10501,62 +10723,77 @@ class SessionOrchestrator:
                 # spawn_session already emitted why (engine_launch_refused /
                 # engine_policy_refused) — nothing further to record here.
                 return
+            accepted = True
             sid = getattr(rec, "id", None)
+            finished_state = {**state, "session_id": sid}
             await self._pr_doctor_ctx.emit(
                 "info", f"consolidation spawned for {target}",
                 kind="attempted", target=target, session_id=sid)
         except Exception:  # noqa: BLE001 — feed emit itself failed, or a bug
             log.exception("pr_doctor.consolidate_background_failed target=%s", target)
         finally:
-            self._consolidation_inflight.discard(target)
+            await self._pr_doctor_finish(target, state, finished_state, uncertain=not accepted)
 
-    async def _pr_doctor_mechanical(self, repo: str, info, kind: str) -> bool:
-        """Run a mechanical (no-session) recovery action via the gh CLI seam.
+    async def _pr_doctor_observe_mechanical(self, target: str, state: dict) -> None:
+        from server.automations.mechanical_update import observe
+        from server.automations.ownership import owned, ReleaseProof, StaleOwnership
+        from server.db.models import AutomationTargetState
+        token = state.get("ownership_token")
+        if not token:
+            return
+        try:
+            if not await observe(token):
+                return
+            async with owned(token) as tx:
+                row = await tx.db.get(AutomationTargetState, ("pr-doctor", target))
+                if row is None or row.state != state:
+                    return
+                from server.automations.pr_accounting import account
+                if not await account(tx, target):
+                    return
+                state = dict(row.state)
+                if tx.operation.source == "runner-handoff":
+                    return
+                tx.release(ReleaseProof.WORK_STOPPED, "Observed completed GitHub branch update")
+                row.state = {k: v for k, v in state.items() if k != "ownership_token"}
+        except StaleOwnership:
+            return  # Another observer already reconciled this generation.
 
-        For ``kind == "out_of_date"`` calls GitHub's update-branch API to merge
-        the base into the PR head so CI re-runs.  Uses ``self._gh_run`` which is
-        injectable for tests (defaults to ``gitrepos._run_gh``).
-
-        Returns True on gh success (caller should call record_attempt + set
-        took_action); False on failure / exception (attempt NOT consumed so the
-        target re-arms and retries next poll).
-        """
+    async def _pr_doctor_mechanical(self, repo: str, info, kind: str, *, expected_state=None) -> bool:
+        from server.automations import mechanical_update, pr_doctor_engine as engine
+        from server.automations.ownership import (
+            OwnershipConflict, StaleOwnership,
+        )
+        from server.automations.target_identity import TargetIdentityError
+        if kind not in ("out_of_date", "stuck_enqueue"):
+            return False
         target = f"{repo}#{info.number}"
-        if kind in ("out_of_date", "stuck_enqueue"):
-            # stuck_enqueue: armed PR silently dropped from the merge queue (e.g.
-            # ci-gate suite-shadowing). update-branch produces a new head → fresh CI
-            # run → GitHub re-evaluates queue eligibility and re-enqueues.
-            argv = ["api", "-X", "PUT", f"repos/{repo}/pulls/{info.number}/update-branch"]
-            try:
-                proc = self._gh_run(argv)
-                if proc.returncode == 0:
-                    await self._pr_doctor_ctx.emit(
-                        "info", f"update-branch succeeded for {target}",
-                        kind="updated_branch", target=target)
-                    return True
-                # 422 "no new commits": the base hasn't advanced since the poller
-                # snapshot — the PR is effectively up to date. Treat as done (consume
-                # the attempt) so already_acted fires and we stop retrying this head.
-                body = getattr(proc, "stdout", "") or getattr(proc, "stderr", "") or ""
-                if proc.returncode != 0 and "no new commits" in body.lower():
-                    await self._pr_doctor_ctx.emit(
-                        "info", f"update-branch no-op (already current) for {target}",
-                        kind="updated_branch", target=target)
-                    return True
-                await self._pr_doctor_ctx.emit(
-                    "warn", f"update-branch failed (rc={proc.returncode}) for {target}",
-                    kind="mechanical_failed", target=target,
-                    detail={"body": body[:300]})
+        try:
+            evidence = await mechanical_update.snapshot(repo, info.number)
+            if evidence["expected_head_sha"] != info.head_sha:
                 return False
-            except Exception as exc:  # noqa: BLE001
-                await self._pr_doctor_ctx.emit(
-                    "warn", f"update-branch raised {exc!r} for {target}",
-                    kind="mechanical_failed", target=target)
-                return False
-        # Unknown mechanical kind — warn and return False so the attempt is NOT
-        # consumed; the engine will re-classify next poll rather than burning a try.
-        log.warning("pr_doctor_mechanical: unknown kind=%r for %s", kind, target)
-        return False
+            expected = await self._pr_doctor_claim(repo, [info.number], target,
+                                                  expected_state=expected_state)
+        except (OwnershipConflict, StaleOwnership, TargetIdentityError, ValueError) as exc:
+            await self._pr_doctor_ctx.emit("warn", str(exc), kind="ownership_wait", target=target)
+            return False
+        token = expected["ownership_token"]
+        admitted = engine.record_attempt(engine.apply_rearm(expected, info),
+                                         engine.Mechanical(kind), info.head_sha)
+        await self._pr_doctor_prepare_attempt(target, expected, admitted, "mechanical")
+        outcome = await mechanical_update.submit(token, evidence)
+        await self._pr_doctor_finish(target, expected, expected,
+                                     uncertain=outcome == "unknown")
+        if outcome in ("rejected", "completed"):
+            current = await self._pr_doctor_ctx.get_target_state(target)
+            if current.get("ownership_token") == token:
+                await self._pr_doctor_observe_mechanical(target, current)
+        await self._pr_doctor_ctx.emit(
+            "info" if outcome in ("accepted", "completed") else "warn",
+            f"GitHub branch update {outcome} for {target}",
+            kind="updated_branch" if outcome in ("accepted", "completed") else "mechanical_failed",
+            target=target)
+        return outcome in ("accepted", "completed")
 
     async def _condense_estimate(self) -> float:
         from server.sessions import compaction_stats
@@ -12093,14 +12330,7 @@ class SessionOrchestrator:
         return mode if mode in VALID_AUTOFIX_MODES else "propose"
 
     async def request_pr_fix(self, session_id: str, pr_number: int) -> str:
-        """Inject a branch-aware fix prompt for the session's PR #pr_number.
-
-        Single source of truth for "restore this PR", shared by the auto path
-        (_on_pr_change) and the manual propose endpoint. Resolves the (repo,
-        branch) for the PR number from the session's authored branches, gates on
-        an actionable (open/draft) state, and injects via send_prompt. Returns a
-        status string; does not resume a driver and does not apply the loop guard.
-        """
+        """Route a manual fix of an authored PR through the shared canonical ownership executor."""
         rec = self._records.get(session_id)
         if rec is None or not rec.repo:
             return "no_session"
@@ -12114,8 +12344,9 @@ class SessionOrchestrator:
             return "no_pr"
         if info.state not in ("open", "draft"):
             return "not_actionable"
-        prompt = build_pr_fix_prompt(rec.repo, info, engine=rec.engine)
-        return await self.send_prompt(session_id, prompt)
+        status, _ = await self._pr_doctor_session_fix(
+            rec.repo, br, info, "failing_ci", rec)
+        return status
 
     def _pr_doctor_owning_rec(self, repo: str, branch: str):
         """The live session record that authored *branch* in *repo*, or None.
@@ -13891,6 +14122,7 @@ class SessionOrchestrator:
         """Create a CHILD session of *parent_id* (spec §4.3): same repo, fresh worktree,
         same owner, mode never wider than the parent's. Raises ChildSessionLimit for the
         cap/depth/kill-switch refusals (the tool reports str(exc) to the model)."""
+        await self._automation_before_execution(parent_id)
         from server.config import get_settings
         from server.sessions.permissions import narrowest
         parent = self._records.get(parent_id)
@@ -13917,12 +14149,9 @@ class SessionOrchestrator:
             cwd=parent_cwd if (not repo and parent_is_git) else None,
             identity=identity, permission_mode=mode, name_is_auto=False,
             model=model or getattr(parent, "model", None),
-            engine=getattr(parent, "engine", AgentEngine.CLAUDE_CODE))
-        rec.parent_session_id = parent_id
+            engine=getattr(parent, "engine", AgentEngine.CLAUDE_CODE),
+            parent_session_id=parent_id)
         async with db_session() as db:
-            from sqlalchemy import update as sa_update
-            await db.execute(sa_update(DbSession).where(DbSession.id == rec.id)
-                             .values(parent_session_id=parent_id))
             await record_audit(db, "session.child_dispatch", identity,
                                {"parentSessionId": parent_id, "childSessionId": rec.id, "name": name},
                                via="session")
@@ -16213,7 +16442,7 @@ class SessionOrchestrator:
     async def _close_archived_driver(self, driver: "AgentDriver", session_id: str) -> None:
         """Background half of archive_session: graceful driver shutdown (5 s grace)."""
         try:
-            await driver.aclose()
+            await self._close_automation_driver(driver, session_id)
         except Exception:
             log.warning("session.archive_driver_close_failed id=%s", session_id,
                         exc_info=True)
