@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { AccountUsage } from '@/api/types'
-import { bindingWindow, reserveWindow, usageKnown, usageUnavailableReason, usageWindows, windowByKey } from './usageWindows'
+import { bindingWindow, reserveWindow, usageKnown, usageUnavailableReason, usageWindows, windowByKey, windowsFor, windowLabel } from './usageWindows'
 import { anthropicUsage, copilotUsage } from '@/test/factories'
 
 function unavailable(availability: AccountUsage['availability']): AccountUsage {
@@ -71,5 +71,37 @@ describe('usageWindows', () => {
       .toBe('Quota not reported for this credential')
     expect(usageUnavailableReason({ ...unavailable('unsupported'), reason: null }))
       .toBe('Quota not reported for this credential')
+  })
+})
+
+const kindash: AccountUsage = {
+  provider: 'anthropic', fetchedAt: '2026-09-14T12:00:00Z', availability: 'available',
+  reason: null, staleAsOf: null, extraUsageEnabled: false,
+  windows: [
+    { key: 'session', label: 'session', pct: 3, resetsAt: '2026-09-14T16:40:00Z', durationSeconds: 18000, scope: 'account', appliesToModels: [] },
+    { key: 'weekly', label: 'weekly', pct: 91, resetsAt: '2026-09-14T20:00:00Z', durationSeconds: 604800, scope: 'account', appliesToModels: [] },
+    { key: 'weekly:fable', label: 'Fable weekly', pct: 100, resetsAt: '2026-09-14T19:59:59Z', durationSeconds: 604800, scope: 'model', appliesToModels: ['fable'] },
+  ],
+}
+
+describe('model-scoped windows', () => {
+  it('applies a model window only to its own tier, and every window to an unknown model', () => {
+    expect(windowsFor(kindash, 'sonnet').map((w) => w.key)).toEqual(['session', 'weekly'])
+    expect(windowsFor(kindash, 'claude-fable-5-1').map((w) => w.key)).toEqual(['session', 'weekly', 'weekly:fable'])
+    expect(windowsFor(kindash, null).map((w) => w.key)).toEqual(['session', 'weekly', 'weekly:fable'])
+    expect(windowsFor(kindash, 'best').map((w) => w.key)).toEqual(['session', 'weekly', 'weekly:fable'])
+  })
+  it('binds per model', () => {
+    expect(bindingWindow(kindash, 'sonnet')?.key).toBe('weekly')
+    expect(bindingWindow(kindash, 'fable')?.key).toBe('weekly:fable')
+    expect(bindingWindow(kindash)?.key).toBe('weekly:fable')
+  })
+  it('never measures a reserve on a model window', () => {
+    expect(reserveWindow(kindash)?.key).toBe('weekly')
+  })
+  it('labels account windows by abbreviation and model windows by the provider label', () => {
+    expect(windowLabel(kindash.windows[1])).toBe('wk')
+    expect(windowLabel(kindash.windows[2])).toBe('Fable weekly')
+    expect(windowLabel({ key: 'primary', label: 'primary', pct: 1, resetsAt: null })).toBe('primary')
   })
 })
