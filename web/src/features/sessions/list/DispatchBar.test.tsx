@@ -80,7 +80,7 @@ describe('DispatchBar', () => {
     await user.click(box)
     await user.type(box, 'fix the bug')
     await user.keyboard('{Enter}')
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null, autopilot: true, autoArchive: true })
     await waitFor(() => expect(box).toHaveValue(''))
   })
 
@@ -144,7 +144,7 @@ describe('DispatchBar', () => {
     await user.type(box, 'fix the bug')
     expect(create).toBeEnabled()
     await user.click(create)
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'fix the bug', repo: null, account: null, model: null, host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null, autopilot: true, autoArchive: true })
     await waitFor(() => expect(box).toHaveValue(''))
   })
 
@@ -169,7 +169,7 @@ describe('DispatchBar', () => {
     await user.type(box, 'ship it')
     await user.keyboard('{Enter}')
 
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'ship it', repo: null, account: 'work', model: 'opus', host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'ship it', repo: null, account: 'work', model: 'opus', host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null, autopilot: true, autoArchive: true })
   })
 
   it('normalizes the "Default" model to null so the backend keeps the account default', async () => {
@@ -183,7 +183,45 @@ describe('DispatchBar', () => {
     await user.type(box, 'go')
     await user.keyboard('{Enter}')
 
-    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'go', repo: null, account: 'personal', model: null, host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null })
+    expect(onDispatch).toHaveBeenCalledWith({ initialPrompt: 'go', repo: null, account: 'personal', model: null, host: null, attachmentIds: [], engine: 'claude_code', reasoningEffort: null, autopilot: true, autoArchive: true })
+  })
+
+  it('offers Autopilot and Auto-archive toggles, on by default, and forwards an opt-out for THIS session only', async () => {
+    const user = userEvent.setup()
+    const onDispatch = vi.fn().mockResolvedValue(undefined)
+    render(<DispatchBar {...makeProps({ onDispatch })} />)
+    const autopilot = screen.getByRole('checkbox', { name: /^autopilot$/i })
+    const autoArchive = screen.getByRole('checkbox', { name: /^auto-archive$/i })
+    // Governed by the global settings unless the user says otherwise.
+    expect(autopilot).toBeChecked()
+    expect(autoArchive).toBeChecked()
+
+    await user.click(autopilot)
+    await user.click(autoArchive)
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.type(box, 'quiet one')
+    await user.keyboard('{Enter}')
+    expect(onDispatch).toHaveBeenCalledWith(expect.objectContaining({
+      initialPrompt: 'quiet one', autopilot: false, autoArchive: false,
+    }))
+
+    // The opt-out was for that session: the next dispatch starts governed again.
+    await waitFor(() => expect(box).toHaveValue(''))
+    expect(autopilot).toBeChecked()
+    expect(autoArchive).toBeChecked()
+  })
+
+  it('keeps an opt-out when the dispatch fails, so a retry sends the same choice', async () => {
+    const user = userEvent.setup()
+    const onDispatch = vi.fn().mockRejectedValue(new DispatchError('No usable accounts'))
+    render(<DispatchBar {...makeProps({ onDispatch })} />)
+    const autopilot = screen.getByRole('checkbox', { name: /^autopilot$/i })
+    await user.click(autopilot)
+    const box = screen.getByRole('textbox', { name: /new session prompt/i })
+    await user.type(box, 'retry me')
+    await user.keyboard('{Enter}')
+    await screen.findByRole('alert')
+    expect(autopilot).not.toBeChecked()
   })
 
   it('Create button never opens the highlighted session (stays disabled when empty)', async () => {

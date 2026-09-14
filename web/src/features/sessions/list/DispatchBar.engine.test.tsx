@@ -439,7 +439,7 @@ describe('DispatchBar — the new controls join the mobile disclosure', () => {
     const controlled = (more.getAttribute('aria-controls') ?? '').split(' ').filter(Boolean)
     expect(controlled).toEqual([
       'dispatch-bar-engine', 'dispatch-bar-account', 'dispatch-bar-model',
-      'dispatch-bar-reasoning', 'dispatch-bar-runner',
+      'dispatch-bar-reasoning', 'dispatch-bar-runner', 'dispatch-bar-toggles',
     ])
     // Every id must resolve — a dangling aria-controls is an a11y violation.
     for (const id of controlled) expect(document.getElementById(id)).not.toBeNull()

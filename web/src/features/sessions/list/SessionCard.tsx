@@ -604,12 +604,17 @@ export function SessionCard({ session, account, selected = false, listMode = fal
           </span>
         )}
         {session.autoArchiveOptOut && (
-          /* Passive indicator: this session was manually unarchived, so
-             autopilot will never auto-archive it again. */
+          /* Passive indicator: this session will never be auto-archived — either
+             it was manually unarchived, or "Auto-archive" was unticked when it
+             was created (the two reasons the server records on this column). */
           <span
             data-testid="card-no-autoarchive-badge"
             className={cn(markerBase, 'text-warning')}
-            title="Auto-archive off — you unarchived this session, so autopilot won't archive it again"
+            title={
+              session.autoArchiveOptOut === 'manual-unarchive'
+                ? "Auto-archive off — you unarchived this session, so autopilot won't archive it again"
+                : 'Auto-archive off — turned off when this session was created'
+            }
           >
             <Archive size={12} aria-hidden="true" />
             <span className="sr-only">Auto-archive off</span>

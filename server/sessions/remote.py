@@ -633,6 +633,26 @@ class RemoteOrchestrator:
                 stripped = {k: v for k, v in kwargs.items()
                             if k not in ("client_node", "display")}
                 r = await self._call_create_session(stripped)
+            elif (exc.err_type == "TypeError"
+                    and ("'autopilot_paused'" in exc.message
+                         or "'auto_archive_opt_out_reason'" in exc.message)
+                    and ("autopilot_paused" in kwargs
+                         or "auto_archive_opt_out_reason" in kwargs)):
+                # Rolling upgrade: this daemon predates the per-session dispatch
+                # toggles. Start the session without them rather than fail the
+                # launch, then re-apply the autopilot half through
+                # set_autopilot_paused — an RPC every daemon already serves. The
+                # auto-archive opt-out has no such pre-existing setter, so it is
+                # the one thing an old daemon cannot honour; say so.
+                log.warning("daemon predates per-session toggles; creating without "
+                            "autopilot_paused/auto_archive_opt_out_reason "
+                            "(autopilot pause re-applied after create; the "
+                            "auto-archive opt-out is dropped on this daemon)")
+                stripped = {k: v for k, v in kwargs.items()
+                            if k not in ("autopilot_paused", "auto_archive_opt_out_reason")}
+                r = await self._call_create_session(stripped)
+                if kwargs.get("autopilot_paused"):
+                    await self.set_autopilot_paused(r["session"]["id"], True)
             else:
                 raise
         return SessionRecord.from_dict(r["session"])

@@ -42,6 +42,13 @@ VALID_SESSION_MODES = frozenset({
 ASSISTANT_KIND = "assistant"
 
 
+# `SessionRecord.auto_archive_opt_out_reason` value for a session whose creator
+# unticked "Auto-archive" at dispatch. Sibling of the orchestrator's
+# "manual-unarchive" (a human unarchived it); both are read as one truthy gate by
+# the completion auto-archive path, so a new reason never needs a new branch there.
+AUTO_ARCHIVE_OPT_OUT_CREATE = "create-opt-out"
+
+
 @dataclass
 class SessionRecord:
     """In-memory view of a running session — mirrors the DB row but stays process-local."""
@@ -100,7 +107,8 @@ class SessionRecord:
     # the reap re-arms from the next interaction).
     last_activity_at: float | None = None
     # Sticky auto-archive opt-out reason. None = eligible for auto-archive; "manual-unarchive"
-    # = a human unarchived this session, so it is never auto-archived again (see orchestrator).
+    # = a human unarchived this session, so it is never auto-archived again (see orchestrator);
+    # AUTO_ARCHIVE_OPT_OUT_CREATE = the creator unticked "Auto-archive" at dispatch.
     auto_archive_opt_out_reason: str | None = None
     # Durable record that a session resolved it will NOT open a PR — either it finished
     # without one ("not-needed") or cancelled the PR work ("cancelled"). None = unresolved.

@@ -183,6 +183,7 @@ function NewSessionBar({
 
   function handleDispatch({
     initialPrompt, repo, account, model, host, attachmentIds, engine, reasoningEffort,
+    autopilot, autoArchive,
   }: {
     initialPrompt: string
     repo: string | null
@@ -192,6 +193,8 @@ function NewSessionBar({
     attachmentIds: string[]
     engine: AgentEngine
     reasoningEffort: string | null
+    autopilot: boolean
+    autoArchive: boolean
   }): Promise<void> {
     const repoInfo = repo ? (reposQuery.data ?? []).find((r) => r.nameWithOwner === repo) : undefined
     return new Promise((resolve, reject) => {
@@ -209,6 +212,9 @@ function NewSessionBar({
           // briefly labelled Claude while the daemon spins the runtime up.
           engine,
           reasoningEffort: reasoningEffort ?? undefined,
+          // Per-session opt-outs (server: `autopilot_paused` / `auto_archive_opt_out_reason`).
+          autopilot,
+          autoArchive,
         },
         {
           onSuccess: (session) => {

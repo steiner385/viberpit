@@ -380,6 +380,12 @@ export interface CreateSessionInput {
   display?: 'auto' | 'native' | 'virtual'
   presetId?: string
   permissionProfileId?: string
+  /** Per-session opt-outs. Omitted/true ⇒ governed by the global autopilot mode /
+   *  auto-archive setting; false ⇒ this session is pinned to manual / never
+   *  auto-archived (the server maps them onto `autopilotPaused` and
+   *  `autoArchiveOptOut`). */
+  autopilot?: boolean
+  autoArchive?: boolean
 }
 
 export function useCreateSession() {
