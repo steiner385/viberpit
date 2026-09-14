@@ -59,6 +59,86 @@ class TestOAuth(unittest.TestCase):
         self.assertEqual(u.window("session").used_pct, 11.0)
         self.assertEqual(u.window("weekly").used_pct, 69.0)
 
+    # Verified live shape, 2026-09-14 (percentages only). The scoped entry names the
+    # model by display_name with a null id.
+    SCOPED_PAYLOAD = {
+        "five_hour": {"utilization": 3.0, "resets_at": "2026-09-14T16:40:00Z"},
+        "seven_day": {"utilization": 91.0, "resets_at": "2026-09-14T20:00:00Z"},
+        "seven_day_opus": None,
+        "seven_day_sonnet": None,
+        "limits": [
+            {"kind": "session", "group": "session", "percent": 3,
+             "resets_at": "2026-09-14T16:40:00Z", "scope": None},
+            {"kind": "weekly_all", "group": "weekly", "percent": 91,
+             "resets_at": "2026-09-14T20:00:00Z", "scope": None},
+            {"kind": "weekly_scoped", "group": "weekly", "percent": 100,
+             "resets_at": "2026-09-14T19:59:59Z",
+             "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}},
+        ],
+    }
+
+    def test_parse_usage_emits_a_model_scoped_window_after_the_account_ones(self):
+        from ccswitch.oauth import parse_usage
+        from ccswitch.quota import SCOPE_ACCOUNT, SCOPE_MODEL
+        u = parse_usage(self.SCOPED_PAYLOAD)
+        self.assertEqual([w.key for w in u.windows], ["session", "weekly", "weekly:fable"])
+        fable = u.window("weekly:fable")
+        self.assertEqual(fable.used_pct, 100.0)
+        self.assertEqual(fable.label, "Fable weekly")
+        self.assertEqual(fable.scope, SCOPE_MODEL)
+        self.assertEqual(fable.applies_to_models, ("fable",))
+        self.assertEqual(fable.duration_seconds, 7 * 24 * 3600)
+        self.assertEqual(fable.resets_at.isoformat(), "2026-09-14T19:59:59+00:00")
+        self.assertEqual(u.window("weekly").scope, SCOPE_ACCOUNT)
+        self.assertEqual(u.window("weekly").used_pct, 91.0)
+
+    def test_parse_usage_scoped_window_with_no_active_reset_is_still_emitted(self):
+        from ccswitch.oauth import parse_usage
+        payload = dict(self.SCOPED_PAYLOAD)
+        payload["limits"] = self.SCOPED_PAYLOAD["limits"][:2] + [
+            {"kind": "weekly_scoped", "group": "weekly", "percent": 0, "resets_at": None,
+             "scope": {"model": {"id": None, "display_name": "Opus"}, "surface": None}},
+        ]
+        u = parse_usage(payload)
+        w = u.window("weekly:opus")
+        self.assertIsNotNone(w)
+        self.assertEqual(w.used_pct, 0.0)
+        self.assertIsNone(w.resets_at)
+
+    def test_parse_usage_scoped_model_id_wins_over_display_name(self):
+        from ccswitch.oauth import parse_usage
+        payload = dict(self.SCOPED_PAYLOAD)
+        payload["limits"] = self.SCOPED_PAYLOAD["limits"][:2] + [
+            {"kind": "weekly_scoped", "group": "weekly", "percent": 40,
+             "resets_at": "2026-09-14T19:59:59Z",
+             "scope": {"model": {"id": "claude-opus-4-8", "display_name": "Opus 4.8"},
+                       "surface": None}},
+        ]
+        u = parse_usage(payload)
+        self.assertEqual(u.window("weekly:opus").applies_to_models, ("opus",))
+
+    def test_parse_usage_scoped_entry_without_a_model_is_skipped(self):
+        from ccswitch.oauth import parse_usage
+        payload = dict(self.SCOPED_PAYLOAD)
+        payload["limits"] = self.SCOPED_PAYLOAD["limits"][:2] + [
+            {"kind": "weekly_scoped", "group": "weekly", "percent": 40,
+             "resets_at": "2026-09-14T19:59:59Z",
+             "scope": {"model": None, "surface": "cowork"}},
+            {"kind": "weekly_scoped", "group": "weekly", "percent": "n/a",
+             "resets_at": None,
+             "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}},
+        ]
+        u = parse_usage(payload)
+        self.assertEqual([w.key for w in u.windows], ["session", "weekly"])
+
+    def test_parse_usage_without_limits_reads_legacy_seven_day_model_keys(self):
+        from ccswitch.oauth import parse_usage
+        payload = {k: v for k, v in self.SCOPED_PAYLOAD.items() if k != "limits"}
+        payload["seven_day_opus"] = {"utilization": 55.0, "resets_at": "2026-09-14T20:00:00Z"}
+        u = parse_usage(payload)
+        self.assertEqual([w.key for w in u.windows], ["session", "weekly", "weekly:opus"])
+        self.assertEqual(u.window("weekly:opus").applies_to_models, ("opus",))
+
     def test_fetch_usage_ok(self):
         from ccswitch import oauth
         with mock.patch.object(oauth, "http_request", return_value=(200, json.dumps(USAGE_PAYLOAD).encode())):

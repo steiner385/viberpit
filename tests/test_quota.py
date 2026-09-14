@@ -123,3 +123,19 @@ def test_reason_explains_a_non_available_snapshot_and_survives_a_roundtrip():
     # Absent on the wire (older blobs, every AVAILABLE snapshot) decodes as None.
     assert QuotaSnapshot.from_dict({"provider": "anthropic", "windows": []}).reason is None
     assert anthropic_snapshot(1.0, NOW, 2.0, NOW, fetched_at=NOW).reason is None
+
+
+def test_anthropic_snapshot_appends_model_windows_after_the_account_pair():
+    fable = QuotaWindow(key="weekly:fable", label="Fable weekly", used_pct=100.0,
+                        resets_at=NOW, duration_seconds=7 * 24 * 3600,
+                        scope=SCOPE_MODEL, applies_to_models=("fable",))
+    u = anthropic_snapshot(3.0, NOW, 91.0, NOW, fetched_at=NOW, model_windows=[fable])
+    assert [w.key for w in u.windows] == ["session", "weekly", "weekly:fable"]
+    # The Fable window binds Fable only; Sonnet sees the account-wide weekly.
+    assert u.binding_window("fable").key == "weekly:fable"
+    assert u.binding_window("sonnet").key == "weekly"
+    assert u.binding_window(None).key == "weekly:fable"   # unknown model: conservative
+    # Round-trips through the persisted encoding unchanged, same blob version.
+    again = QuotaSnapshot.from_dict(u.to_dict())
+    assert again.window("weekly:fable").applies_to_models == ("fable",)
+    assert u.to_dict()["v"] == quota.QUOTA_BLOB_VERSION == 2
