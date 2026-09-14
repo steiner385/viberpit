@@ -940,6 +940,11 @@ class ClaudeAgentDriver:
         self._last_assistant_parts = []
         self._turn_buffer = []
         self._turn_produced_output = False
+        # Forget the previous turn's bucket: unlike _last_rate_reset (a timestamp the
+        # max(0.0, resets_at - now) clamp neutralises once it's past), a bucket name
+        # has no decay — a stale "five_hour" from an old warning would otherwise be
+        # replayed onto a LATER turn's 429 that carries no RateLimitEvent of its own.
+        self._last_rate_limit_type = None
         self._turn_active = True
         # Wall-clock start of this turn. The CLI's transcript write LAGS the live
         # stream (MCP fleet boot on resume), so a live attach can see a disk JSONL
@@ -1232,6 +1237,11 @@ class ClaudeAgentDriver:
         self._last_assistant_parts = []
         self._turn_buffer = []
         self._turn_produced_output = False
+        # Forget the previous turn's bucket: unlike _last_rate_reset (a timestamp the
+        # max(0.0, resets_at - now) clamp neutralises once it's past), a bucket name
+        # has no decay — a stale "five_hour" from an old warning would otherwise be
+        # replayed onto a LATER turn's 429 that carries no RateLimitEvent of its own.
+        self._last_rate_limit_type = None
         self._turn_active = True
         self._turn_started_at = time.time()
         self._turn_first_delta_at = None

@@ -84,6 +84,57 @@ def test_turn_failure_carries_rate_limit_type():
     assert tf[0].to_wire()["limitType"] == "seven_day_opus"
 
 
+def test_rate_limit_type_forgotten_at_next_turn_start():
+    """A warning-level RateLimitEvent observed on turn 1 (five_hour) must not be
+    replayed onto turn 2's 429 when turn 2 carries no RateLimitEvent of its own —
+    the bucket is per-turn state, not sticky for the life of the driver."""
+    class _TwoTurnSDK(PerQueryScript):
+        def __init__(self):
+            self._call = 0
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def query(self, prompt: str): pass
+        async def receive_response(self):
+            self._call += 1
+            if self._call == 1:
+                yield f.sys_init("sess-1")
+                yield _rate_limit(resets_at=9999, rate_limit_type="five_hour")
+                yield f.result(session_id="sess-1", uuid="t1")
+            else:
+                yield f.result(session_id="sess-1", uuid="t2", is_error=True,
+                               api_error_status=429)
+        async def interrupt(self): pass
+        async def set_permission_mode(self, mode): pass
+
+    sdk = _TwoTurnSDK()
+    def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None):
+        return sdk
+    calls = []
+    async def on_fail(session_id, kind, retry_after):
+        calls.append((session_id, kind, retry_after))
+    async def go():
+        d = ClaudeAgentDriver("s1", "kindash", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me",
+                          on_recoverable_failure=on_fail)
+        await d.start()
+        await d.send_prompt("first")
+        await d.send_prompt("second")
+        seen = []
+        turn_ends = 0
+        async for e in d.events():
+            seen.append(e)
+            if isinstance(e, ev.TurnEnd):
+                turn_ends += 1
+                if turn_ends == 2:
+                    break
+        await d.aclose()
+        return seen
+    seen = asyncio.run(go())
+    tf = [e for e in seen if isinstance(e, ev.TurnFailure)]
+    assert calls and calls[-1][1] == "rate_limit"
+    assert tf and tf[-1].limit_type is None
+
+
 def test_successful_turn_does_not_invoke_callback():
     from claude_agent_sdk import TextBlock
     msgs = [f.sys_init("sess-1"), f.stream_start(uuid="t1"),
