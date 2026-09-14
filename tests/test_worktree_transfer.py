@@ -174,3 +174,89 @@ class ExportTests(unittest.TestCase):
     def test_bundle_round_trips_through_dict(self) -> None:
         b = wt.Bundle("s", "br", "h", "b", True, {"feat/x": "sha"})
         self.assertEqual(wt.Bundle.from_dict(b.to_dict()), b)
+
+
+class ImportTests(unittest.TestCase):
+    """Two clones of one origin under two repo roots stand in for two hosts."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.src_root = self.root / "hostA"; self.src_root.mkdir()
+        self.dst_root = self.root / "hostB"; self.dst_root.mkdir()
+        self.src = _make_origin_and_clone(self.root, name="hostA/myrepo")
+        self.dst = _make_origin_and_clone(self.root, name="hostB/myrepo")
+        self.sid = "cccc3333-0000"
+        self.info = worktrees.create_worktree(str(self.src), "main", self.sid, str(self.src_root))
+        self.cwd = self.info.path
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _dest(self) -> Path:
+        return worktrees.worktrees_base(str(self.dst_root)) / "myrepo" / "cccc3333"
+
+    def test_clean_import_recreates_worktree_on_branch(self) -> None:
+        b = wt.export(self.cwd, self.sid, carry_dirty=False)
+        info = wt.import_(b, str(self.dst), str(self.dst_root))
+        self.assertEqual(Path(info.path), self._dest())
+        self.assertEqual(_git("branch", "--show-current", cwd=info.path), self.info.branch)
+        self.assertEqual(_git("rev-parse", "HEAD", cwd=info.path), b.head_sha)
+        self.assertFalse(wt.inspect(info.path).dirty)
+
+    def test_wip_arrives_as_unstaged_edits_with_tip_at_base(self) -> None:
+        (Path(self.cwd) / "x.txt").write_text("x\n")
+        (Path(self.cwd) / "README.md").write_text("changed\n")
+        b = wt.export(self.cwd, self.sid, carry_dirty=True)
+        info = wt.import_(b, str(self.dst), str(self.dst_root))
+        self.assertEqual(_git("rev-parse", "HEAD", cwd=info.path), b.base_sha)
+        st = wt.inspect(info.path)
+        self.assertTrue(st.dirty)
+        self.assertEqual(st.dirty_files, 2)
+        self.assertEqual((Path(info.path) / "x.txt").read_text(), "x\n")
+        staged = _git("diff", "--cached", "--name-only", cwd=info.path)
+        self.assertEqual(staged, "")
+
+    def test_detached_head_imports_detached(self) -> None:
+        _git("checkout", "-q", "--detach", cwd=self.cwd)
+        b = wt.export(self.cwd, self.sid, carry_dirty=False)
+        info = wt.import_(b, str(self.dst), str(self.dst_root))
+        self.assertIsNone(info.branch)
+        self.assertEqual(_git("rev-parse", "HEAD", cwd=info.path), b.head_sha)
+
+    def test_branch_busy_on_target_is_refused(self) -> None:
+        b = wt.export(self.cwd, self.sid, carry_dirty=False)
+        _git("fetch", "-q", "origin", f"+{wt.head_ref(self.sid)}:refs/tmp/h", cwd=str(self.dst))
+        _git("checkout", "-q", "-b", self.info.branch, "refs/tmp/h", cwd=str(self.dst))
+        with self.assertRaises(wt.TransferError) as ctx:
+            wt.import_(b, str(self.dst), str(self.dst_root))
+        self.assertEqual(ctx.exception.code, "branch_busy_on_target")
+        self.assertFalse(self._dest().exists())
+
+    def test_existing_dest_with_matching_head_is_reused(self) -> None:
+        b = wt.export(self.cwd, self.sid, carry_dirty=False)
+        first = wt.import_(b, str(self.dst), str(self.dst_root))
+        second = wt.import_(b, str(self.dst), str(self.dst_root))
+        self.assertEqual(first.path, second.path)
+
+    def test_extra_branches_are_recreated_when_free(self) -> None:
+        _git("checkout", "-q", "-b", "feat/extra", cwd=self.cwd)
+        (Path(self.cwd) / "e.txt").write_text("e\n")
+        _git("add", "-A", cwd=self.cwd)
+        _git("commit", "-q", "-m", "extra", cwd=self.cwd)
+        extra = _git("rev-parse", "HEAD", cwd=self.cwd)
+        _git("checkout", "-q", self.info.branch, cwd=self.cwd)
+        b = wt.export(self.cwd, self.sid, carry_dirty=False)
+        wt.import_(b, str(self.dst), str(self.dst_root))
+        self.assertEqual(_git("rev-parse", "refs/heads/feat/extra", cwd=str(self.dst)), extra)
+
+    def test_delete_transfer_refs_clears_origin_and_local(self) -> None:
+        b = wt.export(self.cwd, self.sid, carry_dirty=False)
+        wt.import_(b, str(self.dst), str(self.dst_root))
+        wt.delete_transfer_refs(str(self.dst), self.sid)
+        origin = str(self.root / "origin.git")
+        listed = subprocess.run(["git", "-C", origin, "for-each-ref", f"{wt.TRANSFER_REF_NS}/{self.sid}/"],
+                                capture_output=True, text=True).stdout
+        self.assertEqual(listed.strip(), "")
+        local = _git("for-each-ref", f"{wt.TRANSFER_REF_NS}/{self.sid}/", cwd=str(self.dst))
+        self.assertEqual(local, "")

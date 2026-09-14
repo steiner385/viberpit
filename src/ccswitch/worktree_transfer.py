@@ -172,3 +172,91 @@ def export(cwd: str, session_id: str, *, carry_dirty: bool) -> Bundle:
              session_id, head_sha[:12], wip, len(branches))
     return Bundle(session_id=session_id, branch=state.branch, head_sha=head_sha,
                   base_sha=base_sha, wip_commit=wip, branches=branches)
+
+
+def _branch_checked_out_at(repo_top: str, branch: str) -> str | None:
+    """Path of the worktree that has refs/heads/<branch> checked out, else None."""
+    r = _run(["git", "-C", repo_top, "worktree", "list", "--porcelain"])
+    path: str | None = None
+    for line in r.stdout.splitlines():
+        if line.startswith("worktree "):
+            path = line[len("worktree "):].strip()
+        elif line.strip() == f"branch refs/heads/{branch}":
+            return path
+    return None
+
+
+def import_(bundle: Bundle, repo_path: str, repo_root: str) -> WorktreeInfo:
+    """Fetch *bundle*'s transfer refs into the clone at *repo_path* and re-create the
+    session worktree at its canonical path under *repo_root*.
+
+    Idempotent for the restore-to-source case: a worktree already at the path whose
+    HEAD is the bundle's head or base is reused untouched. A branch already checked
+    out elsewhere on this clone is refused rather than renamed — ``create_worktree``'s
+    child-branch fallback would silently change the branch the agent remembers.
+    """
+    top = _repo_top(repo_path)
+    repo_name = os.path.basename(top.rstrip("/"))
+    dest = worktrees_base(repo_root) / repo_name / _short(bundle.session_id)
+    url = _origin_url(top)
+    ns = f"{TRANSFER_REF_NS}/{bundle.session_id}"
+    r = _run(["git", "-C", top, "fetch", "-q", "origin", f"+{ns}/*:{ns}/*"],
+             env=git_env_for_remote(url))
+    if r.returncode != 0:
+        raise TransferError("fetch_failed", r.stderr.strip())
+    if _rev(top, bundle.head_sha) is None:
+        raise TransferError("fetch_failed", f"{bundle.head_sha} absent after fetch")
+
+    if dest.is_dir():
+        if _rev(str(dest), "HEAD") in (bundle.head_sha, bundle.base_sha):
+            log.info("transfer.import reuse path=%s", dest)
+            return WorktreeInfo(str(dest), bundle.branch, is_child=False, repo=top)
+        raise TransferError("dest_occupied", f"{dest} exists with a different HEAD")
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    clear_stale_registration(top, dest)
+    if bundle.branch is None:
+        add = _run(["git", "-C", top, "worktree", "add", "-q", "--detach", str(dest),
+                    "--", bundle.head_sha])
+    else:
+        busy = _branch_checked_out_at(top, bundle.branch)
+        if busy:
+            raise TransferError("branch_busy_on_target",
+                                f"{bundle.branch} is checked out at {busy}")
+        br = _run(["git", "-C", top, "branch", "-f", bundle.branch, bundle.head_sha])
+        if br.returncode != 0:
+            raise TransferError("branch_failed", br.stderr.strip())
+        add = _run(["git", "-C", top, "worktree", "add", "-q", str(dest), "--", bundle.branch])
+    if add.returncode != 0:
+        raise TransferError("worktree_add_failed", add.stderr.strip())
+    if bundle.wip_commit:
+        rs = _run(["git", "-C", str(dest), "reset", "-q", "--mixed", bundle.base_sha])
+        if rs.returncode != 0:
+            raise TransferError("wip_unpack_failed", rs.stderr.strip())
+    for name, sha in bundle.branches.items():
+        if _rev(top, f"refs/heads/{name}") is None:
+            _run(["git", "-C", top, "branch", name, sha])
+    lock_worktree(top, dest)
+    log.info("transfer.import session=%s path=%s branch=%s wip=%s",
+             bundle.session_id, dest, bundle.branch, bundle.wip_commit)
+    return WorktreeInfo(str(dest), bundle.branch, is_child=False, repo=top)
+
+
+def delete_transfer_refs(repo_path: str, session_id: str) -> None:
+    """Drop the session's transfer namespace locally and on origin. Best-effort."""
+    top = _repo_top(repo_path)
+    ns = f"{TRANSFER_REF_NS}/{session_id}"
+    listed = _run(["git", "-C", top, "for-each-ref", "--format=%(refname)", f"{ns}/"])
+    for ref in (ln.strip() for ln in listed.stdout.splitlines() if ln.strip()):
+        _run(["git", "-C", top, "update-ref", "-d", ref])
+    url = _origin_url(top)
+    if not url:
+        return
+    env = git_env_for_remote(url)
+    remote = _run(["git", "-C", top, "ls-remote", "--refs", "origin", f"{ns}/*"], env=env)
+    refs = [ln.split("\t", 1)[1] for ln in remote.stdout.splitlines() if "\t" in ln]
+    if refs:
+        r = _run(["git", "-C", top, "push", "-q", "--no-verify", "origin",
+                  *[f":{ref}" for ref in refs]], env=env)
+        if r.returncode != 0:
+            log.warning("transfer.refs_delete_failed session=%s: %s", session_id, r.stderr.strip())
