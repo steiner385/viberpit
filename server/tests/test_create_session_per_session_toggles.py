@@ -19,14 +19,13 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import select
 
-from ccswitch.selector import Picked
 from server.db import db_session, init_db
 from server.db.models import Session as DbSession, SessionQueue
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.remote import RemoteOrchestrator
 from server.sessions.types import AUTO_ARCHIVE_OPT_OUT_CREATE
 from server.tests.fakes.fake_factory import fake_sdk_factory
-from server.tests.test_create_session_model import _fake_usage, _seed_account
+from server.tests.test_create_session_model import _fake_usage, _seed_account, _spawn_env
 from server.tests.test_sessions_create_host_prefer import (
     _H, FakeOrch, _build_client, _make_env,
 )
@@ -82,27 +81,6 @@ def test_api_omits_kwargs_unless_a_toggle_is_off(body):
 # ------------------------------------------------------- orchestrator paths
 
 
-def _orch_env(tmp_path):
-    store_home = tmp_path / "store"; store_home.mkdir()
-    shared_base = tmp_path / "dot-claude"; shared_base.mkdir()
-    (shared_base / "settings.json").write_text("{}")
-    (shared_base / "projects").mkdir()
-    cfg_dir = tmp_path / "cfg" / "alpha"; cfg_dir.mkdir(parents=True)
-    (tmp_path / "reporoot").mkdir()
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'toggles.db'}"
-    patches = [
-        patch.dict(os.environ, {
-            "CCSWITCH_HOME": str(store_home),
-            "CLAUDE_CONFIG_DIR": str(shared_base),
-            "CCSWITCH_DB_URL": db_url,
-        }),
-        patch("server.sessions.orchestrator.compose", return_value=cfg_dir),
-        patch("server.sessions.orchestrator.configdir.trust_project"),
-        patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")),
-    ]
-    return db_url, patches
-
-
 async def _row(sid: str) -> DbSession:
     async with db_session() as db:
         return (await db.execute(select(DbSession).where(DbSession.id == sid))).scalar_one()
@@ -116,7 +94,9 @@ async def _queue_params(sid: str) -> dict:
 
 
 def _run_with_orch(tmp_path, body):
-    db_url, patches = _orch_env(tmp_path)
+    """Run *body(orch)* against a real, started orchestrator (fake SDK) inside the
+    isolated spawn environment shared with test_create_session_model.py."""
+    db_url, repo_root, patches = _spawn_env(tmp_path, db_name="toggles.db")
     from contextlib import ExitStack
     with ExitStack() as stack:
         for p in patches:
@@ -127,7 +107,7 @@ def _run_with_orch(tmp_path, body):
             await init_db(db_url=db_url)
             orch = SessionOrchestrator(
                 sdk_factory=fake_sdk_factory(), poll_interval=9999.0,
-                usage_fn=_fake_usage, repo_root=str(tmp_path / "reporoot"),
+                usage_fn=_fake_usage, repo_root=str(repo_root),
             )
             await orch.start()
             try:

@@ -37,27 +37,36 @@ def _seed_account(name: str) -> None:
         write_json_secure(paths.shared_mcp_path(), {})
 
 
-def _run_create(tmp_path, *, model):
-    """Create one session with the given model; return (record, db_row_model,
-    driver_client_model)."""
+def _spawn_env(tmp_path, *, db_name: str = "model_test.db"):
+    """An isolated store / config dir / sqlite DB plus the patches a real
+    `create_session` spawn needs (composed cfg dir, trusted project, account
+    "alpha" always picked). Returns ``(db_url, repo_root, patches)``; enter the
+    patches, then call `_seed_account("alpha")`. Shared with
+    test_create_session_per_session_toggles.py."""
     store_home = tmp_path / "store"; store_home.mkdir()
     shared_base = tmp_path / "dot-claude"; shared_base.mkdir()
     (shared_base / "settings.json").write_text("{}")
     (shared_base / "projects").mkdir()
     cfg_dir = tmp_path / "cfg" / "alpha"; cfg_dir.mkdir(parents=True)
     repo_root = tmp_path / "reporoot"; repo_root.mkdir()
-    db_path = tmp_path / "model_test.db"
-    db_url = f"sqlite+aiosqlite:///{db_path}"
+    db_url = f"sqlite+aiosqlite:///{tmp_path / db_name}"
+    patches = [
+        patch.dict(os.environ, {
+            "CCSWITCH_HOME": str(store_home),
+            "CLAUDE_CONFIG_DIR": str(shared_base),
+            "CCSWITCH_DB_URL": db_url,
+        }),
+        patch("server.sessions.orchestrator.compose", return_value=cfg_dir),
+        patch("server.sessions.orchestrator.configdir.trust_project"),
+        patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")),
+    ]
+    return db_url, repo_root, patches
 
-    env_patch = patch.dict(os.environ, {
-        "CCSWITCH_HOME": str(store_home),
-        "CLAUDE_CONFIG_DIR": str(shared_base),
-        "CCSWITCH_DB_URL": db_url,
-    })
-    compose_patch = patch("server.sessions.orchestrator.compose", return_value=cfg_dir)
-    trust_patch = patch("server.sessions.orchestrator.configdir.trust_project")
-    select_patch = patch("server.sessions.orchestrator.select_account",
-                         return_value=Picked("alpha"))
+
+def _run_create(tmp_path, *, model):
+    """Create one session with the given model; return (record, db_row_model,
+    driver_client_model)."""
+    db_url, repo_root, (env_patch, compose_patch, trust_patch, select_patch) = _spawn_env(tmp_path)
 
     with env_patch, compose_patch, trust_patch, select_patch:
         _seed_account("alpha")
