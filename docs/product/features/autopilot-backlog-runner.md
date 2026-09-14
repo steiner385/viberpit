@@ -101,9 +101,18 @@ PR linkage, never on labels alone.
   with ITS OWN `queue_min_status` (`Ready`, the safe default, or `Backlog` to reach untriaged
   items) and `respect_dependencies` (dependency-gated from the compiled graph: native
   blocked-by edges, `Depends on #N` body references and epic list order), merging the
-  per-product rankings into one pool by the queue's own `rank_key` (score, then age, then issue
-  ref) — never a hand-copied tie-break — so a cross-product tie between two unscored issues breaks
-  by age, not by product slug. `weight` comes from each ON product's policy, applied to every repo
+  per-product rankings into one pool by the queue's own `rank_key` (urgency, then score, then age,
+  then issue ref) — never a hand-copied tie-break — so a cross-product tie between two unscored
+  issues breaks by age, not by product slug. **Urgency leads** because the other legs work against
+  it: an issue an automation files to report a broken environment (`URGENT_LABELS`, today just
+  `deploy-monitor`) is unscored and brand new, so score-then-age sorted it to the *back* of the
+  queue at the moment it mattered most — two incidents reporting both KinDash admin environments
+  down ranked 328th and 329th of 332 (#16150, #16151). The grouping plan applies the same
+  invariant on its own side (`parse_group_plan` floats a group holding urgent work to the front),
+  because the plan — not the pool — is what the runner pops, and both of its ordering paths
+  otherwise undo it: the model is free to rank an incident last, and the degraded all-singletons
+  path sorts by issue number, where the newest issue is always last. Urgency reorders only; it
+  never overrides a product's `dispatch: off`, its `max_in_flight`, or a repo paused by weight. `weight` comes from each ON product's policy, applied to every repo
   it owns and handed to the selection strategies below as a per-repo weight/order (never a cap).
   `max_in_flight` is enforced directly per PRODUCT in the loop's `_refill`, counted once per tick
   from the runner's durable target-state rows and kept in step with every claim taken that tick: a

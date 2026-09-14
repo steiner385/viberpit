@@ -32,6 +32,22 @@ NEEDS_HUMAN_RETRY_DAYS_DEFAULT = 7
 SKIP_ISSUE_LABELS = frozenset({"dependencies", "renovate"})
 SKIP_ISSUE_TITLES = frozenset({"dependency dashboard"})
 
+# Labels that mark work the queue must serve BEFORE ordinary backlog, whatever
+# its score or age (#16150, #16151). An automation that reports a broken
+# environment files an issue that is, by construction, unscored (no human has
+# groomed it) and brand new — which under a score-then-oldest ordering is the
+# worst position in the queue, not the best. Two such issues reported both admin
+# environments down and sat at 328th and 329th of 332 while the environments
+# stayed broken, behind three-day-old test flakes.
+#
+# Lowercase; compared case-insensitively like SKIP_ISSUE_LABELS. The label is
+# OWNED by the automation that files the issue
+# (``server.automations.deploy_monitor.LABEL``), but importing an automation into
+# this pure ranking core would invert the layering — so the coupling is pinned by
+# ``test_urgent_labels_pin_the_deploy_monitor_label`` instead, exactly as
+# MIN_STATUS_OPTIONS pins its coupling to STATUS_OPTIONS below.
+URGENT_LABELS = frozenset({"deploy-monitor"})
+
 SKIP_REASONS = ("status", "blocked", "live_session", "claimed", "assigned", "epic_open", "bot",
                  "needs_human_cooldown", "needs_spec")
 
@@ -97,6 +113,11 @@ class QueueEntry:
     # has to re-sort by the same key, and age is the tie-break. Defaulted so every
     # positional construction keeps working.
     gh_created_at: datetime | None = None
+    # Same reason as ``gh_created_at``: urgency is decided from the ROW's labels,
+    # which an entry does not carry, so the verdict rides along. Without it the
+    # cross-product merge would re-sort by a key that can no longer see urgency
+    # and quietly undo the preemption.
+    urgent: bool = False
 
 
 def _is_bot(row: QueueRow) -> bool:
@@ -105,6 +126,19 @@ def _is_bot(row: QueueRow) -> bool:
     if {lbl.strip().lower() for lbl in row.labels} & SKIP_ISSUE_LABELS:
         return True
     return row.title.strip().lower() in SKIP_ISSUE_TITLES
+
+
+def is_urgent(row: "QueueRow | QueueEntry") -> bool:
+    """Whether this item preempts ordinary backlog (see ``URGENT_LABELS``).
+
+    Reads labels off a ``QueueRow`` and the carried verdict off a ``QueueEntry``,
+    for the same reason ``rank_key`` accepts both: the runner ranks each product
+    separately and re-sorts the merged ENTRIES, which have no labels.
+    """
+    labels = getattr(row, "labels", None)
+    if labels is not None:
+        return bool({str(lbl).strip().lower() for lbl in labels} & URGENT_LABELS)
+    return bool(getattr(row, "urgent", False))
 
 
 def _min_status_rank(min_status: str) -> int:
@@ -164,8 +198,12 @@ def skip_reason(
 
 
 def rank_key(row: "QueueRow | QueueEntry") -> tuple:
-    """THE queue ordering, as a sort key: highest score first (an unscored row
-    last), then oldest first, then ref.
+    """THE queue ordering, as a sort key: urgent work first, then highest score
+    (an unscored row last), then oldest first, then ref.
+
+    Urgency LEADS because the other legs actively work against it: an incident
+    filed by an automation is unscored and newest, so score-then-age sorts it to
+    the very back of the queue at exactly the moment it matters most (#16150).
 
     Exported because ``rank`` is not always the last word on ordering: the Backlog
     Runner ranks each product separately (each has its own ``queue_min_status`` /
@@ -179,7 +217,7 @@ def rank_key(row: "QueueRow | QueueEntry") -> tuple:
     one (which raises).
     """
     created = row.gh_created_at
-    return (row.score is None, -(row.score or 0.0), created is None,
+    return (not is_urgent(row), row.score is None, -(row.score or 0.0), created is None,
             created or datetime.min, row.ref)
 
 
@@ -210,7 +248,7 @@ def rank(
     kept.sort(key=rank_key)
     return [
         QueueEntry(r.ref, r.repo, r.number, r.product, r.title, r.body, r.url, r.score,
-                   r.gh_created_at)
+                   r.gh_created_at, is_urgent(r))
         for r in kept
     ], skipped
 
@@ -226,4 +264,8 @@ def to_candidate(e: QueueEntry) -> dict:
         "url": e.url,
         "score": e.score,
         "product": e.product,
+        # The grouper re-orders this pool into the plan the runner pops, so the
+        # urgency verdict has to cross that hand-off as data — a candidate dict is
+        # all it receives.
+        "urgent": e.urgent,
     }
