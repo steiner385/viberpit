@@ -1,4 +1,5 @@
 import type { AccountUsage, UsageWindow } from '@/api/types'
+import { modelTier } from '@/session/modelName'
 
 /**
  * Reading an account's quota windows — the single source of truth for it.
@@ -62,12 +63,29 @@ export function windowByKey(
 }
 
 /**
+ * The windows that meter `model` — mirrors `QuotaSnapshot.windows_for`. A window
+ * scoped to specific models applies when the session's TIER is listed; a model
+ * with no fixed tier (null, 'default', 'best', unknown id) matches every window,
+ * the conservative rule the server uses for the same reason.
+ */
+export function windowsFor(usage: AccountUsage | null | undefined, model: string | null | undefined): UsageWindow[] {
+  const tier = modelTier(model)
+  return usageWindows(usage).filter((w) => {
+    if (w.scope !== 'model' || !w.appliesToModels || w.appliesToModels.length === 0) return true
+    if (tier == null) return true
+    return w.appliesToModels.includes(tier)
+  })
+}
+
+/**
  * The window that runs out FIRST — the most-used one. Mirrors the server's
  * `QuotaSnapshot.binding_window`, including its tie rule: on equal usage the
- * EARLIER window in provider order wins (`>` , not `>=`).
+ * EARLIER window in provider order wins (`>` , not `>=`). `model` narrows to
+ * the windows that actually meter it (see `windowsFor`); omitted, every
+ * window is a candidate.
  */
-export function bindingWindow(usage: AccountUsage | null | undefined): UsageWindow | null {
-  const windows = usageWindows(usage)
+export function bindingWindow(usage: AccountUsage | null | undefined, model?: string | null): UsageWindow | null {
+  const windows = windowsFor(usage, model)
   if (windows.length === 0) return null
   return windows.reduce((best, w) => (w.pct > best.pct ? w : best), windows[0])
 }
@@ -75,13 +93,30 @@ export function bindingWindow(usage: AccountUsage | null | undefined): UsageWind
 /**
  * The window a per-account RESERVE is measured against: the longest one
  * (Anthropic's weekly), or the only one for a single-allowance provider.
- * Mirrors `QuotaSnapshot.reserve_window`.
+ * Mirrors `QuotaSnapshot.reserve_window`. A model-scoped window (e.g. a
+ * per-tier weekly) never stands in for the account-wide reserve; only when
+ * every reported window is model-scoped does the reserve fall back to them.
  */
 export function reserveWindow(usage: AccountUsage | null | undefined): UsageWindow | null {
-  const windows = usageWindows(usage)
-  if (windows.length === 0) return null
-  if (windows.length === 1) return windows[0]
-  const timed = windows.filter((w) => w.durationSeconds != null)
+  const all = usageWindows(usage)
+  if (all.length === 0) return null
+  const windows = all.filter((w) => w.scope !== 'model')
+  const pool = windows.length > 0 ? windows : all
+  if (pool.length === 1) return pool[0]
+  const timed = pool.filter((w) => w.durationSeconds != null)
   if (timed.length === 0) return null
   return timed.reduce((best, w) => ((w.durationSeconds ?? 0) > (best.durationSeconds ?? 0) ? w : best), timed[0])
+}
+
+/** Compact labels for account-wide windows; a model window keeps the provider's
+ *  label ("Fable weekly") because the model IS the information. */
+const ACCOUNT_ABBR: Record<string, string> = { session: 'sess', weekly: 'wk', premium: 'prem' }
+
+/** Display label for a window: the provider's own label for a model-scoped
+ *  window, else the tight abbreviation the status strip needs, falling back
+ *  to the provider's label for anything unabbreviated. Single source for
+ *  every surface that used to keep its own key→abbreviation map. */
+export function windowLabel(w: UsageWindow): string {
+  if (w.scope === 'model') return w.label
+  return ACCOUNT_ABBR[w.key] ?? w.label
 }

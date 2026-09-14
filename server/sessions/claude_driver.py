@@ -242,6 +242,7 @@ class ClaudeAgentDriver:
         self._clock = clock or time.time
         self._last_progress_at: float = self._clock()
         self._last_rate_reset: int | None = None  # resets_at (epoch s) from a RateLimitEvent
+        self._last_rate_limit_type: str | None = None  # rate_limit_type from a RateLimitEvent
         self._factory = sdk_factory
         # The loopback HTTP client an assistant-kind session's MCP tools call
         # ViberPit's own API through (server/assistant/client.py). None for every
@@ -961,6 +962,11 @@ class ClaudeAgentDriver:
         self._turn_buffer = []
         self._turn_produced_output = False
         self._automation_terminal_observed = False
+        # Forget the previous turn's bucket: unlike _last_rate_reset (a timestamp the
+        # max(0.0, resets_at - now) clamp neutralises once it's past), a bucket name
+        # has no decay — a stale "five_hour" from an old warning would otherwise be
+        # replayed onto a LATER turn's 429 that carries no RateLimitEvent of its own.
+        self._last_rate_limit_type = None
         self._turn_active = True
         # Wall-clock start of this turn. The CLI's transcript write LAGS the live
         # stream (MCP fleet boot on resume), so a live attach can see a disk JSONL
@@ -1031,8 +1037,13 @@ class ClaudeAgentDriver:
         retry_after = failure.retry_after
         if retry_after is None and self._last_rate_reset is not None:
             retry_after = max(0.0, float(self._last_rate_reset) - self._clock())
+        limit_type = self._last_rate_limit_type if failure.kind == "rate_limit" else None
         self._emit(ev.TurnFailure(
-            kind=failure.kind, account=self.account, retry_after=retry_after))
+            kind=failure.kind, account=self.account, retry_after=retry_after,
+            limit_type=limit_type))
+        if limit_type:
+            log.info("driver.rate_limit session=%s account=%s bucket=%s retry_after=%s",
+                     self.session_id, self.account, limit_type, retry_after)
         if self._on_recoverable_failure is not None:
             try:
                 await self._on_recoverable_failure(self.session_id, failure.kind, retry_after)
@@ -1091,6 +1102,7 @@ class ClaudeAgentDriver:
                 self._automation_background_tools.add(e.tool_id)
             if isinstance(e, ev.RateLimit):
                 # Internal: stash the reset for retry timing; don't forward.
+                self._last_rate_limit_type = e.rate_limit_type
                 if e.resets_at is not None:
                     self._last_rate_reset = e.resets_at
                 continue
@@ -1266,6 +1278,11 @@ class ClaudeAgentDriver:
         self._turn_buffer = []
         self._turn_produced_output = False
         self._automation_terminal_observed = False
+        # Forget the previous turn's bucket: unlike _last_rate_reset (a timestamp the
+        # max(0.0, resets_at - now) clamp neutralises once it's past), a bucket name
+        # has no decay — a stale "five_hour" from an old warning would otherwise be
+        # replayed onto a LATER turn's 429 that carries no RateLimitEvent of its own.
+        self._last_rate_limit_type = None
         self._turn_active = True
         self._turn_started_at = time.time()
         self._turn_first_delta_at = None

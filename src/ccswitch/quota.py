@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 # Bumped whenever the persisted (ledger) encoding of a snapshot changes shape.
 # A blob with no version key predates versioning and is the legacy two-field
@@ -223,9 +223,12 @@ class QuotaSnapshot:
         """
         if not self.windows:
             return None
-        if len(self.windows) == 1:
-            return self.windows[0]
-        timed = [w for w in self.windows if w.duration_seconds is not None]
+        # A reserve protects the ACCOUNT's long-horizon allowance; a window that
+        # meters one model (a Fable weekly) is never the thing it measures.
+        candidates = [w for w in self.windows if w.scope == SCOPE_ACCOUNT] or list(self.windows)
+        if len(candidates) == 1:
+            return candidates[0]
+        timed = [w for w in candidates if w.duration_seconds is not None]
         if not timed:
             return None
         return max(timed, key=lambda w: w.duration_seconds or 0)
@@ -281,8 +284,12 @@ def anthropic_snapshot(session_pct: float,
                        extra_usage_enabled: bool = False,
                        *,
                        fetched_at: datetime | None = None,
-                       availability: str = AVAILABLE) -> QuotaSnapshot:
-    """Anthropic reports TWO windows: a rolling 5-hour one and a rolling 7-day one."""
+                       availability: str = AVAILABLE,
+                       model_windows: Sequence[QuotaWindow] = ()) -> QuotaSnapshot:
+    """Anthropic reports TWO account-wide windows (rolling 5-hour, rolling 7-day) and,
+    for some plans, extra windows that meter ONE model (e.g. a separate Fable weekly).
+    *model_windows* are appended AFTER the account-wide pair: ``binding_window``'s
+    tie rule and ``reserve_window`` both depend on provider order."""
     return QuotaSnapshot(
         provider="anthropic",
         fetched_at=fetched_at or datetime.now(timezone.utc),
@@ -292,6 +299,7 @@ def anthropic_snapshot(session_pct: float,
                         resets_at=session_resets_at, duration_seconds=_FIVE_HOURS_S),
             QuotaWindow(key=WINDOW_WEEKLY, label="weekly", used_pct=float(weekly_pct),
                         resets_at=weekly_resets_at, duration_seconds=_SEVEN_DAYS_S),
+            *model_windows,
         ),
         extra_usage_enabled=bool(extra_usage_enabled),
     )

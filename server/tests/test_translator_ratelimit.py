@@ -25,3 +25,17 @@ def test_rate_limit_event_without_reset_still_surfaced():
                                  uuid="u1", session_id="s1"))
     rl = [e for e in out if isinstance(e, ev.RateLimit)]
     assert len(rl) == 1 and rl[0].resets_at is None and rl[0].status == "allowed_warning"
+
+
+def test_rate_limit_event_carries_its_type():
+    tr = Translator()
+    out = tr.feed(RateLimitEvent(rate_limit_info=_info(), uuid="u1", session_id="s1"))
+    rl = [e for e in out if isinstance(e, ev.RateLimit)][0]
+    assert rl.rate_limit_type == "five_hour"
+
+
+def test_turn_failure_wire_includes_limit_type():
+    tf = ev.TurnFailure(kind="rate_limit", account="a", retry_after=5.0,
+                        limit_type="seven_day_opus")
+    assert tf.to_wire()["limitType"] == "seven_day_opus"
+    assert ev.TurnFailure(kind="auth_401", account="a").to_wire()["limitType"] is None

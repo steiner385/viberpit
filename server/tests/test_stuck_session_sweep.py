@@ -12,7 +12,7 @@ import pytest
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
-from ccswitch.quota import anthropic_snapshot
+from ccswitch.quota import QuotaWindow, SCOPE_MODEL, anthropic_snapshot
 
 
 def _make_orch():
@@ -225,6 +225,33 @@ async def test_sweep_leaves_limited_session_while_account_still_at_ceiling():
     await asyncio.sleep(0)
 
     assert o.calls == []
+
+
+@pytest.mark.asyncio
+async def test_sweep_resumes_only_the_sessions_the_scoped_window_freed():
+    """A Fable weekly still at ceiling must not hold a SONNET session parked.
+
+    Both sessions are pinned-and-limited on one account whose account-wide windows
+    have recovered; only the Fable session is still metered by a window at ceiling,
+    so only it keeps waiting.
+    """
+    fable = QuotaWindow(key="weekly:fable", label="Fable weekly", used_pct=100.0,
+                        resets_at=None, duration_seconds=7 * 24 * 3600,
+                        scope=SCOPE_MODEL, applies_to_models=("fable",))
+    usage = anthropic_snapshot(session_pct=20.0, session_resets_at=None,
+                               weekly_pct=30.0, weekly_resets_at=None,
+                               model_windows=[fable])
+    o = _with_poller(_make_orch(), usage)
+    son = _rec(o, "son", account="pinned_acct", status="limited")
+    son.model = "sonnet"
+    fab = _rec(o, "fab", account="pinned_acct", status="limited")
+    fab.model = "fable"
+
+    await o._sweep_needs_attention()
+    await asyncio.sleep(0)
+
+    assert ("reassign", "son", "pinned_acct", "limit_reset") in o.calls
+    assert not any(c[1] == "fab" for c in o.calls)
 
 
 @pytest.mark.asyncio

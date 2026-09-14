@@ -15,8 +15,8 @@ def _factory(msgs):
     return make
 
 
-def _rate_limit(resets_at):
-    info = RateLimitInfo(status="rejected", resets_at=resets_at, rate_limit_type="five_hour",
+def _rate_limit(resets_at, rate_limit_type="five_hour"):
+    info = RateLimitInfo(status="rejected", resets_at=resets_at, rate_limit_type=rate_limit_type,
                          utilization=1.0, overage_status=None, overage_resets_at=None,
                          overage_disabled_reason=None, raw={})
     return RateLimitEvent(rate_limit_info=info, uuid="u", session_id="sess-1")
@@ -68,6 +68,71 @@ def test_retry_after_derived_from_rate_limit_reset():
     _, calls = _run(msgs, clock=lambda: 1000.0)
     assert calls and calls[0][1] == "rate_limit"
     assert calls[0][2] == 12.0
+
+
+def test_turn_failure_carries_rate_limit_type():
+    # A RateLimitEvent naming a model-scoped bucket (seven_day_opus) observed mid-turn
+    # should surface on the emitted TurnFailure so the UI/logs can distinguish which
+    # window tripped.
+    msgs = [f.sys_init("sess-1"), f.stream_start(uuid="t1"),
+            _rate_limit(resets_at=1012, rate_limit_type="seven_day_opus"),
+            f.result(session_id="sess-1", uuid="t1", is_error=True, api_error_status=429)]
+    seen, calls = _run(msgs, clock=lambda: 1000.0)
+    assert calls and calls[0][1] == "rate_limit"
+    tf = [e for e in seen if isinstance(e, ev.TurnFailure)]
+    assert tf and tf[0].limit_type == "seven_day_opus"
+    assert tf[0].to_wire()["limitType"] == "seven_day_opus"
+
+
+def test_rate_limit_type_forgotten_at_next_turn_start():
+    """A warning-level RateLimitEvent observed on turn 1 (five_hour) must not be
+    replayed onto turn 2's 429 when turn 2 carries no RateLimitEvent of its own —
+    the bucket is per-turn state, not sticky for the life of the driver."""
+    class _TwoTurnSDK(PerQueryScript):
+        def __init__(self):
+            self._call = 0
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def query(self, prompt: str): pass
+        async def receive_response(self):
+            self._call += 1
+            if self._call == 1:
+                yield f.sys_init("sess-1")
+                yield _rate_limit(resets_at=9999, rate_limit_type="five_hour")
+                yield f.result(session_id="sess-1", uuid="t1")
+            else:
+                yield f.result(session_id="sess-1", uuid="t2", is_error=True,
+                               api_error_status=429)
+        async def interrupt(self): pass
+        async def set_permission_mode(self, mode): pass
+
+    sdk = _TwoTurnSDK()
+    def factory(cwd, cfg, can_use_tool, mode, resume, *, on_pre_compact=None):
+        return sdk
+    calls = []
+    async def on_fail(session_id, kind, retry_after):
+        calls.append((session_id, kind, retry_after))
+    async def go():
+        d = ClaudeAgentDriver("s1", "kindash", "/tmp/r", "/tmp/cfg", mode="interactive",
+                          sdk_factory=factory, registry=PermissionRegistry(), identity="me",
+                          on_recoverable_failure=on_fail)
+        await d.start()
+        await d.send_prompt("first")
+        await d.send_prompt("second")
+        seen = []
+        turn_ends = 0
+        async for e in d.events():
+            seen.append(e)
+            if isinstance(e, ev.TurnEnd):
+                turn_ends += 1
+                if turn_ends == 2:
+                    break
+        await d.aclose()
+        return seen
+    seen = asyncio.run(go())
+    tf = [e for e in seen if isinstance(e, ev.TurnFailure)]
+    assert calls and calls[-1][1] == "rate_limit"
+    assert tf and tf[-1].limit_type is None
 
 
 def test_successful_turn_does_not_invoke_callback():
