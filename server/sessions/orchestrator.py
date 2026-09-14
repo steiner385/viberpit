@@ -2255,7 +2255,8 @@ class SessionOrchestrator:
         not prevent a start. Returns the number of CLIs signalled.
         """
         try:
-            known = [a["name"] for a in ccswitch_accounts.list_accounts()]
+            accounts = await asyncio.to_thread(ccswitch_accounts.list_accounts)
+            known = [a["name"] for a in accounts]
         except Exception:
             log.warning("orphan-cli: account enumeration failed — skipping the reap",
                         exc_info=True)
@@ -2352,7 +2353,7 @@ class SessionOrchestrator:
         usage_for path.
         """
         try:
-            accounts = ccswitch_accounts.list_accounts()
+            accounts = await asyncio.to_thread(ccswitch_accounts.list_accounts)
         except Exception:
             log.warning("token-refresh: list_accounts failed", exc_info=True)
             return
@@ -15751,9 +15752,13 @@ class SessionOrchestrator:
         # Validate: reject path-traversal / bad chars.
         assert_valid_account_name(new_account)
         # Validate: reject unknown accounts (must be in the configured ledger).
-        known = {a["name"] for a in ccswitch_accounts.list_accounts()}
+        accounts = await asyncio.to_thread(ccswitch_accounts.list_accounts)
+        known = {a["name"] for a in accounts}
         if new_account not in known:
             raise KeyError(f"Unknown account: {new_account}")
+        # Enumeration yields: closing or replacing the session invalidates the
+        # earlier record. Never rotate a detached snapshot back into existence.
+        record = self._records[session_id]
         result = await self._reassign(record, new_account, reason="manual")
         if result in ("rotated", "rotated_new_thread"):
             record.account_pinned = True

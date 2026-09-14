@@ -9,6 +9,7 @@ integration test each against their real manager surface.
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -408,3 +409,26 @@ async def test_start_and_stop_are_idempotent_and_reap_the_task():
     assert r._task is None
     assert task.done()
     await r.stop()
+
+
+@pytest.mark.asyncio
+async def test_sweep_reads_accounts_off_event_loop(monkeypatch):
+    loop_thread = threading.get_ident()
+
+    def accounts():
+        assert threading.get_ident() != loop_thread
+        return [
+            {"name": "enabled", "provider": "copilot"},
+            {"name": "disabled", "provider": "copilot", "enabled": False},
+            {"name": "other", "provider": "anthropic"},
+        ]
+
+    refresher = _refresher(FakeSource("copilot"), list_accounts=accounts)
+    refreshed = []
+
+    async def refresh(name):
+        refreshed.append(name)
+
+    monkeypatch.setattr(refresher, "_refresh_quiet", refresh)
+    await refresher.sweep()
+    assert refreshed == ["enabled"]

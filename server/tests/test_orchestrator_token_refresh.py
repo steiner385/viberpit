@@ -3,6 +3,7 @@ backoff. Keeps idle accounts' access tokens fresh (and recovers quickly after a
 daemon restart) even when the usage endpoint is throttled.
 """
 import asyncio
+import threading
 from unittest import mock
 
 import pytest
@@ -12,9 +13,41 @@ from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 
 
+_ACCOUNTS_TARGET = "server.sessions.orchestrator.ccswitch_accounts"
+
+
 def _orch():
     return SessionOrchestrator(sdk_factory=mock.MagicMock(), poll_interval=9999.0,
                                usage_fn=lambda n: None)
+
+
+@pytest.mark.asyncio
+async def test_refresh_idle_tokens_enumerates_accounts_off_event_loop():
+    """A contended account ledger must not block the daemon's event loop."""
+    orch = _orch()
+    loop_thread = threading.get_ident()
+    enumeration_threads = []
+
+    def list_accounts():
+        enumeration_threads.append(threading.get_ident())
+        return [{"name": "idle", "status": "ok"}]
+
+    orch.has_live_session = lambda name: False
+    with mock.patch(_ACCOUNTS_TARGET) as ca:
+        ca.list_accounts.side_effect = list_accounts
+        await orch._refresh_idle_tokens_once()
+    assert len(enumeration_threads) == 1
+    assert enumeration_threads[0] != loop_thread
+    ca.acquire_valid_token.assert_called_once_with("idle")
+
+
+@pytest.mark.asyncio
+async def test_refresh_idle_tokens_handles_account_enumeration_failure():
+    orch = _orch()
+    with mock.patch(_ACCOUNTS_TARGET) as ca:
+        ca.list_accounts.side_effect = OSError("ledger unavailable")
+        await orch._refresh_idle_tokens_once()
+    ca.acquire_valid_token.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -22,11 +55,12 @@ async def test_refresh_idle_tokens_skips_needs_reauth_and_live_sessions():
     orch = _orch()
     accts = [
         {"name": "idle_ok", "status": "ok"},
+        {"name": "disabled", "status": "ok", "enabled": False},
         {"name": "dead", "status": "needs-reauth"},   # dead token — don't hammer
         {"name": "live_ok", "status": "ok"},           # SDK owns the token family
     ]
     orch.has_live_session = lambda name: name == "live_ok"
-    with mock.patch("server.sessions.orchestrator.ccswitch_accounts") as ca:
+    with mock.patch(_ACCOUNTS_TARGET) as ca:
         ca.list_accounts.return_value = accts
         await orch._refresh_idle_tokens_once()
     refreshed = [c.args[0] for c in ca.acquire_valid_token.call_args_list]
@@ -39,7 +73,7 @@ async def test_refresh_idle_tokens_is_best_effort():
     pass — other accounts still get their turn."""
     orch = _orch()
     orch.has_live_session = lambda name: False
-    with mock.patch("server.sessions.orchestrator.ccswitch_accounts") as ca:
+    with mock.patch(_ACCOUNTS_TARGET) as ca:
         ca.list_accounts.return_value = [{"name": "a", "status": "ok"}, {"name": "b", "status": "ok"}]
         ca.acquire_valid_token.side_effect = [RuntimeError("boom"), None]
         await orch._refresh_idle_tokens_once()  # must not raise

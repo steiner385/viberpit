@@ -1,4 +1,8 @@
 # server/tests/test_manual_switch_and_pin.py
+import asyncio
+import threading
+from unittest import mock
+
 import pytest
 from ccswitch.account_names import InvalidAccountName
 from ccswitch.selector import Picked
@@ -16,10 +20,13 @@ def _orch_with(rec):
     return orch
 
 
-def _mock_known_accounts(monkeypatch, names):
+def _mock_known_accounts(monkeypatch, names, *, before_read=lambda: None):
     """Make ccswitch_accounts.list_accounts() return the given account names."""
-    monkeypatch.setattr(orch_mod.ccswitch_accounts, "list_accounts",
-                        lambda: [{"name": n} for n in names])
+    def list_accounts():
+        before_read()
+        return [{"name": n} for n in names]
+
+    monkeypatch.setattr(orch_mod.ccswitch_accounts, "list_accounts", list_accounts)
 
 
 @pytest.mark.asyncio
@@ -27,7 +34,11 @@ async def test_switch_account_manual_pins_and_reassigns(monkeypatch):
     rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
                         cols=80, rows=24, cwd="/tmp")
     orch = _orch_with(rec)
-    _mock_known_accounts(monkeypatch, ["a", "b"])
+    loop_thread = threading.get_ident()
+    enumeration_threads = []
+
+    _mock_known_accounts(monkeypatch, ["a", "b"],
+                         before_read=lambda: enumeration_threads.append(threading.get_ident()))
     seen = {}
     async def _reassign(self, r, new, *, reason):
         seen["new"] = new; seen["reason"] = reason; r.account = new
@@ -37,9 +48,51 @@ async def test_switch_account_manual_pins_and_reassigns(monkeypatch):
     monkeypatch.setattr(SessionOrchestrator, "_persist_pin", _persist_pin)
 
     result = await orch.switch_account_manual("s1", "b")
+    assert len(enumeration_threads) == 1
+    assert enumeration_threads[0] != loop_thread
     assert result == "rotated"
     assert rec.account_pinned is True
     assert seen == {"new": "b", "reason": "manual", "pinned": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replace_record", [False, True])
+async def test_switch_account_manual_rechecks_session_after_enumeration(monkeypatch, replace_record):
+    rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE,
+                        engine_session_id="c1", cols=80, rows=24, cwd="/tmp")
+    orch = _orch_with(rec)
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    finish = threading.Event()
+
+    def wait_for_session_change():
+        loop.call_soon_threadsafe(started.set)
+        assert finish.wait(timeout=5), "test did not release account enumeration"
+
+    _mock_known_accounts(monkeypatch, ["a", "b"], before_read=wait_for_session_change)
+    orch._reassign = mock.AsyncMock(return_value="rotated")
+    orch._persist_pin = mock.AsyncMock()
+    task = asyncio.create_task(orch.switch_account_manual("s1", "b"))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        del orch._records["s1"]
+        if replace_record:
+            replacement = SessionRecord(id="s1", name="replacement", account="a",
+                                        engine=AgentEngine.CLAUDE_CODE, engine_session_id="c2",
+                                        cols=80, rows=24, cwd="/tmp")
+            orch._records["s1"] = replacement
+    finally:
+        finish.set()
+    if replace_record:
+        assert await task == "rotated"
+        orch._reassign.assert_awaited_once_with(replacement, "b", reason="manual")
+        assert replacement.account_pinned
+    else:
+        with pytest.raises(KeyError, match="s1"):
+            await task
+        orch._reassign.assert_not_awaited()
+        orch._persist_pin.assert_not_awaited()
+    assert not rec.account_pinned
 
 
 @pytest.mark.asyncio

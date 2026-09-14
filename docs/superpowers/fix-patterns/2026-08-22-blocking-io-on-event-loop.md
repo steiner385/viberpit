@@ -326,3 +326,36 @@ function that already use `asyncio.to_thread` correctly. Both are opt-in/low-fre
 (Copilot accounts, manual reauth) so lower priority than 1-4, but the same one-line fix applies to
 each. Fix: wrap each in `asyncio.to_thread`, consistent with the sibling calls already correct in
 the same functions.
+
+## Account enumeration recurrence — 2026-09-14, #1680
+
+**Symptom:** rocky's journal captured a 94.84-second loop stall on 2026-09-11
+at 19:37 UTC. The loop-thread stack was `_token_refresh_monitor` →
+`_refresh_idle_tokens_once` → `list_accounts` → `locked_ledger` → `Path.read_text`.
+The ledger read subsequently reported an I/O error. A newer 3.84-second warning
+on dobby had no accompanying stack; it cannot be attributed from timing alone.
+
+**Anti-pattern:** treating account enumeration as an in-memory lookup. It takes a
+ledger lock, reads account state, and inspects account directories; remote mounts
+and filesystem contention can block it independently of account count.
+
+**Fix shape:** await `asyncio.to_thread` around the synchronous enumeration call,
+then perform session-state checks and async work back on the event loop. Preserve
+existing failure handling and account filtering. Regression tests record the
+thread executing enumeration and fail if it is the loop thread, without relying
+on sleep-duration thresholds.
+
+**Where to look:** the direct-call sweep covers idle token refresh, orphan cleanup,
+manual switching, usage polling, process quota sweeps, and four account API reads.
+`_discover_candidates` is synchronous and the read-only adoption route already
+offloads it. Indirect callers require checking the entire call chain: `helper_env`
+performs account enumeration plus configuration mirroring and credential reads;
+async title/goal generation and automation helper callers still invoke it directly.
+Those broader authentication and filesystem paths remain follow-up work, as do
+synchronous account mutations in API routes. This fix does not establish that all
+loop-lag warnings have one cause, or that cancellation can interrupt filesystem
+work already running in a worker thread.
+
+Adding an offload introduces a scheduling point: revalidate mutable session
+membership afterward. In manual switching, a session may close while enumeration
+waits; looking it up again prevents a stale record from reaching reassignment.

@@ -11,6 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import time
+import threading
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 from datetime import datetime, timezone
 
 from ccswitch.quota import QuotaSnapshot, anthropic_snapshot
@@ -79,3 +84,43 @@ def test_safe_usage_timeout_returns_none(monkeypatch, tmp_path):
     got, stale_as_of = asyncio.run(accounts_api._safe_usage(orch, "slow", timeout=0.05))
     assert got is None
     assert stale_as_of is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["get", "refresh", "update", "enabled"])
+async def test_account_routes_read_accounts_off_event_loop(monkeypatch, route):
+    loop_thread = threading.get_ident()
+    account = {"name": "test", "nickname": "Personal", "enabled": True}
+
+    def accounts():
+        assert threading.get_ident() != loop_thread
+        return [account]
+
+    monkeypatch.setattr(accounts_api, "list_accounts", accounts)
+    monkeypatch.setattr(accounts_api, "_check_name_and_slot", lambda name: None)
+    monkeypatch.setattr(accounts_api, "_provider_or_none", lambda name: None)
+    monkeypatch.setattr(accounts_api, "set_account_enabled", lambda *args: None)
+    monkeypatch.setattr(accounts_api, "record_audit", AsyncMock())
+    monkeypatch.setattr(accounts_api, "_codex_details", AsyncMock(return_value={}))
+    monkeypatch.setattr(accounts_api, "_safe_usage", AsyncMock(return_value=(None, None)))
+    monkeypatch.setattr(accounts_api, "_gather_usages", AsyncMock(return_value={"test": (None, None)}))
+    monkeypatch.setattr(accounts_api, "load_config", lambda: None)
+    monkeypatch.setattr(accounts_api, "rank_accounts", lambda *args, **kwargs: ([], None))
+    monkeypatch.setattr(accounts_api, "_account_response_from_info", lambda acct, *args, **kwargs: acct)
+    orch = SimpleNamespace(
+        live_session_counts=AsyncMock(return_value={}),
+        live_session_load=AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(accounts_api, "_get_orchestrator", lambda request: orch)
+    request = SimpleNamespace()
+    if route == "get":
+        assert await accounts_api.get_accounts(request) == [account]
+    elif route == "refresh":
+        assert await accounts_api.refresh_account("test", request) == account
+    elif route == "update":
+        assert await accounts_api.update_account("test", accounts_api.AccountPatchBody()) == account
+    else:
+        assert await accounts_api.set_enabled(
+            "test", accounts_api.AccountEnabledBody(enabled=True), request,
+            identity="tester", db=None,
+        ) == account

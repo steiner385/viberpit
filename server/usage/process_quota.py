@@ -209,8 +209,9 @@ class ProcessQuotaRefresher:
 
     async def sweep(self) -> None:
         """Refresh every enabled process-backed account, each isolated."""
+        accounts = await asyncio.to_thread(self._list_accounts)
         names = [
-            a["name"] for a in self._list_accounts()
+            a["name"] for a in accounts
             if a.get("enabled", True) and a.get("provider") in self._sources
         ]
         await asyncio.gather(*(self._refresh_quiet(n) for n in names))

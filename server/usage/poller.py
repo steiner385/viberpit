@@ -150,7 +150,8 @@ class UsagePoller:
 
     async def all(self) -> dict[str, QuotaSnapshot | None]:
         """Fetch usage for every registered account and return the full mapping."""
-        names = [a["name"] for a in list_accounts() if a.get("enabled", True)]
+        accounts = await asyncio.to_thread(list_accounts)
+        names = [a["name"] for a in accounts if a.get("enabled", True)]
         results = await asyncio.gather(*(self.get(n) for n in names))
         return dict(zip(names, results))
 
