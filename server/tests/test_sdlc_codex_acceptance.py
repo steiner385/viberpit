@@ -263,7 +263,7 @@ def test_an_automation_account_is_selected_for_the_engine_that_will_run(
     seen: list = []
 
     def fake_select(exclude=frozenset(), load=None, *, reserve=True,
-                    engine=AgentEngine.CLAUDE_CODE):
+                    engine=AgentEngine.CLAUDE_CODE, model=None):
         seen.append(engine)
 
         class P:
