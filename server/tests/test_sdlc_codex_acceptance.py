@@ -274,7 +274,7 @@ def test_an_automation_account_is_selected_for_the_engine_that_will_run(
 
     async def run():
         orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
-        monkeypatch.setattr(orch, "_account_limited", lambda _n: False,
+        monkeypatch.setattr(orch, "_account_limited", lambda _n, model=None: False,
                             raising=False)
         monkeypatch.setattr(orch, "_recovery",
                             type("R", (), {"quarantined": lambda self, now=None:
