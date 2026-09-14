@@ -83,10 +83,12 @@ def parse_group_plan(raw: str, candidates: list[dict], max_k: int) -> list[dict]
     - groups are disjoint — a ref's first appearance wins;
     - a group is truncated to ``max_k`` refs; emptied groups vanish;
     - candidates the model failed to place are appended as singleton groups in
-      ascending issue-number order, so the plan always covers the whole pool.
+      the order they arrived — the queue's own ranking — so the plan always
+      covers the whole pool without re-deciding its priority.
 
-    Unparseable output degrades to the all-singletons plan (number order) —
-    ungrouped work proceeds one issue at a time rather than mis-bundled.
+    Unparseable output degrades to the all-singletons plan, still in queue
+    order — ungrouped work proceeds one issue at a time rather than mis-bundled,
+    and in the order the queue asked for rather than one invented here.
     """
     by_ref = {c["ref"]: c for c in candidates}
     max_k = max(1, int(max_k))
@@ -123,11 +125,17 @@ def parse_group_plan(raw: str, candidates: list[dict], max_k: int) -> list[dict]
             "rationale": rationale if isinstance(rationale, str) else None,
         })
 
-    leftovers = sorted(
-        (c for c in candidates if c["ref"] not in seen),
-        key=lambda c: (c["number"], c["repo"]),
-    )
-    for c in leftovers:
+    # Leftovers keep the order they arrived in, which IS the queue's ranking
+    # (``server.pm.queue.rank_key``: urgency, then score, then age, then ref).
+    # This used to re-sort them by ``(number, repo)`` — a second definition of
+    # priority, in a consumer, that silently outranked the canonical one for
+    # every row it touched. #1698 floated urgent groups over it (below), which
+    # fixes the incident case; this fixes the cause, so a human-scored issue is
+    # no longer reordered by issue number either.
+    #
+    # Determinism was the only thing the sort bought, and it was already paid
+    # for: ``rank_key`` ends in ``ref``, so candidate order is a total order.
+    for c in (c for c in candidates if c["ref"] not in seen):
         groups.append({"refs": [c["ref"]], "rationale": None})
 
     # Urgent work leads the plan, whatever the model said and whatever the
