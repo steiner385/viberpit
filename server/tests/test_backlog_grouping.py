@@ -215,3 +215,50 @@ def test_store_load_consume_roundtrip(tmp_path):
         assert await load_plan() == []
 
     asyncio.run(go())
+
+
+# ── urgency: the plan must not bury an incident (#16150, #16151) ─────────────
+
+_URGENT = [
+    {"ref": "o/r#2", "number": 2, "repo": "o/r", "title": "Fix two", "body": ""},
+    {"ref": "o/r#5", "number": 5, "repo": "o/r", "title": "Fix five", "body": ""},
+    {"ref": "o/r#900", "number": 900, "repo": "o/r", "body": "",
+     "title": "[deploy-monitor] prod deploy failing", "urgent": True},
+]
+
+
+def test_parse_floats_an_urgent_group_to_the_front_of_a_model_plan():
+    """Ranking the pool is not enough: the model re-orders it into the plan, and
+    the runner pops the plan. So the same invariant has to hold on this side of
+    the hand-off — otherwise a model that ranks the incident last (which is what
+    happened: 328th of 332) silently undoes the queue's urgency leg."""
+    raw = _plan_json([{"refs": ["o/r#2"], "rationale": "a"},
+                      {"refs": ["o/r#5"], "rationale": "b"},
+                      {"refs": ["o/r#900"], "rationale": "c"}])
+    plan = parse_group_plan(raw, _URGENT, 1)
+    assert [g["refs"] for g in plan] == [["o/r#900"], ["o/r#2"], ["o/r#5"]]
+
+
+def test_parse_floats_an_urgent_leftover_too():
+    """The degraded path is the one that actually bit: unparseable output becomes
+    all-singletons in ISSUE-NUMBER order, and an incident is the newest issue
+    there is — so it sorts last, every single refresh."""
+    plan = parse_group_plan("not json at all", _URGENT, 1)
+    assert plan[0]["refs"] == ["o/r#900"]
+
+
+def test_parse_keeps_a_bundled_urgent_group_whole_and_first():
+    raw = _plan_json([{"refs": ["o/r#2"], "rationale": "a"},
+                      {"refs": ["o/r#5", "o/r#900"], "rationale": "same break"}])
+    plan = parse_group_plan(raw, _URGENT, 2)
+    assert [g["refs"] for g in plan] == [["o/r#5", "o/r#900"], ["o/r#2"]]
+
+
+def test_parse_preserves_relative_order_among_equally_urgent_groups():
+    # Stable: floating urgent work must not otherwise reshuffle the model's
+    # priority ordering, or the plan stops meaning what the model said.
+    # o/r#9 is unplaced by this plan, so it trails as a leftover singleton — the
+    # model's own #5-before-#2 ordering is what must survive untouched.
+    plan = parse_group_plan(_plan_json([{"refs": ["o/r#5"], "rationale": "b"},
+                                        {"refs": ["o/r#2"], "rationale": "a"}]), C, 1)
+    assert [g["refs"] for g in plan] == [["o/r#5"], ["o/r#2"], ["o/r#9"]]

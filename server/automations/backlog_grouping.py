@@ -129,6 +129,21 @@ def parse_group_plan(raw: str, candidates: list[dict], max_k: int) -> list[dict]
     )
     for c in leftovers:
         groups.append({"refs": [c["ref"]], "rationale": None})
+
+    # Urgent work leads the plan, whatever the model said and whatever the
+    # leftover ordering is. The queue already ranks incidents first
+    # (``server.pm.queue.rank_key``), but the plan is what the runner actually
+    # pops, so the invariant has to survive this hand-off too — and BOTH paths
+    # here work against it. A model free to order by "implementation priority"
+    # can rank an incident last, and the degraded path sorts leftovers by issue
+    # NUMBER, where an incident is the newest issue in the pool and therefore
+    # always last. That is not hypothetical: two incidents reporting both admin
+    # environments down came out 328th and 329th of 332.
+    #
+    # Stable, so floating urgent work never otherwise reshuffles the model's
+    # priority ordering.
+    urgent_refs = {c["ref"] for c in candidates if c.get("urgent")}
+    groups.sort(key=lambda g: not urgent_refs.intersection(g["refs"]))
     return groups
 
 
