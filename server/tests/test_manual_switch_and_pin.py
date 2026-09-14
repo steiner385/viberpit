@@ -4,6 +4,7 @@ from ccswitch.account_names import InvalidAccountName
 from ccswitch.selector import Picked
 from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.engine import AgentEngine
+from server.sessions.model_policy import quota_model
 from server.sessions.types import SessionRecord
 import server.sessions.orchestrator as orch_mod
 
@@ -123,7 +124,7 @@ async def test_switch_account_manual_rejects_unknown_account(monkeypatch):
 @pytest.mark.asyncio
 async def test_rotate_away_clears_pin(monkeypatch):
     rec = SessionRecord(id="s1", name="n", account="a", engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
-                        cols=80, rows=24, cwd="/tmp", account_pinned=True)
+                        cols=80, rows=24, cwd="/tmp", account_pinned=True, model="sonnet")
     orch = _orch_with(rec)
     orch._recovery = type("R", (), {
         "quarantined": lambda self, now: frozenset(),
@@ -136,10 +137,18 @@ async def test_rotate_away_clears_pin(monkeypatch):
     monkeypatch.setattr(SessionOrchestrator, "_reassign", _reassign)
     monkeypatch.setattr(SessionOrchestrator, "_persist_pin", _persist_pin)
     # select_account gained a load-aware `load=` kwarg (master #137) and a
-    # per-model quota key `model=`; accept both.
-    monkeypatch.setattr("server.sessions.orchestrator.select_account",
-                        lambda exclude=frozenset(), load=None, soft_exclude=frozenset(),
-                        engine=AgentEngine.CLAUDE_CODE, model=None: Picked("b"))
+    # per-model quota key `model=`; accept and record both.
+    seen = {}
+
+    def _select(exclude=frozenset(), load=None, soft_exclude=frozenset(),
+                engine=AgentEngine.CLAUDE_CODE, model=None, **_kw):
+        seen["model"] = model
+        return Picked("b")
+
+    monkeypatch.setattr("server.sessions.orchestrator.select_account", _select)
 
     await orch._rotate_away(rec, reason="auth_401")
     assert rec.account_pinned is False  # hard-failure recovery overrides the pin
+    # The replacement account is picked for the model this session runs, not for
+    # "every window" — a Fable-exhausted account still serves Sonnet.
+    assert seen["model"] == quota_model(rec.model, engine=rec.engine) == "sonnet"

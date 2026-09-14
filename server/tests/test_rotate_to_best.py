@@ -13,6 +13,7 @@ from ccswitch.selector import AllAccountsBusy, Picked
 from server.sessions import orchestrator as orch_mod
 from server.sessions.orchestrator import SessionOrchestrator, _ROTATE_REPLAY_STATUSES, _REPLAY_STATUSES
 from server.sessions.engine import AgentEngine
+from server.sessions.model_policy import quota_model
 from server.sessions.types import SessionRecord, SYSTEM_IDENTITY
 
 
@@ -61,6 +62,7 @@ def _orch(monkeypatch, rec, *, pick="b", with_driver=True):
     def select_account(exclude=frozenset(), load=None, soft_exclude=frozenset(), **k):
         seen["exclude"] = exclude
         seen["soft_exclude"] = soft_exclude
+        seen["model"] = k.get("model")
         if isinstance(pick, Exception):
             raise pick
         return Picked(pick)
@@ -76,7 +78,10 @@ def test_replay_statuses_add_the_two_parked_shapes():
 
 @pytest.mark.asyncio
 async def test_rotates_stalled_session_replays_and_unpins(monkeypatch):
-    rec = _rec(status="needs_attention", paused_reason="all_accounts_busy", account_pinned=True)
+    # An explicitly tiered model so the expected quota key is deterministic
+    # ("sonnet") rather than whatever a host's settings.json resolves "default" to.
+    rec = _rec(status="needs_attention", paused_reason="all_accounts_busy",
+               account_pinned=True, model="sonnet")
     o = _orch(monkeypatch, rec)
     assert await o.rotate_to_best("s1", "user@x") == "rotated"
     assert ("reassign", "b", "manual_rotate", True) in o.calls
@@ -86,6 +91,9 @@ async def test_rotates_stalled_session_replays_and_unpins(monkeypatch):
     # "rotate to best" returned the same account it was asked to move off (2026-09-08).
     assert o.seen["exclude"] == frozenset({"a"})           # current — never relaxed
     assert o.seen["soft_exclude"] == frozenset({"q"})      # quarantined — relaxable
+    # The pick is made for the model this session runs: an account that is only
+    # out of Fable still serves Sonnet, and must not be skipped for one.
+    assert o.seen["model"] == quota_model(rec.model, engine=rec.engine) == "sonnet"
     assert o.rotations == []                                # never counts toward the cap
     assert o._drivers["s1"].identity == "user@x"
 

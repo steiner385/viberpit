@@ -26,11 +26,16 @@ from server.sessions.orchestrator import SessionOrchestrator
 from server.sessions.engine import AgentEngine
 from server.sessions.types import SessionRecord
 from server.sessions import orchestrator as orch_mod
+from server.sessions.model_policy import quota_model
 from ccswitch.selector import AllAccountsBusy, Picked
 
 
 CURRENT = "acct-rate-limited"
 FREE = "acct-with-headroom"
+# An explicitly tiered model, so the expected quota key is deterministic ("sonnet")
+# rather than whatever fleet default a host's settings.json would make "default"
+# resolve to.
+MODEL = "sonnet"
 
 
 def _orch():
@@ -55,10 +60,10 @@ def _orch():
     return o
 
 
-def _record(o=None, account=CURRENT, status="needs_attention"):
+def _record(o=None, account=CURRENT, status="needs_attention", model=MODEL):
     rec = SessionRecord(id="sess-1", name="n", account=account,
                         engine=AgentEngine.CLAUDE_CODE, engine_session_id="c1",
-                        cols=80, rows=24, cwd="/tmp/x", status=status)
+                        cols=80, rows=24, cwd="/tmp/x", status=status, model=model)
     if o is not None:
         o._records["sess-1"] = rec
         o._drivers["sess-1"] = object()
@@ -110,9 +115,14 @@ def test_rotate_away_passes_current_hard_and_quarantine_soft(monkeypatch):
     o = _orch()
     o._recovery.quarantined = lambda now=None: frozenset({"acct-quarantined"})
     seen = _selector(monkeypatch, {CURRENT, FREE})
-    asyncio.run(o._rotate_away(_record(o), reason="rate_limit"))
+    rec = _record(o)
+    asyncio.run(o._rotate_away(rec, reason="rate_limit"))
     assert seen["exclude"] == frozenset({CURRENT})
     assert seen["soft_exclude"] == frozenset({"acct-quarantined"})
+    # …and the pick is made for the model THIS session runs. Without it every
+    # window meters the choice, so a Sonnet session is rotated off (or refused)
+    # an account that is only out of Fable.
+    assert seen["model"] == quota_model(rec.model, engine=rec.engine) == MODEL
 
 
 def test_rotate_to_best_pauses_rather_than_returning_the_same_account(monkeypatch):
@@ -129,8 +139,11 @@ def test_rotate_to_best_pauses_rather_than_returning_the_same_account(monkeypatc
 
 def test_rotate_to_best_moves_when_another_account_has_headroom(monkeypatch):
     o = _orch()
-    _selector(monkeypatch, {CURRENT, FREE})
-    _record(o, status="limited")
+    seen = _selector(monkeypatch, {CURRENT, FREE})
+    rec = _record(o, status="limited")
     asyncio.run(o.rotate_to_best("sess-1"))
     assert ("reassign", "sess-1", CURRENT, FREE, "manual_rotate") in [
         (c[0], c[1], c[2], c[3], c[4]) for c in o.calls if c[0] == "reassign"]
+    # The manual rotate picks for the session's own model too (same reason as
+    # _rotate_away's assertion above).
+    assert seen["model"] == quota_model(rec.model, engine=rec.engine) == MODEL

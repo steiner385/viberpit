@@ -81,6 +81,28 @@ def test_backlog_pauses_on_a_weekly_exhausted_account(orch, monkeypatch):
     assert asyncio.run(orch._backlog_healthy_account()) == "work"
 
 
+def test_backlog_probe_picks_for_the_inherited_fleet_model(orch, monkeypatch):
+    """The probe has no per-dispatch model, so it must ask for the model a Default
+    launch would actually inherit — not for "every window", which would pause the
+    backlog on an account exhausted only for a tier nothing is launching."""
+    from server.sessions.engine import AgentEngine
+    from server.sessions.model_policy import quota_model
+    seen = {}
+
+    def _select(**kw):
+        seen.update(kw)
+        return Picked(name="work", optimistic=False)
+
+    monkeypatch.setattr(orch_mod, "select_account", _select)
+    orch.live_session_load = lambda: {}
+    orch._recovery.quarantined = lambda now=None: set()
+    _cache(orch, work=anthropic_snapshot(20.0, None, 30.0, None))
+
+    assert asyncio.run(orch._backlog_healthy_account(engine=AgentEngine.CLAUDE_CODE)) == "work"
+    assert seen["model"] == quota_model(None, engine=AgentEngine.CLAUDE_CODE)
+    assert seen["reserve"] is False  # still a read-only probe
+
+
 def test_backlog_returns_none_when_selection_fails(orch, monkeypatch):
     def _busy(**kw):
         raise AllAccountsBusy(None)

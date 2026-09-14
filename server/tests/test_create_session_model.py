@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from ccswitch.selector import Picked
 from server.db import init_db, db_session
+from server.sessions.model_policy import quota_model
 from server.sessions.orchestrator import SessionOrchestrator
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -37,12 +38,15 @@ def _seed_account(name: str) -> None:
         write_json_secure(paths.shared_mcp_path(), {})
 
 
-def _spawn_env(tmp_path, *, db_name: str = "model_test.db"):
+def _spawn_env(tmp_path, *, db_name: str = "model_test.db", picked: dict | None = None):
     """An isolated store / config dir / sqlite DB plus the patches a real
     `create_session` spawn needs (composed cfg dir, trusted project, account
     "alpha" always picked). Returns ``(db_url, repo_root, patches)``; enter the
     patches, then call `_seed_account("alpha")`. Shared with
-    test_create_session_per_session_toggles.py."""
+    test_create_session_per_session_toggles.py.
+
+    Pass a ``picked`` dict to have the kwargs the spawn path hands
+    ``select_account`` recorded into it — the per-model quota key among them."""
     store_home = tmp_path / "store"; store_home.mkdir()
     shared_base = tmp_path / "dot-claude"; shared_base.mkdir()
     (shared_base / "settings.json").write_text("{}")
@@ -50,6 +54,14 @@ def _spawn_env(tmp_path, *, db_name: str = "model_test.db"):
     cfg_dir = tmp_path / "cfg" / "alpha"; cfg_dir.mkdir(parents=True)
     repo_root = tmp_path / "reporoot"; repo_root.mkdir()
     db_url = f"sqlite+aiosqlite:///{tmp_path / db_name}"
+
+    # side_effect (not return_value) so the kwargs the spawn path passes are
+    # observable — the per-model quota key among them.
+    def _select(**kw):
+        if picked is not None:
+            picked.update(kw)
+        return Picked("alpha")
+
     patches = [
         patch.dict(os.environ, {
             "CCSWITCH_HOME": str(store_home),
@@ -58,15 +70,17 @@ def _spawn_env(tmp_path, *, db_name: str = "model_test.db"):
         }),
         patch("server.sessions.orchestrator.compose", return_value=cfg_dir),
         patch("server.sessions.orchestrator.configdir.trust_project"),
-        patch("server.sessions.orchestrator.select_account", return_value=Picked("alpha")),
+        patch("server.sessions.orchestrator.select_account", side_effect=_select),
     ]
     return db_url, repo_root, patches
 
 
 def _run_create(tmp_path, *, model):
     """Create one session with the given model; return (record, db_row_model,
-    driver_client_model)."""
-    db_url, repo_root, (env_patch, compose_patch, trust_patch, select_patch) = _spawn_env(tmp_path)
+    driver_client_model, select_account_kwargs)."""
+    picked: dict = {}
+    db_url, repo_root, (env_patch, compose_patch, trust_patch, select_patch) = _spawn_env(
+        tmp_path, picked=picked)
 
     with env_patch, compose_patch, trust_patch, select_patch:
         _seed_account("alpha")
@@ -98,7 +112,7 @@ def _run_create(tmp_path, *, model):
                     row = (await db.execute(
                         select(DbSession).where(DbSession.id == rec.id)
                     )).scalar_one()
-                return rec, row.model, driver_model
+                return rec, row.model, driver_model, dict(picked)
             finally:
                 await orch.stop()
 
@@ -109,15 +123,23 @@ def test_create_session_applies_and_persists_model(tmp_path):
     # A non-gated tier: the model-approval gate parks gated models (e.g. fable) as
     # pending_approval with no driver instead of applying them — that path is covered
     # by test_orchestrator_model_gate. Here we assert the ordinary apply+persist path.
-    rec, row_model, driver_model = _run_create(tmp_path, model="opus")
+    rec, row_model, driver_model, picked = _run_create(tmp_path, model="opus")
     assert driver_model == "opus"    # applied to the live driver before the first turn
     assert row_model == "opus"       # persisted onto the DB row
     assert rec.model == "opus"       # mirrored on the in-memory record
+    # …and the account was chosen FOR that model: the spawn pick must carry the
+    # quota key, or a session pinned to Opus is refused an account that is only
+    # out of Fable.
+    assert picked["model"] == quota_model("opus") == "opus"
 
 
 def test_create_session_default_model_is_account_default(tmp_path):
     # "default" (and None) mean "account default": nothing applied, nothing stored.
-    rec, row_model, driver_model = _run_create(tmp_path, model="default")
+    rec, row_model, driver_model, picked = _run_create(tmp_path, model="default")
     assert driver_model is None
     assert row_model is None
     assert rec.model is None
+    # The pick still carries a quota key. Its VALUE is whatever settings.json makes
+    # "default" inherit, so it is asserted on the deterministic "opus" case above
+    # rather than here.
+    assert "model" in picked
