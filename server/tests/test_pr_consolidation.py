@@ -22,10 +22,9 @@ def consolidation_github(monkeypatch, github_identity):
             CanonicalTarget("I_" + ref.split("#")[1], ref.replace("#", "#10"))))
 
     resolver = AsyncMock(side_effect=resolve)
+    # One seam covers every consumer, the legacy guard included: it reaches the
+    # resolver through this module rather than binding it at import.
     monkeypatch.setattr("server.automations.target_identity.resolve_targets", resolver)
-    # The legacy guard binds this function on import, which may precede this
-    # fixture (and may occur under another test's identity fake).
-    monkeypatch.setattr("server.automations.ownership_reconciliation.resolve_targets", resolver)
     monkeypatch.setattr("server.automations.target_identity._fetch", AsyncMock(
         side_effect=AssertionError("consolidation unit tests must not contact GitHub")))
     monkeypatch.setattr("server.sessions.orchestrator.SessionOrchestrator._sdlc_default_branch",

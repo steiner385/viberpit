@@ -1,10 +1,17 @@
-"""Migration guard resolves legacy actor targets before allowing new work."""
+"""Migration guard resolves legacy actor targets before allowing new work.
+
+Stub the resolver on ``target_identity`` — its one canonical seam, shared with
+the orchestrator and ``mechanical_update``. Patching a name re-exported by the
+guard would pass here and still let a *frozen* module-level binding serve every
+other caller, which is the order-dependent leak these tests now pin shut.
+"""
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
 
 from server.automations import ownership_reconciliation as guard
+from server.automations import target_identity
 from server.automations.ownership import CanonicalTarget, OwnershipConflict
 from server.automations.target_identity import TargetIdentityError
 from server.db import db_session
@@ -35,7 +42,7 @@ async def legacy_session(ref, *, origin="other-automation", status="working"):
 async def test_secondary_alias_overlap_refused_without_rewriting_history(monkeypatch, state):
     await legacy_state(state)
     resolver = AsyncMock(return_value=(CanonicalTarget("I_secondary", "new/repo#2"),))
-    monkeypatch.setattr(guard, "resolve_targets", resolver)
+    monkeypatch.setattr(target_identity, "resolve_targets", resolver)
     with pytest.raises(OwnershipConflict, match="backlog-runner"):
         await guard.reconcile_legacy_targets([CanonicalTarget("I_secondary", "new/repo#2")])
     resolver.assert_awaited_once_with(["old/repo#1", "old/repo#2"], kind="issue")
@@ -47,7 +54,7 @@ async def test_secondary_alias_overlap_refused_without_rewriting_history(monkeyp
 async def test_inactive_runner_history_does_not_claim_targets(monkeypatch, state):
     await legacy_state(state)
     resolver = AsyncMock()
-    monkeypatch.setattr(guard, "resolve_targets", resolver)
+    monkeypatch.setattr(target_identity, "resolve_targets", resolver)
     await guard.reconcile_legacy_targets([CanonicalTarget("I_one", "new/repo#1")])
     resolver.assert_not_awaited()
 
@@ -59,7 +66,7 @@ async def test_inactive_runner_history_does_not_claim_targets(monkeypatch, state
 async def test_cross_origin_and_partial_consolidation_overlap(monkeypatch, ref, origin, refs, kind):
     await legacy_session(ref, origin=origin)
     resolver = AsyncMock(return_value=(CanonicalTarget("NODE", "new/repo#2"),))
-    monkeypatch.setattr(guard, "resolve_targets", resolver)
+    monkeypatch.setattr(target_identity, "resolve_targets", resolver)
     with pytest.raises(OwnershipConflict, match="legacy"):
         await guard.reconcile_legacy_targets([CanonicalTarget("NODE", "new/repo#2")])
     if kind == "pr":
@@ -70,14 +77,14 @@ async def test_cross_origin_and_partial_consolidation_overlap(monkeypatch, ref, 
 
 async def test_unavailable_identity_never_permits_new_claim(monkeypatch):
     await legacy_state({"claimed": True})
-    monkeypatch.setattr(guard, "resolve_targets", AsyncMock(side_effect=TargetIdentityError("offline")))
+    monkeypatch.setattr(target_identity, "resolve_targets", AsyncMock(side_effect=TargetIdentityError("offline")))
     with pytest.raises(TargetIdentityError):
         await guard.reconcile_legacy_targets([CanonicalTarget("NODE", "new/repo#1")])
 
 
 async def test_unrelated_verified_work_allowed(monkeypatch):
     await legacy_session("other/repo#1")
-    monkeypatch.setattr(guard, "resolve_targets", AsyncMock(
+    monkeypatch.setattr(target_identity, "resolve_targets", AsyncMock(
         return_value=(CanonicalTarget("OTHER", "other/repo#1"),)))
     await guard.reconcile_legacy_targets([CanonicalTarget("NODE", "new/repo#1")])
 
@@ -85,7 +92,7 @@ async def test_unrelated_verified_work_allowed(monkeypatch):
 async def test_terminal_history_without_claim_is_not_live_ownership(monkeypatch):
     await legacy_session("old/repo#1", status="archived")
     resolver = AsyncMock()
-    monkeypatch.setattr(guard, "resolve_targets", resolver)
+    monkeypatch.setattr(target_identity, "resolve_targets", resolver)
     await guard.reconcile_legacy_targets([CanonicalTarget("NODE", "new/repo#1")])
     resolver.assert_not_awaited()
 
@@ -106,7 +113,7 @@ async def test_failed_identity_is_contained_to_known_product_scope(monkeypatch, 
     await product_scopes()
     await legacy_state({"claimed": True, "product": product}, ref="alias/repo#1")
     resolver = AsyncMock(side_effect=TargetIdentityError("inaccessible repository"))
-    monkeypatch.setattr(guard, "resolve_targets", resolver)
+    monkeypatch.setattr(target_identity, "resolve_targets", resolver)
     if blocked:
         with pytest.raises(TargetIdentityError):
             await guard.reconcile_legacy_targets([CanonicalTarget("NODE", "new/repo#1")])
@@ -129,7 +136,7 @@ async def test_malformed_batch_does_not_freeze_other_product(monkeypatch, produc
 async def test_verified_alias_overlap_wins_over_different_product_metadata(monkeypatch):
     await product_scopes()
     await legacy_state({"claimed": True, "product": "unrelated"})
-    monkeypatch.setattr(guard, "resolve_targets", AsyncMock(
+    monkeypatch.setattr(target_identity, "resolve_targets", AsyncMock(
         return_value=(CanonicalTarget("NODE", "new/repo#1"),)))
     with pytest.raises(OwnershipConflict):
         await guard.reconcile_legacy_targets([CanonicalTarget("NODE", "new/repo#1")])
@@ -169,6 +176,6 @@ async def test_legacy_pr_work_excludes_verified_linked_issue(monkeypatch, ref):
             targets.append(CanonicalTarget("I_one", "different/issues#1"))
         return tuple(targets)
 
-    monkeypatch.setattr(guard, "resolve_targets", resolve)
+    monkeypatch.setattr(target_identity, "resolve_targets", resolve)
     with pytest.raises(OwnershipConflict, match="legacy"):
         await guard.reconcile_legacy_targets([CanonicalTarget("I_one", "different/issues#1")])

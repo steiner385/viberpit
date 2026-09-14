@@ -12,7 +12,13 @@ from sqlalchemy import select
 from server.automations.backlog_runner import is_in_flight
 from server.automations.consolidation_engine import parse_consolidation_target
 from server.automations.ownership import CanonicalTarget, OwnershipConflict
-from server.automations.target_identity import TargetIdentityError, resolve_targets
+# Bind the resolver through its module, never `from … import resolve_targets`: a
+# module-level name is frozen at *first import*, and importing this module is a
+# side effect of stubbing `reconcile_legacy_targets`, so the guard would capture
+# whichever caller's resolver happened to be installed then and keep it for the
+# life of the process. One seam — `target_identity.resolve_targets` — for all callers.
+from server.automations import target_identity
+from server.automations.target_identity import TargetIdentityError
 from server.db import db_session
 from server.db.models import (
     INACTIVE_SESSION_STATUSES, AutomationTargetState, Project, ProjectRepo, Session,
@@ -107,8 +113,9 @@ async def reconcile_legacy_targets(targets: Sequence[CanonicalTarget]) -> None:
     wanted = {target.key for target in targets}
     for refs, kind, source, unrelated in candidates:
         try:
-            resolved = (await resolve_targets(refs, kind="pr", include_linked_issues=True)
-                        if kind == "pr" else await resolve_targets(refs, kind="issue"))
+            resolved = (
+                await target_identity.resolve_targets(refs, kind="pr", include_linked_issues=True)
+                if kind == "pr" else await target_identity.resolve_targets(refs, kind="issue"))
         except TargetIdentityError:
             if unrelated:
                 continue

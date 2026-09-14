@@ -6,7 +6,10 @@ import json
 import re
 
 from ccswitch import gitrepos
-from server.automations.ownership import owned
+# Module-attribute access, not `from … import owned`: this module is only ever
+# imported lazily, so a module-level name would freeze whatever `owned` was
+# installed at that first import — see the note in ownership_reconciliation.
+from server.automations import ownership
 from server.db import db_session
 from server.db.models import AutomationOperation
 
@@ -43,7 +46,7 @@ async def snapshot(repo: str, number: int, *, require_open: bool = True, transpo
 
 async def submit(token: str, evidence: dict, *, transport=None) -> str:
     """Persist the intended effect before sending; rc=0 proves acceptance only."""
-    async with owned(token) as tx:
+    async with ownership.owned(token) as tx:
         tx.operation.provenance = {**tx.operation.provenance, **evidence}
         tx.start_action()
     outcome = 'unknown'
@@ -62,7 +65,7 @@ async def submit(token: str, evidence: dict, *, transport=None) -> str:
     finally:
         from server.automations.ownership import StaleOwnership
         try:
-            async with owned(token) as tx:
+            async with ownership.owned(token) as tx:
                 if tx.operation.provenance.get('mechanical_observed_completed'):
                     outcome = 'completed'
                 else:
@@ -108,7 +111,7 @@ async def observe(token: str, *, transport=None) -> bool:
                 return False
     except Exception:
         return False
-    async with owned(token) as tx:
+    async with ownership.owned(token) as tx:
         if tx.operation.provenance != evidence or tx.operation.phase not in ('active', 'uncertain'):
             return tx.operation.phase == 'completed'
         tx.complete_action()
@@ -120,7 +123,7 @@ async def release_manual(token: str) -> None:
     """Settle once, including an observer racing the original HTTP response."""
     from server.automations.ownership import ReleaseProof, StaleOwnership
     try:
-        async with owned(token) as tx:
+        async with ownership.owned(token) as tx:
             if tx.operation.owner != 'map-changes' or tx.operation.phase != 'completed':
                 raise ValueError('manual update completion has not been observed')
             tx.release(ReleaseProof.WORK_STOPPED, 'Observed completed manual branch update')
