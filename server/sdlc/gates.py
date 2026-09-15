@@ -10,6 +10,7 @@ engine can import it and stay total.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 RISK_CLASSES: tuple[str, ...] = ("low", "medium", "high")
 RISK_TOLERANCES: tuple[str, ...] = ("cautious", "balanced", "bold")
@@ -83,3 +84,56 @@ def effective_tolerance(value: str | None, *, enabled: bool) -> str:
     if not enabled or value not in RISK_TOLERANCES:
         return "cautious"
     return value
+
+
+#: How long the roadmap shows what the machine did with a gate (spec D5): long
+#: enough to be seen on the next working day, short enough that a row is not
+#: labelled by its history forever.
+AUTO_RESOLVED_VISIBLE_S = 24 * 3600
+
+
+def auto_gate_record(gate_id: str, tolerance: str, at: datetime, *,
+                     outcome: str = "resolved", detail: dict | None = None) -> dict:
+    """The ``Initiative.last_auto_gate`` payload (spec §8) — ONE shape, built here
+    so every loop that resolves a gate and every reader agree on the keys.
+    ``outcome`` is ``resolved`` or ``refused`` (GitHub declined the write)."""
+    return {"gate": gate_id, "at": at.astimezone(timezone.utc).isoformat(),
+            "tolerance": tolerance, "outcome": outcome, "detail": dict(detail or {})}
+
+
+def _summary(record: dict) -> str:
+    detail = record.get("detail") or {}
+    gate = record.get("gate")
+    if record.get("outcome") == "refused":
+        return "auto-merge unavailable" if gate == "artifact.merge" else "refused"
+    if gate in ("stage.advance", "stage.advance_built") and detail.get("to"):
+        return f"advanced to {detail['to']}"
+    if gate == "artifact.merge" and detail.get("kind"):
+        return f"merged {detail['kind']}"
+    if gate == "materialization.accept":
+        return "accepted decomposition"
+    spec = GATE_BY_ID.get(str(gate))
+    return spec.label.lower() if spec is not None else str(gate)
+
+
+def auto_resolved_view(record: dict | None, now: datetime) -> dict | None:
+    """The roadmap's ``autoResolved`` node field: what the machine did with this
+    initiative, only while it is still worth a chip (``AUTO_RESOLVED_VISIBLE_S``
+    after ``at``). ``None`` for no record, a malformed one, or an expired one —
+    the chip leaving the row is the point, not an error."""
+    if not record or not isinstance(record, dict):
+        return None
+    try:
+        at = datetime.fromisoformat(str(record.get("at")))
+    except (TypeError, ValueError):
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    if now.astimezone(timezone.utc) - at > timedelta(seconds=AUTO_RESOLVED_VISIBLE_S):
+        return None
+    gate = str(record.get("gate") or "")
+    spec = GATE_BY_ID.get(gate)
+    return {"gate": gate, "summary": _summary(record),
+            "reverse": spec.reverse if spec is not None else None,
+            "at": at.isoformat(), "outcome": str(record.get("outcome") or "resolved"),
+            "tolerance": record.get("tolerance")}

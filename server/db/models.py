@@ -1344,6 +1344,12 @@ class Initiative(Base):
     # from their phases and they are never advanced or back-synced directly.
     parent_initiative_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("initiatives.id"), nullable=True, index=True)
+    # What the synthesizer last did with one of this row's gates under the
+    # product's risk tolerance (spec 2026-09-14 §8): the payload built by
+    # `server/sdlc/gates.py:auto_gate_record` — {gate, at, tolerance, outcome,
+    # detail} — overwritten by each resolution. NULL = never auto-resolved.
+    # Nullable so reconcile ALTER-ADDs it on both dialects (0046 records it).
+    last_auto_gate: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     # timezone=True to match the newer tables: both default to _utcnow() (AWARE),
     # which asyncpg rejects into a naive `timestamp without time zone` column.
     created_at: Mapped[datetime] = mapped_column(

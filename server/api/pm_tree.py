@@ -208,7 +208,8 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
                 primary_slug=primary["slug"] if primary else None,
                 capability_slugs=tuple(c["slug"] for c in cap_list),
                 epic=epics.get(i.id),
-                parent_slug=slug_by_id.get(i.parent_initiative_id) if i.parent_initiative_id else None))
+                parent_slug=slug_by_id.get(i.parent_initiative_id) if i.parent_initiative_id else None,
+                last_auto_gate=i.last_auto_gate))
         my_repos = repos_by_project.get(p.id, [])
         products.append(build_product_tree(ProductIn(
             slug=p.slug or "", name=p.name,

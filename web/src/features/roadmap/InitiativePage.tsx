@@ -474,6 +474,18 @@ function InitiativePageContent() {
                   {initiativeStatusLabel(initiative.status)}
                 </Badge>
                 {reason && <Badge tone="warning">{reason}</Badge>}
+                {/* What the synthesizer did with this row's gate under the product's
+                    risk tolerance (spec 2026-09-14 D5): "auto · advanced to plan ·
+                    Step back". The reverse it names is the control beside it, never
+                    a new undo path; the chip leaves after 24 h (server-side window). */}
+                {node?.autoResolved && (
+                  <Badge
+                    tone={node.autoResolved.outcome === 'refused' ? 'warning' : 'neutral'}
+                    title={`Resolved automatically under ${node.autoResolved.tolerance ?? 'the product policy'}`}
+                  >
+                    {`auto · ${node.autoResolved.summary}${node.autoResolved.reverse ? ` · ${node.autoResolved.reverse}` : ''}`}
+                  </Badge>
+                )}
                 {initiative.repo && <span className="text-xs text-ink-muted">{initiative.repo}</span>}
               </div>
             )}

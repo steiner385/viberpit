@@ -59,6 +59,10 @@ export interface InitiativeNode {
   /** Derived priority (server/pm/priority.py): the epic's RICE score, else the
    *  highest open sub-issue score, else null. Never stored, never recomputed here. */
   priority: number | null
+  /** What the synthesizer last did with one of this row's gates under the
+   *  product's risk tolerance, only inside the 24 h chip window (server
+   *  `sdlc/gates.py:auto_resolved_view`), else null. */
+  autoResolved: AutoResolved | null
   /** Slug of the program initiative this is a phase of, or null for a root
    *  initiative (spec: initiative nesting). A phase whose parent names an
    *  initiative not present in the product's tree is treated as a root — the
@@ -66,6 +70,17 @@ export interface InitiativeNode {
   parentInitiative: string | null
   /** Whether this initiative has phases nested under it (a "program"). */
   hasChildren: boolean
+}
+
+export interface AutoResolved {
+  gate: string
+  /** e.g. "advanced to plan", "merged spec", "auto-merge unavailable" */
+  summary: string
+  /** The existing human reverse action ("Step back", ...), or null. */
+  reverse: string | null
+  at: string
+  outcome: 'resolved' | 'refused'
+  tolerance: string | null
 }
 
 export interface ProductCounts {

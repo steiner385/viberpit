@@ -230,3 +230,51 @@ def test_sdlc_list_initiatives_sorts_by_priority_then_age_and_carries_progress()
     assert (scored["project_slug"], scored["priority"], scored["epic_total"], scored["epic_done"]) == \
         ("viberpit", 200.0, 2, 1)
     assert rows[1]["priority"] is None and rows[1]["project_slug"] == "viberpit"
+
+
+def test_sdlc_advance_stage_is_a_compare_and_set_that_records_the_gate():
+    """The synthesizer's Advance write (spec 2026-09-14 §6/§8/§15): one UPDATE
+    moves the stage, activates the row and stores `last_auto_gate`, and it
+    refuses — touching nothing — when the stage a human left behind is not the
+    one the engine decided from, or the row is blocked."""
+    from server.app import create_app
+    from server.db import db_session
+    from server.db.models import AuditEvent, Initiative
+    from server.sdlc.gates import auto_gate_record
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+
+    async def _run(orch):
+        async with db_session() as db:
+            db.add(Initiative(id="i-adv", slug="adv", repo="o/r", stage="design",
+                              status="awaiting_human"))
+            db.add(Initiative(id="i-blk", slug="blk", repo="o/r", stage="design",
+                              status="blocked"))
+            await db.commit()
+        gate = auto_gate_record("stage.advance", "balanced", datetime.now(timezone.utc),
+                                detail={"from": "design", "to": "plan"})
+        first = await orch._sdlc_advance_stage("i-adv", "design", "plan", gate)
+        stale = await orch._sdlc_advance_stage("i-adv", "design", "plan", gate)   # already at plan
+        blocked = await orch._sdlc_advance_stage("i-blk", "design", "plan", gate)
+        async with db_session() as db:
+            row = (await db.execute(select(Initiative).where(Initiative.id == "i-adv"))).scalar_one()
+            blk = (await db.execute(select(Initiative).where(Initiative.id == "i-blk"))).scalar_one()
+            audits = (await db.execute(select(AuditEvent).where(
+                AuditEvent.type == "sdlc.gate.auto_resolve"))).scalars().all()
+        return first, stale, blocked, row, blk, audits
+
+    with tempfile.TemporaryDirectory() as tmp, temp_env(), patch.dict(
+        os.environ, _sqlite_env(tmp)
+    ):
+        orch = _make_orch()
+        app = create_app(orchestrator=orch)
+        client = TestClient(app, raise_server_exceptions=False)
+        with client:
+            first, stale, blocked, row, blk, audits = client.portal.call(_run, orch)
+    assert (first, stale, blocked) == (True, False, False)
+    assert (row.stage, row.status) == ("plan", "active")
+    assert row.last_auto_gate["gate"] == "stage.advance"
+    assert row.last_auto_gate["detail"] == {"from": "design", "to": "plan"}
+    assert (blk.stage, blk.status, blk.last_auto_gate) == ("design", "blocked", None)
+    assert len(audits) == 1 and audits[0].identity == "sdlc-synthesizer"
+    assert audits[0].detail["to"] == "plan"

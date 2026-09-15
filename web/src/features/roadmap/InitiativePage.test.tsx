@@ -168,6 +168,28 @@ describe('InitiativePage', () => {
     expect(screen.getByRole('button', { name: 'Complete' })).toBeDisabled()
   })
 
+  it('names what the synthesizer did with the gate, and the control that reverses it', () => {
+    // The map node carries the chip (server `auto_resolved_view`); the page
+    // renders it beside the reason so "auto · advanced to plan · Step back"
+    // sits next to the Step back button that undoes it.
+    const map = h.map as { products: { initiatives: Record<string, unknown>[] }[] }
+    h.state.map = {
+      ...h.map,
+      products: [{
+        ...map.products[0],
+        initiatives: [
+          { ...map.products[0].initiatives[0],
+            autoResolved: { gate: 'stage.advance', summary: 'advanced to plan', reverse: 'Step back',
+              at: '2026-09-15T12:00:00+00:00', outcome: 'resolved', tolerance: 'balanced' } },
+          map.products[0].initiatives[1],
+        ],
+      }],
+    }
+    mount()
+    expect(screen.getByText('auto · advanced to plan · Step back')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Step back' })).toBeInTheDocument()
+  })
+
   it('Sessions tab links to the session; Capabilities tab links to the capability', () => {
     mount('/initiatives/views?tab=sessions')
     expect(screen.getByRole('link', { name: /viberpit\/views/ })).toHaveAttribute('href', '/sessions/s1')

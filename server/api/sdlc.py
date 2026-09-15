@@ -62,6 +62,7 @@ def _initiative_to_dict(i: Initiative) -> dict:
         "originRef": i.origin_ref,
         "epicRepo": i.epic_repo,
         "epicNumber": i.epic_number,
+        "lastAutoGate": i.last_auto_gate,
         "createdAt": i.created_at.isoformat() if i.created_at else None,
         "updatedAt": i.updated_at.isoformat() if i.updated_at else None,
     }

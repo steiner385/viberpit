@@ -13,7 +13,7 @@ export function ini(over: Partial<InitiativeNode> & { slug: string; projectSlug:
   return {
     title: over.slug, stage: 'build', status: 'active', primaryCapability: null,
     capabilities: [], tier: 'in-flight', reason: null, epic: null, priority: null,
-    parentInitiative: null, hasChildren: false, ...over,
+    autoResolved: null, parentInitiative: null, hasChildren: false, ...over,
   }
 }
 

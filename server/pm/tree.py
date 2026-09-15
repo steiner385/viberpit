@@ -8,6 +8,7 @@ maps these names to tones (constitution VI).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from server.db.models import INITIATIVE_STAGES
 from server.pm.desired_state import (
@@ -18,6 +19,7 @@ from server.pm.desired_state import (
     STATUS_NEEDS_HUMAN,
 )
 from server.pm.outcomes import bounced_out
+from server.sdlc.gates import auto_resolved_view
 
 TIERS: tuple[str, ...] = ("needs-you", "blocked", "in-flight", "proposed", "live", "idle")
 _RANK = {t: i for i, t in enumerate(TIERS)}
@@ -244,6 +246,10 @@ class InitiativeIn:
     capability_slugs: tuple[str, ...]
     epic: dict | None                     # {ref,url,total,done,blocked,needsHuman} or None
     parent_slug: str | None = None        # program this phase nests under, or None
+    # `Initiative.last_auto_gate` verbatim (spec 2026-09-14 §8): what the
+    # synthesizer last did with one of this row's gates, or None. Rendered as
+    # `autoResolved` only inside the visible window (`auto_resolved_view`).
+    last_auto_gate: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -284,6 +290,10 @@ def _initiative_node(ini: InitiativeIn, project_slug: str, *,
         "reason": reason,
         "epic": ini.epic,
         "priority": epic.get("priority"),
+        # What the machine did with this row's gate, while the chip is still
+        # worth showing (spec D5: 24 h). The reverse action named here is the
+        # existing human control (Step back), never a new undo path.
+        "autoResolved": auto_resolved_view(ini.last_auto_gate, datetime.now(timezone.utc)),
         # `parent_slug` here is the caller's already-sanitized parent (never
         # `ini.parent_slug` directly) so a cyclic/unknown pointer never leaks
         # through as a phantom `parentInitiative`.

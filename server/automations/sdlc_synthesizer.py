@@ -14,11 +14,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Collection, Sequence
+from datetime import datetime, timezone
 from typing import Any
 
 from server.sdlc.engine import (
-    STAGE_ARTIFACT, ArtifactView, AwaitApproval, InitiativeView, Materialize, NeedsHuman,
-    Propose, next_action)
+    STAGE_ARTIFACT, Advance, ArtifactView, AwaitApproval, InitiativeView, Materialize,
+    MergeArtifact, NeedsHuman, Propose, next_action)
+from server.sdlc.gates import auto_gate_record, effective_tolerance
 from server.sdlc.prompts import artifact_path
 
 from .base import AutomationStatus, ConfigField
@@ -62,6 +64,11 @@ UpdateArtifact = Callable[..., Awaitable[None]]
 ReadConfig = Callable[[], Awaitable["tuple[str, dict]"]]
 ReadPolicies = Callable[[], Awaitable["dict[str, dict]"]]
 LiveSessions = Callable[[Sequence[str]], Awaitable["set[str]"]]
+#: (initiative_id, from_stage, to_stage, last_auto_gate record) → advanced?
+#: False means the compare-and-set found a newer human decision (spec §15).
+AdvanceStage = Callable[[str, str, str, dict], Awaitable[bool]]
+#: The process-wide kill switch (spec D9), read per tick.
+AutoresolveEnabled = Callable[[], bool]
 
 
 def _to_views(ini: dict, artifacts: list[dict]) -> tuple[InitiativeView, list[ArtifactView]]:
@@ -141,7 +148,10 @@ class SdlcSynthesizer:
         awaiting = counts["awaiting"]
         proposed = counts["proposed"]
         queued = counts.get("queued", 0)
+        auto_resolved = counts.get("auto_resolved", 0)
         text = f"{proposed} proposed this refresh · {awaiting} awaiting human action"
+        if auto_resolved:
+            text += f" · {auto_resolved} auto-resolved"
         if queued:
             text += f" · {queued} queued behind the cap"
         return AutomationStatus(
@@ -178,6 +188,8 @@ class SdlcSynthesizerLoop:
         materialization_attempts: MaterializationAttempts | None = None,
         read_policies: ReadPolicies | None = None,
         live_sessions: LiveSessions | None = None,
+        advance_stage: AdvanceStage | None = None,
+        autoresolve_enabled: AutoresolveEnabled | None = None,
     ) -> None:
         self._ctx = ctx
         self._list_initiatives = list_initiatives
@@ -201,6 +213,13 @@ class SdlcSynthesizerLoop:
         self._read_config = read_config
         self._read_policies = read_policies
         self._live_sessions = live_sessions
+        self._advance_stage = advance_stage
+        #: No seam = no switch = `cautious` everywhere (fail-closed: an unwired
+        #: deployment must never resolve a gate by accident).
+        self._autoresolve_enabled = autoresolve_enabled
+        #: slugs already warned that the engine wanted an advance this
+        #: deployment cannot write — once, like the materialize seam.
+        self._advance_unwired: set[str] = set()
         self._clock = clock
         self._lock = asyncio.Lock()
 
@@ -218,7 +237,11 @@ class SdlcSynthesizerLoop:
             return
         initiatives = await self._list_initiatives()
         policies = await self._read_policies() if self._read_policies is not None else {}
-        counts = {"initiatives": len(initiatives), "proposed": 0, "awaiting": 0, "queued": 0}
+        # The kill switch is read once per tick (spec §15: a flip takes effect on
+        # the next tick, nothing in flight is interrupted).
+        enabled = bool(self._autoresolve_enabled()) if self._autoresolve_enabled is not None else False
+        counts = {"initiatives": len(initiatives), "proposed": 0, "awaiting": 0,
+                  "queued": 0, "auto_resolved": 0}
         # Front-chain slots per product, counted before any spawn this tick so
         # the cap is judged against the whole pool, not the rows visited so far.
         artifacts_by_id = {ini["id"]: await self._list_artifacts(ini["id"]) for ini in initiatives}
@@ -240,15 +263,23 @@ class SdlcSynthesizerLoop:
         for ini in initiatives:
             artifacts = artifacts_by_id[ini["id"]]
             state, arts = _to_views(ini, artifacts)
-            # Phase 1: literal cautious; phase 2 passes the product's effective tolerance.
-            action = next_action(state, arts, mode, "cautious")
-            if isinstance(action, AwaitApproval) or (
+            key = ini.get("project_slug")
+            policy = effective_policy(policies.get(key) if key else None)
+            tolerance = effective_tolerance(policy.get("risk_tolerance"), enabled=enabled)
+            action = next_action(state, arts, mode, tolerance)
+            if isinstance(action, AwaitApproval | MergeArtifact) or (
                     isinstance(action, NeedsHuman)
                     and (state.status == "blocked" or state.stage == "build")):
+                # `MergeArtifact` counts as awaiting until the arm-auto-merge
+                # seam lands (phase 2b): the PR still needs a human merge today.
                 counts["awaiting"] += 1
+            if isinstance(action, Advance):
+                if await self._advance(ini, state, action, tolerance):
+                    counts["auto_resolved"] += 1
+                else:
+                    counts["awaiting"] += 1
             if isinstance(action, Propose) and action.kind in ("spec", "plan"):
-                key = ini.get("project_slug")
-                cap = int(effective_policy(policies.get(key) if key else None)["max_initiatives_in_flight"])
+                cap = int(policy["max_initiatives_in_flight"])
                 if producing.get(key, 0) >= cap:
                     counts["queued"] += 1
                     if key not in warned:
@@ -276,6 +307,35 @@ class SdlcSynthesizerLoop:
                     counts[outcome] += 1
             await self._enrich(artifacts)
         publish_observation(self._ctx, "sdlc_synthesizer_counts", counts)
+
+    async def _advance(self, ini: dict, state: InitiativeView, action: Advance,
+                       tolerance: str) -> bool:
+        """Execute the engine's ``Advance`` (spec §6): the gate the tolerance
+        covered is ``stage.advance_built`` from ``build`` and ``stage.advance``
+        elsewhere. The write is the injected compare-and-set; ``False`` from it
+        means a human moved the row first (§15) and the loop just moves on.
+        Returns whether a gate was resolved this tick."""
+        slug = str(ini.get("slug") or "")
+        if self._advance_stage is None:
+            if slug not in self._advance_unwired:
+                self._advance_unwired.add(slug)
+                await self._emit("warn", f"{slug}: the stage would advance under "
+                                 f"{tolerance} but stage advance is not wired — advance it by hand",
+                                 kind="advance_unwired", target=slug)
+            return False
+        gate_id = "stage.advance_built" if state.stage == "build" else "stage.advance"
+        record = auto_gate_record(gate_id, tolerance, datetime.now(timezone.utc),
+                                  detail={"from": state.stage, "to": action.to_stage})
+        advanced = await self._advance_stage(ini["id"], state.stage, action.to_stage, record)
+        if not advanced:
+            log.info("sdlc_synthesizer.advance_stale slug=%s from=%s", slug, state.stage)
+            return False
+        await self._emit("info", f"{slug}: advanced {state.stage} → {action.to_stage} "
+                         f"under {tolerance} (Step back reverses it)",
+                         kind="auto_resolved", target=slug,
+                         detail={"gate": gate_id, "tolerance": tolerance,
+                                 "from": state.stage, "to": action.to_stage})
+        return True
 
     async def _materialize(self, ini: dict) -> str | None:
         """Spawn the decompose session for a merged plan (spec 003 §7b).
