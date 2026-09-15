@@ -40,6 +40,8 @@ holds the session rather than archiving a question away.
 """
 from __future__ import annotations
 
+import asyncio
+
 import json
 import logging
 import os
@@ -130,7 +132,7 @@ async def completion_awaits_user(
             options = ClaudeAgentOptions(
                 model="haiku", system_prompt=_SYSTEM, cwd=helper_cwd(),
                 env=helper_env(config_dir),
-                allowed_tools=[], setting_sources=[], **cli_path_kwargs())
+                allowed_tools=[], setting_sources=[], **(await asyncio.to_thread(cli_path_kwargs)))
     except Exception as exc:
         log.warning("open_question.classify unavailable: %s", exc)
         return True

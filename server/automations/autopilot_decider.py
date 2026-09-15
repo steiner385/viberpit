@@ -2,6 +2,8 @@
 _query_fn so the real model is NEVER called in tests; safe 'escalate' on any failure."""
 from __future__ import annotations
 
+import asyncio
+
 import json
 import logging
 import os
@@ -134,7 +136,7 @@ async def decide(ctx: DecisionContext, *, _query_fn=None, _config_dir=None, _cwd
             options = ClaudeAgentOptions(
                 model="haiku", system_prompt=_GUIDANCE, cwd=_cwd or helper_cwd(),
                 env=helper_env(config_dir),
-                allowed_tools=[], setting_sources=[], **cli_path_kwargs())
+                allowed_tools=[], setting_sources=[], **(await asyncio.to_thread(cli_path_kwargs)))
         query_fn = _query_fn or _default_sdk_query_fn()
     except Exception as exc:  # bad/unimportable options
         log.warning("autopilot.decide failed: %s", exc)

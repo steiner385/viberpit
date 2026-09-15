@@ -34,6 +34,8 @@ spawn site asks. ``SpawnModelChoice`` below is its answer type.
 """
 from __future__ import annotations
 
+import asyncio
+
 import logging
 import os
 from collections.abc import Sequence
@@ -130,7 +132,7 @@ async def assess_model(
             env=helper_env(config_dir),
             allowed_tools=[],
             setting_sources=[],
-            **cli_path_kwargs(),
+            **(await asyncio.to_thread(cli_path_kwargs)),
         )
     except Exception as exc:
         log.warning("assess_model: model call failed: %s", exc)

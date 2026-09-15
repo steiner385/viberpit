@@ -6,6 +6,8 @@ The caller (POST /api/dispatch/assess) shows the refinement only when non-None.
 """
 from __future__ import annotations
 
+import asyncio
+
 import logging
 import os
 
@@ -88,7 +90,7 @@ async def refine_prompt(
             env=helper_env(config_dir),
             allowed_tools=[],
             setting_sources=[],
-            **cli_path_kwargs(),
+            **(await asyncio.to_thread(cli_path_kwargs)),
         )
     except Exception as exc:
         log.warning("refine_prompt: setup failed: %s", exc)

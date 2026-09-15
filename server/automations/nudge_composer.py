@@ -3,6 +3,8 @@ injected _query_fn so the real model is NEVER called in tests; returns None on a
 failure or an explicit escalate — there is NO template fallback (spec §3)."""
 from __future__ import annotations
 
+import asyncio
+
 import json
 import logging
 import os
@@ -85,7 +87,7 @@ async def compose_nudge(ctx, *, intent_hint, verdict_reason, verdict_remedy,
             options = ClaudeAgentOptions(
                 model="sonnet", system_prompt=_GUIDANCE, cwd=_cwd or helper_cwd(),
                 env=helper_env(config_dir),
-                allowed_tools=[], setting_sources=[], **cli_path_kwargs())
+                allowed_tools=[], setting_sources=[], **(await asyncio.to_thread(cli_path_kwargs)))
         query_fn = _query_fn or _default_sdk_query_fn()
         parts: list[str] = []
         prompt = _build_prompt(ctx, intent_hint=intent_hint, verdict_reason=verdict_reason,
