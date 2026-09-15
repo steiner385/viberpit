@@ -300,6 +300,30 @@ def clones_base(repo_root: str) -> Path:
     return Path(repo_root).expanduser() / ".ccswitch" / "clones"
 
 
+# The two trailing segments of ``clones_base`` (the managed dot-dir, then
+# ``clones``), derived from it so the pair can never drift from the real layout.
+_CLONES_SEGMENTS: tuple[str, ...] = clones_base("/").relative_to("/").parts
+
+
+def is_clone_path(path: str) -> bool:
+    """True if ``path`` is a managed repo clone or anything inside one.
+
+    Judged by path segments — the ``clones_base`` tail appearing anywhere in the
+    path — rather than against the current ``repo_root``, the same way the
+    session purge's dot-dir containment guard is, so a repo_root move cannot
+    make an old clone look like a deletable worktree.
+
+    Exists because a session can legitimately carry a clone as its ``cwd``: a
+    queued session only gets its own worktree at spawn time, so until then the
+    row points at the shared clone every worktree of that repo hangs off. Nothing
+    that "cleans up a session's directory" may ever rmtree such a path (the
+    2026-09-08 KinDash incident: one purged queued row took 77 worktrees with it).
+    """
+    parts = Path(path).parts
+    n = len(_CLONES_SEGMENTS)
+    return any(parts[i:i + n] == _CLONES_SEGMENTS for i in range(len(parts) - n + 1))
+
+
 # GitHub owner/repo names are [A-Za-z0-9._-]; anything else in a clone path
 # component is either a bug upstream (a literal ``<owner>`` placeholder leaking
 # into the path) or an attempt at traversal. Both must fail loudly rather than

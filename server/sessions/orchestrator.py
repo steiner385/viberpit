@@ -17192,6 +17192,13 @@ class SessionOrchestrator:
         in place rather than risk deleting a user's real directory. Guarded by
         path segment, not the current worktrees base, so a repo_root move can't
         strand directories the way the 2026-08-21 archive-root incident did.
+
+        The shared clone is the one managed path a row may point at that is
+        NOT the session's own: a queued session (or a backlog dispatch that never
+        spawned) records the repo clone as ``cwd`` until spawn creates its
+        worktree. Purging such a row must never rmtree the clone — on 2026-09-08 it
+        did, orphaning 77 KinDash worktrees and failing every queued pm session at
+        spawn with "Working directory does not exist".
         """
         if ".ccswitch" not in cwd_path.parts:
             log.warning(
@@ -17200,6 +17207,14 @@ class SessionOrchestrator:
                 session_id, cwd_path,
             )
             return True  # nothing we should delete on disk; the row can still go
+        if gitrepos.is_clone_path(str(cwd_path)):
+            log.warning(
+                "session.permanent_delete id=%s cwd=%s is a shared repo clone, not a "
+                "session worktree (row never spawned) — leaving it in place, "
+                "deleting the row only",
+                session_id, cwd_path,
+            )
+            return True
         # Resolve the shared clone BEFORE the delete, while the worktree is still a
         # valid git dir, so we can scope-deregister exactly this path afterward
         # (never a global prune — issue #177). Off the event loop: git subprocess
