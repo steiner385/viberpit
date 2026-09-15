@@ -22,6 +22,7 @@ import { useAssistantSession, useAssistantStatus } from '@/api/assistant'
 import { SessionRuntimeProvider, useSessionRuntimeContext } from '@/features/sessions/SessionRuntimeProvider'
 import { TranscriptView } from '@/features/sessions/transcript/TranscriptView'
 import { SessionComposer } from '@/features/sessions/composer/SessionComposer'
+import { SessionErrorBanner } from '@/features/sessions/panels/SessionErrorBanner'
 import { useOpenSessionId } from '@/shell/openSessionId'
 import { statusTier } from '@/session/statusTier'
 import { Button } from '@/ui/Button'
@@ -83,6 +84,9 @@ function AssistantSheetBody() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <AssistantHeader />
+      {/* Session-level errors (a failed wake, an unknown thread) used to reach this
+          runtime's reducer and render nowhere — SessionBody was the only surface. */}
+      <SessionErrorBanner rt={rt} />
       <div className="min-h-0 flex-1 overflow-y-auto" aria-live="polite">
         <StarterChips starters={startersFor(pathname, openSessionId)} />
         <TranscriptView

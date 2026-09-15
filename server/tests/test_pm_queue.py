@@ -6,8 +6,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from server.pm.desired_state import STATUS_OPTIONS, STATUS_READY
-from server.pm.queue import (MIN_STATUS_OPTIONS, SKIP_REASONS, QueueRow, rank, rank_key,
-                             skip_reason, to_candidate)
+from server.pm.queue import (MIN_STATUS_OPTIONS, SKIP_REASONS, URGENT_LABELS, QueueRow, rank,
+                             rank_key, skip_reason, to_candidate)
 
 NOW = datetime(2026, 9, 4, tzinfo=timezone.utc)
 
@@ -128,14 +128,24 @@ def test_rank_key_is_the_one_ordering_and_applies_to_rows_and_entries():
     # An undated row sorts last on its own boolean leg rather than via a sentinel
     # datetime, so the key never compares a naive datetime with an aware one.
     undated = _row(ref="o/r#9", score=5.0, gh_created_at=None)
-    assert rank_key(undated)[2] is True
+    # Index 3, not 2: urgency is a leading leg of the key (see the incident tests
+    # at the bottom of this file).
+    assert rank_key(undated)[3] is True
     assert sorted([undated, rows[0]], key=rank_key)[0].ref == "o/r#1"
 
 
 def test_to_candidate_is_the_runner_shape_plus_provenance():
     entries, _ = rank([_row()], now=NOW)
     assert to_candidate(entries[0]) == {"ref": "o/r#1", "number": 1, "repo": "o/r", "title": "t",
-                                        "body": "", "url": "u", "score": 10.0, "product": "viberpit"}
+                                        "body": "", "url": "u", "score": 10.0, "product": "viberpit",
+                                        "urgent": False}
+
+
+def test_to_candidate_carries_urgency_to_the_grouper():
+    # The grouper re-orders the pool into a plan, so urgency has to survive the
+    # hand-off as DATA — the candidate dict is the only thing it receives.
+    entries, _ = rank([_row(labels=("deploy-monitor",))], now=NOW)
+    assert to_candidate(entries[0])["urgent"] is True
 
 
 def test_rank_rejects_unknown_min_status():
@@ -186,3 +196,60 @@ def test_every_skip_reason_is_in_the_vocabulary():
         assert got == expected
         seen.add(got)
     assert seen == set(SKIP_REASONS)
+
+
+# ── urgency: a reported incident preempts the queue (#16150, #16151) ──────────
+
+def test_a_reported_incident_outranks_everything_regardless_of_score_and_age():
+    """The incident the monitor files is unscored and brand new — which under a
+    score-then-oldest key is the WORST possible position, not the best.
+
+    Live evidence: cairnea/KinDash#16150 and #16151 reported both admin
+    environments down and ranked 328th and 329th of 332, behind three-day-old
+    Playwright flakes, for the seven hours the environments stayed broken.
+    Urgency is therefore a LEADING leg of the key: no score and no age can put a
+    downed environment behind ordinary backlog.
+    """
+    incident = _row(ref="o/r#900", score=None, labels=("deploy-monitor",),
+                    gh_created_at=NOW)  # unscored AND newest: dead last before this
+    scored_old = _row(ref="o/r#1", score=9.0, gh_created_at=NOW - timedelta(days=30))
+    plain = _row(ref="o/r#2", score=None, gh_created_at=NOW - timedelta(days=1))
+    assert [r.ref for r in sorted([scored_old, plain, incident], key=rank_key)] == [
+        "o/r#900", "o/r#1", "o/r#2"]
+
+
+def test_urgency_is_case_insensitive_like_the_bot_label_check():
+    assert rank_key(_row(labels=("Deploy-Monitor",)))[0] is False
+
+
+def test_urgency_survives_the_row_to_entry_merge():
+    """``rank_key`` must answer the same before and after ranking: the Backlog
+    Runner ranks each product separately and re-sorts the MERGED entries. Urgency
+    living only on the row would be silently dropped by exactly that merge."""
+    rows = [_row(ref="o/r#1", score=9.0, gh_created_at=NOW - timedelta(days=30)),
+            _row(ref="o/r#900", score=None, labels=("deploy-monitor",), gh_created_at=NOW)]
+    entries, _ = rank(rows, now=NOW)
+    assert [e.ref for e in entries] == ["o/r#900", "o/r#1"]
+    assert (entries[0].urgent, entries[1].urgent) == (True, False)
+    assert [e.ref for e in sorted(entries, key=rank_key)] == [e.ref for e in entries]
+
+
+def test_urgent_labels_pin_the_deploy_monitor_label():
+    # Same pinning rationale as MIN_STATUS_OPTIONS above: the label is OWNED by
+    # the automation that files the issue, but importing an automation into the
+    # pure ranking core would invert the layering. Pin the coupling here so
+    # renaming the automation's LABEL fails this test instead of silently
+    # demoting every incident back to the bottom of the queue.
+    from server.automations.deploy_monitor import LABEL
+
+    assert LABEL in URGENT_LABELS
+
+
+def test_ordinary_ranking_is_unchanged_by_the_urgency_leg():
+    rows = [_row(ref="o/r#1", score=5.0, gh_created_at=NOW - timedelta(days=1)),
+            _row(ref="o/r#2", score=None, gh_created_at=NOW - timedelta(days=9)),
+            _row(ref="o/r#3", score=5.0, gh_created_at=NOW - timedelta(days=3)),
+            _row(ref="o/r#4", score=9.0),
+            _row(ref="o/r#5", score=None, gh_created_at=None)]
+    assert [r.ref for r in sorted(rows, key=rank_key)] == [
+        "o/r#4", "o/r#3", "o/r#1", "o/r#2", "o/r#5"]

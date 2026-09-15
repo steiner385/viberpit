@@ -1572,6 +1572,17 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
             async with _attach_lock(session_id):
                 live_ok = await _ensure_live(session_id)
             if not live_ok:
+                # The receipt ack above promised "resuming"; retract it. The error
+                # frame _resume_driver_or_error already emitted says WHY, but it is
+                # a banner, not a stage — without this the pending bubble kept its
+                # spinner on "waking session…" indefinitely (2026-09-14, the
+                # assistant drawer against a thread whose row was stamped for
+                # another host). Terminal, like the browser's own "stalled": the
+                # text was never handed to a driver and is not retried here.
+                log.warning("ws.prompt: wake failed, prompt not delivered session=%s",
+                            session_id)
+                await _send({"type": "promptAck", "sessionId": session_id,
+                             "stage": "failed"})
                 return
             ensured = time.monotonic()
             text = msg.get("text", "")

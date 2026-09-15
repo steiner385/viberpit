@@ -7,9 +7,7 @@
  */
 
 import { useState, useEffect, type ReactNode } from 'react'
-import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { IconButton } from '@/ui/IconButton'
 import type { SessionRuntime } from '@/session/useSessionRuntime'
 import { SessionMeta } from './SessionMeta'
 import { StatusBar } from './StatusBar'
@@ -19,6 +17,7 @@ import { WorkingIndicator } from './WorkingIndicator'
 import { CondensingProgress } from '@/features/sessions/transcript/CondensingProgress'
 import { PendingQuestionPanel } from '@/features/sessions/panels/PendingQuestionPanel'
 import { PendingPermissionPanel } from '@/features/sessions/panels/PendingPermissionPanel'
+import { SessionErrorBanner } from '@/features/sessions/panels/SessionErrorBanner'
 import { InterruptedAskNotice } from '@/features/sessions/transcript/InterruptedAskNotice'
 import { YourTurnPanel } from '@/features/sessions/panels/YourTurnPanel'
 import { PendingModelApprovalPanel } from '@/features/sessions/panels/PendingModelApprovalPanel'
@@ -161,38 +160,9 @@ export function SessionBody({ rt, actionsSlot }: { rt: SessionRuntime; actionsSl
       {(() => {
         const conversationPanel = (
           <>
-            {/* Error banner. Transient by design: dismissable here, and retired
-                automatically by the reducer when the next prompt is sent. The
-                matching inline ErrorCard is the durable record, so closing this
-                never loses the failure. */}
-            {rt.state.error && (
-              <div
-                role="alert"
-                className={cn(
-                  'flex-shrink-0 flex items-start gap-2 px-4 py-3 text-sm',
-                  'bg-danger-wash text-danger',
-                  'border-b border-danger',
-                )}
-              >
-                <div className="flex-1 min-w-0">
-                  <span className="font-medium">Error: </span>
-                  {rt.state.error.message}
-                  {rt.state.error.resetsAt && (
-                    <span className="ml-2 text-xs opacity-75">
-                      (Resets at {new Date(rt.state.error.resetsAt).toLocaleTimeString()})
-                    </span>
-                  )}
-                </div>
-                <IconButton
-                  aria-label="Dismiss"
-                  size="sm"
-                  onClick={rt.dismissError}
-                  className="-my-1 shrink-0 text-danger"
-                >
-                  <X size={14} aria-hidden="true" />
-                </IconButton>
-              </div>
-            )}
+            {/* Error banner — shared with the assistant drawer; see the component
+                for why it is transient and where the durable record lives. */}
+            <SessionErrorBanner rt={rt} />
 
             {/* Transcript — rotation dividers are interleaved inline by anchor turn.
                 With no turns to show, the transcript area would be blank; the

@@ -1,4 +1,4 @@
-"""Tests for per-session git worktrees (ccswitch.worktrees)."""
+"""Tests for per-session git worktrees (the worktrees module)."""
 import os
 import subprocess
 import tempfile

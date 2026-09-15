@@ -26,6 +26,10 @@ export type PromptStage =
   | 'delivered'
   /** No ack inside PROMPT_ACK_TIMEOUT_MS. We cannot say it landed. */
   | 'stalled'
+  /** The edge received it but could not wake the session — the prompt was NOT
+   *  delivered and will not be retried. Terminal, like `stalled`; the `error`
+   *  frame that precedes it carries the reason. */
+  | 'failed'
 
 /**
  * Monotonic ordering for FORWARD progress. Acks and the SDK's own echo race each
@@ -37,7 +41,7 @@ export type PromptStage =
  * through `advancesStage`; it is set outright (reducer `_promptHeld`).
  */
 const RANK: Record<PromptStage, number> = {
-  buffered: 0, sent: 1, received: 2, resuming: 3, delivered: 4, stalled: 5,
+  buffered: 0, sent: 1, received: 2, resuming: 3, delivered: 4, stalled: 5, failed: 6,
 }
 
 /** True when `next` is a forward move from `cur`. Equal stages are not advances. */
@@ -58,6 +62,7 @@ export const STAGE_LABEL: Record<PromptStage, string> = {
   resuming: 'Received — waking session…',
   delivered: 'Delivered — starting…',
   stalled: 'No response from the server',
+  failed: 'Not delivered — the session could not be woken',
 }
 
 /** Compact form for the session-list pill, where there is no room for a sentence. */
@@ -68,11 +73,12 @@ export const STAGE_PILL_LABEL: Record<PromptStage, string> = {
   resuming: 'Sent — waking…',
   delivered: 'Sent — starting…',
   stalled: 'Prompt unacknowledged',
+  failed: 'Prompt not delivered',
 }
 
 /** Stages that mean the prompt is still on its way (i.e. keep showing a spinner). */
 export function isInFlight(stage: PromptStage): boolean {
-  return stage !== 'stalled'
+  return stage !== 'stalled' && stage !== 'failed'
 }
 
 /** Only a prompt we put ON THE WIRE and heard nothing about can stall. A held

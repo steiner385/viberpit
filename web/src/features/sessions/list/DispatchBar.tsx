@@ -17,6 +17,7 @@ import { AttachmentChips } from '@/features/sessions/composer/AttachmentChips'
 import { MicButton } from '@/features/sessions/composer/MicButton'
 import { useDictationField } from '@/lib/useDictationField'
 import { DispatchError } from './dispatchError'
+import { useRepoSuggestion, type UseRepoSuggestionOptions } from './useRepoSuggestion'
 import { Checkbox } from '@/ui/Checkbox'
 
 export interface DispatchBarProps {
@@ -111,6 +112,11 @@ export interface DispatchBarProps {
    * no-op callback would leave focus pinned to the prompt — a keyboard trap.
    */
   drivesList?: boolean
+  /**
+   * Timings for the wrong-repository check (`useRepoSuggestion`). Tests pass
+   * short values so they can run in real time; production takes the defaults.
+   */
+  repoCheckOptions?: Pick<UseRepoSuggestionOptions, 'debounceMs' | 'minChars' | 'submitWaitMs'>
 }
 
 export function DispatchBar({
@@ -137,6 +143,7 @@ export function DispatchBar({
   onToggleHighlighted,
   activeDescendantIsHeader,
   drivesList = true,
+  repoCheckOptions,
 }: DispatchBarProps) {
   const [text, setText] = useState('')
   const [repo, setRepo] = useState<string>(() => getLastRepo() ?? '')
@@ -163,10 +170,14 @@ export function DispatchBar({
   const [assessing, setAssessing] = useState(false)
   const [refinedPrompt, setRefinedPrompt] = useState<string | null>(null)
   const [dispatchError, setDispatchError] = useState<string | null>(null)
+  // True when Enter / Create was intercepted by the wrong-repository card: the
+  // draft is intact and the card's Switch / Keep buttons finish the dispatch.
+  const [heldDispatch, setHeldDispatch] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const voice = useDictationField({ value: text, setValue: setText, textareaRef })
   const { assess } = useAssessDispatch()
+  const repoHint = useRepoSuggestion({ text, repo, enabled: !isPending, ...repoCheckOptions })
 
   // Auto-focus when autoFocusKey changes (or on mount)
   useEffect(() => {
@@ -214,6 +225,8 @@ export function DispatchBar({
     setText(e.target.value)
     // Editing the draft is the user moving on from the last failure.
     if (dispatchError) setDispatchError(null)
+    // …and from a held Enter: the next Enter re-checks the new text.
+    if (heldDispatch) setHeldDispatch(false)
     const el = e.target
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, 192)}px`
@@ -264,11 +277,40 @@ export function DispatchBar({
       if (drivesList) onOpenHighlighted()
       return
     }
+    // A second Enter while the card is up is the user insisting: same as Keep.
+    if (heldDispatch) {
+      repoHint.dismiss()
+      await performDispatch()
+      return
+    }
+    // Wrong-repository gate: a confident "this belongs elsewhere" holds the
+    // dispatch and lets the card's Switch / Keep buttons finish it. Fail-open —
+    // no answer within the wait, an error, or the check disabled ⇒ null.
+    if (await repoHint.ensureChecked()) {
+      setHeldDispatch(true)
+      return
+    }
+    await performDispatch()
+  }
+
+  /**
+   * The dispatch itself, split from `dispatchNow` so the wrong-repository
+   * card can send with a repo it has only just selected — `repoOverride`
+   * wins over the `repo` state, which will not have settled yet.
+   */
+  async function performDispatch(repoOverride?: string) {
+    // The DOM value, not the closure's `text`: `dispatchNow` may have awaited
+    // the repo check for a few seconds, and anything typed meanwhile belongs in
+    // the prompt rather than being dropped and then cleared.
+    const trimmed = (textareaRef.current?.value ?? text).trim()
+    const refs = att.refs()
+    const targetRepo = repoOverride ?? repo
+    setHeldDispatch(false)
     setDispatchError(null)
     try {
       await onDispatch({
         initialPrompt: trimmed,
-        repo: repo || null,
+        repo: targetRepo || null,
         account: account || null,
         // "default" ⇒ omit so the backend leaves the account's model as-is.
         model: model && model !== 'default' ? model : null,
@@ -388,6 +430,20 @@ export function DispatchBar({
     if (v) setLastRepo(v)
   }
 
+  /** Wrong-repository card: take the suggestion, then finish a held dispatch with it. */
+  function switchToSuggestedRepo(next: string) {
+    setRepo(next)
+    setLastRepo(next)
+    repoHint.dismiss()
+    if (heldDispatch) void performDispatch(next)
+  }
+
+  /** Wrong-repository card: stay put, then finish a held dispatch as-is. */
+  function keepCurrentRepo() {
+    repoHint.dismiss()
+    if (heldDispatch) void performDispatch()
+  }
+
   // Determine if the persisted repo is in the current repo list
   const persistedRepo = repo
   const repoIsKnown = repos.some((r) => r.nameWithOwner === persistedRepo)
@@ -484,6 +540,9 @@ export function DispatchBar({
     if (names.length === 0) return 'unavailable'
     return `no runner can run it (${names.map((n) => `${n}: ${engineReasonLabel(o.unavailableReasons[n])}`).join(', ')})`
   }
+
+  // Narrowed once so the card's JSX needs no non-null assertions.
+  const repoSuggestion = repoHint.suggestion
 
   return (
     <div
@@ -817,6 +876,60 @@ export function DispatchBar({
           Create
         </button>
       </div>
+
+      {/* Wrong-repository check: the server thinks this prompt belongs to a
+          different repo. Same visual language as the Refined chip below. With
+          `heldDispatch` the Enter/Create that surfaced it was intercepted, and
+          either button finishes that dispatch. */}
+      {repoSuggestion !== null && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={cn(
+            'flex items-start gap-2 rounded-md px-3 py-2 text-sm',
+            'bg-accent-wash border border-accent',
+            'text-ink',
+          )}
+        >
+          <span className="flex-1 min-w-0 break-words">
+            {heldDispatch && <span className="font-medium">Not created yet — </span>}
+            Looks like <strong>{repoSuggestion.repo}</strong> work
+            {repoSuggestion.reason ? ` — ${repoSuggestion.reason}` : ''}
+          </span>
+          <div className="flex flex-shrink-0 gap-1">
+            <button
+              type="button"
+              aria-label={`Switch repository to ${repoSuggestion.repo}`}
+              onClick={() => switchToSuggestedRepo(repoSuggestion.repo)}
+              disabled={isPending}
+              className={cn(
+                'rounded px-2 py-1 text-xs font-medium',
+                'bg-accent text-accent-ink hover:bg-accent/90',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                'disabled:opacity-50 disabled:cursor-not-allowed',
+              )}
+            >
+              Switch to {repoSuggestion.repo}
+            </button>
+            <button
+              type="button"
+              aria-label="Keep current repository"
+              onClick={keepCurrentRepo}
+              disabled={isPending}
+              className={cn(
+                'rounded px-2 py-1 text-xs font-medium',
+                'border border-edge-strong',
+                'text-ink-muted',
+                'hover:bg-surface-raised',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                'disabled:opacity-50 disabled:cursor-not-allowed',
+              )}
+            >
+              Keep {repo || 'no repository'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {refinedPrompt !== null && (
         <div className={cn(

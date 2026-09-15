@@ -10,6 +10,8 @@ links:
     - web/src/shell/useViewport.tsx
     - web/src/features/sessions/list/SessionCard.tsx
     - web/src/features/sessions/list/DispatchBar.tsx
+    - web/src/features/sessions/list/useRepoSuggestion.ts
+    - web/src/api/repoCheck.ts
     - web/src/features/sessions/SessionBody.tsx
     - web/src/features/sessions/composer/Composer.tsx
   prs: [423, 461, 498, 776, 778, 316, 313, 330, 339, 524, 566, 376, 1471]
@@ -95,6 +97,24 @@ above, moved every component listed here out of `components/` into its `features
 home, and replaced the ad-hoc `lib/useMediaQuery.ts` call sites with the single
 `useViewport()` reader. The session transcript is a live view bridged over WebSocket, not a
 raw PTY dump — there is no terminal emulator in the tree.
+
+**Dispatch-bar prompt checks** — two fail-open helpers sit on the new-session prompt in
+`DispatchBar.tsx`. The ✨ *Assess and refine* button asks `POST /api/dispatch/assess` for a
+model tier and a refined prompt, shown as the "Refined:" chip with Accept / Discard.
+
+*Wrong-repository check* — a prompt about KinDash dispatched to `steiner385/viberpit` used to
+start a session in the wrong checkout. Now, once the draft is ≥ 30 characters and has been idle
+for 1.5 s, the bar asks `POST /api/dispatch/repo-check` `{prompt, repo}`
+(`web/src/api/repoCheck.ts`, `useRepoSuggestion.ts`); results are cached per draft text so the
+same prompt is never re-asked. When the server is confident the prompt belongs elsewhere a card
+in the Refined chip's visual language (`role="status"`) appears under the textarea: "Looks like
+**cairnea/KinDash** work — *reason*", with **Switch to cairnea/KinDash** (selects and persists
+that repo, even one not in the Repository list) and **Keep <current repo>** (dismisses for this
+draft; typing new text re-arms). Enter / Create also runs the check first, waiting at most 3 s:
+a positive answer *holds* the dispatch — the card is prefixed "Not created yet — " and either
+button finishes the dispatch with the chosen repo — while a null, an error, or a timeout
+dispatches immediately. Kill switch: `VIBERPIT_DISPATCH_REPO_CHECK_ENABLED` (default on) on the
+edge; off, the endpoint answers "no suggestion" and the UI stays silent.
 
 **Evidence** —
 - Shell and layout: `web/src/shell/AppShell.tsx` (regions + mode matrix), `web/src/shell/useViewport.tsx`

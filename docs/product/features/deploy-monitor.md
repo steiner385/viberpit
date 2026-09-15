@@ -32,4 +32,13 @@ linking the old one.
 notification rules, fanning out like *PR broke* when no rules exist) is the actual alert — scope a
 rule by repo, or ask the assistant to "watch deploy cairnea/KinDash fails".
 
+**Queue priority.** An issue filed in `file` mode carries the `deploy-monitor` label, which the
+backlog queue treats as urgent (`server/pm/queue.py:URGENT_LABELS`): it sorts ahead of ordinary
+backlog in `rank_key` and its group is floated to the front of the grouping plan. Without that it
+sorted *last* — a filed incident is unscored and brand new, the two worst positions under a
+score-then-oldest ordering, so #16150 and #16151 sat at 328th and 329th of 332 while both admin
+environments stayed down. Priority reorders only; it does not override a product's `dispatch: off`,
+its `max_in_flight`, or a repo paused by weight, so filing an incident can never exceed a ceiling
+an operator set.
+
 Spec: `docs/superpowers/specs/2026-09-12-deploy-monitor-design.md`.
