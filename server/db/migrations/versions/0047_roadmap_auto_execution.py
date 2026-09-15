@@ -1,7 +1,7 @@
 """Roadmap auto-execution phase 2: record what the machine did with a gate.
 
-Revision ID: 0046_roadmap_auto_execution
-Revises: 0045_automation_ownership
+Revision ID: 0047_roadmap_auto_execution
+Revises: 0046_pr_resolution_source_harvest
 
 ``initiatives.last_auto_gate`` (JSON, nullable) carries the payload
 ``server/sdlc/gates.py:auto_gate_record`` builds — {gate, at, tolerance,
@@ -12,8 +12,11 @@ this revision is the reviewable record of the change.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0046_roadmap_auto_execution"
-down_revision = "0045_automation_ownership"
+revision = "0047_roadmap_auto_execution"
+# Renumbered from 0046: #1758's `0046_pr_resolution_source_harvest` and this one
+# both chained off 0045 and merged without a git conflict, leaving alembic two
+# heads and master red. Chain off master's newest revision, never off 0045 again.
+down_revision = "0046_pr_resolution_source_harvest"
 branch_labels = None
 depends_on = None
 
