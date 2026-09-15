@@ -237,7 +237,7 @@ def test_rollup_sums_leaf_descendants_and_leaves_leaves_alone():
     }
     parent_of = {"prog": None, "p1": "prog", "p2": "prog", "solo": None, "noepic": None}
     out = rollup_epic_progress(entries, parent_of)
-    assert out["prog"] == {"ref": "o/r#1", "url": "u1", "total": 10, "done": 4, "blocked": 1, "needsHuman": 2}
+    assert out["prog"] == {"ref": "o/r#1", "url": "u1", "total": 10, "done": 4, "blocked": 1, "needsHuman": 2, "priority": None}
     assert out["p1"] == entries["p1"] and out["solo"] == entries["solo"] and out["noepic"] is None
 
 
@@ -245,7 +245,7 @@ def test_rollup_walks_grandchildren_and_a_program_without_an_epic_entry():
     entries = {"prog": None, "mid": None, "leaf": {"ref": "o/r#5", "url": "u", "total": 3, "done": 1, "blocked": 0, "needsHuman": 0}}
     parent_of = {"prog": None, "mid": "prog", "leaf": "mid"}
     out = rollup_epic_progress(entries, parent_of)
-    assert out["prog"] == {"ref": None, "url": None, "total": 3, "done": 1, "blocked": 0, "needsHuman": 0}
+    assert out["prog"] == {"ref": None, "url": None, "total": 3, "done": 1, "blocked": 0, "needsHuman": 0, "priority": None}
     assert out["mid"] == out["prog"] | {"ref": None, "url": None}
 
 
@@ -333,3 +333,28 @@ def test_cyclic_initiative_parents_become_roots():
     assert by_slug["y"]["parentInitiative"] is None and by_slug["y"]["hasChildren"] is False
     infra = tree["capabilities"][0]
     assert infra["counts"]["blocked"] == 2
+
+
+def test_rollup_carries_priority_as_a_max_over_leaves():
+    entries = {
+        "prog": None,
+        "a": {"ref": "o/r#1", "url": "u", "total": 2, "done": 1, "blocked": 0, "needsHuman": 0, "priority": 8.0},
+        "b": {"ref": "o/r#2", "url": "u", "total": 1, "done": 0, "blocked": 0, "needsHuman": 0, "priority": None},
+        "c": {"ref": "o/r#3", "url": "u", "total": 1, "done": 0, "blocked": 0, "needsHuman": 0, "priority": 21.0},
+    }
+    out = rollup_epic_progress(entries, {"prog": None, "a": "prog", "b": "prog", "c": "prog"})
+    assert out["prog"]["priority"] == 21.0
+    assert out["a"]["priority"] == 8.0            # leaves pass through
+    only_unscored = rollup_epic_progress(
+        {"p": None, "x": {"ref": None, "url": None, "total": 0, "done": 0, "blocked": 0, "needsHuman": 0, "priority": None}},
+        {"p": None, "x": "p"})
+    assert only_unscored["p"]["priority"] is None
+
+
+def test_initiative_node_exposes_the_epic_entrys_priority():
+    from server.pm.tree import _initiative_node
+    epic = {"ref": "o/r#1", "url": "u", "total": 3, "done": 1, "blocked": 0, "needsHuman": 0, "priority": 15.25}
+    node = _initiative_node(InitiativeIn("x", "X", "build", "active", None, (), epic), "p")
+    assert node["priority"] == 15.25
+    bare = _initiative_node(InitiativeIn("y", "Y", "design", "active", None, (), None), "p")
+    assert bare["priority"] is None

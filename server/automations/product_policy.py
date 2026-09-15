@@ -4,7 +4,10 @@ product's automation knobs — whether the Backlog Runner dispatches for it, how
 board it reaches, its in-flight cap and weight, its attempt cap, its session model.
 
 `triage_auto_accept` joined the schema in phase 2 (the PM Triage loop's auto-accept tier);
-`give_up_after_bounces` joined it in phase 3 (the dispatch-bounce threshold D8).
+`give_up_after_bounces` joined it in phase 3 (the dispatch-bounce threshold D8). `risk_tolerance`,
+`max_initiatives_in_flight` and `unattended_model_floor` joined it in the 2026-09-14 roadmap
+auto-execution spec's phase 1 (the risk dial, the initiative concurrency cap, and the model-floor
+mitigation for unattended gate resolutions).
 
 Stored on ``Project.automation_policy`` as a JSON blob validated through this schema at write
 time (``PATCH /api/pm/projects/{slug}/policy``) — so a row in the DB is already valid. But
@@ -33,6 +36,8 @@ from server.automations.model_pick import AUTOMATION_MODEL_CHOICES
 from server.db.models import Project
 from server.pm.desired_state import STATUS_READY
 from server.pm.queue import MIN_STATUS_OPTIONS
+from server.sdlc.gates import RISK_TOLERANCES
+from server.sessions.model_request import MODEL_TIERS
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +88,27 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                 help="Accept this product's classification proposals at or above this "
                      "confidence without a human; medium includes high. Never a no-fit "
                      "proposal, never one whose capability doc is still proposed."),
+    # Roadmap auto-execution (spec 2026-09-14 D2/D3): how bold the SDLC front chain
+    # may be for this product. The gate registry (server/sdlc/gates.py) decides
+    # which gates each level covers; `cautious` is today's behaviour.
+    ConfigField(key="risk_tolerance", label="Risk tolerance", type="enum",
+                default="cautious", choices=list(RISK_TOLERANCES),
+                help="cautious: every roadmap gate waits for you. balanced: low-risk gates "
+                     "resolve themselves (artifact PR merges, stage advances). bold: also "
+                     "medium-risk gates (plan decomposition accept, model upgrades)."),
+    # ``min=0``: 0 pauses new artifact sessions for the product without losing its
+    # other settings; gate resolutions are never capped (they finish work).
+    ConfigField(key="max_initiatives_in_flight", label="Max initiatives in flight", type="int",
+                default=2, min=0,
+                help="How many of this product's initiatives may be producing a spec or "
+                     "plan at once. 0 pauses new artifact sessions."),
+    # Spec 2026-09-14 D11: model capability as a risk mitigation. Phase 1 stores it;
+    # phase 2 applies it as the floor for sessions whose output a covered gate will
+    # consume without a human read (inert under `cautious`).
+    ConfigField(key="unattended_model_floor", label="Unattended model floor", type="enum",
+                default="none", choices=["none", *MODEL_TIERS],
+                help="Minimum model for a spec, plan or decompose session whose output will "
+                     "be merged or accepted without a human read. Inert under cautious."),
 ]
 
 # Logged once per process, not once per bad row: a corrupt policy is a per-deploy fact

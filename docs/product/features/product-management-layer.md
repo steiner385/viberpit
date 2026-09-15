@@ -184,7 +184,7 @@ design for it is preserved in `docs/superpowers/plans/2026-08-31-pm-product-laye
 loop — read per product instead of one global config row governing every onboarded product alike.
 The schema — `PRODUCT_POLICY_SCHEMA` in `server/automations/product_policy.py`, the one
 `ConfigField` list and the one validated reader (`effective_policy`) every caller shares
-(constitution VI) — has nine fields: `dispatch`
+(constitution VI) — has twelve fields: `dispatch`
 (`off | propose | auto`, default `off` — whether the runner works this product's board at all, and
 whether a claimed batch is only announced or actually spawned), `queue_min_status` (default `Ready`,
 or `Backlog` to reach untriaged items — how far down the board the runner reaches), `max_in_flight`
@@ -203,7 +203,16 @@ changes its `body_fingerprint` and restarts the count — see "Dispatch outcomes
 `auto` — the session model; `auto` assesses each job), `respect_dependencies` (default `true`), and,
 landed in phase 2, `triage_auto_accept` (`off | high | medium`, default `off` — the PM Triage loop's
 own accept gate, at or above this confidence; `medium` includes `high`; see "Triage auto-accept"
-below). The minimums are `ConfigField.min`, enforced in `validate_config` (a below-minimum int is a 422
+below). Three more landed with roadmap auto-execution phase 1 (spec
+`docs/superpowers/specs/2026-09-14-roadmap-auto-execution-design.md`), governing the SDLC front
+chain rather than the Backlog Runner: `risk_tolerance` (`cautious | balanced | bold`, default
+`cautious` — how far the front chain may resolve its own stage gates; `cautious` parks every gate
+for a human exactly as before), `max_initiatives_in_flight` (default 2, minimum 0 — this product's
+concurrent spec/plan artifact sessions, counted as LIVE design/plan artifact sessions only, so
+intake, a `blocked` initiative, a dead session and a PR awaiting a human merge each hold no slot;
+`0` PAUSES new artifact sessions without stopping materialization) and `unattended_model_floor`
+(`none` or a model tier, default `none` — the floor for a session whose output ships unread; stored
+in phase 1, applied in phase 2). The minimums are `ConfigField.min`, enforced in `validate_config` (a below-minimum int is a 422
 `bad_policy`, not a browser courtesy) and published in the schema JSON so `ConfigInput` renders the
 same floor on the number input. `effective_policy`
 never raises: a `None` row (never opted in) and an unparseable one both read as the pure defaults,

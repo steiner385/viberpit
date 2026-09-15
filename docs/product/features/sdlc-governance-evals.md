@@ -62,15 +62,15 @@ incident becomes a regression eval.
   grows monotonically, no incident without a regression case).
 - Review findings conform to REVIEW.md (in-policy categories, nit cap ≤ 3, no self-approval).
 
-**Non-goals** — v1 is deliberately propose-only and human-gated: the SDLC automations do not
-auto-approve or auto-advance. The Maintain loop detects and files autonomously, but its
-strongest response is still to *queue* an incident so Intake opens an `intent.md` PR —
-which is itself a proposal behind the same human gate. Its own automation ships off, and
-`monitor` mode exists so an operator can watch the queue fill before letting any tier act.
-The engine and
-governance/review/eval cores are pure (no I/O) — they decide, they do not act; spawning,
-recording, and GitHub mutations live in the automations and API. Evals are not a substitute
-for CI tests; static eval checks run in CI, agent evals run out-of-band.
+**Non-goals** — by default (`risk_tolerance: cautious`) the SDLC automations do not auto-approve or
+auto-advance; a product may raise its tolerance to let low- or medium-risk gates resolve themselves (spec
+`2026-09-14-roadmap-auto-execution-design.md`), and high-risk gates never do. The Maintain loop detects and
+files autonomously, but its strongest response is still to *queue* an incident so Intake opens an `intent.md` PR
+— which is itself a proposal behind the same human gate. Its own automation ships off, and `monitor` mode exists
+so an operator can watch the queue fill before letting any tier act. The engine and governance/review/eval cores
+are pure (no I/O) — they decide, they do not act; spawning, recording, and GitHub mutations live in the
+automations and API. Evals are not a substitute for CI tests; static eval checks run in CI, agent evals run
+out-of-band.
 
 **Notes** —
 - **State is `delivering`, not `live`:** the intake → synthesizer → governance → evals →
@@ -85,9 +85,9 @@ for CI tests; static eval checks run in CI, agent evals run out-of-band.
   blocks the agent from filing issues and even from reading its own source. This is a live
   correctness bug in the very gate meant to keep the loop honest; it must be tightened before
   governance can be trusted at higher autonomy.
-- The engine (`engine.py`) mirrors `pr_doctor_engine`'s pure-decision shape: a frozen
-  `StageAction` per initiative, `AwaitApproval` forever until a human advance. Prompts
-  (`prompts.py`) inject org skills as binding constraints at the design/spec stage.
+- The engine (`engine.py`) mirrors `pr_doctor_engine`'s pure-decision shape: a frozen `StageAction` per
+  initiative, `AwaitApproval` until a human advance, or `MergeArtifact`/`Advance` when the product's tolerance
+  covers the gate. Prompts (`prompts.py`) inject org skills as binding constraints at the design/spec stage.
 - Governance (`governance.py`) has three surfaces: permission tiers per environment, an
   `evaluate_release()` approval gate (approver ≠ author, constitution IV), and managed
   non-negotiable deny rules that must exist in `.claude/managed-settings.json`. Review policy

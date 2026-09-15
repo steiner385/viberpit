@@ -22,6 +22,13 @@ from tests.helpers import temp_env  # noqa: E402
 from server.tests.fakes.fake_factory import fake_sdk_factory  # noqa: E402
 
 
+def _sqlite_env(tmp: str | None = None) -> dict[str, str]:
+    """The one DB-URL override every wiring test patches into the environment:
+    a file DB under *tmp*, or in-memory when *tmp* is None."""
+    url = f"sqlite+aiosqlite:///{tmp}/wiring.db" if tmp else "sqlite+aiosqlite:///:memory:"
+    return {"CCSWITCH_DB_URL": url}
+
+
 def _make_orch():
     from server.sessions.orchestrator import SessionOrchestrator
 
@@ -35,7 +42,7 @@ def _make_orch():
 def test_sdlc_loops_are_constructed():
     """Both SDLC loops are built as orchestrator attributes on construction."""
     with temp_env(), patch.dict(
-        os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}
+        os.environ, _sqlite_env()
     ):
         orch = _make_orch()
         assert orch._sdlc_intake_loop is not None
@@ -61,7 +68,7 @@ def test_sdlc_list_initiatives_empty_on_fresh_db():
     from server.app import create_app
 
     with temp_env(), patch.dict(
-        os.environ, {"CCSWITCH_DB_URL": "sqlite+aiosqlite:///:memory:"}
+        os.environ, _sqlite_env()
     ):
         orch = _make_orch()
         app = create_app(orchestrator=orch)
@@ -91,7 +98,7 @@ def test_sdlc_list_initiatives_projects_the_epic_pointer():
         return await orch._sdlc_list_initiatives()
 
     with tempfile.TemporaryDirectory() as tmp, temp_env(), patch.dict(
-        os.environ, {"CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{tmp}/wiring.db"}
+        os.environ, _sqlite_env(tmp)
     ):
         orch = _make_orch()
         app = create_app(orchestrator=orch)
@@ -124,7 +131,7 @@ def test_sdlc_list_initiatives_excludes_a_program():
         return await orch._sdlc_list_initiatives()
 
     with tempfile.TemporaryDirectory() as tmp, temp_env(), patch.dict(
-        os.environ, {"CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{tmp}/wiring.db"}
+        os.environ, _sqlite_env(tmp)
     ):
         orch = _make_orch()
         app = create_app(orchestrator=orch)
@@ -132,3 +139,94 @@ def test_sdlc_list_initiatives_excludes_a_program():
         with client:  # lifespan runs init_db; same loop for the pool (see above)
             rows = client.portal.call(_seed_and_list, orch)
     assert [r["slug"] for r in rows] == ["ui-audit-01"]
+
+
+def test_sdlc_synth_first_tick_rewrites_a_legacy_stored_mode():
+    """A row still carrying `auto` from before the fold is rewritten to `on` once,
+    so the API's mode select stops showing a value outside `modes`. An explicit
+    `off` is left alone."""
+    from server.app import create_app
+    from server.db import db_session
+    from server.db.models import Automation as AutomationRow
+    from sqlalchemy import select
+
+    async def _seed_fold_read(orch):
+        async with db_session() as db:
+            row = (await db.execute(select(AutomationRow).where(
+                AutomationRow.id == "sdlc-synthesizer"))).scalar_one_or_none()
+            if row is None:
+                db.add(AutomationRow(id="sdlc-synthesizer", enabled=True,
+                                     mode="auto", config={}))
+            else:
+                row.enabled, row.mode = True, "auto"
+            await db.commit()
+        # The real primary-only sdlc-synthesizer-loop already ticked once at
+        # lifespan startup (before this row carried "auto") and consumed the
+        # one-shot guard — a known TestClient/startup-tick race, not something
+        # this test is exercising. Reset it so the calls below test the fold
+        # method's own logic against the state just seeded.
+        orch._sdlc_synth_mode_folded = False
+        await orch._sdlc_synth_fold_stored_mode()
+        await orch._sdlc_synth_fold_stored_mode()          # idempotent
+        mode, _ = await orch._sdlc_synth_read_config()
+        async with db_session() as db:
+            stored = (await db.execute(select(AutomationRow.mode).where(
+                AutomationRow.id == "sdlc-synthesizer"))).scalar_one()
+        return mode, stored
+
+    with tempfile.TemporaryDirectory() as tmp, temp_env(), patch.dict(
+        os.environ, _sqlite_env(tmp)
+    ):
+        orch = _make_orch()
+        app = create_app(orchestrator=orch)
+        client = TestClient(app, raise_server_exceptions=False)
+        with client:
+            mode, stored = client.portal.call(_seed_fold_read, orch)
+    assert (mode, stored) == ("on", "on")
+
+
+def test_sdlc_list_initiatives_sorts_by_priority_then_age_and_carries_progress():
+    """Spec 2026-09-14 D7: highest priority first, unscored last, oldest first
+    on ties; each row carries project_slug, priority and epic counts."""
+    from datetime import datetime, timedelta, timezone
+    from server.app import create_app
+    from server.db import db_session
+    from server.db.models import Initiative, Project, WorkItem
+
+    async def _seed_and_list(orch):
+        t0 = datetime.now(timezone.utc) - timedelta(days=3)
+        async with db_session() as db:
+            p = Project(slug="viberpit", name="ViberPit")
+            db.add(p)
+            await db.flush()
+            epic = WorkItem(repo="o/r", number=1, kind="issue", state="open", is_epic=True)
+            db.add(epic)
+            await db.flush()
+            db.add(WorkItem(repo="o/r", number=2, kind="issue", state="open",
+                            parent_work_item_id=epic.id, reach=10, impact=5, effort=2, confidence=8))
+            db.add(WorkItem(repo="o/r", number=3, kind="issue", state="closed",
+                            parent_work_item_id=epic.id))
+            db.add_all([
+                Initiative(slug="unscored-old", repo="o/r", title="u", stage="design",
+                           status="active", project_id=p.id, created_at=t0),
+                Initiative(slug="scored", repo="o/r", title="s", stage="build",
+                           status="active", project_id=p.id, epic_repo="o/r", epic_number=1,
+                           created_at=t0 + timedelta(days=1)),
+                Initiative(slug="unscored-new", repo="o/r", title="n", stage="design",
+                           status="active", project_id=p.id, created_at=t0 + timedelta(days=2)),
+            ])
+        return await orch._sdlc_list_initiatives()
+
+    with tempfile.TemporaryDirectory() as tmp, temp_env(), patch.dict(
+        os.environ, {"CCSWITCH_DB_URL": f"sqlite+aiosqlite:///{tmp}/wiring.db"}
+    ):
+        orch = _make_orch()
+        app = create_app(orchestrator=orch)
+        client = TestClient(app, raise_server_exceptions=False)
+        with client:
+            rows = client.portal.call(_seed_and_list, orch)
+    assert [r["slug"] for r in rows] == ["scored", "unscored-old", "unscored-new"]
+    scored = rows[0]
+    assert (scored["project_slug"], scored["priority"], scored["epic_total"], scored["epic_done"]) == \
+        ("viberpit", 200.0, 2, 1)
+    assert rows[1]["priority"] is None and rows[1]["project_slug"] == "viberpit"

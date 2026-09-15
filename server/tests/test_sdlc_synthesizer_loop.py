@@ -32,6 +32,16 @@ class Recorder:
         self.materialize_result = SimpleNamespace(id="sess-9")
         self.pending_materialization: set[str] = set()
         self.attempts: dict[str, int] = {}
+        self.policies: dict[str, dict] = {}
+        #: session ids the daemon still holds live; an artifact row whose session
+        #: is not in here holds no front-chain slot (spec 2026-09-14 §6, amended).
+        self.live: set[str] = set()
+
+    async def read_policies(self):
+        return self.policies
+
+    async def live_sessions(self, ids):
+        return self.live & set(ids)
 
     async def list_initiatives(self):
         return self.initiatives
@@ -79,12 +89,14 @@ def _loop(rec, ctx=None, *, materialize=True):
         has_pending_materialization=rec.has_pending_materialization,
         materialization_attempts=rec.materialization_attempts,
         pr_lookup=rec.pr_lookup, update_artifact=rec.update_artifact,
-        read_config=rec.read_config, clock=lambda: 0.0)
+        read_config=rec.read_config, clock=lambda: 0.0, read_policies=rec.read_policies,
+        live_sessions=rec.live_sessions)
 
 
-def _ini(stage, status="active"):
+def _ini(stage, status="active", **extra):
     return {"id": "i1", "slug": "dark-mode", "repo": "o/r", "title": "Dark mode",
-            "stage": stage, "status": status, "origin": "human", "origin_ref": None}
+            "stage": stage, "status": status, "origin": "human", "origin_ref": None,
+            **extra}
 
 
 @pytest.mark.asyncio
@@ -319,7 +331,16 @@ def test_to_views_epic_is_none_without_an_epic_number():
 def test_automation_contract():
     a = SdlcSynthesizer()
     assert a.id == "sdlc-synthesizer"
-    assert a.modes == ("off", "propose", "auto")
+    assert a.modes == ("off", "on")
+
+
+def test_fold_synth_mode_maps_legacy_modes_to_on():
+    from server.automations.sdlc_synthesizer import LEGACY_SYNTH_MODES, fold_synth_mode
+    assert LEGACY_SYNTH_MODES == ("propose", "auto")
+    assert fold_synth_mode("propose") == "on"
+    assert fold_synth_mode("auto") == "on"
+    assert fold_synth_mode("on") == "on"
+    assert fold_synth_mode("off") == "off"      # a human's explicit park survives
 
 @pytest.mark.asyncio
 async def test_observation_reports_gate_then_real_zero_and_failure():
@@ -339,7 +360,7 @@ async def test_observation_reports_gate_then_real_zero_and_failure():
     await loop.tick()
     status = SdlcSynthesizer().status(ctx)
     assert status.waiting_reason is None
-    assert status.counts == {"initiatives": 0, "proposed": 0, "awaiting": 0}
+    assert status.counts == {"initiatives": 0, "proposed": 0, "awaiting": 0, "queued": 0}
     timestamp = ctx.observed_at
 
     async def failed():
@@ -376,3 +397,138 @@ async def test_build_missing_issue_is_human_wait_but_later_stage_handoff_is_not(
     rec.initiatives = [_ini("deploy")]
     await loop.tick()
     assert SdlcSynthesizer().status(ctx).waiting_reason is None
+
+
+def _prio(iid, slug, stage, priority, project="viberpit"):
+    return {"id": iid, "slug": slug, "repo": "o/r", "title": slug, "stage": stage,
+            "status": "active", "origin": "human", "origin_ref": None,
+            "project_slug": project, "priority": priority, "epic_total": 0, "epic_done": 0}
+
+
+@pytest.mark.asyncio
+async def test_visits_in_the_order_the_loader_sorted_and_caps_new_spawns_per_product():
+    """Two design-stage initiatives, cap 1: only the first (higher priority, first
+    in the list) spawns; the second is counted as queued, not proposed."""
+    rec = Recorder([_prio("i1", "hot", "design", 40.0), _prio("i2", "cold", "design", 2.0)])
+    rec.policies = {"viberpit": {"max_initiatives_in_flight": 1}}
+    ctx = Ctx()
+    await _loop(rec, ctx).tick()
+    assert rec.spawned == [("hot", "spec")]
+    assert SdlcSynthesizer().status(ctx).counts["queued"] == 1
+    assert SdlcSynthesizer().status(ctx).counts["proposed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_an_initiative_already_producing_counts_against_the_cap():
+    rec = Recorder([_prio("i1", "busy", "design", 40.0), _prio("i2", "next", "design", 30.0)])
+    rec.artifacts["i1"] = [{"id": "a1", "kind": "spec", "commit_sha": None, "session_id": "s1"}]
+    rec.live = {"s1"}
+    rec.policies = {"viberpit": {"max_initiatives_in_flight": 1}}
+    await _loop(rec).tick()
+    assert rec.spawned == []                       # i1 is producing; i2 queued behind it
+
+
+@pytest.mark.asyncio
+async def test_an_intake_stage_initiative_never_holds_a_front_chain_slot():
+    """Intake is governed by sdlc-intake's own daily budget, not by this cap, so
+    an open intent PR with a live session must not starve a design-stage spec."""
+    rec = Recorder([_prio("i1", "intaking", "intake", 40.0), _prio("i2", "next", "design", 30.0)])
+    rec.artifacts["i1"] = [{"id": "a1", "kind": "intent", "commit_sha": None, "session_id": "s1"}]
+    rec.live = {"s1"}
+    rec.policies = {"viberpit": {"max_initiatives_in_flight": 1}}
+    await _loop(rec).tick()
+    assert rec.spawned == [("next", "spec")]
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_initiative_never_holds_a_front_chain_slot():
+    """The loop refuses to act on a blocked initiative (NeedsHuman), so it is not
+    *actively* producing and must not occupy capacity."""
+    rec = Recorder([_prio("i1", "stuck", "design", 40.0) | {"status": "blocked"},
+                    _prio("i2", "next", "design", 30.0)])
+    rec.artifacts["i1"] = [{"id": "a1", "kind": "spec", "commit_sha": None, "session_id": "s1"}]
+    rec.live = {"s1"}
+    rec.policies = {"viberpit": {"max_initiatives_in_flight": 1}}
+    await _loop(rec).tick()
+    assert rec.spawned == [("next", "spec")]
+
+
+@pytest.mark.asyncio
+async def test_a_dead_artifact_session_does_not_leak_a_slot():
+    """An unmerged spec row whose session died without opening a PR would otherwise
+    hold the slot forever — there is no reaper for it."""
+    rec = Recorder([_prio("i1", "dead", "design", 40.0), _prio("i2", "next", "design", 30.0)])
+    rec.artifacts["i1"] = [{"id": "a1", "kind": "spec", "commit_sha": None, "session_id": "s1"}]
+    rec.live = set()                               # s1 is gone
+    rec.policies = {"viberpit": {"max_initiatives_in_flight": 1}}
+    await _loop(rec).tick()
+    assert rec.spawned == [("next", "spec")]
+
+
+@pytest.mark.asyncio
+async def test_a_capped_product_emits_exactly_one_ceiling_event_per_tick():
+    """Two rows queued behind one cap: the operator gets one `ceiling` event for
+    the product, not one per queued initiative."""
+    rec = Recorder([_prio("i1", "a", "design", 9.0), _prio("i2", "b", "design", 8.0),
+                    _prio("i3", "c", "design", 7.0)])
+    rec.policies = {"viberpit": {"max_initiatives_in_flight": 1}}
+    ctx = Ctx()
+    await _loop(rec, ctx).tick()
+    ceilings = [e for e in ctx.events if e[2].get("kind") == "ceiling"]
+    assert len(ceilings) == 1
+    assert ceilings[0][0] == "info"
+    assert "viberpit" in ceilings[0][1] and "cap 1" in ceilings[0][1]
+    assert ceilings[0][2]["target"] == "b"         # the first row that had to queue
+
+
+@pytest.mark.asyncio
+async def test_a_merged_and_parked_initiative_does_not_hold_a_slot():
+    rec = Recorder([_prio("i1", "parked", "design", 40.0), _prio("i2", "next", "design", 30.0)])
+    rec.artifacts["i1"] = [{"id": "a1", "kind": "spec", "commit_sha": "cafe", "session_id": "s1"}]
+    rec.policies = {"viberpit": {"max_initiatives_in_flight": 1}}
+    await _loop(rec).tick()
+    assert rec.spawned == [("next", "spec")]
+
+
+@pytest.mark.asyncio
+async def test_cap_zero_pauses_new_artifacts_but_never_materialization():
+    rec = Recorder([_prio("i1", "plan-done", "plan", 5.0), _prio("i2", "fresh", "design", 50.0)])
+    rec.artifacts["i1"] = [{"id": "a1", "kind": "plan", "commit_sha": "cafe", "session_id": "s1"}]
+    rec.policies = {"viberpit": {"max_initiatives_in_flight": 0}}
+    await _loop(rec).tick()
+    assert rec.spawned == []
+    assert rec.materialized == ["plan-done"]
+
+
+@pytest.mark.asyncio
+async def test_products_are_capped_independently_and_a_homeless_initiative_uses_defaults():
+    rec = Recorder([_prio("i1", "a", "design", 9.0, project="viberpit"),
+                    _prio("i2", "b", "design", 8.0, project="kindash"),
+                    _prio("i3", "c", "design", 7.0, project=None)])
+    rec.policies = {"viberpit": {"max_initiatives_in_flight": 1}, "kindash": {"max_initiatives_in_flight": 1}}
+    await _loop(rec).tick()
+    assert rec.spawned == [("a", "spec"), ("b", "spec"), ("c", "spec")]
+
+
+def test_is_producing_rule():
+    from server.automations.sdlc_synthesizer import is_producing
+    spec = {"kind": "spec", "commit_sha": None, "session_id": "s1"}
+    assert is_producing("design", [spec], {"s1"}) is True
+    assert is_producing("design", [spec], set()) is False        # session died — no slot leak
+    assert is_producing("design", [{"kind": "spec", "commit_sha": "cafe",
+                                    "session_id": "s1"}], {"s1"}) is False   # merged
+    assert is_producing("design", [{"kind": "intent", "commit_sha": None,
+                                    "session_id": "s1"}], {"s1"}) is False   # other stage's kind
+    assert is_producing("intake", [{"kind": "intent", "commit_sha": None,
+                                    "session_id": "s1"}], {"s1"}) is False   # intake has its own budget
+    assert is_producing("build", [{"kind": "plan", "commit_sha": None,
+                                   "session_id": "s1"}], {"s1"}) is False    # not a front-chain stage
+    assert is_producing("design", [], {"s1"}) is False
+
+
+def test_to_views_carries_epic_progress():
+    from server.automations.sdlc_synthesizer import _to_views
+    view, _ = _to_views(_prio("i1", "x", "build", None) | {"epic_total": 4, "epic_done": 3}, [])
+    assert (view.epic_total, view.epic_done) == (4, 3)
+    legacy, _ = _to_views(_ini("build"), [])
+    assert (legacy.epic_total, legacy.epic_done) == (0, 0)

@@ -26,15 +26,19 @@ from server.db.models import (
     WorkItem,
 )
 from server.pm.desired_state import STATUS_BLOCKED, STATUS_NEEDS_HUMAN
+from server.pm.priority import initiative_priority
+from server.pm.score import rice_score
 from server.pm.tree import derived_stage, rollup_epic_progress
 from server.sdlc import triage_store
 from server.sdlc.engine import (
+    Advance,
     ArtifactView,
     AwaitApproval,
     Done,
     HandoffToBuild,
     InitiativeView,
     Materialize,
+    MergeArtifact,
     NeedsHuman,
     Propose,
     advance_stage,
@@ -235,6 +239,12 @@ async def _epic_progress_batch(
             "done": sum(1 for c in children if c.state == "closed"),
             "blocked": sum(1 for c in children if status_by_child.get(c.id) == STATUS_BLOCKED),
             "needsHuman": sum(1 for c in children if status_by_child.get(c.id) == STATUS_NEEDS_HUMAN),
+            # Spec 2026-09-14 D6: computed here, once, for every reader.
+            "priority": initiative_priority(
+                rice_score(epic_wi.reach, epic_wi.impact, epic_wi.effort, epic_wi.confidence)
+                if epic_wi is not None else None,
+                (rice_score(c.reach, c.impact, c.effort, c.confidence)
+                 for c in children if c.state == "open")),
         }
         if include_children:
             entry["children"] = [
@@ -273,6 +283,10 @@ def _action_to_dict(action: object) -> dict:
         return {"type": "done"}
     if isinstance(action, NeedsHuman):
         return {"type": "needs_human", "reason": action.reason}
+    if isinstance(action, MergeArtifact):
+        return {"type": "merge_artifact", "kind": action.kind, "prNumber": action.pr_number}
+    if isinstance(action, Advance):
+        return {"type": "advance", "toStage": action.to_stage}
     return {"type": "unknown"}  # pragma: no cover — union is closed
 
 
@@ -355,6 +369,7 @@ async def list_initiatives(
         d = _initiative_to_dict(i)
         d["artifacts"] = [_artifact_to_dict(a) for a in by_init.get(i.id, [])]
         d["epic"] = epics.get(i.id)
+        d["priority"] = (d["epic"] or {}).get("priority")
         result.append(d)
     await _decorate(db, rows, result)
     return result
@@ -426,7 +441,8 @@ async def get_initiative(
         )
     ).scalars().all()
 
-    # Build nextAction via the pure engine (display-only, mode="propose")
+    # Build nextAction via the pure engine: display-only: mode on, tolerance
+    # cautious, so the detail shows the human's next step
     state = InitiativeView(
         slug=ini.slug or "",
         stage=ini.stage,
@@ -447,7 +463,7 @@ async def get_initiative(
         )
         for a in artifacts
     ]
-    action = next_action(state, artifact_views, "propose", {})
+    action = next_action(state, artifact_views, "on", "cautious")
 
     # Build-stage correlation (#801): find backlog-runner sessions with same origin_ref
     build_sessions: list[dict] = []
@@ -470,6 +486,7 @@ async def get_initiative(
     result["buildSessions"] = build_sessions
     result["nextAction"] = _action_to_dict(action)
     result["epic"] = (await _progress_rolled_up(db, [ini], include_children=True))[ini.id]
+    result["priority"] = (result["epic"] or {}).get("priority")
     await _decorate(db, [ini], [result])
     # A program (an initiative with phases) is never driven directly — advance
     # and step-back both refuse it (409 has_children above), so its nextAction
