@@ -8,9 +8,11 @@ from .context import observation_failed, publish_observation
 
 import asyncio
 import logging
+from itertools import islice
 from typing import Any, Awaitable, Callable
 
 from .base import AutomationStatus, ConfigField
+from .cicd.junit import JUnitCase
 from .engine_policy import EnginePolicy
 
 log = logging.getLogger(__name__)
@@ -21,6 +23,31 @@ log = logging.getLogger(__name__)
 # id.in_([...]), one bound parameter per row — kept well under SQLite's
 # 32766-parameter ceiling (20_000 was only 1.6x away from it).
 _ROLLUP_BATCH = 10_000
+
+# Bound Python/SQLAlchemy parameter preparation per event-loop turn, independently
+# of artifact size. Inserts stay in the run ingestion transaction.
+_INGEST_BATCH = 500
+
+
+def _junit_last_attempts(
+    artifacts: list[tuple[str, bytes]],
+) -> tuple[dict[tuple[str, str], JUnitCase], int]:
+    """Pure parsing/dedup work for a worker thread; never receives a DB session."""
+    from .cicd.junit import parse_junit_xml
+
+    last_attempt: dict[tuple[str, str], JUnitCase] = {}
+    malformed = 0
+    for suite, xml in artifacts:
+        try:
+            cases = parse_junit_xml(xml)
+        except ValueError:
+            malformed += 1
+            continue
+        # Retries, including duplicate suite artifacts, keep the LAST outcome.
+        # The suite is part of the key to preserve independently sharded tests.
+        for case in cases:
+            last_attempt[(suite, case.test_id)] = case
+    return last_attempt, malformed
 
 
 class CicdDoctor:
@@ -423,10 +450,9 @@ class CicdDoctorLoop:
         publish_observation(self._ctx, "cicd_doctor_counts", {"open": open_total, "candidates": candidates, "errors": errors}, degraded=bool(errors))
 
     async def _ingest(self, repo: str) -> None:
-        from sqlalchemy import select
+        from sqlalchemy import insert, select
         from server.db import db_session
         from server.db.models import CiJob, CiRun, CiTestResult
-        from .cicd.junit import JUnitCase, parse_junit_xml
 
         cursor = await self._ctx.get_target_state(f"cursor:{repo}")
         since = cursor.get("last_created_ts")
@@ -437,53 +463,52 @@ class CicdDoctorLoop:
         async with db_session() as db:
             seen = set((await db.execute(select(CiRun.id).where(
                 CiRun.repo == repo))).scalars().all())
-            for r in runs:
-                max_ts = max(max_ts, r["created_ts"])
+        # Fetch/parse every unseen run before the first bulk insert takes a
+        # SQLite writer lock. Keep remote waits outside the atomic write phase.
+        prepared: list[tuple[dict, list[dict], dict[tuple[str, str], JUnitCase]]] = []
+        for r in runs:
+            max_ts = max(max_ts, r["created_ts"])
+            if r["id"] in seen:
+                continue
+            jobs = await self._fetch_jobs(repo, r["id"])
+            artifacts = await self._fetch_junit(repo, r["id"])
+            last_attempt, malformed = await asyncio.to_thread(
+                _junit_last_attempts, artifacts)
+            if malformed:
+                log.warning("cicd_doctor.junit_malformed repo=%s run=%s count=%s",
+                            repo, r["id"], malformed)
+            prepared.append((r, jobs, last_attempt))
+        async with db_session() as db:
+            # A different writer may have ingested runs while artifacts fetched.
+            seen = set((await db.execute(select(CiRun.id).where(
+                CiRun.repo == repo))).scalars().all())
+            for r, jobs, last_attempt in prepared:
                 if r["id"] in seen:
                     continue
+                seen.add(r["id"])
                 db.add(CiRun(id=r["id"], repo=repo, workflow_path=r["workflow_path"],
                              event=r["event"], head_sha=r["head_sha"],
                              head_branch=r["head_branch"], conclusion=r["conclusion"],
                              created_ts=r["created_ts"], duration_s=r["duration_s"]))
-                for j in await self._fetch_jobs(repo, r["id"]):
+                for j in jobs:
                     db.add(CiJob(id=j["id"], run_id=r["id"], repo=repo, name=j["name"],
                                  conclusion=j["conclusion"], duration_s=j["duration_s"],
                                  head_sha=r["head_sha"], head_branch=r["head_branch"],
                                  created_ts=r["created_ts"]))
-                # One <testcase> per ATTEMPT: a framework retry repeats the same
-                # (suite, test_id). Keep the LAST attempt — it is the outcome the
-                # run finished with — so ingestion is idempotent against
-                # uq_ci_test_result_run_suite_test. 430,779 rows (3.6% of the
-                # table) were duplicates before this.
-                #
-                # Keyed on (suite, test_id) and hoisted ABOVE the suite loop: if two
-                # artifacts in one run yield the SAME suite string, keying on
-                # test_id alone would let the second artifact's cases overwrite the
-                # dict entry-by-entry but still emit one row per artifact pass,
-                # producing two rows for the same (run_id, suite, test_id) and
-                # violating uq_ci_test_result_run_suite_test on flush. Accumulating
-                # across all suites first and emitting once keeps "last attempt
-                # wins per suite+test" while staying idempotent against the
-                # constraint even when a suite string repeats within one run. The
-                # suite is already the key's first element, so the value only needs
-                # to hold the case; suite is recovered from the key when emitting.
-                last_attempt: dict[tuple[str, str], JUnitCase] = {}
-                for suite, xml in await self._fetch_junit(repo, r["id"]):
-                    try:
-                        cases = parse_junit_xml(xml)
-                    except ValueError:
-                        log.warning("cicd_doctor.junit_malformed repo=%s run=%s",
-                                    repo, r["id"])
-                        continue
-                    for c in cases:
-                        last_attempt[(suite, c.test_id)] = c
-                for (result_suite, _test_id), c in last_attempt.items():
-                    db.add(CiTestResult(repo=repo, run_id=r["id"], suite=result_suite,
-                                        test_id=c.test_id, outcome=c.outcome,
-                                        time_s=c.time_s, message=c.message,
-                                        head_sha=r["head_sha"],
-                                        head_branch=r["head_branch"],
-                                        created_ts=r["created_ts"]))
+                attempts = iter(last_attempt.items())
+                while batch := list(islice(attempts, _INGEST_BATCH)):
+                    # Bulk parameters avoid one ORM constructor/add/flush per
+                    # case. The mapped insert retains column defaults and IDs;
+                    # render_nulls keeps optional messages in the same batch.
+                    await db.execute(insert(CiTestResult), [
+                        dict(repo=repo, run_id=r["id"], suite=suite,
+                             test_id=test_id, outcome=c.outcome, time_s=c.time_s,
+                             message=c.message, head_sha=r["head_sha"],
+                             head_branch=r["head_branch"], created_ts=r["created_ts"])
+                        for (suite, test_id), c in batch
+                    ], execution_options={"render_nulls": True})
+                    # DB awaits need not suspend (e.g. a hot driver buffer).
+                    await asyncio.sleep(0)
             await db.flush()
         await self._ctx.set_target_state(f"cursor:{repo}", {"last_created_ts": max_ts})
 
