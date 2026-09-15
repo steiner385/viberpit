@@ -226,7 +226,11 @@ def test_apply_resolves_decide_time_perm_and_rechecks_denylist(tmp_path):
     """TOCTOU guard: apply resolves exactly the decide-time perm_id, and a
     deny-listed command can never be approved even if it reaches apply."""
     async def run():
+        from server.sessions.types import SessionRecord
         orch = _bare_orch()
+        orch._records["s1"] = SessionRecord(
+            id="s1", name="s1", account="a", engine=AgentEngine.CLAUDE_CODE,
+            engine_session_id="c", cols=80, rows=24, cwd="/tmp")
         calls: list = []
 
         async def _ensure(sid, ident=None):
