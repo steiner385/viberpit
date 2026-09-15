@@ -1195,6 +1195,11 @@ class SessionOrchestrator:
             read_config=self._sdlc_synth_read_config,
             read_policies=self._sdlc_read_policies,
             live_sessions=self._sdlc_live_artifact_sessions,
+            advance_stage=self._sdlc_advance_stage,
+            # The process-wide kill switch (spec D9) is read per tick, not
+            # captured at construction, so flipping the env and restarting the
+            # daemon is the whole procedure — nothing else caches it.
+            autoresolve_enabled=lambda: bool(get_settings().gate_autoresolve_enabled),
             clock=time.monotonic,
         )
         self._sdlc_synth_task: asyncio.Task | None = None
@@ -8587,6 +8592,40 @@ class SessionOrchestrator:
             await db.execute(update(Initiative).where(
                 Initiative.id == initiative_id).values(status=status))
             await db.commit()
+
+    async def _sdlc_advance_stage(self, initiative_id: str, from_stage: str,
+                                  to_stage: str, gate: dict) -> bool:
+        """The synthesizer's ``Advance`` write (spec 2026-09-14 §6/§8/§15): move
+        the initiative ``from_stage → to_stage``, activate it, and record what
+        the machine did in ``last_auto_gate`` — in ONE compare-and-set UPDATE.
+
+        The ``WHERE stage = from_stage AND status != 'blocked'`` predicate is the
+        race rule from §15: a human's newer Step back (or block) between the
+        engine's decision and this write wins, the UPDATE touches nothing and
+        the caller sees ``False`` ("stale"). Same shape the human route
+        (``POST /initiatives/{slug}/advance``) writes, plus the record; the
+        audit row is the machine's counterpart of that route's
+        ``sdlc.initiative.advance`` entry."""
+        from sqlalchemy import update
+        from server.audit import record_audit
+        from server.db.models import Initiative
+        async with db_session() as db:
+            result = await db.execute(
+                update(Initiative)
+                .where(Initiative.id == initiative_id,
+                       Initiative.stage == from_stage,
+                       Initiative.status != "blocked")
+                .values(stage=to_stage, status="active", last_auto_gate=gate))
+            # `CursorResult.rowcount` — typed away on the async Result wrapper.
+            advanced = int(getattr(result, "rowcount", 0) or 0) == 1
+            if advanced:
+                await record_audit(
+                    db=db, type="sdlc.gate.auto_resolve", identity="sdlc-synthesizer",
+                    detail={"initiativeId": initiative_id, "gate": gate.get("gate"),
+                            "tolerance": gate.get("tolerance"),
+                            "from": from_stage, "to": to_stage})
+            await db.commit()
+        return advanced
 
     async def _sdlc_update_artifact(self, artifact_id: str, **fields) -> None:
         """Update an InitiativeArtifact (PR-metadata enrichment: pr_number/url/sha)."""

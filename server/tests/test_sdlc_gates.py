@@ -68,3 +68,33 @@ def test_settings_carry_the_kill_switch(monkeypatch):
     assert Settings().gate_autoresolve_enabled is True
     monkeypatch.setenv("VIBERPIT_GATE_AUTORESOLVE_ENABLED", "false")
     assert Settings().gate_autoresolve_enabled is False
+
+
+def test_auto_gate_record_has_the_one_shape():
+    from datetime import datetime, timezone
+    from server.sdlc.gates import auto_gate_record
+    at = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
+    rec = auto_gate_record("stage.advance", "balanced", at, detail={"from": "design", "to": "plan"})
+    assert rec == {"gate": "stage.advance", "at": "2026-09-15T12:00:00+00:00",
+                   "tolerance": "balanced", "outcome": "resolved",
+                   "detail": {"from": "design", "to": "plan"}}
+    assert auto_gate_record("artifact.merge", "bold", at, outcome="refused")["outcome"] == "refused"
+
+
+def test_auto_resolved_view_inside_and_outside_the_window():
+    from datetime import datetime, timedelta, timezone
+    from server.sdlc.gates import AUTO_RESOLVED_VISIBLE_S, auto_gate_record, auto_resolved_view
+    at = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
+    rec = auto_gate_record("stage.advance", "balanced", at, detail={"from": "design", "to": "plan"})
+    view = auto_resolved_view(rec, at + timedelta(hours=1))
+    assert view == {"gate": "stage.advance", "summary": "advanced to plan", "reverse": "Step back",
+                    "at": "2026-09-15T12:00:00+00:00", "outcome": "resolved", "tolerance": "balanced"}
+    # The chip leaves the row after the window — that is the point, not an error.
+    assert auto_resolved_view(rec, at + timedelta(seconds=AUTO_RESOLVED_VISIBLE_S + 1)) is None
+    assert auto_resolved_view(None, at) is None
+    assert auto_resolved_view({"gate": "stage.advance", "at": "garbage"}, at) is None
+    refused = auto_gate_record("artifact.merge", "balanced", at, outcome="refused",
+                               detail={"kind": "spec", "pr": 7, "message": "auto-merge is not allowed"})
+    assert auto_resolved_view(refused, at)["summary"] == "auto-merge unavailable"
+    assert auto_resolved_view(auto_gate_record("artifact.merge", "balanced", at,
+                                               detail={"kind": "spec"}), at)["summary"] == "merged spec"

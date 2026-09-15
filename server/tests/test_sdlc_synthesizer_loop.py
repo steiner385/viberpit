@@ -36,6 +36,19 @@ class Recorder:
         #: session ids the daemon still holds live; an artifact row whose session
         #: is not in here holds no front-chain slot (spec 2026-09-14 §6, amended).
         self.live: set[str] = set()
+        #: (initiative_id, from, to, record) per executed Advance; `advance_result`
+        #: False simulates the compare-and-set losing to a human (spec §15).
+        self.advanced: list[tuple[str, str, str, dict]] = []
+        self.advance_result = True
+        #: The kill switch (spec D9); tests that exercise a gate turn it on.
+        self.autoresolve = False
+
+    async def advance_stage(self, iid, from_stage, to_stage, record):
+        self.advanced.append((iid, from_stage, to_stage, record))
+        return self.advance_result
+
+    def autoresolve_enabled(self):
+        return self.autoresolve
 
     async def read_policies(self):
         return self.policies
@@ -79,7 +92,7 @@ class Recorder:
         return self.mode, {}
 
 
-def _loop(rec, ctx=None, *, materialize=True):
+def _loop(rec, ctx=None, *, materialize=True, advance=True):
     return SdlcSynthesizerLoop(
         ctx or AutomationContext("sdlc-synthesizer"),
         list_initiatives=rec.list_initiatives, list_artifacts=rec.list_artifacts,
@@ -90,7 +103,9 @@ def _loop(rec, ctx=None, *, materialize=True):
         materialization_attempts=rec.materialization_attempts,
         pr_lookup=rec.pr_lookup, update_artifact=rec.update_artifact,
         read_config=rec.read_config, clock=lambda: 0.0, read_policies=rec.read_policies,
-        live_sessions=rec.live_sessions)
+        live_sessions=rec.live_sessions,
+        advance_stage=rec.advance_stage if advance else None,
+        autoresolve_enabled=rec.autoresolve_enabled)
 
 
 def _ini(stage, status="active", **extra):
@@ -360,7 +375,8 @@ async def test_observation_reports_gate_then_real_zero_and_failure():
     await loop.tick()
     status = SdlcSynthesizer().status(ctx)
     assert status.waiting_reason is None
-    assert status.counts == {"initiatives": 0, "proposed": 0, "awaiting": 0, "queued": 0}
+    assert status.counts == {"initiatives": 0, "proposed": 0, "awaiting": 0, "queued": 0,
+                             "auto_resolved": 0}
     timestamp = ctx.observed_at
 
     async def failed():
@@ -532,3 +548,105 @@ def test_to_views_carries_epic_progress():
     assert (view.epic_total, view.epic_done) == (4, 3)
     legacy, _ = _to_views(_ini("build"), [])
     assert (legacy.epic_total, legacy.epic_done) == (0, 0)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2: executing the `stage.advance` gates under the product's tolerance    #
+# --------------------------------------------------------------------------- #
+
+def _merged_spec_at_design(project="viberpit"):
+    rec = Recorder([_ini("design", "awaiting_human", project_slug=project)])
+    rec.artifacts = {"i1": [{"id": "a1", "kind": "spec", "commit_sha": "abc", "pr_number": 7,
+                             "session_id": "sess-1"}]}
+    return rec
+
+
+@pytest.mark.asyncio
+async def test_a_merged_spec_advances_to_plan_under_balanced_and_is_recorded():
+    """Under `balanced` the `stage.advance` gate resolves itself: ONE compare-and-set
+    write moves design → plan, the record names the gate, and the tick counts it."""
+    rec = _merged_spec_at_design()
+    rec.policies = {"viberpit": {"risk_tolerance": "balanced"}}
+    rec.autoresolve = True
+    ctx = Ctx()
+    await _loop(rec, ctx).tick()
+    assert [(a[0], a[1], a[2]) for a in rec.advanced] == [("i1", "design", "plan")]
+    record = rec.advanced[0][3]
+    assert record["gate"] == "stage.advance" and record["tolerance"] == "balanced"
+    assert record["detail"] == {"from": "design", "to": "plan"}
+    assert rec.spawned == [] and rec.statuses == []      # the NEXT tick proposes the plan
+    resolved = [e for e in ctx.events if e[2].get("kind") == "auto_resolved"]
+    assert len(resolved) == 1 and resolved[0][2]["target"] == "dark-mode"
+    assert SdlcSynthesizer().status(ctx).counts["auto_resolved"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cautious_and_the_kill_switch_both_keep_the_human_gate():
+    """The default policy parks exactly as phase 1 did; with the process-wide
+    switch off a `bold` product reads as `cautious` (spec D9)."""
+    for policies, autoresolve in (({}, True),
+                                  ({"viberpit": {"risk_tolerance": "bold"}}, False)):
+        rec = _merged_spec_at_design()
+        rec.policies, rec.autoresolve = policies, autoresolve
+        ctx = Ctx()
+        await _loop(rec, ctx).tick()
+        assert rec.advanced == []
+        counts = SdlcSynthesizer().status(ctx).counts
+        assert (counts["awaiting"], counts["auto_resolved"]) == (1, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_stale_advance_is_not_counted_as_resolved():
+    """The compare-and-set lost to a human's newer decision (spec §15): nothing
+    is recorded as done, no event, and the row is simply awaiting again."""
+    rec = _merged_spec_at_design()
+    rec.policies = {"viberpit": {"risk_tolerance": "balanced"}}
+    rec.autoresolve, rec.advance_result = True, False
+    ctx = Ctx()
+    await _loop(rec, ctx).tick()
+    assert len(rec.advanced) == 1
+    assert [e for e in ctx.events if e[2].get("kind") == "auto_resolved"] == []
+    counts = SdlcSynthesizer().status(ctx).counts
+    assert (counts["awaiting"], counts["auto_resolved"]) == (1, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_fully_built_epic_advances_to_deploy_under_the_built_gate():
+    rec = Recorder([_ini("build", "active", project_slug="viberpit", origin_ref="o/r#1",
+                         epic_repo="o/r", epic_number=5, epic_total=3, epic_done=3)])
+    rec.policies = {"viberpit": {"risk_tolerance": "balanced"}}
+    rec.autoresolve = True
+    await _loop(rec).tick()
+    assert [(a[1], a[2], a[3]["gate"]) for a in rec.advanced] == [
+        ("build", "deploy", "stage.advance_built")]
+
+
+@pytest.mark.asyncio
+async def test_an_unwired_advance_seam_warns_once_and_parks():
+    """A deployment without the write seam must never resolve a gate by accident:
+    the row stays awaiting and the operator hears about it once per initiative."""
+    rec = _merged_spec_at_design()
+    rec.policies = {"viberpit": {"risk_tolerance": "balanced"}}
+    rec.autoresolve = True
+    ctx = Ctx()
+    loop = _loop(rec, ctx, advance=False)
+    await loop.tick()
+    await loop.tick()
+    warns = [e for e in ctx.events if e[2].get("kind") == "advance_unwired"]
+    assert len(warns) == 1 and warns[0][0] == "warn"
+    assert rec.advanced == []
+
+
+@pytest.mark.asyncio
+async def test_an_open_artifact_pr_still_waits_for_a_human_merge():
+    """`MergeArtifact` is decided under `balanced` but not executed yet (the
+    arm-auto-merge seam is phase 2b): it counts as awaiting, nothing is written."""
+    rec = Recorder([_ini("design", "awaiting_human", project_slug="viberpit")])
+    rec.artifacts = {"i1": [{"id": "a1", "kind": "spec", "commit_sha": None, "pr_number": 7,
+                             "session_id": "sess-1"}]}
+    rec.policies = {"viberpit": {"risk_tolerance": "balanced"}}
+    rec.autoresolve = True
+    ctx = Ctx()
+    await _loop(rec, ctx).tick()
+    assert rec.advanced == [] and rec.spawned == []
+    assert SdlcSynthesizer().status(ctx).counts["awaiting"] == 1
