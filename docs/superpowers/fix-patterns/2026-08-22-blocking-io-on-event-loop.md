@@ -359,3 +359,36 @@ work already running in a worker thread.
 Adding an offload introduces a scheduling point: revalidate mutable session
 membership afterward. In manual switching, a session may close while enumeration
 waits; looking it up again prevents a stale record from reaching reassignment.
+
+## Async database consumers still do synchronous bulk work — 2026-09-15, #1736
+
+**Symptom:** a bounded, nonblocking live-daemon profile captured merge-queue window
+reconstruction and CI JUnit ingestion on the event-loop thread. The historical
+#1736 warning at 08:50 UTC was 3.77 seconds; its normalized fingerprint also groups
+other durations ending in `.77`. No stack was retained for that exact occurrence,
+so these measured contributors do not establish a unique cause for every warning.
+
+**Anti-pattern:** assuming `await db.execute(...)` makes subsequent ORM loading,
+whole-window grouping, XML parsing, or thousands of ORM constructors cooperative.
+An async driver can yield for I/O while the surrounding Python work still blocks
+other tasks for hundreds of milliseconds.
+
+**Fix shape:** stream merge history in 256-row partitions, grouping ordered
+snapshots incrementally with explicit scheduling points. Parse and deduplicate
+JUnit artifacts in a worker thread using the canonical parser, then bulk-insert
+500 result rows per batch on the owning event loop. Finish network fetches and parsing before writes begin. Keep all batches in the same
+transaction and advance the cursor only after commit. Preserve empty snapshots,
+same-timestamp groups, last-attempt semantics, and rollback after later failure.
+
+Synthetic SQLite comparisons returned identical results: 30,000 merge-history
+rows had maximum 1-ms heartbeat gaps of 203 ms before and 43 ms after; 20,000 CI
+cases had gaps of 441 ms before and 64 ms after (ingestion time 3.11 s versus
+0.31 s). These are local diagnostic measurements, not timing assertions or
+production latency guarantees. Regression tests assert bounded work, execution
+thread, scheduled-peer progress, complete output, and transaction rollback.
+
+**Where to look:** the only runtime JUnit ingestion caller was CI/CD Doctor; other
+`CiTestResult` constructors are test seeds. No other merge-queue observation reader
+or matching whole-window grouping implementation remains. Other pipeline reads
+are bounded by requested PRs or small limits; `timeline.tracked_merged` remains an
+unmeasured high-volume candidate, not an attributed cause or part of this fix.

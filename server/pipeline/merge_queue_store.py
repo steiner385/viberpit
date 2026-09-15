@@ -5,6 +5,8 @@ Observation objects for the pure derivation in merge_train.py.
 """
 from __future__ import annotations
 
+import asyncio
+
 from sqlalchemy import delete, select
 
 from server.db import db_session
@@ -42,21 +44,38 @@ def _entry(row: MergeQueueObservation) -> QueueEntry:
 
 
 async def window(repo: str, since_epoch: int) -> list[Observation]:
+    observations: list[Observation] = []
+    captured_at: int | None = None
+    entries: list[QueueEntry] = []
     async with db_session() as s:
-        rows = (await s.execute(
+        rows = await s.stream_scalars(
             select(MergeQueueObservation)
             .where(MergeQueueObservation.repo == repo,
                    MergeQueueObservation.captured_at >= since_epoch)
             .order_by(MergeQueueObservation.captured_at)
-        )).scalars().all()
-    grouped: dict[int, list[QueueEntry]] = {}
-    for row in rows:
-        bucket = grouped.setdefault(row.captured_at, [])
-        # pr_number NULL is the empty-queue sentinel: it pins the observation's
-        # captured_at but contributes no entry.
-        if row.pr_number is not None:
-            bucket.append(_entry(row))
-    return [Observation(captured_at=t, entries=tuple(es)) for t, es in sorted(grouped.items())]
+            # Bound ORM construction as well as grouping: execute() buffers
+            # the entire window before returning control to this coroutine.
+            .execution_options(yield_per=256)
+        )
+        try:
+            async for batch in rows.partitions():
+                for row in batch:
+                    if row.captured_at != captured_at:
+                        if captured_at is not None:
+                            observations.append(Observation(captured_at, tuple(entries)))
+                        captured_at = row.captured_at
+                        entries = []
+                    # A NULL sentinel pins the timestamp without an entry.
+                    if row.pr_number is not None:
+                        entries.append(_entry(row))
+                # Buffered drivers need not suspend on the next fetch. Keep
+                # the current snapshot across batches, but let other tasks run.
+                await asyncio.sleep(0)
+        finally:
+            await rows.close()
+    if captured_at is not None:
+        observations.append(Observation(captured_at, tuple(entries)))
+    return observations
 
 
 async def prune(older_than_epoch: int) -> int:
