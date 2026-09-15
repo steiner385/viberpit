@@ -165,7 +165,8 @@ def rollup_epic_progress(entries: dict[str, dict | None],
                          parent_of: dict[str, str | None]) -> dict[str, dict | None]:
     """A program's progress is the sum over its LEAF descendants' epics — the
     issues people close — never a count of its sub-epics. Leaves pass through.
-    A program without an epic entry of its own gets one (ref/url None)."""
+    A program without an epic entry of its own gets one (ref/url None). A
+    program's `priority` is the max over its leaves (spec 2026-09-14 §10)."""
     parent_of = _acyclic_parents(parent_of)
     children: dict[str, list[str]] = {}
     for cid, pid in parent_of.items():
@@ -186,13 +187,17 @@ def rollup_epic_progress(entries: dict[str, dict | None],
             out[iid] = entry
             continue
         totals = {"total": 0, "done": 0, "blocked": 0, "needsHuman": 0}
+        priorities: list[float] = []
         for leaf in leaves(iid):
             e = entries.get(leaf)
             if e:
                 for k in totals:
                     totals[k] += int(e.get(k) or 0)
+                if e.get("priority") is not None:
+                    priorities.append(float(e["priority"]))
         base = entry or {"ref": None, "url": None}
-        out[iid] = {"ref": base.get("ref"), "url": base.get("url"), **totals}
+        out[iid] = {"ref": base.get("ref"), "url": base.get("url"), **totals,
+                    "priority": max(priorities) if priorities else None}
     return out
 
 
@@ -278,6 +283,7 @@ def _initiative_node(ini: InitiativeIn, project_slug: str, *,
         "tier": tier,
         "reason": reason,
         "epic": ini.epic,
+        "priority": epic.get("priority"),
         # `parent_slug` here is the caller's already-sanitized parent (never
         # `ini.parent_slug` directly) so a cyclic/unknown pointer never leaks
         # through as a phantom `parentInitiative`.

@@ -247,6 +247,12 @@ try:
         # are parked for a human instead. Bounds a session driving itself in circles.
         self_model_switch_cap: int = Field(
             default=3, alias="CCSWITCH_SELF_MODEL_SWITCH_CAP")
+        # Roadmap auto-execution (spec 2026-09-14 D9): process-wide kill switch. Off
+        # forces every product's risk tolerance to `cautious` without touching any policy.
+        # New settings take the VIBERPIT_ prefix (#1591); mirror_legacy_env() fills it from
+        # CCSWITCH_ on hosts still on the old one.
+        gate_autoresolve_enabled: bool = Field(
+            default=True, alias="VIBERPIT_GATE_AUTORESOLVE_ENABLED")
         # Per-session in-process MCP surface for coding sessions (session tools spec §3).
         # Off = no in-process server is mounted and no instruction is appended.
         session_tools_enabled: bool = Field(
@@ -554,6 +560,9 @@ except ImportError:  # pragma: no cover — fallback if pydantic-settings unavai
         )
         self_model_switch_cap: int = dataclasses.field(
             default_factory=lambda: int(v) if (v := os.environ.get("CCSWITCH_SELF_MODEL_SWITCH_CAP", "")) and v.isdigit() else 3
+        )
+        gate_autoresolve_enabled: bool = dataclasses.field(
+            default_factory=lambda: os.environ.get("VIBERPIT_GATE_AUTORESOLVE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
         session_tools_enabled: bool = dataclasses.field(
             default_factory=lambda: os.environ.get("CCSWITCH_SESSION_TOOLS_ENABLED", "true").lower() in ("1", "true", "yes", "on")

@@ -118,6 +118,9 @@ def test_policy_schema_and_project_policy_round_trip():
         assert fields["weight"]["min"] == 0
         assert fields["max_attempts"]["min"] == 1       # 0 would give up instantly
         assert fields["dispatch"]["min"] is None
+        assert fields["risk_tolerance"]["choices"] == ["cautious", "balanced", "bold"]
+        assert fields["max_initiatives_in_flight"]["min"] == 0
+        assert fields["unattended_model_floor"]["default"] == "none"
 
         r = c.post("/api/pm/projects", json={"name": "KinDash", "slug": "kindash",
                                              "repos": [{"repo": "cairnea/KinDash", "isPrimary": True}]},

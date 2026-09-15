@@ -107,6 +107,7 @@ export function InitiativeCard({
             ? <span className={TIER_TEXT[initiative.tier]}>{reason}{next ? ` → ${stageLabel(next)}` : ''}</span>
             : tierLabel(initiative.tier)}
           {epic ? ` · ${epic.done}/${epic.total} done` : ''}
+          {initiative.priority != null ? ` · priority ${initiative.priority}` : ''}
         </span>
       </CardFrame>
     </div>

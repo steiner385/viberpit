@@ -24,6 +24,7 @@ import time
 import uuid
 from pathlib import Path
 from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Callable, Mapping, cast
 
 if TYPE_CHECKING:
@@ -1192,6 +1193,8 @@ class SessionOrchestrator:
             pr_lookup=self._sdlc_pr_lookup,
             update_artifact=self._sdlc_update_artifact,
             read_config=self._sdlc_synth_read_config,
+            read_policies=self._sdlc_read_policies,
+            live_sessions=self._sdlc_live_artifact_sessions,
             clock=time.monotonic,
         )
         self._sdlc_synth_task: asyncio.Task | None = None
@@ -8449,14 +8452,61 @@ class SessionOrchestrator:
     # ------------------------------------------------------------------
 
     async def _sdlc_synth_read_config(self) -> tuple[str, dict]:
-        """The sdlc-synthesizer row's (mode, config) merged onto schema defaults.
-        Mirrors ``_sdlc_intake_read_config``: off + pure defaults on any absent
-        or invalid row so a bad config never spawns."""
+        """The sdlc-synthesizer row's (mode, config) merged onto schema defaults,
+        with a pre-fold `propose`/`auto` read as `on` (spec 2026-09-14 D8). Off +
+        pure defaults on any absent or invalid row so a bad config never spawns."""
         from server.automations.config_store import read_automation_config
-        from server.automations.sdlc_synthesizer import SdlcSynthesizer
-        return await read_automation_config(
-            SdlcSynthesizer, modes=("propose", "auto"),
+        from server.automations.sdlc_synthesizer import SdlcSynthesizer, fold_synth_mode
+        mode, config = await read_automation_config(
+            SdlcSynthesizer, modes=("on", "propose", "auto"),
             log_key="sdlc_synthesizer")
+        return fold_synth_mode(mode), config
+
+    async def _sdlc_synth_fold_stored_mode(self) -> None:
+        """One-shot: rewrite a stored legacy `propose`/`auto` to `on` so the row
+        stops being load-bearing on the read-path fold and the API's mode select
+        shows a value inside `modes`. Idempotent; `off` untouched.
+
+        Compare-and-set, not read-modify-write: the `mode IN (legacy)` predicate is
+        part of the UPDATE, so an operator PATCHing the row to an explicit `off`
+        inside the window cannot be clobbered back to `on` (the spec prescribes the
+        same shape for the sibling advance seam, §15)."""
+        if getattr(self, "_sdlc_synth_mode_folded", False):
+            return
+        self._sdlc_synth_mode_folded = True
+        from sqlalchemy import update as sa_update
+        from server.automations.sdlc_synthesizer import LEGACY_SYNTH_MODES
+        from server.db.models import Automation as AutomationRow
+        try:
+            async with db_session() as db:
+                await db.execute(sa_update(AutomationRow).where(
+                    AutomationRow.id == "sdlc-synthesizer",
+                    AutomationRow.mode.in_(LEGACY_SYNTH_MODES)).values(mode="on"))
+                await db.commit()
+        except Exception:
+            self._sdlc_synth_mode_folded = False   # retry next tick
+            log.warning("sdlc_synthesizer.mode_fold_failed", exc_info=True)
+
+    async def _sdlc_read_policies(self) -> dict[str, dict]:
+        """Loop seam: slug → effective product policy (the ONE reading,
+        `server/automations/product_policy.py:load_policies`)."""
+        from server.automations.product_policy import load_policies
+        async with db_session() as db:
+            return await load_policies(db)
+
+    async def _sdlc_live_artifact_sessions(self, session_ids: Sequence[str]) -> set[str]:
+        """Loop seam: which of *session_ids* are live right now (spec 2026-09-14 §6:
+        a front-chain slot is a LIVE artifact session, never a dead one or a PR
+        waiting on a human). Reads the in-memory records through the same
+        `ACTIVE_SESSION_STATUSES` vocabulary the PM tree uses; a session this daemon
+        does not hold is not live."""
+        from server.pm.desired_state import ACTIVE_SESSION_STATUSES
+        out: set[str] = set()
+        for sid in session_ids:
+            rec = self._records.get(sid)
+            if rec is not None and rec.status in ACTIVE_SESSION_STATUSES:
+                out.add(sid)
+        return out
 
     async def _sdlc_list_initiatives(self) -> list[dict]:
         """Every non-done LEAF Initiative as a plain dict (the loop's seam shape).
@@ -8467,21 +8517,45 @@ class SessionOrchestrator:
         are derived from its phases, so the synthesizer must never propose
         artifacts for it or materialize it as a plan. The parent-id query is
         unfiltered by status: a program with only done phases still has phases,
-        and must still be excluded even though none of them appear in ``rows``."""
+        and must still be excluded even though none of them appear in ``rows``.
+
+        Rows arrive sorted by priority desc (unscored last), then age, and carry
+        `project_slug`, `priority`, `epic_total`, `epic_done` (spec 2026-09-14
+        D6/D7)."""
         from sqlalchemy import select
-        from server.db.models import Initiative
+        from server.api.sdlc import _epic_progress_batch
+        from server.db.models import Initiative, Project
         async with db_session() as db:
             rows = (await db.execute(select(Initiative).where(
                 Initiative.status != "done", Initiative.stage != "done"))).scalars().all()
             parent_ids = set((await db.execute(select(Initiative.parent_initiative_id).where(
                 Initiative.parent_initiative_id.isnot(None)))).scalars().all())
-        return [{"id": r.id, "slug": r.slug, "repo": r.repo, "title": r.title,
-                 "stage": r.stage, "status": r.status, "origin": r.origin,
-                 "origin_ref": r.origin_ref,
-                 # The engine decides plan-stage materialization off this pointer
-                 # (spec 003 §7b) — without it every merged plan looks un-decomposed.
-                 "epic_repo": r.epic_repo, "epic_number": r.epic_number}
-                for r in rows if r.id not in parent_ids]
+            leaves = [r for r in rows if r.id not in parent_ids]
+            project_ids = {r.project_id for r in leaves if r.project_id}
+            slug_by_project = {p.id: p.slug for p in (await db.execute(
+                select(Project).where(Project.id.in_(project_ids)))).scalars().all()} if project_ids else {}
+            progress = await _epic_progress_batch(db, leaves, include_children=False)
+        out: list[dict[str, Any]] = []
+        for r in leaves:
+            entry = progress.get(r.id) or {}
+            out.append({"id": r.id, "slug": r.slug, "repo": r.repo, "title": r.title,
+                        "stage": r.stage, "status": r.status, "origin": r.origin,
+                        "origin_ref": r.origin_ref,
+                        # The engine decides plan-stage materialization off this pointer
+                        # (spec 003 §7b) — without it every merged plan looks un-decomposed.
+                        "epic_repo": r.epic_repo, "epic_number": r.epic_number,
+                        # Spec 2026-09-14 D7: the loop caps per product and the engine's
+                        # build gate reads the epic's completion.
+                        "project_slug": slug_by_project.get(r.project_id) if r.project_id else None,
+                        "priority": entry.get("priority"),
+                        "epic_total": int(entry.get("total") or 0),
+                        "epic_done": int(entry.get("done") or 0),
+                        "_created_at": r.created_at})
+        # Highest priority first, unscored last, oldest first on ties (D6/D7).
+        out.sort(key=lambda d: (d["priority"] is None, -(d["priority"] or 0.0), d["_created_at"]))
+        for d in out:
+            d.pop("_created_at", None)
+        return out
 
     async def _sdlc_list_artifacts(self, initiative_id: str) -> list[dict]:
         """Every InitiativeArtifact index row for *initiative_id* as a plain dict."""
@@ -9105,6 +9179,7 @@ class SessionOrchestrator:
     async def _sdlc_synth_tick_once(self) -> None:
         """One synthesizer tick + an enabled-only ``last_active_at`` heartbeat.
         Best-effort — neither the tick nor the heartbeat may crash the loop."""
+        await self._sdlc_synth_fold_stored_mode()
         if not await self._schedule_allows_tick("sdlc-synthesizer"):
             return
         try:

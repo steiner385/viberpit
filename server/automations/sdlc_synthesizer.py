@@ -4,24 +4,28 @@ Carries initiatives through the design and plan stages by proposing spec and
 plan artifacts. Enrichment (pr_number/commit_sha fill-in) is handled here for
 ALL artifact kinds so there is exactly one writer (constitution VI).
 
-Propose-only v1: after spawning the artifact session the Initiative parks at
-``awaiting_human`` until the human advance tap. All I/O is injected (fakes in
-tests, orchestrator in prod) — the ``BacklogRunnerLoop`` idiom."""
+The loop's mode is ``off | on`` (spec 2026-09-14 D8): whether a gate resolves
+itself is the product's ``risk_tolerance``, not a global mode. Under
+``cautious`` an initiative parks at ``awaiting_human`` after its artifact
+session exactly as before. All I/O is injected (fakes in tests, orchestrator
+in prod) — the ``BacklogRunnerLoop`` idiom."""
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from typing import Any
 
 from server.sdlc.engine import (
-    ArtifactView, AwaitApproval, InitiativeView, Materialize, NeedsHuman, Propose, next_action)
+    STAGE_ARTIFACT, ArtifactView, AwaitApproval, InitiativeView, Materialize, NeedsHuman,
+    Propose, next_action)
 from server.sdlc.prompts import artifact_path
 
 from .base import AutomationStatus, ConfigField
 from .context import observation_failed, publish_observation
 from .model_pick import AUTOMATION_MODEL_CHOICES
 from .engine_policy import EnginePolicy
+from .product_policy import effective_policy
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +38,17 @@ log = logging.getLogger(__name__)
 #: three sessions, not a session every tick forever.
 MATERIALIZE_MAX_ATTEMPTS = 3
 
+#: Modes the row could carry before spec 2026-09-14 D8 folded them into ``on``.
+LEGACY_SYNTH_MODES: tuple[str, ...] = ("propose", "auto")
+
+
+def fold_synth_mode(mode: str) -> str:
+    """ONE fold, shared by the read path (``_sdlc_synth_read_config``) and the
+    first-tick row rewrite (``_sdlc_synth_fold_stored_mode``). A stored ``off``
+    survives verbatim: it is a human's explicit park."""
+    return "on" if mode in LEGACY_SYNTH_MODES else mode
+
+
 ListInitiatives = Callable[[], Awaitable[list[dict]]]
 ListArtifacts = Callable[[str], Awaitable[list[dict]]]
 RecordArtifact = Callable[..., Awaitable[None]]
@@ -45,6 +60,8 @@ MaterializationAttempts = Callable[[str], Awaitable[int]]
 PrLookup = Callable[[dict], Awaitable["dict | None"]]
 UpdateArtifact = Callable[..., Awaitable[None]]
 ReadConfig = Callable[[], Awaitable["tuple[str, dict]"]]
+ReadPolicies = Callable[[], Awaitable["dict[str, dict]"]]
+LiveSessions = Callable[[Sequence[str]], Awaitable["set[str]"]]
 
 
 def _to_views(ini: dict, artifacts: list[dict]) -> tuple[InitiativeView, list[ArtifactView]]:
@@ -59,7 +76,9 @@ def _to_views(ini: dict, artifacts: list[dict]) -> tuple[InitiativeView, list[Ar
                        repo=str(ini.get("repo") or ""),
                        issue=ini.get("origin_ref"),
                        epic=(f"{ini['epic_repo']}#{ini['epic_number']}"
-                             if ini.get("epic_number") else None)),
+                             if ini.get("epic_number") else None),
+                       epic_total=int(ini.get("epic_total") or 0),
+                       epic_done=int(ini.get("epic_done") or 0)),
         [ArtifactView(kind=str(a.get("kind") or ""),
                       commit_sha=a.get("commit_sha"),
                       pr_number=a.get("pr_number"),
@@ -67,12 +86,34 @@ def _to_views(ini: dict, artifacts: list[dict]) -> tuple[InitiativeView, list[Ar
     )
 
 
+def is_producing(stage: str | None, artifacts: list[dict], live: Collection[str]) -> bool:
+    """Whether an initiative currently holds a front-chain slot (spec 2026-09-14
+    §6, amended after the phase 1 review): its CURRENT stage is ``design`` or
+    ``plan``, that stage's artifact row is unmerged (``commit_sha is None``) AND
+    that row's session is still live.
+
+    Everything the rule excludes, it excludes on purpose. ``intake`` never counts
+    — sdlc-intake's own daily budget governs it, and letting an open intent PR
+    hold a slot starves the spec/plan work this cap exists to pace. A session that
+    died without opening a PR never leaks a slot: nothing else would ever clear
+    its ``commit_sha is None`` row. And an open artifact PR waiting on a human
+    merge does not count either: under ``cautious`` the cap bounds concurrent
+    machine work, never the human merge queue. (A ``blocked`` initiative is
+    excluded by the caller, which is where status lives.)"""
+    kind = STAGE_ARTIFACT.get(stage or "")
+    if kind is None or stage not in ("design", "plan"):
+        return False
+    return any(a.get("kind") == kind and a.get("commit_sha") is None
+               and a.get("session_id") in live for a in artifacts)
+
+
 class SdlcSynthesizer:
     id = "sdlc-synthesizer"
     name = "SDLC Synthesizer"
     work_class = "development"
-    description = "Carries initiatives intent→spec→plan as artifact PRs (propose-only v1)."
-    modes: tuple[str, ...] = ("off", "propose", "auto")
+    description = ("Carries initiatives intent→spec→plan as artifact PRs; resolves stage "
+                   "gates under each product's risk tolerance.")
+    modes: tuple[str, ...] = ("off", "on")
     # Audited engine ceiling (Phase 7, Task 7.3; widened by #1266). Same gate and
     # same evidence as sdlc-intake — the offline suite in
     # `server/tests/test_sdlc_codex_acceptance.py` plus the live intent → spec →
@@ -99,8 +140,12 @@ class SdlcSynthesizer:
             return AutomationStatus(text="Initiative observations unavailable", level="unknown")
         awaiting = counts["awaiting"]
         proposed = counts["proposed"]
+        queued = counts.get("queued", 0)
+        text = f"{proposed} proposed this refresh · {awaiting} awaiting human action"
+        if queued:
+            text += f" · {queued} queued behind the cap"
         return AutomationStatus(
-            text=f"{proposed} proposed this refresh · {awaiting} awaiting human action",
+            text=text,
             level="active" if proposed else "idle", counts=counts,
             waiting_reason="human" if awaiting else None)
 
@@ -131,6 +176,8 @@ class SdlcSynthesizerLoop:
         spawn_materialize: SpawnMaterialize | None = None,
         has_pending_materialization: HasPendingMaterialization | None = None,
         materialization_attempts: MaterializationAttempts | None = None,
+        read_policies: ReadPolicies | None = None,
+        live_sessions: LiveSessions | None = None,
     ) -> None:
         self._ctx = ctx
         self._list_initiatives = list_initiatives
@@ -152,6 +199,8 @@ class SdlcSynthesizerLoop:
         self._pr_lookup = pr_lookup
         self._update_artifact = update_artifact
         self._read_config = read_config
+        self._read_policies = read_policies
+        self._live_sessions = live_sessions
         self._clock = clock
         self._lock = asyncio.Lock()
 
@@ -164,31 +213,63 @@ class SdlcSynthesizerLoop:
                 log.warning("sdlc_synthesizer.tick_failed", exc_info=True)
 
     async def _run(self) -> None:
-        mode, config = await self._read_config()
+        mode, _config = await self._read_config()
         if mode == "off":
             return
         initiatives = await self._list_initiatives()
-        counts = {"initiatives": len(initiatives), "proposed": 0, "awaiting": 0}
+        policies = await self._read_policies() if self._read_policies is not None else {}
+        counts = {"initiatives": len(initiatives), "proposed": 0, "awaiting": 0, "queued": 0}
+        # Front-chain slots per product, counted before any spawn this tick so
+        # the cap is judged against the whole pool, not the rows visited so far.
+        artifacts_by_id = {ini["id"]: await self._list_artifacts(ini["id"]) for ini in initiatives}
+        # One batched liveness read for every unmerged artifact session: a slot is
+        # a session this daemon still holds, never a dead one (see `is_producing`).
+        sids = [a["session_id"] for arts in artifacts_by_id.values() for a in arts
+                if a.get("session_id") and a.get("commit_sha") is None]
+        live = await self._live_sessions(sids) if self._live_sessions is not None and sids else set()
+        producing: dict[str | None, int] = {}
         for ini in initiatives:
-            artifacts = await self._list_artifacts(ini["id"])
+            if ini.get("status") == "blocked":
+                continue          # the loop refuses to act on it, so it is not *actively* producing
+            if is_producing(ini.get("stage"), artifacts_by_id[ini["id"]], live):
+                key = ini.get("project_slug")
+                producing[key] = producing.get(key, 0) + 1
+        #: products already told about their ceiling this tick — five queued rows
+        #: are one operator-visible fact, not five.
+        warned: set[str | None] = set()
+        for ini in initiatives:
+            artifacts = artifacts_by_id[ini["id"]]
             state, arts = _to_views(ini, artifacts)
-            action = next_action(state, arts, mode, config)
+            # Phase 1: literal cautious; phase 2 passes the product's effective tolerance.
+            action = next_action(state, arts, mode, "cautious")
             if isinstance(action, AwaitApproval) or (
                     isinstance(action, NeedsHuman)
                     and (state.status == "blocked" or state.stage == "build")):
                 counts["awaiting"] += 1
             if isinstance(action, Propose) and action.kind in ("spec", "plan"):
-                rec = await self._spawn(ini, action.kind)
-                if rec is not None:
-                    slug = str(ini.get("slug") or "")
-                    await self._record_artifact(
-                        initiative_id=ini["id"], kind=action.kind,
-                        repo_path=artifact_path(slug, action.kind),
-                        session_id=getattr(rec, "id", None),
-                        model=getattr(rec, "model", None))
-                    await self._set_status(ini["id"], "awaiting_human")
-                    await self._emit_proposed(slug, action.kind, rec)
-                    counts["proposed"] += 1
+                key = ini.get("project_slug")
+                cap = int(effective_policy(policies.get(key) if key else None)["max_initiatives_in_flight"])
+                if producing.get(key, 0) >= cap:
+                    counts["queued"] += 1
+                    if key not in warned:
+                        warned.add(key)
+                        await self._emit(
+                            "info", f"{key or 'unassigned'}: front-chain cap {cap} "
+                                    f"reached; queuing {ini.get('slug') or ''}",
+                            kind="ceiling", target=str(ini.get("slug") or ""))
+                else:
+                    rec = await self._spawn(ini, action.kind)
+                    if rec is not None:
+                        producing[key] = producing.get(key, 0) + 1
+                        slug = str(ini.get("slug") or "")
+                        await self._record_artifact(
+                            initiative_id=ini["id"], kind=action.kind,
+                            repo_path=artifact_path(slug, action.kind),
+                            session_id=getattr(rec, "id", None),
+                            model=getattr(rec, "model", None))
+                        await self._set_status(ini["id"], "awaiting_human")
+                        await self._emit_proposed(slug, action.kind, rec)
+                        counts["proposed"] += 1
             elif isinstance(action, Materialize):
                 outcome = await self._materialize(ini)
                 if outcome is not None:

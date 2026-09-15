@@ -365,11 +365,13 @@ def test_list_epic_progress_dedupes_child_mirrored_onto_two_boards():
             await db.flush()
 
             done_child = WorkItem(repo="o/r", number=1, kind="issue", state="closed",
-                                  parent_work_item_id=epic_wi.id)
+                                  parent_work_item_id=epic_wi.id,
+                                  reach=100, impact=10, effort=1, confidence=10)
             dup_child = WorkItem(repo="o/r", number=2, kind="issue", state="open",
                                  parent_work_item_id=epic_wi.id)
             ready_child = WorkItem(repo="o/r", number=3, kind="issue", state="open",
-                                   parent_work_item_id=epic_wi.id)
+                                   parent_work_item_id=epic_wi.id,
+                                   reach=10, impact=5, effort=2, confidence=8)
             db.add_all([done_child, dup_child, ready_child])
             await db.flush()
 
@@ -397,11 +399,14 @@ def test_list_epic_progress_dedupes_child_mirrored_onto_two_boards():
             with TestClient(app, raise_server_exceptions=False) as c:
                 r = c.get("/api/sdlc/initiatives", headers=IDENTITY_HEADERS)
                 assert r.status_code == 200, r.text
-                epic = next(i for i in r.json() if i["slug"] == "the-epic")["epic"]
+                item = next(i for i in r.json() if i["slug"] == "the-epic")
+                epic = item["epic"]
                 assert epic["total"] == 3, "duplicate board row must not inflate total"
                 assert epic["blocked"] == 1, "later-updated status ('Blocked') must win"
                 assert epic["done"] == 1
                 assert "children" not in epic
+                assert item["priority"] == 200.0          # 10*5*8/2; the closed child's 10000 is ignored
+                assert item["epic"]["priority"] == 200.0
 
 
 def test_get_detail_no_epic_is_null():

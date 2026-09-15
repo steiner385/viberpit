@@ -435,13 +435,16 @@ def test_seed_writes_policies_for_the_owning_products_of_enabled_repos(tmp_path)
 
         policies = await _policies()
         alpha, stamp = policies["alpha"]
-        # ``triage_auto_accept`` and ``give_up_after_bounces`` are stored at their
-        # defaults: the legacy runner config never had a triage knob or a bounce
-        # threshold, so the seed cannot invent a setting for either.
+        # ``triage_auto_accept``, ``give_up_after_bounces`` and the three SDLC
+        # front-chain keys are stored at their defaults: the legacy runner config
+        # never had a triage knob, a bounce threshold or a risk dial, so the seed
+        # cannot invent a setting for any of them.
         assert alpha == {"dispatch": "auto", "queue_min_status": "Backlog",
                          "max_in_flight": 4, "weight": 3, "max_attempts": 5,
                          "give_up_after_bounces": 2, "default_model": "opus",
-                         "respect_dependencies": False, "triage_auto_accept": "off"}
+                         "respect_dependencies": False, "triage_auto_accept": "off",
+                         "risk_tolerance": "cautious", "max_initiatives_in_flight": 2,
+                         "unattended_model_floor": "none"}
         assert stamp is not None
         beta, _ = policies["beta"]
         assert beta["max_in_flight"] == 1 and beta["weight"] == 1   # unlisted → 1

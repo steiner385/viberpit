@@ -29,7 +29,7 @@
 | File | Responsibility |
 |---|---|
 | `server/sdlc/gates.py` (new) | `RISK_CLASSES`, `RISK_TOLERANCES`, `GateSpec`, `GATES`, `auto_resolves()`, `effective_tolerance()` |
-| `server/config.py` | `gate_autoresolve_enabled` (`CCSWITCH_GATE_AUTORESOLVE_ENABLED`, default true), both settings shapes |
+| `server/config.py` | `gate_autoresolve_enabled` (`VIBERPIT_GATE_AUTORESOLVE_ENABLED`, default true), both settings shapes |
 | `server/automations/product_policy.py` | + `risk_tolerance`, + `max_initiatives_in_flight`, + `unattended_model_floor` (stored only; applied in phase 2) |
 | `server/sdlc/engine.py` | `next_action(..., tolerance)`; + `MergeArtifact`, + `Advance`; `InitiativeView.epic_total/epic_done`; `propose_only` gone |
 | `server/api/sdlc.py` | detail route passes `"cautious"`; `_action_to_dict` covers the new actions; epic entries carry `priority`; initiative dicts carry `priority` |
@@ -126,9 +126,9 @@ def test_effective_tolerance_kill_switch_and_garbage():
 
 def test_settings_carry_the_kill_switch(monkeypatch):
     from server.config import Settings
-    monkeypatch.delenv("CCSWITCH_GATE_AUTORESOLVE_ENABLED", raising=False)
+    monkeypatch.delenv("VIBERPIT_GATE_AUTORESOLVE_ENABLED", raising=False)
     assert Settings().gate_autoresolve_enabled is True
-    monkeypatch.setenv("CCSWITCH_GATE_AUTORESOLVE_ENABLED", "false")
+    monkeypatch.setenv("VIBERPIT_GATE_AUTORESOLVE_ENABLED", "false")
     assert Settings().gate_autoresolve_enabled is False
 ```
 
@@ -237,14 +237,14 @@ def effective_tolerance(value: str | None, *, enabled: bool) -> str:
         # Roadmap auto-execution (spec 2026-09-14 D9): process-wide kill switch. Off
         # forces every product's risk tolerance to `cautious` without touching any policy.
         gate_autoresolve_enabled: bool = Field(
-            default=True, alias="CCSWITCH_GATE_AUTORESOLVE_ENABLED")
+            default=True, alias="VIBERPIT_GATE_AUTORESOLVE_ENABLED")
 ```
 
 Dataclass fallback block (after `self_model_switch_cap`):
 
 ```python
         gate_autoresolve_enabled: bool = dataclasses.field(
-            default_factory=lambda: os.environ.get("CCSWITCH_GATE_AUTORESOLVE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+            default_factory=lambda: os.environ.get("VIBERPIT_GATE_AUTORESOLVE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
         )
 ```
 
@@ -946,7 +946,7 @@ git commit -q -F /tmp/c5.txt
 
 **Interfaces:**
 - Consumes: `initiative_priority` via `_epic_progress_batch` (Task 5), `effective_policy`/`policies_by_slug` (existing), the `max_initiatives_in_flight` key (Task 2).
-- Produces: loader rows gain `project_slug: str | None`, `priority: float | None`, `epic_total: int`, `epic_done: int` and arrive sorted by `(priority is None, -priority, created_at)`; loop seam `read_policies: Callable[[], Awaitable[dict[str, dict]]]` (slug → effective policy); `is_producing(stage: str | None, artifacts: list[dict]) -> bool`; counts gain `"queued"`.
+- Produces: loader rows gain `project_slug: str | None`, `priority: float | None`, `epic_total: int`, `epic_done: int` and arrive sorted by `(priority is None, -priority, created_at)`; loop seam `read_policies: Callable[[], Awaitable[dict[str, dict]]]` (slug → effective policy); loop seam `live_sessions: Callable[[Sequence[str]], Awaitable[set[str]]]`; `is_producing(stage: str | None, artifacts: list[dict], live: Collection[str]) -> bool`; counts gain `"queued"`. The `live` argument and the `design`/`plan`-only, non-`blocked` slot rule come from the amended spec §6 step 3 (post-review): a slot is a LIVE artifact session, so intake, a blocked initiative, a dead session and a PR awaiting a human merge each hold none.
 
 - [ ] **Step 1: Write the failing loop tests**
 
@@ -1484,7 +1484,7 @@ git push -u origin HEAD
 cat > /tmp/pr-p1.md <<'EOF'
 Phase 1 of `docs/superpowers/specs/2026-09-14-roadmap-auto-execution-design.md` (§13): the behaviour-preserving substrate.
 
-- `server/sdlc/gates.py`: the gate registry (id, risk class, reverse action) and `auto_resolves`; `CCSWITCH_GATE_AUTORESOLVE_ENABLED` kill switch.
+- `server/sdlc/gates.py`: the gate registry (id, risk class, reverse action) and `auto_resolves`; `VIBERPIT_GATE_AUTORESOLVE_ENABLED` kill switch.
 - Product policy gains `risk_tolerance` (default `cautious`) and `max_initiatives_in_flight` (default 2).
 - The stage engine decides under a tolerance and returns `MergeArtifact` / `Advance` for covered gates (not executed until phase 2); the dead `propose_only` seam is gone.
 - SDLC Synthesizer modes fold to `off | on`; stored legacy modes rewrite once.
