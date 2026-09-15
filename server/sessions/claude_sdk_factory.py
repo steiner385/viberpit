@@ -1,5 +1,6 @@
-"""Production factory: builds a real ClaudeSDKClient for a ClaudeAgentDriver."""
+"""Async factories: probe the CLI in a worker, construct SDK clients on the loop."""
 from __future__ import annotations
+import asyncio
 import json
 import os
 
@@ -69,7 +70,7 @@ def merge_options_overlay(kwargs: dict, overlay: dict | None) -> dict:
     return merged
 
 
-def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
+async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None, *,
                      on_pre_compact=None, options_overlay=None):
     """Build the real ``ClaudeSDKClient`` for one session.
 
@@ -99,7 +100,7 @@ def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_env=None
             "preset": "claude_code",
             "append": _build_append_string(),
         },
-        **_cli_path_kwargs(),
+        **(await asyncio.to_thread(_cli_path_kwargs)),
     )
     opts = ClaudeAgentOptions(**merge_options_overlay(kwargs, options_overlay))
     return ClaudeSDKClient(options=opts)
@@ -110,7 +111,7 @@ async def _deny_all_tools(tool_name, tool_input, ctx=None):
     return PermissionResultDeny(message="tools are disabled during suggestion generation")
 
 
-def real_suggestion_factory(cwd, config_dir, account=None):
+async def real_suggestion_factory(cwd, config_dir, account=None):
     """One-shot, resume-less client for generating next-prompt suggestions.
 
     Bound to the session's own account config dir (Max subscription only). Tools denied;
@@ -134,12 +135,12 @@ def real_suggestion_factory(cwd, config_dir, account=None):
         cwd=cwd, env=env, can_use_tool=_deny_all_tools,
         permission_mode="default", include_partial_messages=True,
         max_turns=1, system_prompt=SUGGEST_SYSTEM_PROMPT, model=model, resume=None,
-        **_cli_path_kwargs(),
+        **(await asyncio.to_thread(_cli_path_kwargs)),
     )
     return ClaudeSDKClient(options=opts)
 
 
-def real_summary_factory(cwd, config_dir, account=None):
+async def real_summary_factory(cwd, config_dir, account=None):
     """One-shot, resume-less client for generating a session status summary.
 
     Bound to the session's own account config dir (Max subscription only). Tools denied;
@@ -161,6 +162,6 @@ def real_summary_factory(cwd, config_dir, account=None):
         cwd=cwd, env=env, can_use_tool=_deny_all_tools,
         permission_mode="default", include_partial_messages=True,
         max_turns=1, system_prompt=SUMMARY_SYSTEM_PROMPT, model=model, resume=None,
-        **_cli_path_kwargs(),
+        **(await asyncio.to_thread(_cli_path_kwargs)),
     )
     return ClaudeSDKClient(options=opts)

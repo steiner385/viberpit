@@ -9,6 +9,8 @@ re-export on the factory module.
 """
 import json
 
+import pytest
+
 import server.sessions.account_auth as aa
 import server.sessions.claude_sdk_factory as sf
 from ccswitch.configdir import CLAUDE_JSON_NAME
@@ -26,58 +28,64 @@ def _patch_sdk_client(monkeypatch):
     return captured
 
 
-def test_real_suggestion_factory_injects_oauth_token_for_account(monkeypatch):
+@pytest.mark.asyncio
+async def test_real_suggestion_factory_injects_oauth_token_for_account(monkeypatch):
     captured = _patch_sdk_client(monkeypatch)
     monkeypatch.setattr(
         aa, "oauth_env_for",
         lambda account: {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-TOK"} if account == "primary" else {},
     )
-    sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct", "primary")
+    await sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct", "primary")
     assert captured["options"].env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-TOK"
 
 
-def test_real_suggestion_factory_no_setup_token_omits_env(monkeypatch):
+@pytest.mark.asyncio
+async def test_real_suggestion_factory_no_setup_token_omits_env(monkeypatch):
     # The factory starts from dict(os.environ, ...), so this assertion only means what it
     # claims if the *test process's own* environment doesn't already export the var (plausible
     # on a dev box for this project).
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     captured = _patch_sdk_client(monkeypatch)
     monkeypatch.setattr(aa, "oauth_env_for", lambda account: {})
-    sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct", "primary")
+    await sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct", "primary")
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in captured["options"].env
 
 
-def test_real_summary_factory_injects_oauth_token_for_account(monkeypatch):
+@pytest.mark.asyncio
+async def test_real_summary_factory_injects_oauth_token_for_account(monkeypatch):
     captured = _patch_sdk_client(monkeypatch)
     monkeypatch.setattr(
         aa, "oauth_env_for",
         lambda account: {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-TOK"} if account == "primary" else {},
     )
-    sf.real_summary_factory("/tmp/r", "/tmp/cfg-acct", "primary")
+    await sf.real_summary_factory("/tmp/r", "/tmp/cfg-acct", "primary")
     assert captured["options"].env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-TOK"
 
 
-def test_real_summary_factory_no_setup_token_omits_env(monkeypatch):
+@pytest.mark.asyncio
+async def test_real_summary_factory_no_setup_token_omits_env(monkeypatch):
     # See the matching comment on test_real_suggestion_factory_no_setup_token_omits_env.
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     captured = _patch_sdk_client(monkeypatch)
     monkeypatch.setattr(aa, "oauth_env_for", lambda account: {})
-    sf.real_summary_factory("/tmp/r", "/tmp/cfg-acct", "primary")
+    await sf.real_summary_factory("/tmp/r", "/tmp/cfg-acct", "primary")
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in captured["options"].env
 
 
-def test_real_suggestion_factory_never_logs_token(monkeypatch, caplog):
+@pytest.mark.asyncio
+async def test_real_suggestion_factory_never_logs_token(monkeypatch, caplog):
     captured = _patch_sdk_client(monkeypatch)
     monkeypatch.setattr(
         aa, "oauth_env_for", lambda account: {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-super-secret"}
     )
     with caplog.at_level("DEBUG"):
-        sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct", "primary")
+        await sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct", "primary")
     assert "sk-ant-oat01-super-secret" not in caplog.text
     assert captured["options"].env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-super-secret"
 
 
-def test_helper_factories_spawn_against_a_host_local_config_dir(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_helper_factories_spawn_against_a_host_local_config_dir(monkeypatch, tmp_path):
     """#1005: a suggestion/summary spawn must not point at the shared account dir.
 
     These are the ``latest_suggestions_many`` / ``latest_summary_many`` spawns that fired
@@ -92,7 +100,7 @@ def test_helper_factories_spawn_against_a_host_local_config_dir(monkeypatch, tmp
 
     for factory in (sf.real_suggestion_factory, sf.real_summary_factory):
         captured = _patch_sdk_client(monkeypatch)
-        factory("/tmp/r", str(cfg), "primary")
+        await factory("/tmp/r", str(cfg), "primary")
         spawned = captured["options"].env["CLAUDE_CONFIG_DIR"]
         assert spawned != str(cfg)
         assert str(tmp_path / "scratch") in spawned

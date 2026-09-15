@@ -424,3 +424,31 @@ factories and the cached model-catalog cold lookup also reach the resolver throu
 async callers; they remain broader, unmeasured boundaries, not silently converted
 APIs in this change. The regression tests retain the real resolver and assert
 thread identity, version fallback, bypass behavior, and cancellation propagation.
+
+
+## Async SDK factories must await version resolution — #1746
+
+**Symptom:** a fresh daemon profile after #1758 still captured
+`SuggestionService.generate` → `real_suggestion_factory` → `cli_path_kwargs` →
+`_probe_version` → `subprocess.run` on MainThread. The async helper fixes did not
+cover factories that returned clients synchronously.
+
+**Anti-pattern:** moving an entire SDK factory into a worker would also move
+client construction and potentially lifecycle state away from its owning async
+context. Caching the selected path would hide version-floor changes.
+
+**Fix shape:** make the three canonical real factories async and offload only
+`cli_path_kwargs` with `asyncio.to_thread`. Construct options, credentials, and
+clients on the calling thread. Consumers await factory results when awaitable,
+retaining synchronous injected factories. Driver start and reconnect retain a
+local candidate until resolution completes, so cancellation cannot leave a
+coroutine stored as the live client. A cancelled probe finishes within the
+resolver's existing timeout without constructing a client.
+
+**Where to look:** suggestions, summaries, driver start, and reconnect all use
+the corrected factory boundary. Tests exercise those paths, lifecycle thread
+affinity, cancellation, auth isolation, overlays, and fresh version fallback.
+The ten direct helpers already offload resolution. The model-catalog cold lookup
+remains a separate synchronous boundary with cached discovery; it was not the
+profiled stack and needs separate measurement. This fixes an observed blocking
+path, not a claim that all production loop-lag warnings have disappeared.

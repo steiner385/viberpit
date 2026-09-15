@@ -1,7 +1,9 @@
+import pytest
 from server.sessions import claude_sdk_factory
 
 
-def test_extra_env_merged(monkeypatch):
+@pytest.mark.asyncio
+async def test_extra_env_merged(monkeypatch):
     captured = {}
 
     class FakeClient:
@@ -15,7 +17,7 @@ def test_extra_env_merged(monkeypatch):
     monkeypatch.setattr(
         claude_sdk_factory, "_import_sdk", lambda: (FakeClient, FakeOpts), raising=False
     )
-    claude_sdk_factory.real_sdk_factory(
+    await claude_sdk_factory.real_sdk_factory(
         "/tmp",
         "/cfg",
         None,
