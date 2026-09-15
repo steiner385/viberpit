@@ -133,6 +133,7 @@ class Harness:
             pr_doctor_active=self._pr_doctor_active_fn,
             read_config=self._read_config,
             read_policies=self._read_policies,
+            admission=self._admission,
             clock=clock,
             needs_human=self._needs_human,
             session_ended=self._session_ended,
@@ -142,6 +143,13 @@ class Harness:
         )
         self.needs_humaned: list[str] = []
         self.needs_human_reasons: list[str] = []
+
+    async def _admission(self, batch, **_kwargs):
+        from types import SimpleNamespace
+        policies = await self._read_policies()
+        return (SimpleNamespace(permitted=True, product_slug=batch.product,
+                                configured_dispatch=policies[batch.product]["dispatch"]),
+                policies[batch.product])
 
     async def _handoff(self, target, st, info):
         # Loop composition tests abstract the PR actor; real expanded successor

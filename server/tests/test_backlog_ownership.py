@@ -45,7 +45,10 @@ async def runner(ownership_db, monkeypatch):
         count_in_flight=AsyncMock(return_value=0), healthy_account=AsyncMock(return_value="a"),
         pr_status_for=AsyncMock(return_value=None), pr_doctor_active=AsyncMock(return_value=False),
         read_config=AsyncMock(return_value=("on", {})), clock=lambda: 1,
-        session_work_stopped=AsyncMock(return_value=False))
+        session_work_stopped=AsyncMock(return_value=False),
+        admission=AsyncMock(return_value=(
+            SimpleNamespace(permitted=True, product_slug=None, configured_dispatch="auto"),
+            {"default_model": "auto"})))
     ctx.record_outcome = AsyncMock()
     return loop, ctx
 

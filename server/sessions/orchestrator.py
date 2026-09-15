@@ -1021,6 +1021,7 @@ class SessionOrchestrator:
             pr_doctor_attempts_for=self._backlog_pr_doctor_attempts_for,
             read_config=self._backlog_read_config,
             read_policies=self._backlog_load_policies,
+            admission=self._backlog_admission,
             seed_policies=self._backlog_seed_policies_once,
             clock=time.monotonic,
             needs_human=self._backlog_needs_human,
@@ -1732,6 +1733,36 @@ class SessionOrchestrator:
         record = self._records.get(session_id)
         parent = getattr(record, "parent_session_id", None)
         prior = await execution_snapshot(session_id, parent_session_id=parent)
+        if prior is not None and prior.tree_generation in (None, 0):
+            # reserve_session records generation zero before any native work;
+            # None also requires admission for legacy reservations. A queued/held
+            # reservation has no native work yet. Its persisted
+            # dispatch intent carries manual provenance across process restarts.
+            # Read and close before GitHub or policy I/O; never acquire loop._lock
+            # here because immediate spawn already runs under that lock.
+            from server.automations.ownership import StaleOwnership
+            from server.automations.product_admission import evaluate_implementation
+            from server.db.models import AutomationOperation
+            async with db_session() as db:
+                operation = await db.get(AutomationOperation, prior.token)
+                intent = (operation.provenance or {}).get("runner_dispatch") if operation else None
+                runner_owned = operation is not None and operation.owner == "backlog-runner"
+            if runner_owned and (not isinstance(intent, dict)
+                                 or not isinstance(intent.get("expected"), dict)
+                                 or not intent["expected"].get("repo")):
+                raise StaleOwnership("implementation admission unknown: missing dispatch provenance")
+            if runner_owned and intent and operation is not None:
+                expected = intent["expected"]
+                decision, _ = await evaluate_implementation(
+                    expected["repo"], requested_product=expected.get("product"),
+                    trigger="manual" if intent.get("source") in {"manual", "proposal"} else "automatic",
+                    effect="implementation", existing_slot=True, context=self._backlog_ctx,
+                    existing_token=prior.token,
+                    target_refs=[*expected.get("issues", []), *operation.display_refs.values()])
+                if not decision.permitted:
+                    reasons = "; ".join(item.text for item in decision.constraints
+                                        if item.state != "permitted")
+                    raise StaleOwnership(f"implementation admission refused: {reasons}")
         known = bool(prior and prior.generation is not None
                      and prior.generation == prior.stopped_generation)
         await begin_session_execution(session_id, parent_session_id=parent, execution_id=execution_id)
@@ -6377,35 +6408,25 @@ class SessionOrchestrator:
                       product=by_ref.get(primary, {}).get("product") or previous.get("product"))
         return await self._backlog_dispatch_batch(batch, source="manual")
 
+    async def _backlog_admission(self, batch, *, source: str, existing_slot: bool,
+                                 existing_token: str | None = None):
+        from server.automations.product_admission import evaluate_implementation
+        return await evaluate_implementation(
+            batch.repo, requested_product=batch.product,
+            trigger="automatic" if source == "automatic" else "manual",
+            effect="dispatch", existing_slot=existing_slot, context=self._backlog_ctx,
+            target_refs=[batch.primary, *batch.issues], existing_token=existing_token)
+
     async def _backlog_dispatch_batch(self, batch, *, source: str) -> dict:
         """Manual actions share the runner's claims, budget and spawn lifecycle."""
         loop = self._backlog_loop
         async with loop._lock:
-            _mode, config = await self._backlog_read_config()
             await loop._reconcile_dangling()
             await loop._refresh_dispatch_budget()
             loop._prune_day()
-            previous = await self._backlog_ctx.get_target_state(batch.primary)
-            # Continuing an unstarted proposal already occupies a slot.
-            existing_slot = bool(previous.get("claimed") and (previous.get("ownership_token")
-                                                               or previous.get("proposed")))
-            if (not existing_slot and await self._backlog_count_in_flight()
-                    >= config["max_concurrent"]):
-                return {"status": "capacity", "session_id": None, "session_name": None}
-            if len(loop._spawns_today) >= config["max_spawns_per_day"]:
-                return {"status": "budget", "session_id": None, "session_name": None}
-            if batch.product and not existing_slot:
-                from server.automations.backlog_runner import in_flight_by_product
-                from server.automations.product_policy import effective_policy
-                policies = await self._backlog_load_policies()
-                policy = effective_policy(policies.get(batch.product))
-                counts = in_flight_by_product(await self._backlog_ctx.list_target_states())
-                if counts.get(batch.product, 0) >= int(policy["max_in_flight"]):
-                    return {"status": "capacity", "session_id": None, "session_name": None}
             account = await self._automation_account_for(self._backlog_ctx, batch.primary)
-            model = await self._backlog_policy_model(batch.product)
             return await loop.dispatch_batch(batch, source=source, account=account,
-                                             default_model=model)
+                                             default_model="auto")
 
     async def _backlog_tick_loop(self, interval: float) -> None:
         """Periodic driver for the backlog-runner control loop. Runs a tick every

@@ -7,9 +7,9 @@
 import { Link } from 'react-router-dom'
 import { productPath } from '../roadmapNavState'
 import type { ConfigField } from '@/api/automations'
-import type { Project } from '@/api/pm'
+import type { Project, ProductImplementationDecision } from '@/api/pm'
 import type { ProductNode } from '@/api/roadmap'
-import { usePolicySchema, useUpdateProductPolicy, useProductPolicyCoverage } from '@/api/hooks'
+import { usePolicySchema, useUpdateProductPolicy, useProductPolicyCoverage, useProductImplementationPolicy } from '@/api/hooks'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { ConfigInput } from '@/features/delivery/automation/ConfigInput'
 import { Banner } from '@/ui/Banner'
@@ -24,10 +24,30 @@ function orderedFields(schema: ConfigField[]): ConfigField[] {
   return [...dispatch, ...rest]
 }
 
+function ImplementationEligibility({ label, decision }: { label: string; decision: ProductImplementationDecision }) {
+  const reasons = decision.constraints.filter((constraint) => constraint.state !== 'permitted')
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="font-medium">{label}: {decision.state}</p>
+      {decision.approvalRequired && <p>Approval required before implementation.</p>}
+      {reasons.length > 0 && (
+        <ul className="list-disc pl-4">
+          {reasons.map((reason) => (
+            <li key={reason.code}>
+              {reason.link ? <a href={reason.link} className="underline">{reason.text}</a> : reason.text}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 export function AutomationPolicyCard({ product, project }: { product: ProductNode; project: Project }) {
   const { data: schema, isLoading, isError } = usePolicySchema()
   const update = useUpdateProductPolicy(product.slug)
   const coverage = useProductPolicyCoverage(product.slug)
+  const implementation = useProductImplementationPolicy(product.slug)
   const live = project.onboardingState === 'live'
   const policy = project.automationPolicy ?? {}
 
@@ -101,6 +121,43 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
             )
         ))}
       </fieldset>
+      <section aria-labelledby="implementation-policy-heading" className="mt-2 flex flex-col gap-2 border-t border-edge pt-3">
+        <h4 id="implementation-policy-heading" className="text-sm font-medium">Issue implementation eligibility</h4>
+        {implementation.isPending ? (
+          <p className="text-sm text-ink-muted" role="status">Checking implementation policy…</p>
+        ) : implementation.isError || !implementation.data ? (
+          <p className="text-sm text-ink-muted" role="status">Implementation policy is unavailable.</p>
+        ) : (
+          <>
+            <p className="text-sm text-ink-muted">{implementation.data.explanation}</p>
+            <p className="text-xs text-ink-muted">
+              Observed <time dateTime={implementation.data.observedAt}>{implementation.data.observedAt}</time>
+            </p>
+            <p className="text-sm text-ink-muted">
+              Manual implementation is a one-time request. It does not turn on automatic dispatch or bypass required checks.
+            </p>
+            {implementation.data.repositories.length === 0 ? (
+              <p className="text-sm text-ink-muted">No repository implementation decisions are available.</p>
+            ) : (
+              <ul className="flex flex-col gap-3 text-sm">
+                {implementation.data.repositories.map((repo) => (
+                  <li key={repo.requestedRepo} className="min-w-0 break-words flex flex-col gap-2">
+                    <p className="font-medium">{repo.requestedRepo}</p>
+                    <ImplementationEligibility label="Automatic implementation" decision={repo.decisions.automaticImplementation} />
+                    <ImplementationEligibility label="Automatic proposals" decision={repo.decisions.automaticProposal} />
+                    <ImplementationEligibility label="Manual implementation" decision={repo.decisions.manualImplementation} />
+                    {[...new Set(Object.values(repo.decisions)
+                      .filter((decision) => decision.remainingChecks.length > 0)
+                      .map((decision) => decision.note))].map((note) => (
+                      <p key={note} className="text-xs text-ink-muted">{note}</p>
+                    ))}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </section>
       <section aria-labelledby="repository-coverage-heading" className="mt-2 flex flex-col gap-2 border-t border-edge pt-3">
         <h4 id="repository-coverage-heading" className="text-sm font-medium">Repository coverage</h4>
         {coverage.isPending ? (

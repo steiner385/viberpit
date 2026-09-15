@@ -329,12 +329,23 @@ async def test_tap_dispatch_applies_the_floor_through_the_one_spawn_path(
     captured: dict = {}
     from server.automations.ownership import CanonicalTarget, owned
     from server.db import db_session
-    from server.db.models import Automation, Session, DispatchOutcome
+    from server.db.models import Automation, Session, DispatchOutcome, Project, ProjectRepo
     from unittest.mock import AsyncMock
     from sqlalchemy import select
 
     async with db_session() as db:
-        db.add(Automation(id="backlog-runner"))
+        db.add(Automation(id="backlog-runner", config={
+            "max_concurrent": 1, "max_spawns_per_day": 10}))
+        project = Project(slug="widget", name="widget", automation_policy={
+            "dispatch": "auto", "default_model": "auto"})
+        db.add(project)
+        await db.flush()
+        db.add(ProjectRepo(project_id=project.id, repo="o/r", is_primary=True))
+
+    async def resolve_repos(names):
+        return {name: name.casefold() for name in names}
+
+    monkeypatch.setattr("server.automations.product_admission.resolve_repositories", resolve_repos)
 
     async def resolve(refs, *, kind):
         assert kind == "issue"
@@ -379,7 +390,7 @@ async def test_tap_dispatch_applies_the_floor_through_the_one_spawn_path(
         orch._backlog_ctx, select_batch=noop, spawn=orch._backlog_spawn,
         count_in_flight=orch._backlog_count_in_flight, healthy_account=noop,
         pr_status_for=noop, pr_doctor_active=noop, read_config=orch._backlog_read_config,
-        clock=lambda: 1)
+        admission=orch._backlog_admission, clock=lambda: 1)
     res = await orch.backlog_runner_dispatch(["o/r#7"])
 
     assert res["status"] == "spawned"

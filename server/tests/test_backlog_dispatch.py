@@ -24,6 +24,10 @@ def isolated_identity(monkeypatch):
         return tuple(CanonicalTarget("I_" + ref.split("#")[1], ref) for ref in refs)
 
     monkeypatch.setattr("server.automations.target_identity.resolve_targets", resolve)
+    async def repos(names):
+        return {name: name.casefold() for name in names}
+
+    monkeypatch.setattr("server.automations.product_admission.resolve_repositories", repos)
     monkeypatch.setattr("server.automations.ownership_reconciliation.reconcile_legacy_targets",
                         AsyncMock())
 
@@ -58,6 +62,7 @@ async def dispatch_orch(tmp_path, monkeypatch):
         async with db_session() as db:
             db.add(Automation(id="backlog-runner"))
 
+        await _seed_product()
         orch._backlog_count_in_flight = AsyncMock(return_value=0)
         orch._backlog_loop._announce = lambda batch: orch._backlog_announce(batch)
         orch._backlog_ctx.record_outcome = AsyncMock()
@@ -236,13 +241,14 @@ def _seed(c) -> None:
     """
     assert c.portal is not None
     c.portal.call(_seed_automation)
+    c.portal.call(_seed_product)
 
 
 @pytest.mark.asyncio
 async def test_proposal_tap_uses_stored_entire_batch_outside_candidate_pool(dispatch_orch):
     ctx = dispatch_orch._backlog_ctx
     proposal = await ctx.claim_target_state("o/r#7", {
-        "issues": ["o/r#7", "o/r#8"], "repo": "o/r", "claimed": True,
+        "issues": ["o/r#7", "o/r#8"], "repo": "o/r", "product": "test-product", "claimed": True,
         "proposed": True, "titles": {"o/r#7": "Seven", "o/r#8": "Eight"},
         "attempts": 2}, expected={}, source="automatic")
     dispatch_orch._backlog_query_queue = AsyncMock(return_value=[])
@@ -260,7 +266,7 @@ async def test_public_proposal_retry_after_no_account_restores_all_issues(dispat
     provider = BacklogRunnerActionProvider(dispatch_orch)
     ctx = dispatch_orch._backlog_ctx
     original = await ctx.claim_target_state("o/r#7", {
-        "issues": ["o/r#7", "o/r#8"], "repo": "o/r", "claimed": True,
+        "issues": ["o/r#7", "o/r#8"], "repo": "o/r", "product": "test-product", "claimed": True,
         "proposed": True, "titles": {"o/r#7": "Seven", "o/r#8": "Eight"},
         "attempts": 2}, expected={}, source="automatic")
     dispatch_orch._backlog_query_queue = AsyncMock(return_value=[])
@@ -284,3 +290,130 @@ async def test_public_proposal_retry_after_no_account_restores_all_issues(dispat
     assert state["ownership_token"] == original["ownership_token"]
     assert state["attempts"] == 2 and not state.get("waiting_account")
     assert await provider.actionable() == []
+
+
+async def _seed_product():
+    from server.db import db_session
+    from server.db.models import Project, ProjectRepo
+    async with db_session() as db:
+        project = Project(slug="test-product", name="Test", automation_policy={"dispatch": "off"})
+        db.add(project)
+        await db.flush()
+        db.add(ProjectRepo(project_id=project.id, repo="o/r", is_primary=True))
+
+
+@pytest.mark.asyncio
+async def test_manual_dispatch_resolves_owner_even_without_candidate_product(dispatch_orch):
+    result = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
+    assert result["status"] == "spawned"
+    assert dispatch_orch._backlog_spawn.call_args.args[0].product == "test-product"
+
+
+@pytest.mark.asyncio
+async def test_manual_dispatch_unknown_repository_takes_no_claim(dispatch_orch):
+    result = await dispatch_orch.backlog_runner_dispatch(["other/repo#7"])
+    assert result["status"] == "refused"
+    assert "ownership_missing" in result["reason_codes"]
+    assert await dispatch_orch._backlog_ctx.get_target_state("other/repo#7") == {}
+    dispatch_orch._backlog_spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_manual_dispatch_zero_owner_cap_takes_no_claim(dispatch_orch):
+    from sqlalchemy import update
+    from server.db import db_session
+    from server.db.models import Project
+    async with db_session() as db:
+        await db.execute(update(Project).values(automation_policy={"dispatch": "off", "max_in_flight": 0}))
+    result = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
+    assert result["status"] == "capacity"
+    assert "product_capacity_full" in result["reason_codes"]
+    assert await dispatch_orch._backlog_ctx.get_target_state("o/r#7") == {}
+    dispatch_orch._backlog_spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_manual_dispatch_rejects_stale_candidate_product(dispatch_orch):
+    dispatch_orch._backlog_query_queue = AsyncMock(return_value=[
+        {**_CANDIDATES[0], "product": "stale-owner"}])
+    result = await dispatch_orch.backlog_runner_dispatch(["o/r#7"])
+    assert result["status"] == "refused"
+    dispatch_orch._backlog_spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source,allowed", [("automatic", False), ("manual", True), (None, False)])
+@pytest.mark.parametrize("started", [False, True])
+async def test_first_native_start_rechecks_current_policy(dispatch_orch, source, allowed, started):
+    from server.automations.ownership import (
+        StaleOwnership, begin_session_execution, execution_snapshot, owned,
+    )
+    ctx = dispatch_orch._backlog_ctx
+    state = await ctx.claim_target_state("o/r#7", {
+        "repo": "o/r", "product": "test-product", "issues": ["o/r#7"], "claimed": True},
+        expected={}, source="automatic")
+    async with owned(state["ownership_token"]) as tx:
+        tx.operation.provenance = {"runner_dispatch": {"expected": state, "source": source}}
+        session_id = tx.reserve_session()
+    if started:
+        await begin_session_execution(session_id)
+    before = await execution_snapshot(session_id)
+    assert before.tree_generation == int(started)
+    if allowed or started:
+        await dispatch_orch._automation_before_execution(session_id)
+        after = await execution_snapshot(session_id)
+        assert after.tree_generation == before.tree_generation + 1
+    else:
+        with pytest.raises(StaleOwnership, match="admission refused"):
+            await dispatch_orch._automation_before_execution(session_id)
+        assert await execution_snapshot(session_id) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("started", [False, True])
+async def test_missing_runner_provenance_blocks_only_first_native_start(dispatch_orch, started):
+    from server.automations.ownership import (
+        StaleOwnership, begin_session_execution, execution_snapshot, owned,
+    )
+    state = await dispatch_orch._backlog_ctx.claim_target_state("o/r#7", {
+        "repo": "o/r", "issues": ["o/r#7"], "claimed": True}, expected={}, source="automatic")
+    async with owned(state["ownership_token"]) as tx:
+        session_id = tx.reserve_session()
+    if started:
+        await begin_session_execution(session_id)
+    before = await execution_snapshot(session_id)
+    if not started:
+        with pytest.raises(StaleOwnership, match="missing dispatch provenance"):
+            await dispatch_orch._automation_before_execution(session_id)
+        assert await execution_snapshot(session_id) == before
+    else:
+        await dispatch_orch._automation_before_execution(session_id)
+        after = await execution_snapshot(session_id)
+        assert after.tree_generation == before.tree_generation + 1
+
+
+@pytest.mark.asyncio
+async def test_manual_dispatch_rejects_cross_repository_batch(dispatch_orch):
+    result = await dispatch_orch.backlog_runner_dispatch(["o/r#7", "other/repo#8"])
+    assert result["status"] == "refused"
+    dispatch_orch._backlog_spawn.assert_not_awaited()
+    assert await dispatch_orch._backlog_ctx.get_target_state("o/r#7") == {}
+
+
+@pytest.mark.asyncio
+async def test_manual_dispatch_rejects_candidate_repo_unrelated_to_ref(dispatch_orch):
+    dispatch_orch._backlog_query_queue = AsyncMock(return_value=[
+        {**_CANDIDATES[0], "ref": "other/repo#7"}])
+    result = await dispatch_orch.backlog_runner_dispatch(["other/repo#7"])
+    assert result["status"] == "refused"
+    dispatch_orch._backlog_spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_runner_status_reports_same_refusal_codes_as_action(dispatch_orch):
+    from server.automations.backlog_runner import BacklogRunner
+    result = await dispatch_orch.backlog_runner_dispatch(["other/repo#7"])
+    status = BacklogRunner().status(dispatch_orch._backlog_ctx)
+    assert status.waiting_reason == "policy"
+    assert status.observed_at
+    assert all(code in status.text for code in result["reason_codes"])

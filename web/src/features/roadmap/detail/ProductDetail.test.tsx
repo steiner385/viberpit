@@ -54,6 +54,7 @@ vi.mock('@/api/hooks', () => ({
   useDeleteEdge: () => ({ mutate: vi.fn(), isPending: false }),
   // The Overview's Automation card.
   usePolicySchema: () => ({ data: [], isLoading: false }),
+  useProductImplementationPolicy: () => ({ data: undefined, isPending: false, isError: false }),
   useProductPolicyCoverage: () => ({ data: undefined, isPending: false, isError: false }),
   useUpdateProductPolicy: () => ({ mutate: vi.fn(), isPending: false }),
   // `+ Capability` opens NewCapabilityDialog, which edits the map-changes PR.

@@ -20,8 +20,10 @@ from server.auth.middleware import current_identity
 from server.automations.base import validate_config
 from server.automations.product_policy import (
     PRODUCT_POLICY_SCHEMA, effective_policy, policies_by_slug)
-from server.automations.target_identity import resolve_repositories
-from server.db import db_session, get_db
+from server.automations.product_admission import (
+    ProductMissing, gather_implementation_snapshot, gather_product_coverage,
+)
+from server.db import get_db
 from server.db.models import (
     PROJECT_EDGE_KINDS,
     WORK_ITEM_TRIAGE_STATES,
@@ -48,7 +50,7 @@ from server.pm.mirror_store import deps_in_repos
 from server.pm.outcomes import list_outcomes_stmt, outcome_to_dict
 from server.pm.queue import MIN_STATUS_OPTIONS, rank, rank_key
 from server.pm.queue_store import load_queue_rows, runner_row_maps
-from server.pm.repo_project import owning_projects_by_repo, resolve_repo_ownership
+from server.pm.repo_project import owning_projects_by_repo
 from server.pm.score import RICE_FIELDS, validate_rice
 from server.pm.sync_request import request_project_sync
 # The accept write path and the undo-snapshot format live in server/pm/triage_accept.py
@@ -345,22 +347,14 @@ async def project_policy_coverage(
     slug: str,
     _identity: str = Depends(current_identity),
 ) -> dict:
-    # Do not hold even a read transaction across GitHub. A subsequent read uses
-    # the evidence snapshot; new registrations absent from it remain unresolved.
-    async with db_session() as db:
-        project = await _load_project(db, slug)
-        project_id = project.id
-        registrations = (await db.execute(
-            select(ProjectRepo.project_id, ProjectRepo.repo))).all()
-        requested = sorted({repo for pid, repo in registrations
-                            if pid == project_id and repo})
-        candidates = sorted({repo for _, repo in registrations if repo})
-    snapshot = await resolve_repositories(candidates) if requested else {}
-    async with db_session() as db:
-        coverage = await resolve_repo_ownership(db, requested, canonical_repos=snapshot)
+    try:
+        evidence = await gather_product_coverage(requested_product=slug)
+    except ProductMissing:
+        raise HTTPException(status_code=404, detail="Project not found") from None
+    coverage = evidence.ownership
     return {
         "projectSlug": slug,
-        "observedAt": datetime.now(timezone.utc).isoformat(),
+        "observedAt": evidence.observed_at,
         "scope": "repository-coverage",
         "explanation": (
             "Repository coverage compares current GitHub identity evidence with registered "
@@ -378,6 +372,52 @@ async def project_policy_coverage(
             "reason": item.reason,
         } for item in coverage.values()],
     }
+
+
+@router.get("/projects/{slug}/policy/effective")
+async def project_policy_effective(
+    slug: str,
+    _identity: str = Depends(current_identity),
+) -> dict:
+    from dataclasses import asdict
+    from typing import Literal
+
+    try:
+        snapshot = await gather_implementation_snapshot(requested_product=slug)
+    except ProductMissing:
+        raise HTTPException(status_code=404, detail="Project not found") from None
+    repositories = []
+    for repo, ownership in snapshot.coverage.ownership.items():
+        decisions = {}
+        actions: tuple[tuple[str, Literal["automatic", "manual"],
+                             Literal["implementation", "proposal"]], ...] = (
+            ("automaticImplementation", "automatic", "implementation"),
+            ("automaticProposal", "automatic", "proposal"),
+            ("manualImplementation", "manual", "implementation"),
+        )
+        for key, trigger, effect in actions:
+            decision, _ = snapshot.decide(
+                repo, requested_product=slug, trigger=trigger, effect=effect)
+            decisions[key] = {
+                "state": decision.state,
+                "constraints": [asdict(c) for c in decision.constraints],
+                "configuredDispatch": decision.configured_dispatch,
+                "policySource": decision.policy_source,
+                "productId": decision.product_id, "productSlug": decision.product_slug,
+                "canonicalRepo": decision.canonical_repo,
+                "approvalRequired": decision.approval_required,
+                "observedAt": decision.observed_at, "policyRevision": decision.policy_revision,
+                "remainingChecks": list(decision.remaining_checks), "note": decision.note,
+            }
+        repositories.append({"requestedRepo": repo, "canonicalRepo": ownership.canonical_repo,
+                             "coverageState": ownership.state, "decisions": decisions})
+    return {"projectSlug": slug, "observedAt": snapshot.coverage.observed_at,
+            "scope": "implementation-policy-eligibility",
+            "explanation": "Current implementation policy eligibility only. Target readiness, "
+                           "engine, security and ownership checks still apply before execution. "
+                           "This preview is not a future authorization token. Other responsibilities "
+                           "retain their existing behavior.",
+            "repositories": repositories}
 
 
 @router.patch("/projects/{slug}/policy")

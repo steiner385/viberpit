@@ -15,7 +15,14 @@ take a product's dispatch decision down with it: every reader falls back to pure
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from server.pm.repo_project import RepoOwnership
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,8 +52,8 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
     # rejected; ``_refill`` treats every cap literally, so a stored ``-1`` would
     # read as an unreachable ceiling, i.e. unlimited.
     ConfigField(key="max_in_flight", label="Max in flight", type="int", default=1, min=0,
-                help="This product's concurrent runner sessions. 0 pauses the "
-                     "product without losing the rest of its policy."),
+                help="This product's concurrent runner sessions. 0 pauses issue "
+                     "dispatch without losing the rest of its policy."),
     ConfigField(key="weight", label="Weight", type="int", default=1, min=0,
                 help="This product's share when a freed slot is contested (the "
                      "'weighted' strategy)."),
@@ -123,3 +130,139 @@ async def load_policies(db: AsyncSession) -> dict[str, dict]:
     second rule."""
     rows = (await db.execute(select(Project.slug, Project.automation_policy))).all()
     return {slug: effective_policy(policy) for slug, policy in rows if slug is not None}
+
+
+DecisionState = Literal["permitted", "refused", "unknown"]
+
+
+@dataclass(frozen=True)
+class ImplementationConstraint:
+    """An observed prerequisite, supplied by its existing authoritative reader."""
+
+    code: str
+    state: DecisionState
+    text: str
+    link: str | None = None
+
+
+@dataclass(frozen=True)
+class ImplementationDecision:
+    """Product-policy eligibility at an instant, never an execution token."""
+
+    state: DecisionState
+    constraints: tuple[ImplementationConstraint, ...]
+    configured_dispatch: str
+    policy_source: str
+    product_id: str | None
+    product_slug: str | None
+    canonical_repo: str | None
+    approval_required: bool
+    observed_at: str
+    policy_revision: str
+    remaining_checks: tuple[str, ...]
+    note: str = (
+        "Product implementation policy eligibility only. Remaining target checks must "
+        "pass before dispatch. This preview is not a future authorization token; "
+        "ownership, policy and capacity must be rechecked at execution."
+    )
+
+    @property
+    def permitted(self) -> bool:
+        return self.state == "permitted"
+
+
+def decide_implementation(
+    *,
+    ownership: RepoOwnership | None,
+    requested_product_slug: str | None,
+    policy: dict | None,
+    trigger: Literal["automatic", "manual"],
+    effect: Literal["implementation", "proposal"],
+    runner_mode: str | None,
+    global_count: int | None,
+    global_cap: int | None,
+    product_count: int | None,
+    daily_count: int | None,
+    daily_cap: int | None,
+    observed_at: str,
+    starts_new_session: bool = True,
+    existing_slot: bool = False,
+    prerequisites: tuple[ImplementationConstraint, ...] = (),
+    remaining_checks: tuple[str, ...] = (),
+) -> ImplementationDecision:
+    """Compose current implementation admission policy without I/O or claims.
+
+    Callers gather verified canonical coverage and validated runner configuration.
+    An intentional manual request bypasses scheduled mode only, never capacity or
+    ownership. ``existing_slot`` means this proposal already occupies the supplied
+    global/product counts; it does not exempt a zero cap. This function does not
+    authorize continued work or other responsibilities. Extra constraints retain
+    their authoritative reader's text and links, sorted by code for stable output.
+    """
+    effective = effective_policy(policy)
+    dispatch = str(effective["dispatch"])
+    constraints: list[ImplementationConstraint] = []
+
+    def add(code: str, state: DecisionState, text: str, link: str | None = None) -> None:
+        constraints.append(ImplementationConstraint(code, state, text, link))
+
+    owner = ownership.owner if ownership is not None else None
+    canonical = ownership.canonical_repo if ownership is not None else None
+    if ownership is None or ownership.state == "unresolved":
+        add("ownership_unresolved", "unknown", "Canonical product ownership is unresolved.")
+    elif ownership.state == "ambiguous":
+        add("ownership_ambiguous", "refused", ownership.reason)
+    elif ownership.state == "missing":
+        add("ownership_missing", "refused", "No product owns this repository; fleet scope is not implied.")
+    elif owner is None or not canonical:
+        add("ownership_unverified", "unknown", "Verified canonical product ownership is required.")
+    elif requested_product_slug is not None and requested_product_slug != owner.slug:
+        add("product_mismatch", "refused", "The requested product does not own this repository.")
+    else:
+        add("ownership_unique", "permitted", "Verified repository ownership identifies one product.")
+
+    if trigger not in {"automatic", "manual"} or effect not in {"implementation", "proposal"}:
+        add("action_unknown", "unknown", "The requested implementation action is unsupported.")
+    if effect == "implementation" and not starts_new_session:
+        add("action_not_admission", "unknown", "Continued work is outside implementation admission policy.")
+    if runner_mode not in {"on", "off"}:
+        add("runner_unknown", "unknown", "Validated runner availability is unavailable.")
+    elif trigger == "manual":
+        add("runner_manual", "permitted", "An intentional manual request bypasses scheduled runner mode.")
+    elif runner_mode == "off":
+        add("runner_off", "refused", "Scheduled issue dispatch is off.")
+    else:
+        add("runner_on", "permitted", "Scheduled issue dispatch is available.")
+
+    approval_required = trigger == "automatic" and dispatch == "propose" and effect == "implementation"
+    if trigger == "manual":
+        add("dispatch_manual", "permitted", "An intentional manual request bypasses the product's scheduled dispatch mode.")
+    elif dispatch == "off":
+        add("dispatch_off", "refused", "Automatic issue dispatch is off for this product.")
+    elif approval_required:
+        add("approval_required", "refused", "This product requires approval before starting implementation.")
+    else:
+        add("dispatch_allowed", "permitted", "The configured product mode permits this dispatch effect.")
+
+    def capacity(name: str, count: int | None, cap: int | None, *, occupied: bool = False) -> None:
+        if type(count) is not int or type(cap) is not int or count < 0 or cap < 0:
+            add(f"{name}_unknown", "unknown", f"The {name.replace('_', ' ')} capacity is unavailable.")
+        elif cap == 0 or count - int(occupied and count > 0) >= cap:
+            add(f"{name}_full", "refused", f"The {name.replace('_', ' ')} limit is reached ({count}/{cap}).")
+        else:
+            add(f"{name}_available", "permitted", f"The {name.replace('_', ' ')} limit has capacity ({count}/{cap}).")
+
+    capacity("global_capacity", global_count, global_cap, occupied=existing_slot)
+    capacity("product_capacity", product_count, effective["max_in_flight"], occupied=existing_slot)
+    capacity("daily_budget", daily_count, daily_cap)
+    constraints.extend(sorted(prerequisites, key=lambda item: (item.code, item.state, item.text, item.link or "")))
+    states = {item.state for item in constraints}
+    state: DecisionState = "refused" if "refused" in states else "unknown" if "unknown" in states else "permitted"
+    return ImplementationDecision(
+        state=state, constraints=tuple(constraints), configured_dispatch=dispatch,
+        policy_source="product_policy" if policy == effective else "product_policy_with_safe_defaults",
+        product_id=owner.project_id if owner else None, product_slug=owner.slug if owner else None,
+        canonical_repo=canonical, approval_required=approval_required, observed_at=observed_at,
+        policy_revision=hashlib.sha256(json.dumps(effective, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+        remaining_checks=remaining_checks,
+    )

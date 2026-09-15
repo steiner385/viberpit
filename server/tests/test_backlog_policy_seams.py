@@ -893,7 +893,7 @@ def test_the_recovery_carry_keeps_the_counts_and_drops_the_give_up_ceiling(tmp_p
     assert carry({"total_attempts": "x", "total_mechanical": None}) == {}
 
 
-def test_both_tap_spawn_paths_record_a_running_outcome(tmp_path):
+def test_both_tap_spawn_paths_record_a_running_outcome(tmp_path, monkeypatch):
     """The propose tap and manual dispatch are dispatches too (spec §6): each
     leaves the same ``running`` row the loop's auto path writes, carrying the
     product's model and the claim's attempt count. Only the claim WITHOUT a spawn
@@ -902,12 +902,19 @@ def test_both_tap_spawn_paths_record_a_running_outcome(tmp_path):
 
     from sqlalchemy import select
 
-    from server.automations.product_policy import effective_policy
     from server.db.models import DispatchOutcome
 
     async def run():
         await _init(tmp_path, "tap_outcomes.db")
-        await _seed_product("widget", "o/r")
+        await _seed_product("widget", "o/r", policy={
+            "dispatch": "auto", "default_model": "opus", "max_in_flight": 2})
+        await _set_runner_row(config={"max_concurrent": 10, "max_spawns_per_day": 10})
+
+        async def resolve_repos(names):
+            return {name: name.casefold() for name in names}
+
+        monkeypatch.setattr("server.automations.product_admission.resolve_repositories",
+                            resolve_repos)
         await _seed_item("o/r", 1)
         await _seed_item("o/r", 2)
         orch = _orch_with_ctx()
@@ -922,11 +929,6 @@ def test_both_tap_spawn_paths_record_a_running_outcome(tmp_path):
                     {"ref": "o/r#2", "repo": "o/r", "title": "two",
                      "product": "widget"}]
         orch._backlog_query_queue = query_queue
-
-        async def load_policies():
-            return {"widget": effective_policy({"dispatch": "auto",
-                                                "default_model": "opus", "max_in_flight": 2})}
-        orch._backlog_load_policies = load_policies
 
         async def announce(_batch):
             return None
@@ -949,7 +951,7 @@ def test_both_tap_spawn_paths_record_a_running_outcome(tmp_path):
             orch._backlog_ctx, select_batch=AsyncMock(return_value=None), spawn=spawn,
             count_in_flight=orch._backlog_count_in_flight, healthy_account=AsyncMock(),
             pr_status_for=AsyncMock(), pr_doctor_active=AsyncMock(),
-            read_config=read_config, clock=lambda: 1)
+            read_config=read_config, admission=orch._backlog_admission, clock=lambda: 1)
 
         # The claim the tap spawns for already carries one spent attempt.
         await orch._backlog_ctx.set_target_state("o/r#1", {
