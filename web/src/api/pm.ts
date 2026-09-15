@@ -99,6 +99,43 @@ export function fetchProductPolicyCoverage(slug: string): Promise<ProductPolicyC
   return api.get<ProductPolicyCoverage>(`/pm/projects/${encodeURIComponent(slug)}/policy/coverage`)
 }
 
+/** Current policy eligibility, never a cached authorization to launch a session. */
+export interface ProductImplementationDecision {
+  state: 'permitted' | 'refused' | 'unknown'
+  constraints: { code: string; state: 'permitted' | 'refused' | 'unknown'; text: string; link: string | null }[]
+  configuredDispatch: string
+  policySource: string
+  productId: string | null
+  productSlug: string | null
+  canonicalRepo: string | null
+  approvalRequired: boolean
+  observedAt: string
+  policyRevision: string
+  remainingChecks: string[]
+  note: string
+}
+
+export interface ProductImplementationPolicy {
+  projectSlug: string
+  observedAt: string
+  scope: 'implementation-policy-eligibility'
+  explanation: string
+  repositories: {
+    requestedRepo: string
+    canonicalRepo: string | null
+    coverageState: ProductPolicyCoverage['repositories'][number]['state']
+    decisions: {
+      automaticImplementation: ProductImplementationDecision
+      automaticProposal: ProductImplementationDecision
+      manualImplementation: ProductImplementationDecision
+    }
+  }[]
+}
+
+export function fetchProductImplementationPolicy(slug: string): Promise<ProductImplementationPolicy> {
+  return api.get<ProductImplementationPolicy>(`/pm/projects/${encodeURIComponent(slug)}/policy/effective`)
+}
+
 /** Whole-object replace: the server validates and stores the FULL policy, never
  *  a partial patch (`server/api/pm.py:update_project_policy`). `null` clears it
  *  (opts the product back out). Returns the full project detail so the card's

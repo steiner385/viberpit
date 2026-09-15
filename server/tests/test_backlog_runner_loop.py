@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from types import SimpleNamespace
 
 import pytest
 from unittest.mock import AsyncMock
@@ -247,6 +248,26 @@ def build_loop(*, mode="on", config=None, clock=None,
             return dict(policies)
         return {DEFAULT_PRODUCT: policy(max_in_flight=1000)}
 
+    async def admission(batch, *, source, existing_slot, existing_token=None):
+        from server.automations.backlog_runner import in_flight_by_product
+        from server.automations.product_policy import decide_implementation, effective_policy
+        from server.pm.repo_project import RepoOwner, RepoOwnership
+        policies_now = await read_policies()
+        current = effective_policy(policies_now.get(batch.product))
+        owner = RepoOwner(batch.product or "missing", batch.product or "missing")
+        coverage = RepoOwnership(batch.repo, batch.repo or "o/r", "unique", owner,
+                                 (owner,), (), "fixture verified ownership")
+        counts = in_flight_by_product(await ctx.list_target_states())
+        decision = decide_implementation(
+            ownership=coverage, requested_product_slug=batch.product, policy=current,
+            trigger="automatic" if source == "automatic" else "manual",
+            effect="proposal" if source == "automatic" and current["dispatch"] == "propose"
+            else "implementation", runner_mode=mode,
+            global_count=await count_in_flight(), global_cap=cfg["max_concurrent"],
+            product_count=counts.get(batch.product, 0), daily_count=len(loop._spawns_today),
+            daily_cap=cfg["max_spawns_per_day"], observed_at="fixture", existing_slot=existing_slot)
+        return decision, current
+
     loop = BacklogRunnerLoop(
         ctx,
         select_batch=select_batch,
@@ -259,6 +280,7 @@ def build_loop(*, mode="on", config=None, clock=None,
         read_config=read_config,
         read_policies=read_policies,
         seed_policies=seed_policies,
+        admission=admission,
         clock=clk,
         needs_human=needs_human,
         session_ran=session_ran_probe if session_ran is not None else None,
@@ -427,6 +449,9 @@ def test_non_reentrant_no_double_spawn(tmp_path):
             pr_status_for=pr_status_for, pr_doctor_active=pr_doctor_active,
             read_config=read_config, read_policies=read_policies,
             clock=FakeClock(),
+            admission=AsyncMock(return_value=(
+                SimpleNamespace(permitted=True, product_slug=DEFAULT_PRODUCT,
+                                                   configured_dispatch="auto"), policy())),
         )
 
         t1 = asyncio.create_task(loop.tick())
@@ -2986,5 +3011,21 @@ def test_wait_reason_uses_refill_decision_and_clears(tmp_path):
         await loop.tick()
         assert ctx.backlog_waiting_reason is None
         assert BacklogRunner().status(ctx).waiting_reason is None
+
+    asyncio.run(run())
+
+
+def test_missing_admission_seam_never_claims_or_spawns(tmp_path):
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'admission.db'}")
+        await _seed_row()
+        loop, rec, ctx = build_loop(candidates=[batch("o/r#1")])
+        loop._admission = None
+        await loop.tick()
+        assert rec.spawns == []
+        assert await ctx.get_target_state("o/r#1") == {}
+        from server.automations.backlog_runner import BacklogRunner
+        assert BacklogRunner().status(ctx).level == "unknown"
+        assert "admission_unavailable" in BacklogRunner().status(ctx).text
 
     asyncio.run(run())

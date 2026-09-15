@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from typing import Any, Awaitable, Callable, Protocol, cast
 
 from ccswitch.worktrees import DISK_EXHAUSTION_MARKERS
@@ -20,7 +21,7 @@ from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
 from .base import AutomationStatus, ConfigField
 from .context import AutomationContext
 from .engine_policy import EnginePolicy
-from .product_policy import effective_policy, is_on
+from .product_policy import ImplementationDecision, effective_policy, is_on
 
 log = logging.getLogger(__name__)
 
@@ -293,6 +294,21 @@ class BacklogRunner:
 
     def status(self, ctx) -> AutomationStatus:
         counts = getattr(ctx, "backlog_counts", None) if ctx is not None else None
+        admission_error = getattr(ctx, "backlog_admission_error", None)
+        if admission_error is not None:
+            return AutomationStatus(
+                text="Last dispatch check unavailable [admission_unavailable]. No work was started.",
+                level="unknown", counts=counts, waiting_reason="policy",
+                observed_at=admission_error)
+        admission = getattr(ctx, "backlog_last_admission", None)
+        if admission is not None and not admission.permitted:
+            reasons = "; ".join(f"{item.text} [{item.code}]" for item in admission.constraints
+                                if item.state != "permitted")
+            return AutomationStatus(
+                text=f"Last dispatch check: {reasons}. Rechecked before the next dispatch.",
+                level="unknown" if admission.state == "unknown" else "warn",
+                counts=counts, waiting_reason="policy", observed_at=admission.observed_at)
+
         if counts is None:
             return AutomationStatus(text="Workload counts unavailable", level="unknown")
         # Per-product rows (``_backlog_count_candidates``), absent on a tick that
@@ -530,6 +546,7 @@ class BacklogRunnerLoop:
         read_config: ReadConfig,
         clock: Callable[[], float],
         read_policies: ReadPolicies | None = None,
+        admission: Callable[..., Awaitable[tuple[ImplementationDecision, dict]]] | None = None,
         seed_policies: SeedPolicies | None = None,
         announce: Announce | None = None,
         needs_human: NeedsHuman | None = None,
@@ -558,6 +575,7 @@ class BacklogRunnerLoop:
         self._pr_status_for = pr_status_for         # (primary) -> PullRequestInfo | None
         self._pr_doctor_active = pr_doctor_active   # (repo) -> bool
         self._read_config = read_config             # -> (mode, config)
+        self._admission = admission
         self._read_policies = read_policies         # -> {slug: policy}; None = none wired
         self._seed_policies = seed_policies         # D10 one-shot migration seam
         self._seeded = False                        # the seed has had its one chance
@@ -969,17 +987,6 @@ class BacklogRunnerLoop:
                 return                      # breaker open — no spawn attempts at all
             self._spawn_circuit_until = None    # cooldown over → half-open probe
         in_flight = await self._count_in_flight()
-        # The per-PRODUCT ceiling (``max_in_flight``), counted once up front and
-        # then kept in step with every claim this refill takes. ``max_concurrent``
-        # above is the fleet-wide slot budget; this is each product's share of it,
-        # enforced here rather than aliased onto the product's repos — a product
-        # owning N repos would otherwise run N × its cap, and the card's
-        # (product-aggregated) "4/2 in flight" would be a number nothing enforced.
-        try:
-            per_product = in_flight_by_product(await self._ctx.list_target_states())
-        except Exception:  # pragma: no cover — a state read must not stall the tick
-            log.warning("backlog_runner.in_flight_by_product_failed", exc_info=True)
-            return  # unknown capacity must not grant another dispatch
         free = config["max_concurrent"] - in_flight
         if free <= 0:
             self._waiting_reason = "capacity"
@@ -1016,45 +1023,6 @@ class BacklogRunnerLoop:
             st = await self._ctx.get_target_state(batch.primary)
             if st.get("gave_up"):
                 continue
-            policy = self._policy_for(batch.product)
-            dispatch = policy["dispatch"]
-            if dispatch == "off":
-                # Flipped off (or unreadable) since the queue read that produced
-                # this batch — take no claim. ``continue``, not ``break``: another
-                # product's batch is still perfectly workable this tick.
-                #
-                # COST: ``select_batch`` already consumed this pick's plan group
-                # (``mark_consumed``), so the group is burnt until the next
-                # grouping refresh even though nothing was claimed. Accepted
-                # deliberately: the alternative — ``break`` — parks every OTHER
-                # product's work for the tick because one product was flipped off,
-                # which is the worse trade on a multi-product board. A dispatch
-                # flip is rare and operator-driven, so the burn is bounded.
-                await self._ctx.emit(
-                    "info",
-                    f"skipped {batch.primary}: {batch.product or 'unknown product'} "
-                    f"dispatch off",
-                    kind="skipped_dispatch_off", target=batch.primary,
-                    detail={"product": batch.product, "issues": batch.issues})
-                continue
-            # Every cap is read LITERALLY, 0 included: ``max_in_flight: 0`` is the
-            # PAUSED setting (schema ``min=0``), not an "unlimited" sentinel — a
-            # product an operator parked at 0 must take no claim while keeping the
-            # rest of its policy. Negative values cannot be stored (validation).
-            cap = int(policy["max_in_flight"])
-            if batch.product and per_product.get(batch.product, 0) >= cap:
-                self._waiting_reason = "capacity"
-                # Same plan-group burn as the dispatch-off skip above, and the same
-                # reason for ``continue``: one product at its ceiling must not stop
-                # the tick from serving the products that are not.
-                await self._ctx.emit(
-                    "info",
-                    f"skipped {batch.primary}: {batch.product} is at its in-flight "
-                    f"cap ({cap})",
-                    kind="skipped_product_cap", target=batch.primary,
-                    detail={"product": batch.product, "cap": cap,
-                            "inFlight": per_product.get(batch.product, 0)})
-                continue
             if self._verify_ready is not None and not await self._live_check(batch):
                 # break, not continue: ``select_batch`` already consumed this
                 # pick's plan group, so continuing would burn the REST of the
@@ -1063,9 +1031,7 @@ class BacklogRunnerLoop:
                 break
             result = await self.dispatch_batch(
                 batch, source="automatic", account=account,
-                default_model=policy["default_model"], propose=dispatch != "auto")
-            if result["status"] in {"spawned", "proposed"} and batch.product:
-                per_product[batch.product] = per_product.get(batch.product, 0) + 1
+                default_model="auto")
             if result["status"] in {"refused", "uncertain"} or self._spawn_circuit_until:
                 break
 
@@ -1080,6 +1046,46 @@ class BacklogRunnerLoop:
                     "session_name": getattr(rec, "name", None)}
 
         previous = await self._ctx.get_target_state(batch.primary)
+        existing_slot = bool(previous.get("claimed") and (
+            previous.get("ownership_token") or previous.get("proposed")))
+        if self._admission is None:
+            setattr(self._ctx, "backlog_admission_error", self._wall_clock().isoformat())
+            return {**result("refused"), "reason_codes": ["admission_unavailable"]}
+        try:
+            decision, policy = await self._admission(
+                batch, source=source, existing_slot=existing_slot,
+                existing_token=previous.get("ownership_token"))
+        except Exception:
+            log.warning("backlog_runner.admission_unavailable", exc_info=True)
+            setattr(self._ctx, "backlog_admission_error", self._wall_clock().isoformat())
+            return {**result("refused"), "reason_codes": ["admission_unavailable"]}
+        setattr(self._ctx, "backlog_admission_error", None)
+        setattr(self._ctx, "backlog_last_admission", decision)
+        if not decision.permitted:
+            self._waiting_reason = "policy"
+            refused = [item for item in decision.constraints if item.state != "permitted"]
+            codes = [item.code for item in refused]
+            kind = "implementation_refused"
+            status = "refused"
+            summary = f"skipped {batch.primary}: " + "; ".join(item.text for item in refused)
+            if "dispatch_off" in codes:
+                kind, status = "skipped_dispatch_off", "policy_refused"
+            elif "product_capacity_full" in codes:
+                kind, status = "skipped_product_cap", "capacity"
+                self._waiting_reason = "capacity"
+                summary += f"; in-flight cap ({policy['max_in_flight']})"
+            elif "global_capacity_full" in codes:
+                status = "capacity"
+            elif "daily_budget_full" in codes:
+                status = "budget"
+            await self._ctx.emit(
+                "info", summary,
+                kind=kind, target=batch.primary,
+                detail={"reason_codes": codes, "product": decision.product_slug})
+            return {**result(status), "reason_codes": codes}
+        batch = replace(batch, product=decision.product_slug)
+        default_model = policy["default_model"]
+        propose = propose or (source == "automatic" and decision.configured_dispatch == "propose")
         state = {"repo": batch.repo, "product": batch.product,
                  "attempts": previous.get("attempts", 0), "issues": batch.issues,
                  "titles": batch.titles,
@@ -1112,7 +1118,7 @@ class BacklogRunnerLoop:
         token = state["ownership_token"]
         async with owned(token) as tx:
             tx.operation.provenance = {**tx.operation.provenance, "runner_dispatch": {
-                "expected": state, "model": default_model, "accounted_at": None}}
+                "expected": state, "model": default_model, "source": source, "accounted_at": None}}
         try:
             rec = await self._spawn(batch, account, default_model=default_model,
                                     ownership_token=token)
@@ -1200,24 +1206,15 @@ class BacklogRunnerLoop:
 
     async def _refresh_dispatch_budget(self) -> None:
         """Recover admitted dispatches even if their callback or process died."""
-        from sqlalchemy import select
-        from server.db import db_session
-        from server.db.models import AutomationOperation
+        from .product_admission import read_dispatch_accounting
 
         now = self._wall_clock()
-        async with db_session() as db:
-            operations = (await db.scalars(select(AutomationOperation).where(
-                AutomationOperation.owner == self._ctx.automation_id,
-                AutomationOperation.updated_at >= (now - timedelta(days=1)).replace(tzinfo=None),
-            ))).all()
-            for operation in operations:
-                stamp = operation.provenance.get("runner_dispatch", {}).get("accounted_at")
-                if not stamp or operation.token in self._accounted_dispatches:
-                    continue
-                age = (now - datetime.fromisoformat(stamp)).total_seconds()
-                if age < _DAY_SECONDS:
-                    self._spawns_today.append(self._clock() - max(0, age))
-                self._accounted_dispatches.add(operation.token)
+        for token, stamp in (await read_dispatch_accounting(
+                now=now, automation_id=self._ctx.automation_id)).items():
+            if token not in self._accounted_dispatches:
+                age = (now - stamp).total_seconds()
+                self._spawns_today.append(self._clock() - max(0, age))
+                self._accounted_dispatches.add(token)
 
     def _prune_day(self) -> None:
         """Drop spawn timestamps older than one rolling day (injected clock)."""

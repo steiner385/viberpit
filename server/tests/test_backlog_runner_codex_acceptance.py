@@ -236,8 +236,15 @@ def _loop(ctx, *, spawn, **overrides):
     async def _needs_human(target, _reason):
         escalated.append(target)
 
+    async def admission(batch, **_kwargs):
+        from types import SimpleNamespace
+        policies = await _policies()
+        return (SimpleNamespace(permitted=True, product_slug=batch.product,
+                                configured_dispatch=policies[batch.product]["dispatch"]),
+                policies[batch.product])
+
     seams = dict(
-        select_batch=overrides.pop("select_batch", lambda _c: _some(BATCH)),
+        admission=admission,        select_batch=overrides.pop("select_batch", lambda _c: _some(BATCH)),
         announce=overrides.pop("announce", _announce),
         spawn=spawn,
         count_in_flight=lambda: _some(0),

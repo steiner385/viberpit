@@ -20,6 +20,7 @@ const SCHEMA = [
 ] as const
 
 const h = vi.hoisted(() => ({
+  implementation: { data: undefined as unknown, isPending: false, isError: false },
   coverage: { data: undefined as unknown, isPending: false, isError: false },
   schema: { data: undefined as unknown, isLoading: false, isError: false },
   update: vi.fn(),
@@ -27,6 +28,7 @@ const h = vi.hoisted(() => ({
 }))
 vi.mock('@/api/hooks', () => ({
   usePolicySchema: () => h.schema,
+  useProductImplementationPolicy: () => h.implementation,
   useProductPolicyCoverage: () => h.coverage,
   useUpdateProductPolicy: () => ({ mutate: h.update, isPending: false, ...h.updateState }),
   useGithubRepos: () => ({ data: [], isLoading: false }),
@@ -45,6 +47,7 @@ function makeProject(over: Partial<Project> = {}): Project {
 
 beforeEach(() => {
   h.update.mockReset()
+  Object.assign(h.implementation, { data: undefined, isPending: false, isError: false })
   Object.assign(h.coverage, { data: undefined, isPending: false, isError: false })
   Object.assign(h.schema, { data: SCHEMA, isLoading: false, isError: false })
   Object.assign(h.updateState, { isError: false, error: null })
@@ -166,5 +169,65 @@ describe('repository coverage', () => {
     } })
     view.rerender(<AutomationPolicyCard product={product} project={makeProject()} />)
     expect(screen.getByText('No repositories are registered for this product.')).toBeInTheDocument()
+  })
+})
+
+describe('implementation eligibility', () => {
+  function policyPreview() {
+    const permitted = {
+      state: 'permitted', configuredDispatch: 'propose', policySource: 'product_policy',
+      productId: 'p', productSlug: 'kindash', canonicalRepo: 'org/repo', approvalRequired: false,
+      observedAt: '2026-09-15T12:00:00Z', policyRevision: 'revision',
+      remainingChecks: ['target_ownership', 'engine'], note: 'Target checks still apply; this preview is not an authorization token.',
+      constraints: [{ code: 'capacity_available', state: 'permitted', text: 'Successful capacity detail.', link: null }],
+    }
+    return {
+      projectSlug: 'kindash', observedAt: '2026-09-15T12:00:00Z',
+      scope: 'implementation-policy-eligibility', explanation: 'Implementation policy eligibility only.',
+      repositories: [{
+        requestedRepo: 'org/repo', canonicalRepo: 'org/repo', coverageState: 'unique', decisions: {
+          automaticImplementation: {
+            ...permitted, state: 'refused', approvalRequired: true,
+            constraints: [{ code: 'approval_required', state: 'refused', text: 'The product requires approval.', link: '/roadmap/kindash' }],
+          },
+          automaticProposal: permitted,
+          manualImplementation: { ...permitted, state: 'unknown', constraints: [
+            { code: 'capacity_unknown', state: 'unknown', text: 'Capacity could not be established.', link: null },
+          ] },
+        },
+      }],
+    }
+  }
+
+  it('renders server eligibility and blocking reasons without inferring permission from settings', () => {
+    h.implementation.data = policyPreview()
+    render(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: { dispatch: 'auto' } })} />)
+    expect(screen.getByText('Automatic implementation: refused')).toBeInTheDocument()
+    expect(screen.getByText('Automatic proposals: permitted')).toBeInTheDocument()
+    expect(screen.getByText('Manual implementation: unknown')).toBeInTheDocument()
+    expect(screen.getByText('Approval required before implementation.')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'The product requires approval.' })).toHaveAttribute('href', '/roadmap/kindash')
+    expect(screen.getByText('Capacity could not be established.')).toBeInTheDocument()
+    expect(screen.queryByText('Successful capacity detail.')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Target checks still apply; this preview is not an authorization token.')).toHaveLength(1)
+    expect(screen.getByText(/Manual implementation is a one-time request/)).toBeInTheDocument()
+    expect(h.update).not.toHaveBeenCalled()
+  })
+
+  it.each([true, false])('keeps settings available when implementation policy is unavailable (error %s)', (isError) => {
+    Object.assign(h.implementation, { isError })
+    render(<AutomationPolicyCard product={product} project={makeProject()} />)
+    expect(screen.getByText('Implementation policy is unavailable.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Dispatch')).toBeEnabled()
+    expect(screen.getByText('Repository coverage is unavailable.')).toBeInTheDocument()
+  })
+
+  it('shows pending and empty decisions explicitly', () => {
+    h.implementation.isPending = true
+    const view = render(<AutomationPolicyCard product={product} project={makeProject()} />)
+    expect(screen.getByText('Checking implementation policy…')).toBeInTheDocument()
+    Object.assign(h.implementation, { isPending: false, data: { ...policyPreview(), repositories: [] } })
+    view.rerender(<AutomationPolicyCard product={product} project={makeProject()} />)
+    expect(screen.getByText('No repository implementation decisions are available.')).toBeInTheDocument()
   })
 })

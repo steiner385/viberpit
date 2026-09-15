@@ -31,3 +31,13 @@ Count incomplete linkage or failed intended writes explicitly. A successful sibl
 **Fix shape:** Idempotent acknowledgement of the exact reservation; durable pre-effect intent; observer and callback settle state/history/accounting under the same ownership lock; reconstruct process budget from persisted admission timestamps. Preserve original snapshot comparison before first settlement and never overwrite later decisions on callback replay.
 
 **Where to look:** Runner launch recovery, PR accounting, Session binding. PR sibling is owned by the PR integration task. Intake/triage local budget counters have no matching ownership observer in this change.
+
+## Hand-built runner fixtures omit admission
+
+**Symptom:** Outcome-recording and model-floor tests return `refused` before reaching their original assertions after admission becomes fail-closed.
+
+**Anti-pattern:** A manually constructed runner omits a newly required admission dependency; its mocked legacy policy/config readers no longer supply the persisted facts the shared evaluator reads.
+
+**Fix shape:** Wire the real orchestrator admission callback, persist the intended product ownership, policy and runner capacity, and fake only external repository identity resolution. Keep the original spawn, outcome, attempt and model assertions. Do not add a production permission fallback or an unconditional test grant.
+
+**Where to look:** Audited every `BacklogRunnerLoop` construction in `server/tests/`. Fixed the dispatch-capable fixtures in `test_backlog_policy_seams.py` and `test_automation_spawn_model.py`; runner-loop, ownership, E2E and Codex-acceptance harnesses already supply admission. `test_queue_orphan_prompt_replay.py` deliberately exercises sweep-only behavior with refill/spawn seams that raise, so it needs no admission callback.

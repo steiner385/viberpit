@@ -35,7 +35,7 @@ import {
   fetchOnboarding, proposeMap, runClassify, advanceMap, advanceLive,
   removeDependency, createEdge, deleteEdge,
   editMapChanges, abandonMapChanges, rebaseMapChanges,
-  fetchPolicySchema, updateProductPolicy, fetchProductPolicyCoverage,
+  fetchPolicySchema, updateProductPolicy, fetchProductPolicyCoverage, fetchProductImplementationPolicy,
   fetchProjectHealth,
   fetchOutcomes, fetchWorkItemIssue, dispositionIssue,
   type WorkItemIssue, type IssueDispositionInput, type IssueDispositionResult,
@@ -118,6 +118,7 @@ export const QK = {
   workItemIssue: (id: string) => ['pm', 'issue', id] as const,
   project: (slug: string) => ['pm', 'project', slug] as const,
   policySchema: ['pm', 'policy-schema'] as const,
+  implementationPolicy: (slug: string) => ['pm', 'project', slug, 'implementation-policy'] as const,
   policyCoverage: (slug: string) => ['pm', 'project', slug, 'policy-coverage'] as const,
   health: (slug: string) => ['pm', 'health', slug] as const,
   outcomes: (workItemId: string) => ['pm', 'outcomes', workItemId] as const,
@@ -1846,6 +1847,16 @@ export function useProductPolicyCoverage(slug: string) {
   return useQuery({
     queryKey: QK.policyCoverage(slug),
     queryFn: () => fetchProductPolicyCoverage(slug),
+    enabled: slug !== '',
+    staleTime: 30_000,
+  })
+}
+
+/** Read-only implementation eligibility; parent project invalidation refreshes it after edits. */
+export function useProductImplementationPolicy(slug: string) {
+  return useQuery({
+    queryKey: QK.implementationPolicy(slug),
+    queryFn: () => fetchProductImplementationPolicy(slug),
     enabled: slug !== '',
     staleTime: 30_000,
   })

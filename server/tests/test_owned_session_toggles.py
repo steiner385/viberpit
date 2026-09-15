@@ -14,12 +14,12 @@ from server.tests.test_create_session_per_session_toggles import (
 def test_owned_launch_and_persisted_retry_preserve_opt_outs(tmp_path, path):
     async def body(orch):
         async with acquire(
-            [CanonicalTarget("I_owned_toggle", "o/r#1")], owner="backlog-runner",
+            [CanonicalTarget("I_owned_toggle", "o/r#1")], owner="pr-doctor",
             source="automatic", reason="dispatch", provenance={"origin_ref": "o/r#1"},
         ) as tx:
             token = tx.token
         kwargs = dict(
-            name="owned", origin="backlog-runner", origin_ref="o/r#1",
+            name="owned", origin="pr-doctor", origin_ref="o/r#1",
             ownership_token=token, autopilot_paused=True,
             auto_archive_opt_out_reason=AUTO_ARCHIVE_OPT_OUT_CREATE,
         )
@@ -34,7 +34,7 @@ def test_owned_launch_and_persisted_retry_preserve_opt_outs(tmp_path, path):
             prior = orch._records.pop(rec.id)
             try:
                 retry = await orch.create_session(
-                    "owned", origin="backlog-runner", origin_ref="o/r#1", ownership_token=token)
+                    "owned", origin="pr-doctor", origin_ref="o/r#1", ownership_token=token)
             finally:
                 orch._records[rec.id] = prior
             assert retry.id == rec.id
