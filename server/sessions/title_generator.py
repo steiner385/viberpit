@@ -9,6 +9,8 @@ never break the session loop.
 """
 from __future__ import annotations
 
+import asyncio
+
 import logging
 import re
 
@@ -115,7 +117,7 @@ async def generate_title(
             env=helper_env(config_dir),
             allowed_tools=[],
             setting_sources=[],
-            **cli_path_kwargs(),
+            **(await asyncio.to_thread(cli_path_kwargs)),
         )
     except Exception as exc:  # unimportable/unbuildable SDK options — degrade
         log.warning("generate_title options failed for config_dir=%s: %s", config_dir, exc)

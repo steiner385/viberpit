@@ -17,6 +17,8 @@ loop nudges a refresh, so the old always-max behavior cannot resurface.
 """
 from __future__ import annotations
 
+import asyncio
+
 import json
 import logging
 import os
@@ -195,7 +197,7 @@ async def propose_groups(
             env=helper_env(config_dir),
             allowed_tools=[],
             setting_sources=[],
-            **cli_path_kwargs(),
+            **(await asyncio.to_thread(cli_path_kwargs)),
         )
         text_parts: list[str] = []
         async for msg in query_fn(prompt=_grouping_prompt(candidates, max_k),

@@ -13,6 +13,8 @@ offers a switch only when a suggestion is non-None.
 """
 from __future__ import annotations
 
+import asyncio
+
 import logging
 import os
 from dataclasses import dataclass
@@ -189,7 +191,7 @@ async def suggest_repo(
             env=helper_env(config_dir),
             allowed_tools=[],
             setting_sources=[],
-            **cli_path_kwargs(),
+            **(await asyncio.to_thread(cli_path_kwargs)),
         )
     except Exception as exc:
         log.warning("suggest_repo: setup failed: %s", exc)

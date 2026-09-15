@@ -7,6 +7,7 @@ clobber a good goal with a failure). The result feeds Session.inferred_goal — 
 middle tier of effective_goal()."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -109,7 +110,7 @@ async def infer_goal(
             options = ClaudeAgentOptions(
                 model=model, system_prompt=_SYSTEM_PROMPT, cwd=cwd,
                 env=helper_env(config_dir),
-                allowed_tools=[], setting_sources=[], **cli_path_kwargs())
+                allowed_tools=[], setting_sources=[], **(await asyncio.to_thread(cli_path_kwargs)))
     except Exception as exc:
         log.warning("infer_goal failed: %s", exc)
         return None

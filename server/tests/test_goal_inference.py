@@ -247,3 +247,94 @@ def test_goal_sweep_failure_keeps_prior_value(tmp_path):
         assert calls["infer"] == 1
         assert orch._records["s1"].inferred_goal == "previous good goal"  # never clobbered
     asyncio.run(run())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version, expected_path", [
+    ((2, 2, 0), "/test/claude"),
+    ((2, 0, 0), None),
+    (None, "/test/claude"),
+])
+async def test_goal_options_probe_off_loop(monkeypatch, version, expected_path):
+    """Exercise real option construction and the canonical resolver, without a turn."""
+    import threading
+    import claude_agent_sdk
+    from server.sessions import claude_bin, goal_inference
+
+    loop_thread = threading.get_ident()
+    probe_threads = []
+    options_seen = []
+    monkeypatch.setattr(claude_bin, "_min_version", lambda: (2, 1, 0))
+    monkeypatch.setattr(claude_bin.shutil, "which", lambda _: "/test/claude")
+
+    def probe(path):
+        probe_threads.append(threading.get_ident())
+        return version
+
+    def env(config_dir):
+        assert threading.get_ident() == loop_thread
+        return {"CLAUDE_CONFIG_DIR": config_dir}
+
+    async def query(*, prompt, options):
+        assert threading.get_ident() == loop_thread
+        options_seen.append(options)
+        async for message in _fake_query("Ship it")(prompt=prompt, options=options):
+            yield message
+
+    monkeypatch.setattr(claude_bin, "_probe_version", probe)
+    monkeypatch.setattr(goal_inference, "helper_env", env)
+    monkeypatch.setattr(claude_agent_sdk, "query", query)
+
+    result = await infer_goal("goal", [], config_dir="/test/config", cwd="/test/repo")
+
+    assert result == "Ship it"
+    assert probe_threads and all(t != loop_thread for t in probe_threads)
+    assert len(options_seen) == 1
+    assert options_seen[0].cli_path == expected_path
+    assert options_seen[0].cwd == "/test/repo"
+    assert options_seen[0].env == {"CLAUDE_CONFIG_DIR": "/test/config"}
+
+
+@pytest.mark.asyncio
+async def test_injected_goal_query_skips_options_and_probe(monkeypatch):
+    from server.sessions import goal_inference
+
+    def unexpected():
+        pytest.fail("injected query must not resolve the binary")
+
+    monkeypatch.setattr(goal_inference, "cli_path_kwargs", unexpected)
+    assert await infer_goal("goal", [], config_dir="", cwd="/tmp",
+                            query_fn=_fake_query("Ship it")) == "Ship it"
+
+
+@pytest.mark.asyncio
+async def test_goal_probe_cancellation_propagates(monkeypatch):
+    import threading
+    from server.aio import cancel_and_reap
+    from server.sessions import goal_inference
+
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    finished = asyncio.Event()
+    release = threading.Event()
+
+    def probe():
+        loop.call_soon_threadsafe(started.set)
+        try:
+            assert release.wait(timeout=5)
+            return {}
+        finally:
+            loop.call_soon_threadsafe(finished.set)
+
+    monkeypatch.setattr(goal_inference, "cli_path_kwargs", probe)
+    monkeypatch.setattr(goal_inference, "helper_env", lambda _: {})
+    task = asyncio.create_task(infer_goal("goal", [], config_dir="", cwd="/tmp"))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+        await cancel_and_reap(task, phase="goal-probe-test")
+        await asyncio.wait_for(finished.wait(), timeout=2)

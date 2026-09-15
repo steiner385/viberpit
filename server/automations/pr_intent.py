@@ -4,6 +4,8 @@ any failure/ambiguity degrades to an unresolved verdict (autopilot then falls ba
 its normal no-PR nudge)."""
 from __future__ import annotations
 
+import asyncio
+
 import json
 import logging
 import os
@@ -99,7 +101,7 @@ async def classify_pr_intent(transcript_tail: list[dict], goal: str, *,
             options = ClaudeAgentOptions(
                 model="haiku", system_prompt=_SYSTEM, cwd=_cwd or helper_cwd(),
                 env=helper_env(config_dir),
-                allowed_tools=[], setting_sources=[], **cli_path_kwargs())
+                allowed_tools=[], setting_sources=[], **(await asyncio.to_thread(cli_path_kwargs)))
     except Exception as exc:
         log.warning("pr_intent.classify failed: %s", exc)
         return _UNRESOLVED

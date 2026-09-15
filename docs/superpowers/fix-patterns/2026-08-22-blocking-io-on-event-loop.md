@@ -392,3 +392,35 @@ thread, scheduled-peer progress, complete output, and transaction rollback.
 or matching whole-window grouping implementation remains. Other pipeline reads
 are bounded by requested PRs or small limits; `timeline.tracked_merged` remains an
 unmeasured high-volume candidate, not an attributed cause or part of this fix.
+
+## SDK option helpers hide synchronous version probes — #1736 follow-up
+
+**Symptom:** after #1753 deployed, a live profile captured the main thread in
+`_goal_monitor` → `infer_goal` → `cli_path_kwargs` → `resolve_claude_bin` →
+`_probe_version` → `subprocess.run`. The resolver probes both the selected CLI and
+its bundled minimum version; each subprocess has a ten-second timeout.
+
+**Anti-pattern:** treating SDK option assembly as a cheap dictionary lookup even
+though it executes external commands. A version cache would avoid some calls but
+could conceal a binary update or changed version floor.
+
+**Fix shape:** await `asyncio.to_thread(cli_path_kwargs)` at each direct async
+helper call site. Reuse the canonical resolver, preserving fresh version checks,
+selection/fallback semantics, and lazy injected-query bypass. Credential preparation
+and SDK construction remain on their original thread. Cancellation stops waiting;
+an already-running probe finishes in its worker within its existing timeout.
+
+A local smoke used the real selected/bundled binaries (2.1.272/2.1.183), with SDK
+imports warmed equally and the model response stubbed: both probes moved from the
+loop to workers, the output stayed identical, and maximum heartbeat gap changed
+from 82.8 ms to 1.8 ms. A 50-second local py-spy recording captured 67 worker probe
+samples and zero MainThread probe samples. These checks exercise the changed code;
+only a post-deployment profile can establish what the running daemon does.
+
+**Where to look:** ten direct async callers were corrected: goal, title, prompt
+refinement, repository matching, open-question detection, model selection, backlog
+grouping, autopilot decisions, nudge composition, and PR intent. Synchronous SDK
+factories and the cached model-catalog cold lookup also reach the resolver through
+async callers; they remain broader, unmeasured boundaries, not silently converted
+APIs in this change. The regression tests retain the real resolver and assert
+thread identity, version fallback, bypass behavior, and cancellation propagation.
