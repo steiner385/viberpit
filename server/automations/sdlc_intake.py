@@ -176,7 +176,8 @@ class SdlcIntakeLoop:
 
         for trigger in triggers:
             view, artifacts = await self._ensure_initiative(trigger)
-            action = engine.next_action(view, artifacts, mode, config)
+            # Intake only proposes intents; the synthesizer resolves gates (spec 2026-09-14 §5).
+            action = engine.next_action(view, artifacts, mode, "cautious")
 
             if isinstance(action, engine.Propose) and action.kind == "intent":
                 if len(self._spawns_today) >= cap:

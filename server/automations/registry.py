@@ -201,11 +201,10 @@ registry.register(SdlcIntake(), oversight=AutomationOversight(
 registry.register(SdlcSynthesizer(), oversight=AutomationOversight(
     Responsibility.PREPARATION, 'Initiatives at eligible specification and plan stages.',
     {
-        'off': 'Disable background artifact synthesis and plan decomposition.',
-        'propose': 'Launch specification, plan, and merged-plan decomposition proposal sessions; '
-                   'human advancement and materialization approval gates remain.',
-        'auto': 'Launch artifact and decomposition sessions; human advancement remains required by default, '
-                'subject to separate configuration. Materialization proposals retain their approval gate.',
+        'off': 'Disable background artifact synthesis, plan decomposition and gate resolution.',
+        'on': 'Launch specification, plan and merged-plan decomposition sessions in priority order '
+              'under each product\'s front-chain cap; resolve stage gates only as far as the '
+              'product\'s risk tolerance allows (cautious keeps every human gate).',
     },
     (Relationship('hands_off_to', 'backlog-runner',
                   'Approved materialization creates issues for dispatch under product policy.'),),

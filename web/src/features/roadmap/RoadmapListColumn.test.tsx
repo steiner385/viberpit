@@ -3,7 +3,7 @@ import { render, screen, fireEvent, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { TriageProposal } from '@/api/triage'
 import type { RoadmapMap } from '@/api/roadmap'
-import { MAP, cap } from './__fixtures__/map'
+import { MAP, cap, ini, product } from './__fixtures__/map'
 import { RoadmapListColumn } from './RoadmapListColumn'
 import { capabilityKey, initiativeKey, productKey } from './treeRows'
 import { ViewportProvider } from '@/shell/useViewport'
@@ -161,6 +161,26 @@ describe('RoadmapListColumn', () => {
     // The parent lookup resolves the program but finds no title on it — the
     // chip falls back to the program's own slug rather than disappearing.
     expect(within(phase).getByText('audit')).toBeInTheDocument()
+  })
+
+  it('orders initiatives of one tier by priority, highest first, unscored last, then title', () => {
+    const map: RoadmapMap = {
+      ...MAP,
+      products: [product({
+        slug: 'kindash', name: 'KinDash',
+        initiatives: [
+          ini({ slug: 'low', title: 'Alpha', projectSlug: 'kindash', stage: 'build', priority: 5 }),
+          ini({ slug: 'high', title: 'Zulu', projectSlug: 'kindash', stage: 'build', priority: 40 }),
+          ini({ slug: 'none', title: 'Beta', projectSlug: 'kindash', stage: 'build', priority: null }),
+        ],
+      })],
+    }
+    mount({ scope: 'initiatives', map })
+    const names = screen.getAllByRole('button', { name: /^Open initiative / })
+      .map((b) => b.getAttribute('aria-label') ?? '')
+    expect(names).toEqual(['Open initiative Zulu', 'Open initiative Alpha', 'Open initiative Beta'])
+    // The row shows the number it sorted by.
+    expect(screen.getByText(/priority 40/)).toBeInTheDocument()
   })
 
   it('badges a capability row with its open map-changes PR number', () => {

@@ -39,7 +39,9 @@ from .materialize import (
     chain_edges,
 )
 from .reconcile_diff import Mutation
+from .refs import split_ref
 from .repo_project import owning_projects_by_repo
+from .score import rice_score
 from .sync_request import request_project_sync
 
 log = logging.getLogger(__name__)
@@ -313,6 +315,21 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
     by_number = {w.number: w for w in (await db.execute(select(WorkItem).where(
         WorkItem.repo == repo, WorkItem.kind == "issue",
         WorkItem.number.in_(numbers)))).scalars().all()}
+    # Spec 2026-09-14 D6: seed each task's RICE from the initiative's source issue
+    # (the intake or adopted issue in ``origin_ref``) when it is mirrored and fully
+    # scored. The epic itself was created seconds ago and has no score yet; with no
+    # scored source the tasks stay unscored — the queue never invents numbers.
+    seed: tuple[int, int, int, int] | None = None
+    source_ref = split_ref(ini.origin_ref or "")
+    if source_ref is not None:
+        src_repo, src_number = source_ref
+        source = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == src_repo, WorkItem.number == src_number,
+            WorkItem.kind == "issue"))).scalar_one_or_none()
+        if source is not None and rice_score(source.reach, source.impact, source.effort,
+                                             source.confidence) is not None:
+            seed = (source.reach, source.impact, source.effort, source.confidence)  # type: ignore[assignment]
+
     for idx, task in enumerate(decomposition.tasks):
         node = task_nodes[str(idx)]
         item = by_number.get(node.get("number"))
@@ -322,12 +339,13 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
         item.state, item.title, item.body = "open", task.title, task.body
         item.url, item.gh_node_id = node.get("url"), node.get("node_id")
         # Classified by construction: these issues came out of a plan a human
-        # approved, so they are queue-eligible without a triage pass. RICE is
-        # left unset — Initiative carries no RICE columns to seed it from (spec
-        # §7b's "score seeded from initiative RICE" has no source yet), and the
-        # queue treats a missing score as unranked rather than inventing one.
+        # approved, so they are queue-eligible without a triage pass. RICE comes
+        # from the source issue when it is scored (see ``seed`` above); otherwise
+        # unset.
         item.triage_state, item.classified_by = "classified", "materialize"
         item.classified_at = now
+        if seed is not None:
+            item.reach, item.impact, item.effort, item.confidence = seed
     proposal.status = "accepted"
     proposal.resolved_at = now
     sync_requested = await _request_sync(db, ini, repo, now)

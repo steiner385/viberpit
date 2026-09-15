@@ -51,7 +51,8 @@ def db_env():
 
 
 async def _seed(db_url: str, *, payload: dict | None = None,
-                with_product: bool = True) -> tuple[str, str]:
+                with_product: bool = True, origin_ref: str | None = None,
+                source_rice: tuple[int, int, int, int] | None = None) -> tuple[str, str]:
     """(initiative_id, proposal_id) for a plan-stage initiative awaiting the gate."""
     await init_db(db_url)
     async with db_session() as db:
@@ -61,7 +62,12 @@ async def _seed(db_url: str, *, payload: dict | None = None,
             await db.flush()
             db.add(ProjectRepo(project_id=p.id, repo="o/r", is_primary=True))
         ini = Initiative(slug="dark-mode", repo="o/r", title="Dark mode",
-                         stage="plan", status="awaiting_human")
+                         stage="plan", status="awaiting_human", origin_ref=origin_ref)
+        if origin_ref and source_rice:
+            repo, number = origin_ref.rsplit("#", 1)
+            r, i, e, c = source_rice
+            db.add(WorkItem(repo=repo, number=int(number), kind="issue", state="open",
+                            reach=r, impact=i, effort=e, confidence=c))
         db.add(ini)
         await db.flush()
         prop = MaterializationProposal(
@@ -241,6 +247,29 @@ async def test_apply_overlays_the_initiative_and_the_work_items(db_env):
         assert prop.payload["created"]["tasks"]["2"]["number"] == 104
         repo_row = (await db.execute(select(ProjectRepo))).scalar_one()
         assert repo_row.sync_requested_at is not None
+
+
+@pytest.mark.asyncio
+async def test_sub_issues_inherit_the_source_issues_rice(db_env):
+    """Spec 2026-09-14 D6: a plan approved off a scored intake issue yields tasks
+    that rank WITH it in the queue, not last as unscored rows."""
+    ini_id, prop_id = await _seed(db_env, origin_ref="o/r#5", source_rice=(10, 5, 2, 8))
+    await _apply(prop_id, FakeGh())
+    async with db_session() as db:
+        rows = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == "o/r", WorkItem.classified_by == "materialize"))).scalars().all()
+    assert [w.number for w in rows] == [102, 103, 104]
+    assert all((w.reach, w.impact, w.effort, w.confidence) == (10, 5, 2, 8) for w in rows)
+
+
+@pytest.mark.asyncio
+async def test_sub_issues_stay_unscored_without_a_scored_source(db_env):
+    ini_id, prop_id = await _seed(db_env, origin_ref="o/r#5")   # no mirrored source row
+    await _apply(prop_id, FakeGh())
+    async with db_session() as db:
+        rows = (await db.execute(select(WorkItem).where(
+            WorkItem.classified_by == "materialize"))).scalars().all()
+    assert rows and all(w.reach is None and w.effort is None for w in rows)
 
 
 @pytest.mark.asyncio

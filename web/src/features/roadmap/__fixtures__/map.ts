@@ -12,7 +12,7 @@ export function cap(over: Partial<CapabilityNode> & { slug: string }): Capabilit
 export function ini(over: Partial<InitiativeNode> & { slug: string; projectSlug: string }): InitiativeNode {
   return {
     title: over.slug, stage: 'build', status: 'active', primaryCapability: null,
-    capabilities: [], tier: 'in-flight', reason: null, epic: null,
+    capabilities: [], tier: 'in-flight', reason: null, epic: null, priority: null,
     parentInitiative: null, hasChildren: false, ...over,
   }
 }

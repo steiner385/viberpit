@@ -49,9 +49,9 @@ unscored, so a freshly approved plan's tasks rank *last* in the queue.
 | D4 | **An auto-resolved gate calls the same function the human button calls**, stamped `decided_by="auto"`, audited, and recorded on the initiative so the roadmap can show what the machine did with the reverse action inline. | The D6 pattern from the automation-policy spec (`apply_accept`). No second write path per gate. |
 | D5 | **The reverse action is the existing one; there is no new undo mechanism.** Advance is reversed by Step back; a merged artifact by a revert; an accepted materialization by closing the issues; a model upgrade by switching back. The roadmap shows the chip "auto · <what> · <reverse>" for `AUTO_RESOLVED_VISIBLE_S` (24 h). | Every gate already has a human reverse; adding an undo table would be a second truth about the same state. |
 | D6 | **[decided] Initiative priority is derived, never stored:** the epic issue's own RICE score when it is classified, else the highest score among its open sub-issues, else `None`. Materialization seeds each new sub-issue's RICE from the initiative's *source issue* (`origin_ref`, the intake or adopted issue) when that issue is mirrored and fully scored; the epic itself does not exist until the apply creates it. | Evidence the triage layer already produces; no fifth priority vocabulary. Seeding fixes the rank-last inversion for approved plans. |
-| D7 | **The synthesizer executes in priority order under a per-product cap.** Initiatives are visited highest priority first (ties: oldest first); new artifact sessions spawn only while the product has fewer than `max_initiatives_in_flight` initiatives *actively producing* an artifact. Gate resolutions (merge, advance, accept) are never capped: they finish work. | "Execute through the roadmap" means one or two things at a time in the order that matters, not everything at once. |
+| D7 | **The synthesizer executes in priority order under a per-product cap.** Initiatives are visited highest priority first (ties: oldest first); new artifact sessions spawn only while the product has fewer than `max_initiatives_in_flight` initiatives *actively producing* an artifact (a live spec/plan session). Gate resolutions (merge, advance, accept) are never capped: they finish work. | "Execute through the roadmap" means one or two things at a time in the order that matters, not everything at once. |
 | D8 | **The synthesizer's modes fold to `off | on`; the dead `propose_only` seam is deleted.** Whether a gate auto-resolves is the product's tolerance, not a global mode. | Same fold the runner took in the automation-policy spec (D1/D10). Two dials for one decision is the bug shape named first. |
-| D9 | **A process-wide kill switch, `CCSWITCH_GATE_AUTORESOLVE_ENABLED` (default true), forces `cautious` everywhere without touching any policy.** | The C4 lesson (no kill switch for materialize) cost a recovery. One env var, read through `server/config.py`, is cheap insurance. |
+| D9 | **A process-wide kill switch, `VIBERPIT_GATE_AUTORESOLVE_ENABLED` (default true), forces `cautious` everywhere without touching any policy.** | The C4 lesson (no kill switch for materialize) cost a recovery. One env var, read through `server/config.py`, is cheap insurance. |
 | D11 | **[decided] Model capability is a risk mitigation the product owner can buy.** A per-product `unattended_model_floor` (enum `none` or a tier from `MODEL_TIERS`) is the minimum model for any session whose output a covered gate will consume *without a human read*: spec/plan sessions when `artifact.merge` auto-resolves, decompose sessions when `materialization.accept` auto-resolves. Under `cautious` the floor is inert, because a human reads the output. | Raising the tolerance removes a human review; a stronger model is the substitute the owner chooses explicitly, per product, instead of an implicit tier hidden inside each level. Composes with D9's history floor (take the higher). |
 | D10 | **The gate registry is display-truthful:** `GET /api/pm/policy-schema` publishes the gate table (id, label, risk, reverse) beside the schema so the product card can explain what each level unlocks. | The operator should read what `balanced` does from the app, not from this document. |
 
@@ -72,7 +72,7 @@ unscored, so a freshly approved plan's tasks rank *last* in the queue.
 4. **Reverse a bad call.** The synthesizer advanced `epic(auth):passkeys` to `plan` on a spec
    Tony disagrees with. The chip's Step back returns it to `design`; the spec is a docs commit
    he reverts; the next tick re-proposes only if the spec artifact is gone.
-5. **Stop everything now.** `CCSWITCH_GATE_AUTORESOLVE_ENABLED=false` on the daemon and every
+5. **Stop everything now.** `VIBERPIT_GATE_AUTORESOLVE_ENABLED=false` on the daemon and every
    product reads as `cautious` on the next tick. In-flight sessions finish; no gate resolves.
 6. **Read the order.** The roadmap's initiative rows show their derived priority; the
    Delivery → SDLC Synthesizer card shows per product "2/2 in front chain · next: <slug>".
@@ -154,10 +154,14 @@ One tick (`SdlcSynthesizerLoop._run`), in order:
    initiatives route already uses (`_epic_progress_batch`), never per row.
 3. For each initiative, `next_action(view, arts, mode, tolerance)`:
    - `Propose(kind)`: spawn only if the product's *producing* count is below
-     `max_initiatives_in_flight`, where producing = front-chain stage **and** (a live artifact
-     session **or** an artifact PR that is open and unmerged). A merged-and-parked initiative
-     does not count: the human is the bottleneck there, not capacity. Over cap → count as
-     `queued`, no spawn, no status write.
+     `max_initiatives_in_flight`, where producing = the initiative's CURRENT stage is `design`
+     or `plan`, that stage's artifact row is unmerged (`commit_sha is None`) **and its artifact
+     session is live**. Intake never counts (its own daily budget governs it), a `blocked`
+     initiative never counts, a session that died without a PR never leaks a slot, and an open
+     artifact PR awaiting a human merge does not count: under `cautious` the cap bounds
+     concurrent machine work, never the human merge queue. **[default, amended after the phase 1
+     whole-branch review]** Over cap → count as `queued`, no spawn, no status write, plus one
+     `ceiling` activity event per product per tick so the stall is visible.
    - `MergeArtifact`: call the new seam `arm_auto_merge(repo, pr_number)` once; stamp
      `InitiativeArtifact.auto_merge_armed_at` (new nullable column) so the tick never re-runs
      `gh` for the same PR. Record the gate (§8).
@@ -285,7 +289,7 @@ Nothing is stored.
 - `GET /api/sdlc/initiatives` and `GET /api/pm/map` initiative nodes gain `priority` and
   `autoResolved` (`{gate, at, reverse}` or `null`, only inside the visible window).
 - SDLC Synthesizer status payload gains `queued`, `autoResolved`, `products[]`.
-- Synthesizer modes `off | on` (fold); `propose_only` gone; `CCSWITCH_GATE_AUTORESOLVE_ENABLED`
+- Synthesizer modes `off | on` (fold); `propose_only` gone; `VIBERPIT_GATE_AUTORESOLVE_ENABLED`
   in `server/config.py`.
 
 ## 13. Phasing

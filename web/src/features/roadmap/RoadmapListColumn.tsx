@@ -211,6 +211,12 @@ function stageOrder(stage: string | null): number {
   return i < 0 ? INITIATIVE_STAGES.length : i
 }
 
+/** Higher priority first; an unscored initiative sorts after every scored one.
+ *  RICE scores are >= 0, so -1 is below every real value — and two unscored rows
+ *  compare equal (0), falling through to the title tiebreak. */
+const priorityDesc = (a: InitiativeNode, b: InitiativeNode) =>
+  (b.priority ?? -1) - (a.priority ?? -1)
+
 const INITIATIVE_SPEC: OrderingSpec<InitiativeGroupBy, InitiativeSortBy, InitiativeEntry> = {
   namespace: 'roadmap-initiatives',
   groupByValues: ['stage', 'product', 'none'],
@@ -232,6 +238,7 @@ const INITIATIVE_SPEC: OrderingSpec<InitiativeGroupBy, InitiativeSortBy, Initiat
     },
     sorts: {
       tier: (a, b) => TIER_RANK[a.initiative.tier] - TIER_RANK[b.initiative.tier]
+        || priorityDesc(a.initiative, b.initiative)
         || initiativeTitle(a.initiative).localeCompare(initiativeTitle(b.initiative)),
       title: (a, b) => initiativeTitle(a.initiative).localeCompare(initiativeTitle(b.initiative)),
     },

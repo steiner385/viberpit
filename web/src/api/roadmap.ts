@@ -56,6 +56,9 @@ export interface InitiativeNode {
   /** Why it needs a human beyond its status: 'advance', or for a blocked row 'blocked' | 'epic_blocked'. */
   reason: 'advance' | 'blocked' | 'epic_blocked' | string | null
   epic: InitiativeEpic | null
+  /** Derived priority (server/pm/priority.py): the epic's RICE score, else the
+   *  highest open sub-issue score, else null. Never stored, never recomputed here. */
+  priority: number | null
   /** Slug of the program initiative this is a phase of, or null for a root
    *  initiative (spec: initiative nesting). A phase whose parent names an
    *  initiative not present in the product's tree is treated as a root — the

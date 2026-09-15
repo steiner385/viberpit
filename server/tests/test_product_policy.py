@@ -10,12 +10,15 @@ def test_schema_keys_and_defaults():
     keys = [f.key for f in PRODUCT_POLICY_SCHEMA]
     assert keys == ["dispatch", "queue_min_status", "max_in_flight", "weight",
                     "max_attempts", "give_up_after_bounces", "default_model",
-                    "respect_dependencies", "triage_auto_accept"]
+                    "respect_dependencies", "triage_auto_accept",
+                    "risk_tolerance", "max_initiatives_in_flight", "unattended_model_floor"]
     assert DISPATCH_MODES == ("off", "propose", "auto")
     assert effective_policy(None) == {
         "dispatch": "off", "queue_min_status": "Ready", "max_in_flight": 1, "weight": 1,
         "max_attempts": 2, "give_up_after_bounces": 2, "default_model": "auto",
-        "respect_dependencies": True, "triage_auto_accept": "off"}
+        "respect_dependencies": True, "triage_auto_accept": "off",
+        "risk_tolerance": "cautious", "max_initiatives_in_flight": 2,
+        "unattended_model_floor": "none"}
 
 
 def test_effective_policy_fills_defaults_and_falls_back_on_garbage():
@@ -57,3 +60,38 @@ def test_give_up_after_bounces_is_the_ninth_field_defaulting_to_two():
     assert effective_policy({"give_up_after_bounces": 5})["give_up_after_bounces"] == 5
     # A negative threshold degrades the WHOLE policy to defaults.
     assert effective_policy({"give_up_after_bounces": -1})["give_up_after_bounces"] == 2
+
+
+def test_risk_tolerance_is_the_gate_vocabulary_defaulting_to_cautious():
+    """Spec 2026-09-14 D2/D3: the dial's choices are imported from the gate
+    registry, never retyped here (constitution VI)."""
+    from server.sdlc.gates import RISK_TOLERANCES
+    field = {f.key: f for f in PRODUCT_POLICY_SCHEMA}["risk_tolerance"]
+    assert field.type == "enum"
+    assert field.default == "cautious"
+    assert field.choices == list(RISK_TOLERANCES)
+    assert effective_policy({"risk_tolerance": "bold"})["risk_tolerance"] == "bold"
+    # Garbage degrades the WHOLE policy to defaults: a bad row can only be more careful.
+    assert effective_policy({"risk_tolerance": "reckless"})["risk_tolerance"] == "cautious"
+
+
+def test_max_initiatives_in_flight_defaults_to_two_and_zero_pauses():
+    field = {f.key: f for f in PRODUCT_POLICY_SCHEMA}["max_initiatives_in_flight"]
+    assert field.type == "int"
+    assert field.default == 2
+    assert field.min == 0
+    assert effective_policy({"max_initiatives_in_flight": 0})["max_initiatives_in_flight"] == 0
+    assert effective_policy({"max_initiatives_in_flight": -1})["max_initiatives_in_flight"] == 2
+
+
+def test_unattended_model_floor_is_none_or_a_model_tier():
+    """Spec 2026-09-14 D11: the tier vocabulary comes from
+    server/sessions/model_request.py:MODEL_TIERS, never retyped (constitution VI).
+    Schema only in phase 1; phase 2 applies it to unattended spawns."""
+    from server.sessions.model_request import MODEL_TIERS
+    field = {f.key: f for f in PRODUCT_POLICY_SCHEMA}["unattended_model_floor"]
+    assert field.type == "enum"
+    assert field.default == "none"
+    assert field.choices == ["none", *MODEL_TIERS]
+    assert effective_policy({"unattended_model_floor": "opus"})["unattended_model_floor"] == "opus"
+    assert effective_policy({"unattended_model_floor": "gpt-5"})["unattended_model_floor"] == "none"

@@ -12,14 +12,17 @@ The chain is the front of the AI-Native SDLC loop:
    (intent)   (spec)   (plan)   (issue handoff)   ── existing flows ──
 
 Each front stage produces one committed markdown artifact
-(``STAGE_ARTIFACT``). ``next_action`` encodes the **propose-only v1 gate**: once a
-stage's artifact PR is proposed, the engine returns ``AwaitApproval`` and NEVER
-advances the stage on its own — a human tap (or, later, an auto-advance config)
-moves the Initiative to the next stage. See design §3.3.
+(``STAGE_ARTIFACT``). ``next_action`` takes the product's risk *tolerance* (spec
+2026-09-14 §5): under ``cautious`` every artifact gate returns ``AwaitApproval``
+and a human tap advances; ``balanced``/``bold`` return ``MergeArtifact``/``Advance``
+for the gates the registry (``server/sdlc/gates.py``) says they cover. The engine
+never performs the write; the synthesizer loop does.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from server.sdlc.gates import auto_resolves
 
 # --------------------------------------------------------------------------- #
 # Stage / artifact vocabulary (source of truth for the front chain)           #
@@ -67,6 +70,10 @@ class InitiativeView:
     # yet. Internal to the engine — the API's wire `epic` key is a progress
     # object, not this ref.
     epic: str | None = None
+    # Sub-issue progress of the epic (the build stage's completion signal for the
+    # ``stage.advance_built`` gate); 0/0 when there is no epic.
+    epic_total: int = 0
+    epic_done: int = 0
 
 
 # --------------------------------------------------------------------------- #
@@ -95,6 +102,24 @@ class Materialize:
 
 
 @dataclass(frozen=True)
+class MergeArtifact:
+    """The stage artifact PR is open and the tolerance covers ``artifact.merge``:
+    the loop arms auto-merge on it (its one GitHub write). ``pr_number`` is
+    always set — with no number known yet the engine waits instead."""
+    kind: str
+    pr_number: int | None = None
+
+
+@dataclass(frozen=True)
+class Advance:
+    """The stage is complete (artifact merged; at plan, the epic exists; at build,
+    the epic is fully closed) and the tolerance covers the advance gate: move to
+    ``to_stage`` through the same write the human Advance tap uses. The NEXT tick
+    proposes the next artifact — one write per tick, one decision per action."""
+    to_stage: str
+
+
+@dataclass(frozen=True)
 class HandoffToBuild:
     """Front chain is complete — hand the underlying issue to backlog_runner."""
     issue: str
@@ -112,7 +137,7 @@ class NeedsHuman:
     reason: str = ""
 
 
-StageAction = Propose | AwaitApproval | Materialize | HandoffToBuild | Done | NeedsHuman
+StageAction = Propose | AwaitApproval | MergeArtifact | Advance | Materialize | HandoffToBuild | Done | NeedsHuman
 
 
 # --------------------------------------------------------------------------- #
@@ -181,15 +206,15 @@ def next_action(
     initiative: InitiativeView,
     artifacts: list[ArtifactView],
     mode: str,
-    config: dict,
+    tolerance: str,
 ) -> StageAction:
     """Decide the next SDLC action for *initiative*. Pure + total.
 
-    ``mode`` ∈ {"off", "propose", "auto"} mirrors the other automations. ``config``
-    is reserved for future gating; the one flag consulted today is
-    ``propose_only`` (default True) which, when combined with ``mode == "auto"``,
-    lets a merged artifact auto-advance to the next stage. v1 default keeps the
-    human gate at every stage.
+    ``mode`` is the owning automation's mode: ``"off"`` parks everything; any
+    other value proceeds (the synthesizer's is ``off | on``; intake still passes
+    its legacy ``propose``/``auto``). ``tolerance`` is the product's
+    ``risk_tolerance`` (``server/sdlc/gates.py:RISK_TOLERANCES``); the caller
+    resolves it, this function only consults ``auto_resolves``.
     """
     # Terminal / override states first (checked before any stage logic).
     if initiative.stage == "done" or initiative.status == "done":
@@ -201,8 +226,13 @@ def next_action(
 
     stage = initiative.stage
 
-    # Non-artifact stages: hand off (build) or defer to existing flows.
+    # Non-artifact stages: a fully built epic may advance to deploy under the
+    # `stage.advance_built` gate; otherwise hand off (build) or defer to existing flows.
     if stage not in STAGE_ARTIFACT:
+        if (stage == "build" and initiative.epic_total > 0
+                and initiative.epic_done >= initiative.epic_total
+                and auto_resolves("stage.advance_built", tolerance)):
+            return Advance(advance_stage(stage))
         return _enter_stage(stage, initiative)
 
     kind = STAGE_ARTIFACT[stage]
@@ -212,24 +242,19 @@ def next_action(
     if art is None:
         return Propose(kind)
 
-    # Artifact PR open (not merged) → propose-only gate: wait for the human.
+    # Artifact PR open (not merged): arm its merge if the gate allows and the PR
+    # number is known (enrichment fills it); otherwise wait for the human.
     if art.commit_sha is None:
+        if art.pr_number is not None and auto_resolves("artifact.merge", tolerance):
+            return MergeArtifact(kind, art.pr_number)
         return AwaitApproval(kind)
 
-    # Merged plan with no epic yet → materialize (spec 003 §7b). Checked ahead of
-    # the approval gate and the auto-advance seam: until the plan is decomposed
-    # into an epic there is nothing for a human to advance to, nor anything for
-    # the Build stage to hand off. With an epic (adopted, or created by an
-    # earlier materialization) the plan stage behaves exactly as before.
+    # Merged plan with no epic yet → materialize (spec 003 §7b), ahead of any
+    # advance: until the plan is decomposed there is nothing to advance to.
     if stage == "plan" and initiative.epic is None:
         return Materialize()
 
-    # Artifact merged. The engine never advances the stage itself under the
-    # propose-only gate — it keeps awaiting the human advance. The only exception
-    # is the future auto-advance seam (auto mode + gate explicitly disabled).
-    if mode == "auto" and not config.get("propose_only", True):
-        nxt = _next_stage(stage)
-        if nxt is None:
-            return Done()
-        return _enter_stage(nxt, initiative)
+    # Artifact merged: advance under the `stage.advance` gate, else await the tap.
+    if auto_resolves("stage.advance", tolerance):
+        return Advance(advance_stage(stage))
     return AwaitApproval(kind)
