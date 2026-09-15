@@ -1,3 +1,4 @@
+import pytest
 import asyncio
 from server.sessions.events import Suggestions
 from server.sessions.suggestions import build_prompt, parse_suggestions, SuggestionService, SUGGEST_SYSTEM_PROMPT
@@ -69,7 +70,8 @@ def test_generate_swallows_errors():
     assert asyncio.run(svc.generate("/tmp/r", "/tmp/cfg", "User: hi")) == []
 
 
-def test_real_suggestion_factory_builds_isolated_oneshot(monkeypatch):
+@pytest.mark.asyncio
+async def test_real_suggestion_factory_builds_isolated_oneshot(monkeypatch):
     import server.sessions.claude_sdk_factory as sf
 
     captured = {}
@@ -82,7 +84,7 @@ def test_real_suggestion_factory_builds_isolated_oneshot(monkeypatch):
     monkeypatch.setattr(claude_agent_sdk, "ClaudeSDKClient", _FakeClient)
     monkeypatch.setenv("CCSWITCH_SUGGEST_MODEL", "claude-haiku-4-5")
 
-    sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct")
+    await sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct")
     opts = captured["options"]
     assert opts.cwd == "/tmp/r"
     assert opts.env["CLAUDE_CONFIG_DIR"] == "/tmp/cfg-acct"
@@ -92,7 +94,8 @@ def test_real_suggestion_factory_builds_isolated_oneshot(monkeypatch):
     assert opts.system_prompt == SUGGEST_SYSTEM_PROMPT
 
 
-def test_real_suggestion_factory_empty_model_env_uses_account_default(monkeypatch):
+@pytest.mark.asyncio
+async def test_real_suggestion_factory_empty_model_env_uses_account_default(monkeypatch):
     import server.sessions.claude_sdk_factory as sf
 
     captured = {}
@@ -105,7 +108,7 @@ def test_real_suggestion_factory_empty_model_env_uses_account_default(monkeypatc
     monkeypatch.setattr(claude_agent_sdk, "ClaudeSDKClient", _FakeClient)
     monkeypatch.setenv("CCSWITCH_SUGGEST_MODEL", "")
 
-    sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct")
+    await sf.real_suggestion_factory("/tmp/r", "/tmp/cfg-acct")
     assert captured["options"].model is None
 
 

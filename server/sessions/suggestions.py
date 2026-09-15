@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import inspect
 import logging
 
 from .translator import Translator
@@ -83,7 +84,7 @@ def kick_idle_suggestions(driver, events: list) -> None:
 class SuggestionService:
     """Generates next-prompt suggestions via a throwaway, resume-less SDK query.
 
-    `sdk_factory(cwd, config_dir, account) -> SDKClientProtocol` builds a one-shot client bound
+    `sdk_factory(cwd, config_dir, account) -> SDKClientProtocol | Awaitable[SDKClientProtocol]` builds a one-shot client bound
     to the session's own account config dir; `account` is used to also inject a setup-token env
     (see `account_auth.oauth_env_for`) for accounts whose browser-OAuth refresh is dead. Best-
     effort: returns [] on empty context or any failure.
@@ -97,6 +98,8 @@ class SuggestionService:
             return []
         try:
             client = self._factory(cwd, config_dir, account)
+            if inspect.isawaitable(client):
+                client = await client
             tr = Translator()
             parts: list[str] = []
             async with client:

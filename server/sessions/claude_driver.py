@@ -5,6 +5,7 @@ import contextlib
 import dataclasses
 import functools
 import hashlib
+import inspect
 import logging
 import os
 import time
@@ -153,7 +154,7 @@ class ClaudeAgentDriver:
     """Drives one Claude session via an SDK client, exposing normalized events.
 
     The orchestrator composes the per-account config dir and passes it as `config_dir`;
-    `sdk_factory(cwd, config_dir, can_use_tool, mode, resume) -> SDKClientProtocol` builds
+    `sdk_factory(cwd, config_dir, can_use_tool, mode, resume) -> SDKClientProtocol | Awaitable[SDKClientProtocol]` builds
     the client (production = real ClaudeSDKClient; tests = FakeSDKClient).
     """
 
@@ -821,8 +822,11 @@ class ClaudeAgentDriver:
             except Exception:
                 log.warning("driver.start: transcript repair failed session=%s",
                             self.session_id, exc_info=True)
-        self._client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode,
-                                     self.resume, on_pre_compact=self._on_pre_compact)
+        client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode,
+                               self.resume, on_pre_compact=self._on_pre_compact)
+        if inspect.isawaitable(client):
+            client = await client
+        self._client = client
         await self._client.__aenter__()
         self._source = _MessageSource(self._client)
         self._closing = False
@@ -1721,6 +1725,8 @@ class ClaudeAgentDriver:
         self._last_context_header = None
         client = self._factory(self.cwd, self.config_dir, self._can_use_tool, self.mode, None,
                                on_pre_compact=self._on_pre_compact)
+        if inspect.isawaitable(client):
+            client = await client
         self._client = client
         await client.__aenter__()
         self._source = _MessageSource(client)
