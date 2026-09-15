@@ -19,6 +19,7 @@ from ccswitch import copilot as _copilot_mod
 from ccswitch.accounts import provider_or_none as _provider_of
 from server.aio import bounded_wait, cancel_and_reap
 from server.assistant.context import PromptContext, render_context_header
+from server.sessions.prompt_origin import PromptOrigin, render_origin_header
 from server.hostname import self_host_name
 from server.mcp_spec import is_mcp_tool
 from server.obs.metrics import assistant_sessions_live, assistant_ttft_ms, assistant_turn_ms
@@ -276,7 +277,7 @@ class ClaudeAgentDriver:
         # only, spec §4.5) rides along so a prompt that waits in the queue still gets
         # its header and its transcript chip when it finally starts — rendering
         # happens at DEQUEUE time in _start_turn, never here.
-        self._queue: list[tuple[str, list[dict], PromptContext | None]] = []
+        self._queue: list[tuple[str, list[dict], PromptContext | None, PromptOrigin | None]] = []
         # Live Task sub-agents: spawning tool-use id -> CLI task id, from the translator's
         # SubAgentStarted/Ended events. Powers stop_subagent (stop_task needs the task id)
         # and permission attribution (a sub-agent's can_use_tool ctx.agent_id IS its task
@@ -829,7 +830,8 @@ class ClaudeAgentDriver:
 
     async def send_prompt(self, text: str, images: list[dict] | None = None, *,
                           interrupt: bool = False,
-                          context: PromptContext | None = None):
+                          context: PromptContext | None = None,
+                          origin: PromptOrigin | None = None):
         """Send a prompt. While a turn is live it joins the FIFO queue — unless
         ``interrupt`` is set, in which case the live turn is stopped and this prompt
         runs NEXT ("interrupt and post"), ahead of anything already queued.
@@ -852,7 +854,7 @@ class ClaudeAgentDriver:
             # result is consumed reads it as its own and closes the fresh turn.
             # The interrupt also denies any parked permission/question, so the text
             # is a fresh prompt — the answer short-circuit below must not see it.
-            self._queue.insert(0, (text, images, context))
+            self._queue.insert(0, (text, images, context, origin))
             log.info("driver.send_prompt: interrupt-and-post session=%s queue_depth=%d",
                      self.session_id, len(self._queue))
             await self.interrupt(keep_queue=True)
@@ -874,7 +876,7 @@ class ClaudeAgentDriver:
                 log.info("driver.send_prompt: delivered prompt as the answer to %d pending "
                          "question(s) session=%s", answered, self.session_id)
                 if images:
-                    self._queue.append(("", images, context))
+                    self._queue.append(("", images, context, origin))
                     self._emit(ev.QueueUpdate(self.queue_wire()))
                 return
         # A pending PERMISSION parks the turn inside _can_use_tool exactly as a question
@@ -909,9 +911,10 @@ class ClaudeAgentDriver:
                 if text.strip():
                     echo = uuid.uuid4().hex
                     self._emit(ev.UserMessage(turn_id=echo, text=text, src_uuid=echo,
-                                              images=None, context=context))
+                                              images=None, context=context,
+                                              origin=origin))
                 if images:
-                    self._queue.append(("", images, context))
+                    self._queue.append(("", images, context, origin))
                     self._emit(ev.QueueUpdate(self.queue_wire()))
                 await self._emit_status()
                 return
@@ -919,7 +922,7 @@ class ClaudeAgentDriver:
         # the idle listener is tracking (`_turn_active`) — enqueue
         # (text, images, context) instead of rejecting.
         if self._turn_live():
-            self._queue.append((text, images, context))
+            self._queue.append((text, images, context, origin))
             log.debug("driver.send_prompt: queued prompt for session=%s, queue_depth=%d",
                       self.session_id, len(self._queue))
             await self._emit_status()
@@ -930,17 +933,18 @@ class ClaudeAgentDriver:
             self._titled = True
             first_line = text.splitlines()[0] if text else (text or "attachment")
             self._emit(ev.Title(title=first_line[:50], source="prompt"))
-        await self._start_turn(text, images, context=context)
+        await self._start_turn(text, images, context=context, origin=origin)
 
     async def _start_turn(self, text: str, images: list[dict] | None = None, *,
-                          context: PromptContext | None = None):
+                          context: PromptContext | None = None,
+                          origin: PromptOrigin | None = None):
         """Echo the user prompt, emit working status, query the SDK, drain.
 
-        ``context`` is rendered into a ``<ccswitch-context>`` header prepended to the
-        text that reaches the SDK — here, at the one moment a turn actually starts, so
-        a prompt that came off the queue is treated exactly like one that started
+        ``context`` and ``origin`` are rendered into single-line headers prepended to
+        the text that reaches the SDK — here, at the one moment a turn actually starts,
+        so a prompt that came off the queue is treated exactly like one that started
         immediately. The emitted UserMessage always carries the original ``text`` plus
-        the raw ``context`` dict, so the transcript and the chip stay independent of
+        the raw ``context``/``origin`` dicts, so the transcript stays independent of
         what the model sees."""
         await self._automation_fence.enter()
         self._automation_terminal_observed = False
@@ -953,6 +957,15 @@ class ClaudeAgentDriver:
             if header != self._last_context_header:
                 sdk_text = f"{header}\n{text}" if text else header
             self._last_context_header = header
+        if origin is not None:
+            # Deliberately NOT deduped the way the context header is. Origin is a
+            # property of THIS prompt, not of the conversation's current state: two
+            # consecutive autopilot nudges render an identical marker, and dropping the
+            # second would leave that prompt unmarked in the CLI's JSONL — so replay
+            # would rebuild it as a human message on the next reload. Prepended outermost
+            # (before any context header) to match the strip order in replay.py.
+            sdk_text = (f"{render_origin_header(origin)}\n{sdk_text}" if sdk_text
+                        else render_origin_header(origin))
         # The prompt's pump takes over the SDK cursor: park the idle listener first
         # (a no-op when this runs INSIDE the listener, dequeuing at a turn's end).
         await self._stop_listener()
@@ -984,7 +997,7 @@ class ClaudeAgentDriver:
         user_turn = uuid.uuid4().hex
         self._emit(ev.UserMessage(
             turn_id=user_turn, text=text, src_uuid=user_turn,
-            images=wire_images or None, context=context))
+            images=wire_images or None, context=context, origin=origin))
         assert self._client is not None  # _start_turn only runs once the client is connected
         if images:
             content: list[dict] = []
@@ -1234,11 +1247,12 @@ class ClaudeAgentDriver:
         # Nothing below this check awaits, so the pump task completes without
         # reopening the window.
         if self._queue:
-            next_text, next_images, next_context = self._queue.pop(0)
+            next_text, next_images, next_context, next_origin = self._queue.pop(0)
             log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
                       self.session_id, len(self._queue))
             self._emit(ev.QueueUpdate(self.queue_wire()))
-            await self._start_turn(next_text, next_images, context=next_context)
+            await self._start_turn(next_text, next_images, context=next_context,
+                                   origin=next_origin)
             return
         self._maybe_start_suggestions()
         self._start_listener()
@@ -1322,7 +1336,7 @@ class ClaudeAgentDriver:
 
     def queued(self) -> list[str]:
         """Return a snapshot of the queued prompt texts."""
-        return [t for t, _, _ in self._queue]
+        return [t for t, _, _, _ in self._queue]
 
     def queue_wire(self) -> list[dict]:
         """Structured queue snapshot: text + image refs per queued prompt."""
@@ -1330,7 +1344,7 @@ class ClaudeAgentDriver:
             {"text": t,
              "images": [{"url": im["url"], "mime": im["mime"], "name": im.get("name", "")}
                         for im in imgs]}
-            for t, imgs, _ in self._queue
+            for t, imgs, _, _ in self._queue
         ]
 
     async def cancel_queued(self, index: int) -> bool:

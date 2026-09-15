@@ -71,6 +71,7 @@ from server.sessions.commands.catalog import parse_command_line
 from server.sessions.events import ErrorEvent, PermissionRequest, tool_kind
 from server.sessions.facade import call_with_deadline
 from server.sessions.replay import replay_window
+from server.sessions.origin_backfill import apply_origin_backfill
 from server.sessions import session_actions
 from server.sessions.session_actions import ActionError
 from server.sessions.types import is_assistant
@@ -354,6 +355,12 @@ async def _run_replay_and_complete(orchestrator, enqueue: "Callable[[dict], None
                 events = window.events
                 earliest_turn = window.earliest_turn
                 total_turns = window.total_turns
+        # Reconstruct provenance for prompts sent before the origin marker existed.
+        # Placed here, after BOTH branches, so the Claude transcript and an engine
+        # replay get identical treatment — and because this is the one point that has
+        # the session id, the finished window, and database access at the same time.
+        # Best-effort and in-place; see origin_backfill for why it is partial.
+        await apply_origin_backfill(session_id, events)
         # Lead the replay with a reset so a reconnect re-attach rebuilds the
         # transcript cleanly instead of re-appending a duplicate copy (see the
         # reducer's replayReset case). Send it whenever there is history to replay

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 from ccswitch import brand
 from server.assistant.context import strip_context_header
+from server.sessions.prompt_origin import strip_origin_header
 from server.config import env_float
 from . import events as ev
 from .tools.registry import SIGNAL_TOOL_NAMES
@@ -251,13 +252,20 @@ def _build_events(path: str) -> tuple[list, object | None]:
                 # it back off here — the ONE place replay rebuilds a UserMessage — so
                 # the marker never renders as part of the user's own words and the chip
                 # (spec §4.5) survives a reload instead of only existing live.
+                # Origin first, then context — the mirror of the order _start_turn
+                # prepends them (origin outermost). An automated prompt journalled its
+                # `<viberpit-origin …/>` marker here; without this split the marker
+                # would render as part of the prompt AND the turn would rebuild as a
+                # human message, which is the whole bug this closes.
+                text, prompt_origin = strip_origin_header(text)
                 text, ctx = strip_context_header(text)
                 # Passed through as-is, NOT copied via dict(): UserMessage.context is
                 # typed PromptContext, and a dict() copy widens it back to
                 # dict[str, object]. validate_context already built ctx fresh per call,
                 # so there is nothing to defend against by copying.
                 out.append(ev.UserMessage(turn_id=uuid, text=text, src_uuid=uuid,
-                                          images=imgs or None, ts=ts, context=ctx))
+                                          images=imgs or None, ts=ts, context=ctx,
+                                          origin=prompt_origin))
             out.extend(_tool_result_events(content, uuid, ts, None))
         elif typ == "assistant":
             # Reconstruct the model once (status strip needs it after re-attach).

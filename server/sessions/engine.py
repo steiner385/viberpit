@@ -11,6 +11,7 @@ from ccswitch.engines import (
     parse_agent_engine,
 )
 from server.assistant.context import PromptContext
+from server.sessions.prompt_origin import PromptOrigin
 
 class AgentEngineUnavailable(RuntimeError):
     """Raised when an engine is recognized but has no installed driver factory."""
@@ -160,6 +161,7 @@ class AgentDriver(Protocol):
         *,
         interrupt: bool = False,
         context: PromptContext | None = None,
+        origin: PromptOrigin | None = None,
     ) -> None: ...
     async def interrupt(self, *, keep_queue: bool = False) -> None: ...
     async def set_model(self, model: str | None) -> None: ...

@@ -102,7 +102,7 @@ def test_autopilot_apply_marks_session_assisted(tmp_path):
             return object()
         orch.ensure_driver = _ensure
 
-        async def _send(sid, text, attachment_ids=None):
+        async def _send(sid, text, attachment_ids=None, *, origin=None):
             return "sent"
         orch.send_prompt = _send
 

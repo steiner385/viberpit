@@ -62,6 +62,7 @@ from ccswitch import brand
 from ccswitch import paths
 from server.aio import cancel_and_reap
 from server.assistant.context import PromptContext
+from server.sessions.prompt_origin import PromptOrigin, render_origin_header
 from server.assistant.options_codex import (ASSISTANT_CODEX_RESUME_UNSUPPORTED,
                                             CodexAssistantOverlay,
                                             assistant_approval_decision, tool_error)
@@ -287,6 +288,7 @@ class _QueuedPrompt:
     text: str
     images: list[dict] = field(default_factory=list)
     context: PromptContext | None = None
+    origin: PromptOrigin | None = None
 
 
 class CodexAgentDriver:
@@ -812,6 +814,7 @@ class CodexAgentDriver:
         *,
         interrupt: bool = False,
         context: PromptContext | None = None,
+        origin: PromptOrigin | None = None,
     ) -> None:
         """Start, steer, or queue one prompt.
 
@@ -826,10 +829,16 @@ class CodexAgentDriver:
         images = images or []
         # Validate attachments BEFORE any state change: a rejected prompt must
         # not interrupt a turn or leave an entry in the queue.
-        inputs = self._build_inputs(text, images)
+        # The origin marker rides the text sent to the app-server (never `entry.text`,
+        # which is what the transcript echoes), so a Codex thread re-read after a
+        # reload rebuilds the same provenance the live echo carried — the Claude
+        # transcript round-trip, through Codex's own thread storage.
+        inputs = self._build_inputs(
+            f"{render_origin_header(origin)}\n{text}" if origin is not None else text,
+            images)
         if not inputs:
             return
-        entry = _QueuedPrompt(text=text, images=images, context=context)
+        entry = _QueuedPrompt(text=text, images=images, context=context, origin=origin)
         if interrupt and self._turn_active:
             # Queue-head insert BEFORE the interrupt, so the drain that follows
             # runs THIS prompt rather than one that was already waiting.
@@ -1011,6 +1020,7 @@ class CodexAgentDriver:
                 src_uuid=src,
                 images=wire_images or None,
                 context=entry.context,
+                origin=entry.origin,
             )
         )
 

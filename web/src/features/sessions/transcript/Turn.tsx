@@ -1,4 +1,5 @@
 import { memo } from 'react'
+import { User } from 'lucide-react'
 import type { Turn as TurnType, SubThread } from '@/session/reducer'
 import type { PromptContext } from '@/session/events'
 import { groupBlocks, type ToolDetailMode } from '@/session/groupBlocks'
@@ -6,6 +7,7 @@ import { useSessions } from '@/api/hooks'
 import { navDefForPath } from '@/shell/navDefs'
 import { AssistantText } from './AssistantText'
 import { UserBubble } from './UserBubble'
+import { AutomatedPrompt } from './AutomatedPrompt'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCallCard } from './ToolCallCard'
 import { ToolGroup } from './ToolGroup'
@@ -58,6 +60,12 @@ export const Turn = memo(function Turn({
   return (
     <div className="px-4 py-2">
       {isUser && turn.context && <PromptContextChip context={turn.context} />}
+      {/* Positive attribution for a prompt a person actually typed. The automated
+          case carries its own caption inside AutomatedPrompt, so this renders only
+          for the human one — "blue bubble on the right" now means "you", and says so
+          rather than leaving the reader to infer it from a colour. Turn-level, like
+          the context chip, so a multi-block prompt is captioned once. */}
+      {isUser && !turn.origin && <YouCaption />}
       {items.map((item, idx) => {
         const rowTs = item.kind === 'toolGroup' ? item.tools[0]?.ts : item.block.ts
 
@@ -81,11 +89,17 @@ export const Turn = memo(function Turn({
         const block = item.block
         switch (block.kind) {
           case 'text':
-            return isUser
-              ? <BlockRow key={block.id} ts={rowTs}><UserBubble text={block.text} /></BlockRow>
-              : <BlockRow key={block.id} ts={rowTs}><AssistantText text={block.text} streaming={block.id === streamingBlockId} /></BlockRow>
+            if (!isUser)
+              return <BlockRow key={block.id} ts={rowTs}><AssistantText text={block.text} streaming={block.id === streamingBlockId} /></BlockRow>
+            // A prompt nobody typed leaves the right-aligned "you" lane entirely
+            // rather than being re-tinted inside it (see AutomatedPrompt).
+            return <BlockRow key={block.id} ts={rowTs}>{turn.origin
+              ? <AutomatedPrompt origin={turn.origin} text={block.text} />
+              : <UserBubble text={block.text} />}</BlockRow>
           case 'image':
-            return <BlockRow key={block.id} ts={rowTs}><UserBubble images={block.images} /></BlockRow>
+            return <BlockRow key={block.id} ts={rowTs}>{turn.origin
+              ? <AutomatedPrompt origin={turn.origin} images={block.images} />
+              : <UserBubble images={block.images} />}</BlockRow>
           case 'thinking':
             return <BlockRow key={block.id} ts={rowTs}><ThinkingBlock text={block.text} defaultCollapsed={thinkingCollapsed} /></BlockRow>
           case 'tool':
@@ -157,6 +171,22 @@ function PromptContextChip({ context }: { context: PromptContext }) {
     <div className="flex justify-end pb-1">
       <span className="rounded-full border border-edge px-2 py-0.5 text-2xs text-ink-muted">
         on {label}
+      </span>
+    </div>
+  )
+}
+
+/**
+ * "You" — the counterpart to `AutomatedPrompt`'s caption. Kept faint and small: it is
+ * a reassurance to be scanned past, not a label to be read on every turn. Its value is
+ * entirely in the contrast with an automated prompt sitting a few rows away.
+ */
+function YouCaption() {
+  return (
+    <div className="flex justify-end pb-1">
+      <span className="inline-flex items-center gap-1 text-2xs text-ink-faint">
+        <User size={10} aria-hidden="true" />
+        You
       </span>
     </div>
   )

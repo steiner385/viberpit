@@ -128,7 +128,8 @@ async def test_orchestrator_send_prompt_forwards_interrupt_to_driver():
     orch._drivers["s1"] = driver
     status = await orch.send_prompt("s1", "now", None, interrupt=True)
     assert status == "sent"
-    driver.send_prompt.assert_awaited_once_with("now", [], interrupt=True, context=None)
+    driver.send_prompt.assert_awaited_once_with("now", [], interrupt=True, context=None,
+                                                origin=None)
 
 
 @pytest.mark.asyncio
@@ -140,4 +141,4 @@ async def test_orchestrator_send_prompt_forwards_context_to_driver():
     orch._drivers["s1"] = driver
     ctx = {"route": "/insights"}
     assert await orch.send_prompt("s1", "hi", None, context=ctx) == "sent"
-    driver.send_prompt.assert_awaited_once_with("hi", [], context=ctx)
+    driver.send_prompt.assert_awaited_once_with("hi", [], context=ctx, origin=None)
