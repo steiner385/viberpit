@@ -11,6 +11,8 @@ if TYPE_CHECKING:
     # a leaf TypedDict (server/assistant/context.py imports nothing from
     # server.sessions), so this direction can never form a cycle.
     from server.assistant.context import PromptContext
+    # Same leaf-TypedDict rule: prompt_origin imports only stdlib + ccswitch.brand.
+    from server.sessions.prompt_origin import PromptOrigin
 
 
 def _now_ms() -> float:
@@ -339,9 +341,17 @@ class UserMessage:
     # _start_turn before handing the prompt to the SDK never appears here — this is
     # what the transcript bubble renders.
     context: PromptContext | None = None
+    # Who sent this prompt, when it was NOT the human operator: autopilot's composed
+    # nudge, the completion-readiness nudge, the assistant drawer, another automation.
+    # None means a person typed it — the ONLY case the client renders as a right-aligned
+    # "you" bubble. Set live by the driver from `send_prompt(origin=…)`, and recovered on
+    # reload by `replay.strip_origin_header` from the marker the CLI journalled, so the
+    # two halves cannot disagree (see server/sessions/prompt_origin.py).
+    origin: PromptOrigin | None = None
     def to_wire(self): return {"type": "user", "turnId": self.turn_id, "text": self.text, "srcUuid": self.src_uuid,
                                "images": self.images or [], "ts": self.ts,
-                               "ownerPrefix": self.owner_prefix, "context": self.context}
+                               "ownerPrefix": self.owner_prefix, "context": self.context,
+                               "origin": self.origin}
 
 @dataclass
 class QueueUpdate:

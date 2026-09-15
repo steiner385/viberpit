@@ -6,6 +6,8 @@ state: live
 links:
   code:
     - server/sessions/replay.py
+    - server/sessions/prompt_origin.py
+    - server/sessions/origin_backfill.py
     - server/sessions/transcript_repair.py
     - server/sessions/archive_move.py
     - server/sessions/export.py
@@ -63,6 +65,21 @@ oldest archived sessions once a configurable ceiling is exceeded.
   monotonic `seq`; on attach the edge probes ring coverage (`ring_covers`/`ring_tail`), catches up
   from the ring when covered, and falls back to full disk replay on a seq gap or a daemon epoch
   change (#482, #496, #510, #410).
+- **Prompt provenance.** Not every prompt in a transcript was typed by a person: autopilot
+  nudges, the completion-readiness nudge and the AI assistant drawer all reach a session through
+  the same `send_prompt` path, and the driver echoes them as the same `user` event — so the
+  transcript drew them as the reader's own right-aligned bubble. `server/sessions/prompt_origin.py`
+  renders a single-line `<viberpit-origin kind="…"/>` marker into the SDK-bound text (the same
+  round-trip the assistant's context chip uses, and the only mechanism that survives replay, since
+  the JSONL is `claude`-owned); `replay.py` and the Codex translator split it back off into
+  `UserMessage.origin`. The transcript then renders an automated prompt as a captioned, full-width
+  card instead of a bubble, and captions a typed one "You". The marker is always stripped and never
+  trusted — an unknown or forged `kind` yields no origin — and, by design, the model sees it too,
+  so a session can tell an automated nudge from its operator. `origin_backfill.py` reconstructs
+  provenance for prompts sent before the marker existed, from autopilot's recorded nudge texts and
+  action timestamps; it is necessarily partial (`recent_nudges` keeps 5 per session, and the
+  automation event feed is capped at 500 rows fleet-wide) and refuses any ambiguous match rather
+  than risk relabelling something a human wrote.
 - **Repair.** `transcript_repair.py` heals trailing orphaned `tool_use` blocks left by mid-turn
   interrupts (appends a synthetic, byte-compatible `tool_result`) and truncates half-written JSONL
   tails from a hard kill, so resumes don't fail with `stop_reason=tool_use` (#223).

@@ -40,6 +40,7 @@ from typing import Any, Final
 from ccswitch import brand
 from server.codex import schema
 from server.sessions import events as ev
+from server.sessions.prompt_origin import strip_origin_header
 from server.sessions.completion import (has_completion_marker, parse_hand_back_marker,
                                         resolution_from_text)
 
@@ -497,7 +498,12 @@ class CodexEventTranslator:
             if item.id in self._state.user_messages:
                 return []
             self._state.user_messages.add(item.id)
-            return [ev.UserMessage(turn_id, item.text)]
+            # Split the origin marker back off, exactly as replay.py does for the
+            # Claude transcript: the app-server journalled the DECORATED text, and
+            # without this a re-read thread would render the marker as part of the
+            # user's own words and lose the provenance the live echo carried.
+            body, origin = strip_origin_header(item.text)
+            return [ev.UserMessage(turn_id, body, origin=origin)]
         if isinstance(item, (schema.AgentMessageItem, schema.ReasoningItem)):
             # An `item/started` for a text item announces an EMPTY item — the
             # content arrives as deltas or on the completion. Rendering (and so

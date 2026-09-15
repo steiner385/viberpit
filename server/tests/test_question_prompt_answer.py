@@ -111,9 +111,10 @@ def test_send_prompt_with_images_during_question_answers_text_and_queues_images(
 
         result = await asyncio.wait_for(cb, timeout=2.0)
         assert "see screenshot" in result.message
-        # (text, images, context) — the attachment-only follow-up inherits the
-        # prompt's context chip, which is None for a coding session like this one.
-        assert d._queue == [("", images, None)]
+        # (text, images, context, origin) — the attachment-only follow-up inherits both
+        # the prompt's context chip and its origin. Both are None here: a coding session
+        # has no chip, and this prompt was typed by a human.
+        assert d._queue == [("", images, None, None)]
         await d.aclose()
 
     asyncio.run(run())

@@ -59,6 +59,7 @@ from ccswitch.quota import QuotaSnapshot
 from ccswitch.selector import at_ceiling, exhausted, usage_known
 from server.aio import bounded_wait
 from server.assistant.context import PromptContext
+from server.sessions.prompt_origin import PromptOrigin
 from server.audit import record_audit
 from server.db import db_session
 from server.db.models import AUTO_ARCHIVE_PROVENANCE, CAPACITY_EXEMPT_STATUSES, INACTIVE_SESSION_STATUSES, Session as DbSession
@@ -4966,7 +4967,8 @@ class SessionOrchestrator:
                         log.warning("completion.nudge_failed sid=%s reason=no_driver",
                                     session_id)
                         return
-                    result = await self.send_prompt(session_id, nudge)
+                    result = await self.send_prompt(session_id, nudge,
+                                                    origin={"kind": "completion"})
                     if result != "sent":
                         log.warning("completion.nudge_failed sid=%s reason=%s",
                                     session_id, result)
@@ -10039,7 +10041,9 @@ class SessionOrchestrator:
                 session_id, stuck["question_id"], selected, SYSTEM_IDENTITY, "option"))
         elif act == "nudge" and decision.prompt:
             await self.ensure_driver(session_id, SYSTEM_IDENTITY)
-            ok = (await self.send_prompt(session_id, decision.prompt)) == "sent"
+            ok = (await self.send_prompt(
+                session_id, decision.prompt,
+                origin={"kind": "autopilot"})) == "sent"
         if ok:
             await self._autopilot_mark_assisted(session_id)
         return ok
@@ -14274,7 +14278,8 @@ class SessionOrchestrator:
 
     async def send_prompt(self, session_id, text, attachment_ids=None, *,
                           interrupt: bool = False,
-                          context: PromptContext | None = None) -> str:
+                          context: PromptContext | None = None,
+                          origin: PromptOrigin | None = None) -> str:
         """Deliver a prompt to a live driver. ``interrupt`` = "interrupt and post":
         stop the in-flight turn and run this prompt next instead of queueing it.
         ``context`` is the assistant-only "context chip" (spec §4.5); the ws bridge
@@ -14310,9 +14315,10 @@ class SessionOrchestrator:
                     db, session_id, turn_id, ids)
         self._last_prompt[session_id] = text
         if interrupt:
-            await d.send_prompt(text, resolved, interrupt=True, context=context)
+            await d.send_prompt(text, resolved, interrupt=True, context=context,
+                                origin=origin)
         else:
-            await d.send_prompt(text, resolved, context=context)
+            await d.send_prompt(text, resolved, context=context, origin=origin)
         return "sent"
 
     async def interrupt(self, session_id):

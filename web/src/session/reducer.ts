@@ -1,6 +1,6 @@
 import type {
   SessionEvent, ToolKind, EvUser, EvTurnStart, EvTextDelta, EvThinkingDelta, EvToolCall, EvToolResult, QueuedItem,
-  PromptContext,
+  PromptContext, PromptOrigin,
 } from './events'
 import type { ContextUsageExact } from '@/lib/contextWindow'
 import { type PromptStage, advancesStage, canStall } from './promptStage'
@@ -62,7 +62,12 @@ export type Block =
 // the turn's own `turnStart` (see ensureAssistantTurn). Its tail position is a
 // placeholder, not a fact: the turnStart that later names this id fixes where the
 // turn really begins, and the reducer re-anchors it there (the flag is cleared).
-export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean; context?: PromptContext; pending?: PromptStage; fabricated?: boolean }
+//
+// `origin` marks a user turn NOBODY typed — an autopilot nudge, the completion
+// nudge, the assistant drawer (see EvUser.origin). Its absence is what entitles a
+// turn to the right-aligned "you" bubble, so it rides through every user-turn path
+// alongside `ownerPrefix` rather than being read off the raw event at render time.
+export interface Turn { id: string; role: 'user' | 'assistant'; blocks: Block[]; model?: string | null; ordinal?: number; ownerPrefix?: boolean; context?: PromptContext; origin?: PromptOrigin; pending?: PromptStage; fabricated?: boolean }
 
 export type SubThreadTaskStatus = 'running' | 'completed' | 'failed' | 'stopped'
 /** Live task state of a Task sub-agent, from subAgentStarted/Progress/Ended. Absent on
@@ -533,8 +538,8 @@ function userTurnBlocks(turnId: string, text: string, images?: EvUser['images'],
  * travels with the turn from exactly one place — and so an upsert that re-emits the SAME
  * prompt without the mark (the page holding its real position finally loaded) clears it.
  */
-function userTurn(turnId: string, blocks: Block[], ownerPrefix?: boolean, context?: PromptContext): Turn {
-  return { id: turnId, role: 'user', blocks, ...(ownerPrefix ? { ownerPrefix: true } : {}), ...(context ? { context } : {}) }
+function userTurn(turnId: string, blocks: Block[], ownerPrefix?: boolean, context?: PromptContext, origin?: PromptOrigin): Turn {
+  return { id: turnId, role: 'user', blocks, ...(ownerPrefix ? { ownerPrefix: true } : {}), ...(context ? { context } : {}), ...(origin ? { origin } : {}) }
 }
 
 // ── Thread-scoped reducer ─────────────────────────────────────────────────────
@@ -554,8 +559,8 @@ function applyToThread(thread: SubThread, ev: BlockEvent): SubThread {
       const idx = findRoleTurnIdx(thread.turns, turnId, 'user')
       const turns =
         idx === -1
-          ? [...thread.turns, userTurn(newRoleTurnId(thread.turns, turnId, 'user'), blocks, ev.ownerPrefix, ev.context)]
-          : replaceTurn(thread.turns, idx, (t) => userTurn(t.id, blocks, ev.ownerPrefix, ev.context))
+          ? [...thread.turns, userTurn(newRoleTurnId(thread.turns, turnId, 'user'), blocks, ev.ownerPrefix, ev.context, ev.origin)]
+          : replaceTurn(thread.turns, idx, (t) => userTurn(t.id, blocks, ev.ownerPrefix, ev.context, ev.origin))
       return { turns, openBlockId: null }
     }
 
@@ -725,7 +730,7 @@ export function transcriptReducer(
       const optIdx = findTurnIdx(state.turns, OPTIMISTIC_USER_ID)
       if (optIdx !== -1) {
         const adoptedId = newRoleTurnId(state.turns, turnId, 'user')
-        const nextTurns = replaceTurn(state.turns, optIdx, () => userTurn(adoptedId, blocks, ev.ownerPrefix, ev.context))
+        const nextTurns = replaceTurn(state.turns, optIdx, () => userTurn(adoptedId, blocks, ev.ownerPrefix, ev.context, ev.origin))
         return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
       }
 
@@ -742,7 +747,7 @@ export function transcriptReducer(
       )
       if (pendIdx !== -1) {
         const adoptedId = newRoleTurnId(state.turns, turnId, 'user')
-        const nextTurns = replaceTurn(state.turns, pendIdx, () => userTurn(adoptedId, blocks, ev.ownerPrefix, ev.context))
+        const nextTurns = replaceTurn(state.turns, pendIdx, () => userTurn(adoptedId, blocks, ev.ownerPrefix, ev.context, ev.origin))
         return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
       }
 
@@ -762,11 +767,11 @@ export function transcriptReducer(
         if (ev.ownerPrefix && state.turns.length > 0) {
           clientLogger.warn(`transcript.turn.fabricated type=${ev.type} turnId=${turnId}`)
         }
-        nextTurns = [...state.turns, userTurn(newRoleTurnId(state.turns, turnId, 'user'), blocks, ev.ownerPrefix, ev.context)]
+        nextTurns = [...state.turns, userTurn(newRoleTurnId(state.turns, turnId, 'user'), blocks, ev.ownerPrefix, ev.context, ev.origin)]
       } else {
         // Upsert: rebuild the turn (blocks + prefix mark) from the newer event, keeping
         // whichever id this user turn already holds.
-        nextTurns = replaceTurn(state.turns, idx, (t) => userTurn(t.id, blocks, ev.ownerPrefix, ev.context))
+        nextTurns = replaceTurn(state.turns, idx, (t) => userTurn(t.id, blocks, ev.ownerPrefix, ev.context, ev.origin))
       }
       return { ...state, turns: nextTurns, openBlockId: null, latestSuggestions: [], pendingSent }
     }

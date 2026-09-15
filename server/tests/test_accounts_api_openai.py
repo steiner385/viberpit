@@ -23,6 +23,8 @@ from fastapi.testclient import TestClient
 REPO_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from ccswitch import account_registry, ledger  # noqa: E402
+
 from tests.helpers import temp_env  # noqa: E402
 
 from server.codex import auth_client as auth_client_mod  # noqa: E402
@@ -162,8 +164,6 @@ def authority(monkeypatch):
 
 
 def _register_openai(name: str, *, enabled: bool = True) -> None:
-    from ccswitch import account_registry
-
     account_registry.register_account(
         name, account_registry.PROVIDER_OPENAI, engine="codex"
     )
@@ -198,8 +198,6 @@ def test_add_openai_registers_disabled_and_syncs_before_login(authority):
     the registration has to come first; `enabled=False` is what keeps that
     ordering from creating a usable account before any credential exists.
     """
-    from ccswitch import account_registry, ledger
-
     with temp_env():
         client, _ = _make_client(authority)
         with client:
@@ -228,8 +226,6 @@ def test_add_openai_registers_disabled_and_syncs_before_login(authority):
 
 
 def test_add_openai_409_when_name_taken_by_another_provider(authority):
-    from ccswitch import account_registry
-
     with temp_env():
         account_registry.register_account("dup", account_registry.PROVIDER_ANTHROPIC)
         client, _ = _make_client(authority)
@@ -259,8 +255,6 @@ def test_add_openai_400_invalid_name(authority):
 def test_add_openai_status_enables_on_authorized(authority):
     """The edge learns the login succeeded only by polling, so that is where the
     account becomes enabled — and it must re-sync so the authority may issue."""
-    from ccswitch import account_registry
-
     authority.login_state = LoginSnapshot(state="authorized", generation=1)
     with temp_env():
         _register_openai("chatgpt-pro", enabled=False)
@@ -276,8 +270,6 @@ def test_add_openai_status_enables_on_authorized(authority):
 
 
 def test_add_openai_cancel_drops_the_placeholder_entry(authority):
-    from ccswitch import account_registry, ledger
-
     with temp_env():
         client, _ = _make_client(authority)
         with client:
@@ -301,8 +293,6 @@ def test_add_openai_cancel_drops_the_placeholder_entry(authority):
 
 def test_add_openai_cancel_cannot_delete_an_authorized_account(authority):
     """The add-modal Cancel route is never an account-delete shortcut."""
-    from ccswitch import account_registry
-
     with temp_env():
         _register_openai("chatgpt-pro", enabled=True)
         client, _ = _make_client(authority)
@@ -328,8 +318,6 @@ def test_add_openai_cancel_refuses_a_login_that_authorized_before_the_cancel_cal
     cancel route must trust the authority's own (live) answer, not just that
     stale flag, or a Cancel click racing a just-completed login deletes a real
     credential (#1206)."""
-    from ccswitch import account_registry
-
     async def fake_login_cancel(account: str) -> LoginSnapshot:
         authority.calls.append(f"login_cancel:{account}")
         return LoginSnapshot(state="authorized", generation=1)
@@ -380,8 +368,6 @@ def test_disable_revokes_and_invalidates_before_writing_the_flag(authority):
     Writing "disabled" first and revoking second leaves a window in which
     ViberPit reports the account off while runners still hold live envelopes.
     """
-    from ccswitch import account_registry
-
     with temp_env():
         _register_openai("chatgpt-pro")
         client, _ = _make_client(authority)
@@ -416,8 +402,6 @@ def test_disable_reports_degraded_when_a_host_could_not_be_invalidated(authority
     Some host may still be running an app-server with a live envelope. Reporting
     that as "disabled" is the difference the plan calls out by name.
     """
-    from ccswitch import account_registry
-
     with temp_env():
         _register_openai("chatgpt-pro")
         client, sessions = _make_client(authority)
@@ -444,8 +428,6 @@ def test_disable_reports_degraded_when_a_host_could_not_be_invalidated(authority
 
 def test_enable_writes_the_manifest_before_syncing(authority):
     """Enable is the opposite order: a failed sync leaves it un-issuable, not live."""
-    from ccswitch import account_registry
-
     with temp_env():
         _register_openai("chatgpt-pro", enabled=False)
         client, _ = _make_client(authority)
@@ -473,8 +455,6 @@ def test_enable_writes_the_manifest_before_syncing(authority):
 
 def test_authorized_status_retries_sync_after_manifest_was_already_enabled(authority):
     """A failed first sync must not turn the next status poll into false success."""
-    from ccswitch import account_registry
-
     authority.login_state = LoginSnapshot(state="authorized")
     authority.authorize_error = AuthorityUnavailable("connection lost")
     with temp_env():
@@ -509,8 +489,6 @@ def test_authorized_status_retries_sync_after_manifest_was_already_enabled(autho
 
 
 def test_delete_revokes_and_forgets_before_removing(authority):
-    from ccswitch import account_registry
-
     with temp_env():
         _register_openai("chatgpt-pro")
         client, _ = _make_client(authority)
@@ -527,8 +505,6 @@ def test_delete_revokes_and_forgets_before_removing(authority):
 
 
 def test_delete_never_reports_success_when_authority_forget_fails(authority):
-    from ccswitch import account_registry
-
     authority.forget_error = AuthorityUnavailable("connection lost")
     with temp_env():
         _register_openai("chatgpt-pro")
@@ -542,8 +518,6 @@ def test_delete_never_reports_success_when_authority_forget_fails(authority):
 
 
 def test_disable_reports_sync_failure_instead_of_success(authority):
-    from ccswitch import account_registry
-
     authority.authorize_error = AuthorityUnavailable("connection lost")
     with temp_env():
         _register_openai("chatgpt-pro")
@@ -562,8 +536,6 @@ def test_disable_reports_sync_failure_instead_of_success(authority):
 
 def test_disable_503s_when_the_authority_is_unreachable(authority):
     """We could not revoke, so we must not claim the account is disabled."""
-    from ccswitch import account_registry
-
     authority.revoke_error = AuthorityUnavailable("connection refused")
     with temp_env():
         _register_openai("chatgpt-pro")
@@ -580,8 +552,6 @@ def test_disable_503s_when_the_authority_is_unreachable(authority):
 
 def test_disable_tolerates_an_account_the_authority_never_knew(authority):
     """UNKNOWN_ACCOUNT is not a failure to revoke — there was nothing to revoke."""
-    from ccswitch import account_registry
-
     authority.revoke_error = AuthorityError(
         AuthorityErrorCode.UNKNOWN_ACCOUNT, "never synced"
     )
@@ -783,8 +753,6 @@ def test_accounts_list_costs_nothing_when_no_openai_account_exists(authority):
     nothing is authorized, which is strictly more restrictive than letting a stale
     one ride out its lease.
     """
-    from ccswitch import account_registry
-
     with temp_env():
         account_registry.register_account(
             "anth", account_registry.PROVIDER_ANTHROPIC

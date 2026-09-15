@@ -13,7 +13,16 @@ export interface PromptContext   { route: string; sessionId?: string }
 // UserMessage, re-sent at the head of a page that starts mid-logical-turn so the turn's
 // content arrives with its prompt. It is NOT the prompt's real transcript position —
 // see `UserMessage.owner_prefix` (server/sessions/events.py).
-export interface EvUser          { type: 'user';          turnId: string; text: string; images?: EvUserImage[]; srcUuid?: string | null; ts?: number; ownerPrefix?: boolean; context?: PromptContext }
+// Who sent this prompt, when it was NOT the person at the keyboard: an autopilot
+// nudge, the completion-readiness nudge, the AI assistant drawer, another automation.
+// ABSENT means a human typed it — which is the ONLY case the transcript renders as a
+// right-aligned "you" bubble, so the absence of this field is load-bearing.
+// `inferred` marks an origin reconstructed after the fact by the server's backfill
+// (a prompt sent before the marker existed); the card says so rather than claiming it
+// as recorded fact. Mirrors `UserMessage.origin` (server/sessions/prompt_origin.py).
+export type PromptOriginKind = 'autopilot' | 'completion' | 'assistant' | 'automation'
+export interface PromptOrigin    { kind: PromptOriginKind; label?: string; inferred?: boolean }
+export interface EvUser          { type: 'user';          turnId: string; text: string; images?: EvUserImage[]; srcUuid?: string | null; ts?: number; ownerPrefix?: boolean; context?: PromptContext; origin?: PromptOrigin }
 export interface EvTurnStart     { type: 'turnStart';     turnId: string; srcUuid?: string | null; parentToolUseId?: string | null; turnIndex?: number | null }
 export interface EvTurnEnd       { type: 'turnEnd';       turnId: string; usage?: Record<string, unknown> | null; costUsd?: number | null; srcUuid?: string | null; parentToolUseId?: string | null }
 export interface EvTextDelta     { type: 'textDelta';     turnId: string; text: string; srcUuid?: string | null; parentToolUseId?: string | null; ts?: number }

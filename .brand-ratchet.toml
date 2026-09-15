@@ -43,7 +43,7 @@ ceiling = 4
 id = "wire-dual-accept"
 pattern = '<!--\s*ccswitch:|</?ccswitch-context|mcp__ccswitch__|\bccswitch:(complete|no-pr|model|hand-back)\b'
 permanent = "Markers, context headers and MCP tool names live in stored transcripts that are re-parsed on replay; the accept side never comes out (design Phase 7 'keep forever')."
-ceiling = 56
+ceiling = 55
 
 [[allow]]
 id = "rebrand-narrative"
@@ -130,7 +130,7 @@ ceiling = 304
 id = "python-package"
 pattern = '\b(from|import)\s+ccswitch\b|\bccswitch\.[a-z_]+|src/ccswitch\b|src\.ccswitch|__editable__\.ccswitch|name = "ccswitch"|^ccswitch = "|\bccswitch-0\.1\.0|(\.venv/)?bin/ccswitch|version\("ccswitch"\)|ccswitch\[server\]|\bccswitch (accounts|clones|add|crypto|init|link|list|migrate|remove|show|status|use|mcp|ask)\b|\b_?ccswitch_[a-z_]+\b|`ccswitch`\s+(CLI|binary|command|console|entry|proper|package)|(CLI|binary|command|script|entry point|installed as|console script|package)\s+`ccswitch`|--prog ccswitch|prog="ccswitch"|"command": "ccswitch"|Entry points: the `ccswitch` command|logger="ccswitch"|getLogger\("ccswitch"\)'
 issue = 1374
-ceiling = 1350
+ceiling = 1337
 
 [[allow]]
 id = "constitution"

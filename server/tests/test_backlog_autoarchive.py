@@ -208,7 +208,7 @@ def _orch_with_send_prompt(records, pr_info=None):
         archived_calls.append({"session_id": session_id, "archived_by": archived_by,
                                 "context": context})
 
-    async def _spy_send_prompt(session_id, prompt):
+    async def _spy_send_prompt(session_id, prompt, *, origin=None):
         nudged.append(prompt)
         return "sent"
 
