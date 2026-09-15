@@ -8306,7 +8306,67 @@ class SessionOrchestrator:
         written = await self._pm_classify_ingest(session_id, slug, text)
         log.info("pm_classify.chain_ingest: session=%s slug=%s wrote=%d",
                  session_id, slug, written)
+        # Proposals landed → the objective is met, so say so. Only on written > 0: a
+        # parse failure or an output matching no work item is precisely the run a
+        # human should see, and leaving it at `done` (which lifts it into Active) is
+        # how they find it. See _certify_harvested_complete.
+        if written:
+            await self._certify_harvested_complete(session_id)
         return written
+
+    async def _certify_harvested_complete(self, session_id: str) -> None:
+        """Drive a harvested one-shot session to ``complete``, certified by the HARNESS.
+
+        A classify session's prompt ends "Return ONLY a JSON array", so it emits the
+        fenced block and ends its turn without calling ``mark_complete`` or
+        ``mark_no_pr`` — nothing in that prompt asks it to, and "ONLY" reads as
+        forbidding it. ``derive_status`` then returns ``done``, which is tier
+        ``your-turn``, and ``QUIET_TIERS`` (``web/src/session/backgroundSessions.ts``)
+        lifts the maintenance session out of Background into Active as a stall. It had
+        not stalled; it had finished, with no vocabulary to say so.
+
+        Fixing that in the PROMPT does not work, and makes it worse. The effective goal
+        of these sessions is their name, ``f"pm classify {slug}"`` — ``"classify"`` is
+        not in ``completion_bar._RESEARCH_RE``, so with a repo attached the bar reads it
+        as CODE work and a plain ``mark_complete`` earns "open a PR and arm auto-merge
+        before finishing" at a session that exists to print JSON. ``mark_no_pr`` is no
+        better: source ``tool`` is in ``SELF_CERTIFIED_SOURCES``, so it lands on the
+        unverified-self-claim branch. Both make the model's own word the verification.
+
+        The harvest is not the model's word. Proposal rows written from its output are
+        the harness observing the deliverable, so the resolution is latched under
+        ``HARVEST_RESOLUTION_SOURCE`` and ``met_bar`` trusts it — same shape as the
+        ``queue-drain`` and ``classifier`` latches elsewhere in this file.
+        """
+        from server.automations.completion_bar import HARVEST_RESOLUTION_SOURCE
+        rec = self._records.get(session_id)
+        if rec is None or rec.status in ("ended", "archived"):
+            # Ended or archived out from under the poll (the chain waits minutes).
+            # A late harvest must never resurrect a session the user put away.
+            return
+        # Never clobber a resolution decided elsewhere — the same no-clobber rule
+        # _persist_status applies to the driver's token.
+        if getattr(rec, "pr_resolution", None) is None:
+            rec.pr_resolution = "not-needed"
+            rec.pr_resolution_source = HARVEST_RESOLUTION_SOURCE
+            try:
+                from sqlalchemy import update as sa_update
+                async with db_session() as db:
+                    await db.execute(sa_update(DbSession).where(
+                        DbSession.id == session_id).values(
+                            pr_resolution="not-needed",
+                            pr_resolution_source=HARVEST_RESOLUTION_SOURCE))
+            except Exception:  # noqa: BLE001 - a persist failure must not stall the chain
+                log.warning("pm_classify.certify_persist_failed sid=%s", session_id,
+                            exc_info=True)
+        # A session that already reached `complete` on its own has been judged by the
+        # completion guard already (it fires from _persist_status, which ran before this
+        # chain's poll noticed). Re-persisting would only re-run that judgement. The
+        # latch above still lands, so the retro archive_audit pass reads the verified
+        # resolution rather than the session's self-claim.
+        if rec.status != "complete":
+            await self._persist_status(session_id, "complete")
+        log.info("pm_classify.certified_complete sid=%s", session_id)
 
     async def _pm_classify_ingest(
             self, session_id: str, project_slug: str, output_text: str) -> int:
@@ -8837,7 +8897,18 @@ class SessionOrchestrator:
                     kind="materialization_ingest_timeout", target=slug,
                     session_id=session_id, detail={"attempts": attempts})
                 return 0
-            return await self._sdlc_materialize_ingest(session_id, slug)
+            written = await self._sdlc_materialize_ingest(session_id, slug)
+            # Same shape as the classify chain, same fix: `server/pm/materialize.py`
+            # tells this session to "Return ONLY a JSON object", so it too ends its
+            # turn at `done` with no completion signal. Its work_class is
+            # `development`, so it never lifts tabs — it just rests at "Your turn"
+            # forever, and since `_persist_status` releases the driver only on
+            # `complete`, every finished decompose session pinned a live `claude`
+            # process. `written` is 1 only for a parsed, non-duplicate pending
+            # proposal; a parse failure returns 0 and stays visible for a human.
+            if written:
+                await self._certify_harvested_complete(session_id)
+            return written
         except asyncio.CancelledError:
             raise
         except Exception:
