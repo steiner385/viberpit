@@ -109,6 +109,16 @@ def _is_code_goal(goal: str) -> bool:
 # promotes a new transport's claim to a verdict.
 SELF_CERTIFIED_SOURCES = frozenset({"marker", "tool"})
 
+#: The source for a no-PR resolution the HARNESS verified by observing the deliverable,
+#: written by ``SessionOrchestrator._certify_harvested_complete``. Deliberately NOT in
+#: ``SELF_CERTIFIED_SOURCES``, and the assertion that it is not lives in
+#: ``test_pm_orchestrator_seams.py``: a one-shot session whose whole objective is to
+#: emit a fenced JSON block cannot open a PR, and telling it to call ``mark_no_pr``
+#: instead would land on source ``tool`` and trip the unverified-self-claim branch. The
+#: harvest — proposal rows actually written from its output — is verification by
+#: something other than the claimant, which is the entire distinction this set encodes.
+HARVEST_RESOLUTION_SOURCE = "harvest"
+
 
 def is_unverified_self_resolution(goal: str, facts: PrFacts,
                                   pr_resolution: str | None,

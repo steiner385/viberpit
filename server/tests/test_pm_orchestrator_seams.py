@@ -434,6 +434,7 @@ async def test_classify_chain_ingest_waits_for_settled_then_ingests_once(db_env,
     This is the wiring the dogfood found missing: classify sessions completed but
     ``_pm_classify_ingest`` had no caller, so proposals never landed (0 of 13)."""
     orch = _bare_orch()
+    orch._records = {}   # no record → _certify_harvested_complete no-ops; see its own tests
     statuses = ["running", "running", "complete"]
     def fake_get_session(sid):
         return SimpleNamespace(id=sid, status=statuses.pop(0) if statuses else "complete")
@@ -465,6 +466,187 @@ async def test_classify_chain_ingest_stops_when_session_vanishes(db_env, monkeyp
                                                   attempts=3, delay=0.0)
     assert written == 0
     assert ingested == []
+
+
+@pytest.mark.asyncio
+async def test_classify_chain_ingest_certifies_completion_after_harvest(db_env, monkeypatch):
+    """A harvested classify session is driven to `complete` BY THE HARNESS.
+
+    Its prompt says "Return ONLY a JSON array", so the session emits the JSON and
+    ends the turn without ever calling `mark_complete`/`mark_no_pr`. derive_status
+    then returns `done` → tier `your-turn`, and `QUIET_TIERS` lifts the maintenance
+    session out of Background into Active as if it had stalled. The deliverable
+    landing in TriageProposal rows is the real completion signal, so certify it
+    here — where the harness, not the session, is the one that verified it."""
+    orch = _bare_orch()
+    orch.get_session = lambda sid: SimpleNamespace(id=sid, status="done")
+    orch._chained_session_output_text = _mk_async('```json\n[{"number": 1}]\n```')
+    orch._pm_classify_ingest = _mk_async(1)
+    certified = []
+    async def fake_certify(session_id):
+        certified.append(session_id)
+    orch._certify_harvested_complete = fake_certify
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    assert await orch._pm_classify_chain_ingest("sess-1", "viberpit",
+                                                attempts=2, delay=0.0) == 1
+    assert certified == ["sess-1"]
+
+
+@pytest.mark.asyncio
+async def test_classify_chain_ingest_leaves_unharvested_session_for_a_human(db_env, monkeypatch):
+    """Nothing harvested → do NOT certify: a parse failure or an output that
+    matched no work item is exactly the case a human must look at, and `done`
+    lifting into Active is how they find it. Certifying on a 0-row ingest would
+    archive the one session that needed attention."""
+    orch = _bare_orch()
+    orch.get_session = lambda sid: SimpleNamespace(id=sid, status="done")
+    orch._chained_session_output_text = _mk_async("sorry, I could not classify these")
+    orch._pm_classify_ingest = _mk_async(0)
+    certified = []
+    async def fake_certify(session_id):
+        certified.append(session_id)
+    orch._certify_harvested_complete = fake_certify
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    assert await orch._pm_classify_chain_ingest("sess-1", "viberpit",
+                                                attempts=2, delay=0.0) == 0
+    assert certified == []
+
+
+async def _seed_session(status: str = "done") -> str:
+    from server.db.models import Session as DbSession
+    async with db_session() as db:
+        row = DbSession(id="sess-h", name="pm classify viberpit",
+                        account_name="acct1", cwd="/tmp/clone",
+                        repo="steiner385/viberpit", status=status)
+        db.add(row)
+        await db.flush()
+        return row.id
+
+
+def _certify_orch(rec):
+    orch = _bare_orch()
+    orch._records = {rec.id: rec}
+    persisted = []
+    async def fake_persist(session_id, status):
+        rec.status = status
+        persisted.append((session_id, status))
+        return status
+    orch._persist_status = fake_persist
+    return orch, persisted
+
+
+@pytest.mark.asyncio
+async def test_certify_harvested_complete_latches_a_non_self_certified_resolution(db_env):
+    """The resolution's SOURCE is the whole point. `met_bar` trusts any
+    `pr_resolution` whose source is outside `SELF_CERTIFIED_SOURCES` — so writing
+    `harvest` is what keeps the completion guard from nudging "open a PR and arm
+    auto-merge" at a session whose entire objective was to print JSON. A
+    `mark_no_pr` tool call would land on source `tool` and trip the
+    unverified-self-claim branch instead."""
+    from server.automations.completion_bar import (
+        HARVEST_RESOLUTION_SOURCE, SELF_CERTIFIED_SOURCES)
+    from server.db.models import Session as DbSession
+    await init_db(db_env)
+    sid = await _seed_session()
+    rec = SimpleNamespace(id=sid, status="done", pr_resolution=None,
+                          pr_resolution_source=None)
+    orch, persisted = _certify_orch(rec)
+
+    await orch._certify_harvested_complete(sid)
+
+    assert HARVEST_RESOLUTION_SOURCE not in SELF_CERTIFIED_SOURCES
+    assert persisted == [(sid, "complete")]
+    assert (rec.pr_resolution, rec.pr_resolution_source) == (
+        "not-needed", HARVEST_RESOLUTION_SOURCE)
+    async with db_session() as db:
+        from sqlalchemy import select
+        row = (await db.execute(select(DbSession).where(
+            DbSession.id == sid))).scalar_one()
+        assert row.pr_resolution == "not-needed"
+        assert row.pr_resolution_source == HARVEST_RESOLUTION_SOURCE
+
+
+@pytest.mark.asyncio
+async def test_certify_harvested_complete_passes_the_completion_bar(db_env):
+    """End-to-end on the predicate that actually gates the nudge: the latched
+    pair must make `met_bar` return met for a repo-attached classify goal, whose
+    wording ("pm classify …") reads as CODE work to `_is_code_goal`."""
+    from server.automations.completion_bar import PrFacts, met_bar
+    await init_db(db_env)
+    sid = await _seed_session()
+    rec = SimpleNamespace(id=sid, status="done", pr_resolution=None,
+                          pr_resolution_source=None)
+    orch, _ = _certify_orch(rec)
+
+    await orch._certify_harvested_complete(sid)
+
+    verdict = met_bar("pm classify viberpit", "initial_prompt",
+                      PrFacts(has_repo=True), rec.pr_resolution,
+                      pr_resolution_source=rec.pr_resolution_source)
+    assert verdict.met, verdict.reason
+    # Same goal WITHOUT the harness certification is the bug being fixed.
+    assert not met_bar("pm classify viberpit", "initial_prompt",
+                       PrFacts(has_repo=True)).met
+    # ...and a `mark_no_pr` tool call would NOT have escaped it either.
+    assert not met_bar("pm classify viberpit", "initial_prompt",
+                       PrFacts(has_repo=True), "not-needed",
+                       pr_resolution_source="tool").met
+
+
+@pytest.mark.asyncio
+async def test_certify_harvested_complete_never_overrides_a_terminal_status(db_env):
+    """A session the user already ended/archived while the chain was polling must
+    not be resurrected to `complete` by a late harvest."""
+    await init_db(db_env)
+    sid = await _seed_session(status="ended")
+    rec = SimpleNamespace(id=sid, status="ended", pr_resolution=None,
+                          pr_resolution_source=None)
+    orch, persisted = _certify_orch(rec)
+
+    await orch._certify_harvested_complete(sid)
+
+    assert persisted == []
+    assert rec.pr_resolution is None
+
+
+@pytest.mark.asyncio
+async def test_certify_harvested_complete_latches_without_repersisting_a_complete_session(db_env):
+    """A session that reached `complete` on its own was already judged by the
+    completion guard (it fires from `_persist_status`, long before this chain's
+    30s poll notices). Re-persisting would only re-run that judgement — but the
+    latch must still land so the retro archive_audit pass reads a verified
+    resolution instead of the session's own `tool` claim."""
+    from server.automations.completion_bar import HARVEST_RESOLUTION_SOURCE
+    await init_db(db_env)
+    sid = await _seed_session(status="complete")
+    rec = SimpleNamespace(id=sid, status="complete", pr_resolution=None,
+                          pr_resolution_source=None)
+    orch, persisted = _certify_orch(rec)
+
+    await orch._certify_harvested_complete(sid)
+
+    assert persisted == []
+    assert (rec.pr_resolution, rec.pr_resolution_source) == (
+        "not-needed", HARVEST_RESOLUTION_SOURCE)
+
+
+@pytest.mark.asyncio
+async def test_certify_harvested_complete_keeps_an_existing_resolution(db_env):
+    """Never clobber a resolution already decided elsewhere (a classifier verdict,
+    a queue-drain) — same no-clobber rule `_persist_status` applies."""
+    await init_db(db_env)
+    sid = await _seed_session()
+    rec = SimpleNamespace(id=sid, status="done", pr_resolution="cancelled",
+                          pr_resolution_source="classifier")
+    orch, persisted = _certify_orch(rec)
+
+    await orch._certify_harvested_complete(sid)
+
+    assert persisted == [(sid, "complete")]
+    assert (rec.pr_resolution, rec.pr_resolution_source) == (
+        "cancelled", "classifier")
 
 
 @pytest.mark.asyncio
@@ -999,6 +1181,29 @@ async def test_materialize_chain_ingest_swallows_ingest_failures(db_env, monkeyp
     monkeypatch.setattr(_a, "sleep", _mk_async(None))
     assert await orch._sdlc_materialize_chain_ingest("s1", "dark-mode",
                                                      attempts=2, delay=0.0) == 0
+
+
+@pytest.mark.asyncio
+async def test_materialize_chain_ingest_certifies_only_a_real_proposal(db_env, monkeypatch):
+    """The classify chain's sibling: `server/pm/materialize.py` also says "Return
+    ONLY a JSON object", so a decompose session also ends at `done` with no
+    completion signal — and since `_persist_status` releases the driver only on
+    `complete`, each finished one pinned a live `claude` process. Certify on a
+    written proposal; a parse failure (0) stays visible for a human."""
+    import asyncio as _a
+    monkeypatch.setattr(_a, "sleep", _mk_async(None))
+    for written, expected in ((1, ["s1"]), (0, [])):
+        orch = _bare_orch()
+        orch.get_session = lambda sid: SimpleNamespace(id=sid, status="done")
+        orch._sdlc_synth_ctx = FakeAutomationContext()
+        orch._sdlc_materialize_ingest = _mk_async(written)
+        certified = []
+        async def fake_certify(session_id, _c=certified):
+            _c.append(session_id)
+        orch._certify_harvested_complete = fake_certify
+        assert await orch._sdlc_materialize_chain_ingest(
+            "s1", "dark-mode", attempts=2, delay=0.0) == written
+        assert certified == expected
 
 
 _MAT_INI = {"id": "i1", "slug": "dark-mode", "repo": "o/r", "title": "Dark mode"}
