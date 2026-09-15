@@ -9686,8 +9686,11 @@ class SessionOrchestrator:
         from server.automations.autopilot_policy import ACTIONABLE_STATUSES
         _mode, config = await self._autopilot_read_config()
         repos = set(config.get("enabled_repos") or [])
+        enabled_hosts = await self._enabled_host_names()
         out: list[str] = []
         for sid, rec in list(self._records.items()):
+            if not self._owns_record(rec, enabled_hosts):
+                continue  # local context/actions cannot govern a fleet mirror
             if is_assistant(rec):
                 continue   # the assistant is the operator's aide, not governed work
             if rec.status not in ACTIONABLE_STATUSES:
@@ -10015,11 +10018,15 @@ class SessionOrchestrator:
         act = decision.action
         if act in ("escalate", "complete", "skip"):
             return False
-        # A model swap / reassign that began during the decider's await window makes
-        # the decide-time stuck state stale — the turn is being restarted, so acting
-        # on it would inject into (or resolve state belonging to) the replaced turn.
+        enabled_hosts = await self._enabled_host_names()
+        # A model swap / reassign during either the decider or registry await makes
+        # the decide-time stuck state stale. Check after the registry read so that
+        # resolving ownership cannot let an action slip into the replaced turn.
         if self._turn_restart_in_flight(session_id):
             return False
+        rec = self._records.get(session_id)
+        if rec is None or not self._owns_record(rec, enabled_hosts):
+            return False  # ownership may have changed while the decider awaited
         stuck = ctx.stuck if ctx is not None else {}
         ok = False
         if act in ("approve", "deny") and stuck.get("perm_id"):
@@ -10029,18 +10036,21 @@ class SessionOrchestrator:
             if act == "approve" and matches_denylist(
                     stuck.get("tool_name", ""), stuck.get("tool_input", {}), []):
                 return False
-            await self.ensure_driver(session_id, SYSTEM_IDENTITY)
+            if await self.ensure_driver(session_id, SYSTEM_IDENTITY) is None:
+                return False
             ok = bool(self.resolve_permission(
                 session_id, stuck["perm_id"], act == "approve", SYSTEM_IDENTITY))
         elif act == "answer" and stuck.get("question_id") is not None:
-            await self.ensure_driver(session_id, SYSTEM_IDENTITY)
+            if await self.ensure_driver(session_id, SYSTEM_IDENTITY) is None:
+                return False
             opts = stuck.get("options") or []
             idx = decision.answer_index or 0
             selected = [opts[idx]] if 0 <= idx < len(opts) else []
             ok = bool(await self.answer_question(
                 session_id, stuck["question_id"], selected, SYSTEM_IDENTITY, "option"))
         elif act == "nudge" and decision.prompt:
-            await self.ensure_driver(session_id, SYSTEM_IDENTITY)
+            if await self.ensure_driver(session_id, SYSTEM_IDENTITY) is None:
+                return False
             ok = (await self.send_prompt(
                 session_id, decision.prompt,
                 origin={"kind": "autopilot"})) == "sent"
@@ -11827,8 +11837,11 @@ class SessionOrchestrator:
             rows = (await db.execute(sa_select(DbSession).where(
                 or_(DbSession.pending_rearm.isnot(None),
                     DbSession.pending_prompt.isnot(None))))).scalars().all()
+        enabled_hosts = await self._enabled_host_names()
         pending = [(r.id, r.pending_rearm, r.pending_prompt) for r in rows
-                   if (r.pending_rearm or r.pending_prompt) and r.id not in self._rearmed]
+                   if (r.pending_rearm or r.pending_prompt) and r.id not in self._rearmed
+                   and (rec := self._records.get(r.id)) is not None
+                   and self._owns_record(rec, enabled_hosts)]
         if not pending:
             # Idempotent re-calls must not reset a prior boot's count to 0.
             self._startup_note("rearmed", self.startup_report().get("rearmed") or 0)
@@ -13488,8 +13501,10 @@ class SessionOrchestrator:
         # Assistants excluded for the same reason as _recover_undelivered_prompts: an
         # assistant "turn" is an answer to something the user asked before the restart,
         # and nobody is watching the drawer at daemon boot to read it.
+        enabled_hosts = await self._enabled_host_names()
         eligible = [sid for sid, rec in list(self._records.items())
-                    if not is_assistant(rec) and self._resume_eligible(rec) is None]
+                    if self._owns_record(rec, enabled_hosts)
+                    and not is_assistant(rec) and self._resume_eligible(rec) is None]
         if not eligible:
             return 0
         sem = asyncio.Semaphore(int(os.environ.get("CCSWITCH_REARM_CONCURRENCY", "3")))
