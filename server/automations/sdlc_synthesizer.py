@@ -67,6 +67,9 @@ LiveSessions = Callable[[Sequence[str]], Awaitable["set[str]"]]
 #: (initiative_id, from_stage, to_stage, last_auto_gate record) → advanced?
 #: False means the compare-and-set found a newer human decision (spec §15).
 AdvanceStage = Callable[[str, str, str, dict], Awaitable[bool]]
+#: (artifact_id, repo, pr_number) → {"armed": bool, "error": str}. Arms GitHub
+#: auto-merge on the stage artifact PR and stamps `auto_merge_armed_at` (§6).
+ArmAutoMerge = Callable[[str, str, int], Awaitable[dict]]
 #: The process-wide kill switch (spec D9), read per tick.
 AutoresolveEnabled = Callable[[], bool]
 
@@ -190,6 +193,7 @@ class SdlcSynthesizerLoop:
         live_sessions: LiveSessions | None = None,
         advance_stage: AdvanceStage | None = None,
         autoresolve_enabled: AutoresolveEnabled | None = None,
+        arm_auto_merge: ArmAutoMerge | None = None,
     ) -> None:
         self._ctx = ctx
         self._list_initiatives = list_initiatives
@@ -220,6 +224,10 @@ class SdlcSynthesizerLoop:
         #: slugs already warned that the engine wanted an advance this
         #: deployment cannot write — once, like the materialize seam.
         self._advance_unwired: set[str] = set()
+        self._arm_auto_merge = arm_auto_merge
+        #: slugs already warned that the engine wanted auto-merge this
+        #: deployment cannot arm — once, like the advance seam.
+        self._arm_unwired: set[str] = set()
         self._clock = clock
         self._lock = asyncio.Lock()
 
@@ -267,12 +275,15 @@ class SdlcSynthesizerLoop:
             policy = effective_policy(policies.get(key) if key else None)
             tolerance = effective_tolerance(policy.get("risk_tolerance"), enabled=enabled)
             action = next_action(state, arts, mode, tolerance)
-            if isinstance(action, AwaitApproval | MergeArtifact) or (
+            if isinstance(action, AwaitApproval) or (
                     isinstance(action, NeedsHuman)
                     and (state.status == "blocked" or state.stage == "build")):
-                # `MergeArtifact` counts as awaiting until the arm-auto-merge
-                # seam lands (phase 2b): the PR still needs a human merge today.
                 counts["awaiting"] += 1
+            if isinstance(action, MergeArtifact):
+                if await self._arm(ini, state, action, artifacts, tolerance):
+                    counts["auto_resolved"] += 1
+                else:
+                    counts["awaiting"] += 1
             if isinstance(action, Advance):
                 if await self._advance(ini, state, action, tolerance):
                     counts["auto_resolved"] += 1
@@ -335,6 +346,49 @@ class SdlcSynthesizerLoop:
                          kind="auto_resolved", target=slug,
                          detail={"gate": gate_id, "tolerance": tolerance,
                                  "from": state.stage, "to": action.to_stage})
+        return True
+
+    async def _arm(self, ini: dict, state: InitiativeView, action: MergeArtifact,
+                   artifacts: list[dict], tolerance: str) -> bool:
+        """Execute the engine's ``MergeArtifact`` (spec §6): arm GitHub
+        auto-merge on the stage artifact PR exactly once.
+
+        Returns whether a gate was resolved this tick. ``False`` means the
+        caller counts the artifact as ``awaiting``, which is precisely today's
+        behaviour — so an unwired seam, an already-armed PR and a refusal all
+        degrade to "a human merges it", never to a lost initiative.
+        """
+        slug = str(ini.get("slug") or "")
+        if self._arm_auto_merge is None:
+            if slug not in self._arm_unwired:
+                self._arm_unwired.add(slug)
+                await self._emit("warn", f"{slug}: the artifact PR would auto-merge under "
+                                 f"{tolerance} but arming is not wired — merge it by hand",
+                                 kind="arm_unwired", target=slug)
+            return False
+        art = next((a for a in artifacts if a.get("kind") == action.kind), None)
+        if art is None or not art.get("pr_number"):
+            return False
+        # The one gh call per PR: a stamped row has already been armed.
+        if art.get("auto_merge_armed_at"):
+            return False
+        repo = str(ini.get("repo") or state.repo or "")
+        if not repo:
+            return False
+        out = await self._arm_auto_merge(str(art["id"]), repo, int(art["pr_number"]))
+        if not out.get("armed"):
+            await self._emit("warn", f"{slug}: auto-merge unavailable on {repo} — "
+                             f"merge {action.kind} PR #{art['pr_number']} by hand",
+                             kind="gate_refused", target=slug,
+                             detail={"gate": "artifact.merge", "tolerance": tolerance,
+                                     "pr": art["pr_number"],
+                                     "error": str(out.get("error") or "")})
+            return False
+        await self._emit("info", f"{slug}: armed auto-merge on {action.kind} "
+                         f"PR #{art['pr_number']} under {tolerance} (CI is still the gate)",
+                         kind="auto_resolved", target=slug,
+                         detail={"gate": "artifact.merge", "tolerance": tolerance,
+                                 "pr": art["pr_number"]})
         return True
 
     async def _materialize(self, ini: dict) -> str | None:

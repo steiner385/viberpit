@@ -3,7 +3,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from server.automations.context import AutomationContext
 from server.automations.sdlc_synthesizer import SdlcSynthesizer, SdlcSynthesizerLoop
 
 
@@ -42,10 +41,25 @@ class Recorder:
         self.advance_result = True
         #: The kill switch (spec D9); tests that exercise a gate turn it on.
         self.autoresolve = False
+        #: (artifact_id, repo, pr_number) per arm attempt; `arm_result` False
+        #: simulates gh refusing (repo has auto-merge disabled).
+        self.armed: list[tuple[str, str, int]] = []
+        self.arm_result: dict = {"armed": True, "error": ""}
+        #: emitted activity events, so a test can assert `gate_refused`. Doubles
+        #: as the default fake ctx (see `_loop`) so a test that omits `ctx` can
+        #: still inspect what the loop emitted via `rec.events`.
+        self.events: list[dict] = []
 
     async def advance_stage(self, iid, from_stage, to_stage, record):
         self.advanced.append((iid, from_stage, to_stage, record))
         return self.advance_result
+
+    async def arm_auto_merge(self, artifact_id, repo, pr_number):
+        self.armed.append((artifact_id, repo, int(pr_number)))
+        return self.arm_result
+
+    async def emit(self, level, summary, **kw):
+        self.events.append({"level": level, "summary": summary, **kw})
 
     def autoresolve_enabled(self):
         return self.autoresolve
@@ -93,8 +107,10 @@ class Recorder:
 
 
 def _loop(rec, ctx=None, *, materialize=True, advance=True):
+    # `rec` doubles as the default fake ctx (it has `emit`): a test that omits
+    # `ctx` can still inspect `rec.events`, matching every other Recorder seam.
     return SdlcSynthesizerLoop(
-        ctx or AutomationContext("sdlc-synthesizer"),
+        ctx or rec,
         list_initiatives=rec.list_initiatives, list_artifacts=rec.list_artifacts,
         record_artifact=rec.record_artifact, set_status=rec.set_status,
         spawn=rec.spawn,
@@ -105,7 +121,8 @@ def _loop(rec, ctx=None, *, materialize=True, advance=True):
         read_config=rec.read_config, clock=lambda: 0.0, read_policies=rec.read_policies,
         live_sessions=rec.live_sessions,
         advance_stage=rec.advance_stage if advance else None,
-        autoresolve_enabled=rec.autoresolve_enabled)
+        autoresolve_enabled=rec.autoresolve_enabled,
+        arm_auto_merge=rec.arm_auto_merge)
 
 
 def _ini(stage, status="active", **extra):
@@ -638,15 +655,90 @@ async def test_an_unwired_advance_seam_warns_once_and_parks():
 
 
 @pytest.mark.asyncio
-async def test_an_open_artifact_pr_still_waits_for_a_human_merge():
-    """`MergeArtifact` is decided under `balanced` but not executed yet (the
-    arm-auto-merge seam is phase 2b): it counts as awaiting, nothing is written."""
+async def test_an_open_artifact_pr_auto_merges_under_balanced():
+    """`MergeArtifact` is decided under `balanced` and now executed (phase 2b):
+    the arm-auto-merge seam arms the PR instead of parking it as awaiting."""
     rec = Recorder([_ini("design", "awaiting_human", project_slug="viberpit")])
     rec.artifacts = {"i1": [{"id": "a1", "kind": "spec", "commit_sha": None, "pr_number": 7,
-                             "session_id": "sess-1"}]}
+                             "session_id": "sess-1", "auto_merge_armed_at": None}]}
     rec.policies = {"viberpit": {"risk_tolerance": "balanced"}}
     rec.autoresolve = True
     ctx = Ctx()
     await _loop(rec, ctx).tick()
     assert rec.advanced == [] and rec.spawned == []
-    assert SdlcSynthesizer().status(ctx).counts["awaiting"] == 1
+    assert rec.armed == [("a1", "o/r", 7)]
+    assert SdlcSynthesizer().status(ctx).counts["auto_resolved"] == 1
+    assert SdlcSynthesizer().status(ctx).counts["awaiting"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# MergeArtifact (spec 2026-09-14 §6) — phase 2b                                #
+# --------------------------------------------------------------------------- #
+
+def _merge_ready(rec, slug="alpha", iid="i-1"):
+    """An initiative whose spec artifact has an OPEN PR: the engine returns
+    MergeArtifact once the product's tolerance covers `artifact.merge`."""
+    rec.policies["prod"] = {"risk_tolerance": "balanced", "dispatch": "auto"}
+    rec.autoresolve = True
+    rec.artifacts[iid] = [{"id": "a-1", "kind": "spec", "pr_number": 42,
+                           "pr_url": "https://github.com/o/r/pull/42",
+                           "commit_sha": None, "session_id": None,
+                           "auto_merge_armed_at": None}]
+    return rec
+
+
+@pytest.mark.asyncio
+async def test_merge_artifact_arms_auto_merge_once():
+    rec = Recorder([{"id": "i-1", "slug": "alpha", "stage": "design",
+                     "status": "active", "repo": "o/r", "project_slug": "prod"}],
+                   mode="on")
+    _merge_ready(rec)
+    loop = _loop(rec)
+    await loop.tick()
+
+    assert rec.armed == [("a-1", "o/r", 42)]
+    assert loop._ctx.sdlc_synthesizer_counts["auto_resolved"] == 1
+
+
+@pytest.mark.asyncio
+async def test_merge_artifact_refusal_records_gate_refused_and_does_not_stamp():
+    rec = Recorder([{"id": "i-1", "slug": "alpha", "stage": "design",
+                     "status": "active", "repo": "o/r", "project_slug": "prod"}],
+                   mode="on")
+    _merge_ready(rec)
+    rec.arm_result = {"armed": False, "error": "Auto-merge is not allowed"}
+    loop = _loop(rec)
+    await loop.tick()
+
+    assert rec.armed == [("a-1", "o/r", 42)]
+    assert loop._ctx.sdlc_synthesizer_counts["auto_resolved"] == 0
+    assert loop._ctx.sdlc_synthesizer_counts["awaiting"] == 1
+    kinds = [e.get("kind") for e in rec.events]
+    assert "gate_refused" in kinds
+
+
+@pytest.mark.asyncio
+async def test_merge_artifact_skips_an_already_armed_pr():
+    rec = Recorder([{"id": "i-1", "slug": "alpha", "stage": "design",
+                     "status": "active", "repo": "o/r", "project_slug": "prod"}],
+                   mode="on")
+    _merge_ready(rec)
+    rec.artifacts["i-1"][0]["auto_merge_armed_at"] = "2026-09-16T00:00:00+00:00"
+    loop = _loop(rec)
+    await loop.tick()
+
+    assert rec.armed == []          # the one gh call is never spent twice
+
+
+@pytest.mark.asyncio
+async def test_cautious_never_arms():
+    rec = Recorder([{"id": "i-1", "slug": "alpha", "stage": "design",
+                     "status": "active", "repo": "o/r", "project_slug": "prod"}],
+                   mode="on")
+    _merge_ready(rec)
+    rec.policies["prod"]["risk_tolerance"] = "cautious"
+    loop = _loop(rec)
+    await loop.tick()
+
+    assert rec.armed == []
+    assert loop._ctx.sdlc_synthesizer_counts["awaiting"] == 1

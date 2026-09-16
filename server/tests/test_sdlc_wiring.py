@@ -49,6 +49,15 @@ def test_sdlc_loops_are_constructed():
         assert orch._sdlc_synthesizer_loop is not None
 
 
+def test_synthesizer_loop_receives_the_arm_auto_merge_seam():
+    """An unwired seam is fail-closed, so the wiring itself is the contract."""
+    with temp_env(), patch.dict(
+        os.environ, _sqlite_env()
+    ):
+        orch = _make_orch()
+        assert orch._sdlc_synthesizer_loop._arm_auto_merge == orch._sdlc_arm_auto_merge
+
+
 def test_sdlc_automations_registered():
     """The registry resolves both SDLC automation ids to their classes."""
     from server.automations.registry import registry

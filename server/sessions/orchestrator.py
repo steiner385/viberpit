@@ -1217,6 +1217,7 @@ class SessionOrchestrator:
             read_policies=self._sdlc_read_policies,
             live_sessions=self._sdlc_live_artifact_sessions,
             advance_stage=self._sdlc_advance_stage,
+            arm_auto_merge=self._sdlc_arm_auto_merge,
             # The process-wide kill switch (spec D9) is read per tick, not
             # captured at construction, so flipping the env and restarting the
             # daemon is the whole procedure — nothing else caches it.
