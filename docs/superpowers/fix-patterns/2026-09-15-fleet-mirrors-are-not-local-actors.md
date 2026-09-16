@@ -46,6 +46,11 @@ must not authorize foreign recovery. Explicit per-session routing/adoption paths
   permission and question registries. Remote-worker governance needs routed context
   AND actions; skipping foreign mirrors fails closed instead of pretending local
   seams support it. No new RPC surface is added by this fix.
+- Structural fix (spec 2026-09-16-session-lease-ownership): `_claim_session` now applies
+  `_owns_record` itself (`adopt=True` bypasses for adopt/transfer), the heartbeat tick
+  renews a lease whose driver is still building (`SPAWN_WAIT_S` grace, #1826), and
+  `_reconcile_foreign_lease` closes a live driver held for a row another enabled host
+  owns. Per-caller fences remain as the cheap first line; the choke point is the backstop.
 
 The warning alone does not identify its caller. The observed denial followed by a
 prompt drop matches autopilot's unchecked driver result; tests reproduce that path
