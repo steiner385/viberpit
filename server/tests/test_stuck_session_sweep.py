@@ -97,8 +97,26 @@ async def test_sweep_never_retries_a_session_the_engine_can_never_rotate():
 
 
 @pytest.mark.asyncio
+async def test_sweep_never_retries_a_session_whose_automation_lost_its_targets():
+    """automation_ownership_stale (#1767/#1776) is terminal for the same reason.
+
+    A PR Doctor session whose PR merges under it loses the operation's ownership of
+    that PR for good; every rebuild then dies at the automation execution fence on
+    StaleOwnership. Retrying re-parks it on the identical check — 83 times in six
+    hours on dobby, 2026-09-15."""
+    o = _make_orch()
+    rec = _rec(o, status="needs_attention")
+    rec.paused_reason = "automation_ownership_stale"
+
+    await o._sweep_needs_attention()
+    await asyncio.sleep(0)
+
+    assert o.calls == []
+
+
+@pytest.mark.asyncio
 async def test_sweep_still_retries_other_needs_attention_reasons():
-    """The skip above must be specific to engine_rotation_unsupported, not a
+    """The skips above must be specific to the terminal reasons, not a
     blanket change to what the sweep retries."""
     o = _make_orch()
     rec = _rec(o, status="needs_attention")
