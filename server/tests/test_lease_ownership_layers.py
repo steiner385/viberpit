@@ -6,6 +6,7 @@ test_recovery_actor_ownership.py (per-caller fences). These pin the three layers
 that make the 331f7d98 split-brain (#1824, #1826) structurally impossible."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock
 
@@ -181,3 +182,108 @@ async def test_teardown_drops_the_build_marker_too(ticking):
     await ticking._release_session_lease("s1")
     assert "s1" not in ticking._lease_building()
     assert ticking.released == ["s1"]
+
+
+class LiveDriver:
+    def __init__(self, turn_active=False, drain_alive=False):
+        self.turn_active = turn_active
+        self.drain_alive = drain_alive
+        self.closed = False
+
+    async def aclose(self):
+        self.closed = True
+
+
+@pytest.fixture
+def reconciling(ticking, monkeypatch):
+    """`ticking` plus the teardown seams the reconcile calls."""
+    torn: list[str] = []
+
+    async def fake_teardown(sid):
+        torn.append(sid)
+        ticking._lease_fences().pop(sid, None)
+        ticking._lease_building().pop(sid, None)
+        return ticking._drivers.pop(sid, None)
+
+    async def fake_close(driver, sid):
+        driver.closed = True
+
+    ticking._teardown_driver_state = fake_teardown
+    ticking._close_automation_driver = fake_close
+    ticking._spawn = lambda coro, name=None: asyncio.ensure_future(coro)
+    ticking.torn = torn
+    return ticking
+
+
+@pytest.mark.asyncio
+async def test_tick_hands_back_a_lease_held_for_a_row_another_host_owns(reconciling, caplog):
+    """The automated form of the 2026-09-16 manual repair: dobby holds and drives a
+    rocky-stamped row; one tick closes the driver and releases the lease."""
+    await reconciling._claim_session("s1", why="adopt", adopt=True)
+    reconciling._records["s1"] = _record("s1", "rocky", "idle")
+    driver = LiveDriver()
+    reconciling._drivers["s1"] = driver
+    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+        await reconciling._session_lease_tick()
+    await asyncio.sleep(0)                        # let the deferred close run
+    assert reconciling.torn == ["s1"]
+    assert "s1" not in reconciling._drivers and driver.closed
+    assert reconciling.renewed == []              # released, not renewed, this pass
+    assert "s1" in reconciling._records           # the fleet mirror survives
+    ev = [r for r in caplog.records if getattr(r, "event", None) == "session.lease_reconciled"]
+    assert ev and ev[0].fields["session_id"] == "s1" and ev[0].fields["host"] == "rocky"
+
+
+@pytest.mark.asyncio
+async def test_tick_defers_while_a_turn_is_active(reconciling, caplog):
+    await reconciling._claim_session("s1", why="adopt", adopt=True)
+    reconciling._records["s1"] = _record("s1", "rocky", "idle")
+    reconciling._drivers["s1"] = LiveDriver(turn_active=True)
+    with caplog.at_level(logging.CRITICAL, logger="server.sessions.orchestrator"):
+        await reconciling._session_lease_tick()
+    assert reconciling.torn == [] and reconciling.renewed == ["s1"]
+    ev = [r for r in caplog.records if getattr(r, "event", None) == "session.lease_foreign_holder"]
+    assert ev and ev[0].fields["action"] == "deferred_turn_active"
+
+
+@pytest.mark.asyncio
+async def test_tick_never_reconciles_when_the_registry_is_unknown(reconciling):
+    reconciling._enabled_host_names.return_value = None
+    await reconciling._claim_session("s1", why="adopt", adopt=True)
+    reconciling._records["s1"] = _record("s1", "rocky", "idle")
+    reconciling._drivers["s1"] = LiveDriver()
+    await reconciling._session_lease_tick()
+    assert reconciling.torn == [] and reconciling.renewed == ["s1"]
+
+
+@pytest.mark.asyncio
+async def test_tick_logs_only_when_enforcement_is_off(reconciling, monkeypatch, caplog):
+    monkeypatch.setenv("CCSWITCH_SESSION_LEASE_ENFORCE", "false")
+    await reconciling._claim_session("s1", why="adopt", adopt=True)
+    reconciling._records["s1"] = _record("s1", "rocky", "idle")
+    reconciling._drivers["s1"] = LiveDriver()
+    with caplog.at_level(logging.CRITICAL, logger="server.sessions.orchestrator"):
+        await reconciling._session_lease_tick()
+    assert reconciling.torn == [] and reconciling.renewed == ["s1"]
+    ev = [r for r in caplog.records if getattr(r, "event", None) == "session.lease_foreign_holder"]
+    assert ev and ev[0].fields["action"] == "log_only"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host", ["dobby", None, "gone"])
+async def test_tick_leaves_owned_rows_alone(reconciling, host):
+    await reconciling._claim_session("s1", why="spawn")
+    reconciling._records["s1"] = _record("s1", host, "idle")
+    reconciling._drivers["s1"] = LiveDriver()
+    await reconciling._session_lease_tick()
+    assert reconciling.torn == [] and reconciling.renewed == ["s1"]
+
+
+@pytest.mark.asyncio
+async def test_tick_ignores_a_live_driver_with_no_record(reconciling):
+    """test_session_lease's harness registers bare object() drivers with no
+    record; the reconcile must not touch them."""
+    await reconciling._claim_session("s1", why="spawn")
+    reconciling._drivers["s1"] = object()
+    await reconciling._session_lease_tick()
+    assert reconciling.torn == [] and reconciling.renewed == ["s1"]

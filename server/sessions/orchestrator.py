@@ -2331,9 +2331,14 @@ class SessionOrchestrator:
         """
         me = self_host_name()
         now = self._lease_clock()
+        getter = getattr(self, "_enabled_host_names", None)
+        enabled = await getter() if getter is not None else None
         for sid, fence in list(self._lease_fences().items()):
             if sid in self._drivers:
                 self._lease_building().pop(sid, None)
+                rec = self._records.get(sid) if hasattr(self, "_records") else None
+                if rec is not None and await self._reconcile_foreign_lease(sid, rec, enabled):
+                    continue
             elif now - self._lease_building().get(sid, float("-inf")) < SPAWN_WAIT_S:
                 # Claimed, driver not registered yet: a build in flight, not a
                 # leak. Renew so a build longer than the TTL is never seen as
@@ -2358,6 +2363,40 @@ class SessionOrchestrator:
                 "driver for it is still live here — TWO hosts may now be running "
                 "this conversation (#1379).",
                 sid, state.holder if state is not None else "<released>")
+
+    async def _reconcile_foreign_lease(self, sid: str, rec: SessionRecord,
+                                       enabled: frozenset[str] | None) -> bool:
+        """Layer 4: this daemon holds the lease AND a live driver for *sid*, but the
+        row is stamped for another enabled host. Give it back.
+
+        Once the wrong daemon holds a session the state is stable — it renews
+        forever, the owner is refused forever, the dashboard reads "idle, detached"
+        (#1824 lasted a day). Returns True when the driver was torn down, so the
+        caller skips this pass's renew. Never acts on an unknown registry (a blip
+        must not drop this host's own drivers), never mid-turn (killing a driver
+        mid-turn has its own failure modes), and only logs when enforcement is off.
+        """
+        if enabled is None or self._owns_record_by_stamp(getattr(rec, "host", None), enabled):
+            return False
+        driver = self._drivers.get(sid)
+        if driver is None:
+            return False
+        stamp = getattr(rec, "host", None)
+        if getattr(driver, "turn_active", False) or getattr(driver, "drain_alive", False):
+            log_event(log, logging.CRITICAL, "session.lease_foreign_holder",
+                      session_id=sid, host=stamp, action="deferred_turn_active")
+            return False
+        if not session_lease_enforced():
+            log_event(log, logging.CRITICAL, "session.lease_foreign_holder",
+                      session_id=sid, host=stamp, action="log_only")
+            return False
+        popped = await self._teardown_driver_state(sid)   # pops driver, releases lease
+        if popped is not None:
+            self._spawn(self._close_automation_driver(popped, sid),
+                        name=f"lease-reconcile-close-{sid}")
+        log_event(log, logging.WARNING, "session.lease_reconciled",
+                  session_id=sid, host=stamp)
+        return True
 
     async def _session_lease_loop(self) -> None:
         """Beat :meth:`_session_lease_tick` at TTL/5 (#1379). Never dies on an error:
