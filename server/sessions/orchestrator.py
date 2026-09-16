@@ -392,6 +392,26 @@ _UNREACHABLE_ROTATION_THRESHOLD: int = 3
 # events, not recovery, so paused sessions need a separate periodic retry.
 _STUCK_SESSION_SWEEP_INTERVAL: float = 300.0
 
+# Pause reasons the stuck-session sweep must NEVER retry. Every OTHER needs_attention
+# cause it exists to retry (all_accounts_busy, crash_cap, rotation_cap, stall_cap,
+# turn_dropped_cap) is a "wait for an account to free up" — time passing is exactly
+# what clears it. These two are the opposite: the condition is settled, so a retry
+# re-parks the session on the identical check every tick forever, which is a silent
+# no-op loop rather than a recovery attempt.
+#
+#   engine_rotation_unsupported  — an engine will not grow account_rotation or
+#       account_switch_new_thread between sweeps (#1275).
+#   automation_ownership_stale   — the automation operation's targets were taken from
+#       it (e.g. the PR Doctor's PR merged under it), so the execution fence refuses
+#       every rebuild with StaleOwnership and nothing gives them back (#1767, #1776).
+#
+# Keep this the ONE list; both the sweep and _reassign_locked's failure classification
+# read it, so a new terminal reason cannot be honoured in one and retried in the other.
+_TERMINAL_PAUSE_REASONS: frozenset[str] = frozenset({
+    "engine_rotation_unsupported",
+    "automation_ownership_stale",
+})
+
 # Minimum spacing between recovery-triggered sweeps (an account dropping below ceiling
 # in the poller stream). The poller emits one event per account per ~60 s; without a
 # debounce a fleet of healthy accounts would re-run the sweep every few seconds.
@@ -15672,7 +15692,19 @@ class SessionOrchestrator:
         subprocess died while the session was idle, e.g. Copilot proxy crash).
         Picks a fresh account and delegates to _rotate_away which rebuilds the
         driver and replays the last prompt.
+
+        The rotation monitor selects on account usage alone, so a session parked on a
+        TERMINAL reason is re-picked every time its account crosses the ceiling — a
+        second unbounded rebuild loop next to the stuck-session sweep's, and the one
+        that actually drove the 2026-09-15 storm (#1767). The sweep's own skip cannot
+        cover it; both must consult _TERMINAL_PAUSE_REASONS. This is the AUTOMATIC
+        restart primitive (the monitor is its only caller), so guarding here leaves a
+        human's explicit switch_account_manual / _reassign retry working.
         """
+        if record.paused_reason in _TERMINAL_PAUSE_REASONS:
+            log.debug("rotation.skip_terminal session=%s reason=%s",
+                      record.id, record.paused_reason)
+            return
         log.info("rotation.restart_driverless session=%s reason=%s", record.id, reason)
         await self._rotate_away(record, reason=reason)
 
@@ -15725,15 +15757,13 @@ class SessionOrchestrator:
                 continue
             if record.status != "needs_attention":
                 continue
-            if record.paused_reason == "engine_rotation_unsupported":
-                # Unlike the other needs_attention causes this sweep exists to retry
-                # (all_accounts_busy, crash_cap, rotation_cap, stall_cap,
-                # turn_dropped_cap — every one a "wait for an account to free up"),
-                # this one is never recoverable by retrying: the engine will not
-                # suddenly grow account_rotation or account_switch_new_thread between
-                # sweeps. Retrying anyway re-parks the session on the identical
-                # capability check every _STUCK_SESSION_SWEEP_INTERVAL forever — a
-                # silent no-op loop, not a recovery attempt.
+            if record.paused_reason in _TERMINAL_PAUSE_REASONS:
+                # Never recoverable by retrying — see _TERMINAL_PAUSE_REASONS for why
+                # each one is settled rather than waiting on an account to free up.
+                # Retrying anyway re-parks the session on the identical check every
+                # _STUCK_SESSION_SWEEP_INTERVAL forever.
+                log.debug("stuck-sweep.skip_terminal session=%s reason=%s",
+                          record.id, record.paused_reason)
                 continue
             if not self._owns_record(record, enabled_hosts):
                 log.debug("stuck-sweep.skip_foreign session=%s host=%s",
@@ -16591,14 +16621,35 @@ class SessionOrchestrator:
                       session_id=record.id,
                       from_account=old, to_account=new_account, reason=reason)
             return True
-        except Exception:
-            log.exception("reassign.error session=%s", record.id)
+        except Exception as exc:
             # The old driver is already closed by this point, so the session now has
             # NO driver. Logging alone left it silently stranded: the UI kept showing
             # a live-looking session and every prompt the user sent spun forever with
             # no reply. Flag it so it surfaces as needing attention instead.
+            #
+            # Record WHY it failed, not just what triggered the attempt. Revoked
+            # automation ownership is settled — the execution fence will refuse every
+            # future rebuild identically — so parking it as `reassign_failed:<trigger>`
+            # fed it straight back to the stuck-session sweep, which re-enters on that
+            # very reason. Every other failure here is genuinely worth retrying and
+            # keeps the retryable reason.
+            from server.automations.ownership import StaleOwnership
+            terminal = isinstance(exc, StaleOwnership)
+            if terminal:
+                # An expected, handled outcome — not a fault. Logging it as
+                # ERROR-with-traceback is what filed #1767 (83 occurrences) and would
+                # keep re-filing it once per genuine ownership loss even now that the
+                # retry loops are closed. The reason is self-describing; a stack trace
+                # through the fence adds nothing a reader of this branch needs.
+                log.warning(
+                    "reassign.ownership_stale session=%s trigger=%s — parking without "
+                    "retry: %s", record.id, reason, exc)
+            else:
+                log.exception("reassign.error session=%s", record.id)
+            paused_reason = ("automation_ownership_stale" if terminal
+                             else f"reassign_failed:{reason}")
             try:
-                await self._pause_session(record, reason=f"reassign_failed:{reason}")
+                await self._pause_session(record, reason=paused_reason)
             except Exception:
                 log.warning("reassign.pause_failed session=%s", record.id, exc_info=True)
             return False
