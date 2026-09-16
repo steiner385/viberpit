@@ -499,6 +499,56 @@ async def test_engine_replay_reads_a_codex_thread(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_engine_replay_reads_the_sidecar_the_driver_factory_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One derivation for both ends: the path the replay reads item times from is
+    the path the driver factory hands its writer, under the account's config dir."""
+    import server.sessions.orchestrator as orch_mod
+    monkeypatch.setattr(orch_mod, "account_cfg_dir", lambda name: tmp_path / "cfg" / name)
+    orch = _orch(tmp_path, codex=_FakeCodexManager(client=_FakeThreadClient([_turn("t1")])))
+    orch._records["s1"] = _record("s1", tmp_path)
+
+    from server.codex.replay import CodexThreadReplay
+    replay = await orch._engine_replay("s1")
+    assert isinstance(replay, CodexThreadReplay)
+    expected = tmp_path / "cfg" / "openai-main" / "codex-item-times" / "thread-1.jsonl"
+    assert replay.item_times_path == expected
+
+    from server.codex.driver import CodexAgentDriverFactory
+    factory = orch._default_driver_factories()[AgentEngine.CODEX]
+    assert isinstance(factory, CodexAgentDriverFactory)
+    assert factory._item_times_root_for is not None
+    assert factory._item_times_root_for("openai-main") == expected.parent
+
+
+@pytest.mark.asyncio
+async def test_permanent_delete_removes_a_codex_sessions_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import server.sessions.orchestrator as orch_mod
+    monkeypatch.setattr(orch_mod, "account_cfg_dir", lambda name: tmp_path / "cfg" / name)
+    orch = _orch(tmp_path, codex=_FakeCodexManager())
+    sidecar = tmp_path / "cfg" / "openai-main" / "codex-item-times" / "thread-1.jsonl"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text('{"i":"a","s":1}\n')
+
+    class _Row:
+        id = "s1"; engine = "codex"; engine_session_id = "thread-1"; account_name = "openai-main"
+
+    await orch._delete_codex_item_times(_Row())
+    assert not sidecar.exists()
+    # Idempotent, and never a reason to fail the delete.
+    await orch._delete_codex_item_times(_Row())
+
+    class _ClaudeRow(_Row):
+        engine = "claude_code"
+    sidecar.write_text("")
+    await orch._delete_codex_item_times(_ClaudeRow())
+    assert sidecar.exists()
+
+
+@pytest.mark.asyncio
 async def test_engine_replay_starts_a_runner_that_is_not_live(tmp_path: Path) -> None:
     manager = _FakeCodexManager(live=False)
     orch = _orch(tmp_path, codex=manager)

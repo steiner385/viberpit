@@ -21,26 +21,65 @@ one assistant JSONL entry and a tool-heavy logical turn spans several.
 """
 from __future__ import annotations
 
+import asyncio
 import dataclasses
+from pathlib import Path
 from typing import Protocol
 
 from server.codex import schema
+from server.codex.item_times import EMPTY_ITEM_TIMES, ItemTimes, load_item_times, uuid7_ms
 from server.codex.translator import CodexEventTranslator
 from server.sessions import events as ev
 from server.sessions.replay import ReplayWindow
 
 
 def _turn_started_ms(turn: schema.Turn) -> float | None:
-    """The turn's `startedAt` as epoch MILLISECONDS — the unit every `ev.*.ts`
-    carries on the wire — or None when the app-server reported none.
+    """The turn's start as epoch MILLISECONDS — the unit every `ev.*.ts` carries
+    on the wire — or None when nothing states it.
 
-    The app-server's own schema (`codex app-server generate-json-schema`,
-    codex-cli 0.153.2) documents `Turn.startedAt` as "Unix timestamp (in seconds)";
-    a live `thread/read` confirms it (`1789404900`, not `1789404900000`).
+    `Turn.startedAt` first: the app-server's own schema (`codex app-server
+    generate-json-schema`, codex-cli 0.153.2) documents it as "Unix timestamp (in
+    seconds)" and a live `thread/read` confirms it (`1789404900`, not
+    `1789404900000`). Failing that, the turn id itself: turn ids are UUIDv7, whose
+    embedded millisecond decodes to the same second `startedAt` reports.
     """
-    if turn.started_at is None:
-        return None
-    return float(turn.started_at) * 1000.0
+    if turn.started_at is not None:
+        return float(turn.started_at) * 1000.0
+    return uuid7_ms(turn.id)
+
+
+def _item_started_ms(
+    item: schema.ThreadItem, times: ItemTimes, turn_ms: float | None
+) -> float | None:
+    """When *item* began, by the most precise source that knows.
+
+    1. The journalled `item/started` time (``server/codex/item_times.py``) — the
+       exact millisecond the live stream saw. Only source for agent text,
+       reasoning and command runs, whose ids carry no time.
+    2. The item id's own UUIDv7 millisecond — `userMessage` ids are minted that
+       way, so a prompt is exact even with no sidecar.
+    3. The owning turn's start — one value for every block in the turn.
+    4. None: an empty gutter, never a fabricated time.
+    """
+    started = times.started.get(item.id)
+    if started is not None:
+        return float(started)
+    embedded = uuid7_ms(item.id)
+    if embedded is not None:
+        return embedded
+    return turn_ms
+
+
+def _stamp_for(
+    event: object, item: schema.ThreadItem, times: ItemTimes, item_ms: float | None
+) -> float | None:
+    """A ToolResult is when the item FINISHED, so it takes the journalled
+    `item/completed` time when there is one; every other block is the item's start."""
+    if isinstance(event, ev.ToolResult):
+        completed = times.completed.get(item.id)
+        if completed is not None:
+            return float(completed)
+    return item_ms
 
 
 def _restamp(event: object, ts: float | None) -> object:
@@ -70,7 +109,7 @@ class ThreadReader(Protocol):
 class CodexThreadReplay:
     """`EngineReplay` over one Codex thread's `thread/read` history."""
 
-    __slots__ = ("_client", "_thread_id", "_model")
+    __slots__ = ("_client", "_thread_id", "_model", "_item_times_path")
 
     def __init__(
         self,
@@ -78,10 +117,19 @@ class CodexThreadReplay:
         thread_id: str,
         *,
         model: str | None = None,
+        item_times_path: Path | None = None,
     ) -> None:
         self._client = client
         self._thread_id = thread_id
         self._model = model
+        # The per-thread sidecar of journalled item times (see item_times.py), read
+        # fresh on every window because it grows while the thread runs. None means
+        # "no sidecar was ever configured" — the coarser fallbacks still apply.
+        self._item_times_path = item_times_path
+
+    @property
+    def item_times_path(self) -> Path | None:
+        return self._item_times_path
 
     async def _read(self) -> schema.Thread:
         response = await self._client.read_thread(
@@ -89,7 +137,9 @@ class CodexThreadReplay:
         )
         return response.thread
 
-    def _events_for(self, turn: schema.Turn, ordinal: int) -> list:
+    def _events_for(
+        self, turn: schema.Turn, ordinal: int, times: ItemTimes = EMPTY_ITEM_TIMES
+    ) -> list:
         """One turn's events, in the order the live stream would have produced them.
 
         The leading `userMessage` items come out BEFORE the `TurnStart`, mirroring
@@ -97,24 +147,25 @@ class CodexThreadReplay:
         reducer nests a turn's content under the `TurnStart` that opens it, so
         emitting the prompt inside the turn would render it as assistant output.
 
-        Every block event is re-stamped with the turn's `startedAt`. The translator
-        is the LIVE mapping and lets each event self-stamp at construction — right
-        for a notification arriving now, wrong for history: without this override a
-        reloaded session showed the replay time in every gutter. `thread/read` items
-        carry no time of their own, so the owning turn's start is the closest real
-        time there is; a turn with none replays unstamped (empty gutter), never with
-        a fabricated one — the Claude adapter's missing-`timestamp` contract.
+        Every block event is re-stamped with when its item happened (see
+        `_item_started_ms` / `_stamp_for` for the precedence). The translator is the
+        LIVE mapping and lets each event self-stamp at construction — right for a
+        notification arriving now, wrong for history: without this override a
+        reloaded session showed the replay time in every gutter. An item nothing
+        can date replays unstamped (empty gutter), never with a fabricated time —
+        the Claude adapter's missing-`timestamp` contract.
         """
         translator = CodexEventTranslator(
             thread_id=self._thread_id, model=self._model
         )
-        ts = _turn_started_ms(turn)
+        turn_ms = _turn_started_ms(turn)
         prologue: list = []
         body: list = []
         opened = False
         for item in turn.items:
+            item_ms = _item_started_ms(item, times, turn_ms)
             translated = [
-                _restamp(e, ts)
+                _restamp(e, _stamp_for(e, item, times, item_ms))
                 for e in translator.translate_item(
                     item, turn_id=turn.id, completed=True
                 )
@@ -154,6 +205,13 @@ class CodexThreadReplay:
         heuristic, and no way for it to amputate a completed one.
         """
         thread = await self._read()
+        # Off the loop: the sidecar is a plain file read, and on a host whose
+        # account store sits on a slow mount that read must not stall the daemon.
+        times = (
+            EMPTY_ITEM_TIMES
+            if self._item_times_path is None
+            else await asyncio.to_thread(load_item_times, self._item_times_path)
+        )
         turns = thread.turns
         if drop_incomplete_turn:
             while turns and turns[-1].status is schema.TurnStatus.IN_PROGRESS:
@@ -175,7 +233,7 @@ class CodexThreadReplay:
         start = 0 if limit is None else max(0, end - limit)
         out: list = [] if meta is None else [meta]
         for ordinal in range(start, end):
-            out.extend(self._events_for(turns[ordinal], ordinal))
+            out.extend(self._events_for(turns[ordinal], ordinal, times))
         return ReplayWindow(events=out, earliest_turn=start, total_turns=total)
 
     async def user_prompts(self) -> list[str]:

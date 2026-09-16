@@ -210,6 +210,85 @@ async def test_a_turn_without_a_start_time_replays_unstamped_never_as_now():
     assert all(e.ts is None for e in stamped)
 
 
+def _exec(item_id: str) -> dict:
+    return {"type": "commandExecution", "id": item_id, "command": "ls", "cwd": "/w",
+            "status": "completed", "exitCode": 0, "aggregatedOutput": ""}
+
+
+def _journal(tmp_path, thread_id: str, *records: dict):
+    """Write a sidecar the way the driver's ItemTimesWriter does, then hand back
+    the replay bound to it."""
+    from server.codex.item_times import ItemTimesWriter, item_times_path
+    w = ItemTimesWriter(tmp_path / "codex-item-times")
+    for r in records:
+        if "s" in r:
+            w.record_started(thread_id, r["i"], r["s"])
+        if "c" in r:
+            w.record_completed(thread_id, r["i"], r["c"])
+    return item_times_path(w.root, thread_id)
+
+
+@pytest.mark.asyncio
+async def test_journalled_item_times_beat_the_turns_start(tmp_path):
+    """The live stream's `item/started` millisecond is the exact time; the turn's
+    `startedAt` is only the fallback for items nothing dated."""
+    turn = _turn("t1", extra=[_exec("exec-1"), _exec("exec-2")])
+    turn["startedAt"] = 100
+    path = _journal(tmp_path, "thread-1",
+                    {"i": "exec-1", "s": 100_400, "c": 100_900},
+                    {"i": "t1-a", "s": 100_200})
+    replay = CodexThreadReplay(_FakeClient([turn]), "thread-1", item_times_path=path)
+    window = await replay.window()
+    calls = {e.tool_id: e.ts for e in window.events if isinstance(e, ev.ToolCall)}
+    results = {e.tool_id: e.ts for e in window.events if isinstance(e, ev.ToolResult)}
+    text = next(e for e in window.events if isinstance(e, ev.TextDelta))
+    assert calls == {"exec-1": 100_400.0, "exec-2": 100_000.0}
+    assert results == {"exec-1": 100_900.0, "exec-2": 100_000.0}
+    assert text.ts == 100_200.0
+
+
+@pytest.mark.asyncio
+async def test_a_tool_result_with_no_completed_time_takes_the_items_start(tmp_path):
+    turn = _turn("t1", extra=[_exec("exec-1")])
+    path = _journal(tmp_path, "thread-1", {"i": "exec-1", "s": 5_000})
+    replay = CodexThreadReplay(_FakeClient([turn]), "thread-1", item_times_path=path)
+    window = await replay.window()
+    result = next(e for e in window.events if isinstance(e, ev.ToolResult))
+    assert result.ts == 5_000.0
+
+
+@pytest.mark.asyncio
+async def test_a_uuid7_item_id_dates_itself_when_nothing_journalled_it():
+    """`userMessage` ids are UUIDv7: a prompt from before the sidecar existed is
+    still exact to the millisecond, and beats the turn's whole-second start."""
+    turn = _turn("t1")
+    turn["items"][0]["id"] = "01a0a0d7-f021-7343-83aa-383fc474d189"   # 1789404901409 ms
+    turn["startedAt"] = 1_789_404_900
+    window = await _replay([turn]).window()
+    user = next(e for e in window.events if isinstance(e, ev.UserMessage))
+    reply = next(e for e in window.events if isinstance(e, ev.TextDelta))
+    assert user.ts == 1_789_404_901_409.0
+    assert reply.ts == 1_789_404_900_000.0
+
+
+@pytest.mark.asyncio
+async def test_a_turn_with_no_started_at_dates_itself_from_its_uuid7_id():
+    turn = _turn("01a0a0d7-edf7-7a91-a852-650c1c5bf4be")   # 1789404900855 ms
+    window = await _replay([turn]).window()
+    reply = next(e for e in window.events if isinstance(e, ev.TextDelta))
+    assert reply.ts == 1_789_404_900_855.0
+
+
+@pytest.mark.asyncio
+async def test_a_missing_sidecar_is_the_same_as_none(tmp_path):
+    turn = _turn("t1", extra=[_exec("exec-1")])
+    turn["startedAt"] = 7
+    replay = CodexThreadReplay(_FakeClient([turn]), "thread-1",
+                               item_times_path=tmp_path / "never-written.jsonl")
+    window = await replay.window()
+    assert all(e.ts == 7_000.0 for e in window.events if hasattr(e, "ts"))
+
+
 @pytest.mark.asyncio
 async def test_each_turn_is_stamped_with_its_own_start_time():
     first, second = _turn("t1"), _turn("t2")

@@ -157,6 +157,7 @@ class Harness:
         start: bool = True,
         assistant_overlay: Any = None,
         session_tools: Any = None,
+        item_times: Any = None,
     ) -> CodexAgentDriver:
         self.manager = CodexRunnerManager(
             availability=CodexAvailability(available=True, binary_path="/usr/bin/codex"),
@@ -223,6 +224,7 @@ class Harness:
             on_recoverable_failure=_on_recoverable_failure,
             assistant_overlay=assistant_overlay,
             session_tools=session_tools,
+            item_times=item_times,
         )
         self._collector = asyncio.create_task(self._collect())
         await asyncio.sleep(0)
@@ -1911,3 +1913,48 @@ async def test_clear_fences_send_during_native_observation(harness, monkeypatch)
     finally:
         proceed.set()
         await clearing
+
+
+# ---------------------------------------------------------------------------
+# item-time journal (server/codex/item_times.py)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_item_lifecycle_times_are_journalled_for_replay(harness, tmp_path):
+    """`item/started` / `item/completed` are the only place the app-server dates
+    an item; the driver journals them so a reload can show when each block
+    happened instead of its turn's start."""
+    from server.codex.item_times import ItemTimesWriter, item_times_path, load_item_times
+
+    writer = ItemTimesWriter(tmp_path / "item-times")
+    await harness.boot(item_times=writer)
+    harness.notify_turn_started()
+    exec_item = {"type": "commandExecution", "id": "exec-1", "command": "ls",
+                 "cwd": "/w", "status": "inProgress"}
+    harness.server.notify(schema.METHOD_ITEM_STARTED, {
+        "threadId": THREAD, "turnId": "turn-1", "item": exec_item, "startedAtMs": 1_700,
+    })
+    harness.server.notify(schema.METHOD_ITEM_COMPLETED, {
+        "threadId": THREAD, "turnId": "turn-1",
+        "item": {**exec_item, "status": "completed", "exitCode": 0, "aggregatedOutput": ""},
+        "completedAtMs": 2_400,
+    })
+    await harness.settle()
+
+    times = load_item_times(item_times_path(writer.root, THREAD))
+    assert dict(times.started) == {"exec-1": 1_700}
+    assert dict(times.completed) == {"exec-1": 2_400}
+
+
+@pytest.mark.asyncio
+async def test_a_driver_without_a_journal_still_translates_items(harness):
+    await harness.boot()
+    harness.notify_turn_started()
+    harness.server.notify(schema.METHOD_ITEM_STARTED, {
+        "threadId": THREAD, "turnId": "turn-1", "startedAtMs": 1,
+        "item": {"type": "commandExecution", "id": "exec-1", "command": "ls",
+                 "cwd": "/w", "status": "inProgress"},
+    })
+    await harness.settle()
+    assert [e.tool_id for e in harness.of(ev.ToolCall)] == ["exec-1"]

@@ -76,6 +76,7 @@ from server.codex.manager import (
     TurnOutcome,
     TurnToken,
 )
+from server.codex.item_times import ItemTimesWriter
 from server.codex.permissions import (
     ASSISTANT_PROFILE,
     CodexPermissionProfile,
@@ -325,8 +326,13 @@ class CodexAgentDriver:
         clock: Callable[[], float] | None = None,
         assistant_overlay: CodexAssistantOverlay | None = None,
         session_tools: CodexSessionTools | None = None,
+        item_times: ItemTimesWriter | None = None,
     ) -> None:
         self.automation_execution_id = automation_execution_id
+        # Journals each item's startedAtMs/completedAtMs for replay (item_times.py).
+        # None (tests, a factory without a root) means the thread replays on the
+        # coarser fallbacks; nothing else changes.
+        self._item_times = item_times
         self._automation_fence = AutomationExecutionFence(before_execution, after_execution_close)
         self._automation_terminal_observed = False
         self.session_id = session_id
@@ -1670,8 +1676,34 @@ class CodexAgentDriver:
         if item.method not in TRANSLATED_NOTIFICATIONS:
             await self._handle_untranslated(item)
             return
+        await self._journal_item_time(item)
         for event in self._translator.translate(item.method, item.params):
             await self._consume(event)
+
+    async def _journal_item_time(self, item: _Notification) -> None:
+        """Record an item's `startedAtMs` / `completedAtMs` for replay.
+
+        These two notifications are the ONLY place the app-server states when an
+        item happened — `thread/read` hands history back undated — so the times
+        are journalled as they pass (``server/codex/item_times.py``) and the replay
+        adapter reads them back. Awaited off the loop, in order: one notification
+        is handled at a time, so the journal keeps the stream's order without ever
+        blocking it on a disk write.
+        """
+        thread_id = item.thread_id
+        if self._item_times is None or not thread_id:
+            return
+        params = item.params
+        if isinstance(params, schema.ItemStartedParams):
+            await asyncio.to_thread(
+                self._item_times.record_started,
+                thread_id, params.item.id, params.started_at_ms,
+            )
+        elif isinstance(params, schema.ItemCompletedParams):
+            await asyncio.to_thread(
+                self._item_times.record_completed,
+                thread_id, params.item.id, params.completed_at_ms,
+            )
 
     async def _handle_untranslated(self, item: _Notification) -> None:
         """Notifications the translator does not own: this driver's own business.
@@ -2407,12 +2439,17 @@ class CodexAgentDriverFactory(AgentDriverFactory):
         session_tools_for_session: (
             Callable[[str], "CodexSessionTools | None"] | None
         ) = None,
+        item_times_root_for: Callable[[str], Path] | None = None,
     ) -> None:
         self._manager = manager
         self._permission_registry = permission_registry
         self._model_for_session = model_for_session
         self._assistant_overlay_for_session = assistant_overlay_for_session
         self._session_tools_for_session = session_tools_for_session
+        # Where an account's item-time sidecars live (the orchestrator derives it
+        # from the account's config dir — the driver's own `config_dir` is empty
+        # for Codex). None disables journalling rather than guessing a path.
+        self._item_times_root_for = item_times_root_for
 
     def create(self, config: AgentDriverConfig) -> CodexAgentDriver:
         model = (
@@ -2458,4 +2495,9 @@ class CodexAgentDriverFactory(AgentDriverFactory):
             clock=config.clock,
             assistant_overlay=overlay,
             session_tools=session_tools,
+            item_times=(
+                None
+                if self._item_times_root_for is None
+                else ItemTimesWriter(self._item_times_root_for(config.account))
+            ),
         )
