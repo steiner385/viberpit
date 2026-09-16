@@ -180,6 +180,46 @@ async def test_tool_items_replay_through_the_same_translator_as_the_live_stream(
 
 
 @pytest.mark.asyncio
+async def test_replayed_events_carry_the_turns_start_time_not_the_replay_time():
+    """`thread/read` items carry no timestamp of their own (verified against
+    codex-cli 0.153.2: a commandExecution has `durationMs` but no start), so the
+    owning turn's `startedAt` — Unix SECONDS per the app-server schema — is the
+    closest real time there is. Before this, every replayed event self-stamped at
+    construction (`events.py`'s `_now_ms` default), so a reloaded Codex session
+    showed the current time in every gutter."""
+    turn = _turn("t1", extra=[{
+        "type": "commandExecution", "id": "c1", "command": "ls",
+        "cwd": "/w", "status": "completed", "exitCode": 0, "aggregatedOutput": "",
+    }])
+    turn["startedAt"] = 1_789_404_900
+    turn["completedAt"] = 1_789_405_236
+    window = await _replay([turn]).window()
+    stamped = [e for e in window.events if hasattr(e, "ts")]
+    assert {type(e).__name__ for e in stamped} == {
+        "UserMessage", "TextDelta", "ToolCall", "ToolResult"}
+    assert [e.ts for e in stamped] == [1_789_404_900_000.0] * len(stamped)
+
+
+@pytest.mark.asyncio
+async def test_a_turn_without_a_start_time_replays_unstamped_never_as_now():
+    """No `startedAt` means no known time: an empty gutter, never a fabricated one
+    (the same contract as the Claude adapter's missing-`timestamp` case)."""
+    window = await _replay([_turn("t1")]).window()
+    stamped = [e for e in window.events if hasattr(e, "ts")]
+    assert stamped
+    assert all(e.ts is None for e in stamped)
+
+
+@pytest.mark.asyncio
+async def test_each_turn_is_stamped_with_its_own_start_time():
+    first, second = _turn("t1"), _turn("t2")
+    first["startedAt"], second["startedAt"] = 100, 200
+    window = await _replay([first, second]).window()
+    by_turn = {e.turn_id: e.ts for e in window.events if isinstance(e, ev.UserMessage)}
+    assert by_turn == {"t1": 100_000.0, "t2": 200_000.0}
+
+
+@pytest.mark.asyncio
 async def test_an_unknown_item_type_does_not_break_the_replay():
     window = await _replay([
         _turn("t1", extra=[{"type": "somethingNewUpstream", "id": "x1"}])
