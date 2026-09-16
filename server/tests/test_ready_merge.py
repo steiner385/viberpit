@@ -123,7 +123,8 @@ async def test_ready_merge_orchestrator_happy_path():
     orch._gh_run = fake_gh
     result = await orch.ready_merge("o/r", 7)
     assert result == {"markedReady": True, "autoMergeArmed": True,
-                      "alreadyArmed": False, "cleanReadyToMerge": False}
+                      "alreadyArmed": False, "cleanReadyToMerge": False,
+                      "error": ""}
     assert calls == [
         ["pr", "ready", "7", "-R", "o/r"],
         ["pr", "merge", "7", "-R", "o/r", "--squash", "--auto"],
@@ -152,7 +153,8 @@ async def test_ready_merge_orchestrator_tolerates_already_ready_and_armed():
     orch._gh_run = fake_gh
     result = await orch.ready_merge("o/r", 7)
     assert result == {"markedReady": False, "autoMergeArmed": True,
-                      "alreadyArmed": True, "cleanReadyToMerge": False}
+                      "alreadyArmed": True, "cleanReadyToMerge": False,
+                      "error": ""}
 
 
 @pytest.mark.asyncio
@@ -172,4 +174,5 @@ async def test_ready_merge_orchestrator_merge_failure_reports_unarmed():
     orch._gh_run = fake_gh
     result = await orch.ready_merge("o/r", 7)
     assert result == {"markedReady": True, "autoMergeArmed": False,
-                      "alreadyArmed": False, "cleanReadyToMerge": False}
+                      "alreadyArmed": False, "cleanReadyToMerge": False,
+                      "error": "auto-merge is not allowed for this repository"}

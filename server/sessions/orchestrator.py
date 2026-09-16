@@ -8710,6 +8710,44 @@ class SessionOrchestrator:
             await db.commit()
         return advanced
 
+    async def _sdlc_arm_auto_merge(self, artifact_id: str, repo: str,
+                                   pr_number: int) -> dict:
+        """The synthesizer's ``MergeArtifact`` write (spec 2026-09-14 §6): arm
+        GitHub auto-merge (squash) on the stage artifact PR, then stamp
+        ``auto_merge_armed_at`` so no later tick spends a second ``gh`` call on
+        the same PR.
+
+        Reuses ``ready_merge`` — the ONE ``gh pr merge --squash --auto`` writer
+        in this codebase (the Plotroom PrRow action) — rather than a second copy.
+        GitHub applies the repo's branch protection, so "auto" stays bounded by
+        CI; there is deliberately no ``--merge`` fallback.
+
+        A refusal returns ``armed=False`` with gh's text and stamps NOTHING, so
+        a transient failure simply retries next tick while a permanent one
+        (repo has auto-merge disabled) re-reports the same message each tick and
+        the artifact stays at ``AwaitApproval``.
+        """
+        from sqlalchemy import update
+        from server.audit import record_audit
+        from server.db.clock import db_utc_now
+        from server.db.models import InitiativeArtifact
+
+        out = await self.ready_merge(repo, int(pr_number))
+        armed = bool(out.get("autoMergeArmed"))
+        if not armed:
+            return {"armed": False, "error": str(out.get("error") or "")}
+        async with db_session() as db:
+            await db.execute(update(InitiativeArtifact).where(
+                InitiativeArtifact.id == artifact_id).values(
+                    auto_merge_armed_at=db_utc_now()))
+            await record_audit(
+                db=db, type="sdlc.gate.auto_resolve", identity="sdlc-synthesizer",
+                detail={"artifactId": artifact_id, "gate": "artifact.merge",
+                        "repo": repo, "pr": int(pr_number),
+                        "alreadyArmed": bool(out.get("alreadyArmed"))})
+            await db.commit()
+        return {"armed": True, "error": ""}
+
     async def _sdlc_update_artifact(self, artifact_id: str, **fields) -> None:
         """Update an InitiativeArtifact (PR-metadata enrichment: pr_number/url/sha)."""
         if not fields:
@@ -12359,10 +12397,16 @@ class SessionOrchestrator:
             # request" when re-arming; that state is the caller's goal, not an error.
             already = merge.returncode != 0 and "already enabled" in (merge.stderr or "")
             armed = merge.returncode == 0 or already
+            # gh's refusal text verbatim — the SDLC synthesizer records it as
+            # `gate_refused` (spec 2026-09-14 §6). Captured, never parsed: the
+            # only phrase this code matches is "already enabled" above, which
+            # predates this change.
+            error = "" if armed else (merge.stderr or "").strip()
             # cleanReadyToMerge requires a mergeability probe (Phase 3); honest False
             # until that probe exists — never fabricate.
             return {"markedReady": marked, "autoMergeArmed": armed,
-                    "alreadyArmed": already, "cleanReadyToMerge": False}
+                    "alreadyArmed": already, "cleanReadyToMerge": False,
+                    "error": error}
 
         return await asyncio.to_thread(_do)
 
