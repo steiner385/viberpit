@@ -142,24 +142,11 @@ def test_query_queue_records_the_last_ranked_result(tmp_path):
     asyncio.run(run())
 
 
-def test_gave_up_row_is_a_cooldown_not_a_claim(tmp_path, monkeypatch):
+def test_gave_up_row_is_a_cooldown_not_a_claim(tmp_path):
     """Phase D: a give-up leaves a durable row instead of the ``needs-human``
     label. The row is NOT a claim (that skip reason would be a lie about a live
     session) — it is the needs-human cooldown, and it expires with
     ``needs_human_retry_days`` so the issue comes back."""
-    from datetime import datetime, timezone
-    from server.pm import queue
-
-    # Pin the existing ranking clock seam: the durable Sep 9 handoff is still
-    # inside its seven-day window, independent of the day this test runs.
-    rank = queue.rank
-
-    def rank_at_fixed_time(rows, **kwargs):
-        kwargs["now"] = datetime(2026, 9, 10, tzinfo=timezone.utc)
-        return rank(rows, **kwargs)
-
-    monkeypatch.setattr(queue, "rank", rank_at_fixed_time)
-
     async def run():
         await _init(tmp_path, "gaveup.db")
         await _seed_product("viberpit", "o/r",
