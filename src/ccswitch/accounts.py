@@ -561,6 +561,43 @@ def usage_for(name: str, *, allow_refresh: bool = True, path: str = "unknown") -
     return u
 
 
+def eligible_enabled_accounts(*, require_engine: str | None = AgentEngine.CLAUDE_CODE.value,
+                              default_engine: str | None = AgentEngine.CLAUDE_CODE.value,
+                              ) -> list[str]:
+    """Enabled account names eligible for *require_engine*, ignoring usage state.
+
+    Factored out of ``pick_account_detailed``'s eligibility filter (same
+    require_engine/default_engine defaulting) so a caller can ask "does another
+    account exist at all for this engine" as a pure configuration question,
+    without running the usage-dependent ranking that follows.
+    """
+    names = _account_names()
+    if require_engine is not None:
+        # The selector's engine filter is deliberately metadata-driven. Do not
+        # infer compatibility from which credential artefact happens to exist:
+        # OpenAI accounts have no Claude slot, and a missing map entry must fail
+        # closed rather than becoming an optimistic cross-engine candidate.
+        entries = {entry.name: entry for entry in account_registry.all_entries()}
+        providers = {
+            name: entries[name].provider for name in names if name in entries
+        }
+        engines = {
+            name: entries[name].engine for name in names if name in entries
+        }
+        names = eligible_names(
+            names,
+            providers=providers,
+            engines=engines,
+            require_engine=require_engine,
+            default_engine=default_engine,
+        )
+    # Drop disabled accounts up front: they are blocked everywhere (never selected
+    # in any fallback tier) and, being paused, must not be polled for usage either.
+    with ledger.locked_ledger() as led:
+        names = [n for n in names if ledger.is_account_enabled(led, n)]
+    return names
+
+
 def pick_account_detailed(cfg: Config, exclude: set[str] = frozenset(),
                           load: dict[str, float] | None = None,
                           *, reserve: bool = True,

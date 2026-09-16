@@ -109,7 +109,9 @@ from server.sessions.recovery import (
     RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, QUARANTINE_MAX,
     STALL_TIMEOUT, STALL_TIMEOUT_THROTTLED,
 )
-from server.sessions.selection import AllAccountsBusy, Picked, select_account  # noqa: F401
+from server.sessions.selection import (  # noqa: F401
+    AllAccountsBusy, Picked, has_alternative_account, select_account,
+)
 from server.sessions.display_policy import DISPLAY_NATIVE, DISPLAY_VIRTUAL, resolve_display_mode
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
 from server.sessions import child_sessions as _cs
@@ -15990,6 +15992,16 @@ class SessionOrchestrator:
         live but still read under the 100% ceiling, so sessions rotated A→A until
         the rotation cap parked them as "no usage headroom". Quarantine stays a
         soft hint — those accounts are only time-boxed out and may have reset.
+
+        When ``AllAccountsBusy`` reports ``kind="no_usable_accounts"`` (no ranked
+        candidate AND no busy-reset to wait on) and no OTHER account is even
+        configured for this engine, "wait for one to free up" — the premise the
+        stuck-session sweep retries this call on — can never hold; a single-Codex-
+        account host that crashes then heals stayed parked as all_accounts_busy
+        forever (#1826). Fall back to retrying `old` itself, the same primitive
+        `switch_account_manual`/`reload_session` already use, bounded by the same
+        per-session crash cap `_recover_session` uses so a still-broken account
+        still parks instead of being rebuilt every sweep tick.
         """
         now = self._clock()
         old = record.account
@@ -16001,6 +16013,14 @@ class SessionOrchestrator:
                 model=quota_model(record.model, engine=record.engine),
             ).name
         except AllAccountsBusy as e:
+            model = quota_model(record.model, engine=record.engine)
+            if (e.kind == "no_usable_accounts"
+                    and not has_alternative_account(old, engine=record.engine)
+                    and not self._account_is_dead(old, model=model)
+                    and not self._recovery.crash_cap_reached(record.id, now=now)):
+                self._recovery.record_crash(record.id, now=now)
+                await self._reassign(record, old, reason=f"{reason}_same_account")
+                return
             await self._pause_session(record, reason="all_accounts_busy",
                                       earliest_reset=e.earliest_reset)
             return
