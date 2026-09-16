@@ -2206,7 +2206,8 @@ class SessionOrchestrator:
         return fences
 
     def _lease_building(self) -> dict[str, float]:
-        """sid → monotonic time of its most recent lease claim (layer 2).
+        """sid → ``_lease_clock()`` time (wall clock via ``self._clock`` in
+        production; monotonic fallback) of its most recent lease claim (layer 2).
 
         A claim happens BEFORE the driver is built and registered, and the build
         takes seconds to tens of seconds. Without this marker the heartbeat tick
@@ -2247,7 +2248,10 @@ class SessionOrchestrator:
         twin live?"; this answers "is it mine to run?" — and every driver build
         goes through this method, so no caller can forget the second question
         (#1824 was a caller that did). ``adopt=True`` is for the paths that take a
-        row they do not yet own on purpose (adopt_session, transfer import). A
+        row they do not yet own on purpose (adopt_session, transfer import).
+        Layer 4 (``_reconcile_foreign_lease``) has NO adopt bypass: an adopting path
+        must stamp the row AND ``_records[sid].host`` for this host before its
+        driver is registered, or the next tick closes what it just built. A
         session with no in-memory record (a fresh spawn) is decided by the lease
         alone, exactly as before.
         """
@@ -2337,8 +2341,18 @@ class SessionOrchestrator:
             if sid in self._drivers:
                 self._lease_building().pop(sid, None)
                 rec = self._records.get(sid) if hasattr(self, "_records") else None
-                if rec is not None and await self._reconcile_foreign_lease(sid, rec, enabled):
-                    continue
+                if rec is not None:
+                    try:
+                        if await self._reconcile_foreign_lease(sid, rec, enabled):
+                            continue
+                    except Exception:
+                        # One wedged teardown must not stop every later renew in
+                        # this pass. Keep renewing this sid too: holding a lease
+                        # on an uncertain state beats releasing it; the next tick
+                        # retries the reconcile.
+                        log_event(log, logging.WARNING, "session.lease_reconcile_failed",
+                                  session_id=sid, host=getattr(rec, "host", None))
+                        log.warning("session-lease: reconcile of %s failed", sid, exc_info=True)
             elif now - self._lease_building().get(sid, float("-inf")) < SPAWN_WAIT_S:
                 # Claimed, driver not registered yet: a build in flight, not a
                 # leak. Renew so a build longer than the TTL is never seen as
@@ -2375,13 +2389,27 @@ class SessionOrchestrator:
         caller skips this pass's renew. Never acts on an unknown registry (a blip
         must not drop this host's own drivers), never mid-turn (killing a driver
         mid-turn has its own failure modes), and only logs when enforcement is off.
+
+        Layer 4 has NO adopt bypass: an adopting path must stamp the row AND
+        ``_records[sid].host`` for this host before its driver is registered, or the
+        next tick closes what it just built.
         """
-        if enabled is None or self._owns_record_by_stamp(getattr(rec, "host", None), enabled):
+        stamp = getattr(rec, "host", None)
+        if enabled is None or self._owns_record_by_stamp(stamp, enabled):
             return False
         driver = self._drivers.get(sid)
         if driver is None:
             return False
-        stamp = getattr(rec, "host", None)
+        if sid in getattr(self, "_swapping", {}) or sid in getattr(self, "_spawning", {}):
+            # A swap (_reassign_locked) closes the OLD driver but leaves it registered
+            # until the new one is installed, and re-claims the lease mid-swap. Tearing
+            # down in that window pops the old driver and releases the lease, then the
+            # swap registers the NEW driver: a live driver with no lease, which this
+            # tick — iterating _lease_fences — never looks at again. Defer; the next
+            # tick re-checks once the swap has registered or failed.
+            log_event(log, logging.CRITICAL, "session.lease_foreign_holder",
+                      session_id=sid, host=stamp, action="deferred_build_in_flight")
+            return False
         if getattr(driver, "turn_active", False) or getattr(driver, "drain_alive", False):
             log_event(log, logging.CRITICAL, "session.lease_foreign_holder",
                       session_id=sid, host=stamp, action="deferred_turn_active")
@@ -3855,7 +3883,8 @@ class SessionOrchestrator:
         # host may already be running. Doing it first means a refused spawn never
         # checks out a worktree or touches the row for a session it will not run;
         # a spawn that claims and then fails later has its lease reconciled away by
-        # _session_lease_tick (no driver ⇒ released).
+        # _session_lease_tick (no driver and past the SPAWN_WAIT_S build grace ⇒
+        # released).
         if not await self._claim_session(session_id, why="spawn"):
             raise SessionLeaseHeld(session_id)
         selected_engine = self._engine_registry.require(parse_agent_engine(engine))

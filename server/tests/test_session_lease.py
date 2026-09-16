@@ -312,3 +312,40 @@ async def test_stop_releases_every_session_lease(tmp_path, monkeypatch):
         assert await session_lease.acquire(SID, "rocky", ttl_s=120) is not None
     finally:
         await dispose_db()
+
+
+@pytest.mark.asyncio
+async def test_lease_tick_hands_a_foreign_row_back_for_real(tmp_path, monkeypatch):
+    """Layer 4 end-to-end with the real teardown: the primary holds the lease and a
+    live driver for a rocky-stamped row; one tick closes the driver, releases the
+    lease row so rocky can claim it, and leaves the record reading detached."""
+    import server.sessions.orchestrator as mod
+    from unittest.mock import AsyncMock
+
+    class FakeDriver:
+        turn_active = False
+        drain_alive = False
+        identity = "system"
+
+        async def aclose(self): pass
+
+    monkeypatch.setattr(mod, "self_host_name", lambda: "dobby")
+    monkeypatch.setattr(mod, "daemon_role", lambda: "primary")
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
+    try:
+        orch = _new_orch()
+        orch._enabled_host_names = AsyncMock(return_value=frozenset({"dobby", "rocky"}))
+        orch._records[SID] = _record(host="rocky")
+        assert await orch._claim_session(SID, why="adopt", adopt=True) is True
+        orch._drivers[SID] = FakeDriver()
+
+        await orch._session_lease_tick()
+
+        assert SID not in orch._drivers
+        assert SID not in orch._session_lease_fences
+        rec = orch.get_session(SID)
+        assert rec is not None and rec.detached is True
+        # Released for real: the owner can take it without waiting out the TTL.
+        assert await session_lease.acquire(SID, "rocky", ttl_s=120) is not None
+    finally:
+        await dispose_db()

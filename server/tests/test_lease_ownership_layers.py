@@ -289,3 +289,42 @@ async def test_tick_ignores_a_live_driver_with_no_record(reconciling):
     reconciling._drivers["s1"] = object()
     await reconciling._session_lease_tick()
     assert reconciling.torn == [] and reconciling.renewed == ["s1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marker", ["_swapping", "_spawning"])
+async def test_tick_defers_while_a_swap_or_spawn_is_in_flight(reconciling, caplog, marker):
+    """A mid-swap teardown would leave the NEW driver live with no lease and no
+    fence — a state the tick can never see again. Defer instead."""
+    await reconciling._claim_session("s1", why="adopt", adopt=True)
+    reconciling._records["s1"] = _record("s1", "rocky", "idle")
+    reconciling._drivers["s1"] = LiveDriver()
+    setattr(reconciling, marker, {"s1": asyncio.get_running_loop().create_future()})
+    with caplog.at_level(logging.CRITICAL, logger="server.sessions.orchestrator"):
+        await reconciling._session_lease_tick()
+    assert reconciling.torn == [] and reconciling.renewed == ["s1"]
+    ev = [r for r in caplog.records if getattr(r, "event", None) == "session.lease_foreign_holder"]
+    assert ev and ev[0].fields["action"] == "deferred_build_in_flight"
+
+
+@pytest.mark.asyncio
+async def test_tick_isolates_a_failing_reconcile(reconciling, caplog):
+    """A raising teardown for one session must not skip the renew of the others,
+    and the failing session itself is still renewed (lease kept, retried next tick)."""
+    await reconciling._claim_session("bad", why="adopt", adopt=True)
+    await reconciling._claim_session("good", why="spawn")
+    reconciling._records["bad"] = _record("bad", "rocky", "idle")
+    reconciling._records["good"] = _record("good", "dobby", "idle")
+    reconciling._drivers["bad"] = LiveDriver()
+    reconciling._drivers["good"] = LiveDriver()
+
+    async def boom(sid):
+        raise RuntimeError("display teardown wedged")
+
+    reconciling._teardown_driver_state = boom
+    with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
+        await reconciling._session_lease_tick()
+    assert sorted(reconciling.renewed) == ["bad", "good"]
+    assert reconciling.released == []
+    ev = [r for r in caplog.records if getattr(r, "event", None) == "session.lease_reconcile_failed"]
+    assert ev and ev[0].fields["session_id"] == "bad"
