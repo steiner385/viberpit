@@ -289,6 +289,119 @@ def test_sdlc_advance_stage_is_a_compare_and_set_that_records_the_gate():
     assert audits[0].detail["to"] == "plan"
 
 
+def test_sdlc_arm_auto_merge_success_stamps_and_records_the_gate():
+    """The synthesizer's MergeArtifact write (spec 2026-09-14 §6/§8, roadmap
+    auto-execution phase 2b): a direct test of the REAL seam against a real
+    DB session — the loop tests drive a `Recorder` fake that re-implements
+    this method's own logic, so they only assert the fake. Proof the gap was
+    real: deleting the `auto_merge_armed_at=db_utc_now()` stamp from
+    `_sdlc_arm_auto_merge` left every loop test green.
+
+    Mirrors `test_sdlc_advance_stage_is_a_compare_and_set_that_records_the_gate`'s
+    `_make_orch` + real-DB shape, faking only `orch.ready_merge` (the one `gh`
+    subprocess boundary) so no real `gh` runs."""
+    from server.app import create_app
+    from server.db import db_session
+    from server.db.models import AuditEvent, Initiative, InitiativeArtifact
+    from server.sdlc.gates import auto_gate_record
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+
+    async def _run(orch):
+        async with db_session() as db:
+            db.add(Initiative(id="i-arm", slug="arm", repo="o/r", stage="design",
+                              status="awaiting_human"))
+            db.add(InitiativeArtifact(id="art-arm", initiative_id="i-arm", kind="spec",
+                                      pr_number=42, pr_url="https://x/42",
+                                      auto_merge_armed_at=None))
+            await db.commit()
+        gate = auto_gate_record("artifact.merge", "balanced", datetime.now(timezone.utc),
+                                detail={"kind": "spec", "pr": 42})
+
+        async def _fake_ready_merge(repo, number):
+            return {"markedReady": True, "autoMergeArmed": True,
+                    "alreadyArmed": False, "cleanReadyToMerge": False, "error": ""}
+        orch.ready_merge = _fake_ready_merge
+
+        out = await orch._sdlc_arm_auto_merge("art-arm", "o/r", 42, "i-arm", gate)
+        async with db_session() as db:
+            ini = (await db.execute(select(Initiative).where(
+                Initiative.id == "i-arm"))).scalar_one()
+            art = (await db.execute(select(InitiativeArtifact).where(
+                InitiativeArtifact.id == "art-arm"))).scalar_one()
+            audits = (await db.execute(select(AuditEvent).where(
+                AuditEvent.type == "sdlc.gate.auto_resolve"))).scalars().all()
+        return out, ini, art, audits
+
+    with tempfile.TemporaryDirectory() as tmp, temp_env(), patch.dict(
+        os.environ, _sqlite_env(tmp)
+    ):
+        orch = _make_orch()
+        app = create_app(orchestrator=orch)
+        client = TestClient(app, raise_server_exceptions=False)
+        with client:
+            out, ini, art, audits = client.portal.call(_run, orch)
+    assert out == {"armed": True, "error": ""}
+    assert art.auto_merge_armed_at is not None
+    assert ini.last_auto_gate["gate"] == "artifact.merge"
+    assert ini.last_auto_gate["outcome"] == "resolved"
+    assert len(audits) == 1
+    assert audits[0].detail["initiativeId"] == "i-arm"
+    assert audits[0].detail["artifactId"] == "art-arm"
+    assert audits[0].detail["tolerance"] == "balanced"
+
+
+def test_sdlc_arm_auto_merge_refusal_does_not_stamp():
+    """The refusal half of the same seam: GitHub declines (`ready_merge`
+    returns `autoMergeArmed: False`) — `auto_merge_armed_at` must stay None
+    and `last_auto_gate` must carry `outcome="refused"`, with no audit row
+    (the audit only records a successful arm)."""
+    from server.app import create_app
+    from server.db import db_session
+    from server.db.models import Initiative, InitiativeArtifact
+    from server.sdlc.gates import auto_gate_record
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+
+    async def _run(orch):
+        async with db_session() as db:
+            db.add(Initiative(id="i-arm2", slug="arm2", repo="o/r", stage="design",
+                              status="awaiting_human"))
+            db.add(InitiativeArtifact(id="art-arm2", initiative_id="i-arm2", kind="spec",
+                                      pr_number=43, pr_url="https://x/43",
+                                      auto_merge_armed_at=None))
+            await db.commit()
+        gate = auto_gate_record("artifact.merge", "balanced", datetime.now(timezone.utc),
+                                detail={"kind": "spec", "pr": 43})
+
+        async def _fake_ready_merge(repo, number):
+            return {"markedReady": True, "autoMergeArmed": False,
+                    "alreadyArmed": False, "cleanReadyToMerge": False,
+                    "error": "Auto-merge is not allowed"}
+        orch.ready_merge = _fake_ready_merge
+
+        out = await orch._sdlc_arm_auto_merge("art-arm2", "o/r", 43, "i-arm2", gate)
+        async with db_session() as db:
+            ini = (await db.execute(select(Initiative).where(
+                Initiative.id == "i-arm2"))).scalar_one()
+            art = (await db.execute(select(InitiativeArtifact).where(
+                InitiativeArtifact.id == "art-arm2"))).scalar_one()
+        return out, ini, art
+
+    with tempfile.TemporaryDirectory() as tmp, temp_env(), patch.dict(
+        os.environ, _sqlite_env(tmp)
+    ):
+        orch = _make_orch()
+        app = create_app(orchestrator=orch)
+        client = TestClient(app, raise_server_exceptions=False)
+        with client:
+            out, ini, art = client.portal.call(_run, orch)
+    assert out["armed"] is False
+    assert art.auto_merge_armed_at is None
+    assert ini.last_auto_gate["gate"] == "artifact.merge"
+    assert ini.last_auto_gate["outcome"] == "refused"
+
+
 def test_sdlc_list_artifacts_carries_auto_merge_armed_at():
     """The synthesizer's idempotence key for auto-merge arming (roadmap
     auto-execution phase 2b, task 2): ``_sdlc_list_artifacts`` must project

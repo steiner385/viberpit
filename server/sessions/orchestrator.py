@@ -8729,10 +8729,11 @@ class SessionOrchestrator:
         cannot know gh's outcome yet, so it defaults ``outcome="resolved"``; this
         method corrects it to ``"refused"`` before persisting when gh declines.
         Spec §8 requires ``last_auto_gate`` recorded on EITHER outcome — a
-        refusal stamps the record but never ``auto_merge_armed_at``, so a
-        transient failure simply retries next tick while a permanent one (repo
-        has auto-merge disabled) re-reports the same message each tick and the
-        artifact stays at ``AwaitApproval``.
+        refusal stamps the record but never ``auto_merge_armed_at``, so the
+        artifact stays at ``AwaitApproval``. The caller (``_arm`` in
+        ``sdlc_synthesizer.py``) is what stops a refusal from being retried —
+        and its ``gate_refused`` feed event from repeating — every tick
+        forever; this method itself never re-checks a prior refusal.
         """
         from sqlalchemy import update
         from server.audit import record_audit
@@ -8751,7 +8752,8 @@ class SessionOrchestrator:
                         auto_merge_armed_at=db_utc_now()))
                 await record_audit(
                     db=db, type="sdlc.gate.auto_resolve", identity="sdlc-synthesizer",
-                    detail={"artifactId": artifact_id, "gate": "artifact.merge",
+                    detail={"initiativeId": initiative_id, "artifactId": artifact_id,
+                            "gate": "artifact.merge", "tolerance": gate.get("tolerance"),
                             "repo": repo, "pr": int(pr_number),
                             "alreadyArmed": bool(out.get("alreadyArmed"))})
             await db.commit()

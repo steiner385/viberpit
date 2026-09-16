@@ -783,3 +783,42 @@ async def test_cautious_never_arms():
 
     assert rec.armed == []
     assert loop._ctx.sdlc_synthesizer_counts["awaiting"] == 1
+
+
+@pytest.mark.asyncio
+async def test_bold_with_the_kill_switch_off_never_arms():
+    """The other half of `test_cautious_never_arms`: a permissive tolerance
+    does not bypass the kill switch (spec D9) — with autoresolve off, `bold`
+    still never arms, same as `cautious`."""
+    rec = Recorder([{"id": "i-1", "slug": "alpha", "stage": "design",
+                     "status": "active", "repo": "o/r", "project_slug": "prod"}],
+                   mode="on")
+    _merge_ready(rec)
+    rec.policies["prod"]["risk_tolerance"] = "bold"
+    rec.autoresolve = False
+    loop = _loop(rec)
+    await loop.tick()
+
+    assert rec.armed == []
+    assert loop._ctx.sdlc_synthesizer_counts["awaiting"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_refused_arm_is_not_retried_or_re_reported():
+    """Whole-branch review finding 2: against a repo with auto-merge
+    disabled, every tick (60s interval) used to cost a fresh `gh` call plus a
+    `gate_refused` feed event, forever. Once refused, the slug is remembered
+    for the rest of this process — same idiom as `_arm_unwired` — so a second
+    tick spends neither."""
+    rec = Recorder([{"id": "i-1", "slug": "alpha", "stage": "design",
+                     "status": "active", "repo": "o/r", "project_slug": "prod"}],
+                   mode="on")
+    _merge_ready(rec)
+    rec.arm_result = {"armed": False, "error": "Auto-merge is not allowed"}
+    loop = _loop(rec)
+    await loop.tick()
+    await loop.tick()
+
+    assert rec.armed == [("a-1", "o/r", 42)]           # gh spent exactly once
+    kinds = [e.get("kind") for e in rec.events]
+    assert kinds.count("gate_refused") == 1

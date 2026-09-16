@@ -230,6 +230,12 @@ class SdlcSynthesizerLoop:
         #: slugs already warned that the engine wanted auto-merge this
         #: deployment cannot arm — once, like the advance seam.
         self._arm_unwired: set[str] = set()
+        #: slugs GitHub has already refused to auto-merge this deployment — once
+        #: set, the loop stops spending a `gh` call and a `gate_refused` event on
+        #: this slug every tick forever (a repo with auto-merge disabled would
+        #: otherwise cost both, indefinitely, at the 60s tick interval). Cleared
+        #: only by a restart, same as `_arm_unwired` / `_advance_unwired`.
+        self._arm_refused: set[str] = set()
         self._clock = clock
         self._lock = asyncio.Lock()
 
@@ -359,6 +365,12 @@ class SdlcSynthesizerLoop:
         caller counts the artifact as ``awaiting``, which is precisely today's
         behaviour — so an unwired seam, an already-armed PR and a refusal all
         degrade to "a human merges it", never to a lost initiative.
+
+        A refusal (GitHub declines to arm — e.g. auto-merge disabled on the
+        repo) is remembered in ``_arm_refused`` for the rest of this process,
+        same idiom as ``_arm_unwired``: without it, every tick (60s) would
+        spend a fresh ``gh`` call and re-emit ``gate_refused`` on a slug that
+        has already told us it will never arm.
         """
         slug = str(ini.get("slug") or "")
         if self._arm_auto_merge is None:
@@ -367,6 +379,8 @@ class SdlcSynthesizerLoop:
                 await self._emit("warn", f"{slug}: the artifact PR would auto-merge under "
                                  f"{tolerance} but arming is not wired — merge it by hand",
                                  kind="arm_unwired", target=slug)
+            return False
+        if slug in self._arm_refused:
             return False
         art = next((a for a in artifacts if a.get("kind") == action.kind), None)
         if art is None or not art.get("pr_number"):
@@ -386,6 +400,7 @@ class SdlcSynthesizerLoop:
         out = await self._arm_auto_merge(str(art["id"]), repo, int(art["pr_number"]),
                                          str(ini["id"]), record)
         if not out.get("armed"):
+            self._arm_refused.add(slug)
             await self._emit("warn", f"{slug}: auto-merge unavailable on {repo} — "
                              f"merge {action.kind} PR #{art['pr_number']} by hand",
                              kind="gate_refused", target=slug,
