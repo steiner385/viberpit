@@ -5,7 +5,10 @@ from server.sessions import deploy_snapshot as ds
 
 
 class FakeRec:
-    def __init__(self, status): self.status = status
+    def __init__(self, status, host=None, id=None):
+        self.status = status
+        self.host = host        # fleet stamp, read by the real _owns_record
+        self.id = id
 
 
 class FakeDriver:
@@ -19,15 +22,20 @@ class MiniOrch:
     from server.sessions.orchestrator import SessionOrchestrator
     snapshot_deploy = SessionOrchestrator.snapshot_deploy
     restore_deploy = SessionOrchestrator.restore_deploy
+    _owns_record = SessionOrchestrator._owns_record
 
-    def __init__(self, drivers, records, resumable, last_prompts=None):
+    def __init__(self, drivers, records, resumable, last_prompts=None, enabled_hosts=None):
         self._drivers = drivers
         self._records = records
         self._resumable = resumable        # set of ids ensure_driver succeeds for
         self._resume_recovery: dict[str, int] = {}   # restore_deploy enrolls failures here
         self._last_prompt: dict[str, str] = dict(last_prompts or {})
+        self._enabled_hosts = enabled_hosts          # what _enabled_host_names answers
         self.ensured: list[str] = []
         self.built: dict[str, FakeDriver] = {}       # drivers handed out by ensure_driver
+
+    async def _enabled_host_names(self):
+        return self._enabled_hosts
 
     async def ensure_driver(self, session_id, identity="system"):
         self.ensured.append(session_id)
@@ -129,6 +137,90 @@ async def test_restore_logs_outcome_breadcrumb(tmp_path, caplog):
     assert recs[0].fields["restored"] == ["s1"]
     assert recs[0].fields["failed"] == ["s2"]
     assert recs[0].fields["replayed"] == ["s1"]
+
+
+@pytest.fixture
+def primary_dobby(monkeypatch):
+    import server.sessions.orchestrator as mod
+    monkeypatch.setattr(mod, "daemon_role", lambda: "primary")
+    monkeypatch.setattr(mod, "self_host_name", lambda: "dobby")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [frozenset({"dobby", "rocky"}), None])
+async def test_restore_leaves_foreign_host_rows_to_their_owner(
+        tmp_path, caplog, primary_dobby, enabled):
+    """The snapshot lists the drivers this process HELD, not the rows it OWNS.
+
+    A worker's row that a pre-fence automation path once grabbed on the primary
+    would otherwise be resumed here again on EVERY deploy — outside its worktree,
+    in a bare mkdir'd cwd — and its lease would fence the owning host out of its
+    own session for as long as the primary keeps restarting (#1824). Leave it to
+    its owner, log it, and do not enroll it for retry. An unknown host registry
+    fails closed, exactly like the other local actors (#1738)."""
+    p = str(tmp_path / "live.json")
+    ds.write_snapshot([
+        {"id": "mine", "status": "idle"},
+        {"id": "foreign", "status": "in_progress", "lastPrompt": "go"},
+    ], path=p)
+    o = MiniOrch(drivers={},
+                 records={"mine": FakeRec("idle", host="dobby", id="mine"),
+                          "foreign": FakeRec("idle", host="rocky", id="foreign")},
+                 resumable={"mine", "foreign"}, enabled_hosts=enabled)
+    with caplog.at_level(logging.INFO, logger="server.sessions.orchestrator"):
+        res = await o.restore_deploy(path=p)
+    assert o.ensured == ["mine"]
+    assert res["restored"] == ["mine"]
+    assert res["skipped"] == ["foreign"]
+    assert res["failed"] == [] and res["replayed"] == []
+    assert "foreign" not in o._resume_recovery      # the owner resumes it, not us
+    assert "foreign" not in o.built                 # no driver → no replayed prompt
+    skips = [r for r in caplog.records
+             if getattr(r, "event", None) == "deploy.restore.skip_foreign"]
+    assert [r.fields["session_id"] for r in skips] == ["foreign"]
+    assert skips[0].fields["host"] == "rocky"
+    outcome = [r for r in caplog.records if getattr(r, "event", None) == "deploy.restore"]
+    assert outcome[0].fields["skipped"] == ["foreign"]
+
+
+@pytest.mark.asyncio
+async def test_restore_still_resumes_unstamped_and_orphaned_rows(tmp_path, primary_dobby):
+    """Ownership keeps its existing policy: the primary owns NULL-host rows and rows
+    whose host has left the registry (orphan adoption); a row with no in-memory
+    record at all is not fenced (ensure_driver decides, as before)."""
+    p = str(tmp_path / "live.json")
+    ds.write_snapshot([{"id": "legacy", "status": "idle"},
+                       {"id": "orphan", "status": "idle"},
+                       {"id": "unknown", "status": "idle"}], path=p)
+    o = MiniOrch(drivers={},
+                 records={"legacy": FakeRec("idle", host=None, id="legacy"),
+                          "orphan": FakeRec("idle", host="gone", id="orphan")},
+                 resumable={"legacy", "orphan"},
+                 enabled_hosts=frozenset({"dobby", "rocky"}))
+    res = await o.restore_deploy(path=p)
+    assert o.ensured == ["legacy", "orphan", "unknown"]
+    assert res["restored"] == ["legacy", "orphan"]
+    assert res["failed"] == ["unknown"] and res["skipped"] == []
+
+
+@pytest.mark.asyncio
+async def test_restore_on_worker_resumes_only_its_own_stamp(tmp_path, monkeypatch):
+    import server.sessions.orchestrator as mod
+    monkeypatch.setattr(mod, "daemon_role", lambda: "worker")
+    monkeypatch.setattr(mod, "self_host_name", lambda: "rocky")
+    p = str(tmp_path / "live.json")
+    ds.write_snapshot([{"id": "mine", "status": "idle"},
+                       {"id": "primary", "status": "idle"},
+                       {"id": "legacy", "status": "idle"}], path=p)
+    o = MiniOrch(drivers={},
+                 records={"mine": FakeRec("idle", host="rocky", id="mine"),
+                          "primary": FakeRec("idle", host="dobby", id="primary"),
+                          "legacy": FakeRec("idle", host=None, id="legacy")},
+                 resumable={"mine", "primary", "legacy"},
+                 enabled_hosts=frozenset({"dobby", "rocky"}))
+    res = await o.restore_deploy(path=p)
+    assert o.ensured == ["mine"]
+    assert res["skipped"] == ["primary", "legacy"]
 
 
 def test_snapshot_restore_registered_as_rpc():

@@ -17744,8 +17744,26 @@ class SessionOrchestrator:
         restored: list[str] = []
         failed: list[str] = []
         replayed: list[str] = []
-        for entry in _deploy_snapshot.read_snapshot(path=path):
+        skipped: list[str] = []
+        entries = _deploy_snapshot.read_snapshot(path=path)
+        # The snapshot lists the drivers the previous process HELD, not the rows this
+        # host OWNS. Those differ when the primary once grabbed a worker's row (the
+        # pre-#1738 autopilot path did exactly that): restoring it here again would
+        # rebuild it on every deploy — in a bare mkdir'd copy of its worktree path —
+        # and hold its lease so the owning host is refused its own session for as
+        # long as the primary keeps restarting (#1824). Same fence as every other
+        # local actor: leave a foreign-host row to its owner and do not enroll it
+        # for retry. A row with no in-memory record is not fenced; ensure_driver
+        # decides for it, exactly as before.
+        enabled_hosts = await self._enabled_host_names() if entries else None
+        for entry in entries:
             sid = entry["id"]
+            rec = self._records.get(sid)
+            if rec is not None and not self._owns_record(rec, enabled_hosts):
+                skipped.append(sid)
+                log_event(log, logging.WARNING, "deploy.restore.skip_foreign",
+                          session_id=sid, host=getattr(rec, "host", None))
+                continue
             try:
                 driver = await self.ensure_driver(sid, SYSTEM_IDENTITY)
             except Exception:
@@ -17774,8 +17792,9 @@ class SessionOrchestrator:
                                 "session=%s", sid, exc_info=True)
         _deploy_snapshot.clear_snapshot(path=path)
         log_event(log, logging.INFO, "deploy.restore",
-                  restored=restored, failed=failed, replayed=replayed)
-        return {"restored": restored, "failed": failed, "replayed": replayed}
+                  restored=restored, failed=failed, replayed=replayed, skipped=skipped)
+        return {"restored": restored, "failed": failed, "replayed": replayed,
+                "skipped": skipped}
 
     def _prune_recovered(self) -> None:
         """Drop any enrolled id that now has a live driver — covers a session a human
@@ -17793,8 +17812,20 @@ class SessionOrchestrator:
         RESUME_RECOVERY_MAX_ATTEMPTS: a permanently-broken session stays enrolled
         (flagged gave-up by resume_recovery_status) but stops burning retries."""
         self._prune_recovered()
+        enabled_hosts = (await self._enabled_host_names()
+                         if self._resume_recovery else None)
         for sid, attempts in list(self._resume_recovery.items()):
             if attempts >= RESUME_RECOVERY_MAX_ATTEMPTS:
+                continue
+            rec = self._records.get(sid)
+            if rec is not None and not self._owns_record(rec, enabled_hosts):
+                # Same fence as restore_deploy (#1824): a row that belongs to another
+                # enabled host is that host's to resume — retrying here would only
+                # take its lease out from under the owner. Drop the enrollment so the
+                # banner clears rather than charging attempts toward gave-up.
+                self._resume_recovery.pop(sid, None)
+                log_event(log, logging.INFO, "deploy.resume.skip_foreign",
+                          session_id=sid, host=getattr(rec, "host", None))
                 continue
             try:
                 driver = await self.ensure_driver(sid, SYSTEM_IDENTITY)
