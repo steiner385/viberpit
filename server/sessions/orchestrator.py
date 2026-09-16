@@ -109,7 +109,9 @@ from server.sessions.recovery import (
     RecoveryState, RETRY_AFTER_MAX, QUARANTINE_429, QUARANTINE_401, QUARANTINE_MAX,
     STALL_TIMEOUT, STALL_TIMEOUT_THROTTLED,
 )
-from server.sessions.selection import AllAccountsBusy, Picked, select_account  # noqa: F401
+from server.sessions.selection import (  # noqa: F401
+    AllAccountsBusy, Picked, has_alternative_account, select_account,
+)
 from server.sessions.display_policy import DISPLAY_NATIVE, DISPLAY_VIRTUAL, resolve_display_mode
 from server.sessions.background_tasks import scan_open_background_tasks, build_rearm_prompt, OpenBgTask
 from server.sessions import child_sessions as _cs
@@ -391,6 +393,26 @@ _UNREACHABLE_ROTATION_THRESHOLD: int = 3
 # _pause_session() is a dead-end: the rotation monitor only fires on degradation
 # events, not recovery, so paused sessions need a separate periodic retry.
 _STUCK_SESSION_SWEEP_INTERVAL: float = 300.0
+
+# Pause reasons the stuck-session sweep must NEVER retry. Every OTHER needs_attention
+# cause it exists to retry (all_accounts_busy, crash_cap, rotation_cap, stall_cap,
+# turn_dropped_cap) is a "wait for an account to free up" — time passing is exactly
+# what clears it. These two are the opposite: the condition is settled, so a retry
+# re-parks the session on the identical check every tick forever, which is a silent
+# no-op loop rather than a recovery attempt.
+#
+#   engine_rotation_unsupported  — an engine will not grow account_rotation or
+#       account_switch_new_thread between sweeps (#1275).
+#   automation_ownership_stale   — the automation operation's targets were taken from
+#       it (e.g. the PR Doctor's PR merged under it), so the execution fence refuses
+#       every rebuild with StaleOwnership and nothing gives them back (#1767, #1776).
+#
+# Keep this the ONE list; both the sweep and _reassign_locked's failure classification
+# read it, so a new terminal reason cannot be honoured in one and retried in the other.
+_TERMINAL_PAUSE_REASONS: frozenset[str] = frozenset({
+    "engine_rotation_unsupported",
+    "automation_ownership_stale",
+})
 
 # Minimum spacing between recovery-triggered sweeps (an account dropping below ceiling
 # in the poller stream). The poller emits one event per account per ~60 s; without a
@@ -1197,6 +1219,7 @@ class SessionOrchestrator:
             read_policies=self._sdlc_read_policies,
             live_sessions=self._sdlc_live_artifact_sessions,
             advance_stage=self._sdlc_advance_stage,
+            arm_auto_merge=self._sdlc_arm_auto_merge,
             # The process-wide kill switch (spec D9) is read per tick, not
             # captured at construction, so flipping the env and restarting the
             # daemon is the whole procedure — nothing else caches it.
@@ -1653,8 +1676,45 @@ class SessionOrchestrator:
             factories[AgentEngine.CODEX] = CodexAgentDriverFactory(
                 self._codex, self._registry, self._launch_model_for_session,
                 self._codex_assistant_overlay_for_session,
-                self._codex_session_tools_for_session)
+                self._codex_session_tools_for_session,
+                item_times_root_for=self._codex_item_times_root)
         return factories
+
+    @staticmethod
+    def _codex_item_times_root(account: str) -> Path:
+        """Where *account*'s Codex item-time sidecars live (``item_times.py``).
+
+        The ONE derivation, handed to both the driver factory (writer) and
+        ``_codex_replay`` (reader), so the two can never disagree about the path.
+        Under the account's ViberPit config dir — the Codex driver's own
+        ``config_dir`` is deliberately empty (``_driver_config_dir``) and
+        ``CODEX_HOME`` is Codex private state that stays untouched (design D8).
+        """
+        from server.codex.item_times import ITEM_TIMES_DIRNAME
+        return account_cfg_dir(account) / ITEM_TIMES_DIRNAME
+
+    async def _delete_codex_item_times(self, row) -> None:
+        """Drop a Codex session's item-time sidecar on permanent delete.
+
+        Best-effort and never a reason to keep the row: the file is tiny and
+        host-local, so the worst outcome of a miss is one stray file, whereas
+        refusing the delete would strand the session.
+        """
+        engine = parse_agent_engine(getattr(row, "engine", None), legacy_default=True)
+        thread_id = getattr(row, "engine_session_id", None)
+        if engine is not AgentEngine.CODEX or not thread_id:
+            return
+        from server.codex.item_times import item_times_path
+        path = item_times_path(self._codex_item_times_root(row.account_name), thread_id)
+        if path is None:
+            return
+        try:
+            await asyncio.to_thread(path.unlink)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            log.warning("session.permanent_delete id=%s could not remove codex "
+                        "item-time sidecar %s: %s", row.id, path, exc)
 
     def _launch_model_for_session(self, session_id: str) -> str | None:
         """The model a driver being built for *session_id* should launch on.
@@ -2182,7 +2242,28 @@ class SessionOrchestrator:
             self._session_lease_fences = fences
         return fences
 
-    async def _claim_session(self, session_id: str, *, why: str) -> bool:
+    def _lease_building(self) -> dict[str, float]:
+        """sid → ``_lease_clock()`` time (wall clock via ``self._clock`` in
+        production; monotonic fallback) of its most recent lease claim (layer 2).
+
+        A claim happens BEFORE the driver is built and registered, and the build
+        takes seconds to tens of seconds. Without this marker the heartbeat tick
+        read "fence, no driver" as a leaked lease and released it mid-build (#1826);
+        the session then ran with no lease at all. Created on demand for the same
+        reason as ``_lease_fences``.
+        """
+        building = getattr(self, "_session_lease_building", None)
+        if building is None:
+            building = {}
+            self._session_lease_building = building
+        return building
+
+    def _lease_clock(self) -> float:
+        clock = getattr(self, "_clock", None)
+        return clock() if clock is not None else time.monotonic()
+
+    async def _claim_session(self, session_id: str, *, why: str,
+                             adopt: bool = False) -> bool:
         """Win the right to run a CLI for *session_id* on THIS host, or refuse.
 
         Called immediately before every driver build. The three outcomes:
@@ -2197,8 +2278,39 @@ class SessionOrchestrator:
         * **DB error** — fail OPEN. The lease is a safety net over a rare race; a
           database blip must never stop a whole fleet from running sessions. The
           loop re-attempts the claim on its next tick.
+
+        Before the lease is consulted at all, the row's fleet stamp is checked
+        (spec 2026-09-16-session-lease-ownership, layer 1): a record another
+        ENABLED host owns is refused here, whoever asked. The lease answers "is a
+        twin live?"; this answers "is it mine to run?" — and every driver build
+        goes through this method, so no caller can forget the second question
+        (#1824 was a caller that did). ``adopt=True`` is for the paths that take a
+        row they do not yet own on purpose (adopt_session, transfer import).
+        Layer 4 (``_reconcile_foreign_lease``) has NO adopt bypass: an adopting path
+        must stamp the row AND ``_records[sid].host`` for this host before its
+        driver is registered, or the next tick closes what it just built. A
+        session with no in-memory record (a fresh spawn) is decided by the lease
+        alone, exactly as before.
         """
         me = self_host_name()
+        rec = self._records.get(session_id) if hasattr(self, "_records") else None
+        if rec is not None and not adopt:
+            getter = getattr(self, "_enabled_host_names", None)
+            enabled = await getter() if getter is not None else None
+            if not self._owns_record(rec, enabled):
+                stamp = getattr(rec, "host", None)
+                if session_lease_enforced():
+                    log.warning(
+                        "session-lease: refusing to %s session %s — its row is stamped "
+                        "for host %r, not %r; leaving it to its owner (layer 1).",
+                        why, session_id, stamp, me)
+                    log_event(log, logging.WARNING, "session.lease_denied",
+                              session_id=session_id, holder=stamp,
+                              reason=f"foreign_stamp:{why}")
+                    return False
+                log.warning(
+                    "session-lease: session %s is stamped for %r but enforcement is "
+                    "OFF — claiming it on %r anyway (%s)", session_id, stamp, me, why)
         try:
             fence = await session_lease.acquire(
                 session_id, me, ttl_s=SESSION_LEASE_TTL_S)
@@ -2208,6 +2320,7 @@ class SessionOrchestrator:
             return True
         if fence is not None:
             self._lease_fences()[session_id] = fence
+            self._lease_building()[session_id] = self._lease_clock()
             return True
         state = await _lease_state(session_id)
         holder = state.holder if state is not None else "<unknown>"
@@ -2229,6 +2342,7 @@ class SessionOrchestrator:
 
     async def _release_session_lease(self, session_id: str) -> None:
         """Drop our claim on *session_id* so another host need not wait out the TTL."""
+        self._lease_building().pop(session_id, None)
         fence = self._lease_fences().pop(session_id, None)
         if fence is None:
             return
@@ -2257,8 +2371,31 @@ class SessionOrchestrator:
         a wall clock — a tight sleep-and-poll test is a flake on a loaded CI shard.
         """
         me = self_host_name()
+        now = self._lease_clock()
+        getter = getattr(self, "_enabled_host_names", None)
+        enabled = await getter() if getter is not None else None
         for sid, fence in list(self._lease_fences().items()):
-            if sid not in self._drivers:
+            if sid in self._drivers:
+                self._lease_building().pop(sid, None)
+                rec = self._records.get(sid) if hasattr(self, "_records") else None
+                if rec is not None:
+                    try:
+                        if await self._reconcile_foreign_lease(sid, rec, enabled):
+                            continue
+                    except Exception:
+                        # One wedged teardown must not stop every later renew in
+                        # this pass. Keep renewing this sid too: holding a lease
+                        # on an uncertain state beats releasing it; the next tick
+                        # retries the reconcile.
+                        log_event(log, logging.WARNING, "session.lease_reconcile_failed",
+                                  session_id=sid, host=getattr(rec, "host", None))
+                        log.warning("session-lease: reconcile of %s failed", sid, exc_info=True)
+            elif now - self._lease_building().get(sid, float("-inf")) < SPAWN_WAIT_S:
+                # Claimed, driver not registered yet: a build in flight, not a
+                # leak. Renew so a build longer than the TTL is never seen as
+                # lapsed by another host (layer 2).
+                pass
+            else:
                 await self._release_session_lease(sid)
                 continue
             try:
@@ -2270,12 +2407,61 @@ class SessionOrchestrator:
             if ok:
                 continue
             self._lease_fences().pop(sid, None)
+            self._lease_building().pop(sid, None)
             state = await _lease_state(sid)
             log.critical(
                 "session-lease: LOST session %s (fenced takeover by %r) while a "
                 "driver for it is still live here — TWO hosts may now be running "
                 "this conversation (#1379).",
                 sid, state.holder if state is not None else "<released>")
+
+    async def _reconcile_foreign_lease(self, sid: str, rec: SessionRecord,
+                                       enabled: frozenset[str] | None) -> bool:
+        """Layer 4: this daemon holds the lease AND a live driver for *sid*, but the
+        row is stamped for another enabled host. Give it back.
+
+        Once the wrong daemon holds a session the state is stable — it renews
+        forever, the owner is refused forever, the dashboard reads "idle, detached"
+        (#1824 lasted a day). Returns True when the driver was torn down, so the
+        caller skips this pass's renew. Never acts on an unknown registry (a blip
+        must not drop this host's own drivers), never mid-turn (killing a driver
+        mid-turn has its own failure modes), and only logs when enforcement is off.
+
+        Layer 4 has NO adopt bypass: an adopting path must stamp the row AND
+        ``_records[sid].host`` for this host before its driver is registered, or the
+        next tick closes what it just built.
+        """
+        stamp = getattr(rec, "host", None)
+        if enabled is None or self._owns_record_by_stamp(stamp, enabled):
+            return False
+        driver = self._drivers.get(sid)
+        if driver is None:
+            return False
+        if sid in getattr(self, "_swapping", {}) or sid in getattr(self, "_spawning", {}):
+            # A swap (_reassign_locked) closes the OLD driver but leaves it registered
+            # until the new one is installed, and re-claims the lease mid-swap. Tearing
+            # down in that window pops the old driver and releases the lease, then the
+            # swap registers the NEW driver: a live driver with no lease, which this
+            # tick — iterating _lease_fences — never looks at again. Defer; the next
+            # tick re-checks once the swap has registered or failed.
+            log_event(log, logging.CRITICAL, "session.lease_foreign_holder",
+                      session_id=sid, host=stamp, action="deferred_build_in_flight")
+            return False
+        if getattr(driver, "turn_active", False) or getattr(driver, "drain_alive", False):
+            log_event(log, logging.CRITICAL, "session.lease_foreign_holder",
+                      session_id=sid, host=stamp, action="deferred_turn_active")
+            return False
+        if not session_lease_enforced():
+            log_event(log, logging.CRITICAL, "session.lease_foreign_holder",
+                      session_id=sid, host=stamp, action="log_only")
+            return False
+        popped = await self._teardown_driver_state(sid)   # pops driver, releases lease
+        if popped is not None:
+            self._spawn(self._close_automation_driver(popped, sid),
+                        name=f"lease-reconcile-close-{sid}")
+        log_event(log, logging.WARNING, "session.lease_reconciled",
+                  session_id=sid, host=stamp)
+        return True
 
     async def _session_lease_loop(self) -> None:
         """Beat :meth:`_session_lease_tick` at TTL/5 (#1379). Never dies on an error:
@@ -3734,7 +3920,8 @@ class SessionOrchestrator:
         # host may already be running. Doing it first means a refused spawn never
         # checks out a worktree or touches the row for a session it will not run;
         # a spawn that claims and then fails later has its lease reconciled away by
-        # _session_lease_tick (no driver ⇒ released).
+        # _session_lease_tick (no driver and past the SPAWN_WAIT_S build grace ⇒
+        # released).
         if not await self._claim_session(session_id, why="spawn"):
             raise SessionLeaseHeld(session_id)
         selected_engine = self._engine_registry.require(parse_agent_engine(engine))
@@ -8638,7 +8825,8 @@ class SessionOrchestrator:
                 InitiativeArtifact.initiative_id == initiative_id))).scalars().all()
         return [{"id": r.id, "kind": r.kind, "pr_number": r.pr_number,
                  "pr_url": r.pr_url, "commit_sha": r.commit_sha,
-                 "session_id": r.session_id} for r in rows]
+                 "session_id": r.session_id,
+                 "auto_merge_armed_at": r.auto_merge_armed_at} for r in rows]
 
     async def _sdlc_record_artifact(self, *, initiative_id: str, kind: str,
                                     repo_path: str, session_id: str | None,
@@ -8693,6 +8881,56 @@ class SessionOrchestrator:
                             "from": from_stage, "to": to_stage})
             await db.commit()
         return advanced
+
+    async def _sdlc_arm_auto_merge(self, artifact_id: str, repo: str, pr_number: int,
+                                   initiative_id: str, gate: dict) -> dict:
+        """The synthesizer's ``MergeArtifact`` write (spec 2026-09-14 §6/§8): arm
+        GitHub auto-merge (squash) on the stage artifact PR, then stamp
+        ``auto_merge_armed_at`` so no later tick spends a second ``gh`` call on
+        the same PR.
+
+        Reuses ``ready_merge`` — the ONE ``gh pr merge --squash --auto`` writer
+        in this codebase (the Plotroom PrRow action) — rather than a second copy.
+        GitHub applies the repo's branch protection, so "auto" stays bounded by
+        CI; there is deliberately no ``--merge`` fallback.
+
+        ``gate`` is the ``auto_gate_record`` the caller (``_arm``) already built
+        (same helper ``_advance`` uses, so every reader — ``gates.py:_summary``,
+        the roadmap ``autoResolved`` chip — agrees on the shape). The caller
+        cannot know gh's outcome yet, so it defaults ``outcome="resolved"``; this
+        method corrects it to ``"refused"`` before persisting when gh declines.
+        Spec §8 requires ``last_auto_gate`` recorded on EITHER outcome — a
+        refusal stamps the record but never ``auto_merge_armed_at``, so the
+        artifact stays at ``AwaitApproval``. The caller (``_arm`` in
+        ``sdlc_synthesizer.py``) is what stops a refusal from being retried —
+        and its ``gate_refused`` feed event from repeating — every tick
+        forever; this method itself never re-checks a prior refusal.
+        """
+        from sqlalchemy import update
+        from server.audit import record_audit
+        from server.db.clock import db_utc_now
+        from server.db.models import Initiative, InitiativeArtifact
+
+        out = await self.ready_merge(repo, int(pr_number))
+        armed = bool(out.get("autoMergeArmed"))
+        record = dict(gate) if armed else {**gate, "outcome": "refused"}
+        async with db_session() as db:
+            await db.execute(update(Initiative).where(
+                Initiative.id == initiative_id).values(last_auto_gate=record))
+            if armed:
+                await db.execute(update(InitiativeArtifact).where(
+                    InitiativeArtifact.id == artifact_id).values(
+                        auto_merge_armed_at=db_utc_now()))
+                await record_audit(
+                    db=db, type="sdlc.gate.auto_resolve", identity="sdlc-synthesizer",
+                    detail={"initiativeId": initiative_id, "artifactId": artifact_id,
+                            "gate": "artifact.merge", "tolerance": gate.get("tolerance"),
+                            "repo": repo, "pr": int(pr_number),
+                            "alreadyArmed": bool(out.get("alreadyArmed"))})
+            await db.commit()
+        if not armed:
+            return {"armed": False, "error": str(out.get("error") or "")}
+        return {"armed": True, "error": ""}
 
     async def _sdlc_update_artifact(self, artifact_id: str, **fields) -> None:
         """Update an InitiativeArtifact (PR-metadata enrichment: pr_number/url/sha)."""
@@ -12359,10 +12597,16 @@ class SessionOrchestrator:
             # request" when re-arming; that state is the caller's goal, not an error.
             already = merge.returncode != 0 and "already enabled" in (merge.stderr or "")
             armed = merge.returncode == 0 or already
+            # gh's refusal text verbatim — the SDLC synthesizer records it as
+            # `gate_refused` (spec 2026-09-14 §6). Captured, never parsed: the
+            # only phrase this code matches is "already enabled" above, which
+            # predates this change.
+            error = "" if armed else (merge.stderr or "").strip()
             # cleanReadyToMerge requires a mergeability probe (Phase 3); honest False
             # until that probe exists — never fabricate.
             return {"markedReady": marked, "autoMergeArmed": armed,
-                    "alreadyArmed": already, "cleanReadyToMerge": False}
+                    "alreadyArmed": already, "cleanReadyToMerge": False,
+                    "error": error}
 
         return await asyncio.to_thread(_do)
 
@@ -14112,7 +14356,7 @@ class SessionOrchestrator:
         # the invariant uniform ("a session with a live driver holds its lease"), so
         # the reconcile pass and any later resume on another host see a consistent
         # picture rather than a driver with no claim behind it (#1379).
-        await self._claim_session(session_id, why="adopt")
+        await self._claim_session(session_id, why="adopt", adopt=True)
         Path(cand.cwd).mkdir(parents=True, exist_ok=True)
         driver_config_dir = self._driver_config_dir(
             AgentEngine.CLAUDE_CODE, cand.account, cand.cwd, None
@@ -15476,7 +15720,18 @@ class SessionOrchestrator:
             # The live driver is in this process — de facto ours regardless of
             # what the stamp says (e.g. a mid-flight registry rename).
             return True
-        host = record.host
+        return self._owns_record_by_stamp(record.host, enabled_hosts)
+
+    def _owns_record_by_stamp(self, host: str | None,
+                              enabled_hosts: frozenset[str] | None) -> bool:
+        """The stamp half of ``_owns_record``: does *host* (a row's fleet stamp)
+        belong to this daemon, ignoring whether a driver for it is live here?
+
+        Split out so the lease reconcile (spec layer 4) can ask the question for a
+        session whose driver IS live here — the case ``_owns_record``'s first clause
+        answers "yes" for by construction. Keep the two in lock-step: this is the
+        single source of truth for the stamp policy.
+        """
         me = self_host_name()
         if daemon_role() == "worker":
             return host == me
@@ -15693,7 +15948,19 @@ class SessionOrchestrator:
         subprocess died while the session was idle, e.g. Copilot proxy crash).
         Picks a fresh account and delegates to _rotate_away which rebuilds the
         driver and replays the last prompt.
+
+        The rotation monitor selects on account usage alone, so a session parked on a
+        TERMINAL reason is re-picked every time its account crosses the ceiling — a
+        second unbounded rebuild loop next to the stuck-session sweep's, and the one
+        that actually drove the 2026-09-15 storm (#1767). The sweep's own skip cannot
+        cover it; both must consult _TERMINAL_PAUSE_REASONS. This is the AUTOMATIC
+        restart primitive (the monitor is its only caller), so guarding here leaves a
+        human's explicit switch_account_manual / _reassign retry working.
         """
+        if record.paused_reason in _TERMINAL_PAUSE_REASONS:
+            log.debug("rotation.skip_terminal session=%s reason=%s",
+                      record.id, record.paused_reason)
+            return
         log.info("rotation.restart_driverless session=%s reason=%s", record.id, reason)
         await self._rotate_away(record, reason=reason)
 
@@ -15746,15 +16013,13 @@ class SessionOrchestrator:
                 continue
             if record.status != "needs_attention":
                 continue
-            if record.paused_reason == "engine_rotation_unsupported":
-                # Unlike the other needs_attention causes this sweep exists to retry
-                # (all_accounts_busy, crash_cap, rotation_cap, stall_cap,
-                # turn_dropped_cap — every one a "wait for an account to free up"),
-                # this one is never recoverable by retrying: the engine will not
-                # suddenly grow account_rotation or account_switch_new_thread between
-                # sweeps. Retrying anyway re-parks the session on the identical
-                # capability check every _STUCK_SESSION_SWEEP_INTERVAL forever — a
-                # silent no-op loop, not a recovery attempt.
+            if record.paused_reason in _TERMINAL_PAUSE_REASONS:
+                # Never recoverable by retrying — see _TERMINAL_PAUSE_REASONS for why
+                # each one is settled rather than waiting on an account to free up.
+                # Retrying anyway re-parks the session on the identical check every
+                # _STUCK_SESSION_SWEEP_INTERVAL forever.
+                log.debug("stuck-sweep.skip_terminal session=%s reason=%s",
+                          record.id, record.paused_reason)
                 continue
             if not self._owns_record(record, enabled_hosts):
                 log.debug("stuck-sweep.skip_foreign session=%s host=%s",
@@ -15923,6 +16188,16 @@ class SessionOrchestrator:
         live but still read under the 100% ceiling, so sessions rotated A→A until
         the rotation cap parked them as "no usage headroom". Quarantine stays a
         soft hint — those accounts are only time-boxed out and may have reset.
+
+        When ``AllAccountsBusy`` reports ``kind="no_usable_accounts"`` (no ranked
+        candidate AND no busy-reset to wait on) and no OTHER account is even
+        configured for this engine, "wait for one to free up" — the premise the
+        stuck-session sweep retries this call on — can never hold; a single-Codex-
+        account host that crashes then heals stayed parked as all_accounts_busy
+        forever (#1826). Fall back to retrying `old` itself, the same primitive
+        `switch_account_manual`/`reload_session` already use, bounded by the same
+        per-session crash cap `_recover_session` uses so a still-broken account
+        still parks instead of being rebuilt every sweep tick.
         """
         now = self._clock()
         old = record.account
@@ -15934,6 +16209,14 @@ class SessionOrchestrator:
                 model=quota_model(record.model, engine=record.engine),
             ).name
         except AllAccountsBusy as e:
+            model = quota_model(record.model, engine=record.engine)
+            if (e.kind == "no_usable_accounts"
+                    and not has_alternative_account(old, engine=record.engine)
+                    and not self._account_is_dead(old, model=model)
+                    and not self._recovery.crash_cap_reached(record.id, now=now)):
+                self._recovery.record_crash(record.id, now=now)
+                await self._reassign(record, old, reason=f"{reason}_same_account")
+                return
             await self._pause_session(record, reason="all_accounts_busy",
                                       earliest_reset=e.earliest_reset)
             return
@@ -16612,14 +16895,35 @@ class SessionOrchestrator:
                       session_id=record.id,
                       from_account=old, to_account=new_account, reason=reason)
             return True
-        except Exception:
-            log.exception("reassign.error session=%s", record.id)
+        except Exception as exc:
             # The old driver is already closed by this point, so the session now has
             # NO driver. Logging alone left it silently stranded: the UI kept showing
             # a live-looking session and every prompt the user sent spun forever with
             # no reply. Flag it so it surfaces as needing attention instead.
+            #
+            # Record WHY it failed, not just what triggered the attempt. Revoked
+            # automation ownership is settled — the execution fence will refuse every
+            # future rebuild identically — so parking it as `reassign_failed:<trigger>`
+            # fed it straight back to the stuck-session sweep, which re-enters on that
+            # very reason. Every other failure here is genuinely worth retrying and
+            # keeps the retryable reason.
+            from server.automations.ownership import StaleOwnership
+            terminal = isinstance(exc, StaleOwnership)
+            if terminal:
+                # An expected, handled outcome — not a fault. Logging it as
+                # ERROR-with-traceback is what filed #1767 (83 occurrences) and would
+                # keep re-filing it once per genuine ownership loss even now that the
+                # retry loops are closed. The reason is self-describing; a stack trace
+                # through the fence adds nothing a reader of this branch needs.
+                log.warning(
+                    "reassign.ownership_stale session=%s trigger=%s — parking without "
+                    "retry: %s", record.id, reason, exc)
+            else:
+                log.exception("reassign.error session=%s", record.id)
+            paused_reason = ("automation_ownership_stale" if terminal
+                             else f"reassign_failed:{reason}")
             try:
-                await self._pause_session(record, reason=f"reassign_failed:{reason}")
+                await self._pause_session(record, reason=paused_reason)
             except Exception:
                 log.warning("reassign.pause_failed session=%s", record.id, exc_info=True)
             return False
@@ -17246,6 +17550,7 @@ class SessionOrchestrator:
             if not await self._delete_legacy_archive_dir(session_id, stored_root):
                 return False
 
+        await self._delete_codex_item_times(row)
         async with db_session() as db:
             from sqlalchemy import delete as sa_delete
             # Remove the session's attachment rows + (dedup-aware) on-disk files
@@ -17516,7 +17821,11 @@ class SessionOrchestrator:
             client = codex.client_for(account)
         if client is None:
             return None
-        return CodexThreadReplay(client, thread_id, model=model)
+        from server.codex.item_times import item_times_path
+        return CodexThreadReplay(
+            client, thread_id, model=model,
+            item_times_path=item_times_path(self._codex_item_times_root(account), thread_id),
+        )
 
     async def transcript_events(self, session_id: str, *, max_turns: int | None = 20) -> list:
         """Return replayed transcript events for a session (read-only review).
@@ -17714,8 +18023,26 @@ class SessionOrchestrator:
         restored: list[str] = []
         failed: list[str] = []
         replayed: list[str] = []
-        for entry in _deploy_snapshot.read_snapshot(path=path):
+        skipped: list[str] = []
+        entries = _deploy_snapshot.read_snapshot(path=path)
+        # The snapshot lists the drivers the previous process HELD, not the rows this
+        # host OWNS. Those differ when the primary once grabbed a worker's row (the
+        # pre-#1738 autopilot path did exactly that): restoring it here again would
+        # rebuild it on every deploy — in a bare mkdir'd copy of its worktree path —
+        # and hold its lease so the owning host is refused its own session for as
+        # long as the primary keeps restarting (#1824). Same fence as every other
+        # local actor: leave a foreign-host row to its owner and do not enroll it
+        # for retry. A row with no in-memory record is not fenced; ensure_driver
+        # decides for it, exactly as before.
+        enabled_hosts = await self._enabled_host_names() if entries else None
+        for entry in entries:
             sid = entry["id"]
+            rec = self._records.get(sid)
+            if rec is not None and not self._owns_record(rec, enabled_hosts):
+                skipped.append(sid)
+                log_event(log, logging.WARNING, "deploy.restore.skip_foreign",
+                          session_id=sid, host=getattr(rec, "host", None))
+                continue
             try:
                 driver = await self.ensure_driver(sid, SYSTEM_IDENTITY)
             except Exception:
@@ -17744,8 +18071,9 @@ class SessionOrchestrator:
                                 "session=%s", sid, exc_info=True)
         _deploy_snapshot.clear_snapshot(path=path)
         log_event(log, logging.INFO, "deploy.restore",
-                  restored=restored, failed=failed, replayed=replayed)
-        return {"restored": restored, "failed": failed, "replayed": replayed}
+                  restored=restored, failed=failed, replayed=replayed, skipped=skipped)
+        return {"restored": restored, "failed": failed, "replayed": replayed,
+                "skipped": skipped}
 
     def _prune_recovered(self) -> None:
         """Drop any enrolled id that now has a live driver — covers a session a human
@@ -17763,8 +18091,20 @@ class SessionOrchestrator:
         RESUME_RECOVERY_MAX_ATTEMPTS: a permanently-broken session stays enrolled
         (flagged gave-up by resume_recovery_status) but stops burning retries."""
         self._prune_recovered()
+        enabled_hosts = (await self._enabled_host_names()
+                         if self._resume_recovery else None)
         for sid, attempts in list(self._resume_recovery.items()):
             if attempts >= RESUME_RECOVERY_MAX_ATTEMPTS:
+                continue
+            rec = self._records.get(sid)
+            if rec is not None and not self._owns_record(rec, enabled_hosts):
+                # Same fence as restore_deploy (#1824): a row that belongs to another
+                # enabled host is that host's to resume — retrying here would only
+                # take its lease out from under the owner. Drop the enrollment so the
+                # banner clears rather than charging attempts toward gave-up.
+                self._resume_recovery.pop(sid, None)
+                log_event(log, logging.INFO, "deploy.resume.skip_foreign",
+                          session_id=sid, host=getattr(rec, "host", None))
                 continue
             try:
                 driver = await self.ensure_driver(sid, SYSTEM_IDENTITY)

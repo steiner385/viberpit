@@ -1380,6 +1380,13 @@ class InitiativeArtifact(Base):
     pr_url: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     session_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     model: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    #: When the synthesizer armed GitHub auto-merge on ``pr_number`` (spec
+    #: 2026-09-14 §6). Nullable so ``_reconcile_columns`` adds it on both
+    #: dialects; its ONLY job is idempotence — a set value means the loop has
+    #: already spent its one ``gh`` call on this PR and must never re-run it.
+    #: A refusal deliberately leaves it None so the next tick retries.
+    auto_merge_armed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow)
 

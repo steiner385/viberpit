@@ -8,13 +8,13 @@ Thin wrapper around ``ccswitch.accounts.pick_account_detailed`` that:
 """
 from __future__ import annotations
 
-from ccswitch.accounts import pick_account_detailed
+from ccswitch.accounts import eligible_enabled_accounts, pick_account_detailed
 from ccswitch.config import load_config
 from ccswitch.selector import AllAccountsBusy, Picked  # re-exported so callers only import from here
 from server.sessions.engine import AgentEngine
 
 
-__all__ = ["select_account", "AllAccountsBusy", "Picked"]
+__all__ = ["select_account", "has_alternative_account", "AllAccountsBusy", "Picked"]
 
 
 def select_account(exclude: frozenset[str] = frozenset(),
@@ -57,3 +57,18 @@ def select_account(exclude: frozenset[str] = frozenset(),
         default_engine=AgentEngine.CLAUDE_CODE.value,
         model=model,
     )
+
+
+def has_alternative_account(current: str, *, engine: AgentEngine) -> bool:
+    """True when an ENABLED account other than *current* is eligible for *engine*.
+
+    A pure configuration check, independent of usage/ceiling state. Lets a caller
+    that already hit ``AllAccountsBusy(kind="no_usable_accounts")`` after
+    excluding *current* tell "no other account is even configured for this
+    engine" (rotating away is structurally impossible, no matter how long it
+    waits) apart from "an account exists but is reserved or needs reauth right
+    now" (worth waiting on, not worth retrying *current* itself).
+    """
+    names = eligible_enabled_accounts(require_engine=engine.value,
+                                      default_engine=AgentEngine.CLAUDE_CODE.value)
+    return any(n != current for n in names)

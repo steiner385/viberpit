@@ -24,14 +24,14 @@ X display, `003-gh-projects-integration`); design notes and plans under `docs/`.
   (`pyproject.toml`). Tests in `tests/`.
 - `server/app.py` — the **edge**: FastAPI `create_app()`; `app = create_app()` runs at import, so importing the module already reads
   `CCSWITCH_*` env (see the test note below).
-- `server/ipc/` — the **session daemon** (`python -m server.ipc`, `ccswitch-daemon.service`). It owns every live `claude` process; the edge
+- `server/ipc/` — the **session daemon** (`python -m server.ipc`, `viberpit-daemon.service`). It owns every live `claude` process; the edge
   talks to it over mTLS RPC. Remote hosts (e.g. rocky) run the same daemon in worker role (`CCSWITCH_DAEMON_ROLE`).
 - `server/sessions/` — `SessionOrchestrator` (`orchestrator.py`) + canonical engine registry (`engine.py`) + Claude adapter
   (`claude_driver.py`: SDK client, permissions, model switching). In remote mode the lifespan swaps `app.state.sessions` for
   `FleetOrchestrator` (`fleet_orchestrator.py`, routes via `fleet_router.py`) **after** routers are built — capture it lazily, never at
   router construction.
 - `server/db/` — models, `init_db` reconcile, `clock.py` (see DB clock rule), `migrations/`.
-- `server/deploy/` — deploy controller (`ccswitch-deploy-controller.service`); `server/sdlc/` — governance decisions enforced by `.claude/`
+- `server/deploy/` — deploy controller (`viberpit-deploy-controller.service`); `server/sdlc/` — governance decisions enforced by `.claude/`
   (hook + managed deny rules + `REVIEW.md`).
 - Other server packages: `api/` routers, `auth/`, `automations/`, `github/`, `pipeline/`, `pm/`, `library/`, `obs/`, `usage/`, `stt/`,
   `bridge/`.
@@ -123,7 +123,7 @@ auto-merge-armed PR, disable auto-merge first and immediately re-read merged sta
 - Nothing runs `alembic upgrade` at deploy time (and the prod DB has no `alembic_version` stamp — it was built by `create_all` at cutover).
   The revisions in `server/db/migrations/versions/` are the reviewable record of schema changes; reconcile is what actually applies them.
   Add a revision for any schema change anyway, and chain `down_revision` off the newest one.
-- **`systemctl stop|restart ccswitch-daemon.service` touches every live session.** The daemon owns all running `claude` processes; a restart
+- **`systemctl stop|restart viberpit-daemon.service` touches every live session.** The daemon owns all running `claude` processes; a restart
   is never a "brief blip" for them. It drains in-flight turns on SIGTERM first (`server/ipc/drain_on_signal.py`, up to ~3 min / ~10 min
   mid-compaction), so the command blocks — expected, don't escalate. Prefer the deploy controller for code changes; for an env edit that
   needs a restart, do it when the Sessions page shows nothing mid-turn. Never restart a daemon whose installed unit still has

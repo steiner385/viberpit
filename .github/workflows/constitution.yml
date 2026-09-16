@@ -30,11 +30,26 @@ permissions:
   contents: read
 
 concurrency:
-  # pull_request.number is EMPTY on push: without the sha fallback every master push
-  # shares the group `constitution-` and cancels its predecessor, leaving the earlier
-  # commit with a cancelled (absent) check — which is the wedge this patch removes.
-  group: constitution-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: true
+  # Key on the COMMIT, never on the pull request. `edited` is in the trigger list
+  # above, so two events routinely fire for the SAME head sha — a push (`synchronize`)
+  # immediately followed by a body edit is the normal shape of `gh pr create` plus a
+  # `--body-file` update. A pull-request-scoped group put both in `constitution-<n>`
+  # and `cancel-in-progress` shot the first one down mid-run, leaving a CANCELLED
+  # `amendment` check-run attached to that sha. GitHub's status rollup counts
+  # CANCELLED as a FAILURE, so the pull request reads permanently red while the
+  # check it is red for actually passed, and branch protection — which reads only
+  # the latest run per name — says CLEAN (2026-09-16, #1828).
+  #
+  # `pull_request.head.sha` is the commit the checks attach to; `github.sha` is the
+  # synthetic merge commit, and is EMPTY of a pull request on a master push, which is
+  # why it stays the fallback: without it every master push shares `constitution-`
+  # and cancels its predecessor, leaving the earlier commit with no check at all.
+  group: constitution-${{ github.event.pull_request.head.sha || github.sha }}
+  # Never cancel. The script exits in seconds, so supersession saves nothing, and
+  # every cancellation costs a commit either a red check-run (cancelled mid-run) or
+  # a missing one (cancelled while pending) — both of which `ci_verdict` reads as
+  # not-green.
+  cancel-in-progress: false
 
 jobs:
   amendment:

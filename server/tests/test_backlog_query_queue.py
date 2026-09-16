@@ -9,11 +9,29 @@ GitHub call is involved — a real (SQLite) mirror is seeded and read.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 from server.db import db_session, init_db
 from server.db.models import (DispatchOutcome, GhProject, GhProjectItem, Project, ProjectRepo,
                               WorkItem, WorkItemDep)
 from server.pm.outcomes import body_fingerprint
+from server.pm.queue import NEEDS_HUMAN_RETRY_DAYS_DEFAULT
+
+
+def _ago(*, days: float) -> str:
+    """A ``needs_human_at`` stamp *days* in the past, as the runner writes it.
+
+    ``_backlog_query_queue`` takes its ``now`` from real wall-clock time and has
+    no clock seam (unlike the runner loop, which is driven by an injected
+    ``wall_clock``), so the only rot-proof way to place a row inside or outside
+    the cooldown window is relative to the same clock the code under test reads.
+    An absolute literal here is a time bomb: this test held
+    ``needs_human_at="2026-09-09T00:00:00+00:00"`` against the 7-day default and
+    went red on every branch at once on 2026-09-16, the instant the window it
+    was asserting *held* expired. Express the offset in terms of the default so
+    the test still reads as "just inside / just outside" if that default moves.
+    """
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
 
 def _orch_with_ctx():
@@ -150,7 +168,8 @@ def test_gave_up_row_is_a_cooldown_not_a_claim(tmp_path, monkeypatch):
         orch = _orch_with_ctx()
         await orch._backlog_ctx.set_target_state("o/r#5", {
             "repo": "o/r", "issues": ["o/r#5"], "gave_up": True,
-            "needs_human_at": "2026-09-09T00:00:00+00:00", "reason": "max attempts"})
+            "needs_human_at": _ago(days=NEEDS_HUMAN_RETRY_DAYS_DEFAULT - 1),
+            "reason": "max attempts"})
 
         skipped: dict = {}
         cands = await orch._backlog_query_queue(_config(), skipped_out=skipped)
@@ -165,7 +184,8 @@ def test_gave_up_row_is_a_cooldown_not_a_claim(tmp_path, monkeypatch):
         # Once the window has passed the issue is a candidate again.
         await orch._backlog_ctx.set_target_state("o/r#5", {
             "repo": "o/r", "issues": ["o/r#5"], "gave_up": True,
-            "needs_human_at": "2020-01-01T00:00:00+00:00", "reason": "max attempts"})
+            "needs_human_at": _ago(days=NEEDS_HUMAN_RETRY_DAYS_DEFAULT + 1),
+            "reason": "max attempts"})
         skipped = {}
         cands = await orch._backlog_query_queue(_config(), skipped_out=skipped)
         assert [c["ref"] for c in cands] == ["o/r#5"] and skipped == {}

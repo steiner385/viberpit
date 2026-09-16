@@ -747,8 +747,14 @@ async def test_list_auto_accept_candidates_is_ordered_oldest_first(db_env):
         db.add(feat)
         await db.flush()
         # Inserted middle, newest, oldest — so insertion order is NOT the answer.
-        for name, minutes in (("middle", 5), ("newest", 9), ("oldest", 1)):
-            w = WorkItem(repo=REPO, number=abs(hash(name)) % 1000, kind="issue",
+        # The numbers are fixed and arbitrary. They were `abs(hash(name)) % 1000`,
+        # but `hash()` of a str is randomised per process (PEP 456), so the three
+        # were redrawn every run and collided at the birthday rate (~0.3%) — an
+        # IntegrityError on the (repo, number, kind) unique constraint, on an
+        # unlucky PYTHONHASHSEED, in a test that never cared what the numbers were.
+        for name, number, minutes in (("middle", 311, 5), ("newest", 907, 9),
+                                      ("oldest", 145, 1)):
+            w = WorkItem(repo=REPO, number=number, kind="issue",
                          title=name, state="open", triage_state="unclassified")
             db.add(w)
             await db.flush()

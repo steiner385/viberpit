@@ -3,6 +3,7 @@ daemon-affecting deploy are retried by the daemon (not the user), and the
 'failed to resume' banner clears the moment they come back — via auto-retry or
 a manual open. See orchestrator._recover_resume_failures_once / resume_recovery_status."""
 import inspect
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,14 +25,21 @@ class MiniOrch:
     _recover_resume_failures_once = SessionOrchestrator._recover_resume_failures_once
     _prune_recovered = SessionOrchestrator._prune_recovered
     resume_recovery_status = SessionOrchestrator.resume_recovery_status
+    _owns_record = SessionOrchestrator._owns_record
+    _owns_record_by_stamp = SessionOrchestrator._owns_record_by_stamp
 
-    def __init__(self, *, drivers=None, records=None, resumable=None, raising=None):
+    def __init__(self, *, drivers=None, records=None, resumable=None, raising=None,
+                 enabled_hosts=None):
         self._drivers = drivers or {}
         self._records = records or {}
         self._resumable = set(resumable or ())
         self._raising = set(raising or ())
         self._resume_recovery: dict[str, int] = {}
+        self._enabled_hosts = enabled_hosts
         self.ensured: list[str] = []
+
+    async def _enabled_host_names(self):
+        return self._enabled_hosts
 
     async def ensure_driver(self, session_id, identity="system"):
         self.ensured.append(session_id)
@@ -50,9 +58,29 @@ async def test_restore_enrolls_only_failed_sessions(tmp_path):
     ds.write_snapshot([{"id": "s1", "status": "working"}, {"id": "s2", "status": "idle"}], path=p)
     o = MiniOrch(resumable={"s1"})
     res = await o.restore_deploy(path=p)
-    assert res == {"restored": ["s1"], "failed": ["s2"], "replayed": []}
+    assert res == {"restored": ["s1"], "failed": ["s2"], "replayed": [], "skipped": []}
     # s2 (failed) is enrolled for recovery at attempt 0; s1 (restored) is not.
     assert o._resume_recovery == {"s2": 0}
+
+
+@pytest.mark.asyncio
+async def test_recovery_pass_drops_enrollment_now_owned_elsewhere(monkeypatch):
+    """A row re-stamped to (or grabbed from) another enabled host after the snapshot
+    is that host's to resume: retrying ensure_driver here would only re-take its
+    lease out from under the owner (#1824). Drop the enrollment so the banner clears
+    instead of counting attempts toward gave-up."""
+    import server.sessions.orchestrator as mod
+    monkeypatch.setattr(mod, "daemon_role", lambda: "primary")
+    monkeypatch.setattr(mod, "self_host_name", lambda: "dobby")
+    o = MiniOrch(records={"foreign": SimpleNamespace(id="foreign", host="rocky"),
+                          "mine": SimpleNamespace(id="mine", host="dobby")},
+                 resumable={"mine", "foreign"},
+                 enabled_hosts=frozenset({"dobby", "rocky"}))
+    o._resume_recovery = {"foreign": 1, "mine": 0}
+    await o._recover_resume_failures_once()
+    assert o.ensured == ["mine"]
+    assert o._resume_recovery == {}
+    assert o.resume_recovery_status() == {"failed": [], "gaveUp": []}
 
 
 @pytest.mark.asyncio

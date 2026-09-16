@@ -33,14 +33,24 @@ must not authorize foreign recovery. Explicit per-session routing/adoption paths
 - Already guarded: `_recover_undelivered_prompts`, rotation/stuck sweeps, titling,
   inferred-goal sweeps; `_deliver_initial_prompt` and completion corrective nudges
   check the driver result before sending.
-- Reviewed, unchanged: `restore_deploy` consumes a host-local snapshot of live
-  drivers; `_recover_resume_failures_once` retries those IDs. Ownership transfers
-  after snapshotting remain a potential separate edge case, not a demonstrated
-  fleet-global scan. Explicit attach rearm goes through per-session routing.
+- Fixed later (#1824, 2026-09-16): `restore_deploy` and `_recover_resume_failures_once`.
+  The deploy snapshot lists the drivers this process *held*, not the rows it *owns*,
+  so a foreign row grabbed once (by the pre-#1738 autopilot path) was re-resumed by
+  the primary on every deploy restart — in a bare `mkdir`'d copy of the worktree
+  path — and its lease fenced the owning worker out of its own session for a day.
+  Both paths now apply the same `_owns_record` fence: skip (logged as
+  `deploy.restore.skip_foreign` / `deploy.resume.skip_foreign`), never enroll for
+  retry. Rows with no in-memory record, NULL-host rows and orphans keep their
+  existing policy. Explicit attach rearm goes through per-session routing.
 - Limitation: autopilot runs on the primary and assembles context from local driver,
   permission and question registries. Remote-worker governance needs routed context
   AND actions; skipping foreign mirrors fails closed instead of pretending local
   seams support it. No new RPC surface is added by this fix.
+- Structural fix (spec 2026-09-16-session-lease-ownership): `_claim_session` now applies
+  `_owns_record` itself (`adopt=True` bypasses for adopt/transfer), the heartbeat tick
+  renews a lease whose driver is still building (`SPAWN_WAIT_S` grace, #1826), and
+  `_reconcile_foreign_lease` closes a live driver held for a row another enabled host
+  owns. Per-caller fences remain as the cheap first line; the choke point is the backstop.
 
 The warning alone does not identify its caller. The observed denial followed by a
 prompt drop matches autopilot's unchecked driver result; tests reproduce that path
