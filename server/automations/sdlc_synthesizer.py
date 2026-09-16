@@ -67,9 +67,11 @@ LiveSessions = Callable[[Sequence[str]], Awaitable["set[str]"]]
 #: (initiative_id, from_stage, to_stage, last_auto_gate record) → advanced?
 #: False means the compare-and-set found a newer human decision (spec §15).
 AdvanceStage = Callable[[str, str, str, dict], Awaitable[bool]]
-#: (artifact_id, repo, pr_number) → {"armed": bool, "error": str}. Arms GitHub
-#: auto-merge on the stage artifact PR and stamps `auto_merge_armed_at` (§6).
-ArmAutoMerge = Callable[[str, str, int], Awaitable[dict]]
+#: (artifact_id, repo, pr_number, initiative_id, gate) → {"armed": bool, "error": str}.
+#: Arms GitHub auto-merge on the stage artifact PR, stamps `auto_merge_armed_at`
+#: on success (§6), and persists `gate` (an `auto_gate_record` built by the
+#: caller) to `Initiative.last_auto_gate` on EITHER outcome (§8).
+ArmAutoMerge = Callable[[str, str, int, str, dict], Awaitable[dict]]
 #: The process-wide kill switch (spec D9), read per tick.
 AutoresolveEnabled = Callable[[], bool]
 
@@ -375,7 +377,14 @@ class SdlcSynthesizerLoop:
         repo = str(ini.get("repo") or state.repo or "")
         if not repo:
             return False
-        out = await self._arm_auto_merge(str(art["id"]), repo, int(art["pr_number"]))
+        # Built with the SAME helper `_advance` uses (spec §8) so every reader
+        # (`gates.py:_summary`, the roadmap `autoResolved` chip) agrees on the
+        # shape. Outcome defaults to "resolved"; the seam flips it to "refused"
+        # before persisting if gh declines — the caller cannot know that yet.
+        record = auto_gate_record("artifact.merge", tolerance, datetime.now(timezone.utc),
+                                  detail={"kind": action.kind, "pr": art["pr_number"]})
+        out = await self._arm_auto_merge(str(art["id"]), repo, int(art["pr_number"]),
+                                         str(ini["id"]), record)
         if not out.get("armed"):
             await self._emit("warn", f"{slug}: auto-merge unavailable on {repo} — "
                              f"merge {action.kind} PR #{art['pr_number']} by hand",

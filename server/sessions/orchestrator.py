@@ -8711,9 +8711,9 @@ class SessionOrchestrator:
             await db.commit()
         return advanced
 
-    async def _sdlc_arm_auto_merge(self, artifact_id: str, repo: str,
-                                   pr_number: int) -> dict:
-        """The synthesizer's ``MergeArtifact`` write (spec 2026-09-14 §6): arm
+    async def _sdlc_arm_auto_merge(self, artifact_id: str, repo: str, pr_number: int,
+                                   initiative_id: str, gate: dict) -> dict:
+        """The synthesizer's ``MergeArtifact`` write (spec 2026-09-14 §6/§8): arm
         GitHub auto-merge (squash) on the stage artifact PR, then stamp
         ``auto_merge_armed_at`` so no later tick spends a second ``gh`` call on
         the same PR.
@@ -8723,30 +8723,40 @@ class SessionOrchestrator:
         GitHub applies the repo's branch protection, so "auto" stays bounded by
         CI; there is deliberately no ``--merge`` fallback.
 
-        A refusal returns ``armed=False`` with gh's text and stamps NOTHING, so
-        a transient failure simply retries next tick while a permanent one
-        (repo has auto-merge disabled) re-reports the same message each tick and
-        the artifact stays at ``AwaitApproval``.
+        ``gate`` is the ``auto_gate_record`` the caller (``_arm``) already built
+        (same helper ``_advance`` uses, so every reader — ``gates.py:_summary``,
+        the roadmap ``autoResolved`` chip — agrees on the shape). The caller
+        cannot know gh's outcome yet, so it defaults ``outcome="resolved"``; this
+        method corrects it to ``"refused"`` before persisting when gh declines.
+        Spec §8 requires ``last_auto_gate`` recorded on EITHER outcome — a
+        refusal stamps the record but never ``auto_merge_armed_at``, so a
+        transient failure simply retries next tick while a permanent one (repo
+        has auto-merge disabled) re-reports the same message each tick and the
+        artifact stays at ``AwaitApproval``.
         """
         from sqlalchemy import update
         from server.audit import record_audit
         from server.db.clock import db_utc_now
-        from server.db.models import InitiativeArtifact
+        from server.db.models import Initiative, InitiativeArtifact
 
         out = await self.ready_merge(repo, int(pr_number))
         armed = bool(out.get("autoMergeArmed"))
+        record = dict(gate) if armed else {**gate, "outcome": "refused"}
+        async with db_session() as db:
+            await db.execute(update(Initiative).where(
+                Initiative.id == initiative_id).values(last_auto_gate=record))
+            if armed:
+                await db.execute(update(InitiativeArtifact).where(
+                    InitiativeArtifact.id == artifact_id).values(
+                        auto_merge_armed_at=db_utc_now()))
+                await record_audit(
+                    db=db, type="sdlc.gate.auto_resolve", identity="sdlc-synthesizer",
+                    detail={"artifactId": artifact_id, "gate": "artifact.merge",
+                            "repo": repo, "pr": int(pr_number),
+                            "alreadyArmed": bool(out.get("alreadyArmed"))})
+            await db.commit()
         if not armed:
             return {"armed": False, "error": str(out.get("error") or "")}
-        async with db_session() as db:
-            await db.execute(update(InitiativeArtifact).where(
-                InitiativeArtifact.id == artifact_id).values(
-                    auto_merge_armed_at=db_utc_now()))
-            await record_audit(
-                db=db, type="sdlc.gate.auto_resolve", identity="sdlc-synthesizer",
-                detail={"artifactId": artifact_id, "gate": "artifact.merge",
-                        "repo": repo, "pr": int(pr_number),
-                        "alreadyArmed": bool(out.get("alreadyArmed"))})
-            await db.commit()
         return {"armed": True, "error": ""}
 
     async def _sdlc_update_artifact(self, artifact_id: str, **fields) -> None:

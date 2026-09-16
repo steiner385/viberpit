@@ -45,6 +45,11 @@ class Recorder:
         #: simulates gh refusing (repo has auto-merge disabled).
         self.armed: list[tuple[str, str, int]] = []
         self.arm_result: dict = {"armed": True, "error": ""}
+        #: initiative_id -> the last `auto_gate_record` persisted by a real
+        #: arm attempt (mirrors `_sdlc_arm_auto_merge` flipping `outcome` to
+        #: "refused" before persisting when gh declines — never on the unwired
+        #: or already-armed paths, which never call this seam at all).
+        self.last_auto_gate: dict[str, dict] = {}
         #: emitted activity events, so a test can assert `gate_refused`. Doubles
         #: as the default fake ctx (see `_loop`) so a test that omits `ctx` can
         #: still inspect what the loop emitted via `rec.events`.
@@ -54,8 +59,10 @@ class Recorder:
         self.advanced.append((iid, from_stage, to_stage, record))
         return self.advance_result
 
-    async def arm_auto_merge(self, artifact_id, repo, pr_number):
+    async def arm_auto_merge(self, artifact_id, repo, pr_number, initiative_id, gate):
         self.armed.append((artifact_id, repo, int(pr_number)))
+        armed = bool(self.arm_result.get("armed"))
+        self.last_auto_gate[initiative_id] = dict(gate) if armed else {**gate, "outcome": "refused"}
         return self.arm_result
 
     async def emit(self, level, summary, **kw):
@@ -106,7 +113,7 @@ class Recorder:
         return self.mode, {}
 
 
-def _loop(rec, ctx=None, *, materialize=True, advance=True):
+def _loop(rec, ctx=None, *, materialize=True, advance=True, arm=True):
     # `rec` doubles as the default fake ctx (it has `emit`): a test that omits
     # `ctx` can still inspect `rec.events`, matching every other Recorder seam.
     return SdlcSynthesizerLoop(
@@ -122,7 +129,7 @@ def _loop(rec, ctx=None, *, materialize=True, advance=True):
         live_sessions=rec.live_sessions,
         advance_stage=rec.advance_stage if advance else None,
         autoresolve_enabled=rec.autoresolve_enabled,
-        arm_auto_merge=rec.arm_auto_merge)
+        arm_auto_merge=rec.arm_auto_merge if arm else None)
 
 
 def _ini(stage, status="active", **extra):
@@ -669,6 +676,11 @@ async def test_an_open_artifact_pr_auto_merges_under_balanced():
     assert rec.armed == [("a1", "o/r", 7)]
     assert SdlcSynthesizer().status(ctx).counts["auto_resolved"] == 1
     assert SdlcSynthesizer().status(ctx).counts["awaiting"] == 0
+    # spec §8: the gate is recorded, using the same helper `_advance` uses.
+    record = rec.last_auto_gate["i1"]
+    assert (record["gate"], record["outcome"], record["tolerance"]) == (
+        "artifact.merge", "resolved", "balanced")
+    assert record["detail"] == {"kind": "spec", "pr": 7}
 
 
 # --------------------------------------------------------------------------- #
@@ -698,6 +710,9 @@ async def test_merge_artifact_arms_auto_merge_once():
 
     assert rec.armed == [("a-1", "o/r", 42)]
     assert loop._ctx.sdlc_synthesizer_counts["auto_resolved"] == 1
+    # spec §8: recorded with the same helper `_advance` uses, outcome "resolved".
+    assert rec.last_auto_gate["i-1"]["gate"] == "artifact.merge"
+    assert rec.last_auto_gate["i-1"]["outcome"] == "resolved"
 
 
 @pytest.mark.asyncio
@@ -715,6 +730,12 @@ async def test_merge_artifact_refusal_records_gate_refused_and_does_not_stamp():
     assert loop._ctx.sdlc_synthesizer_counts["awaiting"] == 1
     kinds = [e.get("kind") for e in rec.events]
     assert "gate_refused" in kinds
+    # spec §8: a refusal STILL records the gate (outcome "refused") — the
+    # `gates.py:_summary` "auto-merge unavailable" branch exists for this —
+    # but never stamps `auto_merge_armed_at`, so a retry next tick is correct.
+    assert rec.last_auto_gate["i-1"]["gate"] == "artifact.merge"
+    assert rec.last_auto_gate["i-1"]["outcome"] == "refused"
+    assert rec.artifacts["i-1"][0]["auto_merge_armed_at"] is None
 
 
 @pytest.mark.asyncio
@@ -728,6 +749,26 @@ async def test_merge_artifact_skips_an_already_armed_pr():
     await loop.tick()
 
     assert rec.armed == []          # the one gh call is never spent twice
+    assert loop._ctx.sdlc_synthesizer_counts["awaiting"] == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unwired_arm_seam_warns_once_and_parks():
+    """A deployment without the arm-auto-merge write seam must never resolve
+    the gate by accident: the artifact stays awaiting and the operator hears
+    about it once per initiative, mirroring the advance/materialize seams."""
+    rec = Recorder([{"id": "i-1", "slug": "alpha", "stage": "design",
+                     "status": "active", "repo": "o/r", "project_slug": "prod"}],
+                   mode="on")
+    _merge_ready(rec)
+    ctx = Ctx()
+    loop = _loop(rec, ctx, arm=False)
+    await loop.tick()
+    await loop.tick()
+    warns = [e for e in ctx.events if e[2].get("kind") == "arm_unwired"]
+    assert len(warns) == 1 and warns[0][0] == "warn"
+    assert rec.armed == []
+    assert SdlcSynthesizer().status(ctx).counts["awaiting"] == 1
 
 
 @pytest.mark.asyncio
