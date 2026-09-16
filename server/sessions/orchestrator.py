@@ -2205,7 +2205,8 @@ class SessionOrchestrator:
             self._session_lease_fences = fences
         return fences
 
-    async def _claim_session(self, session_id: str, *, why: str) -> bool:
+    async def _claim_session(self, session_id: str, *, why: str,
+                             adopt: bool = False) -> bool:
         """Win the right to run a CLI for *session_id* on THIS host, or refuse.
 
         Called immediately before every driver build. The three outcomes:
@@ -2220,8 +2221,36 @@ class SessionOrchestrator:
         * **DB error** — fail OPEN. The lease is a safety net over a rare race; a
           database blip must never stop a whole fleet from running sessions. The
           loop re-attempts the claim on its next tick.
+
+        Before the lease is consulted at all, the row's fleet stamp is checked
+        (spec 2026-09-16-session-lease-ownership, layer 1): a record another
+        ENABLED host owns is refused here, whoever asked. The lease answers "is a
+        twin live?"; this answers "is it mine to run?" — and every driver build
+        goes through this method, so no caller can forget the second question
+        (#1824 was a caller that did). ``adopt=True`` is for the paths that take a
+        row they do not yet own on purpose (adopt_session, transfer import). A
+        session with no in-memory record (a fresh spawn) is decided by the lease
+        alone, exactly as before.
         """
         me = self_host_name()
+        rec = self._records.get(session_id) if hasattr(self, "_records") else None
+        if rec is not None and not adopt:
+            getter = getattr(self, "_enabled_host_names", None)
+            enabled = await getter() if getter is not None else None
+            if not self._owns_record(rec, enabled):
+                stamp = getattr(rec, "host", None)
+                if session_lease_enforced():
+                    log.warning(
+                        "session-lease: refusing to %s session %s — its row is stamped "
+                        "for host %r, not %r; leaving it to its owner (layer 1).",
+                        why, session_id, stamp, me)
+                    log_event(log, logging.WARNING, "session.lease_denied",
+                              session_id=session_id, holder=stamp,
+                              reason=f"foreign_stamp:{why}")
+                    return False
+                log.warning(
+                    "session-lease: session %s is stamped for %r but enforcement is "
+                    "OFF — claiming it on %r anyway (%s)", session_id, stamp, me, why)
         try:
             fence = await session_lease.acquire(
                 session_id, me, ttl_s=SESSION_LEASE_TTL_S)
@@ -14171,7 +14200,7 @@ class SessionOrchestrator:
         # the invariant uniform ("a session with a live driver holds its lease"), so
         # the reconcile pass and any later resume on another host see a consistent
         # picture rather than a driver with no claim behind it (#1379).
-        await self._claim_session(session_id, why="adopt")
+        await self._claim_session(session_id, why="adopt", adopt=True)
         Path(cand.cwd).mkdir(parents=True, exist_ok=True)
         driver_config_dir = self._driver_config_dir(
             AgentEngine.CLAUDE_CODE, cand.account, cand.cwd, None

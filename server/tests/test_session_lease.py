@@ -262,6 +262,31 @@ async def test_the_renew_loop_releases_leases_whose_driver_is_gone(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_ensure_driver_never_builds_for_a_row_another_host_owns(tmp_path, monkeypatch):
+    """Layer 1 end-to-end (#1824): the primary asks to resume a rocky-stamped row.
+    No lease row is written, no SDK process is built, and the cwd is NOT created —
+    the empty mkdir'd directory was how the wrong daemon ran a coding agent in a
+    non-repo for a day."""
+    import server.sessions.orchestrator as mod
+    from unittest.mock import AsyncMock
+    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.setattr(mod, "daemon_role", lambda: "primary")
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
+    try:
+        orch = _new_orch()
+        orch._enabled_host_names = AsyncMock(return_value=frozenset({"dobby", "rocky"}))
+        cwd = tmp_path / "wt" / "foreign"
+        orch._records[SID] = _record(host="rocky", cwd=str(cwd))
+
+        assert await orch.ensure_driver(SID) is None
+        assert SID not in orch._drivers
+        assert await session_lease.current(SID) is None      # never touched the lease
+        assert not cwd.exists()                               # never mkdir'd the cwd
+    finally:
+        await dispose_db()
+
+
+@pytest.mark.asyncio
 async def test_stop_releases_every_session_lease(tmp_path, monkeypatch):
     """A planned restart (the deploy path the incident came from) must hand its
     sessions over, not fence the peer off them for the TTL."""
