@@ -50,7 +50,7 @@ from server.pm.mirror_store import deps_in_repos
 from server.pm.outcomes import list_outcomes_stmt, outcome_to_dict
 from server.pm.queue import MIN_STATUS_OPTIONS, rank, rank_key
 from server.pm.queue_store import load_queue_rows, runner_row_maps
-from server.pm.repo_project import owning_projects_by_repo
+from server.pm.repo_project import OwnershipConflict, owning_projects_by_repo
 from server.pm.score import RICE_FIELDS, validate_rice
 from server.pm.sync_request import request_project_sync
 # The accept write path and the undo-snapshot format live in server/pm/triage_accept.py
@@ -1236,12 +1236,16 @@ async def accept_triage(
     the copied values (lets phase-3 edit-then-accept work without a route
     change); absent body = plain accept. The batch form is ``accept-bulk``,
     which reuses the same helper."""
+    from server.pm.triage_accept import gather_accept_ownership
+    ownership = await gather_accept_ownership([proposal_id])
     prop = await _load_pending_proposal(db, proposal_id)
     edits = (body or {}).get("edits")
     await _validate_accept_edits(db, edits)
     try:
         await apply_accept(db, prop, decided_by=DECIDED_BY_HUMAN,
-                           audit_identity=identity, edits=edits)
+                           audit_identity=identity, edits=edits, ownership=ownership)
+    except OwnershipConflict as e:
+        raise HTTPException(status_code=409, detail=e.result()) from e
     except WorkItemMissing as e:
         raise HTTPException(status_code=404,
                             detail={"error": "work_item_missing"}) from e
@@ -1353,6 +1357,8 @@ async def accept_bulk(
     an ``HTTPException`` escapes the route, ``get_db`` rolls the whole session
     back, and the ids that already succeeded are silently reverted behind a
     generic 500 — the inbox's bulk key would lose the entire selection."""
+    from server.pm.triage_accept import gather_accept_ownership
+    ownership = await gather_accept_ownership(body.ids)
     results: list[dict] = []
     landed: list[str] = []          # ids that actually committed, for the audit
     for pid in body.ids:
@@ -1368,9 +1374,11 @@ async def accept_bulk(
         try:
             async with db.begin_nested():
                 await apply_accept(db, proposal, decided_by=DECIDED_BY_HUMAN,
-                                   audit_identity=identity)
+                                   audit_identity=identity, ownership=ownership)
             results.append({"id": pid, "ok": True})
             landed.append(pid)
+        except OwnershipConflict as e:
+            results.append({"id": pid, **e.result()})
         except WorkItemMissing:
             # The per-id twin of single-accept's 404: same ``work_item_missing``
             # code, reported as this id's failure instead of the batch's.
@@ -1528,7 +1536,7 @@ async def delete_work_item_dep(
                                "ok": bool(result.get("ok")), "step": result.get("step")})
     if not result.get("ok"):
         await db.commit()  # the failed attempt is exactly what the trail must keep
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail={
+        raise HTTPException(status_code=409 if result.get("step") == "ownership" else 502, detail={
             "error": "dep_remove_failed", "step": result.get("step"),
             "message": str(result.get("error") or "dependency removal failed")})
     return result
@@ -1556,7 +1564,7 @@ async def decide_work_item_issue(item_id: str, body: IssueDecision, request: Req
                                "ok": bool(result.get("ok")), "step": result.get("step")})
     if not result.get("ok"):
         await db.commit()
-        code = 409 if result.get("step") == "conflict" else 502
+        code = 409 if result.get("step") in {"conflict", "ownership"} else 502
         if result.get("step") == "load":
             code = 404
         raise HTTPException(status_code=code, detail={"error": "issue_decision_failed",

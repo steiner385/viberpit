@@ -5,10 +5,22 @@ style of test_sdlc_api.py — reuse that module's fixtures.
 """
 from __future__ import annotations
 
+from server.tests.pm_ownership_fixtures import identity_repositories, ownership_snapshot
+import pytest
+
+
+
+
+
 import os
 import tempfile
 from contextlib import contextmanager
 from unittest.mock import patch
+
+@pytest.fixture(autouse=True)
+def canonical_mutation_repositories(monkeypatch):
+    monkeypatch.setattr("server.automations.target_identity.resolve_repositories", identity_repositories)
+
 
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
@@ -998,11 +1010,11 @@ def test_accept_bulk_one_failure_does_not_roll_back_the_batch():
         # not the owning module's, so the seam is the call site under test.
         real_apply = pm_api.apply_accept
 
-        async def _flaky(db, proposal, *, decided_by, audit_identity, edits=None):
+        async def _flaky(db, proposal, *, decided_by, audit_identity, edits=None, ownership=None):
             # Mutate first, THEN blow up: proves the savepoint discards this id's
             # partial work while leaving the sibling ids' work committed.
             await real_apply(db, proposal, decided_by=decided_by,
-                             audit_identity=audit_identity, edits=edits)
+                             audit_identity=audit_identity, edits=edits, ownership=ownership)
             if proposal.id == pid2:
                 raise RuntimeError("boom")
 
@@ -1560,7 +1572,7 @@ def test_undo_of_an_auto_accept_marks_the_proposal_auto_undone():
                                       confidence_level="high", status="pending")
                 db.add(prop)
                 await db.flush()
-                await apply_accept(db, prop, decided_by="auto", audit_identity="pm-triage")
+                await apply_accept(db, prop, decided_by="auto", audit_identity="pm-triage", ownership=await ownership_snapshot(db, "o/r"))
                 return prop.id
         pid = c.portal.call(_seed)
 
@@ -1606,7 +1618,7 @@ def test_undo_of_an_auto_accept_a_human_patched_first_still_marks_auto_undone():
                                       confidence_level="high", status="pending")
                 db.add(prop)
                 await db.flush()
-                await apply_accept(db, prop, decided_by="auto", audit_identity="pm-triage")
+                await apply_accept(db, prop, decided_by="auto", audit_identity="pm-triage", ownership=await ownership_snapshot(db, "o/r"))
                 return prop.id, w.id
         pid, wid = c.portal.call(_seed)
 
@@ -1662,7 +1674,7 @@ def test_undo_of_a_human_accept_does_not_mark_auto_undone():
                                       confidence_level="high", status="pending")
                 db.add(prop)
                 await db.flush()
-                await apply_accept(db, prop, decided_by="human", audit_identity="tester")
+                await apply_accept(db, prop, decided_by="human", audit_identity="tester", ownership=await ownership_snapshot(db, "o/r"))
                 return prop.id
         pid = c.portal.call(_seed)
 
@@ -1709,8 +1721,8 @@ def test_triage_list_includes_a_fresh_auto_accept_with_its_marker():
                                             confidence_level="high", status="pending")
                 db.add_all([pending, auto_prop, human_prop])
                 await db.flush()
-                await apply_accept(db, auto_prop, decided_by="auto", audit_identity="pm-triage")
-                await apply_accept(db, human_prop, decided_by="human", audit_identity="tester")
+                await apply_accept(db, auto_prop, decided_by="auto", audit_identity="pm-triage", ownership=await ownership_snapshot(db, "o/r"))
+                await apply_accept(db, human_prop, decided_by="human", audit_identity="tester", ownership=await ownership_snapshot(db, "o/r"))
                 return pending.id, auto_prop.id, human_prop.id
         pending_id, auto_id, human_id = c.portal.call(_seed)
 
@@ -1756,7 +1768,7 @@ def test_triage_list_pending_only_omits_a_fresh_auto_accept():
                                            confidence_level="high", status="pending")
                 db.add_all([pending, auto_prop])
                 await db.flush()
-                await apply_accept(db, auto_prop, decided_by="auto", audit_identity="pm-triage")
+                await apply_accept(db, auto_prop, decided_by="auto", audit_identity="pm-triage", ownership=await ownership_snapshot(db, "o/r"))
                 return pending.id, auto_prop.id
         pending_id, auto_id = c.portal.call(_seed)
 
@@ -1794,7 +1806,7 @@ def test_triage_list_drops_an_auto_accept_after_the_undo_window():
                                       confidence_level="high", status="pending")
                 db.add(prop)
                 await db.flush()
-                await apply_accept(db, prop, decided_by="auto", audit_identity="pm-triage")
+                await apply_accept(db, prop, decided_by="auto", audit_identity="pm-triage", ownership=await ownership_snapshot(db, "o/r"))
                 return prop.id
         pid = c.portal.call(_seed)
 
@@ -1839,7 +1851,7 @@ def test_triage_list_keeps_an_auto_accept_a_human_patched_inside_the_window():
                 db.add(prop)
                 await db.flush()
                 await apply_accept(db, prop, decided_by=DECIDED_BY_AUTO,
-                                   audit_identity="pm-triage")
+                                   audit_identity="pm-triage", ownership=await ownership_snapshot(db, "o/r"))
                 return prop.id, w.id
         pid, wid = c.portal.call(_seed)
 
@@ -1851,3 +1863,32 @@ def test_triage_list_keeps_an_auto_accept_a_human_patched_inside_the_window():
         mine = [x for x in rows if x["id"] == pid]
         assert len(mine) == 1
         assert mine[0]["status"] == "accepted" and mine[0]["classifiedBy"] == "auto"
+
+
+def test_ambiguous_accept_is_conflict_and_bulk_gathers_once(monkeypatch):
+    from unittest.mock import AsyncMock
+    from server.automations import target_identity
+    from server.db import db_session
+    from server.db.models import WorkItem, TriageProposal
+
+    with _client_with_stubbed_seams() as c:
+        _register(c, "First", repo="o/r")
+        _register(c, "Second", repo="old/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions", number=1, project_slug="first")
+        resolve = AsyncMock(return_value={"o/r": "o/r", "old/r": "o/r"})
+        monkeypatch.setattr(target_identity, "resolve_repositories", resolve)
+        response = c.post(f"/api/pm/triage/{pid}/accept", headers=IDENTITY_HEADERS)
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["ownershipState"] == "ambiguous"
+        resolve.reset_mock()
+        response = c.post("/api/pm/triage/accept-bulk", json={"ids": [pid, pid]}, headers=IDENTITY_HEADERS)
+        assert response.status_code == 200, response.text
+        assert response.json()["accepted"] == 0
+        assert all(row["ownershipState"] == "ambiguous" for row in response.json()["results"])
+        resolve.assert_awaited_once()
+
+        async def unchanged():
+            async with db_session() as db:
+                assert (await db.get(TriageProposal, pid)).status == "pending"
+                assert (await db.get(WorkItem, wid)).triage_state == "unclassified"
+        c.portal.call(unchanged)

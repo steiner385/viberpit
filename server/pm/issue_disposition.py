@@ -20,7 +20,7 @@ from . import journal
 from .gh_mutations import build_batch, build_issue_query, parse_batch
 from .materialize_apply import Mutate, error_text
 from .reconcile_diff import Mutation
-from .repo_project import owning_projects_by_repo
+from .repo_project import OwnershipConflict, RepoOwnershipSnapshot, require_mutation_owner
 from .sync_request import request_project_sync
 
 
@@ -61,8 +61,13 @@ def _mirror(src: WorkItem, issue: dict) -> None:
 
 
 async def apply(db: AsyncSession, *, src: WorkItem, decision: IssueDecision,
-                fetch: Mutate, mutate: Mutate, now: datetime) -> dict:
+                fetch: Mutate, mutate: Mutate, now: datetime,
+                ownership: RepoOwnershipSnapshot | None = None) -> dict:
     """Write ahead, confirm the returned issue, then update mirror. Caller commits."""
+    try:
+        project = await require_mutation_owner(db, src.repo or "", snapshot=ownership, allow_missing=True)
+    except OwnershipConflict as exc:
+        return exc.result()
     if decision.version != detail(src)["version"] or src.state != "open":
         return {"ok": False, "step": "conflict", "error": "Issue changed; reload before deciding"}
     if not src.gh_node_id:
@@ -108,7 +113,6 @@ async def apply(db: AsyncSession, *, src: WorkItem, decision: IssueDecision,
         return {"ok": False, "step": "mutate", "error": error}
     _mirror(src, confirmed)
     await db.run_sync(lambda s: journal.mark_applied(s, [row_id], now))
-    project = (await owning_projects_by_repo(db, [src.repo or ""])).get(src.repo or "")
     if project is not None:
         await request_project_sync(db, project.project_id, now)
     return {"ok": True, "item": detail(src)}

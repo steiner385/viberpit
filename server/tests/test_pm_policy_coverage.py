@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from server.api import pm
 from server.automations import product_admission
+from server.automations import target_identity
 from server.auth.middleware import current_identity
 from server.db.models import Base, Project, ProjectRepo
 
@@ -61,7 +62,7 @@ async def test_coverage_aliases_across_products_are_ambiguous_and_read_only(cove
         assert set(repos) == {"owner/old", "OWNER/CURRENT", "owner/current"}
         return {r: "owner/current" for r in repos}
 
-    monkeypatch.setattr(product_admission, "resolve_repositories", resolve)
+    monkeypatch.setattr(target_identity, "resolve_repositories", resolve)
     shared = AsyncMock(wraps=product_admission.resolve_repo_ownership)
     monkeypatch.setattr(product_admission, "resolve_repo_ownership", shared)
     response = await client.get("/api/pm/projects/alpha/policy/coverage")
@@ -91,7 +92,7 @@ async def test_coverage_unresolved_registration_never_selects_owner(
     client, factory, _, _ = coverage_env
     await seed(factory, [("a", "alpha", ["owner/current"]),
                          ("b", other_slug, ["owner/old"])])
-    monkeypatch.setattr(product_admission, "resolve_repositories", AsyncMock(return_value={
+    monkeypatch.setattr(target_identity, "resolve_repositories", AsyncMock(return_value={
         "owner/current": "owner/current", "owner/old": other_identity,
     }))
     data = (await client.get("/api/pm/projects/alpha/policy/coverage")).json()
@@ -104,7 +105,7 @@ async def test_coverage_empty_unknown_project_and_auth(coverage_env, monkeypatch
     client, factory, _, app = coverage_env
     await seed(factory, [("a", "alpha", [])])
     fetch = AsyncMock(return_value={})
-    monkeypatch.setattr(product_admission, "resolve_repositories", fetch)
+    monkeypatch.setattr(target_identity, "resolve_repositories", fetch)
     assert (await client.get("/api/pm/projects/alpha/policy/coverage")).json()["repositories"] == []
     fetch.assert_not_awaited()
     assert (await client.get("/api/pm/projects/missing/policy/coverage")).status_code == 404
@@ -133,7 +134,7 @@ async def test_effective_preview_batches_identity_and_matches_dispatch(coverage_
         return {repo: repo for repo in repos}
 
     fetch = AsyncMock(side_effect=resolve)
-    monkeypatch.setattr(product_admission, "resolve_repositories", fetch)
+    monkeypatch.setattr(target_identity, "resolve_repositories", fetch)
     monkeypatch.setattr(config_store, "read_automation_config", AsyncMock(return_value=(
         "on", {"max_concurrent": 5, "max_spawns_per_day": 5})))
     monkeypatch.setattr(AutomationContext, "list_target_states", AsyncMock(return_value={}))
@@ -171,7 +172,7 @@ async def test_registration_added_during_identity_lookup_is_unresolved(coverage_
             await db.commit()
         return {repo: repo for repo in repos}
 
-    monkeypatch.setattr(product_admission, "resolve_repositories", resolve)
+    monkeypatch.setattr(target_identity, "resolve_repositories", resolve)
     result = (await client.get("/api/pm/projects/alpha/policy/coverage")).json()
     assert len(result["repositories"]) == 2
     assert all(repo["state"] == "unresolved" for repo in result["repositories"])

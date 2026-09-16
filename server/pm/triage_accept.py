@@ -20,7 +20,8 @@ from sqlalchemy import Select, select
 from server.audit import record_audit
 from server.db.models import Feature, TriageProposal, WorkItem
 from server.pm.classification import CONFIDENCE_LEVELS
-from server.pm.repo_project import owning_projects_by_repo
+from server.pm.repo_project import (OwnershipConflict, RepoOwnershipSnapshot,
+    gather_repo_ownership_snapshot, require_mutation_owner)
 
 # Who decided a classification, as stored on ``WorkItem.classified_by``. The one
 # spelling of "a person decided this", shared by the accept routes and the overlay
@@ -120,7 +121,7 @@ def _restore_overlay(wi: WorkItem, snap: dict) -> None:
 
 
 async def _repropose_siblings(db, accepted: TriageProposal, feature_id: str,
-                              *, project_id: str) -> list[str]:
+                              *, project_id: str, ownership: RepoOwnershipSnapshot | None) -> list[str]:
     """Other pending no_fit proposals sharing this suggestion get re-pointed at
     the newly-merged feature so the human confirms them against the real map.
 
@@ -138,11 +139,12 @@ async def _repropose_siblings(db, accepted: TriageProposal, feature_id: str,
             TriageProposal.status == "pending",
             TriageProposal.no_fit_suggestion == accepted.no_fit_suggestion)
     )).all()
-    owners = await owning_projects_by_repo(
-        db, {repo for _sib, repo in candidates if repo})
     moved: list[str] = []
     for sib, repo in candidates:
-        owner = owners.get(repo) if repo else None
+        try:
+            owner = await require_mutation_owner(db, repo or "", snapshot=ownership)
+        except OwnershipConflict:
+            continue
         if owner is None or owner.project_id != project_id:
             continue
         sib.proposed_feature_id = feature_id
@@ -152,7 +154,8 @@ async def _repropose_siblings(db, accepted: TriageProposal, feature_id: str,
 
 
 async def apply_accept(db, proposal: TriageProposal, *, decided_by: str,
-                       audit_identity: str, edits: dict | None = None) -> None:
+                       audit_identity: str, edits: dict | None = None,
+                       ownership: RepoOwnershipSnapshot | None = None) -> None:
     """The ONE accept path — do NOT copy it into a second helper. Copies the
     proposal onto the WorkItem overlay, applying ``edits`` over the copied values
     when provided, marks the item ``classified`` and the proposal ``accepted``.
@@ -166,6 +169,13 @@ async def apply_accept(db, proposal: TriageProposal, *, decided_by: str,
         WorkItem.id == proposal.work_item_id))).scalar_one_or_none()
     if wi is None:
         raise WorkItemMissing(proposal.work_item_id)
+    owner = await require_mutation_owner(
+        db, wi.repo or "", snapshot=ownership, allow_missing=decided_by == DECIDED_BY_HUMAN)
+    feature_id = (edits or {}).get("featureId", proposal.proposed_feature_id)
+    if feature_id is not None:
+        feature = await db.get(Feature, feature_id)
+        if feature is None or owner is None or feature.project_id != owner.project_id:
+            raise OwnershipConflict("mismatch", "Feature does not belong to the repository's product.")
     # The snapshot is the pre-decision overlay; ``decidedBy`` rides BESIDE it as
     # this proposal's own, immutable record of who decided it. ``undo_triage``
     # reads that key to arm ``auto_undone`` — it cannot read ``WorkItem
@@ -190,8 +200,6 @@ async def apply_accept(db, proposal: TriageProposal, *, decided_by: str,
     # Projects reconciler, board panes, roadmap scoring). If the item's repo maps
     # to no project we cannot scope the lookup, so the branch does not fire.
     if feature_id is None and proposal.no_fit_suggestion:
-        owner = (await owning_projects_by_repo(
-            db, {wi.repo} if wi.repo else set())).get(wi.repo or "")
         if owner is not None:
             feat = (await db.execute(select(Feature).where(
                 Feature.project_id == owner.project_id,
@@ -199,7 +207,7 @@ async def apply_accept(db, proposal: TriageProposal, *, decided_by: str,
             if feat is not None:
                 feature_id = feat.id
                 moved = await _repropose_siblings(db, proposal, feat.id,
-                                                  project_id=owner.project_id)
+                                                  project_id=owner.project_id, ownership=ownership)
                 if moved:
                     # Spec §7: every accept mutation is audited, and this one
                     # rewrites proposals the caller never named (destroying their
@@ -222,3 +230,14 @@ async def apply_accept(db, proposal: TriageProposal, *, decided_by: str,
     proposal.status = "accepted"
     proposal.resolved_at = now
     await db.flush()
+
+
+async def gather_accept_ownership(proposal_ids: list[str]) -> RepoOwnershipSnapshot:
+    """Gather before the caller acquires pending-proposal row locks."""
+    from server.db import db_session
+
+    async with db_session() as db:
+        repos = (await db.scalars(select(WorkItem.repo).join(
+            TriageProposal, TriageProposal.work_item_id == WorkItem.id
+        ).where(TriageProposal.id.in_(proposal_ids)))).all()
+    return await gather_repo_ownership_snapshot({repo for repo in repos if repo})

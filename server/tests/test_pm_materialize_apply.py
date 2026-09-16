@@ -8,13 +8,19 @@ id as the resume key, and no blind retry of anything already recorded.
 from __future__ import annotations
 
 import json
+from server.tests.pm_ownership_fixtures import identity_repositories, ownership_snapshot
+import pytest
+
+
+
+
+
 import os
 import re
 import tempfile
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-import pytest
 from sqlalchemy import select
 
 from server.db import db_session, init_db
@@ -26,6 +32,11 @@ from server.db.models import (
     ProjectRepo,
     WorkItem,
 )
+
+@pytest.fixture(autouse=True)
+def canonical_mutation_repositories(monkeypatch):
+    monkeypatch.setattr("server.automations.target_identity.resolve_repositories", identity_repositories)
+
 
 NOW = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
 
@@ -156,7 +167,7 @@ async def _apply(proposal_id: str, gh: FakeGh, *, now: datetime = NOW) -> dict:
     async with db_session() as db:
         prop = (await db.execute(select(MaterializationProposal).where(
             MaterializationProposal.id == proposal_id))).scalar_one()
-        return await apply(db, prop, mutate=gh, now=now)
+        return await apply(db, prop, mutate=gh, now=now, ownership=await ownership_snapshot(db, "o/r"))
 
 
 async def _journal() -> list[GhWriteJournal]:
@@ -622,3 +633,20 @@ async def test_a_document_level_edge_failure_is_transient_not_parked(db_env):
     applied = [r for r in await _journal()
                if r.field == "add_blocked_by" and state_of(r) == "applied"]
     assert len(applied) == 2
+
+
+@pytest.mark.asyncio
+async def test_explicit_initiative_product_mismatch_refuses_without_writes(db_env):
+    ini_id, prop_id = await _seed(db_env)
+    async with db_session() as db:
+        other = Project(slug="other", name="Other")
+        db.add(other)
+        await db.flush()
+        (await db.get(Initiative, ini_id)).project_id = other.id
+    gh = FakeGh()
+    result = await _apply(prop_id, gh)
+    assert result["step"] == "ownership" and result["ownershipState"] == "mismatch"
+    assert not gh.docs
+    assert not await _journal()
+    async with db_session() as db:
+        assert (await db.get(Initiative, ini_id)).status == "awaiting_human"

@@ -7773,7 +7773,10 @@ class SessionOrchestrator:
         ``accepted`` and returns ``None`` here."""
         from server.audit import record_audit
         from server.pm.triage_accept import (
-            DECIDED_BY_AUTO, WorkItemMissing, apply_accept, pending_proposal_stmt)
+            DECIDED_BY_AUTO, WorkItemMissing, apply_accept, pending_proposal_stmt,
+            gather_accept_ownership)
+        from server.pm.repo_project import OwnershipConflict
+        ownership = await gather_accept_ownership([proposal_id])
         async with db_session() as db:
             prop = (await db.execute(
                 pending_proposal_stmt(proposal_id))).scalar_one_or_none()
@@ -7781,7 +7784,9 @@ class SessionOrchestrator:
                 return None
             try:
                 await apply_accept(db, prop, decided_by=DECIDED_BY_AUTO,
-                                   audit_identity="pm-triage")
+                                   audit_identity="pm-triage", ownership=ownership)
+            except OwnershipConflict:
+                return None
             except WorkItemMissing:
                 # The work item row is gone (deleted/reconciled away since the
                 # listing): there is nothing to classify, so this is the same
@@ -8985,6 +8990,11 @@ class SessionOrchestrator:
     async def _pm_issue_decision(self, work_item_id: str, decision: dict) -> dict:
         from server.db.models import WorkItem
         from server.pm.issue_disposition import IssueDecision, apply
+        from server.pm.repo_project import gather_repo_ownership_snapshot
+        async with db_session() as preflight:
+            item = await preflight.get(WorkItem, work_item_id)
+            repos = [item.repo] if item is not None and item.repo else []
+        ownership = await gather_repo_ownership_snapshot(repos)
         # Serialize decisions on one issue within the authority, including the
         # preflight. A queued request then sees the updated mirrored version.
         locks = getattr(self, "_issue_decision_locks", None)
@@ -8999,7 +9009,7 @@ class SessionOrchestrator:
                 return {"ok": False, "step": "load", "error": "Issue not found"}
             return await apply(db, src=src, decision=IssueDecision.model_validate(decision),
                                fetch=self._pm_sync_fetch_projects,
-                               mutate=self._pm_reconcile_mutate, now=self._pm_sync_now_utc())
+                               mutate=self._pm_reconcile_mutate, now=self._pm_sync_now_utc(), ownership=ownership)
 
     async def _pm_remove_dependency(self, work_item_id: str, blocker_ref: str) -> dict:
         """Delete one blocked-by edge on GitHub (roadmap spec §8, #1472).
@@ -9011,6 +9021,11 @@ class SessionOrchestrator:
         from sqlalchemy import select
         from server.db.models import WorkItem
         from server.pm.dep_remove import remove
+        from server.pm.repo_project import gather_repo_ownership_snapshot
+        async with db_session() as preflight:
+            item = await preflight.get(WorkItem, work_item_id)
+            repos = [item.repo] if item is not None and item.repo else []
+        ownership = await gather_repo_ownership_snapshot(repos)
         now = self._pm_sync_now_utc()
         async with db_session() as db:
             src = (await db.execute(select(WorkItem).where(
@@ -9018,7 +9033,7 @@ class SessionOrchestrator:
             if src is None:
                 return {"ok": False, "step": "load", "error": f"no such work item: {work_item_id}"}
             result = await remove(db, src=src, blocker_ref=blocker_ref,
-                                  mutate=self._pm_reconcile_mutate, now=now)
+                                  mutate=self._pm_reconcile_mutate, now=now, ownership=ownership)
             await db.commit()
         return result
 
@@ -9066,6 +9081,12 @@ class SessionOrchestrator:
         from sqlalchemy import select
         from server.db.models import Initiative, MaterializationProposal
         from server.pm.materialize_apply import apply
+        from server.pm.repo_project import gather_repo_ownership_snapshot
+        async with db_session() as preflight:
+            repo = await preflight.scalar(select(Initiative.repo).join(
+                MaterializationProposal, MaterializationProposal.initiative_id == Initiative.id
+            ).where(MaterializationProposal.id == proposal_id))
+        ownership = await gather_repo_ownership_snapshot([repo] if repo else [])
         now = self._pm_sync_now_utc()
         async with db_session() as db:
             proposal = (await db.execute(select(MaterializationProposal).where(
@@ -9076,7 +9097,7 @@ class SessionOrchestrator:
             slug = str((await db.execute(select(Initiative.slug).where(
                 Initiative.id == proposal.initiative_id))).scalars().first() or "")
             result = await apply(db, proposal, mutate=self._pm_reconcile_mutate,
-                                 now=now)
+                                 now=now, ownership=ownership)
         if result.get("ok"):
             epic = (result.get("epic") or {}).get("number")
             await self._sdlc_emit(

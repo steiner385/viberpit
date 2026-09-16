@@ -40,7 +40,7 @@ from .materialize import (
 )
 from .reconcile_diff import Mutation
 from .refs import split_ref
-from .repo_project import owning_projects_by_repo
+from .repo_project import OwnershipConflict, RepoOwnershipSnapshot, require_mutation_owner
 from .score import rice_score
 from .sync_request import request_project_sync
 
@@ -81,7 +81,8 @@ def error_text(payload: dict) -> str:
 
 
 async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
-                mutate: Mutate, now: datetime) -> dict:
+                mutate: Mutate, now: datetime,
+                ownership: RepoOwnershipSnapshot | None = None) -> dict:
     """Create the epic, its task sub-issues and the chain for *proposal*.
 
     Returns ``{"ok": True, …counts}`` or ``{"ok": False, "step": …, "error": …}``.
@@ -95,6 +96,12 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
         return {"ok": False, "step": "load",
                 "error": f"proposal {proposal.id} has no initiative"}
     repo = str(ini.repo or "")
+    try:
+        product = await require_mutation_owner(
+            db, repo, snapshot=ownership, allow_missing=ini.project_id is None,
+            project_id=ini.project_id)
+    except OwnershipConflict as exc:
+        return exc.result()
     owner, _, name = repo.partition("/")
     slug = str(ini.slug or "")
     initiated_by = f"{INITIATED_BY_PREFIX}{slug}"
@@ -348,7 +355,7 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
             item.reach, item.impact, item.effort, item.confidence = seed
     proposal.status = "accepted"
     proposal.resolved_at = now
-    sync_requested = await _request_sync(db, ini, repo, now)
+    sync_requested = await _request_sync(db, product.project_id if product else None, repo, now)
     await db.commit()
     log.info("materialize.apply slug=%s epic=%s tasks=%d edges=%d parked=%d",
              slug, epic.get("number"), len(decomposition.tasks), len(edges),
@@ -360,15 +367,9 @@ async def apply(db: AsyncSession, proposal: MaterializationProposal, *,
             "stage": ini.stage, "syncRequested": sync_requested}
 
 
-async def _request_sync(db: AsyncSession, ini: Initiative, repo: str,
+async def _request_sync(db: AsyncSession, project_id: str | None, repo: str,
                         now: datetime) -> bool:
-    """Ask pm-sync for a pass over the owning product, so the reconciler picks the
-    new issues up. ``Initiative.project_id`` is nullable, so fall back to the
-    repo's owning product; a repo no product owns is skipped, not guessed at."""
-    project_id = ini.project_id
-    if not project_id:
-        owner = (await owning_projects_by_repo(db, [repo])).get(repo)
-        project_id = owner.project_id if owner else None
+    """Use the preflight's canonical owner; verified standalone work has none."""
     if not project_id:
         log.warning("materialize.apply: %s is owned by no product — board "
                     "membership will not be requested", repo)
