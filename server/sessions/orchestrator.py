@@ -2205,7 +2205,28 @@ class SessionOrchestrator:
             self._session_lease_fences = fences
         return fences
 
-    async def _claim_session(self, session_id: str, *, why: str) -> bool:
+    def _lease_building(self) -> dict[str, float]:
+        """sid → ``_lease_clock()`` time (wall clock via ``self._clock`` in
+        production; monotonic fallback) of its most recent lease claim (layer 2).
+
+        A claim happens BEFORE the driver is built and registered, and the build
+        takes seconds to tens of seconds. Without this marker the heartbeat tick
+        read "fence, no driver" as a leaked lease and released it mid-build (#1826);
+        the session then ran with no lease at all. Created on demand for the same
+        reason as ``_lease_fences``.
+        """
+        building = getattr(self, "_session_lease_building", None)
+        if building is None:
+            building = {}
+            self._session_lease_building = building
+        return building
+
+    def _lease_clock(self) -> float:
+        clock = getattr(self, "_clock", None)
+        return clock() if clock is not None else time.monotonic()
+
+    async def _claim_session(self, session_id: str, *, why: str,
+                             adopt: bool = False) -> bool:
         """Win the right to run a CLI for *session_id* on THIS host, or refuse.
 
         Called immediately before every driver build. The three outcomes:
@@ -2220,8 +2241,39 @@ class SessionOrchestrator:
         * **DB error** — fail OPEN. The lease is a safety net over a rare race; a
           database blip must never stop a whole fleet from running sessions. The
           loop re-attempts the claim on its next tick.
+
+        Before the lease is consulted at all, the row's fleet stamp is checked
+        (spec 2026-09-16-session-lease-ownership, layer 1): a record another
+        ENABLED host owns is refused here, whoever asked. The lease answers "is a
+        twin live?"; this answers "is it mine to run?" — and every driver build
+        goes through this method, so no caller can forget the second question
+        (#1824 was a caller that did). ``adopt=True`` is for the paths that take a
+        row they do not yet own on purpose (adopt_session, transfer import).
+        Layer 4 (``_reconcile_foreign_lease``) has NO adopt bypass: an adopting path
+        must stamp the row AND ``_records[sid].host`` for this host before its
+        driver is registered, or the next tick closes what it just built. A
+        session with no in-memory record (a fresh spawn) is decided by the lease
+        alone, exactly as before.
         """
         me = self_host_name()
+        rec = self._records.get(session_id) if hasattr(self, "_records") else None
+        if rec is not None and not adopt:
+            getter = getattr(self, "_enabled_host_names", None)
+            enabled = await getter() if getter is not None else None
+            if not self._owns_record(rec, enabled):
+                stamp = getattr(rec, "host", None)
+                if session_lease_enforced():
+                    log.warning(
+                        "session-lease: refusing to %s session %s — its row is stamped "
+                        "for host %r, not %r; leaving it to its owner (layer 1).",
+                        why, session_id, stamp, me)
+                    log_event(log, logging.WARNING, "session.lease_denied",
+                              session_id=session_id, holder=stamp,
+                              reason=f"foreign_stamp:{why}")
+                    return False
+                log.warning(
+                    "session-lease: session %s is stamped for %r but enforcement is "
+                    "OFF — claiming it on %r anyway (%s)", session_id, stamp, me, why)
         try:
             fence = await session_lease.acquire(
                 session_id, me, ttl_s=SESSION_LEASE_TTL_S)
@@ -2231,6 +2283,7 @@ class SessionOrchestrator:
             return True
         if fence is not None:
             self._lease_fences()[session_id] = fence
+            self._lease_building()[session_id] = self._lease_clock()
             return True
         state = await _lease_state(session_id)
         holder = state.holder if state is not None else "<unknown>"
@@ -2252,6 +2305,7 @@ class SessionOrchestrator:
 
     async def _release_session_lease(self, session_id: str) -> None:
         """Drop our claim on *session_id* so another host need not wait out the TTL."""
+        self._lease_building().pop(session_id, None)
         fence = self._lease_fences().pop(session_id, None)
         if fence is None:
             return
@@ -2280,8 +2334,31 @@ class SessionOrchestrator:
         a wall clock — a tight sleep-and-poll test is a flake on a loaded CI shard.
         """
         me = self_host_name()
+        now = self._lease_clock()
+        getter = getattr(self, "_enabled_host_names", None)
+        enabled = await getter() if getter is not None else None
         for sid, fence in list(self._lease_fences().items()):
-            if sid not in self._drivers:
+            if sid in self._drivers:
+                self._lease_building().pop(sid, None)
+                rec = self._records.get(sid) if hasattr(self, "_records") else None
+                if rec is not None:
+                    try:
+                        if await self._reconcile_foreign_lease(sid, rec, enabled):
+                            continue
+                    except Exception:
+                        # One wedged teardown must not stop every later renew in
+                        # this pass. Keep renewing this sid too: holding a lease
+                        # on an uncertain state beats releasing it; the next tick
+                        # retries the reconcile.
+                        log_event(log, logging.WARNING, "session.lease_reconcile_failed",
+                                  session_id=sid, host=getattr(rec, "host", None))
+                        log.warning("session-lease: reconcile of %s failed", sid, exc_info=True)
+            elif now - self._lease_building().get(sid, float("-inf")) < SPAWN_WAIT_S:
+                # Claimed, driver not registered yet: a build in flight, not a
+                # leak. Renew so a build longer than the TTL is never seen as
+                # lapsed by another host (layer 2).
+                pass
+            else:
                 await self._release_session_lease(sid)
                 continue
             try:
@@ -2293,12 +2370,61 @@ class SessionOrchestrator:
             if ok:
                 continue
             self._lease_fences().pop(sid, None)
+            self._lease_building().pop(sid, None)
             state = await _lease_state(sid)
             log.critical(
                 "session-lease: LOST session %s (fenced takeover by %r) while a "
                 "driver for it is still live here — TWO hosts may now be running "
                 "this conversation (#1379).",
                 sid, state.holder if state is not None else "<released>")
+
+    async def _reconcile_foreign_lease(self, sid: str, rec: SessionRecord,
+                                       enabled: frozenset[str] | None) -> bool:
+        """Layer 4: this daemon holds the lease AND a live driver for *sid*, but the
+        row is stamped for another enabled host. Give it back.
+
+        Once the wrong daemon holds a session the state is stable — it renews
+        forever, the owner is refused forever, the dashboard reads "idle, detached"
+        (#1824 lasted a day). Returns True when the driver was torn down, so the
+        caller skips this pass's renew. Never acts on an unknown registry (a blip
+        must not drop this host's own drivers), never mid-turn (killing a driver
+        mid-turn has its own failure modes), and only logs when enforcement is off.
+
+        Layer 4 has NO adopt bypass: an adopting path must stamp the row AND
+        ``_records[sid].host`` for this host before its driver is registered, or the
+        next tick closes what it just built.
+        """
+        stamp = getattr(rec, "host", None)
+        if enabled is None or self._owns_record_by_stamp(stamp, enabled):
+            return False
+        driver = self._drivers.get(sid)
+        if driver is None:
+            return False
+        if sid in getattr(self, "_swapping", {}) or sid in getattr(self, "_spawning", {}):
+            # A swap (_reassign_locked) closes the OLD driver but leaves it registered
+            # until the new one is installed, and re-claims the lease mid-swap. Tearing
+            # down in that window pops the old driver and releases the lease, then the
+            # swap registers the NEW driver: a live driver with no lease, which this
+            # tick — iterating _lease_fences — never looks at again. Defer; the next
+            # tick re-checks once the swap has registered or failed.
+            log_event(log, logging.CRITICAL, "session.lease_foreign_holder",
+                      session_id=sid, host=stamp, action="deferred_build_in_flight")
+            return False
+        if getattr(driver, "turn_active", False) or getattr(driver, "drain_alive", False):
+            log_event(log, logging.CRITICAL, "session.lease_foreign_holder",
+                      session_id=sid, host=stamp, action="deferred_turn_active")
+            return False
+        if not session_lease_enforced():
+            log_event(log, logging.CRITICAL, "session.lease_foreign_holder",
+                      session_id=sid, host=stamp, action="log_only")
+            return False
+        popped = await self._teardown_driver_state(sid)   # pops driver, releases lease
+        if popped is not None:
+            self._spawn(self._close_automation_driver(popped, sid),
+                        name=f"lease-reconcile-close-{sid}")
+        log_event(log, logging.WARNING, "session.lease_reconciled",
+                  session_id=sid, host=stamp)
+        return True
 
     async def _session_lease_loop(self) -> None:
         """Beat :meth:`_session_lease_tick` at TTL/5 (#1379). Never dies on an error:
@@ -3757,7 +3883,8 @@ class SessionOrchestrator:
         # host may already be running. Doing it first means a refused spawn never
         # checks out a worktree or touches the row for a session it will not run;
         # a spawn that claims and then fails later has its lease reconciled away by
-        # _session_lease_tick (no driver ⇒ released).
+        # _session_lease_tick (no driver and past the SPAWN_WAIT_S build grace ⇒
+        # released).
         if not await self._claim_session(session_id, why="spawn"):
             raise SessionLeaseHeld(session_id)
         selected_engine = self._engine_registry.require(parse_agent_engine(engine))
@@ -14171,7 +14298,7 @@ class SessionOrchestrator:
         # the invariant uniform ("a session with a live driver holds its lease"), so
         # the reconcile pass and any later resume on another host see a consistent
         # picture rather than a driver with no claim behind it (#1379).
-        await self._claim_session(session_id, why="adopt")
+        await self._claim_session(session_id, why="adopt", adopt=True)
         Path(cand.cwd).mkdir(parents=True, exist_ok=True)
         driver_config_dir = self._driver_config_dir(
             AgentEngine.CLAUDE_CODE, cand.account, cand.cwd, None
@@ -15535,7 +15662,18 @@ class SessionOrchestrator:
             # The live driver is in this process — de facto ours regardless of
             # what the stamp says (e.g. a mid-flight registry rename).
             return True
-        host = record.host
+        return self._owns_record_by_stamp(record.host, enabled_hosts)
+
+    def _owns_record_by_stamp(self, host: str | None,
+                              enabled_hosts: frozenset[str] | None) -> bool:
+        """The stamp half of ``_owns_record``: does *host* (a row's fleet stamp)
+        belong to this daemon, ignoring whether a driver for it is live here?
+
+        Split out so the lease reconcile (spec layer 4) can ask the question for a
+        session whose driver IS live here — the case ``_owns_record``'s first clause
+        answers "yes" for by construction. Keep the two in lock-step: this is the
+        single source of truth for the stamp policy.
+        """
         me = self_host_name()
         if daemon_role() == "worker":
             return host == me

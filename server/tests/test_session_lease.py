@@ -26,7 +26,7 @@ from server.db import db_session, dispose_db, init_db
 from server.db.models import DaemonLease
 from server.sessions import session_lease
 from server.sessions.engine import AgentEngine
-from server.sessions.orchestrator import SessionLeaseHeld, SessionOrchestrator
+from server.sessions.orchestrator import SessionLeaseHeld, SessionOrchestrator, SPAWN_WAIT_S
 from server.sessions.types import SessionRecord
 from server.tests.fakes.fake_factory import fake_sdk_factory
 
@@ -249,6 +249,10 @@ async def test_the_renew_loop_releases_leases_whose_driver_is_gone(tmp_path, mon
         await orch._claim_session("dropped", why="spawn")
         orch._drivers["kept"] = object()   # only this one still has a live CLI
 
+        # A claim is a build in flight for up to SPAWN_WAIT_S (layer 2); age
+        # "dropped" past that so the tick sees a leak, not a build.
+        orch._lease_building()["dropped"] -= SPAWN_WAIT_S + 1
+
         await orch._session_lease_tick()
         orch._drivers.pop("kept", None)
 
@@ -257,6 +261,31 @@ async def test_the_renew_loop_releases_leases_whose_driver_is_gone(tmp_path, mon
         # Released for real, not just forgotten locally.
         assert await session_lease.acquire("dropped", "rocky", ttl_s=120) is not None
         assert await session_lease.acquire("kept", "rocky", ttl_s=120) is None
+    finally:
+        await dispose_db()
+
+
+@pytest.mark.asyncio
+async def test_ensure_driver_never_builds_for_a_row_another_host_owns(tmp_path, monkeypatch):
+    """Layer 1 end-to-end (#1824): the primary asks to resume a rocky-stamped row.
+    No lease row is written, no SDK process is built, and the cwd is NOT created —
+    the empty mkdir'd directory was how the wrong daemon ran a coding agent in a
+    non-repo for a day."""
+    import server.sessions.orchestrator as mod
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(mod, "self_host_name", lambda: "dobby")
+    monkeypatch.setattr(mod, "daemon_role", lambda: "primary")
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
+    try:
+        orch = _new_orch()
+        orch._enabled_host_names = AsyncMock(return_value=frozenset({"dobby", "rocky"}))
+        cwd = tmp_path / "wt" / "foreign"
+        orch._records[SID] = _record(host="rocky", cwd=str(cwd))
+
+        assert await orch.ensure_driver(SID) is None
+        assert SID not in orch._drivers
+        assert await session_lease.current(SID) is None      # never touched the lease
+        assert not cwd.exists()                               # never mkdir'd the cwd
     finally:
         await dispose_db()
 
@@ -280,6 +309,43 @@ async def test_stop_releases_every_session_lease(tmp_path, monkeypatch):
 
         assert heartbeats[0].done()
         assert not orch._session_lease_fences
+        assert await session_lease.acquire(SID, "rocky", ttl_s=120) is not None
+    finally:
+        await dispose_db()
+
+
+@pytest.mark.asyncio
+async def test_lease_tick_hands_a_foreign_row_back_for_real(tmp_path, monkeypatch):
+    """Layer 4 end-to-end with the real teardown: the primary holds the lease and a
+    live driver for a rocky-stamped row; one tick closes the driver, releases the
+    lease row so rocky can claim it, and leaves the record reading detached."""
+    import server.sessions.orchestrator as mod
+    from unittest.mock import AsyncMock
+
+    class FakeDriver:
+        turn_active = False
+        drain_alive = False
+        identity = "system"
+
+        async def aclose(self): pass
+
+    monkeypatch.setattr(mod, "self_host_name", lambda: "dobby")
+    monkeypatch.setattr(mod, "daemon_role", lambda: "primary")
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
+    try:
+        orch = _new_orch()
+        orch._enabled_host_names = AsyncMock(return_value=frozenset({"dobby", "rocky"}))
+        orch._records[SID] = _record(host="rocky")
+        assert await orch._claim_session(SID, why="adopt", adopt=True) is True
+        orch._drivers[SID] = FakeDriver()
+
+        await orch._session_lease_tick()
+
+        assert SID not in orch._drivers
+        assert SID not in orch._session_lease_fences
+        rec = orch.get_session(SID)
+        assert rec is not None and rec.detached is True
+        # Released for real: the owner can take it without waiting out the TTL.
         assert await session_lease.acquire(SID, "rocky", ttl_s=120) is not None
     finally:
         await dispose_db()

@@ -26,6 +26,7 @@ class MiniOrch:
     _prune_recovered = SessionOrchestrator._prune_recovered
     resume_recovery_status = SessionOrchestrator.resume_recovery_status
     _owns_record = SessionOrchestrator._owns_record
+    _owns_record_by_stamp = SessionOrchestrator._owns_record_by_stamp
 
     def __init__(self, *, drivers=None, records=None, resumable=None, raising=None,
                  enabled_hosts=None):
