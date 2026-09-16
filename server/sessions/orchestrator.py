@@ -2205,6 +2205,25 @@ class SessionOrchestrator:
             self._session_lease_fences = fences
         return fences
 
+    def _lease_building(self) -> dict[str, float]:
+        """sid → monotonic time of its most recent lease claim (layer 2).
+
+        A claim happens BEFORE the driver is built and registered, and the build
+        takes seconds to tens of seconds. Without this marker the heartbeat tick
+        read "fence, no driver" as a leaked lease and released it mid-build (#1826);
+        the session then ran with no lease at all. Created on demand for the same
+        reason as ``_lease_fences``.
+        """
+        building = getattr(self, "_session_lease_building", None)
+        if building is None:
+            building = {}
+            self._session_lease_building = building
+        return building
+
+    def _lease_clock(self) -> float:
+        clock = getattr(self, "_clock", None)
+        return clock() if clock is not None else time.monotonic()
+
     async def _claim_session(self, session_id: str, *, why: str,
                              adopt: bool = False) -> bool:
         """Win the right to run a CLI for *session_id* on THIS host, or refuse.
@@ -2260,6 +2279,7 @@ class SessionOrchestrator:
             return True
         if fence is not None:
             self._lease_fences()[session_id] = fence
+            self._lease_building()[session_id] = self._lease_clock()
             return True
         state = await _lease_state(session_id)
         holder = state.holder if state is not None else "<unknown>"
@@ -2281,6 +2301,7 @@ class SessionOrchestrator:
 
     async def _release_session_lease(self, session_id: str) -> None:
         """Drop our claim on *session_id* so another host need not wait out the TTL."""
+        self._lease_building().pop(session_id, None)
         fence = self._lease_fences().pop(session_id, None)
         if fence is None:
             return
@@ -2309,8 +2330,16 @@ class SessionOrchestrator:
         a wall clock — a tight sleep-and-poll test is a flake on a loaded CI shard.
         """
         me = self_host_name()
+        now = self._lease_clock()
         for sid, fence in list(self._lease_fences().items()):
-            if sid not in self._drivers:
+            if sid in self._drivers:
+                self._lease_building().pop(sid, None)
+            elif now - self._lease_building().get(sid, float("-inf")) < SPAWN_WAIT_S:
+                # Claimed, driver not registered yet: a build in flight, not a
+                # leak. Renew so a build longer than the TTL is never seen as
+                # lapsed by another host (layer 2).
+                pass
+            else:
                 await self._release_session_lease(sid)
                 continue
             try:
@@ -2322,6 +2351,7 @@ class SessionOrchestrator:
             if ok:
                 continue
             self._lease_fences().pop(sid, None)
+            self._lease_building().pop(sid, None)
             state = await _lease_state(sid)
             log.critical(
                 "session-lease: LOST session %s (fenced takeover by %r) while a "

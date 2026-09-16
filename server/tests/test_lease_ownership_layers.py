@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from server.sessions import session_lease
-from server.sessions.orchestrator import SessionOrchestrator
+from server.sessions.orchestrator import SessionOrchestrator, SPAWN_WAIT_S
 from server.tests.test_host_partitioned_ownership import _record
 
 BOTH = frozenset({"dobby", "rocky"})
@@ -123,3 +123,61 @@ async def test_enforcement_off_claims_a_foreign_row_and_warns(claiming, monkeypa
         assert await claiming._claim_session("s1", why="resume") is True
     assert claiming.acquired == ["s1"]
     assert any("enforcement is OFF" in r.getMessage() for r in caplog.records)
+
+
+@pytest.fixture
+def ticking(claiming, monkeypatch):
+    """A primary whose renew/release are recorded; the clock is injectable."""
+    renewed: list[str] = []
+    released: list[str] = []
+
+    async def fake_renew(session_id, holder, fence):
+        renewed.append(session_id)
+        return True
+
+    async def fake_release(session_id, holder, fence):
+        released.append(session_id)
+
+    monkeypatch.setattr(session_lease, "renew", fake_renew)
+    monkeypatch.setattr(session_lease, "release", fake_release)
+    claiming.renewed, claiming.released = renewed, released
+    claiming._now = 1000.0
+    claiming._clock = lambda: claiming._now
+    return claiming
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_claim_is_renewed_not_released_while_the_driver_builds(ticking):
+    assert await ticking._claim_session("s1", why="resume") is True
+    ticking._now += 1.0                       # the tick at t+1 that killed #1826
+    await ticking._session_lease_tick()
+    assert ticking.released == []
+    assert ticking.renewed == ["s1"]
+    assert "s1" in ticking._lease_fences()
+
+
+@pytest.mark.asyncio
+async def test_registration_clears_the_build_marker(ticking):
+    await ticking._claim_session("s1", why="resume")
+    ticking._drivers["s1"] = object()
+    await ticking._session_lease_tick()
+    assert "s1" not in ticking._lease_building()
+    assert ticking.renewed == ["s1"] and ticking.released == []
+
+
+@pytest.mark.asyncio
+async def test_a_build_that_never_registers_is_released_after_spawn_wait(ticking):
+    await ticking._claim_session("s1", why="resume")
+    ticking._now += SPAWN_WAIT_S + 1
+    await ticking._session_lease_tick()
+    assert ticking.released == ["s1"]
+    assert "s1" not in ticking._lease_fences()
+    assert "s1" not in ticking._lease_building()
+
+
+@pytest.mark.asyncio
+async def test_teardown_drops_the_build_marker_too(ticking):
+    await ticking._claim_session("s1", why="resume")
+    await ticking._release_session_lease("s1")
+    assert "s1" not in ticking._lease_building()
+    assert ticking.released == ["s1"]
