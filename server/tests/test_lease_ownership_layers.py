@@ -23,7 +23,7 @@ BOTH = frozenset({"dobby", "rocky"})
 def primary(monkeypatch):
     import server.sessions.orchestrator as mod
     monkeypatch.setattr(mod, "daemon_role", lambda: "primary")
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.setattr(mod, "self_host_name", lambda: "dobby")
     orch = SessionOrchestrator.__new__(SessionOrchestrator)
     orch._records = {}
     orch._drivers = {}
@@ -106,7 +106,7 @@ async def test_adopt_bypasses_the_stamp_fence(claiming):
 async def test_worker_claims_only_its_own_stamp(claiming, monkeypatch):
     import server.sessions.orchestrator as mod
     monkeypatch.setattr(mod, "daemon_role", lambda: "worker")
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "rocky")
+    monkeypatch.setattr(mod, "self_host_name", lambda: "rocky")
     claiming._records["mine"] = _record("mine", "rocky", "idle")
     claiming._records["primary"] = _record("primary", "dobby", "idle")
     claiming._records["legacy"] = _record("legacy", None, "idle")
@@ -118,7 +118,8 @@ async def test_worker_claims_only_its_own_stamp(claiming, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_enforcement_off_claims_a_foreign_row_and_warns(claiming, monkeypatch, caplog):
-    monkeypatch.setenv("CCSWITCH_SESSION_LEASE_ENFORCE", "false")
+    import server.sessions.orchestrator as mod
+    monkeypatch.setattr(mod, "session_lease_enforced", lambda: False)
     claiming._records["s1"] = _record("s1", "rocky", "idle")
     with caplog.at_level(logging.WARNING, logger="server.sessions.orchestrator"):
         assert await claiming._claim_session("s1", why="resume") is True
@@ -258,7 +259,8 @@ async def test_tick_never_reconciles_when_the_registry_is_unknown(reconciling):
 
 @pytest.mark.asyncio
 async def test_tick_logs_only_when_enforcement_is_off(reconciling, monkeypatch, caplog):
-    monkeypatch.setenv("CCSWITCH_SESSION_LEASE_ENFORCE", "false")
+    import server.sessions.orchestrator as mod
+    monkeypatch.setattr(mod, "session_lease_enforced", lambda: False)
     await reconciling._claim_session("s1", why="adopt", adopt=True)
     reconciling._records["s1"] = _record("s1", "rocky", "idle")
     reconciling._drivers["s1"] = LiveDriver()

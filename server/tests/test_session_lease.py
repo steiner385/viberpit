@@ -273,7 +273,7 @@ async def test_ensure_driver_never_builds_for_a_row_another_host_owns(tmp_path, 
     non-repo for a day."""
     import server.sessions.orchestrator as mod
     from unittest.mock import AsyncMock
-    monkeypatch.setenv("CCSWITCH_HOST_NAME", "dobby")
+    monkeypatch.setattr(mod, "self_host_name", lambda: "dobby")
     monkeypatch.setattr(mod, "daemon_role", lambda: "primary")
     await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path/'c.db'}")
     try:

@@ -23,6 +23,7 @@ class MiniOrch:
     snapshot_deploy = SessionOrchestrator.snapshot_deploy
     restore_deploy = SessionOrchestrator.restore_deploy
     _owns_record = SessionOrchestrator._owns_record
+    _owns_record_by_stamp = SessionOrchestrator._owns_record_by_stamp
 
     def __init__(self, drivers, records, resumable, last_prompts=None, enabled_hosts=None):
         self._drivers = drivers
