@@ -1676,8 +1676,45 @@ class SessionOrchestrator:
             factories[AgentEngine.CODEX] = CodexAgentDriverFactory(
                 self._codex, self._registry, self._launch_model_for_session,
                 self._codex_assistant_overlay_for_session,
-                self._codex_session_tools_for_session)
+                self._codex_session_tools_for_session,
+                item_times_root_for=self._codex_item_times_root)
         return factories
+
+    @staticmethod
+    def _codex_item_times_root(account: str) -> Path:
+        """Where *account*'s Codex item-time sidecars live (``item_times.py``).
+
+        The ONE derivation, handed to both the driver factory (writer) and
+        ``_codex_replay`` (reader), so the two can never disagree about the path.
+        Under the account's ViberPit config dir — the Codex driver's own
+        ``config_dir`` is deliberately empty (``_driver_config_dir``) and
+        ``CODEX_HOME`` is Codex private state that stays untouched (design D8).
+        """
+        from server.codex.item_times import ITEM_TIMES_DIRNAME
+        return account_cfg_dir(account) / ITEM_TIMES_DIRNAME
+
+    async def _delete_codex_item_times(self, row) -> None:
+        """Drop a Codex session's item-time sidecar on permanent delete.
+
+        Best-effort and never a reason to keep the row: the file is tiny and
+        host-local, so the worst outcome of a miss is one stray file, whereas
+        refusing the delete would strand the session.
+        """
+        engine = parse_agent_engine(getattr(row, "engine", None), legacy_default=True)
+        thread_id = getattr(row, "engine_session_id", None)
+        if engine is not AgentEngine.CODEX or not thread_id:
+            return
+        from server.codex.item_times import item_times_path
+        path = item_times_path(self._codex_item_times_root(row.account_name), thread_id)
+        if path is None:
+            return
+        try:
+            await asyncio.to_thread(path.unlink)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            log.warning("session.permanent_delete id=%s could not remove codex "
+                        "item-time sidecar %s: %s", row.id, path, exc)
 
     def _launch_model_for_session(self, session_id: str) -> str | None:
         """The model a driver being built for *session_id* should launch on.
@@ -17492,6 +17529,7 @@ class SessionOrchestrator:
             if not await self._delete_legacy_archive_dir(session_id, stored_root):
                 return False
 
+        await self._delete_codex_item_times(row)
         async with db_session() as db:
             from sqlalchemy import delete as sa_delete
             # Remove the session's attachment rows + (dedup-aware) on-disk files
@@ -17762,7 +17800,11 @@ class SessionOrchestrator:
             client = codex.client_for(account)
         if client is None:
             return None
-        return CodexThreadReplay(client, thread_id, model=model)
+        from server.codex.item_times import item_times_path
+        return CodexThreadReplay(
+            client, thread_id, model=model,
+            item_times_path=item_times_path(self._codex_item_times_root(account), thread_id),
+        )
 
     async def transcript_events(self, session_id: str, *, max_turns: int | None = 20) -> list:
         """Return replayed transcript events for a session (read-only review).
