@@ -15535,7 +15535,18 @@ class SessionOrchestrator:
             # The live driver is in this process — de facto ours regardless of
             # what the stamp says (e.g. a mid-flight registry rename).
             return True
-        host = record.host
+        return self._owns_record_by_stamp(record.host, enabled_hosts)
+
+    def _owns_record_by_stamp(self, host: str | None,
+                              enabled_hosts: frozenset[str] | None) -> bool:
+        """The stamp half of ``_owns_record``: does *host* (a row's fleet stamp)
+        belong to this daemon, ignoring whether a driver for it is live here?
+
+        Split out so the lease reconcile (spec layer 4) can ask the question for a
+        session whose driver IS live here — the case ``_owns_record``'s first clause
+        answers "yes" for by construction. Keep the two in lock-step: this is the
+        single source of truth for the stamp policy.
+        """
         me = self_host_name()
         if daemon_role() == "worker":
             return host == me
