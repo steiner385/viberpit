@@ -21,12 +21,36 @@ one assistant JSONL entry and a tool-heavy logical turn spans several.
 """
 from __future__ import annotations
 
+import dataclasses
 from typing import Protocol
 
 from server.codex import schema
 from server.codex.translator import CodexEventTranslator
 from server.sessions import events as ev
 from server.sessions.replay import ReplayWindow
+
+
+def _turn_started_ms(turn: schema.Turn) -> float | None:
+    """The turn's `startedAt` as epoch MILLISECONDS — the unit every `ev.*.ts`
+    carries on the wire — or None when the app-server reported none.
+
+    The app-server's own schema (`codex app-server generate-json-schema`,
+    codex-cli 0.153.2) documents `Turn.startedAt` as "Unix timestamp (in seconds)";
+    a live `thread/read` confirms it (`1789404900`, not `1789404900000`).
+    """
+    if turn.started_at is None:
+        return None
+    return float(turn.started_at) * 1000.0
+
+
+def _restamp(event: object, ts: float | None) -> object:
+    """Return *event* with its `ts` set to *ts*, or the event itself when it has no
+    `ts` field (TurnStart/TurnEnd/Condensing carry none on the wire)."""
+    if not dataclasses.is_dataclass(event) or isinstance(event, type):
+        return event
+    if not any(f.name == "ts" for f in dataclasses.fields(event)):
+        return event
+    return dataclasses.replace(event, ts=ts)
 
 
 class ThreadReader(Protocol):
@@ -72,17 +96,29 @@ class CodexThreadReplay:
         a Claude transcript where the user's entry precedes the assistant's. The
         reducer nests a turn's content under the `TurnStart` that opens it, so
         emitting the prompt inside the turn would render it as assistant output.
+
+        Every block event is re-stamped with the turn's `startedAt`. The translator
+        is the LIVE mapping and lets each event self-stamp at construction — right
+        for a notification arriving now, wrong for history: without this override a
+        reloaded session showed the replay time in every gutter. `thread/read` items
+        carry no time of their own, so the owning turn's start is the closest real
+        time there is; a turn with none replays unstamped (empty gutter), never with
+        a fabricated one — the Claude adapter's missing-`timestamp` contract.
         """
         translator = CodexEventTranslator(
             thread_id=self._thread_id, model=self._model
         )
+        ts = _turn_started_ms(turn)
         prologue: list = []
         body: list = []
         opened = False
         for item in turn.items:
-            translated = translator.translate_item(
-                item, turn_id=turn.id, completed=True
-            )
+            translated = [
+                _restamp(e, ts)
+                for e in translator.translate_item(
+                    item, turn_id=turn.id, completed=True
+                )
+            ]
             if not opened and isinstance(item, schema.UserMessageItem):
                 prologue.extend(translated)
                 continue
