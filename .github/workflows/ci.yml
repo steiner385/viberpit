@@ -12,7 +12,10 @@ on:
 # commits were cancelled before a single job started and carried no check-runs at all.
 # ci_verdict then read them as a "pending" that could never resolve, leaving those commits
 # permanently undeployable (2026-09-05: ed6d9a35 and 15de2a2e). constitution.yml already
-# carries this fix; server/tests/test_workflow_master_concurrency.py keeps them in step.
+# carries this fix; server/tests/test_workflow_concurrency.py keeps them in step.
+# Cancelling a superseded PR run is safe HERE and only here: every trigger above is
+# push-shaped, so the cancelled run always belongs to a sha that is no longer the head,
+# and the suite is long enough that supersession is worth real minutes.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
