@@ -827,6 +827,8 @@ async def accept_materialization(
         # An apply already running for this proposal is a CONFLICT, not a gateway
         # failure: nothing went wrong, the same write is in flight, and the answer
         # a second tap needs is "wait", not "retry" (C4-R17).
+        if result.get("step") == "ownership":
+            raise HTTPException(status_code=409, detail=result)
         if result.get("step") == "in_flight":
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
                 "error": "apply_in_flight",

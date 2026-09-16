@@ -4,17 +4,28 @@ Bare-orchestrator + real-SQLite tests: the seams' DB reads/writes and the
 prompt/parse wiring, with spawn stubbed to a recorder."""
 from __future__ import annotations
 
+from server.tests.pm_ownership_fixtures import identity_repositories
+import pytest
+
+
+
+
+
 import os
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
 
 from server.db import db_session, init_db
 from server.tests.fakes.fake_automation_ctx import FakeAutomationContext
 from server.db.models import (
     Feature, Project, ProjectRepo, TriageProposal, WorkItem)
+
+
+@pytest.fixture(autouse=True)
+def canonical_mutation_repositories(monkeypatch):
+    monkeypatch.setattr("server.automations.target_identity.resolve_repositories", identity_repositories)
 
 
 def _bare_orch():

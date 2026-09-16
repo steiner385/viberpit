@@ -916,7 +916,7 @@ def test_both_tap_spawn_paths_record_a_running_outcome(tmp_path, monkeypatch):
         async def resolve_repos(names):
             return {name: name.casefold() for name in names}
 
-        monkeypatch.setattr("server.automations.product_admission.resolve_repositories",
+        monkeypatch.setattr("server.automations.target_identity.resolve_repositories",
                             resolve_repos)
         await _seed_item("o/r", 1)
         await _seed_item("o/r", 2)

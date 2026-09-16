@@ -31,14 +31,15 @@ from .gh_mutations import build_batch, parse_batch
 from .materialize_apply import Mutate, error_text
 from .reconcile_diff import remove_blocked_by_mutation
 from .refs import split_ref
-from .repo_project import owning_projects_by_repo
+from .repo_project import OwnershipConflict, RepoOwnershipSnapshot, require_mutation_owner
 from .sync_request import request_project_sync
 
 INITIATED_BY_PREFIX = "dep-remove:"
 
 
 async def remove(db: AsyncSession, *, src: WorkItem, blocker_ref: str,
-                 mutate: Mutate, now: datetime) -> dict:
+                 mutate: Mutate, now: datetime,
+                ownership: RepoOwnershipSnapshot | None = None) -> dict:
     """Delete the native edge ``src`` ← blocked by ← ``blocker_ref``.
 
     Returns ``{"ok": True, "src", "blocker"}`` or ``{"ok": False, "step", "error"}``
@@ -51,6 +52,10 @@ async def remove(db: AsyncSession, *, src: WorkItem, blocker_ref: str,
     ViberPit's view — there is deliberately no resume path, unlike
     ``materialize_apply``, because re-issuing the removal is idempotent and costs
     nothing, while a half-applied issue creation is not."""
+    try:
+        owner_row = await require_mutation_owner(db, src.repo or "", snapshot=ownership, allow_missing=True)
+    except OwnershipConflict as exc:
+        return exc.result()
     src_ref = f"{src.repo}#{src.number}"
     parsed = split_ref(blocker_ref)
     dst = None
@@ -88,7 +93,6 @@ async def remove(db: AsyncSession, *, src: WorkItem, blocker_ref: str,
         WorkItemDep.active.is_(True)))).scalars().all()
     for row in rows:
         row.active = False
-    owner_row = (await owning_projects_by_repo(db, [str(src.repo or "")])).get(str(src.repo or ""))
     if owner_row is not None:
         await request_project_sync(db, owner_row.project_id, now)
     return {"ok": True, "src": src_ref, "blocker": blocker_ref}

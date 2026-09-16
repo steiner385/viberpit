@@ -6,16 +6,27 @@ after it, the local dep rows deactivated only on success, and the sync request.
 """
 from __future__ import annotations
 
+from server.tests.pm_ownership_fixtures import identity_repositories, ownership_snapshot
+import pytest
+
+
+
+
+
 import os
 import tempfile
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-import pytest
 from sqlalchemy import select
 
 from server.db import db_session, init_db
 from server.db.models import GhWriteJournal, Project, ProjectRepo, WorkItem, WorkItemDep
+
+@pytest.fixture(autouse=True)
+def canonical_mutation_repositories(monkeypatch):
+    monkeypatch.setattr("server.automations.target_identity.resolve_repositories", identity_repositories)
+
 
 NOW = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
 
@@ -60,7 +71,7 @@ async def _run(db_url: str, src_id: str, mutate):
     from server.pm.dep_remove import remove
     async with db_session() as db:
         src = (await db.execute(select(WorkItem).where(WorkItem.id == src_id))).scalar_one()
-        result = await remove(db, src=src, blocker_ref="o/r#3", mutate=mutate, now=NOW)
+        result = await remove(db, src=src, blocker_ref="o/r#3", mutate=mutate, now=NOW, ownership=await ownership_snapshot(db, "o/r"))
         await db.commit()
         return result
 
@@ -112,5 +123,5 @@ async def test_unmirrored_blocker_is_refused(db_env):
     from server.pm.dep_remove import remove
     async with db_session() as db:
         src = (await db.execute(select(WorkItem).where(WorkItem.id == src_id))).scalar_one()
-        result = await remove(db, src=src, blocker_ref="o/r#999", mutate=_mutate({}, []), now=NOW)
+        result = await remove(db, src=src, blocker_ref="o/r#999", mutate=_mutate({}, []), now=NOW, ownership=await ownership_snapshot(db, "o/r"))
     assert result["ok"] is False and result["step"] == "resolve"

@@ -345,7 +345,7 @@ async def test_tap_dispatch_applies_the_floor_through_the_one_spawn_path(
     async def resolve_repos(names):
         return {name: name.casefold() for name in names}
 
-    monkeypatch.setattr("server.automations.product_admission.resolve_repositories", resolve_repos)
+    monkeypatch.setattr("server.automations.target_identity.resolve_repositories", resolve_repos)
 
     async def resolve(refs, *, kind):
         assert kind == "issue"

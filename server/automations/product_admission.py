@@ -10,11 +10,11 @@ from sqlalchemy import select
 
 from server.db import db_session
 from server.db.models import AutomationOperation, Project, ProjectRepo
-from server.pm.repo_project import RepoOwnership, resolve_repo_ownership
+from server.pm.repo_project import RepoOwnership, gather_repo_identities, resolve_repo_ownership
 
 from .context import AutomationContext
 from .product_policy import ImplementationConstraint, ImplementationDecision, decide_implementation, effective_policy
-from .target_identity import resolve_repositories, valid_repo_name
+from .target_identity import valid_repo_name
 
 
 class ProductMissing(LookupError):
@@ -43,10 +43,7 @@ async def gather_product_coverage(
         requested = sorted(set(repos) if repos is not None else {
             repo for pid, repo in registrations if project is not None and pid == project.id and repo})
         candidates = {repo for _, repo in registrations if repo} | set(requested)
-    supplied = dict(verified_repos or {})
-    pending = sorted(candidates - supplied.keys())
-    identities = await resolve_repositories(pending) if requested and pending else {}
-    identities.update(supplied)
+    identities = await gather_repo_identities(candidates, verified_repos=verified_repos) if requested else {}
     async with db_session() as db:
         if requested_product is not None:
             project = await db.scalar(select(Project).where(Project.slug == requested_product))

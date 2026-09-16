@@ -27,7 +27,7 @@ def isolated_identity(monkeypatch):
     async def repos(names):
         return {name: name.casefold() for name in names}
 
-    monkeypatch.setattr("server.automations.product_admission.resolve_repositories", repos)
+    monkeypatch.setattr("server.automations.target_identity.resolve_repositories", repos)
     monkeypatch.setattr("server.automations.ownership_reconciliation.reconcile_legacy_targets",
                         AsyncMock())
 

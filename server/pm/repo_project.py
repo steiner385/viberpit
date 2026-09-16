@@ -12,7 +12,6 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from server.automations.target_identity import valid_repo_name
 from server.db.models import Project, ProjectRepo
 from server.pm.github_sync import canonical_repo_name
 
@@ -55,6 +54,8 @@ async def resolve_repo_ownership(
     unmatched names are unresolved, never verified missing. New authorization
     callers must supply a snapshot, including an empty one when lookup failed.
     """
+    from server.automations.target_identity import valid_repo_name
+
     wanted = sorted({repo for repo in repos if repo})
     if not wanted:
         return {}
@@ -138,3 +139,77 @@ async def owning_projects_by_repo(
         for repo, result in (await resolve_repo_ownership(db, repos)).items()
         if result.state == "unique" and result.owner is not None
     }
+
+
+class OwnershipConflict(ValueError):
+    """Fresh ownership evidence is insufficient to authorize this mutation."""
+
+    def __init__(self, state: str, reason: str):
+        self.state = state
+        super().__init__(f"Repository ownership {state}: {reason}")
+
+    def result(self) -> dict:
+        return {"ok": False, "step": "ownership", "ownershipState": self.state,
+                "error": str(self)}
+
+
+@dataclass(frozen=True)
+class RepoOwnershipSnapshot:
+    canonical_repos: Mapping[str, str | None]
+    registrations: frozenset[tuple[str | None, str | None, str | None]]
+
+
+async def _registration_evidence(db: AsyncSession) -> frozenset:
+    return frozenset(tuple(row) for row in (await db.execute(
+        select(ProjectRepo.repo, Project.id, Project.slug)
+        .outerjoin(Project, Project.id == ProjectRepo.project_id)
+    )).all())
+
+
+async def gather_repo_identities(
+    candidates: Collection[str], *, verified_repos: Mapping[str, str | None] | None = None,
+) -> dict[str, str | None]:
+    """Gather canonical evidence once, outside the mutation transaction."""
+    from server.automations.target_identity import resolve_repositories
+
+    supplied = dict(verified_repos or {})
+    pending = sorted(set(candidates) - supplied.keys())
+    identities = await resolve_repositories(pending) if pending else {}
+    identities.update(supplied)
+    return identities
+
+
+async def gather_repo_ownership_snapshot(repos: Collection[str]) -> RepoOwnershipSnapshot:
+    from server.db import db_session
+
+    async with db_session() as db:
+        registrations = await _registration_evidence(db)
+    identities = await gather_repo_identities(
+        set(repos) | {repo for repo, _, _ in registrations if repo})
+    return RepoOwnershipSnapshot(identities, registrations)
+
+
+async def require_mutation_owner(
+    db: AsyncSession, repo: str, *, snapshot: RepoOwnershipSnapshot | None,
+    allow_missing: bool = False, project_id: str | None = None,
+) -> RepoOwner | None:
+    """Revalidate gathered registration evidence before any mutation; never network.
+
+    Missing evidence is a refusal even for direct service callers. Verified absence
+    is supported only by explicit standalone human paths, never fleet authority.
+    """
+    if snapshot is None:
+        raise OwnershipConflict("unresolved", "Canonical preflight is required.")
+    if await _registration_evidence(db) != snapshot.registrations:
+        raise OwnershipConflict("changed", "Product registrations changed; retry preflight.")
+    ownership = (await resolve_repo_ownership(
+        db, [repo], canonical_repos=snapshot.canonical_repos)).get(repo)
+    if ownership is None:
+        raise OwnershipConflict("unresolved", "Repository is missing.")
+    if ownership.state == "missing" and allow_missing and project_id is None:
+        return None
+    if ownership.state != "unique" or ownership.owner is None:
+        raise OwnershipConflict(ownership.state, ownership.reason)
+    if project_id is not None and ownership.owner.project_id != project_id:
+        raise OwnershipConflict("mismatch", "Repository belongs to another product.")
+    return ownership.owner

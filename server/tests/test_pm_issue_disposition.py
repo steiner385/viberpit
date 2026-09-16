@@ -1,14 +1,25 @@
 """Confirmed upstream issue decisions, optimistic conflicts and write-ahead journal."""
+from server.tests.pm_ownership_fixtures import identity_repositories, ownership_snapshot
+import pytest
+
+
+
+
+
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
-import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
 from server.db import db_session, init_db
 from server.db.models import GhWriteJournal, WorkItem
 from server.pm.issue_disposition import IssueDecision, apply, detail
+
+@pytest.fixture(autouse=True)
+def canonical_mutation_repositories(monkeypatch):
+    monkeypatch.setattr("server.automations.target_identity.resolve_repositories", identity_repositories)
+
 
 NOW = datetime(2026, 9, 12, tzinfo=timezone.utc)
 
@@ -38,7 +49,7 @@ async def run(item, action="resolve", *, remote=None, response=None, version=Non
         row = await db.get(WorkItem, item)
         request = IssueDecision(action=action, version=version or detail(row)["version"],
                                 title="New", body="New body")
-        result = await apply(db, src=row, decision=request, fetch=fetch, mutate=mutate, now=NOW)
+        result = await apply(db, src=row, decision=request, fetch=fetch, mutate=mutate, now=NOW, ownership=await ownership_snapshot(db, "o/r"))
     return result, fetch, mutate
 
 
@@ -103,7 +114,7 @@ async def test_transport_failure_is_journaled_before_call(item):
     async with db_session() as db:
         src = await db.get(WorkItem, item)
         result = await apply(db, src=src, decision=IssueDecision(action="resolve", version=detail(src)["version"]),
-                            fetch=AsyncMock(return_value={"data": {"node": node()}}), mutate=fail, now=NOW)
+                            fetch=AsyncMock(return_value={"data": {"node": node()}}), mutate=fail, now=NOW, ownership=await ownership_snapshot(db, "o/r"))
         assert not result["ok"] and "credential" not in result["error"]
         assert src.state == "open"
 
@@ -115,7 +126,7 @@ async def test_preflight_failure_never_mutates(item, remote):
     async with db_session() as db:
         src = await db.get(WorkItem, item)
         result = await apply(db, src=src, decision=IssueDecision(action="resolve", version=detail(src)["version"]),
-                            fetch=AsyncMock(return_value=remote), mutate=mutate, now=NOW)
+                            fetch=AsyncMock(return_value=remote), mutate=mutate, now=NOW, ownership=await ownership_snapshot(db, "o/r"))
         assert result["step"] == "fetch"
         assert src.state == "open"
     mutate.assert_not_called()

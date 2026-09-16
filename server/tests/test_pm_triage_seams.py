@@ -30,6 +30,14 @@ from server.db.models import (
     Feature, Project, ProjectRepo, Session as DbSession, TriageProposal, WorkItem)
 from server.tests.fakes.fake_automation_ctx import FakeAutomationContext
 
+from server.tests.pm_ownership_fixtures import identity_repositories
+
+
+@pytest.fixture(autouse=True)
+def canonical_mutation_repositories(monkeypatch):
+    monkeypatch.setattr("server.automations.target_identity.resolve_repositories", identity_repositories)
+
+
 REPO = "steiner385/viberpit"
 OTHER_REPO = "steiner385/kindash"
 
