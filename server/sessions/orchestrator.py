@@ -8653,7 +8653,8 @@ class SessionOrchestrator:
                 InitiativeArtifact.initiative_id == initiative_id))).scalars().all()
         return [{"id": r.id, "kind": r.kind, "pr_number": r.pr_number,
                  "pr_url": r.pr_url, "commit_sha": r.commit_sha,
-                 "session_id": r.session_id} for r in rows]
+                 "session_id": r.session_id,
+                 "auto_merge_armed_at": r.auto_merge_armed_at} for r in rows]
 
     async def _sdlc_record_artifact(self, *, initiative_id: str, kind: str,
                                     repo_path: str, session_id: str | None,

@@ -278,3 +278,48 @@ def test_sdlc_advance_stage_is_a_compare_and_set_that_records_the_gate():
     assert (blk.stage, blk.status, blk.last_auto_gate) == ("design", "blocked", None)
     assert len(audits) == 1 and audits[0].identity == "sdlc-synthesizer"
     assert audits[0].detail["to"] == "plan"
+
+
+def test_sdlc_list_artifacts_carries_auto_merge_armed_at():
+    """The synthesizer's idempotence key for auto-merge arming (roadmap
+    auto-execution phase 2b, task 2): ``_sdlc_list_artifacts`` must project
+    ``auto_merge_armed_at`` from the row, not just the six original keys —
+    otherwise the loop's `art.get("auto_merge_armed_at")` check always reads
+    None and re-arms on every tick."""
+    from datetime import datetime, timezone
+    from server.app import create_app
+    from server.db import db_session
+    from server.db.models import Initiative, InitiativeArtifact
+
+    async def _seed_and_list(orch):
+        async with db_session() as db:
+            init = Initiative(slug="armed", repo="o/r", title="Armed",
+                              stage="build", status="active")
+            db.add(init)
+            await db.flush()
+            db.add(InitiativeArtifact(initiative_id=init.id, kind="plan",
+                                      pr_number=7, pr_url="https://x/7",
+                                      auto_merge_armed_at=None))
+            db.add(InitiativeArtifact(initiative_id=init.id, kind="spec",
+                                      pr_number=8, pr_url="https://x/8",
+                                      auto_merge_armed_at=datetime(
+                                          2026, 9, 16, tzinfo=timezone.utc)))
+            await db.commit()
+            initiative_id = init.id
+        return await orch._sdlc_list_artifacts(initiative_id)
+
+    with tempfile.TemporaryDirectory() as tmp, temp_env(), patch.dict(
+        os.environ, _sqlite_env(tmp)
+    ):
+        orch = _make_orch()
+        app = create_app(orchestrator=orch)
+        client = TestClient(app, raise_server_exceptions=False)
+        with client:
+            rows = client.portal.call(_seed_and_list, orch)
+    by_pr = {r["pr_number"]: r for r in rows}
+    assert "auto_merge_armed_at" in by_pr[7]
+    assert by_pr[7]["auto_merge_armed_at"] is None
+    # SQLite stores naive UTC (per the DB clock rule), so the round trip drops
+    # tzinfo even though the column is declared DateTime(timezone=True).
+    assert by_pr[8]["auto_merge_armed_at"].replace(tzinfo=timezone.utc) == \
+        datetime(2026, 9, 16, tzinfo=timezone.utc)
