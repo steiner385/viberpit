@@ -1056,6 +1056,7 @@ class SessionOrchestrator:
             clock=time.monotonic,
             needs_human=self._backlog_needs_human,
             session_ended=self._backlog_session_ended,
+            session_gone=self._backlog_session_gone,
             session_ran=self._backlog_session_ran,
             session_work_stopped=self._automation_session_work_stopped,
             handoff=self._backlog_handoff,
@@ -6138,6 +6139,17 @@ class SessionOrchestrator:
             status = (await db.execute(_select(DbSession.status).where(
                 DbSession.id == session_id))).scalar_one_or_none()
         return status in INACTIVE_SESSION_STATUSES
+
+    async def _backlog_session_gone(self, session_id: str) -> bool:
+        """True once *session_id*'s row is terminal (``ended``/``archived``) OR no
+        longer exists — the evidence the sweep needs to discharge a pre-ownership
+        claim (``_release_legacy_claim``). Deliberately stricter than "not
+        running": a ``done`` row can still be resumed, so it keeps its claim."""
+        from sqlalchemy import select as _select
+        async with db_session() as db:
+            status = (await db.execute(_select(DbSession.status).where(
+                DbSession.id == session_id))).scalar_one_or_none()
+        return status is None or status in INACTIVE_SESSION_STATUSES
 
     async def _backlog_session_ran(self, session_id: str) -> bool:
         """True if the runner session *session_id* ever started turn one (#1100).

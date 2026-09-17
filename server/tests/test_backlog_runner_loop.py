@@ -143,7 +143,7 @@ def build_loop(*, mode="on", config=None, clock=None,
                credential_alerts=None, verify_ready=None, queue_tail=None,
                wall_clock=None, needs_human_raises=False,
                spawn_result=None, session_ran=None, pr_doctor_attempts=None,
-               pr_doctor_attempts_fn=None):
+               pr_doctor_attempts_fn=None, session_gone=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .announced and
@@ -292,6 +292,7 @@ def build_loop(*, mode="on", config=None, clock=None,
         verify_ready=verify_ready,
         queue_tail=queue_tail,
         wall_clock=wall_clock,   # None → the loop's real UTC clock
+        session_gone=session_gone,
     )
     # These policy/outcome tests model an observed stopped actor. Native proof
     # and unknown lifecycles are exercised by test_backlog_ownership.py.
@@ -489,6 +490,212 @@ def test_no_healthy_account_emits_skipped_debounced(tmp_path):
         assert rec.spawns == []
         events = await ctx.list_events(kind="skipped_no_account")
         assert len(events) == 1  # debounced to a single event
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# A refill that makes no claim says why (2026-09-16: 13 hours of nothing but   #
+# ``groups_refreshed`` while six dead claims held every slot).                 #
+# --------------------------------------------------------------------------- #
+
+async def _seed_legacy_claim(ctx, target: str, *, session_id: str | None = "gone-sid") -> None:
+    """A pre-ownership claim (#1648): ``claimed`` + ``session_id`` and NO
+    ``ownership_token`` — the exact row shape found in prod, written before the
+    ownership store existed."""
+    state = {"repo": "o/r", "claimed": True, "attempts": 0, "issues": [target],
+             "claimed_at": "2026-09-07T10:22:57+00:00"}
+    if session_id is not None:
+        state["session_id"] = session_id
+    await ctx.set_target_state(target, state)
+
+
+def test_refill_at_capacity_emits_stalled_once_naming_the_slot_holders(tmp_path):
+    """Every slot held → one ``refill_stalled`` warn (reason=capacity) that names
+    the rows holding the slots and flags the token-less legacy ones, debounced
+    until the reason changes or a claim is attempted."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'stall1.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        occupied = 2
+
+        async def in_flight():
+            return occupied
+
+        loop, rec, ctx = build_loop(candidates=[batch("o/r#1"), batch("o/r#2")],
+                                    in_flight_counter=in_flight,
+                                    config=make_config(max_concurrent=2))
+        await _seed_legacy_claim(ctx, "o/r#9")
+        await loop.tick()
+        await loop.tick()                      # same reason → no second event
+        assert rec.spawns == []
+        events = await ctx.list_events(kind="refill_stalled")
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["level"] == "warn"
+        assert ev["detail"]["reason"] == "capacity"
+        assert ev["detail"]["in_flight"] == 2 and ev["detail"]["max_concurrent"] == 2
+        holders = {h["target"]: h for h in ev["detail"]["holders"]}
+        assert holders["o/r#9"]["legacy"] is True
+        assert holders["o/r#9"]["session_id"] == "gone-sid"
+        assert "2/2" in ev["summary"]
+
+        occupied = 0                           # both slots free → both candidates claimed
+        await loop.tick()
+        assert len(rec.spawns) == 2
+        occupied = 2                           # …and a fresh stall is reported again
+        await loop.tick()
+        assert len(await ctx.list_events(kind="refill_stalled")) == 2
+
+    asyncio.run(run())
+
+
+def test_refill_with_planned_groups_but_nothing_claimable_emits_stalled(tmp_path):
+    """A non-empty plan whose groups never intersect the live pool used to be
+    silent forever (the starvation nudge just re-ran the grouper); an EMPTY plan
+    is an idle backlog, not a stall, and stays quiet."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'stall2.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        refresh, calls = _refresh_recorder()   # plans 3 groups
+        loop, rec, ctx = build_loop(candidates=[], refresh_groups=refresh)
+        await loop.tick()
+        await loop.tick()
+        events = await ctx.list_events(kind="refill_stalled")
+        assert len(events) == 1
+        assert events[0]["detail"] == {"reason": "no_batch", "groups_planned": 3}
+        assert "3 group(s)" in events[0]["summary"]
+
+        async def empty_plan(_config):
+            return 0
+
+        # Same DB and automation id, so the feed still holds the ONE event above.
+        loop2, _rec2, ctx2 = build_loop(candidates=[], refresh_groups=empty_plan)
+        await loop2.tick()
+        assert len(await ctx2.list_events(kind="refill_stalled")) == 1
+
+    asyncio.run(run())
+
+
+def test_refill_stalled_on_a_cooling_target_names_it(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'stall3.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        clock = FakeClock()
+        loop, rec, ctx = build_loop(candidates=[batch("o/r#1"), batch("o/r#1")], clock=clock)
+        loop._spawn_backoff["o/r#1"] = (1, clock() + 600)
+        await loop.tick()
+        events = await ctx.list_events(kind="refill_stalled")
+        assert len(events) == 1
+        assert events[0]["target"] == "o/r#1"
+        assert events[0]["detail"]["reason"] == "target_cooldown"
+        assert events[0]["detail"]["retry_in_s"] == 600
+
+    asyncio.run(run())
+
+
+def test_legacy_claim_is_released_once_its_session_is_gone(tmp_path):
+    """The prod shape: a pre-ownership row whose session row no longer exists.
+    ``compare_target_state`` refuses token-less rows and nothing else reconciled
+    them, so it held a slot forever. With the ``session_gone`` seam wired, the
+    sweep discharges it (warn event, row deleted) and the next refill can claim."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy1.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        from server.automations.backlog_runner import is_in_flight
+
+        async def in_flight_from_rows():
+            return sum(is_in_flight(s) for s in (await ctx.list_target_states()).values())
+
+        async def session_gone(sid):
+            return sid == "gone-sid"
+
+        loop, rec, ctx = build_loop(candidates=[batch("o/r#1")],
+                                    in_flight_counter=in_flight_from_rows,
+                                    config=make_config(max_concurrent=1),
+                                    session_gone=session_gone)
+        await _seed_legacy_claim(ctx, "o/r#9")
+        await loop.tick()                      # refill stalls on the zombie; sweep discharges it
+        assert await ctx.get_target_state("o/r#9") == {}
+        released = await ctx.list_events(kind="legacy_claim_released")
+        assert len(released) == 1
+        assert released[0]["level"] == "warn"
+        assert released[0]["target"] == "o/r#9"
+        assert released[0]["detail"]["session_id"] == "gone-sid"
+        await loop.tick()                      # the slot is free → the claim goes through
+        assert [b.primary for b, _ in rec.spawns] == ["o/r#1"]
+
+    asyncio.run(run())
+
+
+def test_legacy_claim_with_no_session_id_is_released(tmp_path):
+    """A pre-ownership claim that never recorded a session (an account wait or a
+    crashed launcher) has nothing running to protect."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy2.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+
+        async def session_gone(_sid):
+            raise AssertionError("no session id → the probe must not be asked")
+
+        loop, rec, ctx = build_loop(candidates=[], session_gone=session_gone)
+        await _seed_legacy_claim(ctx, "o/r#9", session_id=None)
+        await loop.tick()
+        assert await ctx.get_target_state("o/r#9") == {}
+        assert len(await ctx.list_events(kind="legacy_claim_released")) == 1
+
+    asyncio.run(run())
+
+
+def test_legacy_claim_is_kept_while_its_session_is_alive_or_the_seam_is_unwired(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy3.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+
+        async def still_running(_sid):
+            return False
+
+        loop, rec, ctx = build_loop(candidates=[], session_gone=still_running)
+        await _seed_legacy_claim(ctx, "o/r#9")
+        before = await ctx.get_target_state("o/r#9")
+        await loop.tick()
+        assert await ctx.get_target_state("o/r#9") == before
+        assert await ctx.list_events(kind="legacy_claim_released") == []
+
+        unwired, _rec, ctx2 = build_loop(candidates=[])   # session_gone=None
+        await _seed_legacy_claim(ctx2, "o/r#8")
+        await unwired.tick()
+        assert (await ctx2.get_target_state("o/r#8")).get("claimed") is True
+
+    asyncio.run(run())
+
+
+def test_legacy_release_never_touches_a_token_holding_row(tmp_path):
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy4.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(candidates=[])
+        await _set_owned_state(ctx, "o/r#9", {"repo": "o/r", "claimed": True, "attempts": 0,
+                                              "issues": ["o/r#9"], "session_id": "s1"})
+        owned = await ctx.get_target_state("o/r#9")
+        assert owned.get("ownership_token")
+        assert await ctx.release_legacy_target_state("o/r#9", owned) is False
+        assert await ctx.get_target_state("o/r#9") == owned
 
     asyncio.run(run())
 
