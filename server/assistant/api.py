@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sqlalchemy import func as sa_func
 from sqlalchemy import select
 
 from ccswitch.selector import AllAccountsBusy
@@ -19,9 +20,11 @@ from server.auth.middleware import current_identity
 from server.config import get_settings
 from server.db import get_db
 from server.db.models import AssistantToken, NotificationChannel, NotificationRule
+from server.db.models import Session as DbSession
 from server.sessions.model_policy import resolve_model_policy
 from server.sessions.engine import AgentEngineUnavailable
 from server.sessions.types import ASSISTANT_KIND
+from server.time_iso import iso_utc
 
 from . import watches as watch_conditions
 from .policy import (assistant_enabled, assistant_engine, assistant_model,
@@ -29,6 +32,10 @@ from .policy import (assistant_enabled, assistant_engine, assistant_model,
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
+
+# GET /history returns at most this many rows, newest-archived first — no pagination
+# (spec: the drawer's "History" list is a short recency list, not a full archive browser).
+_HISTORY_LIMIT = 20
 
 
 class CreateBody(BaseModel):
@@ -119,6 +126,96 @@ async def create(body: CreateBody, request: Request,
                        {"sessionId": rec.id, "model": model, "engine": engine.value})
     await db.commit()
     return {"id": rec.id, "model": model, "engine": engine.value, "state": "created"}
+
+
+def _history_dict(row: DbSession) -> dict:
+    return {
+        "id": row.id,
+        "snippet": row.initial_prompt,
+        # `archived_at` is the lifecycle fact; `updated_at` (bumped on every row write)
+        # is only a fallback for legacy rows archived before that column existed — the
+        # same null-safety convention `SessionOrchestrator.list_archived` /
+        # `purge_oldest_archived` already apply.
+        "archivedAt": iso_utc(row.archived_at or row.updated_at),
+    }
+
+
+@router.get("/history")
+async def history(identity: str = Depends(current_identity), db=Depends(get_db)) -> list[dict]:
+    """The caller's own archived assistant threads, most-recently-archived first,
+    capped at `_HISTORY_LIMIT` (the drawer's "History" list). Identity-scoped in the
+    WHERE clause exactly like `list_tokens`/`list_watches` above — never widened to
+    another identity's threads."""
+    order_key = sa_func.coalesce(DbSession.archived_at, DbSession.updated_at)
+    rows = (await db.execute(
+        select(DbSession)
+        .where(DbSession.kind == ASSISTANT_KIND, DbSession.owner_identity == identity,
+               DbSession.status == "archived")
+        .order_by(order_key.desc())
+        .limit(_HISTORY_LIMIT)
+    )).scalars().all()
+    return [_history_dict(r) for r in rows]
+
+
+@router.post("/session/{session_id}/resume")
+async def resume(session_id: str, request: Request,
+                 identity: str = Depends(current_identity), db=Depends(get_db)):
+    """Resume an archived assistant thread from the History list as the live one.
+
+    Mirrors `create`'s archive/identity-scoping logic rather than reinventing it: the
+    current live thread (if any, and not already `session_id`) is archived exactly as
+    a `fresh` reset archives it, then `session_id` is restored via `orch.unarchive`
+    (a pure status flip — the worktree never moved) and its driver is ensured under
+    the CALLER's identity, not SYSTEM_IDENTITY (see `ensure_driver`'s docstring: a
+    driver resumed under the wrong identity rejects every answer, #1080).
+    """
+    if getattr(request.state, "via", None) == "assistant":
+        return _err("ASSISTANT_RECURSION", "the assistant cannot resume assistants", 403)
+    if not await assistant_enabled(db):
+        return _err("ASSISTANT_DISABLED", "enable the assistant in Settings → General", 404)
+
+    orch = request.app.state.sessions
+    engine = assistant_engine()
+
+    # Identity + kind scoped in the WHERE clause (never fetched-then-checked), so a
+    # foreign or non-assistant id answers identically to a nonexistent one — the same
+    # cross-identity 404 (never 403) `revoke_token` above already uses, to avoid
+    # confirming the row exists.
+    row = (await db.execute(
+        select(DbSession).where(
+            DbSession.id == session_id, DbSession.kind == ASSISTANT_KIND,
+            DbSession.owner_identity == identity)
+    )).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "assistant thread not found")
+
+    existing = await orch.find_assistant(identity)
+    if existing is not None and existing.id == session_id:
+        # Already the live thread — no-op, just report current state.
+        return {"id": existing.id, "model": existing.model or await assistant_model(db),
+                "engine": (existing.engine.value if existing.engine else engine.value),
+                "state": "existing"}
+
+    if row.status != "archived":
+        # Neither the live thread nor an archived one (e.g. a stray "ended" row
+        # that was reaped but never archived) — nothing this endpoint can resume.
+        raise HTTPException(404, "assistant thread not found")
+
+    if existing is not None:
+        await orch.archive_session(existing.id, archived_by="user",
+                                   context={"reason": "assistant-resume"})
+        await record_audit(db, "assistant.session.reset", identity, {"sessionId": existing.id})
+        await db.commit()
+
+    restored = await orch.unarchive(session_id)
+    if restored is None:
+        raise HTTPException(404, "assistant thread not found")
+    await orch.ensure_driver(restored.id, identity=identity)
+    await record_audit(db, "assistant.session.resume", identity, {"sessionId": restored.id})
+    await db.commit()
+    return {"id": restored.id, "model": restored.model or await assistant_model(db),
+            "engine": (restored.engine.value if restored.engine else engine.value),
+            "state": "resumed"}
 
 
 class TokenCreateBody(BaseModel):

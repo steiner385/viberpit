@@ -47,6 +47,8 @@ vi.mock('@/api/assistant', () => ({
   useSetAssistantModel: vi.fn(() => ({
     mutateAsync: vi.fn(), isPending: false, isError: false, error: null,
   })),
+  useAssistantHistory: vi.fn(() => ({ data: [], isLoading: false })),
+  useResumeAssistantSession: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, isError: false })),
 }))
 vi.mock('@/features/sessions/SessionRuntimeProvider', () => ({
   SessionRuntimeProvider: ({ children }: { children: ReactNode }) => <div data-testid="runtime">{children}</div>,

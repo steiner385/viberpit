@@ -9,6 +9,8 @@ vi.mock('@/api/assistant', () => ({
   useSetAssistantModel: vi.fn(() => ({
     mutateAsync: vi.fn(), isPending: false, isError: false, error: null,
   })),
+  useAssistantHistory: vi.fn(() => ({ data: [], isLoading: false })),
+  useResumeAssistantSession: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, isError: false })),
 }))
 
 // The real SessionRuntimeProvider owns a live WebSocket attach/detach cycle

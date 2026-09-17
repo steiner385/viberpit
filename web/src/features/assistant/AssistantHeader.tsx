@@ -8,13 +8,16 @@
  * effort, queueing and approval affordances the drawer has no room for.
  */
 import { useState } from 'react'
+import { History } from 'lucide-react'
 import { useAssistantStatus, useResetAssistant, useSetAssistantModel } from '@/api/assistant'
 import { useModels } from '@/api/hooks'
 import { apiErrorCode } from '@/api/client'
 import { modelName } from '@/session/modelName'
 import { Dialog } from '@/ui/Dialog'
 import { Button } from '@/ui/Button'
+import { IconButton } from '@/ui/IconButton'
 import { Select } from '@/ui/Select'
+import { AssistantHistoryList } from './AssistantHistoryList'
 
 export function AssistantHeader() {
   const status = useAssistantStatus()
@@ -22,6 +25,7 @@ export function AssistantHeader() {
   const reset = useResetAssistant()
   const setModel = useSetAssistantModel()
   const [confirming, setConfirming] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
 
   const sessionId = status.data?.sessionId ?? null
   const modelId = status.data?.model ?? null
@@ -62,9 +66,20 @@ export function AssistantHeader() {
           </p>
         )}
       </div>
-      <Button type="button" variant="secondary" size="sm" onClick={() => setConfirming(true)}>
-        New chat
-      </Button>
+      <div className="flex flex-shrink-0 items-center gap-1">
+        <IconButton
+          aria-label="Assistant history"
+          size="sm"
+          onClick={() => setShowHistory(true)}
+        >
+          <History size={16} aria-hidden="true" />
+        </IconButton>
+        <Button type="button" variant="secondary" size="sm" onClick={() => setConfirming(true)}>
+          New chat
+        </Button>
+      </div>
+
+      <AssistantHistoryList open={showHistory} onClose={() => setShowHistory(false)} />
 
       {confirming && (
         <Dialog open onClose={() => setConfirming(false)} title="Start a new chat?">
