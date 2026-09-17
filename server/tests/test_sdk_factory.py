@@ -103,3 +103,17 @@ async def test_factory_auto_trusts_project_mcp_servers(monkeypatch):
     assert opts.settings is not None, "factory must pass an inline --settings payload"
     parsed = json.loads(opts.settings)
     assert parsed.get("enableAllProjectMcpServers") is True
+
+
+@pytest.mark.asyncio
+async def test_factory_raises_the_sdk_line_buffer_above_the_1mib_default(monkeypatch):
+    """The CLI echoes the whole ``originalFile`` in an Edit result on stdout. The SDK's
+    default ``max_buffer_size`` is 1 MiB per JSON line, and one over it kills the
+    reader for good while the process lives on (2026-09-16: a 1,023,418-byte
+    orchestrator.py edit → "JSON message exceeded maximum buffer size" → two hours of
+    a session the daemon could write to but never hear). The cap must comfortably
+    clear any source file a session will edit."""
+    from server.sessions.claude_sdk_factory import SDK_MAX_BUFFER_BYTES
+    opts = await _captured_options(monkeypatch)
+    assert opts.max_buffer_size == SDK_MAX_BUFFER_BYTES
+    assert opts.max_buffer_size >= 16 * 1024 * 1024

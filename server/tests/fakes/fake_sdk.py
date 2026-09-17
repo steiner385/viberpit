@@ -206,6 +206,11 @@ class FakeSDKClient:
     async def __aexit__(self, *exc):
         self._q().put_nowait(_EOF)
         return False
+    def end_stream(self) -> None:
+        """The stream ends with NOBODY closing the client: the CLI exited on its own,
+        or its stdout reader died between turns. The driver must read this as a loss,
+        not as the EOF its own ``aclose()`` produces."""
+        self._q().put_nowait(_EOF)
     async def query(self, prompt: str):
         self.sent.append(prompt)
         self._deliver(self._messages)

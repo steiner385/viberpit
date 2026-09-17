@@ -293,6 +293,17 @@ class ClaudeAgentDriver:
         # arrives (reset per-turn in _start_turn / _open_autonomous_turn). Assistant-kind
         # only — feeds assistant_ttft_ms (spec §4.10).
         self._turn_first_delta_at: float | None = None
+        # The SDK cursor hit EOF (or raised) with nobody closing this driver: the CLI
+        # exited, or — the 2026-09-16 shape — its stdout reader died on an oversized
+        # line while the process lived on. Once set, nothing will ever be READ from
+        # this client again (no events, no results, no permission asks), so no
+        # control request may be issued against it and no prompt written to it; the
+        # orchestrator is recomposing the driver. See _on_stream_ended.
+        self._stream_ended: bool = False
+        # One recovery per driver for the crash class (process_crash / stream_lost):
+        # the drain's classified error and the EOF that always follows it must not
+        # each recompose the session.
+        self._crash_signalled: bool = False
         self._retrying: bool = False
         self._condensing: bool = False
         self._turns_completed: int = 0
@@ -932,6 +943,18 @@ class ClaudeAgentDriver:
             await self._emit_status()
             self._emit(ev.QueueUpdate(self.queue_wire()))
             return
+        # C2b — the stream is dead and a recompose is in flight: hold the prompt for
+        # the rebuilt driver (_reassign carries the queue over) rather than write it
+        # to a CLI nobody can hear. The orchestrator refuses at its own door first
+        # ("recovering"); this is the guard for direct callers.
+        if self._stream_ended:
+            self._queue.append((text, images, context, origin))
+            log.warning("driver.send_prompt: SDK stream dead — holding prompt for the "
+                        "rebuilt driver session=%s queue_depth=%d",
+                        self.session_id, len(self._queue))
+            self._emit(ev.QueueUpdate(self.queue_wire()))
+            await self._emit_status()
+            return
         # C3 — auto-title from the first prompt (first line, max 50 chars).
         if not self._titled:
             self._titled = True
@@ -1055,6 +1078,20 @@ class ClaudeAgentDriver:
         if retry_after is None and self._last_rate_reset is not None:
             retry_after = max(0.0, float(self._last_rate_reset) - self._clock())
         limit_type = self._last_rate_limit_type if failure.kind == "rate_limit" else None
+        await self._signal_recovery(failure, retry_after=retry_after, limit_type=limit_type)
+        return failure
+
+    async def _signal_recovery(self, failure: TurnFailure, *, retry_after: float | None = None,
+                               limit_type: str | None = None) -> None:
+        """Emit ``TurnFailure`` and hand the recoverable failure to the orchestrator —
+        the ONE path for both a classified error and the driver's own verdict
+        (:meth:`_on_stream_ended`). A crash-class kind is signalled at most once per
+        driver: the same loss surfaces twice (the raised error frame, then the EOF
+        behind it) and must recompose the session once."""
+        if failure.kind in ("process_crash", "stream_lost"):
+            if self._crash_signalled:
+                return
+            self._crash_signalled = True
         self._emit(ev.TurnFailure(
             kind=failure.kind, account=self.account, retry_after=retry_after,
             limit_type=limit_type))
@@ -1067,7 +1104,33 @@ class ClaudeAgentDriver:
             except Exception:
                 log.warning("driver.on_recoverable_failure failed session=%s",
                             self.session_id, exc_info=True)
-        return failure
+
+    async def _on_stream_ended(self, *, mid_turn: bool) -> None:
+        """The SDK cursor ended with nobody closing this driver.
+
+        Two causes, one consequence. The CLI process exited — or (2026-09-16, session
+        1375c82f) its stdout reader died: the CLI echoes the whole ``originalFile`` in
+        an Edit result, one line over the SDK's ``max_buffer_size`` raises
+        "JSON message exceeded maximum buffer size", and the SDK closes its message
+        stream while the process lives on. Either way the daemon can still WRITE to
+        the CLI but will never READ from it again: no events, no results, no
+        permission requests. Left as a warning, that was a black hole — prompts were
+        accepted into it for two hours, the CLI parked on unanswerable permission
+        asks, and the stall watchdog interrupted every later turn within seconds.
+
+        So: mark the stream dead (no control request, no dequeue, no listener will
+        touch it again — the sibling guards read the flag) and signal ONE recovery.
+        Mid-turn it is a ``process_crash`` (recompose and replay the cut-off prompt);
+        idle it is ``stream_lost`` (recompose, nothing to replay). The orchestrator's
+        crash cap bounds a stream that keeps dying.
+        """
+        self._stream_ended = True
+        if self._closing:
+            return
+        log.error("driver.stream_ended: SDK stream ended outside a close session=%s "
+                  "mid_turn=%s — recomposing", self.session_id, mid_turn)
+        await self._signal_recovery(
+            TurnFailure(kind="process_crash" if mid_turn else "stream_lost"))
 
     async def emit_error(self, code: str, message: str) -> None:
         """Surface a red error card anchored to the current turn. Used by the
@@ -1082,10 +1145,22 @@ class ClaudeAgentDriver:
         """A prompt turn's pump: consume the SDK cursor up to and including this turn's
         ResultMessage (the CLI closes every turn with one), then settle the turn."""
         assert self._source is not None  # only started after start() built the cursor
+        ended = False
         try:
             while True:
-                msg = await self._source.next()
+                try:
+                    msg = await self._source.next()
+                except Exception as exc:
+                    # The SDK reports a dead reader as ONE raised error frame, after
+                    # which the cursor is at EOF for good (a generator that raised is
+                    # finished). Surface the real cause on the turn, then treat it as
+                    # the stream ending: this turn can never complete.
+                    log.exception("driver.drain session=%s", self.session_id)
+                    await self._surface_drain_error(exc)
+                    ended = True
+                    break
                 if msg is _EOF:
+                    ended = True
                     break
                 await self._handle_msg(msg)
                 if isinstance(msg, ResultMessage):
@@ -1094,7 +1169,13 @@ class ClaudeAgentDriver:
             log.exception("driver.drain session=%s", self.session_id)
             await self._surface_drain_error(exc)
         finally:
+            if ended and not self._closing:
+                # BEFORE settling: _end_turn must issue no control request against the
+                # dead reader and must not dequeue a prompt onto it.
+                self._stream_ended = True
             await self._end_turn()
+            if ended:
+                await self._on_stream_ended(mid_turn=True)
 
     async def _handle_msg(self, msg) -> None:
         """Route ONE SDK message through the translator and the per-event side effects.
@@ -1231,14 +1312,19 @@ class ClaudeAgentDriver:
         # Clear every turn-scoped flag so none outlives the turn that set it.
         self._reset_turn_flags()
         # Nothing queued: settle to idle. The dequeue below is deliberately NOT an
-        # `else` — see its comment.
-        if not self._queue:
+        # `else` — see its comment. A dead stream settles too, whatever is queued:
+        # those prompts are held for the rebuilt driver (_reassign carries them).
+        if not self._queue or self._stream_ended:
             self._turn_active = False
             self._turn_started_at = None
             self._turn_buffer = []
             self._turns_completed += 1
-            # Turn settled — refresh the exact context-window readout.
-            await self._emit_context_usage()
+            # Turn settled — refresh the exact context-window readout. Not on a dead
+            # stream: it is a control request the CLI's reader will never answer, so
+            # it sat on the SDK's 60 s timeout — a zombie pump the stall watchdog then
+            # "interrupted" (2026-09-16).
+            if not self._stream_ended:
+                await self._emit_context_usage()
             await self._emit_status()
         # If queued prompts remain, pop the front and start the next turn. Re-checked
         # AFTER the idle bookkeeping above because `_turn_live()` is `drain_alive or
@@ -1250,6 +1336,8 @@ class ClaudeAgentDriver:
         # here, because turn one runs at spawn instead of at the first attach).
         # Nothing below this check awaits, so the pump task completes without
         # reopening the window.
+        if self._stream_ended:
+            return   # nothing to dequeue onto, nothing to listen to
         if self._queue:
             next_text, next_images, next_context, next_origin = self._queue.pop(0)
             log.debug("driver.drain: dequeuing next prompt for session=%s, remaining=%d",
@@ -1263,7 +1351,7 @@ class ClaudeAgentDriver:
 
     # ---- idle listener: the SDK cursor is never left unread -----------------------
     def _start_listener(self) -> None:
-        if self._closing or self._source is None:
+        if self._closing or self._source is None or self._stream_ended:
             return
         if self._listener is not None and not self._listener.done():
             return
@@ -1315,8 +1403,11 @@ class ClaudeAgentDriver:
             while self._listener is me:
                 msg = await self._source.next()
                 if msg is _EOF:
+                    if self._closing:
+                        return
                     log.warning("driver.idle_listen: SDK stream ended while idle session=%s",
                                 self.session_id)
+                    await self._on_stream_ended(mid_turn=False)
                     return
                 # Only a turn's own frames open a turn. Bookkeeping frames (SessionStart
                 # hook lifecycle right after connect, task notices) are fed through
@@ -1389,6 +1480,13 @@ class ClaudeAgentDriver:
     @property
     def turn_active(self) -> bool:
         return self._turn_active
+
+    @property
+    def stream_ended(self) -> bool:
+        """True once the SDK stream ended outside a close: this driver can no longer
+        hear its CLI and is being recomposed. The orchestrator's ``send_prompt``
+        refuses ("recovering") while it is set."""
+        return self._stream_ended
 
     @property
     def turn_started_at(self) -> float | None:
@@ -1574,7 +1672,8 @@ class ClaudeAgentDriver:
         if not keep_queue:
             self._queue.clear()
         self._cancel_suggest()
-        if self._client:
+        # A dead stream answers no control request; the CLI is being replaced anyway.
+        if self._client and not self._stream_ended:
             try:
                 await self._client.interrupt()
             except CLIConnectionError:
@@ -1642,12 +1741,12 @@ class ClaudeAgentDriver:
             await self._client.set_model(model)
 
     async def server_info(self) -> dict | None:
-        if self._client is None:
+        if self._client is None or self._stream_ended:
             return None
         return await self._client.get_server_info()
 
     async def context_usage(self) -> dict:
-        if self._client is None:
+        if self._client is None or self._stream_ended:
             return {}
         return await self._client.get_context_usage()
 
@@ -1718,6 +1817,10 @@ class ClaudeAgentDriver:
         self._queue.clear()
         self._turn_active = False
         self._turn_started_at = None
+        # A fresh client is a fresh stream: a death on the old one must not brand the
+        # new one dead (or spend its one crash signal) before it says a word.
+        self._stream_ended = False
+        self._crash_signalled = False
         self._tr = Translator()
         # A fresh CLI session has no history: a header deduped against the OLD
         # session's last-sent value would leave the new one never told where the

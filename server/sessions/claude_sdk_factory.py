@@ -43,6 +43,17 @@ def _build_append_string() -> str:
 # pass `setting_sources`, so the binary loads no filesystem settings — only this inline layer.
 _MCP_TRUST_SETTINGS = json.dumps({"enableAllProjectMcpServers": True})
 
+# Per-line cap on the SDK's stdout reader (``ClaudeAgentOptions.max_buffer_size``). The
+# SDK default is 1 MiB, and ONE line over it kills the reader for good while the CLI
+# process lives on — the daemon can still write prompts and interrupts, but never
+# reads another event, result or permission request. The CLI echoes the whole
+# ``originalFile`` in every Edit result on stdout, so the default was tripped by a
+# routine edit of a 1,023,418-byte source file (2026-09-16, session 1375c82f: two
+# hours of "Waiting…"). 64 MiB clears any source file a session will realistically
+# edit; the driver's stream-death recovery (claude_driver._on_stream_ended) is the
+# backstop for whatever still exceeds it.
+SDK_MAX_BUFFER_BYTES = 64 * 1024 * 1024
+
 
 def _import_sdk():
     from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
@@ -95,6 +106,7 @@ async def real_sdk_factory(cwd, config_dir, can_use_tool, mode, resume, extra_en
         include_partial_messages=True, resume=resume,
         hooks=hooks,
         settings=_MCP_TRUST_SETTINGS,
+        max_buffer_size=SDK_MAX_BUFFER_BYTES,
         system_prompt={
             "type": "preset",
             "preset": "claude_code",

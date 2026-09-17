@@ -131,3 +131,34 @@ def test_prompt_survives_a_failing_context_lookup(ws_env):
     assert seen == [{}], (
         "a failed context lookup must degrade to 'no context', not drop the prompt; "
         f"sends seen: {seen!r}")
+
+
+def test_prompt_is_handed_back_while_the_driver_recomposes(ws_env):
+    """The 2026-09-16 shape: the daemon still holds a driver, but its SDK stream is
+    dead and a recompose is in flight, so send_prompt answers "recovering". The
+    bridge must hand the prompt back (promptRejected → the browser re-queues and
+    flushes after the swap) — not ack it as delivered, and not silently drop it."""
+    _app, orch, client = ws_env([])
+    session = client.portal.call(orch.create_session, "recomposing")
+    sid = session.id
+
+    async def recovering_send(session_id, text, attachment_ids=None, **kw):
+        return "recovering"
+
+    orch.send_prompt = recovering_send  # type: ignore[method-assign]
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        _attach(ws, sid)
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": sid,
+                                 "text": "continue"}))
+        # The early "received" ack lands first (it precedes the send); the verdict
+        # is the frame after it: a rejection, never a "delivered" ack.
+        def _terminal(e):
+            return (e.get("type") == "promptRejected"
+                    or (e.get("type") == "promptAck" and e.get("stage") == "delivered"))
+        events = _drain_events(ws, until=_terminal, timeout=8.0)
+        terminal = [e for e in events if _terminal(e)]
+        assert terminal and terminal[0]["type"] == "promptRejected", (
+            f"expected a promptRejected hand-back, got {terminal!r}")
+        assert terminal[0]["text"] == "continue"
+        assert terminal[0]["reason"] == "recovering"

@@ -291,3 +291,65 @@ async def test_run_command_other_commands_still_blocked_without_driver():
 
     assert result is not None
     assert "isn't live" in result.get("data", {}).get("text", ""), repr(result)
+
+
+@pytest.mark.asyncio
+async def test_reassign_carries_the_old_drivers_queued_prompts(monkeypatch, tmp_path):
+    """Prompts the user typed while the old driver was wedged (queued behind its
+    turn) are the user's intent; a recompose/rotation must hand them to the new driver
+    after the replayed prompt, in order — not let the courtesy interrupt throw them
+    away (2026-09-16: the user's queued "continue" vanished at the swap)."""
+    o = _make_orch()
+    rec = _rec(o, with_driver=False, cwd=str(tmp_path))
+    o._last_prompt["s1"] = "cut-off turn"
+    sent = []
+
+    class _OldDriver:
+        engine_session_id = "old-csid"
+        cwd = str(tmp_path)
+        mode = "interactive"
+        identity = "user@example.com"
+
+        def queued(self): return ["early", "continue"]
+        async def interrupt(self, *, keep_queue=False): pass
+        async def aclose(self): pass
+
+    class _NewDriver:
+        engine_session_id = None
+        mode = "interactive"
+
+        def __init__(self, *a, **kw): pass
+        async def start(self): pass
+        async def interrupt(self, *, keep_queue=False): pass
+        async def aclose(self): pass
+        async def set_model(self, m): pass
+        async def send_prompt(self, text, *a, **kw): sent.append(text)
+
+    o._drivers["s1"] = _OldDriver()
+    monkeypatch.setattr(orch_mod.SessionOrchestrator, "_create_driver",
+                        lambda self, **kw: _NewDriver())
+    o._publish_event = lambda e: None
+    o._install_driver = lambda sid, drv: o._drivers.__setitem__(sid, drv)
+    monkeypatch.setattr(orch_mod, "compose", lambda acct: Path("/fake/cfg"))
+    monkeypatch.setattr(orch_mod.configdir, "trust_project", lambda *a: None)
+
+    class _MockDB:
+        async def execute(self, *a): pass
+
+    class _FakeDbCtx:
+        async def __aenter__(self): return _MockDB()
+        async def __aexit__(self, *a): pass
+
+    monkeypatch.setattr(orch_mod, "db_session", lambda: _FakeDbCtx())
+    o._copilot = None
+    o._suggester = None
+    o._session_factory = lambda sid: lambda *a, **k: None
+
+    await o._reassign(rec, "copilot_acct", reason="process_crash")
+    assert sent == ["cut-off turn", "early", "continue"]
+
+    # With no replay (a stream lost while idle) the carried prompts still arrive.
+    sent.clear()
+    o._drivers["s1"] = _OldDriver()
+    await o._reassign(rec, "copilot_acct", reason="stream_lost", replay_last_prompt=False)
+    assert sent == ["early", "continue"]
