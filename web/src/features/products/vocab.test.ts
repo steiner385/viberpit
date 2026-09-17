@@ -6,8 +6,8 @@ import {
   PRODUCT, CAPABILITY, STAGE_LABEL, stageLabel,
   INITIATIVE_STATUS_LABEL, initiativeStatusLabel,
   ONBOARDING_STATE_LABEL, onboardingStateLabel,
-  CAPABILITY_STATE_LABEL, NEXT_ACTION_LABEL, REASON_LABEL, ROADMAP, TIER_LABEL,
-  nextActionLabel, nextStage, reasonLabel,
+  CAPABILITY_STATE_LABEL, REASON_LABEL, ROADMAP, TIER_LABEL,
+  nextStage, reasonLabel,
 } from './vocab'
 
 describe('vocab', () => {
@@ -43,7 +43,7 @@ describe('vocab', () => {
       ...Object.values(STAGE_LABEL), ...Object.values(INITIATIVE_STATUS_LABEL),
       ...Object.values(ONBOARDING_STATE_LABEL), ...Object.values(CAPABILITY_STATE_LABEL),
       ...Object.values(TIER_LABEL), ...Object.values(ROADMAP),
-      ...Object.values(REASON_LABEL), ...Object.values(NEXT_ACTION_LABEL),
+      ...Object.values(REASON_LABEL),
     ].join(' ').toLowerCase()
     expect(all).not.toMatch(/\bproject\b|\bfeature\b/)
   })
@@ -54,16 +54,6 @@ it('names the roadmap surfaces and every tier', () => {
   expect(Object.keys(TIER_LABEL)).toEqual(['needs-you', 'blocked', 'in-flight', 'proposed', 'live', 'idle'])
   expect(reasonLabel('advance')).toBe('Ready to advance')
   expect(reasonLabel(null)).toBe('')
-})
-
-it('says every next action as a sentence, including the ones with nothing to say', () => {
-  for (const t of ['propose', 'await_approval', 'handoff_to_build', 'done', 'needs_human', 'unknown']) {
-    expect(NEXT_ACTION_LABEL[t]).toMatch(/\.$/)
-  }
-  expect(nextActionLabel('handoff_to_build')).toBe('Ready to hand off to build.')
-  // An engine that grows a type the web has not learned yet shows the raw type,
-  // never a blank line.
-  expect(nextActionLabel('brand_new')).toBe('brand_new')
 })
 
 it('names the stage the gate would move to, and nothing past the end', () => {

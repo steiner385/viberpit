@@ -46,6 +46,7 @@ const h = vi.hoisted(() => {
     capabilities: [],
     buildSessions: [],
     nextAction: { type: 'materialize', kind: 'plan' },
+    guidance: null as Record<string, unknown> | null,
   }
   const state = {
     proposal: proposal as Record<string, unknown> | null,
@@ -120,11 +121,6 @@ describe('InitiativePage — materialization gate', () => {
     expect(within(tasks[0]!).queryByText(/after/)).not.toBeInTheDocument()
   })
 
-  it('the next action names the decision the card is asking for', () => {
-    mount()
-    expect(screen.getByText(/decompose/i)).toBeInTheDocument()
-  })
-
   it('Accept confirms first — like Advance — and says what it will create', () => {
     mount()
     fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
@@ -136,6 +132,31 @@ describe('InitiativePage — materialization gate', () => {
     // This confirm is ALSO the plan stage's gate: the apply advances the
     // initiative, so no Advance tap follows and the copy has to say so.
     expect(dialog).toHaveTextContent('moves this initiative to Build')
+  })
+
+  it('the Materialize confirm lists the computed consequence when guidance is present', () => {
+    const accept = {
+      available: true, unavailableReason: null,
+      immediate: [
+        { text: 'Creates the epic and 2 sub-issues on GitHub; this cannot be undone here.', spawnsSession: false, writesGithub: true },
+        { text: 'Moves the gate to build.', spawnsSession: false, writesGithub: false },
+      ],
+      then: [{ text: 'Nothing more from the roadmap loop.', spawnsSession: false, writesGithub: false }],
+      when: 'now', reversal: 'Close the created issues', gate: 'materialization.accept',
+    }
+    const reject = { ...accept, immediate: [{ text: 'Rejects this decomposition; nothing is created on GitHub.', spawnsSession: false, writesGithub: false }],
+      then: [{ text: 'Spawns a decompose session that proposes an epic and sub-issues for you to accept or reject.', spawnsSession: true, writesGithub: false }],
+      when: 'next_tick', reversal: null, gate: null }
+    const original = h.initiative
+    h.initiative = { ...original, guidance: { machine: null, tickSeconds: 60,
+      tolerance: { effective: 'cautious', configured: 'cautious', autoresolveEnabled: true, synthesizerMode: 'on' },
+      actions: { advance: accept, step_back: accept, unblock: accept, materialize_accept: accept, materialize_reject: reject } } }
+    mount()
+    expect(screen.getByText(/Reject: Spawns a decompose session/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    expect(screen.getByText('writes to GitHub')).toBeInTheDocument()
+    expect(screen.getByText('Reverse: Close the created issues')).toBeInTheDocument()
+    h.initiative = original
   })
 
   it('a pending proposal with issues behind it reads as a resume', () => {
