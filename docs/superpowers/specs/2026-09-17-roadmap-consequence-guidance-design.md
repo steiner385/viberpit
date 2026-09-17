@@ -139,7 +139,8 @@ the view and running the real `next_action` on it:
 - `Propose(kind)` → one step, `spawns_session=True`: "Spawns a *{kind}* session on
   *{session_model}* that reads the merged *{upstream}* and opens a PR adding
   `docs/sdlc/<slug>/{kind}.md`." (`upstream` from `STAGE_ARTIFACT` order; path from
-  `server/sdlc/prompts.py:artifact_path`.)
+  `artifact_path`, moved to a pure `server/sdlc/paths.py` because `prompts.py` imports
+  session code; `prompts.py` re-exports it.)
 - `AwaitApproval(kind)` → PR open: "The *{kind}* PR is waiting for you to review and merge it;
   under *{tol}* the loop does not merge it." Merged, not advanced: "The *{kind}* is merged;
   tap Advance to move to *{next}*."
