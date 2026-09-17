@@ -1,14 +1,18 @@
 // web/src/api/assistant.ts
 //
 // The AI assistant's status + session lifecycle, fetched/posted in ONE place —
-// colocated hooks pattern (see fleet.ts). Mirrors server/assistant/api.py's two
-// endpoints exactly: GET /assistant/status and POST /assistant/session.
+// colocated hooks pattern (see fleet.ts). Mirrors server/assistant/api.py's
+// endpoints: GET /assistant/status, POST /assistant/session, GET
+// /assistant/history and POST /assistant/session/{id}/resume.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './client'
 import type { ApiRequestError } from '@/api/client'
 
 /** The query key, exported so invalidations cannot misspell it. */
 export const ASSISTANT_STATUS_KEY = ['assistant', 'status'] as const
+
+/** The history list's query key, exported for the same reason. */
+export const ASSISTANT_HISTORY_KEY = ['assistant', 'history'] as const
 
 export interface AssistantStatus {
   enabled: boolean
@@ -88,4 +92,48 @@ export function useResetAssistant() {
     mutateAsync: (input: AssistantSessionInput = {}) =>
       mutation.mutateAsync({ ...input, fresh: true }),
   }
+}
+
+/** One row of the drawer's "History" list — an archived assistant thread owned
+ * by the caller. `snippet` is `initial_prompt` (the same human-readable-goal
+ * field other session surfaces already reuse) and is `null` for a thread that
+ * never got one; `archivedAt` is `null` only for a row the server could not
+ * timestamp at all. */
+export interface AssistantHistoryEntry {
+  id: string
+  snippet: string | null
+  archivedAt: string | null
+}
+
+/**
+ * The caller's own archived assistant threads, most-recently-archived first
+ * (server caps at 20, no pagination). `enabled` gates the fetch — the history
+ * list is a popover, not always-visible chrome, so it only needs to fetch
+ * while open.
+ */
+export function useAssistantHistory(enabled: boolean) {
+  return useQuery<AssistantHistoryEntry[]>({
+    queryKey: ASSISTANT_HISTORY_KEY,
+    queryFn: () => api.get<AssistantHistoryEntry[]>('/assistant/history'),
+    enabled,
+    staleTime: 15_000,
+  })
+}
+
+/**
+ * Resume an archived thread from the History list as the live one. Invalidates
+ * BOTH the status query (so the drawer picks up the new live sessionId — the
+ * same mechanism `useAssistantSession` already relies on) and the history query
+ * (the resumed thread must drop off the list, and the thread it displaced must
+ * appear on it).
+ */
+export function useResumeAssistantSession() {
+  const qc = useQueryClient()
+  return useMutation<AssistantSession, ApiRequestError, string>({
+    mutationFn: (sessionId) => api.post<AssistantSession>(`/assistant/session/${sessionId}/resume`),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ASSISTANT_STATUS_KEY })
+      void qc.invalidateQueries({ queryKey: ASSISTANT_HISTORY_KEY })
+    },
+  })
 }

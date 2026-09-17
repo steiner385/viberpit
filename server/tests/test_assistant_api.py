@@ -208,3 +208,126 @@ def test_switching_the_assistant_to_an_allowed_model_still_works(tmp_path):
         sid = c.post("/api/assistant/session", json={}, headers=_H).json()["id"]
         r = c.post(f"/api/sessions/{sid}/model", json={"model": "opus"}, headers=_H)
         assert r.status_code == 200, r.text
+
+
+# ── History + resume (drawer "History" list) ──────────────────────────────────
+
+
+def test_history_is_scoped_to_owner_identity(tmp_path):
+    other_h = {"Tailscale-User-Login": "v@example.com"}
+    with _client(tmp_path) as c:
+        mine = c.post("/api/assistant/session", json={}, headers=_H).json()["id"]
+        c.post("/api/assistant/session", json={"fresh": True}, headers=_H)  # archives `mine`
+        theirs = c.post("/api/assistant/session", json={}, headers=other_h).json()["id"]
+        c.post("/api/assistant/session", json={"fresh": True}, headers=other_h)  # archives `theirs`
+
+        mine_history = c.get("/api/assistant/history", headers=_H).json()
+        assert [h["id"] for h in mine_history] == [mine]
+
+        their_history = c.get("/api/assistant/history", headers=other_h).json()
+        assert [h["id"] for h in their_history] == [theirs]
+
+
+def test_history_reports_snippet_and_archived_at(tmp_path):
+    with _client(tmp_path) as c:
+        sid = c.post("/api/assistant/session", json={}, headers=_H).json()["id"]
+        c.post("/api/assistant/session", json={"fresh": True}, headers=_H)
+        row = c.get("/api/assistant/history", headers=_H).json()[0]
+        assert row["id"] == sid
+        assert row["archivedAt"]
+        # `initial_prompt` is unset for a freshly created assistant thread — the
+        # field is None (not KeyError), the same "no snippet yet" shape the web
+        # side renders as a placeholder.
+        assert "snippet" in row
+
+
+def test_history_caps_at_20_most_recent(tmp_path):
+    with _client(tmp_path) as c:
+        ids = []
+        for _ in range(22):
+            sid = c.post("/api/assistant/session", json={"fresh": True}, headers=_H).json()["id"]
+            ids.append(sid)
+        # Each `fresh` create archives the PREVIOUS live thread, so 21 of the 22
+        # created threads end up archived (the 22nd is still live) — enough to
+        # prove the 20-item cap.
+        history = c.get("/api/assistant/history", headers=_H).json()
+        assert len(history) == 20
+        history_ids = [h["id"] for h in history]
+        assert ids[0] not in history_ids            # oldest archived, dropped by the cap
+        assert history_ids[0] == ids[-2]             # most-recently-archived first
+
+
+def test_resume_restores_the_target_and_archives_the_current_live_thread(tmp_path):
+    with _client(tmp_path) as c:
+        first = c.post("/api/assistant/session", json={}, headers=_H).json()["id"]
+        second = c.post("/api/assistant/session", json={"fresh": True}, headers=_H).json()["id"]
+        assert c.get("/api/assistant/status", headers=_H).json()["sessionId"] == second
+
+        r = c.post(f"/api/assistant/session/{first}/resume", headers=_H)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"id": first, "model": r.json()["model"],
+                            "engine": r.json()["engine"], "state": "resumed"}
+
+        status = c.get("/api/assistant/status", headers=_H).json()
+        assert status["sessionId"] == first
+
+        # `second` is now the archived one.
+        history_ids = [h["id"] for h in c.get("/api/assistant/history", headers=_H).json()]
+        assert history_ids == [second]
+
+
+def test_resume_is_a_noop_for_the_already_live_thread(tmp_path):
+    with _client(tmp_path) as c:
+        sid = c.post("/api/assistant/session", json={}, headers=_H).json()["id"]
+        r = c.post(f"/api/assistant/session/{sid}/resume", headers=_H)
+        assert r.status_code == 200
+        assert r.json() == {"id": sid, "model": r.json()["model"],
+                            "engine": r.json()["engine"], "state": "existing"}
+        # No archive happened — history is still empty.
+        assert c.get("/api/assistant/history", headers=_H).json() == []
+
+
+def test_resume_rejects_a_thread_owned_by_another_identity(tmp_path):
+    other_h = {"Tailscale-User-Login": "v@example.com"}
+    with _client(tmp_path) as c:
+        theirs = c.post("/api/assistant/session", json={}, headers=other_h).json()["id"]
+        c.post("/api/assistant/session", json={"fresh": True}, headers=other_h)  # archives `theirs`
+
+        r = c.post(f"/api/assistant/session/{theirs}/resume", headers=_H)
+        assert r.status_code == 404
+
+
+def test_resume_rejects_a_non_assistant_session(tmp_path):
+    with _client(tmp_path) as c:
+        orch = c.app.state.sessions._orch
+
+        async def _make_and_archive_plain_session() -> str:
+            from server.assistant.api import _scratch_cwd
+            rec = await orch.create_session(
+                name="Plain", cwd=_scratch_cwd("u@example.com"), identity="u@example.com")
+            await orch.archive_session(rec.id, archived_by="user")
+            return rec.id
+
+        sid = c.portal.call(_make_and_archive_plain_session)
+        r = c.post(f"/api/assistant/session/{sid}/resume", headers=_H)
+        assert r.status_code == 404
+
+
+def test_resume_rejects_an_unknown_id(tmp_path):
+    with _client(tmp_path) as c:
+        r = c.post("/api/assistant/session/does-not-exist/resume", headers=_H)
+        assert r.status_code == 404
+
+
+def test_resume_threads_the_callers_identity_onto_the_resumed_driver(tmp_path):
+    """Same #1080 hazard as the reap-resume path: a driver resumed under the wrong
+    identity rejects every answer the real caller sends."""
+    from unittest.mock import AsyncMock
+
+    with _client(tmp_path) as c:
+        first = c.post("/api/assistant/session", json={}, headers=_H).json()["id"]
+        c.post("/api/assistant/session", json={"fresh": True}, headers=_H)  # archives `first`
+        with patch.object(SessionOrchestrator, "ensure_driver", new=AsyncMock()) as ed:
+            r = c.post(f"/api/assistant/session/{first}/resume", headers=_H)
+        assert r.status_code == 200, r.text
+        assert ed.await_args.kwargs.get("identity") == "u@example.com"
