@@ -8,6 +8,15 @@ import pytest
 from server.sessions.repo_match import RepoVocabulary
 
 
+class _StopAfterOptions(Exception):
+    """Sentinel the fake options factory raises to end the helper right after it
+    builds real options. Helpers differ in what they do with a failed model call
+    — most swallow it into a neutral result, ``propose_groups`` re-raises it as
+    ``GroupingModelError`` so the runner can name the cause — and this test is
+    about the probe/options threading boundary, not that policy, so it accepts
+    either as long as what comes back out is this sentinel."""
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("module_name,function_name,args,kwargs", [
     ("sessions.title_generator", "generate_title", (["Fix login"],),
@@ -54,7 +63,7 @@ async def test_helper_option_probe_thread(monkeypatch, module_name, function_nam
         options_seen.append(original_options(**kw))
         # Stop immediately after real options construction: no model turn or
         # unrelated response-parser inputs are needed to exercise this boundary.
-        raise RuntimeError("test stops after options construction")
+        raise _StopAfterOptions("test stops after options construction")
 
     monkeypatch.setattr(claude_bin, "_probe_version", probe)
     monkeypatch.setattr(claude_agent_sdk, "ClaudeAgentOptions", options)
@@ -62,7 +71,11 @@ async def test_helper_option_probe_thread(monkeypatch, module_name, function_nam
         # These helpers always build options, including their injected-query path;
         # the suite's outer no-model guards require injection to reach that code.
         kwargs = {**kwargs, "_query_fn": claude_agent_sdk.query}
-    await getattr(module, function_name)(*args, **kwargs)
+    try:
+        await getattr(module, function_name)(*args, **kwargs)
+    except Exception as exc:  # a helper that re-raises a failed model call
+        assert isinstance(exc, _StopAfterOptions) or isinstance(
+            exc.__cause__, _StopAfterOptions), f"unexpected failure: {exc!r}"
     assert probe_threads and all(t != loop_thread for t in probe_threads)
     assert len(options_seen) == 1
     assert options_seen[0].cli_path == "/test/claude"

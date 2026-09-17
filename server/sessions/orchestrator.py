@@ -5993,7 +5993,9 @@ class SessionOrchestrator:
         The one-shot SDK call needs a config dir — the DAEMON process has no
         ``CLAUDE_CONFIG_DIR`` — so bind it to a healthy account (same trick the
         old inline ranking used); with no healthy account the SDK default
-        applies and a failure is caught by the raise-on-empty contract."""
+        applies. A failed model call propagates as ``GroupingModelError`` with
+        the SDK's message (so the runner's ``groups_refresh_failed`` event can
+        name it); a model that answered with nothing parseable raises below."""
         from server.automations.backlog_grouping import propose_groups, store_plan
         candidates = await self._backlog_query_queue(config)
         if not candidates:
@@ -6005,7 +6007,8 @@ class SessionOrchestrator:
             config_dir = str(paths.account_cfg_dir(acct))
         groups = await propose_groups(candidates, config, _config_dir=config_dir)
         if not groups:
-            raise RuntimeError("grouping model returned no plan for a non-empty backlog")
+            raise RuntimeError(
+                f"grouping model returned no parseable plan for {len(candidates)} candidate(s)")
         await store_plan(groups, candidates)
         return len(groups)
 

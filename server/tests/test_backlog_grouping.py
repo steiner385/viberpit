@@ -202,11 +202,19 @@ async def test_propose_groups_empty_candidates_no_model_call():
 
 
 @pytest.mark.asyncio
-async def test_propose_groups_model_failure_returns_empty():
+async def test_propose_groups_model_failure_raises_with_the_models_error():
+    """A model-call failure surfaces as ``GroupingModelError`` carrying the SDK's
+    own message, so the runner's ``groups_refresh_failed`` event can name it
+    (2026-09-16: "Claude Code returned an error result: success" was in the
+    journal only; the event said "retrying shortly"). An unparseable plan is a
+    different thing and still reads as an empty plan."""
+    from server.automations.backlog_grouping import GroupingModelError
+
     def _query(*, prompt, options):  # noqa: ARG001
         raise RuntimeError("sdk down")
 
-    assert await propose_groups(C, {"max_issues_per_pr": 2}, _query_fn=_query) == []
+    with pytest.raises(GroupingModelError, match="sdk down"):
+        await propose_groups(C, {"max_issues_per_pr": 2}, _query_fn=_query)
 
 
 # --------------------------------------------------------------------------- #
