@@ -2133,8 +2133,9 @@ class SessionOrchestrator:
             )
             # SDLC Synthesizer control loop: one tick per interval (propose spec/plan
             # artifacts + enrich PR metadata). A disabled row makes each tick cheap.
+            from server.automations.sdlc_synthesizer import TICK_INTERVAL_S
             self._sdlc_synth_task = asyncio.create_task(
-                self._sdlc_synth_tick_loop(interval=60.0), name="sdlc-synthesizer-loop"
+                self._sdlc_synth_tick_loop(interval=TICK_INTERVAL_S), name="sdlc-synthesizer-loop"
             )
             # Control-Band Monitor: one detection pass per interval. Deliberately
             # the slowest loop here — its series are bucketed by DAY, so a tick
@@ -8727,15 +8728,9 @@ class SessionOrchestrator:
     # ------------------------------------------------------------------
 
     async def _sdlc_synth_read_config(self) -> tuple[str, dict]:
-        """The sdlc-synthesizer row's (mode, config) merged onto schema defaults,
-        with a pre-fold `propose`/`auto` read as `on` (spec 2026-09-14 D8). Off +
-        pure defaults on any absent or invalid row so a bad config never spawns."""
-        from server.automations.config_store import read_automation_config
-        from server.automations.sdlc_synthesizer import SdlcSynthesizer, fold_synth_mode
-        mode, config = await read_automation_config(
-            SdlcSynthesizer, modes=("on", "propose", "auto"),
-            log_key="sdlc_synthesizer")
-        return fold_synth_mode(mode), config
+        """Loop seam → ``sdlc_synthesizer.read_synth_mode`` (the ONE reader)."""
+        from server.automations.sdlc_synthesizer import read_synth_mode
+        return await read_synth_mode()
 
     async def _sdlc_synth_fold_stored_mode(self) -> None:
         """One-shot: rewrite a stored legacy `propose`/`auto` to `on` so the row
