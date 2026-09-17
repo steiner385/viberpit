@@ -145,7 +145,7 @@ def test_policy_schema_and_project_policy_round_trip():
         assert r.status_code == 200, r.text
         pol = r.json()["automationPolicy"]
         assert pol["dispatch"] == "auto" and pol["max_in_flight"] == 2
-        assert pol["queue_min_status"] == "Ready"          # defaults are stored, not implied
+        assert "queue_min_status" not in pol  # defaults are display/effective only
         assert c.get("/api/pm/projects/kindash", headers=IDENTITY_HEADERS).json()["automationPolicy"] == pol
 
         r = c.patch("/api/pm/projects/kindash/policy", json={"policy": {"dispatch": "turbo"}},
@@ -1892,3 +1892,52 @@ def test_ambiguous_accept_is_conflict_and_bulk_gathers_once(monkeypatch):
                 assert (await db.get(TriageProposal, pid)).status == "pending"
                 assert (await db.get(WorkItem, wid)).triage_state == "unclassified"
         c.portal.call(unchanged)
+
+
+def test_policy_patch_requires_explicit_policy_and_refuses_stale_reset_edits():
+    with _client() as c:
+        c.post("/api/pm/projects", json={"name": "P", "slug": "p", "repos": [{"repo": "owner/repo"}]}, headers=IDENTITY_HEADERS)
+        url = "/api/pm/projects/p/policy"
+        assert c.patch(url, json={}, headers=IDENTITY_HEADERS).status_code == 422
+        first = c.patch(url, json={"policy": {"dispatch": "off"}, "expectedUpdatedAt": None}, headers=IDENTITY_HEADERS)
+        assert first.status_code == 200, first.text
+        rev = first.json()["automationPolicyUpdatedAt"]
+        assert rev
+        assert c.patch(url, json={"policy": {"weight": 4}, "expectedUpdatedAt": None}, headers=IDENTITY_HEADERS).status_code == 409
+        merged = c.patch(url, json={"policy": {"weight": 4}, "expectedUpdatedAt": rev}, headers=IDENTITY_HEADERS)
+        assert merged.status_code == 200, merged.text
+        assert merged.json()["automationPolicy"] == {"dispatch": "off", "weight": 4}
+        reset = c.patch(url, json={"policy": None, "expectedUpdatedAt": merged.json()["automationPolicyUpdatedAt"]}, headers=IDENTITY_HEADERS)
+        assert reset.status_code == 200, reset.text
+        assert reset.json()["automationPolicy"] is None
+        assert reset.json()["automationPolicyUpdatedAt"] != merged.json()["automationPolicyUpdatedAt"]
+        assert c.patch(url, json={"policy": {"dispatch": "auto"}, "expectedUpdatedAt": rev}, headers=IDENTITY_HEADERS).status_code == 409
+        # Compatibility callers merge sparsely, never erase unspecified choices.
+        c.patch(url, json={"policy": {"dispatch": "off"}}, headers=IDENTITY_HEADERS)
+        final = c.patch(url, json={"policy": {"weight": 2}}, headers=IDENTITY_HEADERS)
+        assert final.json()["automationPolicy"] == {"dispatch": "off", "weight": 2}
+
+
+def test_policy_patch_refuses_corrupt_stored_policy_but_allows_explicit_reset():
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import AuditEvent, Project
+    with _client() as c:
+        async def seed():
+            async with db_session() as db:
+                db.add(Project(name="Bad", slug="bad", automation_policy={"unknown_grant": True}))
+        c.portal.call(seed)
+        url = "/api/pm/projects/bad/policy"
+        response = c.patch(url, json={"policy": {"weight": 2}}, headers=IDENTITY_HEADERS)
+        assert response.status_code == 422, response.text
+        async def observed():
+            async with db_session() as db:
+                p = (await db.scalars(select(Project).where(Project.slug == "bad"))).one()
+                audits = (await db.scalars(select(AuditEvent).where(AuditEvent.type == "pm.project.policy"))).all()
+                return p.automation_policy, p.automation_policy_updated_at, len(audits)
+        assert c.portal.call(observed) == ({"unknown_grant": True}, None, 0)
+        response = c.patch(url, json={"policy": None, "expectedUpdatedAt": None}, headers=IDENTITY_HEADERS)
+        assert response.status_code == 200, response.text
+        assert response.json()["automationPolicy"] is None
+        assert response.json()["automationPolicyUpdatedAt"]
+        assert c.portal.call(observed)[2] == 1
