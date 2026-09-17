@@ -14596,6 +14596,18 @@ class SessionOrchestrator:
             log.warning("send_prompt: no live driver for session=%s — prompt dropped",
                         session_id)
             return "no_driver"
+        # `is True`, not truthiness: engines without the flag, and test doubles
+        # (MagicMock auto-attributes are truthy), must read as alive.
+        if getattr(d, "stream_ended", False) is True:
+            # The driver is installed but its SDK stream is dead and a recompose is
+            # in flight (_recover_session). Writing now would reach a CLI the daemon
+            # can no longer hear — the 2026-09-16 black hole. Refuse so the bridge
+            # hands the prompt back for a re-send after the swap, and do NOT record it
+            # as the last prompt: the crash replay must re-send the cut-off turn, not
+            # this message (which the browser is about to re-send itself).
+            log.warning("send_prompt: SDK stream dead, recompose in flight — prompt "
+                        "refused session=%s", session_id)
+            return "recovering"
         ids = list(attachment_ids or [])
         if len(ids) > _attachments.MAX_PER_MESSAGE:
             log.warning("send_prompt: capping attachments from %d to %d session=%s",
@@ -15643,7 +15655,13 @@ class SessionOrchestrator:
             # tick for the SDK's 60 s and skips every later driver's stall check (and
             # the disabled-account sweep). If it doesn't land, the stall cap above
             # escalates to a recompose on a later tick.
-            await bounded_wait(driver.interrupt(), timeout=_DRIVER_CONTROL_TIMEOUT_S,
+            #
+            # keep_queue: this is not the user's Stop. Prompts typed while the turn
+            # sat wedged are exactly what the user wants run next; the settling turn
+            # drains them. Without it the watchdog destroyed the user's queued
+            # "continue" and left a stale chip in the queue strip (2026-09-16).
+            await bounded_wait(driver.interrupt(keep_queue=True),
+                               timeout=_DRIVER_CONTROL_TIMEOUT_S,
                                phase=f"stall.interrupt:{sid}")
 
     async def _check_disabled_account_sessions(self) -> None:
@@ -16108,7 +16126,7 @@ class SessionOrchestrator:
         if self._recovery.rotation_cap_reached(record.id, now=now):
             await self._pause_session(record, reason="rotation_cap")
             return
-        if kind == "process_crash":
+        if kind in ("process_crash", "stream_lost"):
             if self._recovery.crash_cap_reached(record.id, now=now):
                 await self._pause_session(record, reason="crash_cap")
                 return
@@ -16121,6 +16139,14 @@ class SessionOrchestrator:
                     model=quota_model(record.model, engine=record.engine)):
                 self._recovery.quarantine(record.account, until=now + QUARANTINE_429)
                 await self._rotate_away(record, reason="process_crash_account_exhausted")
+                return
+            if kind == "stream_lost":
+                # The SDK stream ended while the session was IDLE (the CLI exited,
+                # or its stdout reader died between turns — claude_driver
+                # _on_stream_ended). Same rebuild, but the last prompt already
+                # completed: replaying it would run that turn twice.
+                await self._reassign(record, record.account, reason="stream_lost",
+                                     replay_last_prompt=False)
                 return
             # Rebuild the driver in place on the same account, resuming the
             # conversation; _reassign re-sends the last prompt so the interrupted
@@ -16781,6 +16807,16 @@ class SessionOrchestrator:
             mode = getattr(record, "permission_mode", "interactive")
             identity = SYSTEM_IDENTITY
 
+        # Prompts queued behind the old driver's turn are the user's intent, and the
+        # courtesy interrupt below clears them (a Stop abandons the queue). Read them
+        # first and hand them to the new driver after the replayed prompt, in order —
+        # the swap must not be the moment a typed message vanishes (2026-09-16: the
+        # user's queued "continue" was lost at exactly this point).
+        carried: list[str] = []
+        queued = getattr(old_driver, "queued", None)
+        if callable(queued):
+            carried = list(queued())
+
         try:
             if old_driver is not None:
                 # Best-effort, BOUNDED. interrupt() awaits a control-channel reply from
@@ -16877,6 +16913,8 @@ class SessionOrchestrator:
             last = self._last_prompt.get(record.id) if replay_last_prompt else None
             if last:
                 await new_driver.send_prompt(last)
+            for text in carried:
+                await new_driver.send_prompt(text)
             # A successful swap ends whatever pause parked the session; the replayed
             # turn's own status persist may not arrive (no prompt to replay), so clear
             # the cause here too.

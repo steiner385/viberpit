@@ -25,7 +25,7 @@ class _Driver:
         self.interrupted = False
         self._hang = hang
 
-    async def interrupt(self):
+    async def interrupt(self, *, keep_queue=False):
         if self._hang:
             await asyncio.Event().wait()
         self.interrupted = True

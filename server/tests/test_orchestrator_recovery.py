@@ -203,7 +203,7 @@ def test_check_stalls_interrupts_wedged_turn():
         awaiting_user_input = False
         account = "kindash"
         last_progress_at = 0.0
-        async def interrupt(self):
+        async def interrupt(self, *, keep_queue=False):
             interrupted.append(True)
     o._drivers["s1"] = _StubDriver()
     asyncio.run(o._check_stalls(now=10_000.0))
@@ -227,7 +227,7 @@ def test_check_stalls_escalates_zombie_to_recompose_after_cap():
         awaiting_user_input = False
         account = "kindash"
         last_progress_at = 0.0      # progress frozen
-        async def interrupt(self):
+        async def interrupt(self, *, keep_queue=False):
             raise AssertionError("must escalate, not interrupt again")
     o._drivers["s1"] = _Zombie()
     for _ in range(R.STALL_CAP):    # interrupts already exhausted
@@ -250,7 +250,7 @@ def test_check_stalls_zombie_pauses_after_crash_cap():
         awaiting_user_input = False
         account = "kindash"
         last_progress_at = 0.0
-        async def interrupt(self): pass
+        async def interrupt(self, *, keep_queue=False): pass
     o._drivers["s1"] = _Zombie()
     for _ in range(R.STALL_CAP):
         o._recovery.record_stall("s1", now=10_000.0)
@@ -277,7 +277,7 @@ def test_check_stalls_leaves_resolved_turn_alone():
         awaiting_user_input = False
         account = "kindash"
         last_progress_at = 0.0
-        async def interrupt(self):
+        async def interrupt(self, *, keep_queue=False):
             raise AssertionError("resolved turn must be left alone")
     o._drivers["s1"] = _Done()
     for _ in range(R.STALL_CAP):
@@ -296,7 +296,7 @@ def test_check_stalls_leaves_progressing_turn_alone():
         awaiting_user_input = False
         account = "kindash"
         last_progress_at = 9_990.0
-        async def interrupt(self):
+        async def interrupt(self, *, keep_queue=False):
             interrupted.append(True)
     o._drivers["s1"] = _StubDriver()
     asyncio.run(o._check_stalls(now=10_000.0))
@@ -315,7 +315,7 @@ def test_check_stalls_leaves_turn_blocked_on_user_alone():
         last_progress_at = 0.0
         awaiting_user_input = True
         account = "kindash"
-        async def interrupt(self):
+        async def interrupt(self, *, keep_queue=False):
             interrupted.append(True)
     o._drivers["s1"] = _StubDriver()
     asyncio.run(o._check_stalls(now=10_000.0))
@@ -332,7 +332,7 @@ def test_check_stalls_stops_after_stall_cap():
         awaiting_user_input = False
         account = "kindash"
         last_progress_at = 0.0
-        async def interrupt(self): interrupted.append(True)
+        async def interrupt(self, *, keep_queue=False): interrupted.append(True)
     o._drivers["s1"] = _StubDriver()
     for _ in range(3):
         o._recovery.record_stall("s1", now=10_000.0)
@@ -364,7 +364,7 @@ def test_check_stalls_extends_timeout_for_throttled_turn():
         in_api_backoff = True
         awaiting_user_input = False
         account = "kindash"
-        async def interrupt(self): interrupted.append(True)
+        async def interrupt(self, *, keep_queue=False): interrupted.append(True)
     o._drivers["s1"] = _StubDriver()
     # Silence just past the base timeout but within the extended throttle window.
     asyncio.run(o._check_stalls(now=R.STALL_TIMEOUT + 1.0))
@@ -383,7 +383,7 @@ def test_check_stalls_interrupts_throttled_turn_past_extended_timeout():
         in_api_backoff = True
         awaiting_user_input = False
         account = "kindash"
-        async def interrupt(self): interrupted.append(True)
+        async def interrupt(self, *, keep_queue=False): interrupted.append(True)
     o._drivers["s1"] = _StubDriver()
     asyncio.run(o._check_stalls(now=R.STALL_TIMEOUT_THROTTLED + 1.0))
     assert interrupted == [True]
@@ -402,7 +402,7 @@ def test_check_stalls_extends_timeout_for_quarantined_account():
         awaiting_user_input = False
         last_progress_at = 0.0
         account = "kindash"
-        async def interrupt(self): interrupted.append(True)
+        async def interrupt(self, *, keep_queue=False): interrupted.append(True)
     o._drivers["s1"] = _StubDriver()
     now = R.STALL_TIMEOUT + 1.0
     o._recovery.quarantine("kindash", until=now + R.STALL_TIMEOUT)  # still in cooldown at `now`
@@ -571,3 +571,63 @@ def test_401_oauth_path_unchanged_when_no_setup_token():
     asyncio.run(o._recover_session(rec, "auth_401", None))
     assert o.calls == [("recompose", "s1")]
     assert o._recovery.quarantined(now=1000.0) == frozenset()
+
+
+def test_check_stalls_interrupt_keeps_queued_prompts():
+    """The watchdog's interrupt is not the user's Stop: prompts the user typed while
+    the turn was wedged are the very thing they want run next, so the interrupt must
+    leave the queue for the settling turn to drain (2026-09-16: the user's second
+    "continue" was destroyed by a watchdog interrupt and the queue chip went stale)."""
+    o = _make_orch()
+    kept = []
+    class _StubDriver:
+        turn_active = True
+        drain_alive = False
+        in_api_backoff = False
+        awaiting_user_input = False
+        account = "kindash"
+        last_progress_at = 0.0
+        async def interrupt(self, *, keep_queue=False):
+            kept.append(keep_queue)
+    o._drivers["s1"] = _StubDriver()
+    asyncio.run(o._check_stalls(now=10_000.0))
+    assert kept == [True]
+
+
+def test_stream_lost_recomposes_in_place_without_replaying_the_last_prompt():
+    """The SDK stream ended while the session was IDLE (process gone, or its stdout
+    reader died between turns): rebuild the driver on the same account, resuming the
+    conversation — but there is no interrupted turn, so the last prompt must NOT be
+    re-sent (it already completed)."""
+    o = _make_orch(); rec = _rec(o)
+    calls = []
+    async def spy_reassign(record, new_account, **kw):
+        calls.append((record.id, new_account, kw))
+    o._reassign = spy_reassign
+    asyncio.run(o._recover_session(rec, "stream_lost", None))
+    assert calls == [("s1", "kindash", {"reason": "stream_lost", "replay_last_prompt": False})]
+
+
+def test_stream_lost_is_bounded_by_the_crash_cap():
+    """A stream that keeps dying (a file the reader can never swallow, a CLI that
+    exits on connect) must pause for a human, not recompose forever."""
+    o = _make_orch(); rec = _rec(o)
+    for _ in range(R.CRASH_CAP):
+        o._recovery.record_crash("s1", now=1000.0)
+    asyncio.run(o._recover_session(rec, "stream_lost", None))
+    assert ("pause", "s1", "crash_cap") in o.calls
+
+
+def test_send_prompt_refuses_a_driver_whose_stream_died():
+    """Between the stream's death and the recompose, a prompt must be REFUSED (the
+    bridge re-queues it client-side and re-sends after the swap), never written to a
+    CLI the daemon can no longer hear — and not recorded as the last prompt either,
+    or the crash recovery would replay the new message instead of the cut-off turn."""
+    o = _make_orch()
+    class _Dead:
+        stream_ended = True
+        async def send_prompt(self, *a, **k):
+            raise AssertionError("must not reach a dead driver")
+    o._drivers["s1"] = _Dead()
+    assert asyncio.run(o.send_prompt("s1", "continue")) == "recovering"
+    assert "s1" not in o._last_prompt

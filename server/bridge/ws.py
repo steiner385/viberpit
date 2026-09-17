@@ -1694,13 +1694,16 @@ def build_ws_router(default_orchestrator: "InProcessOrchestratorAdapter") -> API
                 except Exception:
                     log.warning("ws.audit_failed event=%s session=%s",
                                 "session.interrupt", session_id, exc_info=True)
-            if status in ("draining", "no_driver"):
+            if status in ("draining", "no_driver", "recovering"):
                 # The turn was refused — ack it so the browser re-queues
                 # instead of losing the prompt. "draining": a deploy drain.
                 # "no_driver": the session's driver was released between
                 # _ensure_live and the send (or _ensure_live believed it was
-                # already live). Either way the prompt was NOT delivered, and
-                # a dropped user message must never be silent.
+                # already live). "recovering": the driver is there but its
+                # SDK stream is dead and the daemon is recomposing it — a
+                # prompt written now would reach a CLI nobody can hear. Either
+                # way the prompt was NOT delivered, and a dropped user message
+                # must never be silent.
                 log.warning("ws.prompt rejected session=%s reason=%s",
                             session_id, status)
                 await _send({"type": "promptRejected", "sessionId": session_id,
