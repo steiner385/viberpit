@@ -23,6 +23,8 @@ import { SessionRuntimeProvider, useSessionRuntimeContext } from '@/features/ses
 import { TranscriptView } from '@/features/sessions/transcript/TranscriptView'
 import { SessionComposer } from '@/features/sessions/composer/SessionComposer'
 import { SessionErrorBanner } from '@/features/sessions/panels/SessionErrorBanner'
+import { PendingPermissionPanel } from '@/features/sessions/panels/PendingPermissionPanel'
+import { PendingQuestionPanel } from '@/features/sessions/panels/PendingQuestionPanel'
 import { useOpenSessionId } from '@/shell/openSessionId'
 import { statusTier } from '@/session/statusTier'
 import { Button } from '@/ui/Button'
@@ -107,6 +109,25 @@ function AssistantSheetBody() {
           onAsk={(text) => setDraftSeed({ text })}
         />
       </div>
+      {/* Pinned permission / question panels, exactly as SessionBody mounts them. Turn
+          filters open permissions and live questions OUT of the transcript on the
+          assumption that these panels render them above the composer — an assumption
+          the drawer did not honour until 2026-09-16, when the assistant's gated
+          `dispatch_backlog` cards (DESTRUCTIVE → always a card, even in full-auto)
+          were pended and re-emitted by the daemon but had no surface here, so the
+          operator saw nothing and their next message steer-denied each one. The
+          gate is unchanged; this only gives it somewhere to be answered. */}
+      <PendingPermissionPanel
+        turns={rt.state.turns}
+        permissionMode={rt.mode}
+        onDecision={rt.onDecision}
+      />
+      <PendingQuestionPanel
+        turns={rt.state.turns}
+        onAnswer={rt.onAnswer}
+        onChat={rt.onChat}
+        armedQuestionId={rt.armedQuestionId}
+      />
       <SessionComposer
         rt={rt}
         hideModeSelector
