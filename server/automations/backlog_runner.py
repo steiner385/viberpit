@@ -1461,8 +1461,14 @@ class BacklogRunnerLoop:
         terminal OR missing session row. A claim that never recorded a session
         has nothing running to protect. The released issue returns to the pool
         with no bounce charged — the old session's fate is unknown, and a phantom
-        attempt would be a guess. Unwired seam = rows are left exactly as before."""
-        if self._session_gone is None:
+        attempt would be a guess. Unwired seam = rows are left exactly as before.
+
+        Scoped to rows that actually HOLD A SLOT, via the shared ``is_in_flight``
+        predicate rather than a second hand-rolled filter: the harm being undone
+        is a slot held forever. ``_sweep`` already skips ``gave_up`` (a human
+        cooldown), but a ``handed_off`` row belongs to PR Doctor and reaches here
+        — deleting one would yank a target out from under another automation."""
+        if self._session_gone is None or not is_in_flight(st):
             return
         sid = st.get("session_id")
         if sid:

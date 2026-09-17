@@ -683,6 +683,31 @@ def test_legacy_claim_is_kept_while_its_session_is_alive_or_the_seam_is_unwired(
     asyncio.run(run())
 
 
+def test_legacy_release_never_touches_a_row_that_holds_no_slot(tmp_path):
+    """A token-less ``handed_off`` row belongs to PR Doctor, not to a slot. The
+    sweep skips ``gave_up`` itself, but ``handed_off`` reaches the release path,
+    so the release is scoped by the shared ``is_in_flight`` predicate — deleting
+    one would yank a target out from under the other automation for no gain."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy5.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+
+        async def session_gone(_sid):
+            return True
+
+        loop, _rec, ctx = build_loop(candidates=[], session_gone=session_gone)
+        await ctx.set_target_state("o/r#9", {"repo": "o/r", "handed_off": True,
+                                             "issues": ["o/r#9"], "session_id": "gone-sid"})
+        before = await ctx.get_target_state("o/r#9")
+        await loop.tick()
+        assert await ctx.get_target_state("o/r#9") == before
+        assert await ctx.list_events(kind="legacy_claim_released") == []
+
+    asyncio.run(run())
+
+
 def test_legacy_release_never_touches_a_token_holding_row(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'legacy4.db'}"
 
