@@ -163,7 +163,21 @@ def test_permission_answered_over_ccas2_socket_is_audited_via_cli(ws_env, monkey
             "type": "permissionResponse", "sessionId": session_id,
             "permId": req["permId"], "decision": "allow",
         }))
-        _drain_events(ws, until_type="turnEnd", timeout=8.0)
+        events = _drain_events(ws, until_type="turnEnd", timeout=8.0)
+        assert any(e.get("type") == "turnEnd" for e in events)
+
+        # turnEnd comes from the driver's independent fan-out, before the WS
+        # permission handler necessarily commits its audit row. Closing the test
+        # socket here can cancel that commit. As in test_ws_commands, an unknown
+        # frame is a receive-loop barrier: permissionResponse runs inline, so its
+        # transaction must finish before the sentinel's response can be sent.
+        ws.send_text(json.dumps({"type": "__ping__", "sessionId": session_id}))
+        events = _drain_events(ws, until_type="error")
+        assert any(
+            e.get("code") == "UNKNOWN_TYPE"
+            and e.get("message") == "Unknown message type: '__ping__'"
+            for e in events
+        ), events
 
     async def _read_audit():
         from sqlalchemy import select

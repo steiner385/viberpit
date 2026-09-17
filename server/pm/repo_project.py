@@ -9,7 +9,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db.models import Project, ProjectRepo
@@ -213,3 +213,44 @@ async def require_mutation_owner(
     if project_id is not None and ownership.owner.project_id != project_id:
         raise OwnershipConflict("mismatch", "Repository belongs to another product.")
     return ownership.owner
+
+
+async def lock_repo_registration(db: AsyncSession) -> None:
+    """Serialize registration writers across processes until transaction completion.
+
+    Must be the first SQL in the request session, after canonical network preflight.
+    PostgreSQL's table lock also excludes mirror rename writes; SQLite reserves its
+    single writer before any reads, avoiding read-to-write upgrade races. Neither
+    lock modifies legacy ambiguous registrations or requires a uniqueness rollout.
+    """
+    if db.in_transaction():
+        raise RuntimeError("Repository registration requires a fresh transaction")
+    dialect = db.get_bind().dialect.name
+    if dialect == "postgresql":
+        await db.execute(text("LOCK TABLE project_repos IN SHARE ROW EXCLUSIVE MODE"))
+    elif dialect == "sqlite":
+        await db.execute(text("BEGIN IMMEDIATE"))
+    else:
+        raise RuntimeError(f"Unsupported repository registration database: {dialect}")
+
+
+async def require_unregistered_repos(
+    db: AsyncSession, repos: Collection[str], *, snapshot: RepoOwnershipSnapshot,
+) -> dict[str, str]:
+    """Under the registration lock, prove absence and return verified identities."""
+    if await _registration_evidence(db) != snapshot.registrations:
+        raise OwnershipConflict("changed", "Product registrations changed; retry registration.")
+    ownership = await resolve_repo_ownership(db, repos, canonical_repos=snapshot.canonical_repos)
+    identities: dict[str, str] = {}
+    for repo, result in ownership.items():
+        if result.state != "missing" or result.canonical_repo is None:
+            owners = ", ".join(owner.slug for owner in result.candidates)
+            unavailable = ", ".join(result.unresolved_repos)
+            reason = f"{repo}: {result.reason}"
+            if owners:
+                reason += f" Existing products: {owners}. Choose another repository or correct its registration."
+            if unavailable:
+                reason += f" Unavailable registrations: {unavailable}. Verify access and retry."
+            raise OwnershipConflict(result.state, reason)
+        identities[repo] = result.canonical_repo
+    return identities
