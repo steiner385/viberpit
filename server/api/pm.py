@@ -17,9 +17,9 @@ from sqlalchemy import and_, func, or_, select, tuple_
 
 from server.audit import record_audit
 from server.auth.middleware import current_identity
-from server.automations.base import validate_config
 from server.automations.product_policy import (
-    PRODUCT_POLICY_SCHEMA, effective_policy, policies_by_slug)
+    PRODUCT_POLICY_SCHEMA, PolicyEditConflict, effective_policy, policies_by_slug, patch_project_policy)
+from server.time_iso import iso_utc
 from server.automations.product_admission import (
     ProductMissing, gather_implementation_snapshot, gather_product_coverage,
 )
@@ -99,6 +99,7 @@ def _project_to_dict(p: Project) -> dict:
         # The RAW validated blob, or null when the product never opted in — the web
         # renders it through PRODUCT_POLICY_SCHEMA's defaults (server/automations/product_policy.py).
         "automationPolicy": p.automation_policy,
+        "automationPolicyUpdatedAt": iso_utc(p.automation_policy_updated_at),
     }
 
 
@@ -159,7 +160,8 @@ class EdgeCreateBody(BaseModel):
 class PolicyPatchBody(BaseModel):
     # `None` clears the policy (opts the product back out entirely); a dict is
     # validated against PRODUCT_POLICY_SCHEMA before it's stored.
-    policy: dict | None = None
+    policy: dict | None
+    expectedUpdatedAt: datetime | None = None
 
 
 async def _load_project(db, slug: str) -> Project:
@@ -447,20 +449,20 @@ async def update_project_policy(
     db=Depends(get_db),
 ) -> dict:
     p = await _load_project(db, slug)
-    if body.policy is None:
-        validated = None
-        p.automation_policy = None
-        p.automation_policy_updated_at = None
-    else:
-        try:
-            validated = validate_config(PRODUCT_POLICY_SCHEMA, body.policy)
-        except ValueError as e:
-            raise HTTPException(
-                status_code=422,
-                detail={"error": "bad_policy", "message": str(e)}) from e
-        p.automation_policy = validated
-        p.automation_policy_updated_at = datetime.now(timezone.utc)
-    await db.flush()
+    try:
+        validated = await patch_project_policy(
+            db, p, body.policy, expected_updated_at=body.expectedUpdatedAt,
+            check_expected="expectedUpdatedAt" in body.model_fields_set,
+        )
+    except PolicyEditConflict as e:
+        raise HTTPException(status_code=409, detail={
+            "error": "policy_conflict",
+            "message": "Automation settings changed. Refresh and try again.",
+        }) from e
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_policy", "message": str(e),
+        }) from e
     await record_audit(db=db, type="pm.project.policy", identity=identity,
                        detail={"slug": slug, "policy": validated})
     return await _project_detail_dict(db, p)

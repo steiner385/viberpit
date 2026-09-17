@@ -35,7 +35,7 @@ import {
   fetchOnboarding, proposeMap, runClassify, advanceMap, advanceLive,
   removeDependency, createEdge, deleteEdge,
   editMapChanges, abandonMapChanges, rebaseMapChanges,
-  fetchPolicySchema, updateProductPolicy, fetchProductPolicyCoverage, fetchProductImplementationPolicy,
+  fetchPolicySchema, updateProductPolicy, type ProductPolicyPatch, fetchProductPolicyCoverage, fetchProductImplementationPolicy,
   fetchProjectHealth,
   fetchOutcomes, fetchWorkItemIssue, dispositionIssue,
   type WorkItemIssue, type IssueDispositionInput, type IssueDispositionResult,
@@ -1862,19 +1862,23 @@ export function useProductImplementationPolicy(slug: string) {
   })
 }
 
-/** The product Overview's Automation card (spec §9): a whole-object replace of
- *  the policy blob. Invalidates this project's own detail (the card reads its
- *  `automationPolicy` back) and the map (a product's "is automation on" chip,
- *  if the map ever grows one, would read the same field). */
+/** Sparse edits retain unrelated choices; conflicts refresh without retrying. */
 export function useUpdateProductPolicy(slug: string) {
   const qc = useQueryClient()
-  return useMutation<Project, ApiRequestError, Record<string, unknown> | null>({
-    mutationFn: (policy) => updateProductPolicy(slug, policy),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: QK.project(slug) })
-      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+  return useMutation<Project, ApiRequestError, ProductPolicyPatch>({
+    mutationFn: (patch) => updateProductPolicy(slug, patch),
+    retry: false,
+    onSuccess: async (project) => {
+      qc.setQueryData(QK.project(slug), project)
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: QK.project(slug) }),
+        qc.invalidateQueries({ queryKey: QK.roadmapMap }),
+      ])
     },
-    onError: (e) => toast.error(extractMutationErrorMessage(e, 'Could not update the automation policy')),
+    onError: async (e) => {
+      if (e.status === 409) await qc.invalidateQueries({ queryKey: QK.project(slug) })
+      toast.error(extractMutationErrorMessage(e, 'Could not update the automation policy'))
+    },
     meta: PM_MUTATION_META,
   })
 }

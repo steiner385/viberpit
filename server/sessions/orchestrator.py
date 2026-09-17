@@ -6242,7 +6242,6 @@ class SessionOrchestrator:
         defaults. A product that ALREADY carries a policy is skipped individually
         instead: a human who has set one owns that answer, and their edit must not
         block the other products' migration."""
-        from datetime import datetime, timezone
 
         from sqlalchemy import select as sa_select
 
@@ -6250,7 +6249,7 @@ class SessionOrchestrator:
         from server.automations.backlog_runner import BacklogRunner, fold_global_mode
         from server.automations.base import retired_config_keys_of
         from server.automations.product_policy import (
-            PRODUCT_POLICY_SCHEMA, effective_policy)
+            PRODUCT_POLICY_SCHEMA, PolicyEditConflict, patch_project_policy)
         from server.db.models import Automation, GhProject, Project, ProjectRepo
         from server.pm.repo_project import owning_projects_by_repo
 
@@ -6330,10 +6329,10 @@ class SessionOrchestrator:
                 any_repo.setdefault(project_id, repo)
                 if is_primary:
                     primary.setdefault(project_id, repo)
-            now = datetime.now(timezone.utc)
             for project in rows:
                 slug = project.slug or project.id
-                if project.automation_policy is not None:
+                if (project.automation_policy is not None
+                        or project.automation_policy_updated_at is not None):
                     # A human set this product's policy before the first tick —
                     # theirs is the answer, and overwriting it with the retired
                     # defaults would be the migration undoing an operator. Skipped
@@ -6358,9 +6357,11 @@ class SessionOrchestrator:
                         "default_model", raw.get("default_model"))
                 if "respect_dependencies" in raw:
                     legacy["respect_dependencies"] = bool(raw["respect_dependencies"])
-                policy = effective_policy(legacy)
-                project.automation_policy = policy
-                project.automation_policy_updated_at = now
+                try:
+                    policy = await patch_project_policy(db, project, legacy)
+                except PolicyEditConflict:
+                    # A concurrent human edit/reset wins over legacy seeding.
+                    continue
                 seeded.append(slug)
                 await record_audit(
                     db=db, type="pm.project.policy", identity="backlog-runner",
