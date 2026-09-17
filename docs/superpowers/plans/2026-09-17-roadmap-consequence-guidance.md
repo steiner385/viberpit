@@ -19,7 +19,7 @@
 - Working norm: purge replaced code in the same PR — `NEXT_ACTION_LABEL` / `nextActionLabel` in `web/src/features/products/vocab.ts` are deleted in Task 8.
 - Run the FULL `npm run test` in `web/` (many test files mock `@/api/hooks`; a new hook on a shared component breaks files you never touched).
 - Server gate is four steps: `ruff check src/ server/`, `mypy server/ --ignore-missing-imports`, `pytest tests/`, `pytest server/tests/`. Run `server/tests/` with `env -u CCSWITCH_TAILNET_ALLOWLIST -u CCSWITCH_SESSIOND_CERT -u CCSWITCH_SESSIOND_KEY -u CCSWITCH_SESSIOND_CA -u CCSWITCH_DAEMON_ROLE CCSWITCH_DEV=1 …`.
-- Python interpreter: the worktree has no venv; use `/home/tony/GitHub/viberpit-deploy/.venv/bin/python -m pytest` (or the main checkout's `.venv`), and `PYTHONPATH=$PWD/src` on both suites. `web/node_modules` is a symlink to the deploy checkout's.
+- Python interpreter: the worktree has no venv; use `/home/tony/GitHub/viberpit/.venv/bin/python -m pytest` (or the main checkout's `.venv`), and `PYTHONPATH=$PWD/src` on both suites. `web/node_modules` is a symlink to the deploy checkout's.
 - Commit trailer on every commit: `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. Write commit messages to a file and pass `-F` (the Bash hook denies command text pairing deploy verbs with prod words).
 
 ---
@@ -62,8 +62,23 @@
 """The artifact layout lives in a pure module so the consequence explainer
 (server/sdlc/explain.py) can name the file a session will add without importing
 the prompt builders, which pull in session code."""
-import importlib
+import subprocess
 import sys
+
+# Purity is checked in a FRESH interpreter: deleting entries from sys.modules in
+# the test process would leave later tests in the same pytest worker holding
+# duplicate class objects (isinstance mismatches).
+_PURITY_CHECK = (
+    "import sys, {module}; bad = sorted(m for m in sys.modules if m.startswith("
+    "('server.db', 'server.automations', 'server.sessions'))); "
+    "assert not bad, bad"
+)
+
+
+def assert_pure(module: str) -> None:
+    r = subprocess.run([sys.executable, "-c", _PURITY_CHECK.format(module=module)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
 
 
 def test_artifact_path_layout():
@@ -74,11 +89,7 @@ def test_artifact_path_layout():
 
 def test_paths_module_is_pure():
     """Importing it must not drag in the DB, automations or session packages."""
-    for name in [m for m in sys.modules if m.startswith("server.")]:
-        del sys.modules[name]
-    importlib.import_module("server.sdlc.paths")
-    assert not any(m.startswith(("server.db", "server.automations", "server.sessions"))
-                   for m in sys.modules), "server.sdlc.paths imported impure packages"
+    assert_pure("server.sdlc.paths")
 
 
 def test_prompts_reexports_the_same_function():
@@ -89,7 +100,7 @@ def test_prompts_reexports_the_same_function():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit-deploy/.venv/bin/python -m pytest server/tests/test_sdlc_paths.py -v`
+Run: `PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit/.venv/bin/python -m pytest server/tests/test_sdlc_paths.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'server.sdlc.paths'`
 
 - [ ] **Step 3: Create the module and re-export from prompts**
@@ -126,7 +137,7 @@ _artifact_path = artifact_path
 
 - [ ] **Step 4: Run the new test and the existing prompt/artifact tests**
 
-Run: `PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit-deploy/.venv/bin/python -m pytest server/tests/test_sdlc_paths.py server/tests/test_sdlc_prompts.py server/tests/test_sdlc_synthesizer_loop.py server/tests/test_sdlc_intake_loop.py -q`
+Run: `PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit/.venv/bin/python -m pytest server/tests/test_sdlc_paths.py server/tests/test_sdlc_prompts.py server/tests/test_sdlc_synthesizer_loop.py server/tests/test_sdlc_intake_loop.py -q`
 Expected: all PASS
 
 - [ ] **Step 5: Commit**
@@ -166,8 +177,6 @@ git commit -F /tmp/c1.txt
 control is the real engine run on the post-tap state, described. Pure and total."""
 from __future__ import annotations
 
-import importlib
-import sys
 from dataclasses import replace
 
 import pytest
@@ -178,6 +187,7 @@ from server.sdlc.explain import (
     ExplainContext, describe, dispatch_sentence, explain, gates_to_wire, guidance_to_wire,
 )
 from server.sdlc.gates import GATES, RISK_TOLERANCES
+from server.tests.test_sdlc_paths import assert_pure
 
 
 def _view(**kw) -> InitiativeView:
@@ -200,11 +210,7 @@ def _ctx(view: InitiativeView, arts: list[ArtifactView] | None = None, **kw) -> 
 
 
 def test_module_is_pure():
-    for name in [m for m in sys.modules if m.startswith("server.")]:
-        del sys.modules[name]
-    importlib.import_module("server.sdlc.explain")
-    assert not any(m.startswith(("server.db", "server.automations", "server.sessions"))
-                   for m in sys.modules)
+    assert_pure("server.sdlc.explain")
 
 
 # --- the simulation property: `then` IS the engine on the post-tap state --------
@@ -455,7 +461,7 @@ def test_gates_wire_lists_every_gate_with_auto_resolution_per_tolerance():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit-deploy/.venv/bin/python -m pytest server/tests/test_sdlc_explain.py -q`
+Run: `PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit/.venv/bin/python -m pytest server/tests/test_sdlc_explain.py -q`
 Expected: FAIL with `ModuleNotFoundError: No module named 'server.sdlc.explain'`
 
 - [ ] **Step 3: Write the module**
@@ -854,12 +860,12 @@ def gates_to_wire(*, autoresolve_enabled: bool) -> dict:
 
 - [ ] **Step 4: Run the tests**
 
-Run: `PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit-deploy/.venv/bin/python -m pytest server/tests/test_sdlc_explain.py -v`
+Run: `PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit/.venv/bin/python -m pytest server/tests/test_sdlc_explain.py -v`
 Expected: all PASS. If `test_build_stage_defers_to_the_board_whatever_the_issue_pointer` fails on the `issue="o/r#5"` leg, the engine returned `HandoffToBuild` and `_loop_acts` must still say `False` under `dispatch="off"` — that is the implemented rule; re-read `_loop_acts`.
 
 - [ ] **Step 5: Lint and type-check the module**
 
-Run: `/home/tony/GitHub/viberpit-deploy/.venv/bin/python -m ruff check server/sdlc/explain.py server/tests/test_sdlc_explain.py && /home/tony/GitHub/viberpit-deploy/.venv/bin/python -m mypy server/sdlc/explain.py --ignore-missing-imports`
+Run: `/home/tony/GitHub/viberpit/.venv/bin/python -m ruff check server/sdlc/explain.py server/tests/test_sdlc_explain.py && /home/tony/GitHub/viberpit/.venv/bin/python -m mypy server/sdlc/explain.py --ignore-missing-imports`
 Expected: clean
 
 - [ ] **Step 6: Commit**
@@ -934,7 +940,7 @@ def test_tick_constant_is_the_loop_interval():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit-deploy/.venv/bin/python -m pytest server/tests/test_sdlc_synth_mode_reader.py -q`
+Run: `PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit/.venv/bin/python -m pytest server/tests/test_sdlc_synth_mode_reader.py -q`
 Expected: FAIL with `ImportError: cannot import name 'read_synth_mode'`
 
 - [ ] **Step 3: Add the reader and the constant; delegate from the orchestrator**
@@ -982,7 +988,7 @@ and change line 2137 from `interval=60.0` to use the constant:
 
 - [ ] **Step 4: Run the new test plus the loop/wiring tests**
 
-Run: `env -u CCSWITCH_TAILNET_ALLOWLIST -u CCSWITCH_DAEMON_ROLE CCSWITCH_DEV=1 PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit-deploy/.venv/bin/python -m pytest server/tests/test_sdlc_synth_mode_reader.py server/tests/test_sdlc_synthesizer_loop.py server/tests/test_sdlc_wiring.py -q`
+Run: `env -u CCSWITCH_TAILNET_ALLOWLIST -u CCSWITCH_DAEMON_ROLE CCSWITCH_DEV=1 PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit/.venv/bin/python -m pytest server/tests/test_sdlc_synth_mode_reader.py server/tests/test_sdlc_synthesizer_loop.py server/tests/test_sdlc_wiring.py -q`
 Expected: all PASS
 
 - [ ] **Step 5: Commit**
@@ -1165,7 +1171,7 @@ def test_detail_guidance_with_a_pending_materialization():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `env -u CCSWITCH_TAILNET_ALLOWLIST -u CCSWITCH_DAEMON_ROLE CCSWITCH_DEV=1 PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit-deploy/.venv/bin/python -m pytest server/tests/test_sdlc_api.py -k "guidance or gates_endpoint or follows_the_products_tolerance" -q`
+Run: `env -u CCSWITCH_TAILNET_ALLOWLIST -u CCSWITCH_DAEMON_ROLE CCSWITCH_DEV=1 PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit/.venv/bin/python -m pytest server/tests/test_sdlc_api.py -k "guidance or gates_endpoint or follows_the_products_tolerance" -q`
 Expected: FAIL (404 on `/api/sdlc/gates`, `KeyError: 'guidance'`)
 
 - [ ] **Step 3: Implement**
@@ -1282,12 +1288,12 @@ Route ordering: `/gates` is a fixed path; FastAPI matches `/initiatives/{slug}` 
 
 - [ ] **Step 4: Run the SDLC API suite**
 
-Run: `env -u CCSWITCH_TAILNET_ALLOWLIST -u CCSWITCH_DAEMON_ROLE CCSWITCH_DEV=1 PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit-deploy/.venv/bin/python -m pytest server/tests/test_sdlc_api.py -q 2>&1 | tee /tmp/sdlc-api.log | tail -5`
+Run: `env -u CCSWITCH_TAILNET_ALLOWLIST -u CCSWITCH_DAEMON_ROLE CCSWITCH_DEV=1 PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit/.venv/bin/python -m pytest server/tests/test_sdlc_api.py -q 2>&1 | tee /tmp/sdlc-api.log | tail -5`
 Expected: all PASS, including the pre-existing `test_get_detail_includes_chain_and_action` (intake, no product → cautious → `await_approval`) and `test_detail_next_action_materialize_depends_on_the_epic_pointer`.
 
 - [ ] **Step 5: Lint + mypy**
 
-Run: `/home/tony/GitHub/viberpit-deploy/.venv/bin/python -m ruff check server/ && /home/tony/GitHub/viberpit-deploy/.venv/bin/python -m mypy server/api/sdlc.py --ignore-missing-imports`
+Run: `/home/tony/GitHub/viberpit/.venv/bin/python -m ruff check server/ && /home/tony/GitHub/viberpit/.venv/bin/python -m mypy server/api/sdlc.py --ignore-missing-imports`
 Expected: clean
 
 - [ ] **Step 6: Commit**
@@ -1411,7 +1417,7 @@ def test_triage_guidance_for_an_unowned_repo_reads_as_dispatch_off():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `env -u CCSWITCH_TAILNET_ALLOWLIST -u CCSWITCH_DAEMON_ROLE CCSWITCH_DEV=1 PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit-deploy/.venv/bin/python -m pytest server/tests/test_pm_explain.py server/tests/test_pm_api.py -k "guidance" -q`
+Run: `env -u CCSWITCH_TAILNET_ALLOWLIST -u CCSWITCH_DAEMON_ROLE CCSWITCH_DEV=1 PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit/.venv/bin/python -m pytest server/tests/test_pm_explain.py server/tests/test_pm_api.py -k "guidance" -q`
 Expected: FAIL (`ModuleNotFoundError: server.pm.explain`, `KeyError: 'guidance'`)
 
 - [ ] **Step 3: Implement**
@@ -1492,12 +1498,12 @@ and in the output loop replace the `out.append(...)` with:
 
 - [ ] **Step 4: Run the tests**
 
-Run: `env -u CCSWITCH_TAILNET_ALLOWLIST -u CCSWITCH_DAEMON_ROLE CCSWITCH_DEV=1 PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit-deploy/.venv/bin/python -m pytest server/tests/test_pm_explain.py server/tests/test_pm_api.py server/tests/test_assistant_tools.py -q 2>&1 | tee /tmp/pm-api.log | tail -5`
+Run: `env -u CCSWITCH_TAILNET_ALLOWLIST -u CCSWITCH_DAEMON_ROLE CCSWITCH_DEV=1 PYTHONPATH=$PWD/src /home/tony/GitHub/viberpit/.venv/bin/python -m pytest server/tests/test_pm_explain.py server/tests/test_pm_api.py server/tests/test_assistant_tools.py -q 2>&1 | tee /tmp/pm-api.log | tail -5`
 Expected: all PASS (assistant tools list triage rows and must tolerate the extra key).
 
 - [ ] **Step 5: Lint + mypy, then commit**
 
-Run: `/home/tony/GitHub/viberpit-deploy/.venv/bin/python -m ruff check server/ && /home/tony/GitHub/viberpit-deploy/.venv/bin/python -m mypy server/pm/explain.py server/api/pm.py --ignore-missing-imports`
+Run: `/home/tony/GitHub/viberpit/.venv/bin/python -m ruff check server/ && /home/tony/GitHub/viberpit/.venv/bin/python -m mypy server/pm/explain.py server/api/pm.py --ignore-missing-imports`
 
 ```bash
 git add server/pm/explain.py server/api/pm.py server/tests/test_pm_explain.py server/tests/test_pm_api.py
@@ -2404,7 +2410,7 @@ the gate registry with per-tolerance auto-resolution; triage rows carry `guidanc
 
 ```bash
 cd /home/tony/GitHub/.ccswitch/worktrees/viberpit/1ccd94bf
-PY=/home/tony/GitHub/viberpit-deploy/.venv/bin/python
+PY=/home/tony/GitHub/viberpit/.venv/bin/python
 $PY -m ruff check src/ server/ && PYTHONPATH=$PWD/src $PY -m mypy server/ --ignore-missing-imports 2>&1 | tail -3
 PYTHONPATH=$PWD/src $PY -m pytest tests/ -q 2>&1 | tail -3
 env -u CCSWITCH_TAILNET_ALLOWLIST -u CCSWITCH_SESSIOND_CERT -u CCSWITCH_SESSIOND_KEY -u CCSWITCH_SESSIOND_CA -u CCSWITCH_DAEMON_ROLE CCSWITCH_DEV=1 PYTHONPATH=$PWD/src $PY -m pytest server/tests/ -n auto --dist loadfile --timeout=300 -q 2>&1 | tee /tmp/server-tests.log | tail -5
