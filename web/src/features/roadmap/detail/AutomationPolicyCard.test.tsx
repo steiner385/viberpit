@@ -137,6 +137,10 @@ describe('AutomationPolicyCard', () => {
     expect(rows[1]).toHaveTextContent('Waits for you')
     expect(rows[2]).toHaveTextContent('Policy-owned')
     expect(rows[3]).toHaveTextContent('Waits for you')
+    // A policy-owned gate carries no risk level; the cell says which, never a
+    // bare em dash (the house rule against em dashes in shipped copy).
+    expect(rows[2]).toHaveTextContent('policy')
+    for (const row of rows) expect(row).not.toHaveTextContent('—')
     expect(screen.queryByText(/switched off/)).not.toBeInTheDocument()
   })
 

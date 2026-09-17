@@ -187,8 +187,16 @@ function MaterializationCard({ slug, stage, guidance }: { slug: string; stage: s
             Accept
           </Button>
         </div>
-        {guidance?.actions.materialize_reject.then[0] && (
-          <p className="text-xs text-ink-muted">Reject: {guidance.actions.materialize_reject.then[0].text}</p>
+        {/* Reject has no confirm (it creates nothing), so its consequence sits
+            under the buttons — through the ONE renderer, like every other one. */}
+        {guidance && (
+          <div className="text-xs">
+            <ConsequenceList
+              heading="Reject"
+              consequence={guidance.actions.materialize_reject}
+              tickSeconds={guidance.tickSeconds}
+            />
+          </div>
         )}
       </section>
       {/* `Dialog` portals to the overlay root, so this sits beside the card in

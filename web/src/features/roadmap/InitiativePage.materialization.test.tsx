@@ -92,10 +92,16 @@ const page = () => (
 const mount = () => render(page())
 const card = () => screen.queryByRole('region', { name: /materialize plan/i })
 
+// The hoisted `h.initiative` is what the mocked `useInitiative` answers, and a
+// test that needs guidance REPLACES it. Restoring in the body leaks on a failed
+// assertion, so the reset is a `beforeEach` over this snapshot instead.
+const baseInitiative = { ...h.initiative }
+
 describe('InitiativePage — materialization gate', () => {
   beforeEach(() => {
     h.acceptMutate.mockClear()
     h.rejectMutate.mockClear()
+    h.initiative = { ...baseInitiative }
     h.state.proposal = h.proposal
     h.state.acceptIsError = false
     h.state.acceptError = null
@@ -147,16 +153,19 @@ describe('InitiativePage — materialization gate', () => {
     const reject = { ...accept, immediate: [{ text: 'Rejects this decomposition; nothing is created on GitHub.', spawnsSession: false, writesGithub: false }],
       then: [{ text: 'Spawns a decompose session that proposes an epic and sub-issues for you to accept or reject.', spawnsSession: true, writesGithub: false }],
       when: 'next_tick', reversal: null, gate: null }
-    const original = h.initiative
-    h.initiative = { ...original, guidance: { machine: null, tickSeconds: 60,
+    h.initiative = { ...h.initiative, guidance: { machine: null, tickSeconds: 60,
       tolerance: { effective: 'cautious', configured: 'cautious', autoresolveEnabled: true, synthesizerMode: 'on' },
       actions: { advance: accept, step_back: accept, unblock: accept, materialize_accept: accept, materialize_reject: reject } } }
     mount()
-    expect(screen.getByText(/Reject: Spawns a decompose session/)).toBeInTheDocument()
+    // Reject renders through `ConsequenceList` like everything else: a heading,
+    // the step text, and the cost badge — no hand-formatted "Reject: …" line.
+    // "Reject" is also the button's label, so the heading is the non-button one.
+    expect(screen.getAllByText('Reject').some((el) => el.tagName !== 'BUTTON')).toBe(true)
+    expect(screen.getByText(/^Spawns a decompose session/)).toBeInTheDocument()
+    expect(screen.getByText('starts a session')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
     expect(screen.getByText('writes to GitHub')).toBeInTheDocument()
     expect(screen.getByText('Reverse: Close the created issues')).toBeInTheDocument()
-    h.initiative = original
   })
 
   it('a pending proposal with issues behind it reads as a resume', () => {

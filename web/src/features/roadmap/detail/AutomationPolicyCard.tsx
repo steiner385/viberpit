@@ -159,7 +159,10 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
                     <p>{g.label}</p>
                     <p className="text-xs text-ink-muted">{g.action}</p>
                   </td>
-                  <td className="py-1 pr-2 text-ink-muted">{g.risk ?? '—'}</td>
+                  {/* A `risk: null` row is not "no risk": it is owned by a policy
+                      knob rather than the tolerance, which the verdict column
+                      spells out as "Policy-owned". */}
+                  <td className="py-1 pr-2 text-ink-muted">{g.risk ?? 'policy'}</td>
                   <td className="py-1">{verdict(g)}</td>
                 </tr>
               ))}

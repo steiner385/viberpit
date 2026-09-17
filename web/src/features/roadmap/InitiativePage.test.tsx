@@ -136,7 +136,7 @@ describe('InitiativePage', () => {
     h.state.proposal = null
   })
 
-  it('shows the breadcrumb, the reason, the next action and the artifact link at its SHA', () => {
+  it('shows the breadcrumb, the reason and the artifact link at its SHA, with no bare next-action line', () => {
     mount()
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Use-case-first task views')
     // The product crumb is the map's display NAME, not the slug the payload carries.
