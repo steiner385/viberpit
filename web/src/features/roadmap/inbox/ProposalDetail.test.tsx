@@ -157,6 +157,29 @@ describe('ProposalDetail', () => {
     expect((select as HTMLSelectElement).options[0]!.textContent).toBe('— no fit —')
   })
 
+  it('says what Accept and Reject do under the product policy', () => {
+    mount({ proposal: { ...proposal, guidance: {
+      accept: { available: true, unavailableReason: null,
+        immediate: [{ text: 'Files it under tasks with score 360; it leaves the inbox.', spawnsSession: false, writesGithub: false }],
+        then: [{ text: "The Backlog Runner may dispatch it to a coding session once it is at or above 'ready' on the board.", spawnsSession: true, writesGithub: false }],
+        when: 'next_tick', reversal: 'Undo within the window', gate: 'triage.accept' },
+      reject: { available: true, unavailableReason: null,
+        immediate: [{ text: 'Marks it needs-human; it leaves the inbox and nothing is dispatched.', spawnsSession: false, writesGithub: false }],
+        then: [], when: 'now', reversal: null, gate: null },
+    } } })
+    const region = screen.getByRole('group', { name: 'What each decision does' })
+    expect(region).toHaveTextContent('Files it under tasks with score 360')
+    expect(region).toHaveTextContent('starts a session')
+    expect(region).toHaveTextContent('Then · on the next automation run')
+    expect(region).toHaveTextContent('Reverse: Undo within the window')
+    expect(region).toHaveTextContent('Marks it needs-human')
+  })
+
+  it('renders no guidance block when the server sends none', () => {
+    mount()
+    expect(screen.queryByRole('group', { name: 'What each decision does' })).not.toBeInTheDocument()
+  })
+
   it('swallows the inbox letter keys so a focused button cannot accept the row behind it', () => {
     const seen = vi.fn()
     window.addEventListener('keydown', seen)
