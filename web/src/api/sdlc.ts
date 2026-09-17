@@ -78,6 +78,66 @@ export interface InitiativeNextAction {
   reason?: string
 }
 
+/** One thing a tap (or the loop) does. The two flags are the cost signals the
+ *  UI badges (spec 2026-09-17 D4). */
+export interface GuidanceStep {
+  text: string
+  spawnsSession: boolean
+  writesGithub: boolean
+}
+
+/** When a consequence's `then` steps happen: on the synthesizer's next tick,
+ *  right now (a GitHub write), or not without a human. */
+export type GuidanceWhen = 'now' | 'next_tick' | 'never' | string
+
+/** What ONE human control does — computed server-side by running the real stage
+ *  engine on the post-tap state (`server/sdlc/explain.py`). */
+export interface Consequence {
+  available: boolean
+  unavailableReason: string | null
+  immediate: GuidanceStep[]
+  then: GuidanceStep[]
+  when: GuidanceWhen
+  reversal: string | null
+  gate: string | null
+}
+
+/** What happens with NO human action. */
+export interface MachineOutlook {
+  actor: 'machine' | 'you' | 'nobody' | string
+  when: GuidanceWhen
+  summary: string
+  steps: GuidanceStep[]
+  because: string
+}
+
+export type GuidanceControl = 'advance' | 'step_back' | 'unblock' | 'materialize_accept' | 'materialize_reject'
+
+export interface InitiativeGuidance {
+  /** Null for a program (it has no gate of its own). */
+  machine: MachineOutlook | null
+  actions: Record<GuidanceControl, Consequence>
+  tolerance: { effective: string; configured: string; autoresolveEnabled: boolean; synthesizerMode: string }
+  tickSeconds: number
+}
+
+/** One row of the gate registry (`server/sdlc/gates.py`). `risk: null` marks a
+ *  gate owned by its own policy knob (dispatch, triage auto-accept). */
+export interface GateSpec {
+  id: string
+  label: string
+  risk: 'low' | 'medium' | 'high' | null
+  action: string
+  reverse: string
+  autoResolvesUnder: Record<string, boolean>
+}
+
+export interface GateRegistry {
+  gates: GateSpec[]
+  tolerances: string[]
+  autoresolveEnabled: boolean
+}
+
 export interface Initiative {
   slug: string
   repo: string | null
@@ -109,6 +169,8 @@ export interface Initiative {
   /** Detail endpoint only. */
   buildSessions?: { id: string; status: string | null; branch: string | null }[]
   nextAction?: InitiativeNextAction
+  /** Detail endpoint only; absent from a server that predates it. */
+  guidance?: InitiativeGuidance | null
 }
 
 export interface CreateInitiativeInput {
@@ -123,6 +185,10 @@ export interface CreateInitiativeInput {
 
 export function fetchInitiative(slug: string): Promise<Initiative> {
   return api.get<Initiative>(`/sdlc/initiatives/${encodeURIComponent(slug)}`)
+}
+
+export function fetchGates(): Promise<GateRegistry> {
+  return api.get<GateRegistry>('/sdlc/gates')
 }
 
 export function createInitiative(input: CreateInitiativeInput): Promise<Initiative> {

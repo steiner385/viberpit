@@ -15,7 +15,7 @@ import {
 import { ApiRequestError } from '@/api/client'
 import type { ProductNode } from '@/api/roadmap'
 import { BRAND_NAME } from '@/brand'
-import { createdIssueCount, type Initiative, type InitiativeArtifact } from '@/api/sdlc'
+import { createdIssueCount, type Initiative, type InitiativeArtifact, type InitiativeGuidance } from '@/api/sdlc'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { PageHeader } from '@/ui/PageHeader'
 import { PageContent } from '@/ui/PageContent'
@@ -31,7 +31,7 @@ import { commitUrl, fileUrl, prUrl } from '@/lib/githubUrl'
 import { sessionPath } from '@/session/sessionNavState'
 import {
   CAPABILITY, EPIC, INITIATIVE, ROADMAP,
-  initiativeStatusLabel, nextActionLabel, nextStage, prevStage, reasonLabel, stageLabel,
+  initiativeStatusLabel, nextStage, prevStage, reasonLabel, stageLabel,
 } from '@/features/products/vocab'
 import { capabilityPath, initiativePath, productPath, roadmapPath } from './roadmapNavState'
 import { findProduct, programTitleOf } from './lookup'
@@ -40,6 +40,8 @@ import { useTabParam } from './useTabParam'
 import { StatTiles } from './detail/StatTiles'
 import { LeafList } from './detail/LeafList'
 import { EditInitiativeDialog } from './detail/EditInitiativeDialog'
+import { ConsequenceList } from './guidance/ConsequenceList'
+import { WhatHappensNext } from './guidance/WhatHappensNext'
 
 // `epic` and `phases` are mutually exclusive on any one initiative — a
 // program's roll-up epic has no pointer of its own to show a per-child list
@@ -110,7 +112,7 @@ function ArtifactLink({ repo, artifact }: { repo: string | null; artifact: Initi
  * the wire: "Task 1" is what a human counts, and the "after task k" references
  * are mapped through the same +1 so the two always agree on screen.
  */
-function MaterializationCard({ slug, stage }: { slug: string; stage: string | null }) {
+function MaterializationCard({ slug, stage, guidance }: { slug: string; stage: string | null; guidance: InitiativeGuidance | null }) {
   const { data: proposal } = useMaterialization(slug)
   const accept = useAcceptMaterialization()
   const reject = useRejectMaterialization()
@@ -185,6 +187,17 @@ function MaterializationCard({ slug, stage }: { slug: string; stage: string | nu
             Accept
           </Button>
         </div>
+        {/* Reject has no confirm (it creates nothing), so its consequence sits
+            under the buttons — through the ONE renderer, like every other one. */}
+        {guidance && (
+          <div className="text-xs">
+            <ConsequenceList
+              heading="Reject"
+              consequence={guidance.actions.materialize_reject}
+              tickSeconds={guidance.tickSeconds}
+            />
+          </div>
+        )}
       </section>
       {/* `Dialog` portals to the overlay root, so this sits beside the card in
           the tree without ever being part of the tab panel's scroll. */}
@@ -193,13 +206,11 @@ function MaterializationCard({ slug, stage }: { slug: string; stage: string | nu
         onClose={() => setConfirming(false)}
         title={`Materialize this ${INITIATIVE.singular.toLowerCase()}'s plan?`}
         size="sm"
-        description={
-          `This creates the ${EPIC.singular.toLowerCase()} and ${tasks} sub-issue${tasks === 1 ? '' : 's'} `
-          + `on GitHub. It cannot be undone from ${BRAND_NAME}. `
-          // Said out loud because this confirm is also the stage gate: there is no
-          // second Advance tap after it.
-          + `It also moves this ${INITIATIVE.singular.toLowerCase()} to ${stageLabel(advancesTo)}.`
-        }
+        description={guidance
+          ? <ConsequenceList consequence={guidance.actions.materialize_accept} tickSeconds={guidance.tickSeconds} />
+          : `This creates the ${EPIC.singular.toLowerCase()} and ${tasks} sub-issue${tasks === 1 ? '' : 's'} `
+            + `on GitHub. It cannot be undone from ${BRAND_NAME}. `
+            + `It also moves this ${INITIATIVE.singular.toLowerCase()} to ${stageLabel(advancesTo)}.`}
       >
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setConfirming(false)}>Cancel</Button>
@@ -220,19 +231,18 @@ function MaterializationCard({ slug, stage }: { slug: string; stage: string | nu
 }
 
 function TrackTab({ initiative }: { initiative: Initiative }) {
-  const next = initiative.nextAction
+  const guidance = initiative.guidance ?? null
   // The server sends artifacts in ASCENDING order (intent, spec, plan), so the
   // LAST committed one is the latest — `find` would link the intent commit.
   const newestCommitted = initiative.artifacts.findLast((a) => a.commitSha)
   return (
     <div className="flex flex-col gap-3">
-      <MaterializationCard slug={initiative.slug} stage={initiative.stage} />
+      <MaterializationCard slug={initiative.slug} stage={initiative.stage} guidance={guidance} />
       <InitiativeTrack stage={initiative.stage} status={initiative.status} epic={initiative.epic} />
-      {next && (
-        <p className="text-sm text-ink-muted">
-          {nextActionLabel(next.type)}{next.reason ? ` — ${next.reason}` : ''}
-        </p>
-      )}
+      {/* What happens with no human action, computed server-side from the same
+          engine that acts (spec 2026-09-17 §5). A server without it shows the
+          track alone rather than a stale hand-written sentence. */}
+      {guidance && <WhatHappensNext guidance={guidance} />}
       <div className="flex flex-wrap items-center gap-3 text-sm">
         {initiative.artifacts.length === 0
           ? <span className="text-ink-muted">No artifacts committed yet.</span>
@@ -428,6 +438,14 @@ function InitiativePageContent() {
   // unrelated vocabularies together.
   const proposalPending = proposal?.status === 'pending'
 
+  const guidance = initiative?.guidance ?? null
+  // The server's availability reason wins over the client's guess: the two agree
+  // by construction (explain.py mirrors the 409 rules), but only one is authoritative.
+  const tip = (control: keyof InitiativeGuidance['actions'], fallback: string | undefined) =>
+    guidance && !guidance.actions[control].available
+      ? (guidance.actions[control].unavailableReason ?? fallback)
+      : fallback
+
   // A renamed slug or a stale bookmark is an ADDRESS problem, not a connection
   // problem, and the two want opposite copy. The detail endpoint answers 404
   // (which `shouldRetryQuery` fails fast, so it lands as isError with no data —
@@ -525,7 +543,7 @@ function InitiativePageContent() {
               variant="ghost"
               disabled={!prev || blocked || stepBack.isPending}
               onClick={() => setConfirmingBack(true)}
-              title={blocked ? 'Clear the block first' : prev ? `Move the gate back to ${stageLabel(prev)}` : 'Already at the first stage'}
+              title={tip('step_back', blocked ? 'Clear the block first' : prev ? `Move the gate back to ${stageLabel(prev)}` : 'Already at the first stage')}
             >
               Step back
             </Button>
@@ -537,7 +555,7 @@ function InitiativePageContent() {
                 variant="danger"
                 disabled={proposalPending || unblock.isPending}
                 onClick={() => setConfirmingUnblock(true)}
-                title={proposalPending ? 'Accept or reject the pending materialization first' : 'Clear the block without moving the gate'}
+                title={tip('unblock', proposalPending ? 'Accept or reject the pending materialization first' : 'Clear the block without moving the gate')}
               >
                 Unblock
               </Button>
@@ -553,7 +571,7 @@ function InitiativePageContent() {
                 size="sm"
                 disabled={!next || blocked || advance.isPending}
                 onClick={() => setConfirming(true)}
-                title={blocked ? 'Clear the block first' : next ? `Move the gate to ${stageLabel(next)}` : 'Already at the final stage'}
+                title={tip('advance', blocked ? 'Clear the block first' : next ? `Move the gate to ${stageLabel(next)}` : 'Already at the final stage')}
               >
                 {next ? `Advance → ${stageLabel(next)}` : 'Complete'}
               </Button>
@@ -640,7 +658,9 @@ function InitiativePageContent() {
           onClose={() => setConfirming(false)}
           title={`Advance to ${stageLabel(next)}?`}
           size="sm"
-          description="This moves the human gate. The stage engine acts on the new stage on its next tick."
+          description={guidance
+            ? <ConsequenceList consequence={guidance.actions.advance} tickSeconds={guidance.tickSeconds} />
+            : 'This moves the human gate. The stage engine acts on the new stage on its next tick.'}
         >
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setConfirming(false)}>Cancel</Button>
@@ -663,7 +683,9 @@ function InitiativePageContent() {
           onClose={() => setConfirmingBack(false)}
           title={`Step back to ${stageLabel(prev)}?`}
           size="sm"
-          description="This moves the human gate back one stage. The stage engine re-enters it on its next tick."
+          description={guidance
+            ? <ConsequenceList consequence={guidance.actions.step_back} tickSeconds={guidance.tickSeconds} />
+            : 'This moves the human gate back one stage. The stage engine re-enters it on its next tick.'}
         >
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setConfirmingBack(false)}>Cancel</Button>
@@ -684,11 +706,11 @@ function InitiativePageContent() {
           onClose={() => setConfirmingUnblock(false)}
           title="Clear the block?"
           size="sm"
-          description={
-            'This returns the initiative to awaiting-human without moving the gate. '
-            + `If the failed materialize left an ${EPIC.singular.toLowerCase()} or sub-issues on GitHub, `
-            + 'close them first: a later decomposition creates a fresh set.'
-          }
+          description={guidance
+            ? <ConsequenceList consequence={guidance.actions.unblock} tickSeconds={guidance.tickSeconds} />
+            : 'This returns the initiative to awaiting-human without moving the gate. '
+              + `If the failed materialize left an ${EPIC.singular.toLowerCase()} or sub-issues on GitHub, `
+              + 'close them first: a later decomposition creates a fresh set.'}
         >
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setConfirmingUnblock(false)}>Cancel</Button>

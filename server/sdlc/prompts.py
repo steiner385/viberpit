@@ -28,16 +28,9 @@ from server.sessions.completion import commit_trailer
 if TYPE_CHECKING:  # pragma: no cover — typing only, keeps this module import-light
     from server.sdlc.control_bands import Breach
 
-# One place defining the committed-artifact directory (single source of truth).
-SDLC_DOCS_DIR = "docs/sdlc"
-
-
-def artifact_path(slug: str, kind: str) -> str:
-    """Repo-relative path of an initiative's committed artifact — the one place
-    the intake/synthesizer loops and the prompt builders agree on layout
-    (constitution VI: single source of truth)."""
-    return f"{SDLC_DOCS_DIR}/{slug}/{kind}.md"
-
+# The layout lives in the pure ``paths`` module; re-exported here because every
+# existing caller imports it from ``prompts`` (constitution VI: one definition).
+from server.sdlc.paths import SDLC_DOCS_DIR, artifact_path  # noqa: F401
 
 # Internal alias kept for the builders below; ``artifact_path`` is the public name.
 _artifact_path = artifact_path

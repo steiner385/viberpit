@@ -4,6 +4,7 @@
  * the hooks in place; it never forks a second TriageProposal/fetchTriage.
  */
 import { api } from './client'
+import type { Consequence } from './sdlc'
 
 // Re-export the map/classify spawn fetchers so triage callers (and phase 3) have
 // one import source for the whole triage surface.
@@ -36,6 +37,9 @@ export interface TriageProposal {
   classifiedBy: string | null
   /** When the proposal was accepted/rejected; null while pending. */
   resolvedAt: string | null
+  /** What Accept / Reject do under the owning product's dispatch policy
+   *  (spec 2026-09-17 §4.3); absent from a server that predates it. */
+  guidance?: { accept: Consequence; reject: Consequence } | null
 }
 
 /** Overlay fields a human may override when accepting (phase-3 edit-then-accept

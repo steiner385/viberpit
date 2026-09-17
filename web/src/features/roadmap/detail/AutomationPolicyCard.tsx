@@ -9,7 +9,8 @@ import { productPath } from '../roadmapNavState'
 import type { ConfigField } from '@/api/automations'
 import type { Project, ProductImplementationDecision } from '@/api/pm'
 import type { ProductNode } from '@/api/roadmap'
-import { usePolicySchema, useUpdateProductPolicy, useProductPolicyCoverage, useProductImplementationPolicy } from '@/api/hooks'
+import type { GateSpec } from '@/api/sdlc'
+import { usePolicySchema, useUpdateProductPolicy, useProductPolicyCoverage, useProductImplementationPolicy, useSdlcGates } from '@/api/hooks'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { ConfigInput } from '@/features/delivery/automation/ConfigInput'
 import { Banner } from '@/ui/Banner'
@@ -50,6 +51,7 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
   const implementation = useProductImplementationPolicy(product.slug)
   const live = project.onboardingState === 'live'
   const policy = project.automationPolicy ?? {}
+  const gates = useSdlcGates()
 
   // A failed schema fetch is a real failure, not a slow one: without the banner
   // the card renders its loading skeleton forever, so an operator is left waiting
@@ -77,6 +79,14 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
   // Defaults are for display only; never persist absent keys as explicit choices.
   const effective: Record<string, unknown> = {}
   for (const f of fields) effective[f.key] = policy[f.key] ?? f.default
+
+  // The tolerance the loop ACTS under: the configured value only while the
+  // process kill switch is on (server `effective_tolerance`); otherwise cautious.
+  const configured = String(effective.risk_tolerance ?? 'cautious')
+  const enabled = gates.data?.autoresolveEnabled ?? true
+  const acting = enabled ? configured : 'cautious'
+  const verdict = (g: GateSpec): string =>
+    g.risk === null ? 'Policy-owned' : g.autoResolvesUnder[acting] ? 'Automatic' : 'Waits for you'
 
   function handleChange(key: string, val: unknown) {
     if (update.isPending) return
@@ -121,6 +131,45 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
             )
         ))}
       </fieldset>
+      {/* Every gate the tolerance governs, with what the selected level does to it
+          (spec 2026-09-14 §11, built by 2026-09-17 D5). The verdict column is the
+          answer to "if I pick balanced, what stops asking me?". */}
+      <section aria-labelledby="gates-heading" className="mt-2 flex flex-col gap-2 border-t border-edge pt-3">
+        <h4 id="gates-heading" className="text-sm font-medium">Gates under {configured}</h4>
+        {!enabled && configured !== 'cautious' && (
+          <Banner tone="info" title="Auto-resolve is switched off for this deployment, so every gate waits for you." />
+        )}
+        {gates.isPending ? (
+          <p className="text-sm text-ink-muted" role="status">Checking gates…</p>
+        ) : gates.isError || !gates.data ? (
+          <p className="text-sm text-ink-muted" role="status">Gate list is unavailable.</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs uppercase text-ink-muted">
+                <th scope="col" className="pb-1 font-medium">Gate</th>
+                <th scope="col" className="pb-1 font-medium">Risk</th>
+                <th scope="col" className="pb-1 font-medium">Under {acting}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {gates.data.gates.map((g) => (
+                <tr key={g.id} className="border-t border-edge align-top">
+                  <td className="py-1 pr-2">
+                    <p>{g.label}</p>
+                    <p className="text-xs text-ink-muted">{g.action}</p>
+                  </td>
+                  {/* A `risk: null` row is not "no risk": it is owned by a policy
+                      knob rather than the tolerance, which the verdict column
+                      spells out as "Policy-owned". */}
+                  <td className="py-1 pr-2 text-ink-muted">{g.risk ?? 'policy'}</td>
+                  <td className="py-1">{verdict(g)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
       <section aria-labelledby="implementation-policy-heading" className="mt-2 flex flex-col gap-2 border-t border-edge pt-3">
         <h4 id="implementation-policy-heading" className="text-sm font-medium">Issue implementation eligibility</h4>
         {implementation.isPending ? (

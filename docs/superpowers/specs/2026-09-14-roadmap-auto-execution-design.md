@@ -268,7 +268,7 @@ Nothing is stored.
 
 - **Product Overview → Automation card:** the two new fields render through the existing generic
   `ConfigInput`. Under the tolerance select, a compact table from `GET /api/pm/policy-schema`
-  (D10): each gate's label, risk, and whether the selected level auto-resolves it.
+  (D10): each gate's label, risk, and whether the selected level auto-resolves it. (Built 2026-09-17 from `GET /api/sdlc/gates` rather than the policy schema; see `2026-09-17-roadmap-consequence-guidance-design.md` D5.)
 - **Roadmap initiative rows and page:** chip `auto · advanced to plan` / `auto · merged spec` /
   `auto · accepted decomposition` for 24 h after `last_auto_gate.at`, with the reverse action
   inline where one exists in the app (Step back). `gate_refused` renders as

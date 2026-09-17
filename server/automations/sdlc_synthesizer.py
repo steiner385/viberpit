@@ -51,6 +51,22 @@ def fold_synth_mode(mode: str) -> str:
     return "on" if mode in LEGACY_SYNTH_MODES else mode
 
 
+#: The loop's tick interval; the orchestrator schedules with it and the API
+#: reports it as ``tickSeconds`` so no copy hardcodes "a minute" (spec 2026-09-17 D6).
+TICK_INTERVAL_S: float = 60.0
+
+
+async def read_synth_mode() -> tuple[str, dict]:
+    """The sdlc-synthesizer row's ``(mode, config)`` merged onto schema defaults, a
+    pre-fold ``propose``/``auto`` read as ``on`` (spec 2026-09-14 D8). ``off`` + pure
+    defaults on any absent or invalid row so a bad config never spawns. THE reader:
+    the orchestrator's loop seam and the SDLC API both call this."""
+    from server.automations.config_store import read_automation_config
+    mode, config = await read_automation_config(
+        SdlcSynthesizer, modes=("on", "propose", "auto"), log_key="sdlc_synthesizer")
+    return fold_synth_mode(mode), config
+
+
 ListInitiatives = Callable[[], Awaitable[list[dict]]]
 ListArtifacts = Callable[[str], Awaitable[list[dict]]]
 RecordArtifact = Callable[..., Awaitable[None]]

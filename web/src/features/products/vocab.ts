@@ -134,20 +134,6 @@ export function prevStage(stage: string | null | undefined): InitiativeStage | n
   return i <= 0 ? null : INITIATIVE_STAGES[i - 1]!
 }
 
-/** What the stage engine says happens next on one initiative
- *  (`nextAction.type`, detail endpoint only), as a sentence a human can act on. */
-export const NEXT_ACTION_LABEL: Record<string, string> = {
-  propose: 'The synthesizer will propose the next artifact.',
-  await_approval: 'An artifact PR is waiting for your review.',
-  materialize: 'The plan is ready to decompose into an epic.',
-  handoff_to_build: 'Ready to hand off to build.',
-  done: 'Nothing left to do.',
-  needs_human: 'Needs a human decision.',
-  unknown: 'No next action yet.',
-}
-
-export const nextActionLabel = (type: string | null | undefined) => lookup(NEXT_ACTION_LABEL, type)
-
 /** The Delivery section and its list scopes (finish-line spec §4.1, §4.4). */
 export const DELIVERY = {
   label: 'Delivery',

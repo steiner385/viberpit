@@ -136,13 +136,13 @@ describe('InitiativePage', () => {
     h.state.proposal = null
   })
 
-  it('shows the breadcrumb, the reason, the next action and the artifact link at its SHA', () => {
+  it('shows the breadcrumb, the reason and the artifact link at its SHA, with no bare next-action line', () => {
     mount()
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Use-case-first task views')
     // The product crumb is the map's display NAME, not the slug the payload carries.
     expect(screen.getByRole('link', { name: 'KinDash' })).toHaveAttribute('href', '/roadmap/kindash')
     expect(screen.getByText('Ready to advance')).toBeInTheDocument()
-    expect(screen.getByText('Ready to hand off to build.')).toBeInTheDocument()
+    expect(screen.queryByText('Ready to hand off to build.')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: /spec/ })).toHaveAttribute('href', expect.stringContaining('abc1234'))
   })
 
@@ -390,5 +390,79 @@ describe('InitiativePage', () => {
     mount('/initiatives/ghost')
     expect(screen.queryByText('Initiative not found')).not.toBeInTheDocument()
     expect(screen.getByTestId('page-content')).toHaveAttribute('aria-busy', 'true')
+  })
+
+  const guidance = {
+    machine: {
+      actor: 'you', when: 'never', summary: 'The spec is merged; tap Advance to move to plan.',
+      steps: [{ text: 'The spec is merged; tap Advance to move to plan.', spawnsSession: false, writesGithub: false }],
+      because: 'Risk tolerance cautious: every gate waits for you.',
+    },
+    actions: {
+      advance: {
+        available: true, unavailableReason: null,
+        immediate: [{ text: 'Moves the gate to deploy.', spawnsSession: false, writesGithub: false }],
+        then: [{ text: 'Deploy and maintain are carried by the pipeline and control bands, not the roadmap loop.', spawnsSession: false, writesGithub: false }],
+        when: 'never', reversal: 'Step back', gate: 'stage.advance',
+      },
+      step_back: {
+        available: true, unavailableReason: null,
+        immediate: [{ text: 'Moves the gate back to plan.', spawnsSession: false, writesGithub: false }],
+        then: [{ text: 'Spawns a decompose session that proposes an epic and sub-issues for you to accept or reject.', spawnsSession: true, writesGithub: false }],
+        when: 'next_tick', reversal: 'Advance', gate: null,
+      },
+      unblock: { available: false, unavailableReason: 'Not blocked.', immediate: [], then: [], when: 'never', reversal: null, gate: 'initiative.blocked' },
+      materialize_accept: { available: false, unavailableReason: 'No decomposition is waiting.', immediate: [], then: [], when: 'never', reversal: null, gate: 'materialization.accept' },
+      materialize_reject: { available: false, unavailableReason: 'No decomposition is waiting.', immediate: [], then: [], when: 'never', reversal: null, gate: null },
+    },
+    tolerance: { effective: 'cautious', configured: 'cautious', autoresolveEnabled: true, synthesizerMode: 'on' },
+    tickSeconds: 60,
+  }
+
+  it('the Track tab shows the outlook card from the guidance', () => {
+    h.state.data = { ...h.initiative, guidance }
+    mount()
+    expect(screen.getByRole('heading', { name: 'What happens next' })).toBeInTheDocument()
+    expect(screen.getByText('Your move')).toBeInTheDocument()
+    expect(screen.getByText(/Risk tolerance cautious/)).toBeInTheDocument()
+  })
+
+  it('the Advance confirm lists the computed consequence instead of the static line', () => {
+    h.state.data = { ...h.initiative, guidance }
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: /Advance/ }))
+    expect(screen.getByText('Moves the gate to deploy.')).toBeInTheDocument()
+    expect(screen.getByText('Reverse: Step back')).toBeInTheDocument()
+    expect(screen.queryByText(/This moves the human gate/)).not.toBeInTheDocument()
+  })
+
+  it('the Step back confirm says a session will start, and when', () => {
+    h.state.data = { ...h.initiative, guidance }
+    mount()
+    fireEvent.click(screen.getByRole('button', { name: 'Step back' }))
+    expect(screen.getByText('starts a session')).toBeInTheDocument()
+    expect(screen.getByText('Then · in about a minute')).toBeInTheDocument()
+  })
+
+  it('a disabled control carries the server reason as its tooltip', () => {
+    h.state.data = {
+      ...h.initiative, status: 'blocked',
+      guidance: { ...guidance, actions: { ...guidance.actions,
+        advance: { ...guidance.actions.advance, available: false, unavailableReason: 'Clear the block first.' },
+        unblock: { ...guidance.actions.unblock, available: true, unavailableReason: null,
+          immediate: [{ text: 'Clears the block; the gate stays at build.', spawnsSession: false, writesGithub: false }] } } },
+    }
+    mount()
+    expect(screen.getByRole('button', { name: /Advance/ })).toHaveAttribute('title', 'Clear the block first.')
+    fireEvent.click(screen.getByRole('button', { name: 'Unblock' }))
+    expect(screen.getByText('Clears the block; the gate stays at build.')).toBeInTheDocument()
+  })
+
+  it('without guidance the confirms fall back to their static copy and the Track tab shows no card', () => {
+    h.state.data = { ...h.initiative, guidance: null }
+    mount()
+    expect(screen.queryByRole('heading', { name: 'What happens next' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Advance/ }))
+    expect(screen.getByText(/This moves the human gate/)).toBeInTheDocument()
   })
 })

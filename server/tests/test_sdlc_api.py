@@ -8,6 +8,8 @@ import tempfile
 from contextlib import contextmanager
 from unittest.mock import patch
 
+from sqlalchemy import select
+
 IDENTITY_HEADERS = {"Tailscale-User-Login": "testuser@example.com"}
 
 
@@ -1260,6 +1262,36 @@ def test_unblock_refuses_an_initiative_the_synthesizer_gave_up_on():
             assert got["status"] == "blocked"
 
 
+def test_detail_guidance_mirrors_the_exhausted_unblock_refusal():
+    """The guidance reproduces the endpoint's THIRD 409 too, so the button explains
+    itself instead of 409-ing on tap (spec 2026-09-17 §3.4)."""
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_exhausted(db_url, proposals=MATERIALIZE_MAX_ATTEMPTS)
+        with _client(db_url) as c:
+            got = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
+            unblock = got["guidance"]["actions"]["unblock"]
+            assert unblock["available"] is False
+            assert "gave up after repeated attempts" in unblock["unavailableReason"]
+
+
+def test_detail_guidance_offers_unblock_below_the_attempt_cap():
+    """Below the cap the block IS clearable, and the confirm warns about the issues
+    a failed materialize may have left on GitHub."""
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_exhausted(db_url, proposals=MATERIALIZE_MAX_ATTEMPTS - 1)
+        with _client(db_url) as c:
+            got = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
+            unblock = got["guidance"]["actions"]["unblock"]
+            assert unblock["available"] is True
+            assert any("close them first" in s["text"] for s in unblock["immediate"])
+
+
 def test_unblock_allows_an_initiative_below_the_attempt_cap():
     """Under the cap the loop will decompose again, so the block IS clearable."""
     from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
@@ -1346,3 +1378,156 @@ def test_unblock_ignores_the_attempt_cap_once_an_epic_exists():
             r = c.post("/api/sdlc/initiatives/dark-mode/unblock", headers=IDENTITY_HEADERS)
             assert r.status_code == 200, r.text
             assert r.json()["status"] == "awaiting_human"
+
+
+# ── Consequence guidance (spec 2026-09-17) ───────────────────────────────────
+
+def _seed_guidance_case(db_url: str, *, tolerance: str = "cautious", synth_on: bool = True,
+                        stage: str = "design", program: bool = False):
+    """One product (`acme`, policy risk_tolerance=tolerance), one initiative at
+    *stage* with a merged intent and a merged spec, the synthesizer row on/off."""
+    from server.db import db_session, init_db
+    from server.db.models import Automation, Initiative, InitiativeArtifact, Project
+
+    async def _seed():
+        await init_db(db_url)
+        async with db_session() as db:
+            p = Project(slug="acme", name="Acme", automation_policy={
+                "risk_tolerance": tolerance, "dispatch": "auto", "default_model": "opus"})
+            db.add(p)
+            await db.flush()
+            ini = Initiative(slug="dark-mode", repo="o/r", title="Dark mode", stage=stage,
+                             status="active", project_id=p.id)
+            db.add(ini)
+            await db.flush()
+            db.add(InitiativeArtifact(initiative_id=ini.id, kind="intent",
+                                      repo_path="docs/sdlc/dark-mode/intent.md", commit_sha="a"))
+            db.add(InitiativeArtifact(initiative_id=ini.id, kind="spec",
+                                      repo_path="docs/sdlc/dark-mode/spec.md", commit_sha="b"))
+            if program:
+                db.add(Initiative(slug="phase-1", repo="o/r", title="Phase 1", stage="intake",
+                                  status="active", parent_initiative_id=ini.id))
+            if synth_on:
+                db.add(Automation(id="sdlc-synthesizer", enabled=True, mode="on", config={}))
+    asyncio.run(_seed())
+
+
+def test_gates_endpoint_exposes_the_registry():
+    with _client() as c:
+        r = c.get("/api/sdlc/gates", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        ids = [g["id"] for g in body["gates"]]
+        assert "stage.advance" in ids and "deploy.production" in ids
+        adv = next(g for g in body["gates"] if g["id"] == "stage.advance")
+        assert adv["autoResolvesUnder"] == {"cautious": False, "balanced": True, "bold": True}
+        assert adv["reverse"] == "Step back"
+        assert body["tolerances"] == ["cautious", "balanced", "bold"]
+        assert body["autoresolveEnabled"] is True
+
+
+def test_gates_endpoint_requires_identity():
+    with _client() as c:
+        assert c.get("/api/sdlc/gates").status_code == 401
+
+
+def test_detail_guidance_under_cautious_says_advance_spawns_a_plan_session():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_guidance_case(db_url)
+        with _client(db_url) as c:
+            body = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
+            assert body["nextAction"] == {"type": "await_approval", "kind": "spec"}
+            g = body["guidance"]
+            assert g["tickSeconds"] == 60
+            assert g["tolerance"] == {"effective": "cautious", "configured": "cautious",
+                                      "autoresolveEnabled": True, "synthesizerMode": "on"}
+            assert g["machine"]["actor"] == "you"
+            adv = g["actions"]["advance"]
+            assert adv["available"] is True
+            assert adv["immediate"][0]["text"] == "Moves the gate to plan."
+            assert adv["then"][0]["spawnsSession"] is True
+            assert "plan session on opus" in adv["then"][0]["text"]
+            assert adv["when"] == "next_tick"
+            assert g["actions"]["materialize_accept"]["available"] is False
+
+
+def test_detail_next_action_follows_the_products_tolerance():
+    """The old code hardcoded cautious; under balanced the engine advances."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_guidance_case(db_url, tolerance="balanced")
+        with _client(db_url) as c:
+            body = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
+            assert body["nextAction"] == {"type": "advance", "toStage": "plan"}
+            m = body["guidance"]["machine"]
+            assert m["actor"] == "machine"
+            assert m["steps"][0]["text"] == "Advances to plan automatically."
+            assert m["steps"][1]["spawnsSession"] is True
+
+
+def test_detail_guidance_names_the_kill_switch(monkeypatch):
+    import server.api.sdlc as sdlc_api
+    monkeypatch.setattr(sdlc_api, "_autoresolve_enabled", lambda: False)
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_guidance_case(db_url, tolerance="balanced")
+        with _client(db_url) as c:
+            body = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
+            assert body["nextAction"] == {"type": "await_approval", "kind": "spec"}
+            g = body["guidance"]
+            assert g["tolerance"]["effective"] == "cautious"
+            assert g["tolerance"]["configured"] == "balanced"
+            assert g["tolerance"]["autoresolveEnabled"] is False
+            assert "switched off" in g["machine"]["because"]
+            gates = c.get("/api/sdlc/gates", headers=IDENTITY_HEADERS).json()
+            assert gates["autoresolveEnabled"] is False
+
+
+def test_detail_guidance_when_the_synthesizer_is_off():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_guidance_case(db_url, synth_on=False)
+        with _client(db_url) as c:
+            body = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
+            g = body["guidance"]
+            assert g["tolerance"]["synthesizerMode"] == "off"
+            assert g["machine"]["actor"] == "nobody"
+            assert g["actions"]["advance"]["when"] == "never"
+            assert "SDLC automation is off" in g["actions"]["advance"]["then"][0]["text"]
+
+
+def test_program_guidance_has_no_outlook_and_no_available_control():
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_guidance_case(db_url, program=True)
+        with _client(db_url) as c:
+            body = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
+            assert body["nextAction"] is None
+            assert body["guidance"]["machine"] is None
+            assert all(not a["available"] for a in body["guidance"]["actions"].values())
+
+
+def test_detail_guidance_with_a_pending_materialization():
+    from server.db import db_session
+    from server.db.models import Initiative, InitiativeArtifact, MaterializationProposal
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_guidance_case(db_url, stage="plan")
+
+        async def _more():
+            async with db_session() as db:
+                ini = (await db.execute(select(Initiative).where(Initiative.slug == "dark-mode"))).scalar_one()
+                db.add(InitiativeArtifact(initiative_id=ini.id, kind="plan",
+                                          repo_path="docs/sdlc/dark-mode/plan.md", commit_sha="c"))
+                db.add(MaterializationProposal(initiative_id=ini.id, status="pending", payload={
+                    "epic_title": "Dark mode", "tasks": [{"title": "a"}, {"title": "b"}]}))
+        asyncio.run(_more())
+        with _client(db_url) as c:
+            body = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
+            acc = body["guidance"]["actions"]["materialize_accept"]
+            assert acc["available"] is True
+            assert "2 sub-issues" in acc["immediate"][0]["text"]
+            assert acc["immediate"][0]["writesGithub"] is True
+            assert body["guidance"]["machine"]["summary"] == "A decomposition is waiting for your Accept or Reject."

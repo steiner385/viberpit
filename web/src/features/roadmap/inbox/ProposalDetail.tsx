@@ -36,6 +36,7 @@ import { Button } from '@/ui/Button'
 import { Field } from '@/ui/Field'
 import { Select } from '@/ui/Select'
 import { CAPABILITY } from '@/features/products/vocab'
+import { ConsequenceList } from '../guidance/ConsequenceList'
 import { ScoreFields, SCORE_FIELDS, type ScoreField } from './ScoreFields'
 import { riceScore } from './rice'
 
@@ -140,6 +141,7 @@ export function ProposalDetail({
     () => capabilities.map((c) => ({ ...c, label: `${'  '.repeat(c.depth)}${c.title ?? c.slug}` })),
     [capabilities],
   )
+  const guidance = p.guidance ?? null
 
   const acceptAsProposed = () => {
     accept.mutate({ id: p.id })
@@ -216,6 +218,15 @@ export function ProposalDetail({
             {options.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
           </Select>
         </Field>
+        {/* The consequence of each way out, from the owning product's dispatch
+            policy (spec 2026-09-17 §4.3). No tick: the Backlog Runner's cadence is
+            not the synthesizer's, so the timing says only "next run". */}
+        {guidance && (
+          <div role="group" aria-label="What each decision does" className="grid gap-3 rounded-md border border-edge p-3 sm:grid-cols-2">
+            <ConsequenceList heading="Accept" consequence={guidance.accept} />
+            <ConsequenceList heading="Reject" consequence={guidance.reject} />
+          </div>
+        )}
         <div className="flex flex-wrap justify-end gap-2">
           {/* `lg` throughout: these are the confirm actions of the pane, and lg
               is the only size carrying the 44px touch target. */}

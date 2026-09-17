@@ -46,6 +46,7 @@ const h = vi.hoisted(() => {
     capabilities: [],
     buildSessions: [],
     nextAction: { type: 'materialize', kind: 'plan' },
+    guidance: null as Record<string, unknown> | null,
   }
   const state = {
     proposal: proposal as Record<string, unknown> | null,
@@ -91,10 +92,16 @@ const page = () => (
 const mount = () => render(page())
 const card = () => screen.queryByRole('region', { name: /materialize plan/i })
 
+// The hoisted `h.initiative` is what the mocked `useInitiative` answers, and a
+// test that needs guidance REPLACES it. Restoring in the body leaks on a failed
+// assertion, so the reset is a `beforeEach` over this snapshot instead.
+const baseInitiative = { ...h.initiative }
+
 describe('InitiativePage — materialization gate', () => {
   beforeEach(() => {
     h.acceptMutate.mockClear()
     h.rejectMutate.mockClear()
+    h.initiative = { ...baseInitiative }
     h.state.proposal = h.proposal
     h.state.acceptIsError = false
     h.state.acceptError = null
@@ -120,11 +127,6 @@ describe('InitiativePage — materialization gate', () => {
     expect(within(tasks[0]!).queryByText(/after/)).not.toBeInTheDocument()
   })
 
-  it('the next action names the decision the card is asking for', () => {
-    mount()
-    expect(screen.getByText(/decompose/i)).toBeInTheDocument()
-  })
-
   it('Accept confirms first — like Advance — and says what it will create', () => {
     mount()
     fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
@@ -136,6 +138,34 @@ describe('InitiativePage — materialization gate', () => {
     // This confirm is ALSO the plan stage's gate: the apply advances the
     // initiative, so no Advance tap follows and the copy has to say so.
     expect(dialog).toHaveTextContent('moves this initiative to Build')
+  })
+
+  it('the Materialize confirm lists the computed consequence when guidance is present', () => {
+    const accept = {
+      available: true, unavailableReason: null,
+      immediate: [
+        { text: 'Creates the epic and 2 sub-issues on GitHub; this cannot be undone here.', spawnsSession: false, writesGithub: true },
+        { text: 'Moves the gate to build.', spawnsSession: false, writesGithub: false },
+      ],
+      then: [{ text: 'Nothing more from the roadmap loop.', spawnsSession: false, writesGithub: false }],
+      when: 'now', reversal: 'Close the created issues', gate: 'materialization.accept',
+    }
+    const reject = { ...accept, immediate: [{ text: 'Rejects this decomposition; nothing is created on GitHub.', spawnsSession: false, writesGithub: false }],
+      then: [{ text: 'Spawns a decompose session that proposes an epic and sub-issues for you to accept or reject.', spawnsSession: true, writesGithub: false }],
+      when: 'next_tick', reversal: null, gate: null }
+    h.initiative = { ...h.initiative, guidance: { machine: null, tickSeconds: 60,
+      tolerance: { effective: 'cautious', configured: 'cautious', autoresolveEnabled: true, synthesizerMode: 'on' },
+      actions: { advance: accept, step_back: accept, unblock: accept, materialize_accept: accept, materialize_reject: reject } } }
+    mount()
+    // Reject renders through `ConsequenceList` like everything else: a heading,
+    // the step text, and the cost badge — no hand-formatted "Reject: …" line.
+    // "Reject" is also the button's label, so the heading is the non-button one.
+    expect(screen.getAllByText('Reject').some((el) => el.tagName !== 'BUTTON')).toBe(true)
+    expect(screen.getByText(/^Spawns a decompose session/)).toBeInTheDocument()
+    expect(screen.getByText('starts a session')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
+    expect(screen.getByText('writes to GitHub')).toBeInTheDocument()
+    expect(screen.getByText('Reverse: Close the created issues')).toBeInTheDocument()
   })
 
   it('a pending proposal with issues behind it reads as a resume', () => {
