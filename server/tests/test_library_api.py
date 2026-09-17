@@ -59,8 +59,15 @@ def test_skill_crud_roundtrip(client: TestClient):
     assert client.delete("/api/library/skills/my-skill", headers=IDENTITY_HEADERS).status_code == 204
     assert client.get("/api/library/skills/my-skill", headers=IDENTITY_HEADERS).status_code == 404
     assert client.delete("/api/library/skills/my-skill", headers=IDENTITY_HEADERS).status_code == 404
-    assert client.put("/api/library/skills/../evil", json={"content": "x"},
-                      headers=IDENTITY_HEADERS).status_code in (400, 404)  # 404: path routing
+    # Preserve the traversal segment through HTTPX normalization to test the validator.
+    before = {p.relative_to(paths.shared_base()): p.read_bytes()
+              for p in paths.shared_base().rglob("*") if p.is_file()}
+    r = client.put("/api/library/skills/%2e%2e", json={"content": "x"},
+                   headers=IDENTITY_HEADERS)
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == {"error": "invalid_name", "message": "invalid skill name"}
+    assert {p.relative_to(paths.shared_base()): p.read_bytes()
+            for p in paths.shared_base().rglob("*") if p.is_file()} == before
     assert client.put("/api/library/skills/Bad Name", json={"content": "x"},
                       headers=IDENTITY_HEADERS).status_code == 400
 
@@ -73,8 +80,15 @@ def test_command_crud_nested(client: TestClient):
                       headers=IDENTITY_HEADERS).json()["content"] == "x\n"
     paths_ = [c["path"] for c in client.get("/api/library/commands", headers=IDENTITY_HEADERS).json()["commands"]]
     assert "project/deep" in paths_
-    # "a/../b" is URL-normalized to "b" by httpx before reaching the server, so
-    # test traversal rejection with a segment that survives transport instead.
+    # An encoded dot segment survives transport and reaches the path validator.
+    before = {p.relative_to(paths.shared_base()): p.read_bytes()
+              for p in paths.shared_base().rglob("*") if p.is_file()}
+    r = client.put("/api/library/commands/%2e%2e/evil", json={"content": "x"},
+                   headers=IDENTITY_HEADERS)
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == {"error": "invalid_name", "message": "invalid command path"}
+    assert {p.relative_to(paths.shared_base()): p.read_bytes()
+            for p in paths.shared_base().rglob("*") if p.is_file()} == before
     assert client.put("/api/library/commands/Bad%20Command", json={"content": "x"},
                       headers=IDENTITY_HEADERS).status_code == 400
     assert client.delete("/api/library/commands/project/deep", headers=IDENTITY_HEADERS).status_code == 204

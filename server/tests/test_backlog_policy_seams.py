@@ -435,19 +435,15 @@ def test_seed_writes_policies_for_the_owning_products_of_enabled_repos(tmp_path)
 
         policies = await _policies()
         alpha, stamp = policies["alpha"]
-        # ``triage_auto_accept``, ``give_up_after_bounces`` and the three SDLC
-        # front-chain keys are stored at their defaults: the legacy runner config
-        # never had a triage knob, a bounce threshold or a risk dial, so the seed
-        # cannot invent a setting for any of them.
+        # Only legacy choices persist; new schema defaults are not invented intent.
         assert alpha == {"dispatch": "auto", "queue_min_status": "Backlog",
                          "max_in_flight": 4, "weight": 3, "max_attempts": 5,
-                         "give_up_after_bounces": 2, "default_model": "opus",
-                         "respect_dependencies": False, "triage_auto_accept": "off",
-                         "risk_tolerance": "cautious", "max_initiatives_in_flight": 2,
-                         "unattended_model_floor": "none"}
+                         "default_model": "opus", "respect_dependencies": False}
         assert stamp is not None
         beta, _ = policies["beta"]
-        assert beta["max_in_flight"] == 1 and beta["weight"] == 1   # unlisted → 1
+        from server.automations.product_policy import effective_policy
+        assert "max_in_flight" not in beta and "weight" not in beta
+        assert effective_policy(beta)["max_in_flight"] == 1 and effective_policy(beta)["weight"] == 1
         assert policies["gamma"] == (None, None)
 
         # Audited per product with the runner's identity, and announced ONCE.
@@ -597,10 +593,10 @@ def test_clearing_every_policy_does_not_re_arm_the_seed(tmp_path):
             for slug in ("alpha", "beta"):
                 await update_project_policy(slug, PolicyPatchBody(policy=None),
                                             identity="tester", db=db)
-        assert await _policies() == {"alpha": (None, None), "beta": (None, None)}
-
+        reset_policies = await _policies()
+        assert all(policy is None and stamp is not None for policy, stamp in reset_policies.values())
         assert await orch._backlog_seed_policies_once() == 0
-        assert await _policies() == {"alpha": (None, None), "beta": (None, None)}
+        assert await _policies() == reset_policies
 
     asyncio.run(run())
 
@@ -655,7 +651,9 @@ def test_seed_leaves_a_key_the_legacy_config_never_set_at_the_schema_default(tmp
 
         from server.automations.product_policy import effective_policy
         defaults = effective_policy(None)
-        alpha, _ = (await _policies())["alpha"]
+        raw_alpha, _ = (await _policies())["alpha"]
+        assert raw_alpha == {"dispatch": "auto"}
+        alpha = effective_policy(raw_alpha)
         assert alpha["max_in_flight"] == defaults["max_in_flight"]
         assert alpha["max_attempts"] == defaults["max_attempts"]
         assert alpha["queue_min_status"] == defaults["queue_min_status"]
@@ -747,7 +745,10 @@ def test_seed_degrades_one_out_of_range_legacy_value_not_the_whole_policy(tmp_pa
             "repo_weights": {"o/a": 4}, "max_attempts": 0})
 
         assert await orch._backlog_seed_policies_once() == 1
-        policy = (await _policies())["alpha"][0]
+        from server.automations.product_policy import effective_policy
+        raw_policy = (await _policies())["alpha"][0]
+        assert raw_policy == {"dispatch": "auto", "weight": 4}
+        policy = effective_policy(raw_policy)
         assert policy["dispatch"] == "auto"
         assert policy["weight"] == 4                    # the in-range value survives
         assert policy["max_attempts"] == 2              # schema default, not 0
@@ -975,4 +976,41 @@ def test_both_tap_spawn_paths_record_a_running_outcome(tmp_path, monkeypatch):
         assert dispatched.outcome == "running" and dispatched.session_id == "sess-2"
         assert dispatched.model == "opus" and dispatched.attempt_no == 0
 
+    asyncio.run(run())
+
+
+def test_explicit_reset_before_legacy_seed_is_preserved(tmp_path):
+    async def run():
+        from server.api.pm import PolicyPatchBody, update_project_policy
+        await _init(tmp_path, "reset-before-seed.db")
+        await _seed_product("alpha", "o/a")
+        await _seed_product("beta", "o/b")
+        async with db_session() as db:
+            await update_project_policy("alpha", PolicyPatchBody(policy=None), identity="tester", db=db)
+        before = (await _policies())["alpha"]
+        assert await _orch_with_ctx()._backlog_seed_policies({"enabled_repos": ["o/a", "o/b"]}, "auto") == 1
+        assert (await _policies())["alpha"] == before
+    asyncio.run(run())
+
+
+def test_human_edit_between_migration_read_and_write_wins(tmp_path, monkeypatch):
+    """Inject a concurrent edit at the writer seam using real SQL CAS, not a mocked conflict."""
+    async def run():
+        from datetime import datetime, timezone
+        from sqlalchemy import update
+        from server.automations import product_policy
+        await _init(tmp_path, "seed-race.db")
+        await _seed_product("alpha", "o/a")
+        original = product_policy.patch_project_policy
+        async def raced(db, project, patch):
+            # Simulate the committed winner after the migration loaded its ORM
+            # snapshot. synchronize_session=False keeps that snapshot stale.
+            await db.execute(update(Project).where(Project.id == project.id).values(
+                automation_policy=None, automation_policy_updated_at=datetime.now(timezone.utc)
+            ).execution_options(synchronize_session=False))
+            return await original(db, project, patch)
+        monkeypatch.setattr(product_policy, "patch_project_policy", raced)
+        assert await _orch_with_ctx()._backlog_seed_policies({"enabled_repos": ["o/a"]}, "auto") == 0
+        policy, stamp = (await _policies())["alpha"]
+        assert policy is None and stamp is not None
     asyncio.run(run())

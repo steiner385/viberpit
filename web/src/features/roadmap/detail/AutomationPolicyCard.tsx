@@ -74,13 +74,13 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
   }
 
   const fields = orderedFields(schema)
-  // Every schema key with its current-or-default value: the server never sees a
-  // partial blob (`update_project_policy` stores exactly what it validates).
+  // Defaults are for display only; never persist absent keys as explicit choices.
   const effective: Record<string, unknown> = {}
   for (const f of fields) effective[f.key] = policy[f.key] ?? f.default
 
   function handleChange(key: string, val: unknown) {
-    update.mutate({ ...effective, [key]: val })
+    if (update.isPending) return
+    update.mutate({ policy: { [key]: val }, expectedUpdatedAt: project.automationPolicyUpdatedAt })
   }
 
   return (
@@ -105,7 +105,7 @@ export function AutomationPolicyCard({ product, project }: { product: ProductNod
       {/* A native fieldset disables every descendant control at once — ConfigInput
           itself carries no `disabled` prop (it is shared verbatim with the
           automations Config tab, which never disables a field). */}
-      <fieldset disabled={!live} className="flex flex-col gap-3 disabled:opacity-60">
+      <fieldset disabled={!live || update.isPending} className="flex flex-col gap-3 disabled:opacity-60">
         {fields.map((field) => (
           field.type === 'bool'
             ? (

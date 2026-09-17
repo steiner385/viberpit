@@ -1,6 +1,6 @@
 // The product Overview's Automation card: every schema field through the
 // shared ConfigInput, disabled + a note until the product is live, and a
-// whole-object-replace patch on change (product automation policy phase 1).
+// sparse revision-checked patch on change (product automation policy phase 1).
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
@@ -24,13 +24,13 @@ const h = vi.hoisted(() => ({
   coverage: { data: undefined as unknown, isPending: false, isError: false },
   schema: { data: undefined as unknown, isLoading: false, isError: false },
   update: vi.fn(),
-  updateState: { isError: false, error: null as unknown },
+  updateState: { isPending: false, isError: false, error: null as unknown },
 }))
 vi.mock('@/api/hooks', () => ({
   usePolicySchema: () => h.schema,
   useProductImplementationPolicy: () => h.implementation,
   useProductPolicyCoverage: () => h.coverage,
-  useUpdateProductPolicy: () => ({ mutate: h.update, isPending: false, ...h.updateState }),
+  useUpdateProductPolicy: () => ({ mutate: h.update, ...h.updateState }),
   useGithubRepos: () => ({ data: [], isLoading: false }),
 }))
 
@@ -40,7 +40,7 @@ function makeProject(over: Partial<Project> = {}): Project {
   return {
     id: 'p', slug: 'kindash', name: 'KinDash', description: null, status: null, portfolioTags: [],
     onboardingState: 'live', createdAt: null, updatedAt: null, repos: [], edges: [],
-    featureCount: 0, workItemCount: 0, automationPolicy: null,
+    featureCount: 0, workItemCount: 0, automationPolicy: null, automationPolicyUpdatedAt: null,
     ...over,
   }
 }
@@ -50,7 +50,7 @@ beforeEach(() => {
   Object.assign(h.implementation, { data: undefined, isPending: false, isError: false })
   Object.assign(h.coverage, { data: undefined, isPending: false, isError: false })
   Object.assign(h.schema, { data: SCHEMA, isLoading: false, isError: false })
-  Object.assign(h.updateState, { isError: false, error: null })
+  Object.assign(h.updateState, { isPending: false, isError: false, error: null })
 })
 
 describe('AutomationPolicyCard', () => {
@@ -68,18 +68,10 @@ describe('AutomationPolicyCard', () => {
     expect(labels[0]).toHaveTextContent('Dispatch')
   })
 
-  it('a change to dispatch sends the full effective blob with dispatch: auto', () => {
+  it('a change sends only the edited key and the observed revision', () => {
     render(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: null })} />)
     fireEvent.change(screen.getByLabelText('Dispatch'), { target: { value: 'auto' } })
-    expect(h.update).toHaveBeenCalledWith({
-      dispatch: 'auto',
-      queue_min_status: 'ready',
-      max_in_flight: 1,
-      weight: 1,
-      max_attempts: 2,
-      default_model: 'auto',
-      respect_dependencies: true,
-    })
+    expect(h.update).toHaveBeenCalledWith({ policy: { dispatch: 'auto' }, expectedUpdatedAt: null })
   })
 
   it('reads existing policy values over the defaults', () => {
@@ -230,4 +222,20 @@ describe('implementation eligibility', () => {
     view.rerender(<AutomationPolicyCard product={product} project={makeProject()} />)
     expect(screen.getByText('No repository implementation decisions are available.')).toBeInTheDocument()
   })
+})
+
+
+it('disables all settings while a save is pending', () => {
+  h.updateState.isPending = true
+  render(<AutomationPolicyCard product={product} project={makeProject()} />)
+  expect(screen.getByLabelText('Dispatch')).toBeDisabled()
+  expect(screen.getByLabelText('Max in flight')).toBeDisabled()
+  expect(screen.getByLabelText('Respect issue dependencies')).toBeDisabled()
+})
+
+it('preserves the exact revision without rounding microseconds', () => {
+  const revision = '2026-09-17T01:00:00.123456+00:00'
+  render(<AutomationPolicyCard product={product} project={makeProject({ automationPolicyUpdatedAt: revision })} />)
+  fireEvent.change(screen.getByLabelText('Weight'), { target: { value: '4' } })
+  expect(h.update).toHaveBeenCalledWith({ policy: { weight: 4 }, expectedUpdatedAt: revision })
 })

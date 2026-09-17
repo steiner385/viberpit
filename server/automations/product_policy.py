@@ -22,18 +22,21 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from server.pm.repo_project import RepoOwnership
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from server.automations.base import ConfigField, validate_config
 from server.automations.model_pick import AUTOMATION_MODEL_CHOICES
 from server.db.models import Project
+from server.db.clock import naive_utc_now
+from server.time_iso import iso_utc, parse_iso_utc
 from server.pm.desired_state import STATUS_READY
 from server.pm.queue import MIN_STATUS_OPTIONS
 from server.sdlc.gates import RISK_TOLERANCES
@@ -131,6 +134,59 @@ def effective_policy(raw: dict | None) -> dict:
                             exc_info=True)
                 _warned_bad_policy = True
     return validate_config(PRODUCT_POLICY_SCHEMA, {})
+
+
+def merge_policy_patch(current: dict | None, patch: dict | None) -> dict | None:
+    """Validate both inputs, retaining only explicitly stored/supplied keys.
+
+    Null is a deliberate reset, including recovery from corrupt stored policy.
+    Default filling belongs to readers and must never turn into persisted intent.
+    """
+    if patch is None:
+        return None
+    if not isinstance(patch, dict) or (current is not None and not isinstance(current, dict)):
+        raise ValueError("policy must be an object or null")
+    current = {} if current is None else current
+    validate_config(PRODUCT_POLICY_SCHEMA, current)
+    validate_config(PRODUCT_POLICY_SCHEMA, patch)
+    merged = {**current, **patch}
+    validated = validate_config(PRODUCT_POLICY_SCHEMA, merged)
+    return {key: validated[key] for key in merged}
+
+
+class PolicyEditConflict(Exception):
+    """The observed policy changed; the caller must refresh before editing."""
+
+
+async def patch_project_policy(
+    db: AsyncSession, project: Project, patch: dict | None, *,
+    expected_updated_at: datetime | None = None, check_expected: bool = False,
+) -> dict | None:
+    """Sparse policy write with an atomic revision check, shared with migration.
+
+    Even compatibility callers without a client revision compare against the row
+    they read. Never retry a stale patch automatically. Resets advance revision
+    too, so a stale edit or the legacy migration cannot resurrect deleted intent.
+    """
+    observed = project.automation_policy_updated_at
+    if check_expected and iso_utc(expected_updated_at) != iso_utc(observed):
+        raise PolicyEditConflict
+    merged = merge_policy_patch(project.automation_policy, patch)
+    revision = naive_utc_now().replace(tzinfo=timezone.utc)
+    previous = parse_iso_utc(iso_utc(observed))
+    if previous is not None:
+        revision = max(revision, previous + timedelta(microseconds=1))
+    conditions = [Project.id == project.id, Project.automation_policy_updated_at == observed]
+    if project.automation_policy is None:
+        conditions.append(Project.automation_policy.is_(None))
+    result = await db.execute(
+        update(Project).where(*conditions).values(automation_policy=merged, automation_policy_updated_at=revision)
+        .returning(Project.id).execution_options(synchronize_session=False)
+    )
+    if result.scalar_one_or_none() is None:
+        raise PolicyEditConflict
+    await db.refresh(project)
+    return merged
 
 
 def is_on(policy: "dict | None") -> bool:

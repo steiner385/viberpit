@@ -1,5 +1,6 @@
 """Product automation policy (spec 2026-09-12 §4): one schema, one validated reading."""
 from __future__ import annotations
+import pytest
 
 from server.automations.product_policy import (
     DISPATCH_MODES, PRODUCT_POLICY_SCHEMA, effective_policy,
@@ -95,3 +96,24 @@ def test_unattended_model_floor_is_none_or_a_model_tier():
     assert field.choices == ["none", *MODEL_TIERS]
     assert effective_policy({"unattended_model_floor": "opus"})["unattended_model_floor"] == "opus"
     assert effective_policy({"unattended_model_floor": "gpt-5"})["unattended_model_floor"] == "none"
+
+
+def test_sparse_policy_merge_preserves_explicit_choices():
+    from server.automations.product_policy import merge_policy_patch
+    assert merge_policy_patch({"dispatch": "off"}, {"weight": 3}) == {"dispatch": "off", "weight": 3}
+    assert merge_policy_patch(None, {"weight": 3}) == {"weight": 3}
+    assert merge_policy_patch({"dispatch": "auto"}, None) is None
+    assert merge_policy_patch({"unknown": True}, None) is None
+
+
+@pytest.mark.parametrize("current,patch", [
+    ({"dispatch": "turbo"}, {"weight": 3}),
+    ({"unknown": True}, {"weight": 3}),
+    ([], {"weight": 3}),
+    ({}, {"unknown": True}),
+    ({}, {"dispatch": "turbo"}),
+])
+def test_sparse_policy_merge_rejects_corruption(current, patch):
+    from server.automations.product_policy import merge_policy_patch
+    with pytest.raises(ValueError):
+        merge_policy_patch(current, patch)

@@ -52,6 +52,7 @@ export interface Project {
    *  `PRODUCT_POLICY_SCHEMA`'s defaults (`usePolicySchema`) — never trust this
    *  alone as "every key present". */
   automationPolicy: Record<string, unknown> | null
+  automationPolicyUpdatedAt: string | null
 }
 
 export interface CreateProjectInput {
@@ -136,14 +137,15 @@ export function fetchProductImplementationPolicy(slug: string): Promise<ProductI
   return api.get<ProductImplementationPolicy>(`/pm/projects/${encodeURIComponent(slug)}/policy/effective`)
 }
 
-/** Whole-object replace: the server validates and stores the FULL policy, never
- *  a partial patch (`server/api/pm.py:update_project_policy`). `null` clears it
- *  (opts the product back out). Returns the full project detail so the card's
- *  invalidation has fresh data without a second fetch. */
-export function updateProductPolicy(
-  slug: string, policy: Record<string, unknown> | null,
-): Promise<Project> {
-  return api.patch<Project>(`/pm/projects/${encodeURIComponent(slug)}/policy`, { policy })
+/** Sparse validated edit. Null deliberately resets; the exact observed revision
+ * guards stale clients, including a null revision for a never-edited product. */
+export interface ProductPolicyPatch {
+  policy: Record<string, unknown> | null
+  expectedUpdatedAt?: string | null
+}
+
+export function updateProductPolicy(slug: string, patch: ProductPolicyPatch): Promise<Project> {
+  return api.patch<Project>(`/pm/projects/${encodeURIComponent(slug)}/policy`, patch)
 }
 
 // --- phase 2: onboarding wizard (design §5) ---

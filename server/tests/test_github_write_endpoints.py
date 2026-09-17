@@ -206,8 +206,10 @@ def test_pr_comment_rejects_a_traversal_repo_segment():
     seen: list[tuple] = []
     with patch.dict(os.environ, _ENV), client, \
             patch.object(ci_issues, "comment_on_pr", _fake_comment(seen)):
-        r = client.post("/api/prs/acme/../42/comments", json={"body": "hi"}, headers=_H)
-    assert r.status_code in (404, 422), r.status_code
+        # Encode the dot segment so HTTPX cannot normalize it away before routing.
+        r = client.post("/api/prs/acme/%2e%2e/42/comments", json={"body": "hi"}, headers=_H)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == "repo must be 'owner/name'"
     assert seen == []
 
 
