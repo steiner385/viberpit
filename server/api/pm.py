@@ -50,7 +50,10 @@ from server.pm.mirror_store import deps_in_repos
 from server.pm.outcomes import list_outcomes_stmt, outcome_to_dict
 from server.pm.queue import MIN_STATUS_OPTIONS, rank, rank_key
 from server.pm.queue_store import load_queue_rows, runner_row_maps
-from server.pm.repo_project import OwnershipConflict, owning_projects_by_repo
+from server.pm.repo_project import (
+    OwnershipConflict, gather_repo_ownership_snapshot, lock_repo_registration,
+    owning_projects_by_repo, require_unregistered_repos,
+)
 from server.pm.score import RICE_FIELDS, validate_rice
 from server.pm.sync_request import request_project_sync
 # The accept write path and the undo-snapshot format live in server/pm/triage_accept.py
@@ -182,12 +185,21 @@ async def create_project(
     for repo_in in body.repos:
         _validate_repo(repo_in.repo)
     slug = body.slug or _slugify(body.name)
+    ownership = await gather_repo_ownership_snapshot([repo.repo for repo in body.repos])
+    await lock_repo_registration(db)
     existing = (await db.execute(
         select(Project).where(Project.slug == slug))).scalar_one_or_none()
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"error": "slug_conflict", "message": f"Project '{slug}' already exists"})
+    try:
+        canonical = await require_unregistered_repos(
+            db, [repo.repo for repo in body.repos], snapshot=ownership)
+    except OwnershipConflict as exc:
+        raise HTTPException(status_code=409, detail={
+            "error": "ownership_conflict", "ownershipState": exc.state, "message": str(exc),
+        }) from exc
     project = Project(
         slug=slug,
         name=body.name,
@@ -199,11 +211,18 @@ async def create_project(
     # Exactly one primary: honour the first isPrimary=True, else the first repo.
     primary_idx = next(
         (i for i, r in enumerate(body.repos) if r.isPrimary), 0)
-    for i, repo_in in enumerate(body.repos):
+    primary_repo = canonical[body.repos[primary_idx].repo].casefold()
+    registered: set[str] = set()
+    for repo_in in body.repos:
+        repo = canonical[repo_in.repo]
+        key = repo.casefold()
+        if key in registered:
+            continue
+        registered.add(key)
         db.add(ProjectRepo(
             project_id=project.id,
-            repo=repo_in.repo,
-            is_primary=(i == primary_idx),
+            repo=repo,
+            is_primary=(key == primary_repo),
         ))
     await db.flush()
     # Fetch the repos we just created so we can return the full shape (repos,
