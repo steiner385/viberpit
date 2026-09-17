@@ -507,6 +507,19 @@ async def get_initiative(
                MaterializationProposal.status == "pending"))).scalars().first()
     proposal_tasks = len(((pending.payload or {}).get("tasks") or [])) if pending else 0
 
+    # The unblock endpoint's third 409 (``materialize_exhausted``, see
+    # ``unblock_initiative``) mirrored into the guidance so the button explains
+    # itself instead of 409-ing on tap. Same lazy imports and same count — one
+    # implementation of "attempts spent" — and only evaluated for the shape that
+    # can be exhausted.
+    materialize_exhausted = False
+    if ini.status == "blocked" and ini.stage == "plan" and ini.epic_number is None:
+        from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+        from server.sessions.orchestrator import SessionOrchestrator
+        materialize_exhausted = (
+            await SessionOrchestrator._sdlc_materialization_attempts(db, ini.id)
+        ) >= MATERIALIZE_MAX_ATTEMPTS
+
     result = _initiative_to_dict(ini)
     result["artifacts"] = [_artifact_to_dict(a) for a in artifacts]
     result["buildSessions"] = build_sessions
@@ -527,7 +540,8 @@ async def get_initiative(
         dispatch=str(policy.get("dispatch") or "off"),
         queue_min_status=str(policy.get("queue_min_status") or "ready"),
         session_model=str(policy.get("default_model") or "auto"),
-        tick_seconds=int(TICK_INTERVAL_S))))
+        tick_seconds=int(TICK_INTERVAL_S),
+        materialize_exhausted=materialize_exhausted)))
     return result
 
 

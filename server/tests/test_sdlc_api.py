@@ -1262,6 +1262,36 @@ def test_unblock_refuses_an_initiative_the_synthesizer_gave_up_on():
             assert got["status"] == "blocked"
 
 
+def test_detail_guidance_mirrors_the_exhausted_unblock_refusal():
+    """The guidance reproduces the endpoint's THIRD 409 too, so the button explains
+    itself instead of 409-ing on tap (spec 2026-09-17 §3.4)."""
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_exhausted(db_url, proposals=MATERIALIZE_MAX_ATTEMPTS)
+        with _client(db_url) as c:
+            got = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
+            unblock = got["guidance"]["actions"]["unblock"]
+            assert unblock["available"] is False
+            assert "gave up after repeated attempts" in unblock["unavailableReason"]
+
+
+def test_detail_guidance_offers_unblock_below_the_attempt_cap():
+    """Below the cap the block IS clearable, and the confirm warns about the issues
+    a failed materialize may have left on GitHub."""
+    from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db_url = f"sqlite+aiosqlite:///{tmp}/test.db"
+        _seed_exhausted(db_url, proposals=MATERIALIZE_MAX_ATTEMPTS - 1)
+        with _client(db_url) as c:
+            got = c.get("/api/sdlc/initiatives/dark-mode", headers=IDENTITY_HEADERS).json()
+            unblock = got["guidance"]["actions"]["unblock"]
+            assert unblock["available"] is True
+            assert any("close them first" in s["text"] for s in unblock["immediate"])
+
+
 def test_unblock_allows_an_initiative_below_the_attempt_cap():
     """Under the cap the loop will decompose again, so the block IS clearable."""
     from server.automations.sdlc_synthesizer import MATERIALIZE_MAX_ATTEMPTS

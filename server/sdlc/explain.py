@@ -64,6 +64,9 @@ class ExplainContext:
     queue_min_status: str         # product policy `queue_min_status`
     session_model: str            # product policy `default_model`
     tick_seconds: int
+    #: The unblock endpoint's third 409: the synthesizer gave up decomposing this
+    #: plan after MATERIALIZE_MAX_ATTEMPTS. Defaulted so existing callers keep working.
+    materialize_exhausted: bool = False
 
 
 @dataclass(frozen=True)
@@ -171,6 +174,15 @@ def describe(action: StageAction, ctx: ExplainContext, view: InitiativeView,
     """Turn one engine decision into the steps a human reads. ``depth`` bounds the
     lookahead after an automatic advance to ONE further decision."""
     if isinstance(action, Propose):
+        if action.kind == "intent":
+            # The synthesizer's `_run` only spawns spec and plan. An intent comes
+            # from the trigger-driven intake loop (server/automations/sdlc_intake.py),
+            # which reacts to a triage incident or an adopted epic and never visits
+            # a hand-created initiative — so promising a session here would lie.
+            return (Step("The intent is proposed by the intake loop when a triage incident or an "
+                         "adopted epic reaches this initiative; nothing starts on its own."),)
+        # Only `spec` and `plan` reach here, and both take "a" (the intent split
+        # above is what keeps a vowel-initial kind out of this sentence).
         up = _upstream(action.kind)
         reads = f" that reads the merged {up}" if up else ""
         return (Step(f"Spawns a {action.kind} session on {ctx.session_model}{reads} and opens "
@@ -211,7 +223,11 @@ def _loop_acts(action: StageAction, ctx: ExplainContext) -> bool:
     a human — the one rule behind ``when`` and ``actor``."""
     if ctx.mode == "off":
         return False
-    if isinstance(action, (Propose, MergeArtifact, Advance)):
+    if isinstance(action, Propose):
+        # The synthesizer spawns `spec` and `plan` only (sdlc_synthesizer._run);
+        # `intent` belongs to the trigger-driven intake loop, which no tick visits.
+        return action.kind in ("spec", "plan")
+    if isinstance(action, (MergeArtifact, Advance)):
         return True
     if isinstance(action, Materialize):
         return not ctx.proposal_pending
@@ -229,7 +245,9 @@ def _because(ctx: ExplainContext) -> str:
     if ctx.configured_tolerance != ctx.tolerance:
         return (f"Risk tolerance is {ctx.configured_tolerance}, but auto-resolve is switched off "
                 "for this deployment, so every gate waits for you.")
-    covered = [g.label.lower() for g in GATES if auto_resolves(g.id, ctx.tolerance)]
+    # Only the FIRST character: `str.lower()` would flatten an acronym inside a
+    # label ("Merge the PR" → "pr").
+    covered = [g.label[:1].lower() + g.label[1:] for g in GATES if auto_resolves(g.id, ctx.tolerance)]
     if not covered:
         return f"Risk tolerance {ctx.tolerance}: every gate waits for you."
     return (f"Risk tolerance {ctx.tolerance}: the machine resolves these gates itself: "
@@ -288,10 +306,21 @@ def _unblock(ctx: ExplainContext) -> Consequence:
         return _unavailable("Not blocked.", gate)
     if ctx.proposal_pending:
         return _unavailable("Accept or reject the pending materialization first.", gate)
+    if ctx.materialize_exhausted:
+        # The endpoint's third 409 (`materialize_exhausted`): the synthesizer wrote
+        # this block after MATERIALIZE_MAX_ATTEMPTS and would re-block on the next
+        # tick, so the button must say so rather than 409 on tap.
+        return _unavailable("Decomposition gave up after repeated attempts; reject or remove "
+                            "the stale proposals first.", gate)
     after = replace(view, status="awaiting_human")
     then, when = _then(ctx, after)
-    return Consequence(True, None, (Step(f"Clears the block; the gate stays at {view.stage}."),),
-                       then, when, None, gate)
+    immediate: tuple[Step, ...] = (Step(f"Clears the block; the gate stays at {view.stage}."),)
+    if view.stage == "plan" and view.epic is None:
+        # A block at plan with no epic is the failed-materialize shape: the apply
+        # may have left issues on GitHub that a later decomposition will duplicate.
+        immediate += (Step("If a failed materialize left an epic or sub-issues on GitHub, close "
+                           "them first; a later decomposition creates a fresh set."),)
+    return Consequence(True, None, immediate, then, when, None, gate)
 
 
 def _materialize_accept(ctx: ExplainContext) -> Consequence:

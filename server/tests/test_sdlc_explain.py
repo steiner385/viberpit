@@ -167,6 +167,35 @@ def test_unblock_waits_for_a_pending_materialization():
     assert g.actions["unblock"].unavailable_reason == "Accept or reject the pending materialization first."
 
 
+def test_unblock_refuses_a_plan_the_synthesizer_gave_up_on():
+    """The endpoint's third 409 (``materialize_exhausted``) explained, not 409'd."""
+    g = explain(_ctx(_view(stage="plan", status="blocked"), [_art("plan", sha="c")],
+                     materialize_exhausted=True))
+    c = g.actions["unblock"]
+    assert c.available is False
+    assert c.unavailable_reason == ("Decomposition gave up after repeated attempts; reject or "
+                                    "remove the stale proposals first.")
+    assert c.gate == "initiative.blocked"
+
+
+def test_unblock_at_plan_with_no_epic_warns_about_orphaned_github_issues():
+    g = explain(_ctx(_view(stage="plan", status="blocked"), [_art("plan", sha="c")]))
+    c = g.actions["unblock"]
+    assert c.available is True
+    assert c.immediate[0].text == "Clears the block; the gate stays at plan."
+    assert c.immediate[1].text == ("If a failed materialize left an epic or sub-issues on GitHub, "
+                                   "close them first; a later decomposition creates a fresh set.")
+    assert c.immediate[1].spawns_session is False
+    assert c.immediate[1].writes_github is False
+
+
+def test_unblock_elsewhere_carries_no_github_warning():
+    for view in (_view(stage="design", status="blocked"),
+                 _view(stage="plan", status="blocked", epic="o/r#9")):
+        c = explain(_ctx(view, [])).actions["unblock"]
+        assert [s.text for s in c.immediate] == [f"Clears the block; the gate stays at {view.stage}."]
+
+
 def test_edges_of_the_track():
     first = explain(_ctx(_view(stage="intake"), []))
     assert first.actions["step_back"].unavailable_reason == "Already at the first stage."
@@ -257,6 +286,26 @@ def test_pending_proposal_is_your_move():
     g = explain(_ctx(_view(stage="plan"), [_art("plan", sha="c")], proposal_pending=True, proposal_tasks=2))
     assert g.machine.actor == ACTOR_YOU
     assert g.machine.summary == "A decomposition is waiting for your Accept or Reject."
+
+
+def test_intake_intent_belongs_to_the_intake_loop_not_the_tick():
+    """The synthesizer's `_run` spawns spec and plan only; a hand-created initiative
+    sitting at intake is nobody's tick, so the card must not promise a session."""
+    g = explain(_ctx(_view(stage="intake"), []))
+    assert g.machine.actor == ACTOR_YOU
+    assert g.machine.when == WHEN_NEVER
+    assert g.machine.steps[0].spawns_session is False
+    assert g.machine.steps[0].writes_github is False
+    assert "intake loop" in g.machine.steps[0].text
+    assert g.actions["advance"].when == WHEN_NEXT_TICK   # design DOES spawn a spec session
+
+
+def test_design_still_promises_a_spec_session():
+    g = explain(_ctx(_view(stage="design"), [_art("intent", sha="a")]))
+    assert g.machine.actor == ACTOR_MACHINE
+    assert g.machine.when == WHEN_NEXT_TICK
+    assert g.machine.steps[0].spawns_session is True
+    assert "a spec session" in g.machine.steps[0].text
 
 
 # --- helpers and wire shapes -----------------------------------------------------
