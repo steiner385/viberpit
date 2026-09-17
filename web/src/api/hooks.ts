@@ -26,6 +26,7 @@ import {
   updateInitiative,
   fetchMaterialization, acceptMaterialization, rejectMaterialization,
   fetchIncidents, actOnIncident,
+  fetchGates, type GateRegistry,
   type Initiative, type CreateInitiativeInput, type UpdateInitiativeInput,
   type MaterializationProposal, type MaterializationApplied,
   type Incident, type IncidentActionInput,
@@ -110,6 +111,7 @@ export const QK = {
   // Control-band INCIDENTS (#804) — deliberately not `triage` below, which is the
   // PM classification inbox. Same word, unrelated data.
   incidents: ['sdlc', 'incidents'] as const,
+  gates: ['sdlc', 'gates'] as const,
   triage: ['pm', 'triage'] as const,          // phase 2 OWNS this key
   onboarding: (slug: string) => ['pm', 'onboarding', slug] as const,
   roadmapMap: ['pm', 'map'] as const,
@@ -1817,6 +1819,16 @@ export function useInitiative(slug: string | null) {
     enabled: slug !== null && slug !== '',
     staleTime: 5_000,
     refetchInterval: 15_000,
+  })
+}
+
+/** The gate registry with per-tolerance auto-resolution (`GET /sdlc/gates`).
+ *  `staleTime: Infinity`: it changes only with a deploy. */
+export function useSdlcGates() {
+  return useQuery<GateRegistry>({
+    queryKey: QK.gates,
+    queryFn: fetchGates,
+    staleTime: Infinity,
   })
 }
 
