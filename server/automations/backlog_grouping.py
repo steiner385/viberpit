@@ -157,6 +157,12 @@ def parse_group_plan(raw: str, candidates: list[dict], max_k: int) -> list[dict]
     return groups
 
 
+class GroupingModelError(RuntimeError):
+    """The grouping model call itself failed (SDK/transport/auth), as opposed to
+    the model answering with an unparseable plan. Carries the SDK's own message so
+    the runner's ``groups_refresh_failed`` event can name the actual cause."""
+
+
 def _default_sdk_query_fn():
     from claude_agent_sdk import query  # lazy: resolved off the package at call
     # time, which lets server/tests/conftest.py stub every helper door at once (#1383)
@@ -173,11 +179,13 @@ async def propose_groups(
 ) -> list[dict]:
     """One-shot Sonnet call that partitions *candidates* into a group plan.
 
-    Returns the validated plan (see :func:`parse_group_plan`) or ``[]`` when
-    the model call itself fails — the caller treats empty-with-candidates as a
-    refresh failure and backs off, so a broken SDK never stores an empty plan
-    over a real backlog. Tests inject ``_query_fn``; the conftest guard makes
-    an un-injected call return ``[]`` so no test ever reaches the real model.
+    Returns the validated plan (see :func:`parse_group_plan`) — ``[]`` when the
+    model answered with nothing parseable — and raises :class:`GroupingModelError`
+    when the model call ITSELF fails, carrying the SDK's message. Either way the
+    caller treats no-plan-with-candidates as a refresh failure and backs off, so
+    a broken SDK never stores an empty plan over a real backlog. Tests inject
+    ``_query_fn``; the conftest guard makes an un-injected call return ``[]`` so
+    no test ever reaches the real model.
     """
     if not candidates:
         return []
@@ -212,7 +220,7 @@ async def propose_groups(
         raw = "".join(text_parts).strip()
     except Exception as exc:
         log.warning("backlog_grouping: model call failed: %s", exc)
-        return []
+        raise GroupingModelError(str(exc)) from exc
     return parse_group_plan(raw, candidates, max_k)
 
 

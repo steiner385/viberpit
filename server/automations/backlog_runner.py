@@ -600,7 +600,8 @@ class BacklogRunnerLoop:
         self._last_group_refresh: float | None = None   # monotonic; throttles the optimizer
         self._group_nudge = False                       # refill starved → refresh next tick
         self._group_refresh_retry_at: float | None = None  # failed → gate nudges until this clock time
-        self._group_refresh_failed_emitted = False      # debounce the failure event
+        self._group_refresh_last_error: str | None = None  # debounce the failure event per distinct error
+        self._counts_published = False                  # cold start: first ``_stash_counts`` done
         self._last_groups_emitted: int | None = None    # debounce the refreshed event
         self._lock = asyncio.Lock()
         self._accounted_dispatches: set[str] = set()
@@ -666,6 +667,19 @@ class BacklogRunnerLoop:
 
     async def _refill_and_sweep(self) -> None:
         self._waiting_reason = None
+        config: dict = {}
+        try:
+            config = await self._refill_and_sweep_body()
+        finally:
+            # ALWAYS publish the claim/queue snapshot, even when refill or the sweep
+            # raised: the stash used to sit after them, so one raising tick left
+            # ``backlog_counts`` unset — "Workload counts unavailable" — for the
+            # life of the process. ``tick()`` still records the failure itself.
+            await self._stash_counts(config)
+
+    async def _refill_and_sweep_body(self) -> dict:
+        """The tick proper; returns the config it ran under so the ``finally``
+        above can stash counts against it."""
         await self._maybe_seed_policies()
         mode, config = await self._read_config()
         # Every per-product decision below (dispatch, attempt cap, model) reads
@@ -701,6 +715,13 @@ class BacklogRunnerLoop:
         await self._expire_give_ups(config)
         # Recover admitted launches before checking the daily dispatch budget.
         await self._reconcile_dangling()
+        if not self._counts_published:
+            # Cold start: the grouping optimizer below is a model call over the
+            # whole backlog (~10 min on 2026-09-16, more on a failure + retry), and
+            # until the first stash the card reads "Workload counts unavailable"
+            # while the actionable count beside it says 430. The counts are two
+            # cheap DB reads — publish them before the expensive part.
+            await self._stash_counts(config)
         if mode != "off" and policies_known:
             # The grouping optimizer runs BEFORE refill so a cold start (or a
             # just-consumed plan) can produce groups and spawn in the same tick.
@@ -716,11 +737,11 @@ class BacklogRunnerLoop:
                     self._circuit_open_emitted = True
                     await self._ctx.emit("warn", "daily spawn cap reached — pausing",
                                          kind="circuit_open")
-        # handoff + terminal-watch runs every tick, regardless of mode.
+        # handoff + terminal-watch runs every tick, regardless of mode. The live
+        # counts ``BacklogRunner.status(ctx)`` renders are stashed by the caller's
+        # ``finally`` once this returns (or raises).
         await self._sweep()
-        # Stash live counts on the ctx so ``BacklogRunner.status(ctx)`` renders
-        # "N work in flight, M eligible, K needs-human" from measured claims.
-        await self._stash_counts(config)
+        return config
 
     async def _check_credentials(self) -> None:
         """Surface stale-credential alerts (issue #670) to the dashboard.
@@ -807,6 +828,7 @@ class BacklogRunnerLoop:
         if self._count_candidates is not None:
             setattr(self._ctx, "backlog_products", per_product)
         setattr(self._ctx, "backlog_last_pick", self._last_pick)
+        self._counts_published = True
 
     async def _reconcile_dangling(self) -> None:
         """Recover a reserved Session identity without guessing that work stopped.
@@ -887,17 +909,21 @@ class BacklogRunnerLoop:
         self._group_nudge = False
         try:
             n = await self._refresh_groups(config)
-        except Exception:
+        except Exception as exc:
             log.warning("backlog_runner.group_refresh_failed", exc_info=True)
             self._group_refresh_retry_at = now + GROUP_REFRESH_BACKOFF_S
-            if not self._group_refresh_failed_emitted:
-                self._group_refresh_failed_emitted = True
+            # The event names the error: "retrying shortly" alone sent an operator
+            # to the journal to learn WHY (2026-09-16). Debounced per distinct
+            # error rather than per streak — a changed cause is news.
+            error = f"{type(exc).__name__}: {exc}"
+            if error != self._group_refresh_last_error:
+                self._group_refresh_last_error = error
                 await self._ctx.emit(
-                    "warn", "group plan refresh failed — retrying shortly",
-                    kind="groups_refresh_failed")
+                    "warn", f"group plan refresh failed — retrying shortly ({error})",
+                    kind="groups_refresh_failed", detail={"error": error})
             return
         self._group_refresh_retry_at = None
-        self._group_refresh_failed_emitted = False
+        self._group_refresh_last_error = None
         if n != self._last_groups_emitted:
             self._last_groups_emitted = n
             await self._ctx.emit(

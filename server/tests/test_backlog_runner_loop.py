@@ -1840,6 +1840,100 @@ def test_group_refresh_emits_refreshed_event_on_count_change(tmp_path):
     asyncio.run(run())
 
 
+def test_group_refresh_failure_event_carries_the_error_and_reemits_when_it_changes(tmp_path):
+    """The two ``groups_refresh_failed`` events of 2026-09-16 read only "retrying
+    shortly" — the RuntimeError was in the journal and nowhere else. The event
+    carries the exception now, and a DIFFERENT error is news even mid-streak."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gr7.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        clock = FakeClock()
+        message = ["grouping model returned no plan for a non-empty backlog"]
+
+        async def refresh(_config):
+            raise RuntimeError(message[0])
+
+        loop, rec, ctx = build_loop(mode="on", clock=clock, candidates=[],
+                                    refresh_groups=refresh)
+
+        async def failures():
+            from sqlalchemy import select
+            from server.db.models import AutomationEvent
+            async with db_session() as db:
+                return (await db.execute(select(AutomationEvent).where(
+                    AutomationEvent.kind == "groups_refresh_failed")
+                    .order_by(AutomationEvent.ts))).scalars().all()
+
+        await loop.tick()
+        clock.advance(130)
+        await loop.tick()                       # same error → debounced
+        events = await failures()
+        assert len(events) == 1
+        assert events[0].detail == {
+            "error": "RuntimeError: grouping model returned no plan for a non-empty backlog"}
+        assert "no plan for a non-empty backlog" in events[0].summary
+
+        message[0] = "sdk down"
+        clock.advance(130)
+        await loop.tick()                       # a different error → a second event
+        events = await failures()
+        assert len(events) == 2
+        assert events[1].detail == {"error": "RuntimeError: sdk down"}
+
+    asyncio.run(run())
+
+
+def test_cold_start_publishes_counts_before_the_grouping_refresh(tmp_path):
+    """The card read "Workload counts unavailable" (counts=None) for the whole first
+    tick of every daemon process, because counts were published only at the END of
+    a tick and the cold-start tick opens with the grouping model call over the
+    entire backlog (~10 min, longer on a failure + retry). The cheap DB counts go
+    up FIRST; the grouping call must find them already on the ctx."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gr8.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        seen: list = []
+
+        async def refresh(_config):
+            seen.append(getattr(ctx, "backlog_counts", None))
+            return 3
+
+        loop, rec, ctx = build_loop(mode="on", candidates=[], candidate_count=7,
+                                    refresh_groups=refresh)
+        assert getattr(ctx, "backlog_counts", None) is None
+        await loop.tick()
+        assert seen == [{"in_flight": 0, "needs_human": 0, "eligible": 7,
+                         "blocked": 0, "untriaged": 0, "unassigned_in_flight": 0}]
+
+    asyncio.run(run())
+
+
+def test_counts_are_published_even_when_the_tick_raises(tmp_path):
+    """A raising sweep used to leave ``backlog_counts`` unset for the process's
+    lifetime (the stash sat after it). The measured counts still go up; the
+    failure is reported through ``last_refresh_failed_at`` as before."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gr9.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        loop, rec, ctx = build_loop(mode="on", candidates=[], candidate_count=2)
+
+        async def boom():
+            raise RuntimeError("sweep exploded (injected)")
+
+        loop._sweep = boom
+        await loop.tick()
+        assert getattr(ctx, "backlog_counts")["eligible"] == 2
+        assert getattr(ctx, "last_refresh_failed_at", None) is not None
+
+    asyncio.run(run())
+
+
 def test_group_refresh_skipped_when_mode_off(tmp_path):
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'gr6.db'}"
 
