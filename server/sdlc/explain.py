@@ -121,14 +121,13 @@ def dispatch_sentence(dispatch: str, queue_min_status: str) -> str:
     return "nothing is dispatched: this product's Dispatch is off."
 
 
-def _kinds() -> list[str]:
-    return list(STAGE_ARTIFACT.values())
-
-
 def _upstream(kind: str) -> str | None:
-    kinds = _kinds()
-    i = kinds.index(kind) if kind in kinds else -1
-    return kinds[i - 1] if i > 0 else None
+    stage = next((s for s, k in STAGE_ARTIFACT.items() if k == kind), None)
+    if stage is None:
+        return None
+    idx = STAGE_SEQUENCE.index(stage)
+    prev = STAGE_SEQUENCE[idx - 1] if idx > 0 else None
+    return STAGE_ARTIFACT.get(prev) if prev is not None else None
 
 
 def _artifact_of(artifacts: list[ArtifactView], kind: str) -> ArtifactView | None:
@@ -164,7 +163,7 @@ def _needs_human_step(reason: str, ctx: ExplainContext, view: InitiativeView) ->
     if view.stage in ("deploy", "maintain"):
         return Step("Deploy and maintain are carried by the pipeline and control bands, "
                     "not the roadmap loop.")
-    return Step(reason or "Needs a human decision.")
+    return Step(f"Needs a human decision: stage {view.stage!s} is not one the roadmap loop drives.")
 
 
 def describe(action: StageAction, ctx: ExplainContext, view: InitiativeView,
@@ -309,7 +308,7 @@ def _materialize_accept(ctx: ExplainContext) -> Consequence:
         Step("Moves the gate to build."),
         Step("The sub-issues land on the board already classified."),
     )
-    return Consequence(True, None, immediate, then, WHEN_NOW, GATE_BY_ID[gate].reverse, gate)
+    return Consequence(True, None, immediate, then, when, GATE_BY_ID[gate].reverse, gate)
 
 
 def _materialize_reject(ctx: ExplainContext) -> Consequence:

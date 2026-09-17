@@ -8,8 +8,9 @@ import pytest
 
 from server.sdlc.engine import ArtifactView, InitiativeView, next_action
 from server.sdlc.explain import (
-    ACTOR_MACHINE, ACTOR_NOBODY, ACTOR_YOU, CONTROLS, WHEN_NEVER, WHEN_NEXT_TICK, WHEN_NOW,
-    ExplainContext, describe, dispatch_sentence, explain, gates_to_wire, guidance_to_wire,
+    ACTOR_MACHINE, ACTOR_NOBODY, ACTOR_YOU, CONTROLS, WHEN_NEVER, WHEN_NEXT_TICK,
+    ExplainContext, capitalize, consequence_to_wire, describe, dispatch_sentence, explain,
+    gates_to_wire, guidance_to_wire,
 )
 from server.sdlc.gates import GATES, RISK_TOLERANCES
 from server.tests.test_sdlc_paths import assert_pure
@@ -98,7 +99,7 @@ def test_materialize_accept_writes_github_moves_to_build_and_hands_to_the_board(
                      queue_min_status="ready"))
     c = g.actions["materialize_accept"]
     assert c.available is True
-    assert c.when == WHEN_NOW
+    assert c.when == WHEN_NEXT_TICK   # `when` means when `then` happens, not the immediate GitHub write
     assert c.immediate[0].writes_github is True
     assert "3 sub-issues" in c.immediate[0].text
     assert c.immediate[1].text == "Moves the gate to build."
@@ -106,6 +107,13 @@ def test_materialize_accept_writes_github_moves_to_build_and_hands_to_the_board(
     assert "dispatch it to a coding session" in c.then[0].text
     assert c.reversal == "Close the created issues"
     assert c.gate == "materialization.accept"
+
+
+def test_materialize_accept_when_reflects_dispatch_off():
+    view = _view(stage="plan")
+    arts = [_art("intent", sha="a"), _art("spec", sha="b"), _art("plan", sha="c")]
+    g = explain(_ctx(view, arts, proposal_pending=True, proposal_tasks=3, dispatch="off"))
+    assert g.actions["materialize_accept"].when == WHEN_NEVER
 
 
 def test_materialize_accept_singular_sub_issue():
@@ -173,6 +181,8 @@ def test_unknown_stage_is_total():
     assert g.actions["advance"].available is False
     assert g.actions["step_back"].available is False
     assert g.machine is not None
+    assert g.machine.summary.startswith("Needs a human decision")
+    assert g.machine.summary.endswith(".")
 
 
 # --- the machine outlook ---------------------------------------------------------
@@ -256,6 +266,19 @@ def test_dispatch_sentence():
     assert dispatch_sentence("propose", "ready") == "the Backlog Runner may include it in a proposed batch; you approve each batch."
     assert dispatch_sentence("auto", "triaged") == ("the Backlog Runner may dispatch it to a coding session once it is "
                                                     "at or above 'triaged' on the board.")
+
+
+def test_capitalize():
+    assert capitalize("nothing is dispatched.") == "Nothing is dispatched."
+    assert capitalize("") == ""
+
+
+def test_consequence_to_wire_of_an_unavailable_consequence():
+    g = explain(_ctx(_view(stage="plan"), [_art("plan", sha="c")]))
+    w = consequence_to_wire(g.actions["materialize_accept"])
+    assert w == {"available": False, "unavailableReason": "No decomposition is waiting.",
+                "immediate": [], "then": [], "when": WHEN_NEVER, "reversal": None,
+                "gate": "materialization.accept"}
 
 
 def test_guidance_wire_shape():
