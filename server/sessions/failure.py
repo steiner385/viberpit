@@ -18,7 +18,12 @@ from dataclasses import dataclass
 # Mirror oauth._RETRY_AFTER_CAP: never trust an absurd server-supplied delay.
 _RETRY_AFTER_CAP = 120.0
 
-_RECOVERABLE = frozenset({"rate_limit", "auth_401", "process_crash", "turn_dropped"})
+# ``stream_lost`` is the driver's own verdict, never classified from text: the SDK
+# cursor ended while the session was IDLE (the CLI exited, or its stdout reader died
+# between turns). Recovered like a crash — recompose in place — but with no cut-off
+# turn to replay. Mid-turn, the same loss is reported as ``process_crash``.
+_RECOVERABLE = frozenset({"rate_limit", "auth_401", "process_crash", "turn_dropped",
+                          "stream_lost"})
 
 _OVERLOAD_STATUSES = frozenset({500, 502, 503, 529})
 _OVERLOAD_CODES = frozenset(f"api_{s}" for s in _OVERLOAD_STATUSES)
@@ -26,7 +31,7 @@ _OVERLOAD_CODES = frozenset(f"api_{s}" for s in _OVERLOAD_STATUSES)
 
 @dataclass(frozen=True)
 class TurnFailure:
-    kind: str  # "rate_limit" | "auth_401" | "process_crash" | "turn_dropped" | "overloaded" | "other"
+    kind: str  # "rate_limit" | "auth_401" | "process_crash" | "stream_lost" | "turn_dropped" | "overloaded" | "other"
     retry_after: float | None = None
 
     @property

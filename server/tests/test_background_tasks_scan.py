@@ -493,3 +493,48 @@ def test_build_rearm_prompt_guards_only_non_monitor():
     p = build_rearm_prompt([mon, bash])
     assert guard in p
     assert '"command": "z"' in p and '"command": "x"' in p   # verbatim input JSON
+
+
+def _tool_result_error(tid, text):
+    """The CLI's journal entry for a tool call that was REFUSED — rejected on a
+    permission card, or cut off by an interrupt ("The user doesn't want to proceed
+    with this tool use"). Same ``type:"user"`` shape as a result, with ``is_error``."""
+    return {"type": "user", "toolUseResult": text,
+            "message": {"role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": tid,
+                                     "content": text, "is_error": True}]}}
+
+
+def test_refused_background_launch_is_not_open(tmp_path):
+    """A ``run_in_background`` launch whose result is an error never became a task:
+    nothing runs, no ``<task-notification>`` will ever close it. Counting it as open
+    pinned a session on ``waiting_external`` ("Waiting…") for good (2026-09-16: an
+    interrupt refused the PR-watcher launch, and the session read "Waiting…" while
+    nothing at all was running). Terminal for both scans: not parked, not re-armed."""
+    p = tmp_path / "t.jsonl"
+    entries = [
+        _user("watch the PRs"),
+        _assistant_tool("tu-bg", "Bash", {"command": "./pr-waiter.sh",
+                                          "run_in_background": True}),
+        _tool_result_error("tu-bg", "The user doesn't want to proceed with this tool "
+                                    "use. The tool use was rejected."),
+    ]
+    p.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+    assert scan_open_background_tasks(str(p), treat_killed_as_open=False) == []
+    assert scan_open_background_tasks(str(p)) == []
+    assert is_parked(str(p)) is False
+
+
+def test_successful_background_launch_stays_open_until_its_notification(tmp_path):
+    """Control for the above: the CLI's normal ack for a backgrounded Bash is NOT an
+    error, and the launch stays open until its notification."""
+    p = tmp_path / "t.jsonl"
+    entries = [
+        _user("watch the PRs"),
+        _assistant_tool("tu-bg", "Bash", {"command": "./pr-waiter.sh",
+                                          "run_in_background": True}),
+        _ack("tu-bg", {"backgroundTaskId": "b1"}, "Command running in background"),
+    ]
+    p.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
+    assert [t.tool_use_id for t in scan_open_background_tasks(str(p))] == ["tu-bg"]
+    assert is_parked(str(p)) is True

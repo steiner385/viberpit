@@ -138,12 +138,13 @@ def _background_ack_task_id(entry: dict) -> str | None:
     return None
 
 
-def _tool_result_ids(entry: dict) -> list[str]:
-    """tool_use ids this ``type:"user"`` entry carries results for."""
+def _tool_result_ids(entry: dict) -> list[tuple[str, bool]]:
+    """``(tool_use id, is_error)`` for each result this ``type:"user"`` entry carries.
+    ``is_error`` is the CLI's own flag on a refused or failed call."""
     content = (entry.get("message") or {}).get("content")
     if not isinstance(content, list):
         return []
-    return [str(b["tool_use_id"]) for b in content
+    return [(str(b["tool_use_id"]), bool(b.get("is_error"))) for b in content
             if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id")]
 
 
@@ -230,8 +231,15 @@ def scan_open_background_tasks(
                             pending[tid] = (name, inp)
             elif o.get("type") == "user":
                 task_id = _background_ack_task_id(o)
-                for tid in _tool_result_ids(o):
+                for tid, is_error in _tool_result_ids(o):
                     call = pending.pop(tid, None)
+                    if is_error:
+                        # The launch was REFUSED — rejected on a permission card, or
+                        # cut off by an interrupt. Nothing runs, so no notification
+                        # will ever close it; counting it open pinned a session on
+                        # "Waiting…" with nothing running (2026-09-16).
+                        terminated.add(tid)
+                        continue
                     if task_id is None:
                         continue
                     if tid not in launches and call is not None:
