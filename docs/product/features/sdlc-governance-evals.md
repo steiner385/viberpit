@@ -14,11 +14,15 @@ links:
     - server/sdlc/bands.py
     - server/sdlc/bands.yaml
     - server/sdlc/triage_store.py
+    - server/sdlc/explain.py
+    - server/pm/explain.py
     - server/api/sdlc.py
     - server/automations/sdlc_intake.py
     - server/automations/sdlc_synthesizer.py
     - server/automations/control_band_monitor.py
     - web/src/initiatives/IncidentQueue.tsx
+    - web/src/features/roadmap/guidance/ConsequenceList.tsx
+    - web/src/features/roadmap/guidance/WhatHappensNext.tsx
     - .claude/REVIEW.md
     - evals/README.md
     - web/src/features/roadmap/InitiativePage.tsx
@@ -124,3 +128,15 @@ out-of-band.
   `GET /api/sdlc/triage` + `POST /api/sdlc/triage/{id}/action`,
   `web/src/initiatives/IncidentQueue.tsx`.
 - Open issues: #832 (governance PreToolUse false-positives on prose — now the gate on `live`).
+
+## Consequence guidance
+
+Every roadmap control explains itself in place (spec `docs/superpowers/specs/2026-09-17-roadmap-consequence-guidance-design.md`).
+`server/sdlc/explain.py` runs the real stage engine on the hypothetical post-tap state and returns,
+per control, what changes now, what the loop does afterwards and when, whether that starts a session
+or writes to GitHub, and the reverse. The initiative detail carries it as `guidance` (computed under
+the product's effective risk tolerance, which `nextAction` now also uses); `GET /api/sdlc/gates` exposes
+the gate registry with per-tolerance auto-resolution; triage rows carry `guidance` for Accept/Reject
+(`server/pm/explain.py`). The web renders all of it through one component,
+`web/src/features/roadmap/guidance/ConsequenceList.tsx`: the initiative page's confirm dialogs and
+"What happens next" card, the product automation card's gate table, and the inbox pane.
