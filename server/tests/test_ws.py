@@ -863,6 +863,78 @@ def test_reattach_reemits_pending_plan_permission_with_plan_flag(ws_env):
 
 
 # ---------------------------------------------------------------------------
+# Reattach re-emits a pending ASSISTANT-kind MCP permission (2026-09-16: the
+# assistant's gated `dispatch_backlog` cards were pended and re-emitted by the
+# daemon but never rendered by the drawer; this pins the server half so a
+# freshly attached client always receives the open card).
+# ---------------------------------------------------------------------------
+
+class _AssistantMcpPermissionBlockingFakeClient(PerQueryScript, FakeSDKClient):
+    """Fake client whose turn requests the assistant's DESTRUCTIVE ViberPit tool
+    and stays blocked until the card is resolved."""
+
+    async def receive_response(self):
+        yield f.stream_start(uuid="t4")
+        if self.on_can_use_tool is not None:
+            await self.on_can_use_tool(
+                "mcp__viberpit__dispatch_backlog", {"target": "o/r#1"}, None)
+        if self.interrupted:
+            return
+        yield f.stream_text("dispatched", uuid="t4")
+        yield f.result(session_id="sess-4", uuid="t4")
+
+
+def test_reattach_reemits_pending_assistant_mcp_permission(ws_env):
+    """An assistant-kind session's pending permission (a DESTRUCTIVE ViberPit tool,
+    which prompts in every mode and never offers "Always allow") must reach a client
+    that attaches AFTER the card was raised — same permId, so the drawer's decision
+    resolves the right future."""
+    import functools
+    from server.sessions.types import ASSISTANT_KIND
+
+    _app, orch, client = ws_env([], client_cls=_AssistantMcpPermissionBlockingFakeClient)
+    identity = _IDENTITY_HEADERS["Tailscale-User-Login"]
+    session = client.portal.call(functools.partial(
+        orch.create_session, "assistant-perm", identity=identity,
+        kind=ASSISTANT_KIND, owner_identity=identity))
+    session_id = session.id
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        _drain_events(ws, until_type="replayComplete")
+        ws.send_text(json.dumps({"type": "prompt", "sessionId": session_id,
+                                 "text": "dispatch it"}))
+        events = _drain_events(ws, until_type="permissionRequest", timeout=8.0)
+        req = next((e for e in events if e.get("type") == "permissionRequest"), None)
+        assert req is not None, f"no permissionRequest in {[e.get('type') for e in events]}"
+        assert req.get("tool") == "mcp__viberpit__dispatch_backlog"
+        assert req.get("alwaysAllowed") is False
+        saved_perm_id = req["permId"]
+        ws.send_text(json.dumps({"type": "detach", "sessionId": session_id}))
+
+    with client.websocket_connect("/ws", headers=_IDENTITY_HEADERS) as ws:
+        ws.send_text(json.dumps({"type": "attach", "sessionId": session_id}))
+        all_events: list[dict] = _drain_events(ws, until_type="permissionRequest", timeout=8.0)
+        reemit = next((e for e in all_events if e.get("type") == "permissionRequest"), None)
+        assert reemit is not None, (
+            f"reattach: the assistant's pending permission was NOT re-emitted — "
+            f"{[e.get('type') for e in all_events]}"
+        )
+        assert reemit.get("permId") == saved_perm_id
+        assert reemit.get("tool") == "mcp__viberpit__dispatch_backlog"
+        assert reemit.get("alwaysAllowed") is False
+
+        ws.send_text(json.dumps({
+            "type": "permissionResponse", "sessionId": session_id,
+            "permId": saved_perm_id, "decision": "allow",
+        }))
+        events = _drain_events(ws, until_type="turnEnd", timeout=8.0)
+        assert "turnEnd" in [e.get("type") for e in events]
+
+    client.portal.call(orch.close_session, session_id)
+
+
+# ---------------------------------------------------------------------------
 # Reattach emits the current live status (regression: stale 'Ready' mid-turn)
 # ---------------------------------------------------------------------------
 

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { screen, within } from '@testing-library/react'
+import { fireEvent, screen, within } from '@testing-library/react'
 import { describe, it, expect, vi } from 'vitest'
 
 vi.mock('@/api/assistant', () => ({
@@ -113,5 +113,51 @@ describe('AssistantSheet', () => {
     renderApp({ path: '/sessions?drawer=assistant', mode: 'desktop' })
     const dlg = screen.getByRole('dialog', { name: /assistant/i })
     expect(within(dlg).getByRole('alert')).toHaveTextContent(/not found/i)
+  })
+
+  it('pins the permission card for an open gated tool call and routes the decision', () => {
+    // 2026-09-16: the assistant raised `dispatch_backlog` (DESTRUCTIVE → always a card)
+    // three times; the daemon pended each one and re-emitted it on attach, but the
+    // drawer mounted no PendingPermissionPanel and Turn filters permission blocks out
+    // of the transcript, so nothing rendered and the operator's next message
+    // steer-denied every card ("The user sent a message instead of answering").
+    vi.mocked(useAssistantStatus).mockReturnValue(
+      { data: { enabled: true, sessionId: 'a1', model: 'sonnet' }, isLoading: false } as never,
+    )
+    const rt = fakeRuntime()
+    rt.state.turns = [{
+      id: 't1', role: 'assistant',
+      blocks: [{
+        kind: 'permission', id: 'p1', permId: 'p1', tool: 'mcp__viberpit__dispatch_backlog',
+        toolKind: 'app_action', input: { target: 'o/r#1' }, plan: false, alwaysAllowed: false, items: null,
+      }],
+    }] as never
+    rt.hasOpenPermission = true
+    vi.mocked(useSessionRuntimeContext).mockReturnValue(rt as never)
+    renderApp({ path: '/sessions?drawer=assistant', mode: 'desktop' })
+    const dlg = screen.getByRole('dialog', { name: /assistant/i })
+    const panel = within(dlg).getByTestId('pending-permission-panel')
+    fireEvent.click(within(panel).getByRole('button', { name: /^allow/i }))
+    expect(rt.onDecision).toHaveBeenCalledWith('p1', 'allow')
+  })
+
+  it('pins a live question so the assistant can be answered in place', () => {
+    // Same blind spot for AskUserQuestion: Turn hides live questions in favour of the
+    // pinned panel, which only SessionBody rendered.
+    vi.mocked(useAssistantStatus).mockReturnValue(
+      { data: { enabled: true, sessionId: 'a1', model: 'sonnet' }, isLoading: false } as never,
+    )
+    const rt = fakeRuntime()
+    rt.state.turns = [{
+      id: 't1', role: 'assistant',
+      blocks: [{
+        kind: 'question', id: 'q1', questionId: 'q1', header: 'Scope', question: 'Which repo?',
+        options: [{ label: 'viberpit' }, { label: 'kindash' }], multiSelect: false, live: true,
+      }],
+    }] as never
+    vi.mocked(useSessionRuntimeContext).mockReturnValue(rt as never)
+    renderApp({ path: '/sessions?drawer=assistant', mode: 'desktop' })
+    const dlg = screen.getByRole('dialog', { name: /assistant/i })
+    expect(within(dlg).getByRole('region', { name: /pending question/i })).toBeInTheDocument()
   })
 })
