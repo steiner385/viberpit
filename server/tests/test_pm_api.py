@@ -1941,3 +1941,53 @@ def test_policy_patch_refuses_corrupt_stored_policy_but_allows_explicit_reset():
         assert response.json()["automationPolicy"] is None
         assert response.json()["automationPolicyUpdatedAt"]
         assert c.portal.call(observed)[2] == 1
+
+
+def test_triage_rows_carry_guidance_from_the_products_dispatch_policy():
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import Feature, Project, TriageProposal, WorkItem
+
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+
+        async def _seed():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(Project.slug == "viberpit"))).scalar_one()
+                p.automation_policy = {"dispatch": "auto", "queue_min_status": "Ready"}
+                f = Feature(project_id=p.id, slug="sessions", title="Sessions", state="live")
+                w = WorkItem(repo="o/r", number=1, kind="issue", title="a", state="open",
+                             triage_state="proposed")
+                db.add_all([f, w])
+                await db.flush()
+                db.add(TriageProposal(work_item_id=w.id, proposed_feature_id=f.id,
+                                      reach=3, impact=2, effort=1, confidence=2,
+                                      rationale="fits", confidence_level="high", status="pending"))
+        c.portal.call(_seed)
+
+        row = c.get("/api/pm/triage", headers=IDENTITY_HEADERS).json()[0]
+        g = row["guidance"]
+        assert g["accept"]["immediate"][0]["text"] == "Files it under sessions with score 12; it leaves the inbox."
+        assert g["accept"]["then"][0]["spawnsSession"] is True
+        assert "coding session" in g["accept"]["then"][0]["text"]
+        assert g["reject"]["when"] == "now"
+
+
+def test_triage_guidance_for_an_unowned_repo_reads_as_dispatch_off():
+    """No product owns the repo → defaults → nothing is dispatched."""
+    from server.db import db_session
+    from server.db.models import TriageProposal, WorkItem
+
+    with _client() as c:
+        async def _seed():
+            async with db_session() as db:
+                w = WorkItem(repo="nobody/owns", number=1, kind="issue", title="a", state="open",
+                             triage_state="proposed")
+                db.add(w)
+                await db.flush()
+                db.add(TriageProposal(work_item_id=w.id, no_fit_suggestion="billing",
+                                      rationale="no fit", confidence_level="low", status="pending"))
+        c.portal.call(_seed)
+        row = c.get("/api/pm/triage", headers=IDENTITY_HEADERS).json()[0]
+        assert row["guidance"]["accept"]["immediate"][0]["text"].startswith("Files it with no capability")
+        assert "Dispatch is off" in row["guidance"]["accept"]["then"][0]["text"]

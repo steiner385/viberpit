@@ -18,7 +18,8 @@ from sqlalchemy import and_, func, or_, select, tuple_
 from server.audit import record_audit
 from server.auth.middleware import current_identity
 from server.automations.product_policy import (
-    PRODUCT_POLICY_SCHEMA, PolicyEditConflict, effective_policy, policies_by_slug, patch_project_policy)
+    PRODUCT_POLICY_SCHEMA, PolicyEditConflict, effective_policy, load_policies, policies_by_slug,
+    patch_project_policy)
 from server.time_iso import iso_utc
 from server.automations.product_admission import (
     ProductMissing, gather_implementation_snapshot, gather_product_coverage,
@@ -40,6 +41,7 @@ from server.db.models import (
     WorkItemDep,
 )
 from server.pm.desired_state import STATUS_READY
+from server.pm.explain import triage_guidance
 from server.pm.featuredoc import FeatureLinkRef
 from server.pm.health import roadmap_health
 from server.pm.issue_disposition import IssueDecision
@@ -54,7 +56,7 @@ from server.pm.repo_project import (
     OwnershipConflict, gather_repo_ownership_snapshot, lock_repo_registration,
     owning_projects_by_repo, require_unregistered_repos,
 )
-from server.pm.score import RICE_FIELDS, validate_rice
+from server.pm.score import RICE_FIELDS, rice_score, validate_rice
 from server.pm.sync_request import request_project_sync
 # The accept write path and the undo-snapshot format live in server/pm/triage_accept.py
 # (spec 2026-09-12 §8, D6) so the PM Triage loop's auto-accept shares them; these
@@ -1076,7 +1078,8 @@ def _decided_by(prop: TriageProposal) -> str | None:
 
 
 def _triage_to_dict(prop: TriageProposal, wi: WorkItem | None,
-                    feat_slug: str | None, project_slug: str | None) -> dict:
+                    feat_slug: str | None, project_slug: str | None,
+                    guidance: dict | None = None) -> dict:
     return {
         "id": prop.id,
         "workItemId": prop.work_item_id,
@@ -1101,6 +1104,9 @@ def _triage_to_dict(prop: TriageProposal, wi: WorkItem | None,
         # ``list_triage``); a pending one has none.
         "classifiedBy": _decided_by(prop) if prop.status != "pending" else None,
         "resolvedAt": prop.resolved_at.isoformat() if prop.resolved_at else None,
+        # What Accept / Reject would do under the owning product's dispatch policy
+        # (spec 2026-09-17 §4.3); None only where a caller has no policy to hand.
+        "guidance": guidance,
     }
 
 
@@ -1160,6 +1166,7 @@ async def list_triage(
     slug_by_repo: dict[str, str] = {
         repo: owner.slug for repo, owner
         in (await owning_projects_by_repo(db, repos)).items()}
+    policies = await load_policies(db)
     allowed_repos: set[str] | None = None
     if projectSlug:
         proj = (await db.execute(select(Project).where(
@@ -1174,9 +1181,13 @@ async def list_triage(
         wi = work_items.get(p.work_item_id)
         if allowed_repos is not None and (wi is None or wi.repo not in allowed_repos):
             continue
+        slug = slug_by_repo.get(wi.repo) if wi and wi.repo else None
         out.append(_triage_to_dict(
-            p, wi, feat_slugs.get(p.proposed_feature_id),
-            slug_by_repo.get(wi.repo) if wi and wi.repo else None))
+            p, wi, feat_slugs.get(p.proposed_feature_id), slug,
+            guidance=triage_guidance(
+                feature_slug=feat_slugs.get(p.proposed_feature_id),
+                score=rice_score(p.reach, p.impact, p.effort, p.confidence),
+                policy=(policies.get(slug) if slug else None) or effective_policy(None))))
     return out
 
 
