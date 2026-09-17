@@ -73,8 +73,8 @@ export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'rec
 
 // ── SessionSocket class ──────────────────────────────────────────────────────
 
-const BACKOFF_BASE_MS = 500
-const BACKOFF_MAX_MS  = 10_000
+export const BACKOFF_BASE_MS = 500
+export const BACKOFF_MAX_MS  = 10_000
 export const ACTIVITY_THROTTLE_MS = 5000
 // How long a socket must stay open before we treat it as healthy and reset the
 // reconnect backoff. Shorter than this and we assume it's a flapping connection
@@ -88,7 +88,7 @@ const CONNECTION_STABLE_MS = 3_000
 export const LIVENESS_CHECK_MS = 5_000
 export const LIVENESS_STALE_MS = 15_000
 
-function jitter(ms: number): number {
+export function jitter(ms: number): number {
   return ms * (0.8 + Math.random() * 0.4)
 }
 
