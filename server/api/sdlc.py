@@ -45,9 +45,19 @@ from server.sdlc.engine import (
     next_action,
     step_back_stage,
 )
+from server.automations.product_policy import effective_policy
+from server.config import get_settings
+from server.sdlc.explain import ExplainContext, explain, gates_to_wire, guidance_to_wire
+from server.sdlc.gates import effective_tolerance
 from server.sdlc.slug import slugify
 
 router = APIRouter(prefix="/api/sdlc", tags=["sdlc"])
+
+
+def _autoresolve_enabled() -> bool:
+    """The process kill switch (spec 2026-09-14 D9), as one seam so a test can flip
+    it without re-reading settings."""
+    return bool(get_settings().gate_autoresolve_enabled)
 
 
 def _initiative_to_dict(i: Initiative) -> dict:
@@ -442,8 +452,18 @@ async def get_initiative(
         )
     ).scalars().all()
 
-    # Build nextAction via the pure engine: display-only: mode on, tolerance
-    # cautious, so the detail shows the human's next step
+    # The product's policy decides the tolerance the loop will act under (spec
+    # 2026-09-17 D3): nextAction and the guidance are computed under the SAME
+    # effective value the synthesizer uses, never a hardcoded cautious.
+    project = (await db.execute(select(Project).where(Project.id == ini.project_id))
+               ).scalar_one_or_none() if ini.project_id else None
+    policy = effective_policy(project.automation_policy if project else None)
+    enabled = _autoresolve_enabled()
+    tolerance = effective_tolerance(policy.get("risk_tolerance"), enabled=enabled)
+    from server.automations.sdlc_synthesizer import TICK_INTERVAL_S, read_synth_mode
+    mode, _config = await read_synth_mode()
+    progress = (await _progress_rolled_up(db, [ini], include_children=True))[ini.id]
+
     state = InitiativeView(
         slug=ini.slug or "",
         stage=ini.stage,
@@ -454,17 +474,16 @@ async def get_initiative(
         # plan has already been materialized (spec 003 §7b). NOT the wire `epic`
         # key below, which is the epic *progress* object.
         epic=f"{ini.epic_repo}#{ini.epic_number}" if ini.epic_number else None,
+        epic_total=int((progress or {}).get("total") or 0),
+        epic_done=int((progress or {}).get("done") or 0),
     )
     artifact_views = [
-        ArtifactView(
-            kind=a.kind or "",
-            commit_sha=a.commit_sha,
-            pr_number=a.pr_number,
-            pr_url=a.pr_url,
-        )
+        ArtifactView(kind=a.kind or "", commit_sha=a.commit_sha, pr_number=a.pr_number, pr_url=a.pr_url)
         for a in artifacts
     ]
-    action = next_action(state, artifact_views, "on", "cautious")
+    # Display-only "on": nextAction is the human's next step even while the
+    # synthesizer row is off; the guidance below carries the real mode.
+    action = next_action(state, artifact_views, "on", tolerance)
 
     # Build-stage correlation (#801): find backlog-runner sessions with same origin_ref
     build_sessions: list[dict] = []
@@ -482,11 +501,17 @@ async def get_initiative(
             for s in session_rows
         ]
 
+    pending = (await db.execute(
+        select(MaterializationProposal)
+        .where(MaterializationProposal.initiative_id == ini.id,
+               MaterializationProposal.status == "pending"))).scalars().first()
+    proposal_tasks = len(((pending.payload or {}).get("tasks") or [])) if pending else 0
+
     result = _initiative_to_dict(ini)
     result["artifacts"] = [_artifact_to_dict(a) for a in artifacts]
     result["buildSessions"] = build_sessions
     result["nextAction"] = _action_to_dict(action)
-    result["epic"] = (await _progress_rolled_up(db, [ini], include_children=True))[ini.id]
+    result["epic"] = progress
     result["priority"] = (result["epic"] or {}).get("priority")
     await _decorate(db, [ini], [result])
     # A program (an initiative with phases) is never driven directly — advance
@@ -494,7 +519,24 @@ async def get_initiative(
     # is meaningless and must not point at a stage transition nobody can take.
     if result["hasChildren"]:
         result["nextAction"] = None
+    result["guidance"] = guidance_to_wire(explain(ExplainContext(
+        initiative=state, artifacts=artifact_views, mode=mode, tolerance=tolerance,
+        configured_tolerance=str(policy.get("risk_tolerance") or "cautious"),
+        autoresolve_enabled=enabled, has_children=bool(result["hasChildren"]),
+        proposal_pending=pending is not None, proposal_tasks=proposal_tasks,
+        dispatch=str(policy.get("dispatch") or "off"),
+        queue_min_status=str(policy.get("queue_min_status") or "ready"),
+        session_model=str(policy.get("default_model") or "auto"),
+        tick_seconds=int(TICK_INTERVAL_S))))
     return result
+
+
+@router.get("/gates")
+async def list_gates(_identity: str = Depends(current_identity)) -> dict:
+    """The gate registry (server/sdlc/gates.py) with, per gate, whether each risk
+    tolerance resolves it — what the product automation card's gate table and the
+    consequence copy are built from (spec 2026-09-17 D5)."""
+    return gates_to_wire(autoresolve_enabled=_autoresolve_enabled())
 
 
 @router.post("/initiatives/{slug}/advance")
