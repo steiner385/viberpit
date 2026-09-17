@@ -57,6 +57,7 @@ vi.mock('@/api/hooks', () => ({
   useProductImplementationPolicy: () => ({ data: undefined, isPending: false, isError: false }),
   useProductPolicyCoverage: () => ({ data: undefined, isPending: false, isError: false }),
   useUpdateProductPolicy: () => ({ mutate: vi.fn(), isPending: false }),
+  useSdlcGates: () => ({ data: undefined, isPending: false, isError: false }),
   // `+ Capability` opens NewCapabilityDialog, which edits the map-changes PR.
   useEditMapChanges: () => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null }),
   mapChangesErrorMessage: (_e: unknown, fallback: string) => fallback,

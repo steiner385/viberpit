@@ -17,12 +17,25 @@ const SCHEMA = [
   { key: 'max_attempts', label: 'Max attempts per issue', type: 'int', default: 2, help: '', choices: null },
   { key: 'default_model', label: 'Session model', type: 'enum', default: 'auto', help: '', choices: ['auto', 'sonnet', 'opus'] },
   { key: 'respect_dependencies', label: 'Respect issue dependencies', type: 'bool', default: true, help: '', choices: null },
+  { key: 'risk_tolerance', label: 'Risk tolerance', type: 'enum', default: 'cautious', help: '', choices: ['cautious', 'balanced', 'bold'] },
 ] as const
+
+const GATES = {
+  gates: [
+    { id: 'artifact.merge', label: 'Merge the stage artifact PR', risk: 'low', action: 'Arm GitHub auto-merge on the PR.', reverse: 'Revert the docs commit', autoResolvesUnder: { cautious: false, balanced: true, bold: true } },
+    { id: 'materialization.accept', label: 'Accept a plan decomposition', risk: 'medium', action: 'Create the epic and sub-issues.', reverse: 'Close the created issues', autoResolvesUnder: { cautious: false, balanced: false, bold: true } },
+    { id: 'dispatch', label: 'Dispatch a ready issue to a coding session', risk: null, action: "Governed by the product's dispatch setting.", reverse: 'Archive the session', autoResolvesUnder: { cautious: false, balanced: false, bold: false } },
+    { id: 'deploy.production', label: 'Deploy to production', risk: 'high', action: 'Never automatic.', reverse: 'Roll back', autoResolvesUnder: { cautious: false, balanced: false, bold: false } },
+  ],
+  tolerances: ['cautious', 'balanced', 'bold'],
+  autoresolveEnabled: true,
+}
 
 const h = vi.hoisted(() => ({
   implementation: { data: undefined as unknown, isPending: false, isError: false },
   coverage: { data: undefined as unknown, isPending: false, isError: false },
   schema: { data: undefined as unknown, isLoading: false, isError: false },
+  gates: { data: undefined as unknown, isPending: false, isError: false },
   update: vi.fn(),
   updateState: { isPending: false, isError: false, error: null as unknown },
 }))
@@ -32,6 +45,7 @@ vi.mock('@/api/hooks', () => ({
   useProductPolicyCoverage: () => h.coverage,
   useUpdateProductPolicy: () => ({ mutate: h.update, ...h.updateState }),
   useGithubRepos: () => ({ data: [], isLoading: false }),
+  useSdlcGates: () => h.gates,
 }))
 
 const product = { slug: 'kindash', name: 'KinDash' } as ProductNode
@@ -51,6 +65,7 @@ beforeEach(() => {
   Object.assign(h.coverage, { data: undefined, isPending: false, isError: false })
   Object.assign(h.schema, { data: SCHEMA, isLoading: false, isError: false })
   Object.assign(h.updateState, { isPending: false, isError: false, error: null })
+  Object.assign(h.gates, { data: GATES, isPending: false, isError: false })
 })
 
 describe('AutomationPolicyCard', () => {
@@ -109,6 +124,39 @@ describe('AutomationPolicyCard', () => {
     expect(screen.getByLabelText('Dispatch')).toBeDisabled()
     expect(screen.getByLabelText('Max in flight')).toBeDisabled()
     expect(screen.getByLabelText('Respect issue dependencies')).toBeDisabled()
+  })
+
+  it('lists every gate with its verdict under the configured tolerance', () => {
+    render(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: { risk_tolerance: 'balanced' } })} />)
+    expect(screen.getByRole('heading', { name: 'Gates under balanced' })).toBeInTheDocument()
+    const rows = screen.getAllByRole('row').slice(1)
+    expect(rows).toHaveLength(4)
+    expect(rows[0]).toHaveTextContent('Merge the stage artifact PR')
+    expect(rows[0]).toHaveTextContent('Arm GitHub auto-merge on the PR.')
+    expect(rows[0]).toHaveTextContent('Automatic')
+    expect(rows[1]).toHaveTextContent('Waits for you')
+    expect(rows[2]).toHaveTextContent('Policy-owned')
+    expect(rows[3]).toHaveTextContent('Waits for you')
+    expect(screen.queryByText(/switched off/)).not.toBeInTheDocument()
+  })
+
+  it('defaults to cautious and marks nothing automatic', () => {
+    render(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: null })} />)
+    expect(screen.getByRole('heading', { name: 'Gates under cautious' })).toBeInTheDocument()
+    expect(screen.queryByText('Automatic')).not.toBeInTheDocument()
+  })
+
+  it('says every gate waits when the kill switch is off, whatever the tolerance', () => {
+    Object.assign(h.gates, { data: { ...GATES, autoresolveEnabled: false } })
+    render(<AutomationPolicyCard product={product} project={makeProject({ automationPolicy: { risk_tolerance: 'bold' } })} />)
+    expect(screen.getByText(/Auto-resolve is switched off for this deployment/)).toBeInTheDocument()
+    expect(screen.queryByText('Automatic')).not.toBeInTheDocument()
+  })
+
+  it('reports a gate list that will not load', () => {
+    Object.assign(h.gates, { data: undefined, isPending: false, isError: true })
+    render(<AutomationPolicyCard product={product} project={makeProject()} />)
+    expect(screen.getByText('Gate list is unavailable.')).toBeInTheDocument()
   })
 })
 

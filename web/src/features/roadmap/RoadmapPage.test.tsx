@@ -59,6 +59,7 @@ vi.mock('@/api/hooks', () => ({
   useProductImplementationPolicy: () => ({ data: undefined, isPending: false, isError: false }),
   useProductPolicyCoverage: () => ({ data: undefined, isPending: false, isError: false }),
   useUpdateProductPolicy: () => ({ mutate: vi.fn(), isPending: false }),
+  useSdlcGates: () => ({ data: undefined, isPending: false, isError: false }),
   useProposeMap: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useClassify: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
   useAdvanceMap: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
