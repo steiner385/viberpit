@@ -563,6 +563,7 @@ class BacklogRunnerLoop:
         verify_ready: VerifyReady | None = None,
         queue_tail: QueueTail | None = None,
         wall_clock: Callable[[], datetime] | None = None,
+        session_gone: SessionEnded | None = None,
     ) -> None:
         self._ctx = ctx
         self._select_batch = select_batch          # Plan B: -> Batch | None
@@ -587,6 +588,10 @@ class BacklogRunnerLoop:
         self._wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
         self._needs_human = needs_human or _stub_needs_human  # announce the handoff
         self._session_ended = session_ended         # (session_id) -> bool | None
+        # (session_id) -> True when the session row is terminal OR no longer exists.
+        # The evidence bar for discharging a pre-ownership (token-less) claim; an
+        # unwired seam leaves those rows untouched (``_release_legacy_claim``).
+        self._session_gone = session_gone
         self._closeout_completed = closeout_completed
         self._handoff = handoff
         self._session_work_stopped = session_work_stopped
@@ -613,6 +618,9 @@ class BacklogRunnerLoop:
         self._no_account_emitted = False            # debounce the skipped_no_account event
         self._waiting_reason: str | None = None
         self._last_pick: dict | None = None          # queue provenance of the last successful spawn (#990)
+        # Why the last refill made NO claim attempt (``refill_stalled``), or None
+        # once one was attempted. Debounces the event to one per reason transition.
+        self._stall_reason: str | None = None
 
     async def tick(self) -> None:
         async with self._lock:
@@ -1007,15 +1015,64 @@ class BacklogRunnerLoop:
             log.warning("backlog_runner.claim_announce_failed target=%s", batch.primary,
                         exc_info=True)
 
+    def _stall_changed(self, reason: str) -> bool:
+        """Record why this refill is making no claim attempt; True the first time
+        *reason* is seen since the last attempt, so ``refill_stalled`` is emitted
+        once per transition rather than once per 60-second tick."""
+        if self._stall_reason == reason:
+            return False
+        self._stall_reason = reason
+        return True
+
+    async def _slot_holders(self) -> list[dict]:
+        """The rows occupying slots right now, for the capacity stall event: which
+        target, which session, and whether the row predates the ownership store
+        (``legacy`` = no ``ownership_token``, the shape that sat on every slot for
+        13 hours on 2026-09-16 with its sessions long deleted)."""
+        try:
+            states = await self._ctx.list_target_states()
+        except Exception:  # pragma: no cover — a diagnostic read must not stall the tick
+            log.warning("backlog_runner.slot_holders_failed", exc_info=True)
+            return []
+        return [{"target": target, "session_id": st.get("session_id"),
+                 "legacy": not st.get("ownership_token"),
+                 "proposed": bool(st.get("proposed")),
+                 "claimed_at": st.get("claimed_at")}
+                for target, st in sorted(states.items()) if is_in_flight(st)][:20]
+
     async def _refill(self, config: dict) -> None:
+        # Every early exit below that makes NO claim attempt reports itself as a
+        # ``refill_stalled`` warn (once per reason transition): an enabled runner
+        # over a full queue that only ever logs ``groups_refreshed`` is the failure
+        # this loop must never be silent about again. Exits that already have
+        # their own event (daily budget → ``circuit_open``, no account →
+        # ``skipped_no_account``, an admission refusal) are left as they are.
         if self._spawn_circuit_until is not None:
             if self._clock() < self._spawn_circuit_until:
+                retry_in = int(self._spawn_circuit_until - self._clock())
+                if self._stall_changed("spawn_circuit"):
+                    await self._ctx.emit(
+                        "warn", f"no claim: spawn circuit breaker open (retry in {retry_in}s)",
+                        kind="refill_stalled",
+                        detail={"reason": "spawn_circuit", "retry_in_s": retry_in})
                 return                      # breaker open — no spawn attempts at all
             self._spawn_circuit_until = None    # cooldown over → half-open probe
         in_flight = await self._count_in_flight()
         free = config["max_concurrent"] - in_flight
         if free <= 0:
             self._waiting_reason = "capacity"
+            if self._stall_changed("capacity"):
+                holders = await self._slot_holders()
+                legacy = [h["target"] for h in holders if h["legacy"]]
+                await self._ctx.emit(
+                    "warn",
+                    f"no claim: no slot free, {in_flight}/{config['max_concurrent']} in flight"
+                    + (f" — {len(legacy)} held by pre-ownership claim(s): "
+                       f"{', '.join(legacy)}" if legacy else ""),
+                    kind="refill_stalled",
+                    detail={"reason": "capacity", "in_flight": in_flight,
+                            "max_concurrent": config["max_concurrent"],
+                            "holders": holders})
         for _ in range(max(0, free)):
             if len(self._spawns_today) >= config["max_spawns_per_day"]:
                 self._waiting_reason = "budget"
@@ -1039,12 +1096,31 @@ class BacklogRunnerLoop:
                 # refreshes the plan (WAIT-for-the-grouper; the runner never
                 # falls back to choosing issues itself).
                 self._group_nudge = True
+                # A planned, non-empty backlog with nothing claimable is a stall;
+                # an empty plan is just an idle backlog and stays quiet.
+                planned = self._last_groups_emitted
+                if planned and self._stall_changed("no_batch"):
+                    await self._ctx.emit(
+                        "warn",
+                        f"no claim: plan has {planned} group(s) but none is claimable "
+                        "against the live queue — refreshing the plan",
+                        kind="refill_stalled",
+                        detail={"reason": "no_batch", "groups_planned": planned})
                 return
             fails_retry = self._spawn_backoff.get(batch.primary)
             if fails_retry is not None and self._clock() < fails_retry[1]:
                 # The selected target is cooling down after a failed spawn.
                 # break, not continue: _select_batch would hand us the same
                 # highest-priority batch again and spin this for-loop.
+                retry_in = int(fails_retry[1] - self._clock())
+                if self._stall_changed("target_cooldown"):
+                    await self._ctx.emit(
+                        "warn",
+                        f"no claim: {batch.primary} is cooling down after a failed "
+                        f"spawn/check (retry in {retry_in}s)",
+                        kind="refill_stalled", target=batch.primary,
+                        detail={"reason": "target_cooldown", "retry_in_s": retry_in,
+                                "failures": fails_retry[0]})
                 break
             st = await self._ctx.get_target_state(batch.primary)
             if st.get("gave_up"):
@@ -1055,6 +1131,7 @@ class BacklogRunnerLoop:
                 # plan on what is usually one GitHub hiccup. The slot waits a
                 # tick instead; the group returns at the next grouping refresh.
                 break
+            self._stall_reason = None   # a claim is being attempted: the next stall is news again
             result = await self.dispatch_batch(
                 batch, source="automatic", account=account,
                 default_model="auto")
@@ -1396,9 +1473,54 @@ class BacklogRunnerLoop:
             log.warning("backlog_runner.needs_human_announce_failed target=%s", target,
                         exc_info=True)
 
+    async def _release_legacy_claim(self, target: str, st: dict) -> None:
+        """Discharge a pre-ownership claim (no ``ownership_token``, #1648) once its
+        session is provably over.
+
+        ``compare_target_state`` refuses to touch token-less rows ("intact until
+        reconciled") and ``reconcile_legacy_targets`` only *refuses new claims*
+        over them, so nothing ever reconciled one: on 2026-09-16 six such rows
+        from 2026-09-07 — every session row long deleted — still counted as in
+        flight, filled all ``max_concurrent`` slots and stalled the runner for 13
+        hours. The evidence bar is the one the sweep already uses to charge a
+        failed attempt, plus absence: ``session_gone`` answers True for a
+        terminal OR missing session row. A claim that never recorded a session
+        has nothing running to protect. The released issue returns to the pool
+        with no bounce charged — the old session's fate is unknown, and a phantom
+        attempt would be a guess. Unwired seam = rows are left exactly as before.
+
+        Scoped to rows that actually HOLD A SLOT, via the shared ``is_in_flight``
+        predicate rather than a second hand-rolled filter: the harm being undone
+        is a slot held forever. ``_sweep`` already skips ``gave_up`` (a human
+        cooldown), but a ``handed_off`` row belongs to PR Doctor and reaches here
+        — deleting one would yank a target out from under another automation."""
+        if self._session_gone is None or not is_in_flight(st):
+            return
+        sid = st.get("session_id")
+        if sid:
+            try:
+                if not await self._session_gone(sid):
+                    return
+            except Exception:  # pragma: no cover — a probe failure must not stall the sweep
+                log.warning("backlog_runner.session_gone_probe_failed sid=%s", sid,
+                            exc_info=True)
+                return
+        if not await self._ctx.release_legacy_target_state(target, st):
+            return
+        await self._ctx.emit(
+            "warn",
+            f"released pre-ownership claim {target}: its session "
+            f"{'is gone' if sid else 'never started'} — back in the pool",
+            kind="legacy_claim_released", target=target,
+            detail={"session_id": sid, "claimed_at": st.get("claimed_at"),
+                    "issues": st.get("issues")})
+
     async def _sweep_one(self, target: str, st: dict,
                          gave_up_targets: set[str]) -> None:
-        if not st.get("ownership_token") or st.get("proposed"):
+        if st.get("proposed"):
+            return
+        if not st.get("ownership_token"):
+            await self._release_legacy_claim(target, st)
             return
         if st.get("closeout_started"):
             # Observe terminal effects after a lost response/restart. Never replay

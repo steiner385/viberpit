@@ -144,14 +144,26 @@ def _seed_runner_row(c, target: str, state: dict) -> None:
     loses locally and wins on a loaded CI runner). A ``gave_up`` row needs no
     such guard: the reconciler skips it and ``_expire_give_ups`` only deletes it
     once the cooldown window has passed.
+
+    That ``session_id`` must name a session row that EXISTS and is not terminal,
+    so this seeds one alongside. A claim the runner holds without an ownership
+    token is a pre-ownership row, and the sweep now discharges one whose session
+    is gone (``_release_legacy_claim``) — exactly the dead-slot shape that stalled
+    the runner for 13 hours. A dangling id would therefore make this fixture a
+    phantom claim the runner is right to collect, not the held claim it means.
     """
     from server.db import db_session
-    from server.db.models import Automation, AutomationTargetState
+    from server.db.models import Automation, AutomationTargetState, Session as DbSession
 
     async def _seed_async() -> None:
         async with db_session() as db:
             if await db.get(Automation, "backlog-runner") is None:
                 db.add(Automation(id="backlog-runner"))
+                await db.flush()
+            sid = state.get("session_id")
+            if sid and await db.get(DbSession, sid) is None:
+                db.add(DbSession(id=sid, name=f"runner {target}", account_name="acct",
+                                 cwd="/tmp", status="working"))
                 await db.flush()
             db.add(AutomationTargetState(automation_id="backlog-runner",
                                          target=target, state=state))

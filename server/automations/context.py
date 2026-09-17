@@ -212,7 +212,8 @@ class AutomationContext:
         async with db_session() as db:
             rows = (await db.execute(stmt)).scalars().all()
         return [{"ts": r.ts.isoformat(), "level": r.level, "kind": r.kind,
-                 "summary": r.summary, "target": r.target, "sessionId": r.session_id}
+                 "summary": r.summary, "target": r.target, "sessionId": r.session_id,
+                 "detail": r.detail}
                 for r in rows]
 
     async def get_target_state(self, target: str) -> dict:
@@ -389,6 +390,22 @@ class AutomationContext:
             return True
         except StaleOwnership:
             return False
+
+    async def release_legacy_target_state(self, target: str, expected: dict) -> bool:
+        """Delete a pre-ownership row (no ``ownership_token``) iff it still reads
+        *expected*. The ONE write path for such rows: ``compare_target_state``
+        refuses them by design (a token is the fence), and the only caller is the
+        Backlog Runner sweep with the session-gone evidence it gathered first
+        (``BacklogRunnerLoop._release_legacy_claim``). A row that has since been
+        acquired (carries a token) or changed is left alone."""
+        if expected.get("ownership_token"):
+            return False
+        async with db_session() as db:
+            row = await db.get(AutomationTargetState, (self.automation_id, target))
+            if row is None or dict(row.state) != expected:
+                return False
+            await db.delete(row)
+        return True
 
     async def list_target_states(self) -> dict[str, dict]:
         """All durable target states for this automation, keyed by target."""

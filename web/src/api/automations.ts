@@ -90,6 +90,9 @@ export interface AutomationEvent {
   summary: string
   target: string | null
   sessionId: string | null
+  // Free-form structured context the server attaches to some events (e.g. a
+  // `refill_stalled` reason and its slot holders). Null on most rows.
+  detail: Record<string, unknown> | null
 }
 
 export interface AutomationPatch {

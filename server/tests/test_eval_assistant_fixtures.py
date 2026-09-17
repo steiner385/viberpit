@@ -261,7 +261,8 @@ async def test_automation_event_contract_matches_canonical_serializer(monkeypatc
         rows = c.get("/api/automations/backlog-runner/events").json()
     assert isinstance(rows, list)
     db_rows = [SimpleNamespace(ts=datetime.fromisoformat(r["ts"]), level=r["level"], kind=r["kind"],
-                              summary=r["summary"], target=r["target"], session_id=r["sessionId"]) for r in rows]
+                              summary=r["summary"], target=r["target"], session_id=r["sessionId"],
+                              detail=r["detail"]) for r in rows]
 
     @asynccontextmanager
     async def fake_db():

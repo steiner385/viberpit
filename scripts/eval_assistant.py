@@ -680,12 +680,16 @@ class EvalFixture:
         # against fake rows to ensure this fixture stays aligned without a DB.
         if automation_id != "backlog-runner":
             return []
+        # ``detail`` is the serializer's free-form JSON leg: null on most rows,
+        # a small dict on the ones that carry structured context. Both shapes
+        # appear here so the contract test exercises the nullable column too.
         return [
             {"ts": (self.now - timedelta(minutes=1)).isoformat(), "level": "info",
-             "kind": "note", "summary": _INJECTION, "target": None, "sessionId": None},
+             "kind": "note", "summary": _INJECTION, "target": None, "sessionId": None,
+             "detail": None},
             {"ts": (self.now - timedelta(minutes=2)).isoformat(), "level": "info",
              "kind": "claim", "summary": "Claimed issue #1201", "target": "acme/billing#1201",
-             "sessionId": S1},
+             "sessionId": S1, "detail": {"issues": ["acme/billing#1201"]}},
         ]
 
     def notification_response(self, method: str, path: str, body: dict[str, Any]) -> httpx.Response:
