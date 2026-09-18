@@ -128,3 +128,25 @@ def test_restore_overlay_ignores_the_provenance_key():
     assert after.triage_state == "proposed" and after.classified_by == "human"
     assert after.classified_at is None
     assert not hasattr(after, "decidedBy")
+
+
+def test_restore_overlay_converts_a_pre_ladder_needs_human_snapshot():
+    """An undo of a proposal accepted BEFORE the ladder landed replays a snapshot whose
+    ``triageState`` is the removed ``needs_human``. Restoring it verbatim would write a
+    state no longer in the vocabulary, so the branch converts it to what it meant: an
+    ``unclassified`` item under an ``owner_action`` hold stamped by ``migration``, the
+    same mapping ``LEGACY_CONVERSION_SQL`` applies to live rows (final-review M12)."""
+    from server.db.models import WORK_ITEM_TRIAGE_STATES, WorkItem
+    from server.pm.triage_accept import _restore_overlay
+
+    wi = WorkItem(repo="o/r", number=1, kind="issue", title="a", state="open",
+                  triage_state="classified", classified_by="auto",
+                  hold_kind="evidence", hold_reason="repro", hold_by="session:s1")
+    _restore_overlay(wi, {"triageState": "needs_human", "featureId": None,
+                          "classifiedBy": "human", "classifiedAt": None})
+    assert wi.triage_state == "unclassified"
+    assert wi.triage_state in WORK_ITEM_TRIAGE_STATES
+    assert wi.hold_kind == "owner_action"
+    assert wi.hold_by == "migration"
+    assert wi.hold_reason == "restored pre-ladder needs_human"
+    assert wi.hold_set_at is None and wi.hold_fingerprint is None

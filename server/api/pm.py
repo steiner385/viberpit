@@ -1291,24 +1291,35 @@ async def accept_triage(
 @router.post("/triage/{proposal_id}/reject")
 async def reject_triage(
     proposal_id: str,
+    request: Request,
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
-    """Reject the proposal → the work item goes to needs_human (no blind retry,
-    spec §6). The proposal row remains as audit."""
+    """Reject the proposal → the work item is parked with an owner-action hold
+    (no blind retry, spec 2026-09-18 §3). The proposal row remains as audit."""
     prop = await _load_pending_proposal(db, proposal_id)
     wi = (await db.execute(select(WorkItem).where(
         WorkItem.id == prop.work_item_id))).scalar_one_or_none()
     now = datetime.now(timezone.utc)
     if wi is not None:
         prop.undo_snapshot = _overlay_snapshot(wi)
-        wi.triage_state = "needs_human"
+        # Spec 2026-09-18 §3: a rejection is a hold, not a triage state — and §8 names
+        # "the two reject flows" as authorised to write owner_action whoever drives
+        # them, so this goes through `set_reject_hold` (no actor-class gate) rather
+        # than `set_hold`. The ACTOR is resolved exactly as patch_overlay resolves it
+        # so an assistant or loopback rejection is recorded as what it was.
+        from server.pm.holds import REJECT_HOLD_REASON, actor_class, actor_for_request, set_reject_hold
+        actor = actor_for_request(request)
+        set_reject_hold(wi, actor=actor, now=now)
+        await record_audit(db=db, type="pm.hold.set", identity=identity, detail={
+            "workItemId": wi.id, "kind": "owner_action",
+            "reason": REJECT_HOLD_REASON, "actorClass": actor_class(actor)})
     prop.status = "rejected"
     prop.resolved_at = now
     await db.flush()
     await record_audit(db=db, type="pm.triage.reject", identity=identity,
                        detail={"proposalId": proposal_id})
-    return {"id": prop.id, "status": "rejected"}
+    return {"id": prop.id, "status": "rejected", "workItemId": prop.work_item_id}
 
 
 @router.post("/triage/{proposal_id}/undo")
@@ -1437,6 +1448,7 @@ def _work_item_to_dict(w: WorkItem) -> dict:
     # offset-less ISO string here, the exact naive/aware slip the DB clock rule
     # warns about.
     at = _aware(w.classified_at)
+    held_at = _aware(w.hold_set_at)
     return {
         "id": w.id, "repo": w.repo, "number": w.number, "kind": w.kind,
         "title": w.title, "state": w.state,
@@ -1446,6 +1458,8 @@ def _work_item_to_dict(w: WorkItem) -> dict:
         "triageState": w.triage_state,
         "classifiedBy": w.classified_by,
         "classifiedAt": at.isoformat() if at else None,
+        "holdKind": w.hold_kind, "holdReason": w.hold_reason, "holdBy": w.hold_by,
+        "holdSetAt": held_at.isoformat() if held_at else None,
         "url": w.url,
     }
 
@@ -1457,25 +1471,44 @@ class OverlayPatchBody(BaseModel):
     effort: int | None = None
     confidence: int | None = None
     triageState: str | None = None
+    # Holds (spec 2026-09-18 §3/§8). ``holdKind`` absent = no change; ``clearHold``
+    # is the explicit release, so "absent" and "null" cannot be confused.
+    holdKind: str | None = None
+    holdReason: str | None = None
+    clearHold: bool = False
 
 
 @router.patch("/work-items/{item_id}/overlay")
 async def patch_overlay(
     item_id: str,
     body: OverlayPatchBody,
+    request: Request,
     identity: str = Depends(current_identity),
     db=Depends(get_db),
 ) -> dict:
-    """Manual classify / inline score edit on the ViberPit-owned overlay. All
-    fields optional; any write marks the item human-classified (spec §7). A body
-    that sets NO field is a read-through no-op — stamping ``classified_by=human``
-    for an empty PATCH would flip an AI-classified item to human-classified with
-    no human decision behind it."""
+    """Manual classify / inline score edit / hold on the ViberPit-owned overlay.
+    All fields optional. ``classified_by`` records the ACTOR (spec 2026-09-18 §8):
+    a person's login, ``assistant:<login>``, or ``lan@local`` — never a blanket
+    "human". A body that applies NO field is a read-through no-op — including one
+    whose only would-be effect is itself a no-op (e.g. ``clearHold`` on an item
+    with no hold): nothing stamps ``classified_by`` or fires an audit unless
+    something on the work item actually changed."""
+    from server.pm.holds import (HoldPermissionError, actor_class, actor_for_request,
+                                 clear_hold, set_hold)
     if body.triageState is not None and body.triageState not in WORK_ITEM_TRIAGE_STATES:
         raise HTTPException(
             status_code=422,
             detail={"error": "bad_triage_state",
                     "message": f"triageState must be one of {WORK_ITEM_TRIAGE_STATES}"})
+    if body.holdKind is not None and body.clearHold:
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_hold", "message": "holdKind and clearHold are exclusive"})
+    if body.holdReason is not None and body.holdKind is None:
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_hold", "message": "holdReason requires holdKind"})
+    if body.holdKind is not None and not (body.holdReason or "").strip():
+        raise HTTPException(status_code=422, detail={
+            "error": "hold_reason_required", "message": "holdReason is required with holdKind"})
     # Range bounds live in server/pm/score.py next to the formula they protect —
     # an out-of-range value reaches the GitHub Projects Score field and inverts
     # roadmap ordering. Do NOT inline a second copy of the bounds here.
@@ -1488,8 +1521,16 @@ async def patch_overlay(
         select(WorkItem).where(WorkItem.id == item_id))).scalar_one_or_none()
     if wi is None:
         raise HTTPException(status_code=404, detail={"error": "not_found"})
-    if not body.model_dump(exclude_none=True):
+    provided = [k for k, v in body.model_dump(exclude_none=True).items() if v is not False]
+    if not provided:
         return _work_item_to_dict(wi)
+    actor = actor_for_request(request)
+    now = datetime.now(timezone.utc)
+    # ``applied`` tracks fields that ACTUALLY mutated `wi` — narrower than
+    # ``provided`` (the raw body), because a hold field can be a no-op (e.g.
+    # ``clearHold`` on an item with no hold to release). Only a real mutation
+    # stamps classified_by/at and fires the overlay audit.
+    applied: list[str] = []
     if body.featureId is not None:
         feat = (await db.execute(
             select(Feature).where(Feature.id == body.featureId))).scalar_one_or_none()
@@ -1497,17 +1538,42 @@ async def patch_overlay(
             raise HTTPException(status_code=404,
                                 detail={"error": "feature_not_found"})
         wi.feature_id = body.featureId
+        applied.append("featureId")
     for attr in RICE_FIELDS:
         val = getattr(body, attr)
         if val is not None:
             setattr(wi, attr, val)
+            applied.append(attr)
     if body.triageState is not None:
         wi.triage_state = body.triageState
-    wi.classified_by = DECIDED_BY_HUMAN
-    wi.classified_at = datetime.now(timezone.utc)
+        applied.append("triageState")
+    try:
+        if body.holdKind is not None:
+            set_hold(wi, kind=body.holdKind, reason=body.holdReason or "", actor=actor, now=now)
+            applied.append("holdKind")
+            await record_audit(db=db, type="pm.hold.set", identity=identity, detail={
+                "workItemId": item_id, "kind": body.holdKind, "reason": wi.hold_reason,
+                "actorClass": actor_class(actor)})
+        elif body.clearHold:
+            released = wi.hold_kind
+            clear_hold(wi, actor=actor)
+            if released is not None:
+                applied.append("clearHold")
+                await record_audit(db=db, type="pm.hold.release", identity=identity, detail={
+                    "workItemId": item_id, "kind": released, "actorClass": actor_class(actor)})
+    except HoldPermissionError as e:
+        raise HTTPException(status_code=422, detail={
+            "error": "hold_not_permitted", "message": str(e)}) from e
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail={"error": "bad_hold", "message": str(e)}) from e
+    if not applied:
+        return _work_item_to_dict(wi)
+    wi.classified_by = actor
+    wi.classified_at = now
     await db.flush()
     await record_audit(db=db, type="pm.workitem.overlay", identity=identity,
-                       detail={"workItemId": item_id})
+                       detail={"workItemId": item_id, "fields": applied,
+                               "actorClass": actor_class(actor)})
     return _work_item_to_dict(wi)
 
 

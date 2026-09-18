@@ -15,7 +15,7 @@ from server.sessions.tools.context import SessionToolContext
 from server.sessions.tools.registry import SESSION_TOOL_SPECS
 from server.sessions.tools.tools import build_session_tools, mounted_tool_names
 
-SIGNALS = ("mark_complete", "mark_no_pr", "hand_back", "request_model")
+SIGNALS = ("mark_complete", "mark_no_pr", "hand_back", "set_hold", "request_model")
 
 
 def _ctx(**kw):
@@ -38,15 +38,16 @@ def test_session_context_stays_read_class():
     assert SESSION_TOOL_SPECS["session_context"].tool_class is ToolClass.READ
 
 
-def test_session_tool_specs_declares_all_seven_unconditionally():
+def test_session_tool_specs_declares_all_eight_unconditionally():
     """The permission layer resolves a tool by name across every surface — a name
     missing from this table fails open into the mutation branch, so every tool the
     handlers can build must have a spec regardless of what any one context mounts.
-    `dispatch_session` (child-session spec §4.2) is the seventh: declared here, mounted
-    only with `signalling_tools` and the child-sessions switch."""
+    `set_hold` (spec 2026-09-18 §8) is the eighth, mounted unconditionally with the
+    signalling tools; `dispatch_session` (child-session spec §4.2) is the ninth:
+    declared here, mounted only with `signalling_tools` and the child-sessions switch."""
     assert set(SESSION_TOOL_SPECS) == {"session_context", "report_feedback",
                                        "mark_complete", "mark_no_pr", "hand_back",
-                                       "request_model", "dispatch_session"}
+                                       "set_hold", "request_model", "dispatch_session"}
 
 
 def test_signalling_tools_are_absent_when_the_engine_cannot_keep_them():

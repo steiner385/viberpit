@@ -139,7 +139,7 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
                               give_up_after_bounces=threshold)
         tiers_by_feature.setdefault(w.feature_id, []).append(
             issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id],
-                      board_status[w.id], reason=reason))
+                      board_status[w.id], reason=reason, hold_kind=w.hold_kind))
 
     initiatives = (await db.execute(select(Initiative).where(
         Initiative.project_id.in_(pids)).order_by(Initiative.created_at))).scalars().all()
@@ -174,7 +174,7 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
             pending_by_repo[repo] = pending_by_repo.get(repo, 0) + 1
         needs_home = (await db.execute(select(WorkItem.repo).where(
             WorkItem.repo.in_(all_repos), WorkItem.state == "open",
-            WorkItem.triage_state == "needs_human", WorkItem.feature_id.is_(None)))).all()
+            WorkItem.hold_kind == "owner_action", WorkItem.feature_id.is_(None)))).all()
         for (repo,) in needs_home:
             needs_home_by_repo[repo] = needs_home_by_repo.get(repo, 0) + 1
         incidents = (await db.execute(select(TriageItem.repo, TriageItem.status).where(
@@ -306,7 +306,7 @@ async def get_leaves(
                               give_up_after_bounces=threshold)
         leaves.append(_leaf(
             w, issue_tier(w.state, w.triage_state, blocked[w.id], session[w.id],
-                         board_status[w.id], reason=reason),
+                         board_status[w.id], reason=reason, hold_kind=w.hold_kind),
             blockers[w.id], session[w.id], parents.get(w.parent_work_item_id),
             reason=reason, bounces=bounces[w.id]))
     leaves.sort(key=_leaf_sort_key)

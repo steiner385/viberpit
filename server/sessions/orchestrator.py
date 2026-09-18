@@ -7546,13 +7546,16 @@ class SessionOrchestrator:
             log_key="pm_triage")
 
     async def _pm_triage_list_pending(self) -> list:
-        """Open, unclassified work items with NO pending proposal — the classify
-        candidate set.
+        """Open, UNHELD, unclassified work items with NO pending proposal — the
+        classify candidate set.
 
-        ``needs_human`` items are excluded by construction (the filter is
-        ``triage_state == "unclassified"``): a rejected proposal moves its item to
-        ``needs_human``, and rejection is signal — the loop never blind-retries
-        it (design §6)."""
+        ``hold_kind IS NULL`` is what carries "rejection is signal, never blind-retry
+        it" (design §6) since the hold ladder removed the ``needs_human`` triage state
+        (spec 2026-09-18 §3): a rejected proposal parks its item under an
+        ``owner_action`` hold and leaves it ``unclassified``, and the legacy conversion
+        does the same to every pre-ladder row. Filtering on ``triage_state`` alone
+        would put all of them back in the candidate set, spend a classify session each
+        and re-raise an inbox card for work a person already rejected."""
         from sqlalchemy import select
         from server.automations.pm_triage import PendingItemView
         from server.db.models import TriageProposal, WorkItem
@@ -7564,7 +7567,8 @@ class SessionOrchestrator:
             rows = (await db.execute(
                 select(WorkItem).where(
                     WorkItem.state == "open",
-                    WorkItem.triage_state == "unclassified")
+                    WorkItem.triage_state == "unclassified",
+                    WorkItem.hold_kind.is_(None))
             )).scalars().all()
             return [PendingItemView(
                 repo=w.repo or "", number=w.number or 0, kind=w.kind or "issue",
@@ -7760,8 +7764,11 @@ class SessionOrchestrator:
         return tuple(sorted(latched))
 
     async def _pm_triage_count_state(self):
-        """Build the pure engine view from DB counts (design §6). Excludes
-        ``needs_human`` and already-proposed items from ``unclassified_count``.
+        """Build the pure engine view from DB counts (design §6). Excludes HELD
+        (``hold_kind IS NOT NULL``) and already-proposed items from
+        ``unclassified_count`` — the same predicate ``_pm_triage_list_pending``
+        applies, and for the same reason: since the hold ladder removed the
+        ``needs_human`` triage state, the hold is what keeps a rejected item out.
 
         ``day_spawns`` is reported as 0 on purpose: the DB holds no record of the
         sessions THIS process spawned in the window, and ``PmTriageLoop._budgeted``
@@ -7782,7 +7789,8 @@ class SessionOrchestrator:
             open_unclassified = (await db.execute(
                 select(WorkItem.id).where(
                     WorkItem.state == "open",
-                    WorkItem.triage_state == "unclassified")
+                    WorkItem.triage_state == "unclassified",
+                    WorkItem.hold_kind.is_(None))
             )).scalars().all()
             unclassified = sum(1 for wid in open_unclassified
                                if wid not in pending_ids)

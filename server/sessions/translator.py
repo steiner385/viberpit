@@ -11,7 +11,7 @@ from . import events as ev
 from .completion import (has_completion_marker, parse_hand_back, parse_hand_back_marker,
                          parse_mark_no_pr, resolution_from_text)
 from .model_request import parse_model_request, parse_request_model
-from .tools.registry import SIGNAL_TOOL_NAMES
+from .tools.registry import TURN_SIGNAL_NAMES
 
 log = logging.getLogger(__name__)
 
@@ -229,9 +229,13 @@ class Translator:
                     # card on top of the QuestionCard in the frontend.
                     if b.name == "AskUserQuestion":
                         continue
-                    # A TOP-LEVEL signalling call is recorded, not rendered: the
+                    # A TOP-LEVEL TURN-signalling call is recorded, not rendered: the
                     # ToolCall card for "mark_complete" would be noise on top of the
-                    # status change it causes. Only the top-level agent's call counts
+                    # status change it causes. The set is TURN_SIGNAL_NAMES, not the
+                    # wider SIGNAL_TOOL_NAMES permission class — a SIGNAL tool with a
+                    # lasting effect and no turn outcome (`set_hold`) falls through to
+                    # a card, which is the transcript's only record of it. Only the
+                    # top-level agent's call counts
                     # — a Task sub-agent calling mark_complete finished its own
                     # sub-objective, the same rule the text scan applies at
                     # `pid is None` above. A sub-agent's call therefore falls THROUGH
@@ -239,7 +243,7 @@ class Translator:
                     # replay.py:120): it had no effect, and the card is the only way
                     # a human reading the transcript can see the tool was misused.
                     stem = brand.mcp_tool_stem(b.name)
-                    if stem is not None and stem in SIGNAL_TOOL_NAMES and pid is None:
+                    if stem is not None and stem in TURN_SIGNAL_NAMES and pid is None:
                         self._record_signal(stem, b.input)
                         continue
                     out.append(ev.ToolCall(tid, b.id, b.name, ev.tool_kind(b.name),

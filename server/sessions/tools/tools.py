@@ -199,6 +199,55 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
     async def request_model(args: dict[str, Any]) -> Any:
         return {"acknowledged": True, **parse_request_model(args)}
 
+    @spec_tool("set_hold",
+               "Hold or release the issue this session was dispatched for, on the "
+               f"{brand.NAME} roadmap. kind 'evidence': record that someone must reproduce "
+               "or correlate before anyone builds; the hold is visible on the roadmap and "
+               "the next pass over this issue reads it. kind 'stronger_model': record that "
+               "you are under-powered for this issue; the next pass reads it when choosing "
+               "a model. kind null: release the hold you set (e.g. you found the cause and "
+               "wrote it into the issue). reason: one sentence, required. ref (optional): "
+               "owner/repo#N, default this session's issue. Only these two kinds are yours "
+               "to set; a hold that needs the owner is hand_back's job.",
+               {"type": "object",
+                "properties": {"kind": {"type": ["string", "null"],
+                                        "enum": ["evidence", "stronger_model", None]},
+                               "reason": {"type": "string"},
+                               "ref": {"type": "string"}},
+                "required": ["kind", "reason"]})
+    @guarded
+    async def set_hold(args: dict[str, Any]) -> Any:
+        from server.audit import record_audit
+        from server.db import db_session
+        from server.pm.holds import apply_session_hold
+        rec = ctx.record()
+        ref = args.get("ref") or getattr(rec, "origin_ref", None)
+        if not ref:
+            raise ToolArgError("this session has no issue ref; pass ref=owner/repo#N")
+        requested_kind = args.get("kind")
+        try:
+            async with db_session() as db:
+                wi, released = await apply_session_hold(
+                    db, ref=str(ref), kind=requested_kind, reason=str(args.get("reason") or ""),
+                    session_id=ctx.session_id, now=datetime.now(timezone.utc))
+                # Setting always audits; releasing only when something was actually held
+                # (matching the overlay route's `if released is not None` guard in
+                # server/api/pm.py) — a null-kind call on an already-unheld item is a
+                # true no-op and gets no `pm.hold.*` row.
+                if requested_kind is not None:
+                    await record_audit(db, "pm.hold.set", ctx.identity,
+                                       {"workItemId": wi.id, "kind": wi.hold_kind,
+                                        "reason": wi.hold_reason, "actorClass": "agent",
+                                        "session_id": ctx.session_id}, via="session")
+                elif released is not None:
+                    await record_audit(db, "pm.hold.release", ctx.identity,
+                                       {"workItemId": wi.id, "kind": released,
+                                        "reason": str(args.get("reason") or ""), "actorClass": "agent",
+                                        "session_id": ctx.session_id}, via="session")
+        except ValueError as e:  # HoldPermissionError is a ValueError subclass
+            raise ToolArgError(str(e)) from e
+        return {"ref": ref, "holdKind": wi.hold_kind, "holdBy": wi.hold_by}
+
     @spec_tool("dispatch_session",
                "Start a CHILD session of this one: a separate session on the same repo, in "
                "its own worktree, owned by the same user, that the user can open, steer, "
@@ -246,6 +295,6 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
 
     by_name = {"session_context": session_context, "report_feedback": report_feedback,
                "mark_complete": mark_complete, "mark_no_pr": mark_no_pr,
-               "hand_back": hand_back, "request_model": request_model,
+               "hand_back": hand_back, "set_hold": set_hold, "request_model": request_model,
                "dispatch_session": dispatch_session}
     return [by_name[name] for name in mounted_tool_names(ctx)]

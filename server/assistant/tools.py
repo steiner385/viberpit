@@ -1243,7 +1243,8 @@ def build_tools(api: AssistantApi, *, operator: bool = False) -> list[SdkMcpTool
     @spec_tool("resolve_triage",
                "Accept or reject ONE AI triage proposal from the inbox — list_triage gives "
                "the ids. Accepting copies the proposed feature and RICE scores onto the "
-               "issue and marks it classified; rejecting sends the issue to needs_human. "
+               "issue and marks it classified; rejecting parks the issue as an owner-action "
+               "hold. "
                "decision is 'accept' or 'reject'.", {"proposal_id": str, "decision": str})
     @guarded
     async def resolve_triage(args: dict[str, Any]) -> Any:

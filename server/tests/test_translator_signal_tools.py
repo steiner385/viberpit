@@ -20,6 +20,7 @@ from server.tests.fakes import fake_sdk as f
 MARK_COMPLETE = "mcp__viberpit__mark_complete"
 MARK_NO_PR = "mcp__viberpit__mark_no_pr"
 REQUEST_MODEL = "mcp__viberpit__request_model"
+SET_HOLD = "mcp__viberpit__set_hold"
 
 _ids = itertools.count()
 
@@ -192,13 +193,37 @@ def test_a_SUBAGENT_signalling_call_DOES_render_a_card():
 
 
 def test_the_signal_tool_names_come_from_the_spec_registry():
-    """One source of truth: the names the translator suppresses/reads are exactly the
-    ToolClass.SIGNAL entries in the session tool spec table, not a re-typed copy."""
+    """One source of truth: the names the permission layer treats as no-card signals
+    are exactly the ToolClass.SIGNAL entries in the session tool spec table, not a
+    re-typed copy — and the names the TRANSCRIPT suppresses are the strictly smaller
+    set the Translator actually reads as a turn signal."""
     from server.mcp_spec import ToolClass
-    from server.sessions.tools.registry import SESSION_TOOL_SPECS, SIGNAL_TOOL_NAMES
+    from server.sessions.tools.registry import (SESSION_TOOL_SPECS, SIGNAL_TOOL_NAMES,
+                                                TURN_SIGNAL_NAMES)
     assert SIGNAL_TOOL_NAMES == {n for n, s in SESSION_TOOL_SPECS.items()
                                  if s.tool_class is ToolClass.SIGNAL}
-    assert SIGNAL_TOOL_NAMES == {"mark_complete", "mark_no_pr", "hand_back", "request_model"}
+    assert SIGNAL_TOOL_NAMES == {"mark_complete", "mark_no_pr", "hand_back", "set_hold",
+                                 "request_model"}
+    assert TURN_SIGNAL_NAMES < SIGNAL_TOOL_NAMES
+    assert TURN_SIGNAL_NAMES == {"mark_complete", "mark_no_pr", "hand_back",
+                                 "request_model"}
+    assert "set_hold" not in TURN_SIGNAL_NAMES
+
+
+def test_a_top_level_set_hold_renders_a_card_and_ends_no_turn():
+    """``set_hold`` is a SIGNAL for the permission layer but NOT a turn signal: the
+    Translator has no branch for it, so suppressing its card left a session mutating
+    roadmap state with no trace in the transcript at all (final-review F2). It must
+    fall through to an ordinary ToolCall card and leave the turn outcome alone."""
+    from server.sessions.events import ToolCall
+    t = Translator()
+    out = feed_assistant_tool_call(t, SET_HOLD, {"kind": "evidence", "reason": "no repro"},
+                                   pid=None)
+    cards = [e for e in out if isinstance(e, ToolCall)]
+    assert len(cards) == 1
+    assert cards[0].name == SET_HOLD
+    assert cards[0].input == {"kind": "evidence", "reason": "no repro"}
+    assert feed_result(t).outcome == "success"
 
 
 def test_a_failed_result_stays_failed_even_with_a_mark_complete_call():

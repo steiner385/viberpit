@@ -89,7 +89,8 @@ def test_map_returns_nested_capabilities_initiatives_and_tiers():
             pending = WorkItem(repo="o/r", number=4, kind="issue", state="open", title="D",
                                triage_state="proposed")
             rejected = WorkItem(repo="o/r", number=5, kind="issue", state="open", title="E",
-                                triage_state="needs_human")
+                                triage_state="unclassified", hold_kind="owner_action",
+                                hold_by="migration", hold_reason="test")
             db.add_all([a, b, closed, pending, rejected])
             await db.flush()
             db.add(WorkItemDep(src_work_item_id=a.id, src_ref="o/r#1", dst_ref="o/r#99",

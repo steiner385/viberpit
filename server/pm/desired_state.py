@@ -25,6 +25,10 @@ ACTIVE_SESSION_STATUSES = frozenset({"in_progress", "retrying", "condensing"})
 HUMAN_WAIT_SESSION_STATUSES = frozenset(
     {"waiting_question", "waiting_input", "ready_review", "needs_attention"})
 
+#: Hold kinds that park the card (spec 2026-09-18 §7). evidence / stronger_model exit
+#: on their own and never reach the board.
+HELD_KINDS: frozenset[str] = frozenset({"owner_action", "decision"})
+
 
 @dataclass(frozen=True)
 class ItemFacts:
@@ -47,6 +51,13 @@ class ItemFacts:
     needs_human_at: datetime | None
     initiative_stage: str | None
     initiative_stage_at: datetime | None
+    # Spec 2026-09-18 §3: the hold on the item. Only owner_action / decision park it.
+    hold_kind: str | None = None
+    # When that hold was set. Spec §7: the hold's OWN timestamp is the decision — the
+    # writers of a hold (reject_triage, apply_session_hold, _restore_overlay's legacy
+    # branch) never touch ``classified_at``, and on a freshly-proposed item that is
+    # NULL, which ``should_push(None, …)`` reads as "no decision" and never stamps.
+    hold_set_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -72,9 +83,12 @@ def derive_status(f: ItemFacts) -> Decision:
         return Decision(STATUS_NEEDS_HUMAN, f.session_at)
     if f.session_status in ACTIVE_SESSION_STATUSES:
         return Decision(STATUS_IN_PROGRESS, f.session_at)
-    if f.needs_human_at is not None or f.triage_state == "needs_human":
-        # The give-up moment is the decision; triage's needs_human dates from classification.
-        return Decision(STATUS_NEEDS_HUMAN, f.needs_human_at or f.classified_at)
+    if f.needs_human_at is not None or f.hold_kind in HELD_KINDS:
+        # The give-up moment is the decision; a hold dates from when the hold was SET
+        # (spec §7), falling back to the classification write only for a pre-ladder row
+        # whose hold_set_at the conversion could not fill.
+        return Decision(STATUS_NEEDS_HUMAN,
+                        f.needs_human_at or f.hold_set_at or f.classified_at)
     if f.open_blocker_refs:
         return Decision(STATUS_BLOCKED, f.blockers_at)
     if f.triage_state == "classified":

@@ -23,11 +23,14 @@ from server.pm.classification import CONFIDENCE_LEVELS
 from server.pm.repo_project import (OwnershipConflict, RepoOwnershipSnapshot,
     gather_repo_ownership_snapshot, require_mutation_owner)
 
-# Who decided a classification, as stored on ``WorkItem.classified_by``. The one
-# spelling of "a person decided this", shared by the accept routes and the overlay
-# PATCH so the inbox chip and the auto-accept gate cannot read a typo'd variant as
-# a machine decision. (Other writers stamp their own provenance — "materialize",
-# "auto-link", "label-route" — which are not triage decisions.)
+# Who decided a classification, as stored on ``WorkItem.classified_by``, for the two
+# writers of a TRIAGE decision: the inbox accept/undo routes pass DECIDED_BY_HUMAN and
+# the PM Triage loop's auto-accept passes DECIDED_BY_AUTO. Sharing the spelling is what
+# stops the inbox chip and the auto-accept gate reading a typo'd variant as a machine
+# decision. The overlay PATCH is NOT a caller: since spec 2026-09-18 §8 it stamps the
+# resolved ACTOR string (a login, ``assistant:<login>``, ``lan@local``) rather than a
+# blanket "human". Other writers stamp their own provenance — "materialize",
+# "auto-link", "label-route" — which are not triage decisions either.
 DECIDED_BY_HUMAN = "human"
 DECIDED_BY_AUTO = "auto"
 
@@ -100,11 +103,15 @@ def _aware(dt: datetime | None) -> datetime | None:
 
 def _overlay_snapshot(wi: WorkItem) -> dict:
     at = _aware(wi.classified_at)
+    held_at = _aware(wi.hold_set_at)
     return {
         "featureId": wi.feature_id, "reach": wi.reach, "impact": wi.impact,
         "effort": wi.effort, "confidence": wi.confidence, "triageState": wi.triage_state,
         "classifiedBy": wi.classified_by,
         "classifiedAt": at.isoformat() if at else None,
+        "holdKind": wi.hold_kind, "holdReason": wi.hold_reason, "holdBy": wi.hold_by,
+        "holdSetAt": held_at.isoformat() if held_at else None,
+        "holdFingerprint": wi.hold_fingerprint,
     }
 
 
@@ -114,10 +121,24 @@ def _restore_overlay(wi: WorkItem, snap: dict) -> None:
     wi.impact = snap.get("impact")
     wi.effort = snap.get("effort")
     wi.confidence = snap.get("confidence")
-    wi.triage_state = snap.get("triageState")
     wi.classified_by = snap.get("classifiedBy")
     at = snap.get("classifiedAt")
     wi.classified_at = _aware(datetime.fromisoformat(at)) if at else None
+    state = snap.get("triageState")
+    if state == "needs_human":
+        # A pre-ladder snapshot: the removed state becomes the hold it meant.
+        wi.triage_state = "unclassified"
+        wi.hold_kind, wi.hold_by = "owner_action", "migration"
+        wi.hold_reason, wi.hold_fingerprint = "restored pre-ladder needs_human", None
+        wi.hold_set_at = None
+    else:
+        wi.triage_state = state
+        wi.hold_kind = snap.get("holdKind")
+        wi.hold_reason = snap.get("holdReason")
+        wi.hold_by = snap.get("holdBy")
+        held = snap.get("holdSetAt")
+        wi.hold_set_at = _aware(datetime.fromisoformat(held)) if held else None
+        wi.hold_fingerprint = snap.get("holdFingerprint")
 
 
 async def _repropose_siblings(db, accepted: TriageProposal, feature_id: str,

@@ -283,13 +283,23 @@ async def test_pending_proposals_are_not_clusters(db_env):
 
 
 @pytest.mark.asyncio
-async def test_unclassified_excludes_needs_human_and_proposed(db_env):
+async def test_unclassified_excludes_held_and_proposed(db_env):
+    """Since the ladder replaced the ``needs_human`` triage state, the HOLD is the
+    carrier of "a person rejected this, never blind-retry it" — a rejected item is
+    ``unclassified`` again, so a count that filters only on triage_state would spend a
+    classify session on it and re-raise the inbox card (final-review F3)."""
     await _seed(db_env)
     async with db_session() as db:
         db.add(WorkItem(repo=REPO, number=1, kind="issue", title="fresh",
                         state="open", triage_state="unclassified"))
         db.add(WorkItem(repo=REPO, number=2, kind="issue", title="rejected",
-                        state="open", triage_state="needs_human"))
+                        state="open", triage_state="unclassified",
+                        hold_kind="owner_action", hold_by="tony@example.com",
+                        hold_reason="classification proposal rejected"))
+        db.add(WorkItem(repo=REPO, number=5, kind="issue", title="needs evidence",
+                        state="open", triage_state="unclassified",
+                        hold_kind="evidence", hold_by="session:s1",
+                        hold_reason="no repro"))
         db.add(WorkItem(repo=REPO, number=3, kind="issue", title="closed",
                         state="closed", triage_state="unclassified"))
         proposed = WorkItem(repo=REPO, number=4, kind="issue", title="proposed",
@@ -317,8 +327,16 @@ async def test_list_pending_filters_the_candidate_set(db_env):
         db.add(WorkItem(repo=REPO, number=1, kind="pr", title="a pr",
                         state="open", triage_state="unclassified",
                         labels=["bug"], linked_issue_numbers=[42]))
+        # Held items are out of the candidate set whatever the kind: the hold is the
+        # carrier of "do not blind-retry this" now that needs_human is gone (F3).
         db.add(WorkItem(repo=REPO, number=2, kind="issue", title="rejected",
-                        state="open", triage_state="needs_human"))
+                        state="open", triage_state="unclassified",
+                        hold_kind="owner_action", hold_by="tony@example.com",
+                        hold_reason="classification proposal rejected"))
+        db.add(WorkItem(repo=REPO, number=4, kind="issue", title="needs evidence",
+                        state="open", triage_state="unclassified",
+                        hold_kind="evidence", hold_by="session:s1",
+                        hold_reason="no repro"))
         proposed = WorkItem(repo=REPO, number=3, kind="issue", title="proposed",
                             state="open", triage_state="unclassified")
         db.add(proposed)
