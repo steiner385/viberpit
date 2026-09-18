@@ -234,6 +234,32 @@ async def test_reject_parks_the_item_as_the_persons_owner_action(db):
 
 
 @pytest.mark.asyncio
+async def test_reject_keeps_a_hold_that_is_not_the_proposals_own(db):
+    """A person who parked the item between the proposal and the rejection keeps
+    their reason and their ``hold_set_at``: the item is already where the rejection
+    would put it, and overwriting would erase why. The proposal is still rejected
+    and still audited."""
+    from server.pm.holds import DECISION_REJECT_REASON, set_hold
+    wi = await _item(db)
+    proposal = await decisions.propose(db, wi, options=OPTIONS, recommended_key="global",
+                                       rationale="because", actor="session:s1", now=NOW)
+    await db.flush()
+    set_hold(wi, kind="owner_action", reason="I'm on this", actor="tony@example.com", now=NOW)
+    await db.flush()
+
+    await decisions.reject(db, proposal, actor="tony@example.com", now=LATER)
+    await db.commit()
+
+    assert proposal.status == "rejected" and proposal.resolved_at == LATER
+    assert wi.hold_kind == "owner_action"
+    assert wi.hold_reason == "I'm on this" != DECISION_REJECT_REASON
+    assert wi.hold_set_at == NOW                       # not bumped
+    assert len(await _audits(db, "pm.decision.reject")) == 1
+    # only the propose-time hold was written; the reject wrote none
+    assert [r.detail["kind"] for r in await _audits(db, "pm.hold.set")] == ["decision"]
+
+
+@pytest.mark.asyncio
 async def test_an_accepted_item_can_take_a_new_decision_later(db):
     """Only a PENDING proposal blocks a new one — an issue can be decided more
     than once over its life."""

@@ -13,17 +13,31 @@ caller, so a route can compose a proposal with whatever else its request writes
 (and so a failed GitHub comment cannot half-commit a decision). Async, like the
 other API/tool taps in ``server/pm/holds.py`` (``release_via_api``,
 ``apply_session_hold``), because ``record_audit`` is.
+
+**``now`` must be an AWARE UTC datetime** (``datetime.now(timezone.utc)``, as every
+caller in ``server/api/pm.py`` passes). It lands in ``created_at`` / ``resolved_at``
+/ ``WorkItem.hold_set_at``, all declared ``DateTime(timezone=True)``; a naive value
+from ``server/db/clock.py`` would be stored through the session time zone on
+Postgres — local wall clock in a UTC column — and would make the ``resolved_at``
+ordering in :func:`accepted_text_for_refs` compare mixed awareness.
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
-from server.db.models import DecisionProposal, WorkItem
+from server.db.models import DECISION_PROPOSAL_STATUSES, DecisionProposal, WorkItem
 from server.pm import holds
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
     from datetime import datetime
+
+log = logging.getLogger(__name__)
+
+#: The proposal lifecycle, unpacked from the ONE status vocabulary in
+#: ``server/db/models.py`` so this module never spells the three strings itself.
+STATUS_PENDING, STATUS_ACCEPTED, STATUS_REJECTED = DECISION_PROPOSAL_STATUSES
 
 #: Spec §6: fewer than two is not a decision, more than six is a survey. Pinned
 #: here because the tool schema, the route and the tests all quote the bounds.
@@ -154,7 +168,7 @@ async def propose(db, wi: WorkItem, *, options: "Iterable[Any]", recommended_key
         raise DecisionError("rationale is required")
     existing = (await db.execute(select(DecisionProposal).where(
         DecisionProposal.work_item_id == wi.id,
-        DecisionProposal.status == "pending"))).scalars().first()
+        DecisionProposal.status == STATUS_PENDING))).scalars().first()
     if existing is not None:
         raise DecisionConflict("a decision is already pending")
     if wi.hold_kind in HELD_KINDS and wi.hold_by and holds.actor_class(wi.hold_by) == "person":
@@ -162,7 +176,7 @@ async def propose(db, wi: WorkItem, *, options: "Iterable[Any]", recommended_key
             f"{wi.hold_by} has parked this item ({wi.hold_kind}); a decision cannot replace it")
     proposal = DecisionProposal(
         work_item_id=wi.id, options=opts, recommended_key=recommended, rationale=text,
-        status="pending", proposed_by=actor,
+        status=STATUS_PENDING, proposed_by=actor,
         session_id=actor.split(":", 1)[1] if actor.startswith("session:") else None,
         created_at=now)
     db.add(proposal)
@@ -194,7 +208,7 @@ async def accept(db, proposal: DecisionProposal, *, chosen_key: str, actor: str,
     keys = option_keys(proposal)
     if key not in keys:
         raise DecisionError(f"chosen_key {key!r} is not one of {keys}")
-    proposal.status = "accepted"
+    proposal.status = STATUS_ACCEPTED
     proposal.chosen_key = key
     proposal.resolved_by = actor
     proposal.resolved_at = now
@@ -221,24 +235,36 @@ async def reject(db, proposal: DecisionProposal, *, actor: str, now: "datetime",
     is rejected and the ``decision`` hold becomes the person's ``owner_action``
     park with ``DECISION_REJECT_REASON``. Nothing re-proposes automatically — the
     machine already tried, and decision 3 of the spec keeps the next move human.
+
+    The hold write is skipped when the item is parked by a hold that is NOT this
+    proposal's own ``decision`` hold — a person who said "I'm on this" between the
+    proposal and the rejection. Their reason and ``hold_set_at`` are theirs to
+    keep, and the item is already where the rejection would put it: parked, needing
+    a human. The proposal is still rejected and still audited; only the overwrite
+    is dropped.
     """
     from sqlalchemy import select
 
     from server.audit import record_audit
+    from server.pm.desired_state import HELD_KINDS
     _require_pending(proposal)
-    proposal.status = "rejected"
+    proposal.status = STATUS_REJECTED
     proposal.resolved_by = actor
     proposal.resolved_at = now
     wi = (await db.execute(select(WorkItem).where(
         WorkItem.id == proposal.work_item_id))).scalar_one_or_none()
-    if wi is not None:
+    kept = wi is not None and wi.hold_kind in HELD_KINDS and wi.hold_kind != "decision"
+    if wi is not None and not kept:
         holds.set_reject_decision_hold(wi, actor=actor, now=now)
+    elif kept and wi is not None:
+        log.info("decision.reject_hold_kept proposal=%s item=%s kind=%s by=%s",
+                 proposal.id, wi.id, wi.hold_kind, wi.hold_by)
     await db.flush()
     await record_audit(db=db, type="pm.decision.reject", identity=actor,
                        detail={"workItemId": proposal.work_item_id,
                                "proposalId": proposal.id,
                                "actorClass": holds.actor_class(actor)}, via=via)
-    if wi is not None:
+    if wi is not None and not kept:
         await record_audit(db=db, type="pm.hold.set", identity=actor,
                            detail={"workItemId": wi.id, "kind": "owner_action",
                                    "reason": holds.DECISION_REJECT_REASON,
@@ -250,7 +276,7 @@ def _require_pending(proposal: DecisionProposal) -> None:
     """A resolved proposal is resolved: re-accepting would re-clear a hold the
     person may have set again since, and re-rejecting would re-park an item that
     is already moving."""
-    if proposal.status != "pending":
+    if proposal.status != STATUS_PENDING:
         raise DecisionConflict(f"this decision is already {proposal.status}")
 
 
@@ -269,7 +295,7 @@ async def pending_list(db) -> list[tuple[DecisionProposal, WorkItem | None]]:
     rows = (await db.execute(
         select(DecisionProposal, WorkItem)
         .outerjoin(WorkItem, WorkItem.id == DecisionProposal.work_item_id)
-        .where(DecisionProposal.status == "pending")
+        .where(DecisionProposal.status == STATUS_PENDING)
         .order_by(DecisionProposal.created_at.desc()))).all()
     return [(p, w) for p, w in rows]
 
@@ -300,7 +326,7 @@ async def accepted_text_for_refs(db, refs: "Sequence[str]") -> dict[str, str]:
     rows = (await db.execute(
         select(DecisionProposal)
         .where(DecisionProposal.work_item_id.in_(list(ref_by_id)),
-               DecisionProposal.status == "accepted")
+               DecisionProposal.status == STATUS_ACCEPTED)
         .order_by(DecisionProposal.resolved_at.asc().nulls_first(),
                   DecisionProposal.created_at.asc()))).scalars().all()
     out: dict[str, str] = {}
