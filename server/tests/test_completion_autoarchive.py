@@ -593,3 +593,88 @@ def test_self_declared_no_pr_on_code_goal_archives_when_classifier_confirms(monk
         assert nudged == []
         assert rec.pr_resolution_source == "classifier"
     asyncio.run(run())
+
+
+# A pm-onboard map-diff session that answers `mark_no_pr` (not-needed) — the cluster
+# is already covered by a doc under another slug — lands on source "tool", a
+# self-claim on a repo-attached goal ("pm map-diff <slug>" reads as code work). Before
+# the observation hook, the only way out was the Haiku salvage confirming; when it
+# did not, the guard nudged "open a PR", the agent handed back, and a maintenance
+# session sat in Active on a needs-you pill (prod 2026-09-18, session 91bf96b6).
+
+def _map_diff_rec(sid="s1", *, source="tool"):
+    rec = _rec(sid, origin="pm-onboard")
+    rec.name = "pm map-diff viberpit"
+    rec.origin_ref = "viberpit:map-diff:offline-mode"
+    rec.pr_resolution = "not-needed"
+    rec.pr_resolution_source = source
+    rec.status = "complete"
+    return rec
+
+
+def test_map_diff_no_pr_archives_when_the_harness_observes_the_cluster_is_covered(monkeypatch):
+    """The harness checked the repository and the cluster IS covered: the resolution
+    is upgraded to the observed source, the classifier is never consulted, and the
+    session archives without a nudge."""
+    from server.automations.completion_bar import OBSERVED_RESOLUTION_SOURCE
+    from server.automations.pr_intent import PrIntentVerdict
+
+    async def run():
+        rec = _map_diff_rec()
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=None)
+        calls = _stub_intent(monkeypatch, PrIntentVerdict(False, "", "high"))
+        observed: list[str] = []
+
+        async def _observe(r):
+            observed.append(r.id)
+            return True
+
+        orch._pm_onboard_observe_map_diff_not_needed = _observe  # type: ignore[method-assign]
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _settle(lambda: bool(archived or nudged))
+        assert observed == ["s1"]
+        assert [a["session_id"] for a in archived] == ["s1"]
+        assert nudged == [], "an observed no-PR is the finished state — never nudge"
+        assert calls == [], "the repository answered; the classifier is not consulted"
+        assert rec.pr_resolution == "not-needed"
+        assert rec.pr_resolution_source == OBSERVED_RESOLUTION_SOURCE
+    asyncio.run(run())
+
+
+def test_map_diff_no_pr_falls_through_to_the_classifier_when_unobserved(monkeypatch):
+    """Observation could not confirm (no clone, unreadable ref, items uncited): the
+    claim is judged exactly as before — the salvage classifier, then the nudge."""
+    from server.automations.pr_intent import PrIntentVerdict
+
+    async def run():
+        rec = _map_diff_rec()
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=None)
+        calls = _stub_intent(monkeypatch, PrIntentVerdict(False, "", "high"))
+
+        async def _observe(r):
+            return False
+
+        orch._pm_onboard_observe_map_diff_not_needed = _observe  # type: ignore[method-assign]
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _settle(lambda: bool(archived or nudged))
+        assert calls == ["pm map-diff viberpit"]
+        assert archived == []
+        assert nudged and "ask" in nudged[0].lower()
+        assert rec.pr_resolution_source == "tool"
+    asyncio.run(run())
+
+
+def test_non_map_diff_self_claim_is_never_observed(monkeypatch):
+    """The observation hook is a map-diff seam: a human session's marker-sourced
+    no-PR goes straight to the classifier as before."""
+    from server.automations.pr_intent import PrIntentVerdict
+
+    async def run():
+        rec = _code_goal_rec(resolution="not-needed", source="marker")
+        orch, archived, nudged = _orch({"s1": rec}, pr_info=None)
+        calls = _stub_intent(monkeypatch, PrIntentVerdict(True, "not-needed", "high"))
+        orch._maybe_autoarchive_completed("s1", "complete", rec)
+        await _settle(lambda: bool(archived or nudged))
+        assert calls == [_CODE_GOAL]
+        assert rec.pr_resolution_source == "classifier"
+    asyncio.run(run())

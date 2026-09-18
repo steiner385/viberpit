@@ -119,6 +119,16 @@ SELF_CERTIFIED_SOURCES = frozenset({"marker", "tool"})
 #: something other than the claimant, which is the entire distinction this set encodes.
 HARVEST_RESOLUTION_SOURCE = "harvest"
 
+#: The source for a no-PR resolution the HARNESS verified by observing the REPOSITORY,
+#: written by ``SessionOrchestrator._pm_onboard_observe_map_diff_not_needed``. A
+#: map-diff session's objective is conditional — a feature doc is owed only when the
+#: cluster is unmapped — so ``mark_no_pr`` (not-needed) is a first-class outcome there,
+#: not a shortfall. It is still the claimant's word until something else checks it: the
+#: harness reads the feature docs on ``origin/<default>`` and confirms the driving
+#: items are already cited (or the suggested doc already exists). Same shape as
+#: ``harvest``, and for the same reason NOT a member of ``SELF_CERTIFIED_SOURCES``.
+OBSERVED_RESOLUTION_SOURCE = "observed"
+
 
 def is_unverified_self_resolution(goal: str, facts: PrFacts,
                                   pr_resolution: str | None,
