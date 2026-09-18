@@ -92,6 +92,13 @@ class TurnEnd:
     # resolution. Carried so the orchestrator records the real provenance instead of
     # assuming "marker" — see SessionRecord.pr_resolution_source.
     pr_resolution_source: str | None = None
+    # The one-sentence `note` argument of the `mark_no_pr` call that produced
+    # `pr_resolution`, or None (no note given, or the marker path, which has no
+    # argument to carry one). Deliberately NOT in `to_wire`: the note is a durable
+    # server-side record — `sessions.pr_resolution_note`, read back by session id
+    # (the Backlog Runner settles an ended investigation from it, spec 2026-09-18
+    # §5) — and no live-stream client renders it.
+    pr_resolution_note: str | None = None
     # Self-directed model request parsed from this turn's text, or None.
     # {"model": str, "reason": str | None}
     model_request: dict | None = None

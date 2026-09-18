@@ -10,6 +10,9 @@ from types import SimpleNamespace
 import pytest
 
 from server.automations.backlog_grouping import (
+    family_groups,
+    float_urgent_first,
+    order_by_pool_rank,
     parse_group_plan,
     plan_to_batch,
     propose_groups,
@@ -143,6 +146,21 @@ def test_plan_to_batch_skips_fully_stale_groups():
     plan = [{"id": 1, "refs": ["o/r#77"]}, {"id": 2, "refs": ["o/r#2"]}]
     batch, gid = plan_to_batch(plan, C)
     assert gid == 2 and batch is not None and batch.primary == "o/r#2"
+
+
+def test_plan_to_batch_carries_the_primarys_hold_kind():
+    """Spec 2026-09-18 §5: the dispatch KIND is the primary's hold, and the
+    candidate dict is all that crosses this hand-off — so the hold rides onto the
+    batch, and a SECONDARY's hold does not (the session is for the primary)."""
+    cands = [
+        {"ref": "o/r#9", "number": 9, "repo": "o/r", "title": "a", "hold_kind": "evidence"},
+        {"ref": "o/r#5", "number": 5, "repo": "o/r", "title": "b", "hold_kind": "owner_action"},
+        {"ref": "o/r#2", "number": 2, "repo": "o/r", "title": "c"},
+    ]
+    held, _ = plan_to_batch([{"id": 1, "refs": ["o/r#9", "o/r#5"]}], cands)
+    assert held is not None and held.primary_hold_kind == "evidence"
+    unheld, _ = plan_to_batch([{"id": 2, "refs": ["o/r#2"]}], cands)
+    assert unheld is not None and unheld.primary_hold_kind is None
 
 
 def test_plan_to_batch_empty_plan_waits():
@@ -298,3 +316,166 @@ def test_parse_preserves_relative_order_among_equally_urgent_groups():
     plan = parse_group_plan(_plan_json([{"refs": ["o/r#5"], "rationale": "b"},
                                         {"refs": ["o/r#2"], "rationale": "a"}]), C, 1)
     assert [g["refs"] for g in plan] == [["o/r#5"], ["o/r#2"], ["o/r#9"]]
+
+
+# --------------------------------------------------------------------------- #
+# family_groups (pure): sibling error reports become one investigation         #
+# --------------------------------------------------------------------------- #
+
+def _evidence(ref: str, family: str | None) -> dict:
+    return {"ref": ref, "number": int(ref.rpartition("#")[2]), "repo": "o/r",
+            "title": f"[auto-error] {ref}", "body": "", "hold_kind": "evidence",
+            "family": family}
+
+
+def _plain(ref: str) -> dict:
+    return {"ref": ref, "number": int(ref.rpartition("#")[2]), "repo": "o/r",
+            "title": f"Fix {ref}", "body": "", "hold_kind": None}
+
+
+def test_family_groups_bundles_siblings_and_overflows_at_max_k():
+    candidates = [
+        _evidence("o/r#1", "server.a:boom"),
+        _evidence("o/r#2", "server.b:crash"),
+        _evidence("o/r#3", "server.a:boom"),
+        _evidence("o/r#4", "server.a:boom"),
+        _plain("o/r#5"),
+        _evidence("o/r#6", "server.b:crash"),
+        _plain("o/r#7"),
+    ]
+
+    groups, rest = family_groups(candidates, max_k=2)
+
+    assert [g["refs"] for g in groups] == [
+        ["o/r#1", "o/r#3"],   # family A, capped at max_k…
+        ["o/r#4"],            # …and its overflow, still family A
+        ["o/r#2", "o/r#6"],   # family B, after A because #1 outranks #2
+    ]
+    assert [c["ref"] for c in rest] == ["o/r#5", "o/r#7"]
+
+
+def test_family_groups_name_the_family_in_the_rationale():
+    groups, _ = family_groups([_evidence("o/r#1", "server.a:boom"),
+                               _evidence("o/r#3", "server.a:boom")], max_k=5)
+    assert len(groups) == 1
+    assert "server.a:boom" in (groups[0]["rationale"] or "")
+
+
+def test_family_groups_keep_familyless_evidence_apart():
+    """No family key means no evidence of relatedness — the same rule the model
+    prompt states. Two unrelated reports must not merge just by both lacking one."""
+    groups, rest = family_groups(
+        [_evidence("o/r#1", None), _evidence("o/r#2", None)], max_k=5)
+
+    assert [g["refs"] for g in groups] == [["o/r#1"], ["o/r#2"]]
+    assert rest == []
+
+
+def test_family_groups_pass_non_evidence_holds_through_to_the_model():
+    """Only an ``evidence`` hold dispatches as an investigation; a stronger-model
+    hold is still ordinary implement work and stays in the model's pool."""
+    candidates = [{**_plain("o/r#1"), "hold_kind": "stronger_model"},
+                  _plain("o/r#2")]
+
+    groups, rest = family_groups(candidates, max_k=2)
+
+    assert groups == []
+    assert [c["ref"] for c in rest] == ["o/r#1", "o/r#2"]
+
+
+def test_family_groups_treat_max_k_below_one_as_one():
+    groups, _ = family_groups([_evidence("o/r#1", "f"), _evidence("o/r#2", "f")],
+                              max_k=0)
+    assert [g["refs"] for g in groups] == [["o/r#1"], ["o/r#2"]]
+
+
+def test_family_groups_produce_the_shape_store_plan_persists(tmp_path):
+    """The evidence groups are concatenated with the model's plan and stored by the
+    same ``store_plan``, so they must be the same dict shape — not a second one."""
+    from server.db import init_db
+
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'fam-plan.db'}")
+        candidates = [_evidence("o/r#1", "server.a:boom"),
+                      _evidence("o/r#3", "server.a:boom")]
+        groups, _ = family_groups(candidates, max_k=2)
+        assert await store_plan(groups, candidates) == 1
+        plan = await load_plan()
+        assert plan[0]["refs"] == ["o/r#1", "o/r#3"]
+        assert plan[0]["repo"] == "o/r"
+        assert plan[0]["titles"] == {"o/r#1": "[auto-error] o/r#1",
+                                     "o/r#3": "[auto-error] o/r#3"}
+
+    asyncio.run(run())
+
+
+def test_float_urgent_first_leads_with_the_urgent_group_and_is_stable():
+    """The evidence half is assembled outside ``parse_group_plan``, so the urgent
+    float has to be applicable to an already-built plan — one definition, two
+    callers."""
+    plan = [{"refs": ["o/r#1", "o/r#3"], "rationale": "family"},
+            {"refs": ["o/r#4"], "rationale": "family overflow"},
+            {"refs": ["o/r#900"], "rationale": "model"}]
+    candidates = [_evidence("o/r#1", "f"), _evidence("o/r#3", "f"),
+                  _evidence("o/r#4", "f"),
+                  {**_plain("o/r#900"), "urgent": True}]
+
+    assert [g["refs"] for g in float_urgent_first(plan, candidates)] == [
+        ["o/r#900"], ["o/r#1", "o/r#3"], ["o/r#4"]]
+
+
+# --------------------------------------------------------------------------- #
+# order_by_pool_rank (pure): the two halves interleave, never concatenate       #
+# --------------------------------------------------------------------------- #
+
+def test_order_by_pool_rank_interleaves_the_evidence_and_model_halves():
+    """Spec 2026-09-18 §5 dispatches an evidence hold as an ordinary candidate —
+    ranking included. Concatenating the halves made the concatenation itself the
+    priority decision: every auto-filed report led every implement group. Each
+    group takes its best member's rank in the (already rank-ordered) pool instead."""
+    candidates = [
+        _plain("o/r#100"),                     # rank 0
+        _evidence("o/r#201", None),            # rank 1
+        _plain("o/r#101"),                     # rank 2
+        _evidence("o/r#202", None),            # rank 3
+        _plain("o/r#102"),                     # rank 4
+        _evidence("o/r#203", None),            # rank 5
+    ]
+    # Three evidence singletons (ranks 1, 3, 5) in front of two model groups whose
+    # best members are ranks 0 and 2 — the concatenated order.
+    plan = [{"refs": ["o/r#201"]}, {"refs": ["o/r#202"]}, {"refs": ["o/r#203"]},
+            {"refs": ["o/r#100", "o/r#102"]}, {"refs": ["o/r#101"]}]
+
+    assert [g["refs"] for g in order_by_pool_rank(plan, candidates)] == [
+        ["o/r#100", "o/r#102"],   # rank 0 (best member of the bundle)
+        ["o/r#201"],              # rank 1
+        ["o/r#101"],              # rank 2
+        ["o/r#202"],              # rank 3
+        ["o/r#203"],              # rank 5
+    ]
+
+
+def test_order_by_pool_rank_sorts_a_group_with_no_live_ref_last():
+    """A group whose refs all left the pool has no rank to take. It must sort LAST
+    — a missing key that defaulted to 0 would put stale work at the head of the
+    plan, ahead of everything the queue actually ranked."""
+    candidates = [_plain("o/r#1"), _plain("o/r#2")]
+    plan = [{"refs": ["o/r#404"]}, {"refs": ["o/r#2"]}, {"refs": ["o/r#1"]}]
+
+    assert [g["refs"] for g in order_by_pool_rank(plan, candidates)] == [
+        ["o/r#1"], ["o/r#2"], ["o/r#404"]]
+
+
+def test_order_by_pool_rank_then_urgent_float_keeps_urgent_first():
+    """The two orderings compose in one direction only: rank first, urgency on top.
+    An incident is ranked first by the queue anyway, but the float is what
+    GUARANTEES it — and it must survive the rank sort, not be undone by it."""
+    candidates = [_evidence("o/r#1", "f"),
+                  {**_plain("o/r#900"), "urgent": True},
+                  _evidence("o/r#2", "f")]
+    plan = [{"refs": ["o/r#1"]}, {"refs": ["o/r#2"]}, {"refs": ["o/r#900"]}]
+
+    ranked = order_by_pool_rank(plan, candidates)
+    assert [g["refs"] for g in ranked] == [["o/r#1"], ["o/r#900"], ["o/r#2"]]
+    assert [g["refs"] for g in float_urgent_first(ranked, candidates)] == [
+        ["o/r#900"], ["o/r#1"], ["o/r#2"]]

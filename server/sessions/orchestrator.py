@@ -1056,6 +1056,8 @@ class SessionOrchestrator:
             clock=time.monotonic,
             needs_human=self._backlog_needs_human,
             escalate=self._backlog_escalate,
+            investigation_state=self._backlog_investigation_state,
+            release_investigation_hold=self._backlog_release_investigation_hold,
             held_targets=self._backlog_held_targets,
             session_ended=self._backlog_session_ended,
             session_gone=self._backlog_session_gone,
@@ -4832,6 +4834,11 @@ class SessionOrchestrator:
         # without a source keeps the pre-provenance behaviour and persists "marker",
         # never None.
         resolution_source = getattr(driver, "last_pr_resolution_source", None) or "marker"
+        # The session's own one-line reason for finishing without a PR. No default:
+        # unlike the source, "no note" is a real answer (the marker path has no
+        # argument to carry one) and a synthesised one would be a claim the session
+        # never made. Written with the resolution below, never on its own.
+        resolution_note = getattr(driver, "last_pr_resolution_note", None)
         # The session's own hand_back reason (tool or marker), read only when the status
         # being written IS the hand-back status: a structured AskUserQuestion lands at
         # waiting_question too, and carries no reason. getattr, like the resolution reads
@@ -4878,6 +4885,11 @@ class SessionOrchestrator:
                     and rec.pr_resolution == resolution):
                 values["pr_resolution"] = resolution
                 values["pr_resolution_source"] = resolution_source
+                # Under the SAME guard, so the note can never outlive or contradict
+                # the resolution it explains. DB-only (no SessionRecord field): its
+                # one reader is the Backlog Runner's investigation settle, which
+                # looks the row up by session id.
+                values["pr_resolution_note"] = resolution_note
             # Fold the in-memory slash-command catalog (cached during attach by
             # command_catalog(), which must not write from the cancellable attach path)
             # into this driver-loop write so it reaches the DB row for cross-restart
@@ -5885,8 +5897,43 @@ class SessionOrchestrator:
         entries.sort(key=rank_key)
         if skipped_out is not None:
             skipped_out.update(skipped)
-        self._backlog_last_queue = [to_candidate(e) for e in entries]
+        candidates = [to_candidate(e) for e in entries]
+        await self._backlog_attach_families(candidates)
+        self._backlog_last_queue = candidates
         return list(self._backlog_last_queue)
+
+    async def _backlog_attach_families(self, candidates: list[dict]) -> None:
+        """Stamp the error-triage fingerprint family onto the ``evidence``-held
+        candidates, in place (spec 2026-09-18 §5).
+
+        Only the evidence half is annotated: the family exists to make sibling
+        error reports ONE investigation, and an implement candidate has no
+        signature row to derive one from. It rides the candidate dict because that
+        dict is all the grouping refresh receives across the hand-off — the same
+        reason ``urgent`` and ``hold_kind`` do.
+
+        Fails OPEN: a lookup that blows up leaves every evidence candidate
+        familyless, which groups each one alone. That is the pre-family behaviour,
+        not a lost tick — this read must not be able to cost the runner its pool.
+        """
+        refs = [c["ref"] for c in candidates if c.get("hold_kind") == "evidence"]
+        if not refs:
+            return
+        families: dict[str, str] = {}
+        try:
+            from server.pm import error_family
+            # The triage repo is an automation-config read, resolved through the
+            # ordinary async config store BEFORE the session opens — the family
+            # join itself is the only part that has to be sync.
+            repo = await error_family.triage_target_repo()
+            async with db_session() as db:
+                families = await db.run_sync(
+                    lambda s: error_family.families_for_refs(s, refs, repo=repo))
+        except Exception:
+            log.warning("orchestrator._backlog_family_lookup_failed", exc_info=True)
+        for c in candidates:
+            if c.get("hold_kind") == "evidence":
+                c["family"] = families.get(c["ref"])
 
     def _backlog_queue_tail(self) -> list[dict]:
         """Status-card queue-provenance seam (#990): a cheap COPY of the last
@@ -6094,22 +6141,54 @@ class SessionOrchestrator:
         old inline ranking used); with no healthy account the SDK default
         applies. A failed model call propagates as ``GroupingModelError`` with
         the SDK's message (so the runner's ``groups_refresh_failed`` event can
-        name it); a model that answered with nothing parseable raises below."""
-        from server.automations.backlog_grouping import propose_groups, store_plan
+        name it); a model that answered with nothing parseable raises below.
+
+        The ``evidence``-held candidates are bucketed by fingerprint family HERE
+        (``family_groups``, spec 2026-09-18 §5) and never reach the model: they
+        dispatch as investigations, so one of them sharing a batch with implement
+        work would hand a session two incompatible prompts. The model partitions
+        only what is left, and the two halves are then INTERLEAVED by their best
+        member's queue rank (``order_by_pool_rank``) — an evidence hold is
+        dispatched "as an ordinary candidate (same capacity, ranking, policy)", so
+        concatenating them would make the concatenation a priority decision and put
+        every auto-filed error report ahead of every implement issue. Urgent work
+        still leads, floated over the whole plan last."""
+        from server.automations.backlog_grouping import (
+            family_groups, float_urgent_first, order_by_pool_rank, propose_groups,
+            store_plan)
         candidates = await self._backlog_query_queue(config)
         if not candidates:
             return await store_plan([], [])
-        config_dir = None
-        acct = await self._backlog_healthy_account()
-        if acct is not None:
-            from ccswitch import paths
-            config_dir = str(paths.account_cfg_dir(acct))
-        groups = await propose_groups(candidates, config, _config_dir=config_dir)
-        if not groups:
-            raise RuntimeError(
-                f"grouping model returned no parseable plan for {len(candidates)} candidate(s)")
-        await store_plan(groups, candidates)
-        return len(groups)
+        evidence, rest = family_groups(
+            candidates, max_k=int(config.get("max_issues_per_pr") or 1))
+        groups: list[dict] = []
+        # An evidence-only pool has nothing for the model to partition — asking
+        # would burn a call to be told so, and an empty answer is the shape this
+        # seam treats as a refresh FAILURE.
+        if rest:
+            config_dir = None
+            acct = await self._backlog_healthy_account()
+            if acct is not None:
+                from ccswitch import paths
+                config_dir = str(paths.account_cfg_dir(acct))
+            groups = await propose_groups(rest, config, _config_dir=config_dir)
+            if not groups:
+                raise RuntimeError(
+                    f"grouping model returned no parseable plan for {len(rest)} candidate(s)")
+        # Two orderings, applied in this order and nowhere else. First rank: the
+        # concatenation itself must not decide priority (spec §5 dispatches an
+        # evidence hold as an ordinary candidate, ranking included), so the halves
+        # interleave by their best member's queue rank. Then urgency: a plan is what
+        # the runner actually pops, and ``parse_group_plan`` floats urgent work
+        # inside the MODEL half only, so the same float is re-applied over the whole
+        # plan — one definition of the invariant (#1698), applied wherever a plan is
+        # assembled.
+        plan = float_urgent_first(
+            order_by_pool_rank(evidence + groups, candidates), candidates)
+        # The WHOLE pool, not ``rest``: ``store_plan`` resolves each stored ref's
+        # repo and title through it.
+        await store_plan(plan, candidates)
+        return len(plan)
 
     async def _backlog_repo_load(self) -> dict[str, int]:
         """Per-repo pipeline pressure, derived from durable target states — the
@@ -6193,6 +6272,12 @@ class SessionOrchestrator:
           human signal. That happens whenever a grouping plan built before the
           hand-off still names the issue as a non-primary member of a later batch
           that bounces below the top. Kept, logged, no audit row;
+        - an ``evidence`` hold (spec §5) is kept the same way against the
+          ``stronger_model`` writer alone: the item IS dispatched while it holds —
+          as an investigation — so it never climbs a ladder, and overwriting the
+          hold would re-queue an untriaged error report as an implement candidate.
+          The ``owner_action`` writer may replace it: that is the investigation's
+          escalate exit and the no-exit hand-off;
         - an IDENTICAL hold already in place (same kind/actor/reason) is a
           no-op retry, not a re-stamp (review R1 I2 item 3) — a retried
           give-up or a re-tick while the row release keeps failing must not
@@ -6220,8 +6305,14 @@ class SessionOrchestrator:
                     WorkItem.kind == "issue",
                     tuple_(WorkItem.repo, WorkItem.number).in_(parts)))).scalars().all()
                 for wi in items:
-                    if wi.hold_kind in HELD_KINDS and not (
-                            kind == "owner_action" and wi.hold_by == RUNNER_ACTOR):
+                    # Both "this writer may not replace that hold" rules, at ONE
+                    # site with one log line (see the docstring): a person's hold,
+                    # and — for the ladder writer only — an ``evidence`` hold,
+                    # which is queue-eligible precisely because the item is
+                    # dispatched while it holds, as an investigation (spec §5).
+                    if (wi.hold_kind in HELD_KINDS and not (
+                            kind == "owner_action" and wi.hold_by == RUNNER_ACTOR)) or (
+                            kind == "stronger_model" and wi.hold_kind == "evidence"):
                         log.info("backlog_runner.hold_kept target=%s#%s kind=%s by=%s",
                                  wi.repo, wi.number, wi.hold_kind, wi.hold_by)
                         continue
@@ -6271,6 +6362,74 @@ class SessionOrchestrator:
         retry — no two-phase gap where the item is neither claimed nor held."""
         await self._backlog_write_runner_hold(
             target, kind="stronger_model", reason=reason, log_key="escalate")
+
+    async def _backlog_investigation_state(self, target: str,
+                                           session_id: str | None) -> dict:
+        """Everything the sweep needs to settle an ENDED investigation (spec
+        2026-09-18 §5), in one read:
+        ``{issue_state, mirrored, hold_kind, hold_by, no_pr_note}``.
+
+        An investigation opens no PR by design, so its four exits are legible only
+        here — on the issue (closed as noise / as a duplicate, or still open), on the
+        hold (an ``evidence`` hold still in place means nobody converted it), and in
+        the session's own ``mark_no_pr`` note (which exit it says it took).
+
+        ``issue_state`` comes from LIVE GitHub, not ``WorkItem.state``: the mirror
+        lags a sync interval and the exit happened minutes ago, so the mirror would
+        still say "open" for an issue the session just closed. ``None`` there means
+        UNKNOWN and the caller retries next tick — it must never read as "still
+        open", which is the hand-off case.
+
+        The hold and the note come from the rows that ARE the answer: the mirrored
+        WorkItem (whose hold the converting session, a person, or the runner itself
+        may have cleared) and the session row's ``pr_resolution_note``.
+
+        ``mirrored`` is its own field rather than being folded into a ``None``
+        ``hold_kind``: "this issue carries no hold" is what a conversion looks like,
+        while "this issue has no mirror row" is not an exit at all, and one field
+        cannot honestly say both. ``hold_by`` travels with the kind for the same
+        reason — when the hold is NOT the evidence one, who parked it is what tells
+        the caller whose decision it is deferring to.
+        """
+        from sqlalchemy import select as sa_select
+
+        from server.automations import backlog_github
+        from server.db.models import Session as DbSession, WorkItem
+        from server.pm.refs import split_ref
+        issue_state = await asyncio.to_thread(
+            backlog_github.issue_state_live, target, gh_run=self._gh_run)
+        hold_kind = hold_by = note = None
+        mirrored = False
+        parts = split_ref(target)
+        async with db_session() as db:
+            if parts is not None:
+                repo, number = parts
+                row = (await db.execute(sa_select(
+                    WorkItem.hold_kind, WorkItem.hold_by).where(
+                        WorkItem.kind == "issue", WorkItem.repo == repo,
+                        WorkItem.number == number))).first()
+                if row is not None:
+                    mirrored = True
+                    hold_kind, hold_by = row
+            if session_id:
+                note = (await db.execute(sa_select(DbSession.pr_resolution_note).where(
+                    DbSession.id == session_id))).scalars().first()
+        return {"issue_state": issue_state, "mirrored": mirrored,
+                "hold_kind": hold_kind, "hold_by": hold_by, "no_pr_note": note}
+
+    async def _backlog_release_investigation_hold(self, target: str) -> bool:
+        """CONVERT-TO-A-FIX exit (spec §5): the investigation found the root cause
+        and wrote it into the issue, so the ``evidence`` hold that made the report an
+        investigation is spent — clear it and the next refill re-claims the issue as
+        an ordinary implement candidate.
+
+        A write seam of its own rather than a mutation hidden inside the read above:
+        the sweep decides the exit, and only one of four exits releases a hold. The
+        rule itself is ``holds.release_on_investigation`` — the same
+        ``clear_hold`` + ``pm.hold.release`` shape as every other release."""
+        from server.pm.holds import release_on_investigation
+        async with db_session() as db:
+            return await db.run_sync(lambda s: release_on_investigation(s, target))
 
     async def _backlog_held_targets(self) -> "frozenset[str]":
         from server.pm.holds import held_refs
@@ -6759,18 +6918,25 @@ class SessionOrchestrator:
 
     async def _backlog_spawn(self, batch, account: str, *, default_model: str,
                              ownership_token: str):
-        """Spawn a de-duped runner session for *batch*, seeded with the implement
-        prompt.
+        """Spawn a de-duped runner session for *batch*, seeded with the prompt for
+        the KIND of dispatch this is.
 
-        Chooses model and prompt before forwarding the durable ownership token
-        to the shared session boundary. That boundary reserves a session UUID
-        before cloning or starting the native driver. Returns the SessionRecord.
+        Chooses kind, model and prompt before forwarding the durable ownership
+        token to the shared session boundary. That boundary reserves a session
+        UUID before cloning or starting the native driver. Returns the
+        SessionRecord, carrying ``dispatch_kind`` for the loop to read back the
+        way it reads ``model``/``branch`` (``_settle_dispatch`` writes both onto
+        the claim row and the dispatch-history row).
 
         *default_model* is the PRODUCT's session model, supplied by the caller —
         the loop hands down the snapshot its dispatch decision was made on, the
         tap paths read it through ``_backlog_policy_model``. Keyword-only and
         required so no spawn site can silently fall back to a different model."""
-        from server.automations.backlog_prompt import build_implement_prompt
+        from server.automations.backlog_prompt import (
+            build_implement_prompt,
+            build_investigate_prompt,
+        )
+        from server.pm.outcomes import dispatch_kind_for_hold
         # Engine FIRST, before any network or disk work: the seed prompt states a
         # commit trailer so it has to be built for the engine that will actually
         # run (Phase 7, Task 7.1) — and a refusal must cost nothing, which it did
@@ -6779,14 +6945,38 @@ class SessionOrchestrator:
         if plan is None:                       # out of policy — the ctx recorded why
             return None
         engine, _launch_config = plan
-        default_branch = await self._sdlc_default_branch(batch.repo)
+        # WHAT this dispatch is FOR (spec §5), decided before anything acts on it:
+        # an ``evidence``-held primary is an auto-filed error report nobody has
+        # triaged, so it is INVESTIGATED, not implemented. The kind picks the seed
+        # prompt, keeps the item off the ladder, and is recorded on the dispatch —
+        # an investigation opens no PR by design and must never be read back as an
+        # implementation that failed to.
+        #
+        # Read off the BATCH, which carried the primary's hold from the candidate
+        # pool the dispatch decision was taken on, and through the same
+        # ``dispatch_kind_for_hold`` the loop stamped onto the claim intent: one
+        # read, one rule, so the claim row and the running session can never
+        # describe different dispatches.
+        dispatch_kind = dispatch_kind_for_hold(batch.primary_hold_kind)
+        investigate = dispatch_kind == "investigate"
+        # The seed prompt, built here because only the implement one takes a branch
+        # and resolving one is a remote branch listing — the same reason the refusal
+        # check runs first: an investigation must not pay for work it has no use for.
+        initial_prompt = (
+            build_investigate_prompt(batch, engine=engine) if investigate
+            else build_implement_prompt(
+                batch, await self._sdlc_default_branch(batch.repo), engine=engine))
         _mode, config = await self._backlog_read_config()
         # The session model is the PRODUCT's (policy phase 1): overlay the caller's
         # answer onto the config the resolvers already take, so ``pick_model`` /
         # ``_resolve_codex_auto_effort`` keep their one ``default_model`` contract
         # instead of growing a second way to be told which model to use.
         config = {**config, "default_model": default_model}
-        detail: dict = {"issues": batch.issues, "engine": engine.value}
+        # Stamped on every spawn, exactly like ``engine``: a backlog that mixes
+        # implementations and investigations is unreadable after the fact if only
+        # one of the two says which it was.
+        detail: dict = {"issues": batch.issues, "engine": engine.value,
+                        "dispatch_kind": dispatch_kind}
         summary = "\n".join(
             f"{ref}  {batch.titles.get(ref) or '(no title)'}" for ref in batch.issues)
         # The capability's own merge history (D9) floors an `auto` pick, so a
@@ -6806,12 +6996,19 @@ class SessionOrchestrator:
             # its last bounce parked as ``stronger_model`` is dispatched at the
             # next rung. Claude-only for the same reason the floor is — the rungs
             # are Claude tiers, and a Codex dispatch has no ladder to climb.
-            try:
-                rung = await self._backlog_ladder_rung(
-                    batch.product, batch.primary, default_model=default_model, floor=floor)
-            except Exception:
-                log.warning("backlog_runner.ladder_rung_failed target=%s",
-                            batch.primary, exc_info=True)
+            #
+            # An INVESTIGATION is off the ladder entirely (spec §5): its primary
+            # holds ``evidence``, not ``stronger_model``, so there is no rung to
+            # climb and no hold to spend — which is also why the hold-consuming
+            # release below, guarded on ``rung``, never fires for one.
+            if not investigate:
+                try:
+                    rung = await self._backlog_ladder_rung(
+                        batch.product, batch.primary, default_model=default_model,
+                        floor=floor)
+                except Exception:
+                    log.warning("backlog_runner.ladder_rung_failed target=%s",
+                                batch.primary, exc_info=True)
         if rung:
             # PINNED, not floored: ``pick_model``'s floor only raises an ``auto``
             # assessment, and the rung is not a bound on a fresh guess — it IS the
@@ -6841,7 +7038,7 @@ class SessionOrchestrator:
             account=account,
             engine=engine,
             name=f"backlog {batch.primary}",
-            initial_prompt=build_implement_prompt(batch, default_branch, engine=engine),
+            initial_prompt=initial_prompt,
             model=model,
             reasoning_effort=reasoning_effort,
             detail=detail,
@@ -6909,6 +7106,15 @@ class SessionOrchestrator:
             except Exception:
                 log.warning("backlog_runner.model_pick_audit_failed target=%s",
                             batch.primary, exc_info=True)
+        if rec is not None:
+            # How the KIND reaches the claim row and the dispatch-history row: the
+            # loop reads it back off the returned record exactly as it reads
+            # ``model`` and ``branch`` (``backlog_runner._settle_dispatch``). In
+            # memory only and never persisted with the session — the kind belongs
+            # to the DISPATCH, whose durable home is those two rows. A de-duped
+            # record is stamped too: the row is written either way, and it must say
+            # what this dispatch was for.
+            rec.dispatch_kind = dispatch_kind
         return rec
 
     async def backlog_runner_implement_core(self, primary: str) -> str:
@@ -6939,7 +7145,13 @@ class SessionOrchestrator:
         batch = Batch(primary=primary,
                       issues=(st.get("issues") or [primary]) if pending_batch else [primary],
                       repo=candidate.get("repo") or st.get("repo") or primary.split("#")[0],
-                      titles=titles, product=candidate.get("product") or st.get("product"))
+                      titles=titles, product=candidate.get("product") or st.get("product"),
+                      # A pending claim is no longer in the pool, so the claim row
+                      # is where its hold survives — same fallback chain as repo
+                      # and product. Without it a proposed investigation would be
+                      # tapped into an implementation (spec 2026-09-18 §5).
+                      primary_hold_kind=(candidate.get("hold_kind")
+                                         or st.get("primary_hold_kind")))
         result = await self._backlog_dispatch_batch(batch, source="proposal")
         return result["status"]
 
@@ -6989,7 +7201,13 @@ class SessionOrchestrator:
         titles.update({r: by_ref[r]["title"]
                        for r in refs if r in by_ref and by_ref[r].get("title")})
         batch = Batch(primary=primary, issues=list(refs), repo=repo, titles=titles,
-                      product=by_ref.get(primary, {}).get("product") or previous.get("product"))
+                      product=by_ref.get(primary, {}).get("product") or previous.get("product"),
+                      # Same fallback chain as repo/product: a ref the picker
+                      # offers may already be claimed and therefore out of the
+                      # pool, and the claim row is the only other account of its
+                      # hold — which is what the dispatch KIND is read from (§5).
+                      primary_hold_kind=(by_ref.get(primary, {}).get("hold_kind")
+                                         or previous.get("primary_hold_kind")))
         return await self._backlog_dispatch_batch(batch, source="manual")
 
     async def _backlog_admission(self, batch, *, source: str, existing_slot: bool,
@@ -7583,11 +7801,26 @@ class SessionOrchestrator:
                 lambda s: mirror_store.adopt_epics(s, project_id, now=now))
 
     async def _pm_sync_upsert_items(self, items: list) -> None:
-        """Idempotent upsert into work_items keyed by (repo, number, kind)."""
+        """Idempotent upsert into work_items keyed by (repo, number, kind).
+
+        Also the BIRTH of an auto-filed error report's ``evidence`` hold (spec
+        2026-09-18 §5): an ``auto-error`` issue is a stack trace, not a diagnosis,
+        so it enters the mirror already parked for investigation instead of
+        falling into the queue as ordinary work. This is the only seam that can
+        write it — it is the one place that knows a row is NEW; a tick that
+        re-held an existing row would undo the very investigation that cleared
+        the hold, so the write lives strictly on the new-row branch.
+        """
         from datetime import datetime, timezone
         from sqlalchemy import select
+        from server.audit import record_audit
+        from server.automations.error_triage import LABEL as AUTO_ERROR_LABEL
         from server.db.models import WorkItem
+        from server.pm.holds import (
+            ERROR_TRIAGE_ACTOR, EVIDENCE_BIRTH_REASON, actor_class, set_evidence_hold,
+        )
         async with db_session() as db:
+            born_held: list[WorkItem] = []
             for item in items:
                 existing = (await db.execute(
                     select(WorkItem).where(
@@ -7597,6 +7830,7 @@ class SessionOrchestrator:
                     )
                 )).scalar_one_or_none()
                 now = datetime.now(timezone.utc)
+                is_new = existing is None
                 if existing is None:
                     existing = WorkItem(repo=item.repo, number=item.number,
                                        kind=item.kind)
@@ -7614,6 +7848,24 @@ class SessionOrchestrator:
                 existing.gh_updated_at = item.gh_updated_at
                 existing.gh_closed_at = item.gh_closed_at
                 existing.last_synced_at = now
+                if (is_new and item.kind == "issue" and item.state == "open"
+                        and AUTO_ERROR_LABEL in (item.labels or ())):
+                    # After the field copy on purpose: set_hold fingerprints
+                    # title/body, and the fingerprint is what makes a later body
+                    # edit a release signal for this hold.
+                    set_evidence_hold(existing, reason=EVIDENCE_BIRTH_REASON,
+                                      actor=ERROR_TRIAGE_ACTOR, now=now)
+                    born_held.append(existing)
+            if born_held:
+                # ``WorkItem.id`` is a Python-side default, so it exists only once
+                # the INSERT is flushed — and the audit row must name it.
+                await db.flush()
+                for wi in born_held:
+                    await record_audit(db=db, type="pm.hold.set",
+                                       identity=ERROR_TRIAGE_ACTOR, via="pm_sync",
+                                       detail={"workItemId": wi.id, "kind": "evidence",
+                                               "reason": EVIDENCE_BIRTH_REASON,
+                                               "actorClass": actor_class(ERROR_TRIAGE_ACTOR)})
 
     async def _pm_sync_save_state(self, view, **updates) -> None:
         """Map keyword updates onto the ProjectRepo row for *view*."""
@@ -7913,17 +8165,35 @@ class SessionOrchestrator:
             PmTriage, modes=("propose",),
             log_key="pm_triage")
 
-    async def _pm_triage_list_pending(self) -> list:
-        """Open, UNHELD, unclassified work items with NO pending proposal — the
-        classify candidate set.
+    @staticmethod
+    def _classifiable_hold_clause():
+        """THE hold half of the classify-candidate predicate, shared by
+        ``_pm_triage_list_pending`` and ``_pm_triage_count_state`` so the list and the
+        count can never disagree about who is a candidate.
 
-        ``hold_kind IS NULL`` is what carries "rejection is signal, never blind-retry
-        it" (design §6) since the hold ladder removed the ``needs_human`` triage state
-        (spec 2026-09-18 §3): a rejected proposal parks its item under an
-        ``owner_action`` hold and leaves it ``unclassified``, and the legacy conversion
-        does the same to every pre-ladder row. Filtering on ``triage_state`` alone
-        would put all of them back in the candidate set, spend a classify session each
-        and re-raise an inbox card for work a person already rejected."""
+        Only ``HELD_KINDS`` (``owner_action`` / ``decision``) disqualify an item. Those
+        two carry "a person stopped this, never blind-retry it" (design §6) since the
+        hold ladder removed the ``needs_human`` triage state (spec 2026-09-18 §3): a
+        rejected proposal parks its item under an ``owner_action`` hold and leaves it
+        ``unclassified``, and the legacy conversion does the same to every pre-ladder
+        row. Filtering on ``triage_state`` alone would put all of them back in the
+        candidate set, spend a classify session each and re-raise an inbox card for
+        work a person already rejected.
+
+        An ``evidence`` or ``stronger_model`` hold parks the WORK, not the filing: it
+        says nothing about where the item belongs. And since every auto-filed error
+        report is now BORN under an ``evidence`` hold (spec §5,
+        ``_pm_sync_upsert_items``), excluding that kind would leave the entire
+        auto-error stream permanently unclassified."""
+        from sqlalchemy import or_
+        from server.db.models import WorkItem
+        from server.pm.desired_state import HELD_KINDS
+        return or_(WorkItem.hold_kind.is_(None),
+                   WorkItem.hold_kind.not_in(sorted(HELD_KINDS)))
+
+    async def _pm_triage_list_pending(self) -> list:
+        """Open, unclassified, not parked by a HELD_KINDS hold, and with NO pending
+        proposal — the classify candidate set (see ``_classifiable_hold_clause``)."""
         from sqlalchemy import select
         from server.automations.pm_triage import PendingItemView
         from server.db.models import TriageProposal, WorkItem
@@ -7936,7 +8206,7 @@ class SessionOrchestrator:
                 select(WorkItem).where(
                     WorkItem.state == "open",
                     WorkItem.triage_state == "unclassified",
-                    WorkItem.hold_kind.is_(None))
+                    self._classifiable_hold_clause())
             )).scalars().all()
             return [PendingItemView(
                 repo=w.repo or "", number=w.number or 0, kind=w.kind or "issue",
@@ -8158,11 +8428,10 @@ class SessionOrchestrator:
         return tuple(sorted(latched))
 
     async def _pm_triage_count_state(self):
-        """Build the pure engine view from DB counts (design §6). Excludes HELD
-        (``hold_kind IS NOT NULL``) and already-proposed items from
-        ``unclassified_count`` — the same predicate ``_pm_triage_list_pending``
-        applies, and for the same reason: since the hold ladder removed the
-        ``needs_human`` triage state, the hold is what keeps a rejected item out.
+        """Build the pure engine view from DB counts (design §6). Excludes
+        HELD_KINDS-parked and already-proposed items from ``unclassified_count`` —
+        literally the same ``_classifiable_hold_clause`` ``_pm_triage_list_pending``
+        applies, so the count and the list cannot disagree.
 
         ``day_spawns`` is reported as 0 on purpose: the DB holds no record of the
         sessions THIS process spawned in the window, and ``PmTriageLoop._budgeted``
@@ -8184,7 +8453,7 @@ class SessionOrchestrator:
                 select(WorkItem.id).where(
                     WorkItem.state == "open",
                     WorkItem.triage_state == "unclassified",
-                    WorkItem.hold_kind.is_(None))
+                    self._classifiable_hold_clause())
             )).scalars().all()
             unclassified = sum(1 for wid in open_unclassified
                                if wid not in pending_ids)

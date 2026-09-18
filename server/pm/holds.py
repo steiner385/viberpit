@@ -126,9 +126,12 @@ SYSTEM_ACTORS: frozenset[str] = frozenset({RUNNER_ACTOR, RECONCILER_ACTOR, "migr
 #: at all — the Backlog Runner's spawn CONSUMING the ``stronger_model`` hold it
 #: climbed for (``release_on_dispatch``, spec §4). It belongs in this tuple because
 #: it audits through the same ``pm.hold.release`` shape, and a reader asking "how
-#: can a hold end?" must find every answer in one place.
+#: can a hold end?" must find every answer in one place. ``investigation`` is the
+#: Backlog Runner settling an ended INVESTIGATION on its convert-to-a-fix exit (spec
+#: §5): the session found the root cause, so the ``evidence`` hold that made the
+#: report an investigation instead of an implementation is spent.
 RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay", "session",
-                                    "implement", "dispatch")
+                                    "implement", "dispatch", "investigation")
 #: Board Status values a human moves a card to in order to hand it back.
 RELEASING_BOARD_STATUSES: frozenset[str] = frozenset({"Ready", "Backlog"})
 
@@ -146,6 +149,28 @@ def set_runner_stronger_hold(wi: WorkItem, *, reason: str, now: datetime) -> Non
     top tier parks the item as ``stronger_model`` — agent-settable, queue-eligible —
     so the next refill re-claims it and the spawn pins the next rung."""
     set_hold(wi, kind="stronger_model", reason=reason, actor=RUNNER_ACTOR, now=now)
+
+
+#: The error-triage automation's actor. System class via ``SYSTEM_PREFIXES``, so the
+#: hold it writes is attributed to the machine that filed the issue and never to a
+#: person — spelled once here because the mirror writes it and every reader of a
+#: birth hold (inbox, evidence dispatch) compares against it.
+ERROR_TRIAGE_ACTOR = "automation:error-triage"
+
+#: The one wording of why an auto-filed error report is born parked (spec §5). An
+#: automation's stack trace is a symptom, not a diagnosis: the report must be
+#: investigated before anyone implements against it, so the row enters the mirror
+#: already holding rather than falling into the queue as ordinary work.
+EVIDENCE_BIRTH_REASON = "auto-filed error report: investigate before implementing"
+
+
+def set_evidence_hold(wi: WorkItem, *, reason: str, actor: str, now: datetime) -> None:
+    """Park ``wi`` pending evidence, as ``actor``. Named — and taking ``actor`` rather
+    than pinning one the way ``set_runner_hold`` does — because ``evidence`` is the one
+    kind every class of actor writes: the mirror's birth hold (``ERROR_TRIAGE_ACTOR``),
+    a session parking its own work, a person. Goes through ``set_hold``, so the
+    permission gate and the fingerprint stay identical for all of them."""
+    set_hold(wi, kind="evidence", reason=reason, actor=actor, now=now)
 
 
 def held_refs(db: "Session") -> frozenset[str]:
@@ -239,6 +264,42 @@ def release_on_dispatch(db: "Session", refs: "Sequence[str]", *, now: datetime) 
         released.append(f"{wi.repo}#{wi.number}")
     db.flush()
     return released
+
+
+def release_on_investigation(db: "Session", ref: str) -> bool:
+    """An ended investigation took the CONVERT-TO-A-FIX exit (spec 2026-09-18 §5):
+    clear the ``evidence`` hold on *ref* so the next refill re-claims the report as
+    an ordinary implement candidate, audited as ``investigation``.
+
+    The runner's third hold-release rule, deliberately alongside the other two
+    rather than hand-rolled at the call site: same ``clear_hold`` +
+    ``_audit_release(via="runner")`` shape, so "how can a hold end?" still has one
+    answer per signal in one file.
+
+    Only ``evidence``, and only the investigated issue itself — a batch sibling is
+    closed as a duplicate by the exit that touched it, and a person's
+    ``owner_action`` park is not this signal's to end. Returns whether a hold was
+    actually released: idempotent (a re-run finds nothing) and blind to a malformed
+    ref, exactly like :func:`release_on_dispatch`. Sync — the orchestrator calls it
+    under ``db.run_sync``.
+    """
+    from sqlalchemy import select
+
+    from server.pm.refs import split_ref
+    parts = split_ref(ref)
+    if parts is None:
+        return False
+    repo, number = parts
+    wi = db.scalars(select(WorkItem).where(
+        WorkItem.kind == "issue", WorkItem.repo == repo, WorkItem.number == number,
+        WorkItem.hold_kind == "evidence")).first()
+    if wi is None:
+        return False
+    clear_hold(wi, actor=RUNNER_ACTOR)
+    _audit_release(db, wi, kind="evidence", signal="investigation",
+                   actor=RUNNER_ACTOR, via="runner")
+    db.flush()
+    return True
 
 
 def clear_hold(wi: WorkItem, *, actor: str) -> None:

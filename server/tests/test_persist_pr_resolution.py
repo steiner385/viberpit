@@ -73,6 +73,38 @@ def test_complete_persists_the_source_the_driver_reports(tmp_path, source):
     assert row.pr_resolution_source == source
 
 
+def test_the_no_pr_note_is_persisted_with_the_resolution_it_explains(tmp_path):
+    """``mark_no_pr``'s ``note`` was parsed and then discarded; nothing recorded the
+    session's own reason for finishing without a PR. It is written under the SAME
+    first-write-wins guard as the resolution, so the two always describe one turn —
+    the Backlog Runner settles an ended investigation from the pair (spec
+    2026-09-18 §5). DB-only: no live-stream or API consumer renders it."""
+    async def run():
+        orch = await _build_orch(tmp_path)
+        orch._drivers["s1"] = types.SimpleNamespace(
+            last_pr_resolution="not-needed", last_pr_resolution_source="tool",
+            last_pr_resolution_note="converted to a fix: the counter never resets")
+        await orch._persist_status("s1", "complete")
+        return await _db_row(tmp_path)
+    row = asyncio.run(run())
+
+    assert row.pr_resolution == "not-needed"
+    assert row.pr_resolution_note == "converted to a fix: the counter never resets"
+
+
+def test_a_resolution_with_no_note_persists_none_rather_than_a_synthesised_one(tmp_path):
+    """"No note" is a real answer — the marker path has no argument to carry one —
+    and a partial driver stub without the attribute must behave the same way."""
+    async def run():
+        orch = await _build_orch(tmp_path)
+        orch._drivers["s1"] = types.SimpleNamespace(last_pr_resolution="not-needed")
+        await orch._persist_status("s1", "complete")
+        return await _db_row(tmp_path)
+    row = asyncio.run(run())
+
+    assert row.pr_resolution == "not-needed" and row.pr_resolution_note is None
+
+
 def test_a_driver_without_a_source_attribute_persists_as_marker(tmp_path):
     """`getattr(driver, "last_pr_resolution_source", None) or "marker"`: a partial
     driver stub, and the Codex driver (which keeps the marker contract by design and

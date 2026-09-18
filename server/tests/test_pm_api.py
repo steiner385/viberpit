@@ -2414,8 +2414,11 @@ def test_issue_detail_carries_hold_fields_and_guidance():
 
 
 def test_issue_detail_reads_the_policy_only_for_an_owner_action_hold():
-    """Guidance exists for exactly one kind, so every other read of this endpoint —
-    the common case, an unheld issue — must not pay for the two policy queries."""
+    """`hold_guidance` decides which kinds carry copy; the endpoint just supplies a
+    policy for whichever kind is on the row. Its evidence copy is policy-independent
+    (spec 2026-09-18 §5), so an evidence hold must not pay for the owning-product
+    lookup / policy load an owner_action hold needs — the common unheld-issue case
+    pays for neither."""
     from unittest.mock import AsyncMock
     with _client() as c:
         _register(c, "Viberpit", repo="o/r")
@@ -2427,5 +2430,36 @@ def test_issue_detail_reads_the_policy_only_for_an_owner_action_hold():
         with patch("server.api.pm.load_policies", loader):
             r = c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
-        assert r.json()["holdKind"] == "evidence" and r.json()["guidance"] is None
+        assert r.json()["holdKind"] == "evidence"
+        assert set(r.json()["guidance"]) == {"evidence"}
         loader.assert_not_awaited()
+
+
+def test_issue_detail_guidance_for_evidence_and_none_for_stronger_model():
+    """spec 2026-09-18 §5: an evidence hold's live detail response carries the
+    single button-less consequence `hold_guidance` computes for it (the API gap
+    task 6's own review caught — `guidance` must not stay null in production for
+    this kind); `stronger_model`, which `hold_guidance` does not know, still reads
+    as no guidance at all."""
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        c.patch(f"/api/pm/work-items/{wid}/overlay",
+                json={"holdKind": "evidence", "holdReason": "auto-filed error report"},
+                headers=IDENTITY_HEADERS)
+        r = c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["holdKind"] == "evidence"
+        assert set(body["guidance"]) == {"evidence"}
+        e = body["guidance"]["evidence"]
+        assert e["available"] is True
+        assert "investigates this report instead of implementing it" in e["then"][0]["text"]
+        assert e["immediate"] == []
+
+        c.patch(f"/api/pm/work-items/{wid}/overlay",
+                json={"holdKind": "stronger_model", "holdReason": "bounced at sonnet"},
+                headers=IDENTITY_HEADERS)
+        r = c.get(f"/api/pm/work-items/{wid}/issue", headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["holdKind"] == "stronger_model" and r.json()["guidance"] is None

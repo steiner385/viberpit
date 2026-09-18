@@ -319,3 +319,21 @@ No absolute date literals in any test (date-literal time-bomb rule); use injecte
   behind a human the same way an unclamped ladder rung would have. Apply the same clamp to the
   floor's raise, or accept the gap as D9-specific (it only ever RAISES a real assessment, never
   pins one on its own).
+- §7's "Investigate now" button for an evidence hold is not shipped in 4b (copy only): the
+  disposition dialog says "Investigating next run" and offers no tap. A follow-up adds the button
+  through the existing manual-dispatch route with `dispatch_kind=investigate`.
+- §5's investigation settle reads the issue's state with one live GitHub call
+  (`backlog_github.issue_state_live`) per ended investigation, never the mirror, because the
+  mirror lags a sync interval and the exit happened minutes ago. Cheap at today's volume; worth
+  caching (the way `verify_ready_live` is amortised before a claim) if investigate throughput
+  grows enough to make the per-settle `gh issue view` a rate-limit concern.
+- §5's fingerprint family (`server/pm/error_family.py:family_key`, `logger:event`) is DERIVED from
+  the `ErrorSignature` rows at read time, never a stored column, so it cannot drift from the
+  signatures beneath it — but every grouping refresh re-derives it from scratch rather than
+  reading a persisted value, an extra join the background pass pays on every tick.
+- §5's convert-to-a-fix exit is engine-neutral by construction, but only Claude actually reaches
+  it in practice: the Codex driver/translator latch no resolution and no note
+  (`sessions.pr_resolution_note` stays `NULL` for a Codex session), so a Codex investigation that
+  found the fix still collapses to the hand-off exit — its findings are in the issue body, so the
+  direction is safe, but it is never read back as a conversion. Extend the Codex driver to latch
+  the note, or document the collapse as permanent.

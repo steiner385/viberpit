@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import types
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
@@ -37,7 +38,11 @@ def _build_backlog_orch(config, *, policies=None, tier_floor=None, ladder_rung=N
     it for the primary issue's capability floor, and every test here would
     otherwise reach for a DB. *ladder_rung* stubs ``_backlog_ladder_rung`` the
     same way (spec 2026-09-18 §4): the rung this dispatch is pinned to because
-    the primary issue is parked ``stronger_model``, or ``None`` when it is not."""
+    the primary issue is parked ``stronger_model``, or ``None`` when it is not.
+
+    The dispatch KIND has no seam: it is read off ``Batch.primary_hold_kind``
+    (spec 2026-09-18 §5), which the candidate pool put there and the loop stamped
+    onto the claim intent, so a test picks it by building the batch it wants."""
     import server.sessions.orchestrator as orch_mod
     from server.automations.context import AutomationContext
     orch = orch_mod.SessionOrchestrator.__new__(orch_mod.SessionOrchestrator)
@@ -58,6 +63,7 @@ def _build_backlog_orch(config, *, policies=None, tier_floor=None, ladder_rung=N
     async def rung(product_slug, primary_ref, *, default_model, floor):
         return ladder_rung
     orch._backlog_ladder_rung = rung  # type: ignore[method-assign]
+
     return orch
 
 
@@ -77,6 +83,9 @@ def _patch_git(monkeypatch, tmp_path):
 
 _BATCH = Batch(primary="o/r#7", issues=["o/r#7"], repo="o/r",
                titles={"o/r#7": "fix the frobnicator"}, product="widget")
+# The same batch as it arrives when the primary is parked pending evidence: the
+# candidate pool carries ``hold_kind`` onto the batch (spec 2026-09-18 §5).
+_EVIDENCE_BATCH = replace(_BATCH, primary_hold_kind="evidence")
 
 
 @pytest.mark.asyncio
@@ -90,7 +99,8 @@ async def test_backlog_spawn_passes_pinned_model(tmp_path, monkeypatch):
     # `engine` joins the detail in Phase 7: a spawn record has to say which agent
     # ran it, or a mixed-engine backlog is unreadable after the fact.
     assert captured["detail"] == {"issues": ["o/r#7"], "model": "sonnet",
-                                  "model_source": "pinned", "engine": "claude_code"}
+                                  "model_source": "pinned", "engine": "claude_code",
+                                  "dispatch_kind": "implement"}
 
 
 @pytest.mark.asyncio
@@ -158,7 +168,8 @@ async def test_backlog_spawn_default_keeps_account_default(tmp_path, monkeypatch
     await orch._backlog_spawn(_BATCH, "acct", default_model="default", ownership_token="test-token")
     assert captured["model"] is None
     # No model keys — but the engine is always recorded (Phase 7).
-    assert captured["detail"] == {"issues": ["o/r#7"], "engine": "claude_code"}
+    assert captured["detail"] == {"issues": ["o/r#7"], "engine": "claude_code",
+                                  "dispatch_kind": "implement"}
 
 
 @pytest.mark.asyncio
@@ -236,7 +247,8 @@ async def test_backlog_spawn_raises_an_auto_pick_to_the_capabilitys_floor(
     assert captured["model"] == "opus"
     assert captured["detail"] == {
         "issues": ["o/r#7"], "engine": "claude_code", "model": "opus",
-        "model_source": "auto+floor", "assessed": "sonnet", "floor": "opus"}
+        "model_source": "auto+floor", "assessed": "sonnet", "floor": "opus",
+        "dispatch_kind": "implement"}
 
 
 @pytest.mark.asyncio
@@ -294,7 +306,8 @@ async def test_backlog_spawn_pinned_model_is_untouched_by_a_floor_and_unaudited(
 
     assert captured["model"] == "sonnet"
     assert captured["detail"] == {"issues": ["o/r#7"], "model": "sonnet",
-                                  "model_source": "pinned", "engine": "claude_code"}
+                                  "model_source": "pinned", "engine": "claude_code",
+                                  "dispatch_kind": "implement"}
     assert await _audit_model_picks() == []
 
 
@@ -445,7 +458,8 @@ async def test_backlog_spawn_pins_the_ladder_rung_over_an_auto_pick(tmp_path, mo
     assert captured["model"] == "opus"
     assert captured["detail"] == {
         "issues": ["o/r#7"], "engine": "claude_code", "model": "opus",
-        "model_source": "pinned", "ladder_rung": "opus"}
+        "model_source": "pinned", "ladder_rung": "opus",
+        "dispatch_kind": "implement"}
 
 
 @pytest.mark.asyncio
@@ -561,6 +575,69 @@ async def test_backlog_spawn_without_a_rung_keeps_the_hold(isolated_db, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_backlog_spawn_investigates_an_evidence_held_primary(tmp_path, monkeypatch):
+    """Spec 2026-09-18 §5: an evidence-held primary is an auto-filed error report
+    nobody has triaged, so the dispatch is an INVESTIGATION — the investigate seed
+    prompt, ``dispatch_kind="investigate"`` on the spawn record and on the value
+    the loop reads back, and no ladder rung (an evidence item never climbs, so the
+    rung seam's answer is never even asked for, let alone pinned)."""
+    orch = _build_backlog_orch({}, ladder_rung="opus")
+    _patch_git(monkeypatch, tmp_path)
+
+    async def no_branch_listing(repo):
+        raise AssertionError("an investigation must not resolve a default branch")
+    # Review r1 F4: only the implement prompt takes a branch, and resolving one is
+    # a remote branch listing — an investigation must not pay for it.
+    orch._sdlc_default_branch = no_branch_listing  # type: ignore[method-assign]
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    rec = await orch._backlog_spawn(_EVIDENCE_BATCH, "acct", default_model="sonnet",
+                                    ownership_token="test-token")
+
+    assert "Investigate; do not implement" in captured["initial_prompt"]
+    assert captured["detail"]["dispatch_kind"] == "investigate"
+    assert "ladder_rung" not in captured["detail"]
+    assert captured["model"] == "sonnet"        # the stubbed rung never pinned "opus"
+    assert rec.dispatch_kind == "investigate"
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_without_an_evidence_hold_implements(tmp_path, monkeypatch):
+    """The other side of the same switch: no evidence hold, so the batch is
+    implemented exactly as before and the dispatch records itself as such."""
+    orch = _build_backlog_orch({})
+    _patch_git(monkeypatch, tmp_path)
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    rec = await orch._backlog_spawn(_BATCH, "acct", default_model="sonnet",
+                                    ownership_token="test-token")
+
+    assert "Investigate; do not implement" not in captured["initial_prompt"]
+    assert "Open ONE pull request" in captured["initial_prompt"]
+    assert captured["detail"]["dispatch_kind"] == "implement"
+    assert rec.dispatch_kind == "implement"
+
+
+@pytest.mark.asyncio
+async def test_backlog_spawn_of_a_batch_built_outside_the_queue_implements(
+        tmp_path, monkeypatch):
+    """A hold this runner never saw is not a kind: a batch reconstructed without a
+    candidate row (``primary_hold_kind`` unset, the dataclass default) dispatches
+    as the implementation the runner has always made, never as an investigation
+    whose prompt tells the session not to fix anything."""
+    orch = _build_backlog_orch({}, ladder_rung=None)
+    _patch_git(monkeypatch, tmp_path)
+    captured: dict = {}
+    orch._backlog_ctx.spawn_session = _capture_spawn(captured)  # type: ignore[method-assign]
+    rec = await orch._backlog_spawn(
+        Batch(primary="o/r#7", issues=["o/r#7"], repo="o/r"), "acct",
+        default_model="sonnet", ownership_token="test-token")
+
+    assert captured["detail"]["dispatch_kind"] == "implement"
+    assert rec.dispatch_kind == "implement"
+
+
+@pytest.mark.asyncio
 async def test_backlog_spawn_that_dedupes_onto_an_existing_session_keeps_the_hold(
         isolated_db, tmp_path, monkeypatch):
     """Final review M1: the release is guarded on ``deduped`` exactly like the pick
@@ -673,7 +750,7 @@ async def test_backlog_spawn_codex_auto_uses_codex_assessor(tmp_path, monkeypatc
     assert captured["model"] is None
     assert captured["reasoning_effort"] == "high"
     assert captured["detail"] == {
-        "issues": ["o/r#7"], "engine": "codex",
+        "issues": ["o/r#7"], "engine": "codex", "dispatch_kind": "implement",
         "reasoning_effort": "high", "model_source": "auto",
     }
 
@@ -695,7 +772,8 @@ async def test_backlog_spawn_codex_assessment_failure_falls_back(tmp_path, monke
 
     assert captured["model"] is None
     assert captured["reasoning_effort"] is None
-    assert captured["detail"] == {"issues": ["o/r#7"], "engine": "codex"}
+    assert captured["detail"] == {"issues": ["o/r#7"], "engine": "codex",
+                                  "dispatch_kind": "implement"}
 
 
 # --------------------------------------------------------------------------- #

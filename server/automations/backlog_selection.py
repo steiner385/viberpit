@@ -30,6 +30,14 @@ class Batch:
     # row records so the sweep can read the same policy back later. ``None`` for a
     # batch reconstructed from a pre-policy claim or built outside the queue.
     product: str | None = None
+    # The hold mirrored on the PRIMARY issue (``WorkItem.hold_kind``), carried off
+    # the candidate pool. It is what decides the dispatch KIND (spec 2026-09-18
+    # §5: an ``evidence`` primary is investigated, not implemented), and it rides
+    # on the batch so the claim intent and the spawn read ONE answer — a claim the
+    # loop stamps ``investigate`` can never be spawned as an implementation, and a
+    # recovery settle that only has the intent still knows which it was. ``None``
+    # for an unheld primary, or one whose batch was built outside the queue.
+    primary_hold_kind: str | None = None
 
 
 def should_free_slot(pr_info: PullRequestInfo, pr_doctor_active: bool) -> bool:

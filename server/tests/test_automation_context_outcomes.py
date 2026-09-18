@@ -356,6 +356,32 @@ async def test_finalize_inserts_a_fallback_row_when_the_spawn_write_was_lost(db_
 
 
 @pytest.mark.asyncio
+async def test_a_fallback_dispatch_kind_is_checked_like_record_outcomes(db_env):
+    """Review r1 F3: ONE ``DISPATCH_KINDS`` check for both writers of the column.
+    ``record_outcome`` has always refused an unknown kind as a programming error;
+    the §13 recovery insert took its kind from the claim row and wrote it
+    unvalidated, and the column is nullable free text, so nothing downstream would
+    ever have caught it."""
+    await _seed(db_env)
+    ctx = AutomationContext("backlog-runner")
+    with pytest.raises(ValueError, match="unknown dispatch kind"):
+        await ctx.finalize_outcome(
+            "o/r#7", outcome="no_pr", cause="c",
+            fallback={"product_slug": "viberpit", "session_id": "s1", "model": "sonnet",
+                      "attempt_no": 1, "dispatch_kind": "reproduce"})
+    assert await _rows() == [], "the refusal must not have written a row"
+
+    # The vocabulary's own values still insert, and a claim row written before the
+    # kind existed still reads as the implementation it was.
+    await ctx.finalize_outcome(
+        "o/r#7", outcome="no_pr", cause="c",
+        fallback={"product_slug": "viberpit", "session_id": "s1", "model": "sonnet",
+                  "attempt_no": 1, "dispatch_kind": "investigate"})
+    (row,) = await _rows()
+    assert row.dispatch_kind == "investigate"
+
+
+@pytest.mark.asyncio
 async def test_a_fallback_is_only_a_last_resort(db_env):
     """The fallback NEVER adds a second row: a running row still wins, and so does
     an upgradable one. One row per dispatch is the invariant every reader leans

@@ -81,6 +81,32 @@ def test_mark_no_pr_sets_the_declared_resolution_and_a_tool_source():
     assert end.outcome == "complete"
     assert end.pr_resolution == "cancelled"
     assert end.pr_resolution_source == "tool"
+    assert end.pr_resolution_note == "user pulled it"
+
+
+def test_the_no_pr_note_travels_only_with_the_tool_that_carried_it():
+    """The note is the session's own account of WHY there is no PR — the Backlog
+    Runner settles an ended investigation from it (spec 2026-09-18 §5). The marker
+    path has no argument to carry one, so it is None rather than a guess scraped out
+    of the prose, and a hand-back that outranks the resolution drops it too."""
+    t = Translator()
+    feed_assistant_text(t, "all set\n<!-- viberpit:no-pr -->", pid=None)
+    end = feed_result(t)
+    assert end.pr_resolution == "not-needed" and end.pr_resolution_note is None
+
+    t = Translator()
+    feed_assistant_tool_call(t, MARK_NO_PR, {"resolution": "not-needed"}, pid=None)
+    assert feed_result(t).pr_resolution_note is None, "no note given"
+
+    t = Translator()
+    feed_assistant_tool_call(t, MARK_NO_PR,
+                             {"resolution": "not-needed", "note": "converted to a fix: x"},
+                             pid=None)
+    feed_assistant_tool_call(t, "mcp__viberpit__hand_back", {"reason": "which repo?"},
+                             pid=None)
+    end = feed_result(t)
+    assert end.outcome == "hand_back"
+    assert end.pr_resolution is None and end.pr_resolution_note is None
 
 
 def test_the_tool_wins_over_a_marker_in_the_same_turn():

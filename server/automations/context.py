@@ -96,6 +96,18 @@ def _elapsed_s(started_at: datetime | None, now: datetime) -> float | None:
     return (now - started).total_seconds()
 
 
+def _check_dispatch_kind(kind: str) -> str:
+    """THE ``DISPATCH_KINDS`` check, for BOTH writers of the column — the
+    spawn-time ``record_outcome`` insert and ``finalize_outcome``'s §13 recovery
+    insert, which takes its kind from the claim row. An unknown kind is a
+    programming error and raises even though the rest of each write is
+    best-effort; the column is nullable free text, so nothing downstream would
+    catch a value the vocabulary forbids."""
+    if kind not in DISPATCH_KINDS:
+        raise ValueError(f"unknown dispatch kind {kind!r}")
+    return kind
+
+
 async def _fingerprint_for(db, target: str) -> str | None:
     """The D8 body fingerprint for ``owner/repo#N`` off its mirror row, or None when
     the ref is unparseable or unmirrored — a row with no fingerprint can never be
@@ -486,9 +498,9 @@ class AutomationContext:
 
         *dispatch_kind* records what the dispatch was FOR (``DISPATCH_KINDS``): an
         ``investigate`` dispatch never opens a PR by design, so it must never count
-        as a bounce (``bounces_stmt`` filters it out). An unknown kind is a
-        programming error and raises even though the rest of the write is
-        best-effort — the ``try`` below only guards the DB half.
+        as a bounce (``bounces_stmt`` filters it out). It is checked through the
+        shared ``_check_dispatch_kind`` before the ``try`` below, which only guards
+        the DB half.
 
         A new dispatch first closes any row still ``running`` for this target as
         ``superseded``: AT MOST ONE running row per (automation, target) is the
@@ -501,8 +513,7 @@ class AutomationContext:
         Every import this needs sits at module scope: an ImportError raised inside
         the method would escape the ``try`` below, and "best effort" has to mean
         the whole write."""
-        if dispatch_kind not in DISPATCH_KINDS:
-            raise ValueError(f"unknown dispatch kind {dispatch_kind!r}")
+        _check_dispatch_kind(dispatch_kind)
         try:
             async with (db_session() if _db is None else nullcontext(_db)) as db:
                 now = datetime.now(timezone.utc)
@@ -552,8 +563,10 @@ class AutomationContext:
         *fallback* is spec §13's recovery for the OTHER way a row can be missing:
         the spawn-time write failed (history is best-effort, dispatch is not), so
         the dispatch really happened but left nothing behind. Given
-        ``{"product_slug", "session_id", "model", "attempt_no"}`` — the claim's own
-        facts — an already-FINALISED row is inserted here instead: the fingerprint
+        ``{"product_slug", "session_id", "model", "attempt_no", "dispatch_kind"}``
+        — the claim's own facts, ``dispatch_kind`` defaulting to ``implement`` for a
+        claim written before the kind existed — an already-FINALISED row is
+        inserted here instead: the fingerprint
         read off the mirror row exactly as ``record_outcome`` reads it (or the
         bounce could never be counted against the body it bounced on),
         ``started_at`` left None because nobody knows when it began (and so
@@ -563,6 +576,12 @@ class AutomationContext:
         no-op."""
         if outcome not in DISPATCH_OUTCOMES:
             raise ValueError(f"unknown dispatch outcome {outcome!r}")
+        # Checked HERE, beside the outcome check and outside the best-effort
+        # ``try``, so the recovery insert cannot persist a kind ``record_outcome``
+        # would have refused (the column is nullable free text — nothing else
+        # would catch it).
+        fallback_kind = (None if fallback is None else
+                         _check_dispatch_kind(fallback.get("dispatch_kind") or "implement"))
         try:
             async with (db_session() if _db is None else nullcontext(_db)) as db:
                 # ``id`` breaks a created_at TIE deterministically: two dispatches
@@ -616,6 +635,7 @@ class AutomationContext:
                         session_id=fallback.get("session_id"),
                         model=fallback.get("model"),
                         attempt_no=fallback.get("attempt_no"),
+                        dispatch_kind=fallback_kind,
                         started_at=None, ended_at=now, updated_at=now,
                         outcome=outcome, cause=cause,
                         pr_number=pr_number, pr_url=pr_url,

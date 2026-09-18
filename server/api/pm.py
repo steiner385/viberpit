@@ -1798,13 +1798,18 @@ async def get_work_item_issue(item_id: str, _identity: str = Depends(current_ide
     wi = await db.get(WorkItem, item_id)
     if wi is None or wi.kind != "issue":
         raise HTTPException(status_code=404, detail={"error": "issue_not_found"})
-    # Guidance exists for owner_action alone (`hold_guidance` returns None for every
-    # other kind), so the owning-product lookup and the policy load — two queries on
-    # the common, unheld read — run only when there is guidance to compute.
+    # `hold_guidance` is what decides which hold kinds carry copy (owner_action and
+    # evidence today) — this endpoint never spells that list, it just supplies a
+    # policy and lets the function answer None for anything it doesn't know. The
+    # owning-product lookup and the policy load are the expensive half of that, so
+    # they run only for owner_action, whose copy actually varies with the product's
+    # dispatch policy; evidence's copy is policy-independent (see hold_guidance's
+    # docstring), so it gets the cheap `effective_policy(None)` default rather than
+    # paying for a lookup its answer can never use.
     guidance = None
-    if wi.hold_kind == "owner_action":
+    if wi.hold_kind is not None:
         policy = effective_policy(None)
-        if wi.repo:
+        if wi.hold_kind == "owner_action" and wi.repo:
             slug_by_repo = {repo: owner.slug for repo, owner
                             in (await owning_projects_by_repo(db, {wi.repo})).items()}
             slug = slug_by_repo.get(wi.repo)

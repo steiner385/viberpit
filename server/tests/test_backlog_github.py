@@ -20,6 +20,7 @@ from ccswitch import gitrepos
 from server.automations.backlog_github import (
     announce_claim,
     announce_needs_human,
+    issue_state_live,
     verify_ready_live,
 )
 from server.automations.backlog_selection import Batch
@@ -169,6 +170,41 @@ def test_verify_ready_live_consults_every_owner_with_its_own_token():
         assert set(gh.tokens) == {"tok-acme", "tok-other"}
         gh = ByOwner(ready_other=False)
         assert verify_ready_live(["acme/r1#1", "other/r2#2"], gh_run=gh) is False
+
+
+# --------------------------------------------------------------------------- #
+# issue_state_live — how an ended INVESTIGATION is settled (spec §5)           #
+# --------------------------------------------------------------------------- #
+
+def test_issue_state_live_reads_the_live_state_with_the_repos_token():
+    gh = FakeGh({("issue", "view"): _proc(stdout=json.dumps({"state": "CLOSED"}))})
+    with _app_tokens():
+        assert issue_state_live("o/r#5", gh_run=gh) == "closed"
+    assert gh.calls == [["issue", "view", "5", "--repo", "o/r", "--json", "state"]]
+    assert gh.tokens == ["tok-o"]
+
+
+def test_issue_state_live_reads_open():
+    gh = FakeGh({("issue", "view"): _proc(stdout=json.dumps({"state": "OPEN"}))})
+    assert issue_state_live("o/r#5", gh_run=gh) == "open"
+
+
+def test_issue_state_live_is_none_when_the_answer_is_unknown():
+    """Unknown must never collapse to "open" — that is the hand-off case, and the
+    caller retries instead of giving a human an issue because gh was down."""
+    failed = FakeGh({("issue", "view"): _proc(returncode=1, stderr="boom")})
+    assert issue_state_live("o/r#5", gh_run=failed) is None
+    unparseable = FakeGh({("issue", "view"): _proc(stdout="<html>rate limited</html>")})
+    assert issue_state_live("o/r#5", gh_run=unparseable) is None
+    unexpected = FakeGh({("issue", "view"): _proc(stdout=json.dumps({"state": "MERGED"}))})
+    assert issue_state_live("o/r#5", gh_run=unexpected) is None
+
+
+def test_issue_state_live_never_calls_gh_for_a_malformed_ref():
+    gh = FakeGh()
+    assert issue_state_live("not-a-ref", gh_run=gh) is None
+    assert issue_state_live("o/r#abc", gh_run=gh) is None
+    assert gh.calls == []
 
 
 # --------------------------------------------------------------------------- #

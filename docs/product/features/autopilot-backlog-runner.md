@@ -14,8 +14,12 @@ links:
     - server/automations/backlog_selection.py
     - server/automations/backlog_grouping.py
     - server/automations/backlog_github.py
+    - server/automations/backlog_prompt.py
     - server/automations/product_policy.py
     - server/pm/outcomes.py
+    - server/pm/holds.py
+    - server/pm/error_family.py
+    - server/pm/explain.py
     - server/automations/model_pick.py
     - server/automations/action_providers.py
     - server/automations/consolidation_engine.py
@@ -274,6 +278,128 @@ PR linkage, never on labels alone.
   the batch's PRIMARY issue while the hold release clears the WHOLE batch. A per-account
   model-approval action stricter than the app-wide one judged at policy-load time can still park a
   ladder dispatch behind a human, because the account is not known until the spawn.
+
+  **Evidence dispatch (series item 4b, spec 2026-09-18 §5).** An auto-filed error report is a
+  stack trace, not a diagnosis: it must be investigated before anyone implements against it, so it
+  is BORN parked. `SessionOrchestrator._pm_sync_upsert_items` writes an `evidence` hold
+  (`server/pm/holds.py:set_evidence_hold`, actor `automation:error-triage`, reason
+  `"auto-filed error report: investigate before implementing"`) the moment a NEW open issue
+  carrying the error-triage label (`server/automations/error_triage.py:LABEL`) enters the mirror —
+  only on the new-row branch, since re-holding an already-mirrored row on a later sync would undo
+  the very investigation that cleared it. `evidence` is agent-settable and queue-eligible exactly
+  like `stronger_model` (see the Holds paragraph in
+  `docs/product/features/product-management-layer.md`), so the runner dispatches it as an
+  ordinary candidate — but `server/pm/outcomes.py:dispatch_kind_for_hold` reads the batch's
+  primary hold and answers `"investigate"` instead of `"implement"`, seeded onto the claim intent
+  at CLAIM time (so a reconciler replay that never saw the spawn record still knows what the
+  dispatch was for) and again at spawn, which is what picks
+  `server/automations/backlog_prompt.py:build_investigate_prompt` over
+  `build_implement_prompt`.
+
+  The investigation prompt is read-only on code — open no PR, push nothing — and must end in
+  exactly ONE of four exits: **close as noise** (comment + `gh issue close`), **consolidate**
+  (comment "duplicate of #primary" + close on every sibling), **convert to a fix** (add a
+  "## Findings" section to the primary issue's body, root cause and reproduction), or **escalate**
+  (write what only the owner can supply into "## Findings"). Finishing is engine-neutral by
+  construction: on Claude the session calls `mark_no_pr("not-needed", note=…)` (convert / close /
+  consolidate) or `mark_no_pr("cancelled", note=…)` (escalate) — Claude alone has the durable
+  signalling-tool surface; Codex, which has none, ends its final message with the same
+  `NO_PR_MARKER` HTML comment every other Codex completion uses, phrased so
+  `resolution_from_text` reads the two cases apart. The convert exit's note always starts
+  `"converted to a fix: "` (`backlog_prompt.CONVERTED_NOTE_PREFIX`) — the one literal the prompt
+  writes and the settle logic matches on. A session that ends without taking one of the four is
+  the fifth, NO-exit case: the runner hands the issue to the owner exactly like an escalation, just
+  with no note of its own.
+
+  **Settle** (`BacklogRunnerLoop._settle_investigation`, only once the session has really ended —
+  `_work_stopped` true AND `_session_alive` false; a session that never ran a turn is released for
+  free like a no-PR bounce). An investigation opens no PR by design, so it is read from the issue's
+  LIVE GitHub state and the hold, never from PR state:
+  `server/automations/backlog_github.py:issue_state_live` (`gh issue view --json state`) and
+  `server/sessions/orchestrator.py:_backlog_investigation_state` (the mirrored hold plus the
+  session's own `sessions.pr_resolution_note`, migration `0052_pr_resolution_note`).
+  - **Unknown issue state** (malformed ref, `gh` failure, an unparseable payload) — the row is left
+    where it is and the next tick tries again. Never read as "still open". The retry is bounded:
+    the consecutive-unknown streak is counted on the claim row
+    (`investigation_unknown_ticks`, reset by the first readable answer) and logged at WARNING from
+    the first one, and after `INVESTIGATION_UNKNOWN_TICKS_MAX` (12) failures in a row the claim is
+    handed to the owner with the reason "could not read the issue state after 12 checks" and an
+    `investigated` event whose `exit` is `unreadable`. Without that terminal a persistently 403ing
+    App token held the row's `max_concurrent` slot forever, invisibly. The UNWIRED seam is exempt —
+    it answers unknown by construction, not by failure, so a deployment that never wired it still
+    settles nothing.
+  - **Closed** — done: finalise the dispatch-outcome row `no_pr` and release the claim.
+  - **Open, no longer mirrored** — nothing to hold and no way to tell which exit was taken; release
+    the claim with no hold write.
+  - **Open, and either the note starts with `CONVERTED_NOTE_PREFIX` or the `evidence` hold is
+    already gone** (a session or a person cleared it directly through `set_hold`) — converted:
+    clear the `evidence` hold FIRST (`server/pm/holds.py:release_on_investigation`, the
+    `RELEASE_SIGNALS` signal `"investigation"`), then finalise the row, so the issue re-enters the
+    queue as an ordinary implement candidate on the next refill.
+  - **Open, held by something that is not the `evidence` hold this dispatch was for** — somebody
+    else's decision (a person's `owner_action`, or any other kind) supersedes; release the claim
+    and write nothing.
+  - **Open, still `evidence`-held, no conversion note** — escalated or no-exit: hand off through
+    the existing give-up path (`owner_action` hold + comment + `gave_up` row + the usual retry
+    signals), carrying the session's own note as the reason — normalised through
+    `issue_filing.neutralize_markers` (the same HTML-comment defence the error filer applies to
+    quoted log text, so a note cannot smuggle a marker onto the public comment) and capped at
+    `NOTE_REASON_MAX` (400 chars, ellipsis) by `_reason_from_note`; a note that collapses to
+    nothing hands off as "investigation ended without an exit" rather than a bare "investigation: ".
+    That one normalised string is also what the `investigated` event stores, so the copy rendered
+    in the automation activity feed carries the same bound as the public comment.
+
+  **Not a bounce.** Every investigate dispatch's `dispatch_outcomes` row carries
+  `dispatch_kind = "investigate"`; `server/pm/outcomes.py:_implement_only()` — the one predicate
+  shared by the bounce count and the ladder's `last_attempt_model` — only ever counts `NULL` or
+  `"implement"` rows, so an investigation's by-design absence of a PR can never read as a failed
+  implementation attempt or climb the model ladder.
+
+  **Family grouping.** Sibling reports of ONE defect — one broken call site can raise from three
+  frames and file three issues with three fingerprints, all sharing the same `logger:event`
+  (`server/pm/error_family.py:family_key`, derived from the `ErrorSignature` rows at read time,
+  never stored) — become ONE investigation instead of N sessions racing to close each other as
+  duplicates. `server/automations/backlog_grouping.py:family_groups(candidates, max_k=…)` splits
+  the candidate pool into evidence groups (bucketed by family in the pool's own queue-rank order,
+  each capped at the product's `max_issues_per_pr` with overflow spilling into further groups of
+  the same family right behind the first) and everything else; the evidence half never reaches the
+  grouping model and is never mixed with implement candidates in one group — a single session
+  cannot be handed both an investigate prompt and an implement prompt.
+  `server/sessions/orchestrator.py:_backlog_attach_families` stamps `"family"` onto evidence
+  candidates only (an implement candidate has no signature row to derive one from) and fails OPEN:
+  a lookup that blows up leaves every evidence candidate familyless, which groups each one alone —
+  the pre-family behaviour, never a lost tick. Sibling reports are bundled only up to
+  `max_issues_per_pr`, which defaults to 1 — raise it to investigate a family in one session.
+
+  **Plan order.** The two halves are interleaved, not concatenated: evidence groups are ranked
+  among the other groups by their best member's queue rank
+  (`backlog_grouping.order_by_pool_rank`, over the pool the global priority queue already ordered),
+  and urgent work still leads. An investigation therefore competes for a dispatch slot exactly like
+  any other candidate at its score — a `Ready`, high-score implement issue is not made to wait
+  behind the day's auto-filed error reports, and an incident still goes first.
+
+  **Still classified.** An `evidence` (or `stronger_model`) hold parks the WORK, not the FILING:
+  `server/sessions/orchestrator.py:_classifiable_hold_clause` excludes only `HELD_KINDS`
+  (`owner_action`, `decision`) from the classify-candidate set, so an auto-filed error report born
+  under `evidence` is still classified normally — otherwise the entire auto-error stream would be
+  permanently unclassified.
+
+  **Limits.**
+  - Sibling reports are bundled only up to `max_issues_per_pr`, which defaults to 1 — raise it to
+    investigate a family in one session. At the default, every family bucket is size 1 and each
+    auto-filed report is investigated alone.
+  - The convert-to-a-fix exit is Claude-only in practice: the Codex driver/translator latch no
+    resolution and no note (`pr_resolution_note` stays `NULL` for a Codex session), so a
+    converting Codex investigation collapses to the hand-off exit instead — its findings are
+    already in the issue body, which is the safe direction, but it is not read back as a
+    conversion.
+  - Already-mirrored auto-error issues get no birth hold: the write lives strictly on the new-row
+    branch of `_pm_sync_upsert_items`, so there is no backfill for issues filed before this landed.
+  - An unmirrored issue at settle time is released without writing a hold.
+  - The issue state read at settle time is a LIVE GitHub call, never the lagging mirror; unknown
+    (a `gh` failure, a malformed ref) retries next tick rather than being read as still open, for
+    at most `INVESTIGATION_UNKNOWN_TICKS_MAX` (12) consecutive ticks before the claim is handed to
+    the owner as unreadable.
 
   **Model pick (phase 4, spec §7, D9).** A product's `default_model` policy field of `auto`
   still asks `assess_model` (one-shot Haiku complexity judgment) for a tier per dispatch; what's

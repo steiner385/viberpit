@@ -314,6 +314,7 @@ class ClaudeAgentDriver:
         self._status_overlay: tuple[str, str] | None = None
         self._last_pr_resolution: str | None = None
         self._last_pr_resolution_source: str | None = None
+        self._last_pr_resolution_note: str | None = None
         self._last_model_request: dict | None = None
         # Per-turn, NOT sticky like _last_pr_resolution: the reason belongs to the turn
         # that handed back, and the next turn clears it so the orchestrator can never
@@ -1248,6 +1249,10 @@ class ClaudeAgentDriver:
                     # as a marker.
                     self._last_pr_resolution = e.pr_resolution
                     self._last_pr_resolution_source = e.pr_resolution_source
+                    # Latched in the same branch for the same reason as the source:
+                    # the note explains THIS resolution, so the two must never be
+                    # able to come from different turns.
+                    self._last_pr_resolution_note = e.pr_resolution_note
                 self._last_hand_back_reason = (
                     e.hand_back_reason if e.outcome == "hand_back" else None)
                 self._latch_model_request(e)
@@ -1524,6 +1529,18 @@ class ClaudeAgentDriver:
         Latched together with ``last_pr_resolution`` and therefore exactly as sticky:
         a turn with no resolution leaves both alone, so the pair can never disagree."""
         return self._last_pr_resolution_source
+
+    @property
+    def last_pr_resolution_note(self) -> str | None:
+        """The ``note`` the ``mark_no_pr`` call gave for ``last_pr_resolution``, or
+        ``None`` (no note, or the marker path, which carries no argument).
+
+        Latched with the resolution and therefore exactly as sticky. Persisted by
+        ``_persist_status`` as ``sessions.pr_resolution_note``: it is the session's
+        own one-line account of why it finished without a PR, and the Backlog Runner
+        reads it back by session id to settle an ended investigation (spec
+        2026-09-18 §5)."""
+        return self._last_pr_resolution_note
 
     @property
     def last_hand_back_reason(self) -> str | None:

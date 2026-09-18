@@ -297,6 +297,40 @@ def find_referencing_pr(ref: str, *, gh_run: GhRun = gitrepos._run_gh):
     )
 
 
+def issue_state_live(ref: str, *, gh_run: GhRun = gitrepos._run_gh) -> str | None:
+    """``"open"`` / ``"closed"`` for issue *ref* on live GitHub, or ``None`` when
+    that is UNKNOWN (malformed ref, gh failure, unparseable or unexpected payload).
+
+    How an ended INVESTIGATION is settled (spec 2026-09-18 §5): its four exits are
+    all expressed on the ISSUE (closed as noise, closed as a duplicate, converted,
+    escalated), never on a PR — an investigation opens none. The board mirror lags
+    GitHub by a sync interval and the exit happened minutes ago, so this asks
+    GitHub, exactly as :func:`verify_ready_live` does before a claim.
+
+    Unknown is a real answer here and never collapses to "open": the caller retries
+    on the next tick rather than handing an issue to a human because gh was down.
+    """
+    repo, number = _split_ref(ref)
+    if not repo or not number.isdigit():
+        log.warning("backlog_github.issue_state_malformed_ref ref=%s", ref)
+        return None
+    proc = gh_run(["issue", "view", number, "--repo", repo, "--json", "state"],
+                  token=gitrepos.app_token_for_repo(repo))
+    if getattr(proc, "returncode", 1) != 0:
+        log.warning("backlog_github.issue_state_failed ref=%s err=%s",
+                    ref, (getattr(proc, "stderr", "") or "").strip())
+        return None
+    try:
+        state = json.loads(getattr(proc, "stdout", "") or "{}").get("state")
+    except (json.JSONDecodeError, AttributeError):
+        log.warning("backlog_github.issue_state_unparseable ref=%s", ref, exc_info=True)
+        return None
+    if not isinstance(state, str) or state.lower() not in ("open", "closed"):
+        log.warning("backlog_github.issue_state_unexpected ref=%s state=%r", ref, state)
+        return None
+    return state.lower()
+
+
 # --------------------------------------------------------------------------- #
 # Comments: the claim / handoff announcements                                  #
 # --------------------------------------------------------------------------- #

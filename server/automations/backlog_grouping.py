@@ -140,21 +140,112 @@ def parse_group_plan(raw: str, candidates: list[dict], max_k: int) -> list[dict]
     for c in (c for c in candidates if c["ref"] not in seen):
         groups.append({"refs": [c["ref"]], "rationale": None})
 
-    # Urgent work leads the plan, whatever the model said and whatever the
-    # leftover ordering is. The queue already ranks incidents first
-    # (``server.pm.queue.rank_key``), but the plan is what the runner actually
-    # pops, so the invariant has to survive this hand-off too — and BOTH paths
-    # here work against it. A model free to order by "implementation priority"
-    # can rank an incident last, and the degraded path sorts leftovers by issue
-    # NUMBER, where an incident is the newest issue in the pool and therefore
-    # always last. That is not hypothetical: two incidents reporting both admin
-    # environments down came out 328th and 329th of 332.
-    #
-    # Stable, so floating urgent work never otherwise reshuffles the model's
-    # priority ordering.
+    return float_urgent_first(groups, candidates)
+
+
+def float_urgent_first(groups: list[dict], candidates: list[dict]) -> list[dict]:
+    """A group holding an urgent candidate leads the plan. Stable, pure, and THE
+    one place the invariant is applied.
+
+    Urgent work leads the plan, whatever the model said and whatever the leftover
+    ordering is. The queue already ranks incidents first
+    (``server.pm.queue.rank_key``), but the plan is what the runner actually pops,
+    so the invariant has to survive this hand-off too — and every path that builds
+    a plan works against it. A model free to order by "implementation priority" can
+    rank an incident last; the degraded path sorts leftovers by issue NUMBER, where
+    an incident is the newest issue in the pool and therefore always last; and the
+    evidence half (:func:`family_groups`) is concatenated ahead of the model's, so
+    an incident would sit behind a day's worth of auto-error reports. That is not
+    hypothetical: two incidents reporting both admin environments down came out
+    328th and 329th of 332.
+
+    Stable, so floating urgent work never otherwise reshuffles the priority
+    ordering it is applied to.
+    """
     urgent_refs = {c["ref"] for c in candidates if c.get("urgent")}
-    groups.sort(key=lambda g: not urgent_refs.intersection(g["refs"]))
-    return groups
+    return sorted(groups, key=lambda g: not urgent_refs.intersection(g.get("refs") or ()))
+
+
+def order_by_pool_rank(groups: list[dict], candidates: list[dict]) -> list[dict]:
+    """Order an assembled plan by each group's BEST member's queue rank. Stable,
+    pure, and the one place two independently-built halves of a plan are merged.
+
+    The evidence half (:func:`family_groups`) and the model's half are built
+    separately and then concatenated, which made the concatenation itself a
+    priority decision: every evidence group led every implement group, so a
+    ``Ready`` score-9 issue waited behind a day's worth of auto-filed error
+    reports (one per dispatch cycle at the ``max_issues_per_pr`` default of 1).
+    Spec 2026-09-18 §5 dispatches an evidence hold "as an ordinary candidate
+    (same capacity, ranking, policy)" — ranking included, so the two halves
+    INTERLEAVE here instead.
+
+    *candidates* arrives in the queue's own ranking
+    (``server.pm.queue.rank_key``: urgency, then score, then age, then ref), so a
+    ref's index in it IS its rank; a group takes the lowest index it holds. Groups
+    are disjoint, so the keys are distinct and the sort is a total order; a group
+    whose refs are all unknown sorts last rather than first. This deliberately
+    subordinates the grouping model's own "implementation priority" ordering to the
+    queue's rank — the same call ``parse_group_plan``'s leftovers already make, and
+    the reason a human score is not re-decided by a consumer.
+
+    Apply :func:`float_urgent_first` AFTER this: urgent work leads the plan
+    whatever the ranking says.
+    """
+    rank = {c["ref"]: i for i, c in enumerate(candidates)}
+    last = len(rank)
+
+    def key(g: dict) -> int:
+        ranks = [rank[r] for r in (g.get("refs") or ()) if r in rank]
+        return min(ranks) if ranks else last
+
+    return sorted(groups, key=key)
+
+
+def family_groups(candidates: list[dict], *,
+                  max_k: int) -> "tuple[list[dict], list[dict]]":
+    """Pure: split *candidates* into ``(evidence groups, everything else)``.
+
+    Two rules of spec 2026-09-18 §5, and they are the same rule seen from two
+    sides. An ``evidence``-held item dispatches as an INVESTIGATION, not as an
+    implementation, so it can never ride a batch with implement work — one session
+    cannot be given both prompts. And sibling reports of one error-triage
+    fingerprint family (``server/pm/error_family.py``) are one defect, so they
+    become one investigation instead of N sessions racing to close each other as
+    duplicates.
+
+    Bucketing is by ``family``; a candidate with none groups alone (a missing key
+    is the absence of evidence of relatedness). Buckets keep the pool's order — the
+    queue's own ranking — and a bucket larger than *max_k* spills into further
+    groups of the same family right behind the first, so the per-dispatch issue cap
+    still applies. The primary is each group's first ref, exactly as everywhere
+    else in the plan.
+
+    Returns groups in the SAME ``{"refs", "rationale"}`` shape ``parse_group_plan``
+    produces and ``store_plan`` persists: the caller concatenates the two halves
+    into one plan, so a second shape here would be a second plan format.
+    """
+    max_k = max(1, int(max_k))
+    evidence = [c for c in candidates if c.get("hold_kind") == "evidence"]
+    rest = [c for c in candidates if c.get("hold_kind") != "evidence"]
+
+    buckets: dict[Any, tuple[str | None, list[str]]] = {}
+    for i, c in enumerate(evidence):
+        family = c.get("family") or None
+        # A familyless item gets a key nothing else can collide with, so "no
+        # family" never becomes a family of its own.
+        key: Any = ("family", family) if family else ("solo", i)
+        buckets.setdefault(key, (family, []))[1].append(c["ref"])
+
+    groups: list[dict] = []
+    for family, refs in buckets.values():
+        for start in range(0, len(refs), max_k):
+            groups.append({
+                "refs": refs[start:start + max_k],
+                "rationale": (f"error-triage family {family}: sibling reports "
+                              f"investigated together" if family else
+                              "auto-filed error report: investigated on its own"),
+            })
+    return groups, rest
 
 
 class GroupingModelError(RuntimeError):
@@ -358,6 +449,11 @@ def plan_to_batch(
         # board — and where it is not, the primary is the issue the session is
         # actually for, so its product is the right owner.
         product=by_ref[primary].get("product"),
+        # Same reason the product rides along: the dispatch KIND is the primary's
+        # question (spec 2026-09-18 §5), and the candidate dict is all the loop
+        # receives across this hand-off. A secondary's hold does not travel — the
+        # session is for the primary, and it is the primary's prompt that is seeded.
+        primary_hold_kind=by_ref[primary].get("hold_kind"),
     ), group.get("id")
 
 

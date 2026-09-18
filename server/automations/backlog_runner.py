@@ -21,7 +21,13 @@ from .context import AutomationContext
 from .engine_policy import EnginePolicy
 from .product_policy import (
     NO_PRODUCT_POLICY_KEY, ImplementationDecision, is_on, policy_for_product)
-from server.pm.outcomes import bounced_out, gated_ladder_top, next_rung, top_tier
+from server.pm.outcomes import (
+    bounced_out,
+    dispatch_kind_for_hold,
+    gated_ladder_top,
+    next_rung,
+    top_tier,
+)
 from server.sessions.model_catalog import model_tier
 
 log = logging.getLogger(__name__)
@@ -472,6 +478,22 @@ NeedsHuman = Callable[[str, str], Awaitable[None]]
 # raising, so a raise here leaves the claim untouched for the next sweep to
 # retry the whole branch.
 Escalate = Callable[[str, str, str], Awaitable[None]]
+# INVESTIGATION settle (spec 2026-09-18 §5): ``investigation_state(target, session_id)``
+# -> ``{"issue_state": "open"|"closed"|None, "mirrored": bool, "hold_kind",
+# "hold_by", "no_pr_note"}``. An investigation opens no PR, so its exit is legible
+# only from the issue (live GitHub, not the lagging mirror), the hold still on it —
+# whose KIND says whether it is still the evidence hold this dispatch was for and
+# whose ACTOR says who parked it if not — and the note its ``mark_no_pr`` call left
+# behind. ``mirrored`` is separate from ``hold_kind`` on purpose: "this row has no
+# hold" and "there is no row" are different answers, and only the first can mean the
+# investigation converted the report. ``issue_state`` None means UNKNOWN — the sweep
+# retries next tick rather than guessing; an unwired seam (stub) answers ``{}``,
+# which is that same unknown, so nothing is settled until the seam is real.
+InvestigationState = Callable[[str, "str | None"], Awaitable[dict]]
+# The one investigation exit that WRITES: convert-to-a-fix clears the ``evidence``
+# hold so the report re-enters the queue as an implement candidate. Returns whether
+# a hold was actually released (False = there was none, or the write is unwired).
+ReleaseInvestigationHold = Callable[[str], Awaitable[bool]]
 # Which ``owner/repo#N`` refs are currently held (owner_action / decision) — the
 # runner's own ``gave_up`` rows follow the hold now, not a timer (spec 2026-09-18
 # §3): ``_release_give_ups`` drops a row once none of its refs is in this set.
@@ -540,6 +562,69 @@ async def _stub_escalate(_target: str, _reason: str, _rung: str) -> None:
     return None
 
 
+#: Longest a session-authored no-PR note may be once it becomes a hand-off reason.
+#: Room for the one sentence the tool asks for; anything past it is pasted context.
+NOTE_REASON_MAX = 400
+
+#: How many consecutive UNKNOWN issue-state reads an ended investigation may cost
+#: before its claim is handed to a human instead of retried forever.
+#:
+#: Unknown is not an exit (a hand-off written on a ``gh`` blip is indistinguishable
+#: afterwards from an investigation that really gave up), so the retry is right —
+#: but an unbounded retry is a wedge: a persistently 403ing App token or a
+#: rate-limited ``gh`` leaves the claim row in flight against ``max_concurrent``
+#: forever, with no event and no visible trace. The same shape as the 13-hour stall
+#: ``_release_legacy_claim`` records. A dozen sweeps is long enough that no
+#: transient outage reaches it and short enough that a wedged slot surfaces the
+#: same day.
+INVESTIGATION_UNKNOWN_TICKS_MAX = 12
+
+
+def _reason_from_note(note: "str | None") -> "str | None":
+    """Make a session's ``mark_no_pr`` note safe to use as a hand-off reason, or
+    ``None`` when there is nothing left of it.
+
+    This is the ONLY model-authored text the runner puts on a public GitHub comment:
+    ``_give_up`` writes the reason into ``WorkItem.hold_reason`` AND into
+    ``announce_needs_human``'s comment body, and every other give-up reason is
+    runner-authored constant text. An investigation reads auto-filed error reports,
+    so an unbounded note can carry a pasted stack trace straight onto the issue —
+    and a multi-KB one makes the comment call fail outright.
+
+    Three bounds, applied once, here, where the reason is built:
+
+    - whitespace collapsed to single spaces, so a multi-line paste becomes one line;
+    - HTML-comment delimiters broken by ``issue_filing.neutralize_markers`` — the
+      same defence the error filer already applies to quoted log text, so a note
+      cannot smuggle a ``<!-- viberpit:… -->`` marker (or hide content) into the
+      comment. Imported, never re-implemented;
+    - capped at ``NOTE_REASON_MAX`` with an ellipsis.
+    """
+    from .issue_filing import neutralize_markers
+
+    if not note:
+        return None
+    collapsed = neutralize_markers(" ".join(str(note).split()))
+    if not collapsed:
+        return None
+    if len(collapsed) <= NOTE_REASON_MAX:
+        return collapsed
+    return collapsed[:NOTE_REASON_MAX - 1].rstrip() + "…"
+
+
+async def _stub_investigation_state(_target: str, _session_id: "str | None") -> dict:
+    # Unwired seam: every field unknown. ``_settle_investigation`` reads that as
+    # "cannot tell yet" and retries on the next tick, so an unwired deployment
+    # never hands an investigation off on a guess.
+    return {}
+
+
+async def _stub_release_investigation_hold(_target: str) -> bool:
+    # Unwired seam: no hold is cleared. The converted exit still finalises its
+    # outcome row — the item simply stays parked until a real seam is wired.
+    return False
+
+
 async def _stub_held_targets() -> "frozenset[str]":
     # Unwired seam: nothing reads as held, so no gave_up row is ever released.
     return frozenset()
@@ -579,6 +664,8 @@ class BacklogRunnerLoop:
         announce: Announce | None = None,
         needs_human: NeedsHuman | None = None,
         escalate: Escalate | None = None,
+        investigation_state: InvestigationState | None = None,
+        release_investigation_hold: ReleaseInvestigationHold | None = None,
         session_ended: SessionEnded | None = None,
         session_ran: SessionRan | None = None,
         session_work_stopped: SessionEnded | None = None,
@@ -618,6 +705,11 @@ class BacklogRunnerLoop:
         self._wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
         self._needs_human = needs_human or _stub_needs_human  # announce the handoff
         self._escalate = escalate or _stub_escalate  # the model-ladder path
+        # The investigation settle (spec §5): one read seam for the exit, one write
+        # seam for the single exit that releases a hold.
+        self._investigation_state = investigation_state or _stub_investigation_state
+        self._release_investigation_hold = (
+            release_investigation_hold or _stub_release_investigation_hold)
         self._held_targets = held_targets or _stub_held_targets  # what backs a gave_up row
         self._session_ended = session_ended         # (session_id) -> bool | None
         # (session_id) -> True when the session row is terminal OR no longer exists.
@@ -1246,6 +1338,13 @@ class BacklogRunnerLoop:
                  "attempts": prior_count, "issues": batch.issues,
                  "titles": batch.titles,
                  "claimed": True, "claimed_at": self._wall_clock().isoformat()}
+        if batch.primary_hold_kind:
+            # Persisted so a claim the queue no longer offers can still be
+            # dispatched for what it IS: the propose tap and manual dispatch build
+            # their batch from the live candidate pool, which excludes claimed
+            # refs, so without this a proposed investigation would be tapped into
+            # an implementation (the pool is the only other place the hold is read).
+            state["primary_hold_kind"] = batch.primary_hold_kind
         if propose:
             state["proposed"] = True
         elif account is None:
@@ -1274,7 +1373,14 @@ class BacklogRunnerLoop:
         token = state["ownership_token"]
         async with owned(token) as tx:
             tx.operation.provenance = {**tx.operation.provenance, "runner_dispatch": {
-                "expected": state, "model": default_model, "source": source, "accounted_at": None}}
+                "expected": state, "model": default_model, "source": source,
+                # Seeded at CLAIM time, exactly like ``model``: the reconciler's
+                # replay settles a dispatch whose process died before the first
+                # settle, and the intent is all it has. Without this seed every
+                # recovered investigation was recorded as an implementation and
+                # its by-design missing PR counted as a bounce (spec §5).
+                "dispatch_kind": dispatch_kind_for_hold(batch.primary_hold_kind),
+                "accounted_at": None}}
         try:
             rec = await self._spawn(batch, account, default_model=default_model,
                                     ownership_token=token)
@@ -1317,7 +1423,8 @@ class BacklogRunnerLoop:
             async with owned(token) as tx:
                 acknowledged = await self._settle_dispatch(
                     tx, batch.primary, getattr(rec, "id", None), getattr(rec, "branch", None),
-                    model=getattr(rec, "model", None))
+                    model=getattr(rec, "model", None),
+                    dispatch_kind=getattr(rec, "dispatch_kind", None))
         except StaleOwnership:
             acknowledged = False
         await self._refresh_dispatch_budget()
@@ -1330,8 +1437,20 @@ class BacklogRunnerLoop:
         return result("spawned", rec)
 
     async def _settle_dispatch(self, tx, target: str, sid: str | None,
-                               branch: str | None, *, model: str | None = None) -> bool:
-        """Observer and callback acknowledge one persisted dispatch intent."""
+                               branch: str | None, *, model: str | None = None,
+                               dispatch_kind: str | None = None) -> bool:
+        """Observer and callback acknowledge one persisted dispatch intent.
+
+        *dispatch_kind* is what the spawn decided this dispatch was FOR (spec
+        2026-09-18 §5) — the spawn hands it back on its record and it is written
+        onto the claim row AND the dispatch-history row, so a later reader (and
+        the recovery path below, which has only the row) knows an investigation
+        from an implementation. Without a record it falls back to the kind the
+        CLAIM seeded onto the intent, which is the reconciler's replay path: that
+        settle never saw a spawn record, so the intent is the only account of what
+        the dispatch was for. Both derive from ``batch.primary_hold_kind`` through
+        ``dispatch_kind_for_hold``, so they cannot disagree. ``implement`` remains
+        the last resort for an intent written before the kind existed."""
         from server.db.models import AutomationTargetState, Session as DbSession
 
         intent = tx.operation.provenance.get("runner_dispatch")
@@ -1344,22 +1463,26 @@ class BacklogRunnerLoop:
             return False
         session = await tx.db.get(DbSession, sid) if sid else None
         model = (session.model if session is not None else None) or model or intent["model"]
+        # The reconciler's replay (``_reconcile_operations``) settles from the
+        # intent alone — it never saw the spawn record — so an investigation it
+        # recovers is read off the kind the CLAIM seeded there.
+        kind = dispatch_kind or intent.get("dispatch_kind") or "implement"
         state = dict(intent["expected"])
         # The APPLIED model, not the policy's ``default_model``: the ladder's
         # ``next_rung`` (spec 2026-09-18 §4) climbs from what this attempt
         # actually ran on, read back off the sweep's ``st.get("model")``.
-        state.update(session_id=sid, branch=branch, model=model)
+        state.update(session_id=sid, branch=branch, model=model, dispatch_kind=kind)
         state.pop("proposed", None)
         try:
             async with tx.db.begin_nested():
                 await self._ctx.record_outcome(
                     target, _db=tx.db, product_slug=state.get("product"), session_id=sid,
-                    model=model, attempt_no=state.get("attempts", 0))
+                    model=model, attempt_no=state.get("attempts", 0), dispatch_kind=kind)
         except Exception:
             log.warning("backlog_runner.outcome_start_failed target=%s", target, exc_info=True)
         row.state = state
         tx.operation.provenance = {**tx.operation.provenance, "runner_dispatch": {
-            **intent, "model": model, "session_id": sid,
+            **intent, "model": model, "dispatch_kind": kind, "session_id": sid,
             "accounted_at": self._wall_clock().isoformat()}}
         return True
 
@@ -1472,9 +1595,12 @@ class BacklogRunnerLoop:
         context inserts one from these instead of losing the bounce. The claim is
         the only surviving account of that dispatch — ``model`` is the APPLIED
         model ``_settle_dispatch`` wrote onto the row (spec 2026-09-18 §4: the
-        ladder climbs from what this attempt actually ran on, not a guess), and
-        ``attempts`` is the count at spawn (the sweep charges its increment after
-        this call), which is exactly what ``record_outcome`` would have written.
+        ladder climbs from what this attempt actually ran on, not a guess),
+        ``dispatch_kind`` is the kind it wrote there too (spec §5: an investigation
+        recovered as an implementation would be counted as a bounce it never was),
+        and ``attempts`` is the count at spawn (the sweep charges its increment
+        after this call), which is exactly what ``record_outcome`` would have
+        written.
 
         ``None`` for a claim that never dispatched (no ``session_id``: a propose
         claim, or one the reaper caught before the spawn record). Nothing ran, so
@@ -1484,7 +1610,8 @@ class BacklogRunnerLoop:
             return None
         return {"product_slug": st.get("product"),
                 "session_id": st.get("implementation_session_id") or st.get("session_id"),
-                "model": st.get("model"), "attempt_no": st.get("attempts", 0)}
+                "model": st.get("model"), "attempt_no": st.get("attempts", 0),
+                "dispatch_kind": st.get("dispatch_kind") or "implement"}
 
     async def _pr_doctor_attempts(self, pr_ref: str) -> int | None:
         """PR Doctor's session-fix count for *pr_ref*, or None when unknown.
@@ -1541,7 +1668,12 @@ class BacklogRunnerLoop:
             reason="current actor observed stopped or not started" if release else "")
 
     async def _give_up(self, target: str, st: dict, reason: str, *,
-                       outcome: dict | None = None, action_completed: bool = False) -> None:
+                       outcome: dict | None = None, action_completed: bool = False) -> bool:
+        # Returns whether the hand-off actually STARTED — i.e. whether the parked row
+        # landed. A lost fence means nothing happened at all and the next sweep
+        # retries the whole branch; the investigation settle reads this so it does
+        # not announce an exit for a hand-off that was not written.
+        #
         # Retain attempt/session provenance and durable exclusion while the human
         # decides. The operational slot can free without permitting a new actor.
         # No timestamp: the owner_action hold ``_backlog_needs_human`` writes on
@@ -1557,7 +1689,7 @@ class BacklogRunnerLoop:
         parked = {**st, "claimed": False, "gave_up": True, "reason": reason, "held": False}
         if not await self._write_state(target, st, parked, outcome=outcome,
                                        action_completed=action_completed):
-            return
+            return False
         await self._ctx.emit("warn", f"{target}: {reason} — needs human",
                              kind="gave_up", target=target)
         try:
@@ -1565,10 +1697,11 @@ class BacklogRunnerLoop:
         except Exception:
             log.warning("backlog_runner.needs_human_announce_failed target=%s", target,
                         exc_info=True)
-            return
+            return True
         # Compare-and-set against the row just parked. A lost CAS (another actor
         # moved the row meanwhile) is left alone: the next tick's sweep retries.
         await self._write_state(target, parked, {**parked, "held": True})
+        return True
 
     async def _release_legacy_claim(self, target: str, st: dict) -> None:
         """Discharge a pre-ownership claim (no ``ownership_token``, #1648) once its
@@ -1650,6 +1783,34 @@ class BacklogRunnerLoop:
                 await self._write_state(target, st, None, action_completed=True, outcome={
                     "outcome": "merged", "pr_number": st.get("closing_pr"),
                     "fallback": self._outcome_fallback(st)})
+            return
+        if st.get("dispatch_kind") == "investigate":
+            # An INVESTIGATION is settled from the issue and the hold, never from PR
+            # state (spec 2026-09-18 §5). It opens no PR by design, so every branch
+            # below — the merged close-out, PR Doctor's give-up, "PR closed
+            # unmerged", the hand-off to PR Doctor and the no-PR ladder climb —
+            # would read its correct, deliberate absence of a PR as a failed
+            # implementation and charge a bounce it never was. Placed here, before
+            # the PR read, so it does not even pay for the answer it must not use.
+            #
+            # BOTH gates the no-PR bounce below uses, not just the first. They
+            # answer different questions: ``_work_stopped`` says the native actor
+            # quiesced, while ``_session_alive`` says the session row is terminal —
+            # and ``complete`` satisfies the first while failing the second, because
+            # a completed session is still attached and resumable. A settle on that
+            # status alone would hand a live investigation to the owner (owner_action
+            # hold + a public issue comment) because it had not signalled an exit
+            # *yet*. An investigate row is never ``handed_off`` (that needs a PR), so
+            # the aliveness half is all this branch borrows.
+            #
+            # A session that never ran a turn is still the existing no-penalty
+            # release: nothing was investigated either.
+            if not await self._work_stopped(st) or await self._session_alive(st):
+                return
+            if not await self._session_ever_ran(st):
+                await self._release_never_ran(target, st)
+                return
+            await self._settle_investigation(target, st)
             return
         info = await self._pr_status_for(target)
         if info is not None and info.number in (st.get("unlinked_prs") or []):
@@ -1767,20 +1928,7 @@ class BacklogRunnerLoop:
         # was written for it.
         attempts = st.get("attempts", 0) + 1
         if not await self._session_ever_ran(st):
-            # No ``upgrade_from`` here (final review M3). It was the "the verdict
-            # arrives a sweep late" fallback from the attempt-cap era; now that the
-            # check runs on EVERY bounce it fires on the first sweep after the
-            # session ends, when this dispatch has no ``no_pr`` row of its own — so
-            # the newest upgradable row it found could only ever belong to a
-            # PREVIOUS claim cycle, whose bounce survives re-queueing and would be
-            # rewritten as this dispatch's "never ran a turn". With the running row
-            # missing (§13) the fallback insert is the right recovery: it is guarded
-            # by THIS dispatch's session id, so it can add at most one row.
-            if await self._write_state(target, st, None, outcome={
-                    "outcome": "abandoned", "cause": "session never ran a turn",
-                    "fallback": fallback}):
-                await self._ctx.emit("info", f"released {target} (session never ran a turn)",
-                                     kind="unclaimed", target=target)
+            await self._release_never_ran(target, st)
             return
         previous = st.get("model")
         ladder_policy = self._policy_for(st.get("product"))
@@ -1825,6 +1973,236 @@ class BacklogRunnerLoop:
         await self._escalate(target, reason, rung)
         if not await self._write_state(target, st, None, outcome=no_pr_outcome):
             return  # release lost the fence — leave it for the next sweep
+
+    async def _release_never_ran(self, target: str, st: dict) -> None:
+        """The no-penalty release for a dispatch whose session never started turn
+        one (#1100): the batch was not attempted, so nothing may be charged against
+        it — no bounce, no ladder climb, no hand-off. The item goes straight back in
+        the pool.
+
+        ONE implementation for both callers (the no-PR bounce path and the
+        investigation settle): what "never ran" costs must not depend on which kind
+        of dispatch failed to start.
+
+        No ``upgrade_from`` here (final review M3). It was the "the verdict arrives a
+        sweep late" fallback from the attempt-cap era; now that the check runs on
+        EVERY bounce it fires on the first sweep after the session ends, when this
+        dispatch has no ``no_pr`` row of its own — so the newest upgradable row it
+        found could only ever belong to a PREVIOUS claim cycle, whose bounce survives
+        re-queueing and would be rewritten as this dispatch's "never ran a turn".
+        With the running row missing (§13) the fallback insert is the right recovery:
+        it is guarded by THIS dispatch's session id, so it can add at most one row."""
+        if await self._write_state(target, st, None, outcome={
+                "outcome": "abandoned", "cause": "session never ran a turn",
+                "fallback": self._outcome_fallback(st)}):
+            await self._ctx.emit("info", f"released {target} (session never ran a turn)",
+                                 kind="unclaimed", target=target)
+
+    async def _settle_investigation(self, target: str, st: dict) -> None:
+        """Settle one ENDED investigation from the issue's real state and the hold
+        (spec 2026-09-18 §5) — never from PR state, and never as a bounce.
+
+        The four exits the investigate prompt offers are all expressed outside the
+        session, so this reads them back rather than trusting a claim:
+
+        1/2. **closed as noise / consolidated** — the issue is closed. Done: finalise
+             the outcome row and release the claim.
+        3.   **converted to a fix** — the issue is still open and either the session
+             said so in its ``mark_no_pr`` note (``CONVERTED_NOTE_PREFIX``, the
+             engine-neutral signal: Codex has no hold-setting tool) or the
+             ``evidence`` hold is already gone because a session or a person cleared
+             it. The runner clears the hold on the note case, and the item re-enters
+             the queue as an ordinary implement candidate on the next refill.
+        4.   **escalated** — and its twin, **no exit at all**: the issue is open and
+             still holds ``evidence``, so nothing was resolved. Hand it to the owner
+             through the existing ``_give_up`` (owner_action hold + comment +
+             ``gave_up`` row + retry), carrying the session's own note — bounded and
+             marker-stripped by ``_reason_from_note``, because this is the one
+             give-up reason that is model-authored text on a public comment — as the
+             reason when it left one. That hold REPLACES the evidence hold, which is
+             exactly what the escalate exit means.
+
+        Two non-exits still have to release the claim, and NEITHER may be read as a
+        conversion — that event is the metric for whether investigating pays, and a
+        false ``converted`` on it is worse than no row at all:
+
+        - the issue is **held by somebody else** (any hold that is not the
+          ``evidence`` one this dispatch was for): their decision supersedes, so the
+          row is released and no hold or comment is written;
+        - the issue is **not mirrored** any more: there is no hold to read, so the
+          claim is released as exactly that.
+
+        UNKNOWN is the last answer and it is not an exit at all: a seam failure or an
+        unreachable GitHub leaves the row untouched and the next tick tries again.
+        Handing an issue to a human because ``gh`` was down would be
+        indistinguishable, afterwards, from an investigation that really gave up. The
+        retry is BOUNDED, though — see :meth:`_unknown_issue_state`: the streak is
+        counted on the row and a claim that has answered unknown
+        ``INVESTIGATION_UNKNOWN_TICKS_MAX`` times running is handed off rather than
+        holding its concurrency slot forever.
+
+        Every path finalises its outcome row as ``no_pr`` — an investigation opening
+        no PR is the SUCCESS case — and the row's ``dispatch_kind`` is
+        ``investigate`` (stamped at spawn), so ``bounces_stmt`` never counts one of
+        these as a bounce.
+        """
+        from server.pm.holds import actor_class
+
+        from .backlog_prompt import CONVERTED_NOTE_PREFIX
+
+        # ``session_id``, not the ``implementation_session_id`` PR-Doctor hand-off
+        # key: an investigate row can never carry one (the branch returns before any
+        # hand-off path), and reading it first would mean the note came from a
+        # different session than the one ``_session_ever_ran`` and ``_work_stopped``
+        # just probed on this same row.
+        sid = st.get("session_id")
+        try:
+            info = await self._investigation_state(target, sid)
+        except Exception:
+            log.warning("backlog_runner.investigation_state_failed target=%s", target,
+                        exc_info=True)
+            info = {}
+        issue_state = info.get("issue_state")
+        note = info.get("no_pr_note") or None
+        # ONE normalisation, reused: the hand-off reason below and the
+        # ``investigated`` event's copy are the same session-authored text, and the
+        # event is rendered in the automation activity feed, so a pasted stack trace
+        # must not land there at full length either.
+        safe = _reason_from_note(note)
+        fallback = self._outcome_fallback(st)
+        if issue_state not in ("open", "closed"):
+            await self._unknown_issue_state(target, st, sid, safe, fallback)
+            return
+        if st.get("investigation_unknown_ticks"):
+            # A readable answer ends the streak. Rewrite the row before acting on
+            # it so the counter cannot survive into a later, unrelated outage — and
+            # rebind ``st``, because every write below fences on the exact snapshot.
+            cleared = {**st, "investigation_unknown_ticks": 0}
+            if not await self._write_state(target, st, cleared):
+                return  # lost the fence — the next sweep re-reads
+            st = cleared
+        converted = bool(note) and str(note).strip().lower().startswith(
+            CONVERTED_NOTE_PREFIX)
+
+        async def finalise(cause: str) -> bool:
+            return await self._write_state(target, st, None, outcome={
+                "outcome": "no_pr", "cause": cause, "fallback": fallback})
+
+        if issue_state == "closed":
+            if not await finalise("investigation: issue closed"):
+                return  # release lost the fence — leave it for the next sweep
+            await self._investigated(target, "closed", safe)
+            return
+        hold_kind = info.get("hold_kind")
+        if not info.get("mirrored"):
+            # The issue left the mirror (or never entered it) while the
+            # investigation ran. There is no hold to touch and no way to tell which
+            # exit was taken, but the claim must not sit forever on a row nothing
+            # can re-select — release it and say exactly that, rather than reading
+            # the absent hold as a conversion.
+            log.info("backlog_runner.investigation_state_unmirrored target=%s session=%s",
+                     target, sid)
+            if not await finalise("investigation: issue unmirrored"):
+                return
+            await self._investigated(target, "unmirrored", safe)
+            return
+        if converted:
+            # Clear the hold BEFORE releasing the row (the escalate-then-release
+            # ordering the ladder uses, review R1 I2 item 2): a raise leaves the
+            # claim intact and the next sweep retries the whole branch. A hold the
+            # session or a person already cleared makes the write seam answer False,
+            # which is simply the observation that the conversion happened.
+            await self._release_investigation_hold(target)
+            if not await finalise("investigation: converted to a fix"):
+                return
+            await self._investigated(target, "converted", safe)
+            return
+        if hold_kind is None:
+            # No note, but the hold is gone: a Claude session cleared its own
+            # ``evidence`` hold through ``set_hold``, or a person did. Converted is
+            # the only thing that can mean — and ONLY ``None`` means it, because
+            # "no hold" and "no row" are now different answers (``mirrored`` above)
+            # and a hold of some OTHER kind is somebody else's park, below.
+            if not await finalise("investigation: converted to a fix"):
+                return
+            await self._investigated(target, "converted", safe)
+            return
+        if hold_kind != "evidence":
+            # Somebody parked the issue while the investigation ran — a person's
+            # ``owner_action``/``decision``, or any other kind that is not the
+            # evidence hold this dispatch was for. Their decision supersedes the
+            # investigation's, so the claim is released and NOTHING is written: a
+            # ``_give_up`` here would overwrite their hold with the runner's and
+            # comment on an issue whose owner has already spoken. A hold with no
+            # recorded actor classes as a person, which is the same conservative
+            # direction: leave it alone.
+            held_by = f"investigation: held by {actor_class(info.get('hold_by') or '')}"
+            if not await finalise(held_by):
+                return
+            await self._investigated(target, "held", safe)
+            return
+        reason = f"investigation: {safe}" if safe else "investigation ended without an exit"
+        if await self._give_up(target, st, reason, outcome={
+                "outcome": "no_pr", "cause": reason, "fallback": fallback}):
+            await self._investigated(target, "escalated" if safe else "no_exit", safe)
+
+    async def _unknown_issue_state(self, target: str, st: dict, sid: "str | None",
+                                   safe: "str | None", fallback: dict | None) -> None:
+        """An ended investigation whose issue state could not be read. Retry — but a
+        BOUNDED number of times.
+
+        Unknown is not an exit: a hand-off written because ``gh`` was down would be
+        indistinguishable afterwards from an investigation that really gave up, so
+        the row is left exactly where it is and the next tick asks again. What that
+        rule lacked was a terminal. A persistently failing read (an expired App
+        token, a sustained 403, a rate limit) answered UNKNOWN forever, and the claim
+        row kept its ``max_concurrent`` slot forever with it — invisibly, at INFO,
+        with no event on the automation card.
+
+        So the streak is counted ON THE ROW (``investigation_unknown_ticks``, reset
+        by the first readable answer), logged at WARNING from the very first one, and
+        after ``INVESTIGATION_UNKNOWN_TICKS_MAX`` consecutive failures the claim is
+        handed to the owner through the ordinary ``_give_up`` with a reason that says
+        exactly what happened — a wedged slot returned to the pool and a human told
+        why, which is strictly better than a slot nobody can see is gone.
+
+        The UNWIRED seam (``_stub_investigation_state``) is exempt: it answers
+        unknown by construction, not by failure, and a deployment that never wired
+        the seam must not hand every investigation it has to a human twelve ticks
+        later. That is the one case where "unknown" is not evidence of anything.
+        """
+        wired = self._investigation_state is not _stub_investigation_state
+        if not wired:
+            log.info("backlog_runner.investigation_state_unwired target=%s session=%s",
+                     target, sid)
+            return
+        ticks = int(st.get("investigation_unknown_ticks") or 0) + 1
+        log.warning("backlog_runner.investigation_state_unknown target=%s session=%s "
+                    "count=%d", target, sid, ticks)
+        if ticks < INVESTIGATION_UNKNOWN_TICKS_MAX:
+            await self._write_state(target, st,
+                                    {**st, "investigation_unknown_ticks": ticks})
+            return
+        reason = ("investigation: could not read the issue state after "
+                  f"{INVESTIGATION_UNKNOWN_TICKS_MAX} checks")
+        if await self._give_up(target, st, reason, outcome={
+                "outcome": "no_pr", "cause": reason, "fallback": fallback}):
+            await self._investigated(target, "unreadable", safe)
+
+    async def _investigated(self, target: str, exit_: str, note: "str | None") -> None:
+        """One ``investigated`` event per settled investigation — the only durable
+        account of WHICH exit a dispatch that opens no PR took, and the metric for
+        whether investigating auto-filed reports is worth the dispatches. Emitted
+        only after the settle it describes has landed (``emit`` is itself
+        best-effort and never raises).
+
+        *note* is the session's note as ``_reason_from_note`` left it — collapsed,
+        marker-stripped and capped. The event detail is rendered in the automation
+        activity feed, so it gets the same bound as the GitHub-facing copy rather
+        than the raw text; one call upstream produces both."""
+        await self._ctx.emit(
+            "info", f"{target}: investigation {exit_}", kind="investigated",
+            target=target, detail={"exit": exit_, "note": note})
 
     async def _session_ever_ran(self, st: dict) -> bool:
         """Whether this target's session ever started turn one.

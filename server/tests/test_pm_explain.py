@@ -44,11 +44,12 @@ def test_reject_is_immediate_and_dispatches_nothing():
     assert r["when"] == "now"
 
 
-def test_hold_guidance_only_for_owner_action():
+def test_hold_guidance_only_for_owner_action_and_evidence():
     from server.pm.explain import hold_guidance
     from server.automations.product_policy import effective_policy
     assert hold_guidance(hold_kind=None, policy=effective_policy(None)) is None
-    assert hold_guidance(hold_kind="evidence", policy=effective_policy(None)) is None
+    assert hold_guidance(hold_kind="stronger_model", policy=effective_policy(None)) is None
+    assert hold_guidance(hold_kind="decision", policy=effective_policy(None)) is None
     g = hold_guidance(hold_kind="owner_action", policy={**effective_policy(None), "dispatch": "auto"})
     assert set(g) == {"retry", "implement"}
     assert g["retry"]["when"] == "next_tick" and g["retry"]["then"][0]["spawnsSession"] is True
@@ -56,3 +57,21 @@ def test_hold_guidance_only_for_owner_action():
     off = hold_guidance(hold_kind="owner_action", policy={**effective_policy(None), "dispatch": "off"})
     assert off["implement"]["available"] is False and "dispatch is off" in off["implement"]["unavailableReason"]
     assert off["retry"]["when"] == "never"
+
+
+def test_hold_guidance_evidence_is_one_entry_with_no_buttons():
+    from server.pm.explain import hold_guidance
+    from server.automations.product_policy import effective_policy
+    g = hold_guidance(hold_kind="evidence", policy=effective_policy(None))
+    assert set(g) == {"evidence"}
+    e = g["evidence"]
+    assert e["available"] is True
+    assert e["immediate"] == []
+    assert e["when"] == "next_tick"
+    assert "investigates this report instead of implementing it" in e["then"][0]["text"]
+    assert "No pull request" in e["then"][0]["text"]
+    assert e["then"][0]["spawnsSession"] is False
+    assert e["reversal"] is None and e["gate"] is None
+    # Policy-independent: the copy does not vary with dispatch mode.
+    g2 = hold_guidance(hold_kind="evidence", policy={**effective_policy(None), "dispatch": "auto"})
+    assert g2 == g

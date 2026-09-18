@@ -37,9 +37,21 @@ def triage_guidance(*, feature_slug: str | None, score: float | None, policy: di
 def hold_guidance(*, hold_kind: str | None, policy: dict) -> dict | None:
     """``{"retry": …, "implement": …}`` for an owner_action hold (spec 2026-09-18 §7):
     what the Retry tap and the Implement-now tap do under the owning product's
-    dispatch policy. ``None`` for any other kind — evidence and stronger-model holds
-    exit on their own (series item 4) and a decision hold resolves in the inbox
-    (item 5); neither has a button here yet, so neither gets copy."""
+    dispatch policy. ``{"evidence": …}`` for an evidence hold (spec 2026-09-18 §5):
+    one entry, no buttons — the Backlog Runner dispatches and settles it on its own,
+    so there is nothing here for a person to tap. ``None`` for any other kind — a
+    stronger-model hold climbs the ladder on its own (item 4a) and a decision hold
+    resolves in the inbox (item 5); neither has a button here yet, so neither gets
+    copy."""
+    if hold_kind == "evidence":
+        investigate = Consequence(
+            True, None, (),
+            (Step("The next run investigates this report instead of implementing "
+                  "it: it closes noise, consolidates duplicates, converts it into "
+                  "a fix, or hands it to you with what is needed. No pull "
+                  "request."),),
+            WHEN_NEXT_TICK, None, None)
+        return {"evidence": consequence_to_wire(investigate)}
     if hold_kind != "owner_action":
         return None
     dispatch = str(policy.get("dispatch") or "off")
