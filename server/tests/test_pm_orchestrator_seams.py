@@ -1054,12 +1054,13 @@ async def test_backlog_needs_human_writes_the_hold_and_audit_row(db_env):
 
 
 @pytest.mark.asyncio
-async def test_backlog_escalate_writes_a_stronger_model_hold_for_a_rung_and_owner_action_at_the_top(db_env):
-    """Spec 2026-09-18 §4: a rung climb parks the issue ``stronger_model``
-    (agent-settable, queue-eligible — the next refill re-claims it); a bounce at
-    the top (``rung=None``) parks it ``owner_action`` instead and — ONLY in that
-    case — fires the same best-effort comment ``_backlog_needs_human`` uses. Each
-    call writes exactly one ``pm.hold.set`` audit row."""
+async def test_backlog_escalate_writes_a_stronger_model_hold_and_never_comments(db_env):
+    """Spec 2026-09-18 §4, review R1 I2/I4: ``_backlog_escalate`` is rung-only —
+    a bounce at the top routes through ``_backlog_needs_human`` instead (its own
+    test above), never this seam with ``rung=None``. A rung climb parks the
+    issue ``stronger_model`` (agent-settable, queue-eligible — the next refill
+    re-claims it) and writes exactly one ``pm.hold.set`` audit row; it never
+    comments — only the final hand-off does."""
     from sqlalchemy import select
 
     from server.automations.context import AutomationContext
@@ -1080,7 +1081,6 @@ async def test_backlog_escalate_writes_a_stronger_model_hold_for_a_rung_and_owne
         announced.append((batch.primary, reason))
 
     with patch("server.automations.backlog_github.announce_needs_human", recording_announce):
-        # A rung climb: stronger_model, no comment.
         await orch._backlog_escalate("o/r#1", "bounced at sonnet; next attempt on opus", "opus")
     assert announced == []
 
@@ -1096,21 +1096,93 @@ async def test_backlog_escalate_writes_a_stronger_model_hold_for_a_rung_and_owne
         assert len(events) == 1
         assert events[0].detail["kind"] == "stronger_model"
 
-    with patch("server.automations.backlog_github.announce_needs_human", recording_announce):
-        # Bounced at the top: owner_action, plus the comment.
-        await orch._backlog_escalate("o/r#1", "bounced at fable: no mergeable PR after 1 attempts", None)
-    assert len(announced) == 1
+
+@pytest.mark.asyncio
+async def test_backlog_write_runner_hold_is_idempotent_on_a_retry(db_env):
+    """Review R1 I2 item 3: a retry that would write the IDENTICAL hold (same
+    kind/actor/reason) must be a no-op — no re-stamped ``hold_set_at`` /
+    ``hold_fingerprint`` (which would lose a pending body-edit release) and no
+    duplicate audit row. A DIFFERENT reason at the same kind still writes."""
+    from sqlalchemy import select
+
+    from server.automations.context import AutomationContext
+    from server.db.models import Automation, AuditEvent, WorkItem
+    await init_db(db_env)
+    orch = _bare_orch()
+    orch._backlog_ctx = AutomationContext("backlog-runner")
+    async with db_session() as db:
+        db.add(Automation(id="backlog-runner"))
+        db.add(WorkItem(repo="o/r", number=1, kind="issue", state="open",
+                        title="T", body="B"))
+    await orch._backlog_ctx.set_target_state("o/r#1", {"repo": "o/r", "issues": ["o/r#1"]})
+
+    await orch._backlog_escalate("o/r#1", "bounced at sonnet; next attempt on opus", "opus")
+    async with db_session() as db:
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == "o/r", WorkItem.number == 1))).scalar_one()
+        first_stamp = wi.hold_set_at
+        first_fingerprint = wi.hold_fingerprint
+
+    # Identical retry: no write, no audit, no re-stamp.
+    await orch._backlog_escalate("o/r#1", "bounced at sonnet; next attempt on opus", "opus")
+    async with db_session() as db:
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == "o/r", WorkItem.number == 1))).scalar_one()
+        assert wi.hold_set_at == first_stamp
+        assert wi.hold_fingerprint == first_fingerprint
+        events = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.set"))).scalars().all()
+        assert len(events) == 1
+
+    # A genuinely new rung: writes again.
+    await orch._backlog_escalate("o/r#1", "bounced at opus; next attempt on fable", "fable")
+    async with db_session() as db:
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == "o/r", WorkItem.number == 1))).scalar_one()
+        assert wi.hold_reason == "bounced at opus; next attempt on fable"
+        events = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.set"))).scalars().all()
+        assert len(events) == 2
+
+
+@pytest.mark.asyncio
+async def test_backlog_write_runner_hold_never_replaces_a_persons_hold(db_env):
+    """Review R1 I6: a person's ``owner_action``/``decision`` hold — not the
+    runner's own — must never be overwritten by a queue-eligible
+    ``stronger_model`` hold (that would silently re-dispatch work a human
+    explicitly stopped). Applies symmetrically: the runner's OWN give-up must
+    not downgrade a person's ``decision`` hold to ``owner_action`` either."""
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+
+    from server.automations.context import AutomationContext
+    from server.db.models import Automation, AuditEvent, WorkItem
+    from server.pm.holds import set_hold
+    await init_db(db_env)
+    orch = _bare_orch()
+    orch._gh_run = object()
+    orch._backlog_ctx = AutomationContext("backlog-runner")
+    now = datetime.now(timezone.utc)
+    async with db_session() as db:
+        db.add(Automation(id="backlog-runner"))
+        wi = WorkItem(repo="o/r", number=1, kind="issue", state="open", title="T", body="B")
+        set_hold(wi, kind="decision", reason="human called it", actor="tony@example.com", now=now)
+        db.add(wi)
+    await orch._backlog_ctx.set_target_state("o/r#1", {"repo": "o/r", "issues": ["o/r#1"]})
+
+    with patch("server.automations.backlog_github.announce_needs_human", lambda *a, **k: None):
+        await orch._backlog_escalate("o/r#1", "bounced at sonnet; next attempt on opus", "opus")
+        await orch._backlog_needs_human("o/r#1", "bounced at fable: no mergeable PR after 1 attempts")
 
     async with db_session() as db:
         wi = (await db.execute(select(WorkItem).where(
             WorkItem.repo == "o/r", WorkItem.number == 1))).scalar_one()
-        assert wi.hold_kind == "owner_action"
-        assert wi.hold_by == "runner"
-
+        assert wi.hold_kind == "decision"          # untouched, both times
+        assert wi.hold_by == "tony@example.com"
+        assert wi.hold_reason == "human called it"
         events = (await db.execute(select(AuditEvent).where(
             AuditEvent.type == "pm.hold.set"))).scalars().all()
-        assert len(events) == 2
-        assert events[-1].detail["kind"] == "owner_action"
+        assert events == []                         # no audit for a kept hold
 
 
 def test_backlog_queue_tail_returns_copy_of_cache():

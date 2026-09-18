@@ -6072,34 +6072,74 @@ class SessionOrchestrator:
         return Batch(primary=target, issues=list(issues),
                      repo=target.split("#", 1)[0], product=st.get("product"))
 
-    async def _backlog_needs_human(self, target: str, reason: str) -> None:
-        """GIVE-UP path (spec 2026-09-18 §3): write the owner_action hold on every
-        issue of the batch — the hold IS the handoff — then comment it (best-effort).
-        The runner's ``gave_up`` row survives for slot accounting only and is
-        dropped by ``_release_give_ups`` once the hold is gone."""
+    async def _backlog_write_runner_hold(self, target: str, *, kind: str, reason: str,
+                                         log_key: str):
+        """THE shared runner-hold writer (review R1 I5) behind both
+        ``_backlog_needs_human`` (``kind="owner_action"``) and
+        ``_backlog_escalate`` (``kind="stronger_model"``): resolves the batch,
+        writes ``kind`` as the runner's hold on every mirrored issue, and audits
+        it — except:
+
+        - a PERSON's hold (``HELD_KINDS``: ``owner_action``/``decision``) not
+          already the runner's own is left untouched (review R1 I6) — the
+          runner may reinforce or replace its OWN prior hold, never override a
+          human's; kept, logged, no audit row;
+        - an IDENTICAL hold already in place (same kind/actor/reason) is a
+          no-op retry, not a re-stamp (review R1 I2 item 3) — a retried
+          give-up or a re-tick while the row release keeps failing must not
+          keep bumping ``hold_set_at``/``hold_fingerprint`` (that would lose a
+          pending body-edit release) or double-audit.
+
+        Unmirrored refs are logged and skipped. Returns the resolved ``Batch``
+        (the callers' comment step needs it) alongside the WorkItems the hold
+        WAS actually written to."""
         from datetime import datetime, timezone
         from sqlalchemy import select, tuple_
         from server.audit import record_audit
-        from server.automations import backlog_github
         from server.db.models import WorkItem
-        from server.pm.holds import RUNNER_ACTOR, actor_class, set_runner_hold
+        from server.pm.desired_state import HELD_KINDS
+        from server.pm.holds import (
+            RUNNER_ACTOR, actor_class, set_runner_hold, set_runner_stronger_hold,
+        )
         from server.pm.refs import split_ref
         batch = await self._backlog_batch_for(target)
         parts = [p for p in (split_ref(r) for r in batch.issues) if p is not None]
         now = datetime.now(timezone.utc)
+        written: list[WorkItem] = []
         if parts:
             async with db_session() as db:
                 items = (await db.execute(select(WorkItem).where(
                     WorkItem.kind == "issue",
                     tuple_(WorkItem.repo, WorkItem.number).in_(parts)))).scalars().all()
                 for wi in items:
-                    set_runner_hold(wi, reason=reason, now=now)
+                    if wi.hold_kind in HELD_KINDS and wi.hold_by != RUNNER_ACTOR:
+                        log.info("backlog_runner.hold_kept target=%s#%s kind=%s by=%s",
+                                 wi.repo, wi.number, wi.hold_kind, wi.hold_by)
+                        continue
+                    if (wi.hold_kind == kind and wi.hold_by == RUNNER_ACTOR
+                            and wi.hold_reason == reason):
+                        continue  # identical retry: nothing changed, nothing to re-stamp
+                    if kind == "owner_action":
+                        set_runner_hold(wi, reason=reason, now=now)
+                    else:
+                        set_runner_stronger_hold(wi, reason=reason, now=now)
                     await record_audit(db=db, type="pm.hold.set", identity=RUNNER_ACTOR, detail={
-                        "workItemId": wi.id, "kind": "owner_action", "reason": reason,
+                        "workItemId": wi.id, "kind": kind, "reason": reason,
                         "actorClass": actor_class(RUNNER_ACTOR)}, via="runner")
+                    written.append(wi)
                 missing = set(batch.issues) - {f"{w.repo}#{w.number}" for w in items}
                 if missing:
-                    log.warning("backlog_runner.give_up_unmirrored refs=%s", sorted(missing))
+                    log.warning("backlog_runner.%s_unmirrored refs=%s", log_key, sorted(missing))
+        return batch, written
+
+    async def _backlog_needs_human(self, target: str, reason: str) -> None:
+        """GIVE-UP path (spec 2026-09-18 §3): write the owner_action hold on every
+        issue of the batch — the hold IS the handoff — then comment it (best-effort).
+        The runner's ``gave_up`` row survives for slot accounting only and is
+        dropped by ``_release_give_ups`` once the hold is gone."""
+        from server.automations import backlog_github
+        batch, _written = await self._backlog_write_runner_hold(
+            target, kind="owner_action", reason=reason, log_key="give_up")
         try:
             await asyncio.to_thread(
                 backlog_github.announce_needs_human, batch, reason, gh_run=self._gh_run)
@@ -6111,54 +6151,18 @@ class SessionOrchestrator:
             log.warning("backlog_needs_human.announce_failed target=%s", target,
                         exc_info=True)
 
-    async def _backlog_escalate(self, target: str, reason: str, rung: "str | None") -> None:
+    async def _backlog_escalate(self, target: str, reason: str, rung: str) -> None:
         """LADDER path (spec 2026-09-18 §4): a bounce below the top tier parks
         every issue of the batch as ``stronger_model`` — agent-settable,
         queue-eligible, so the next refill re-claims it and the spawn pins
-        ``rung``. A bounce AT the top (``rung is None``) is the owner's: the same
-        ``owner_action`` hold ``_backlog_needs_human`` writes, plus the existing
-        best-effort comment — a rung climb never comments, only the final handoff
-        does."""
-        from datetime import datetime, timezone
-        from sqlalchemy import select, tuple_
-        from server.audit import record_audit
-        from server.automations import backlog_github
-        from server.db.models import WorkItem
-        from server.pm.holds import (
-            RUNNER_ACTOR, actor_class, set_runner_hold, set_runner_stronger_hold,
-        )
-        from server.pm.refs import split_ref
-        batch = await self._backlog_batch_for(target)
-        parts = [p for p in (split_ref(r) for r in batch.issues) if p is not None]
-        now = datetime.now(timezone.utc)
-        hold_kind = "owner_action" if rung is None else "stronger_model"
-        if parts:
-            async with db_session() as db:
-                items = (await db.execute(select(WorkItem).where(
-                    WorkItem.kind == "issue",
-                    tuple_(WorkItem.repo, WorkItem.number).in_(parts)))).scalars().all()
-                for wi in items:
-                    if rung is None:
-                        set_runner_hold(wi, reason=reason, now=now)
-                    else:
-                        set_runner_stronger_hold(wi, reason=reason, now=now)
-                    await record_audit(db=db, type="pm.hold.set", identity=RUNNER_ACTOR, detail={
-                        "workItemId": wi.id, "kind": hold_kind, "reason": reason,
-                        "actorClass": actor_class(RUNNER_ACTOR)}, via="runner")
-                missing = set(batch.issues) - {f"{w.repo}#{w.number}" for w in items}
-                if missing:
-                    log.warning("backlog_runner.escalate_unmirrored refs=%s", sorted(missing))
-        if rung is not None:
-            return
-        try:
-            await asyncio.to_thread(
-                backlog_github.announce_needs_human, batch, reason, gh_run=self._gh_run)
-        except Exception:
-            # Best-effort exactly like ``_backlog_needs_human``'s docstring: the
-            # hold above is already committed, and a comment failure must never
-            # raise out of the sweep.
-            log.warning("backlog_escalate.announce_failed target=%s", target,
-                        exc_info=True)
+        ``rung``. Never comments: a rung climb is silent, only the final
+        hand-off (routed through ``_give_up``/``_backlog_needs_human`` — review
+        R1 I2/I4, this seam is never called with "no rung") does. The runner's
+        caller awaits this BEFORE releasing the claim row, so raising here
+        (e.g. a DB hiccup) leaves the claim intact for the next sweep to
+        retry — no two-phase gap where the item is neither claimed nor held."""
+        await self._backlog_write_runner_hold(
+            target, kind="stronger_model", reason=reason, log_key="escalate")
 
     async def _backlog_held_targets(self) -> "frozenset[str]":
         from server.pm.holds import held_refs
