@@ -809,6 +809,9 @@ class BacklogRunnerLoop:
         try:
             states = await self._ctx.list_target_states()
             counts["in_flight"] = sum(is_in_flight(s) for s in states.values())
+            # The RUNNER'S OWN give-ups, not every hold on the board: an item a
+            # person or a session parked has no row here. (What the card calls this
+            # count is items 3b/6's concern.)
             counts["needs_human"] = sum(bool(s.get("gave_up")) for s in states.values())
         except Exception:
             errors.append("workload counts unavailable (the claim read failed)")
@@ -1340,6 +1343,10 @@ class BacklogRunnerLoop:
         on the item is the handoff, and a human releases it (board edit, body edit,
         Retry). Once none of the row's refs is held the row is deleted, which is what
         returns the issue to the pool. Runs BEFORE ``_refill`` — see the call site.
+
+        This is also where the give-up's two-transaction handoff is made whole: a row
+        whose ``held`` flag is falsy has no proof its hold was ever written, so it is
+        NEVER dropped here — the seam is retried instead, every tick, until it lands.
         """
         states = await self._ctx.list_target_states()
         held = await self._held_targets()
@@ -1347,7 +1354,28 @@ class BacklogRunnerLoop:
             if not st.get("gave_up"):
                 continue
             refs = st.get("issues") or [target]
-            if any(ref in held for ref in refs):
+            backed = any(ref in held for ref in refs)
+            if not st.get("held"):
+                # No recorded handoff. If the item IS parked, the hold is there
+                # (this row predates the flag, or the CAS after the write was lost)
+                # and the row just adopts it — re-announcing would re-stamp
+                # ``hold_set_at``/``hold_fingerprint``, losing a pending body-edit
+                # release, and comment the issue again. Otherwise retry the seam and
+                # keep the row whatever happens.
+                if not backed:
+                    try:
+                        await self._needs_human(target, st.get("reason") or "")
+                    except Exception:
+                        log.warning("backlog_runner.needs_human_retry_failed target=%s",
+                                    target, exc_info=True)
+                        continue
+                await self._write_state(target, st, {**st, "held": True})
+                continue
+            # A bundle is released as a UNIT: while ANY ref of the row is still held
+            # the whole row stays, because the batch was claimed and dispatched as
+            # one. A Retry on one sibling therefore takes effect only once the last
+            # held sibling is released too.
+            if backed:
                 continue
             if not await self._write_state(target, st, None):
                 continue
@@ -1460,7 +1488,13 @@ class BacklogRunnerLoop:
         # the issue IS the handoff now (spec 2026-09-18 §3) — this row survives
         # only for slot accounting and is dropped by ``_release_give_ups`` once
         # the hold is gone.
-        parked = {**st, "claimed": False, "gave_up": True, "reason": reason}
+        #
+        # The handoff spans two transactions (this row, then the hold), so the row
+        # carries whether the SECOND one landed. It is parked ``held: False`` first:
+        # a row that claimed a hold it does not have would be dropped by the next
+        # sweep and the item re-dispatched with no handoff at all. ``held`` only ever
+        # goes False → True, and ``_release_give_ups`` retries until it does.
+        parked = {**st, "claimed": False, "gave_up": True, "reason": reason, "held": False}
         if not await self._write_state(target, st, parked, outcome=outcome,
                                        action_completed=action_completed):
             return
@@ -1471,6 +1505,10 @@ class BacklogRunnerLoop:
         except Exception:
             log.warning("backlog_runner.needs_human_announce_failed target=%s", target,
                         exc_info=True)
+            return
+        # Compare-and-set against the row just parked. A lost CAS (another actor
+        # moved the row meanwhile) is left alone: the next tick's sweep retries.
+        await self._write_state(target, parked, {**parked, "held": True})
 
     async def _release_legacy_claim(self, target: str, st: dict) -> None:
         """Discharge a pre-ownership claim (no ``ownership_token``, #1648) once its

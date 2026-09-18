@@ -266,7 +266,10 @@ PR linkage, never on labels alone.
   human holds no slot); the reconciler turns it into board Status `Needs human`. The queue skips
   held items as `held`; the Backlog Runner's give-up writes the hold (`hold_by = runner`) and its
   `gave_up` row survives only until the hold is gone (spec 2026-09-18 §7, `server/pm/holds.py`).
-  A human takes an issue back from a give-up either by one of the three hold-release signals —
+  Because the row and the hold are two transactions, the row carries `held`: false until the hold
+  write returns, and a row that is still `held: false` is re-announced every tick and never
+  dropped — dropping it would re-dispatch the issue with no handoff at all.
+  A human takes an issue back from a give-up either by one of the hold-release signals —
   moving the board card to Ready or Backlog, editing the issue body (the fingerprint no longer
   matches), or the Retry tap (`POST /api/pm/work-items/{id}/hold/release`) — or by **dispatching
   it manually** (`POST /api/automations/backlog-runner/dispatch`, or the card's dispatch action),
