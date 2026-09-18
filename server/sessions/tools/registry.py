@@ -31,7 +31,12 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     # the turn ends afterwards with `mark_no_pr("awaiting-decision")`, and the
     # proposal itself deserves the ordinary ToolCall card as the transcript's only
     # record of it.
-    ToolSpec("propose_decision", ToolClass.SIGNAL, "Propose a decision on this issue"),
+    # ``idempotent=False``: the first SIGNAL whose second call is a hard conflict
+    # rather than a no-op (one pending proposal per item, enforced by a partial
+    # unique index), so the class default would tell the model exactly the wrong
+    # thing about retrying (review R1 nit).
+    ToolSpec("propose_decision", ToolClass.SIGNAL, "Propose a decision on this issue",
+             idempotent=False),
     # MUTATION: it creates a session the user sees on the board. Gated on its
     # annotation by the permission layer, exactly like the assistant drawer's
     # create_session: our own MUTATION tools raise a card in EVERY session mode

@@ -66,3 +66,18 @@ def test_signal_class_is_not_read_only_but_is_not_destructive():
     assert ann.readOnlyHint is False
     assert ann.destructiveHint is False
     assert ann.idempotentHint is True
+
+
+def test_a_spec_may_override_the_class_idempotency_default():
+    """A SIGNAL that CREATES something is not idempotent, whatever its class says: a
+    second ``propose_decision`` is a hard conflict, and advertising a safe retry
+    invites exactly the call the unique index then refuses (review R1 nit). The
+    override is per-spec so the class rule still holds for everything else."""
+    from server.mcp_spec import ToolClass, ToolSpec, annotations_for
+    from server.sessions.tools.registry import SESSION_TOOL_SPECS
+    assert annotations_for(SESSION_TOOL_SPECS["propose_decision"]).idempotentHint is False
+    assert annotations_for(SESSION_TOOL_SPECS["mark_no_pr"]).idempotentHint is True
+    # The override is honoured in both directions, and only when given.
+    assert annotations_for(
+        ToolSpec("x", ToolClass.MUTATION, "X", idempotent=True)).idempotentHint is True
+    assert annotations_for(ToolSpec("x", ToolClass.MUTATION, "X")).idempotentHint is False
