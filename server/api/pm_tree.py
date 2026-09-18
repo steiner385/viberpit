@@ -174,7 +174,7 @@ async def get_map(_identity: str = Depends(current_identity), db=Depends(get_db)
             pending_by_repo[repo] = pending_by_repo.get(repo, 0) + 1
         needs_home = (await db.execute(select(WorkItem.repo).where(
             WorkItem.repo.in_(all_repos), WorkItem.state == "open",
-            WorkItem.triage_state == "needs_human", WorkItem.feature_id.is_(None)))).all()
+            WorkItem.hold_kind == "owner_action", WorkItem.feature_id.is_(None)))).all()
         for (repo,) in needs_home:
             needs_home_by_repo[repo] = needs_home_by_repo.get(repo, 0) + 1
         incidents = (await db.execute(select(TriageItem.repo, TriageItem.status).where(

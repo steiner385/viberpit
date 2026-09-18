@@ -100,11 +100,15 @@ def _aware(dt: datetime | None) -> datetime | None:
 
 def _overlay_snapshot(wi: WorkItem) -> dict:
     at = _aware(wi.classified_at)
+    held_at = _aware(wi.hold_set_at)
     return {
         "featureId": wi.feature_id, "reach": wi.reach, "impact": wi.impact,
         "effort": wi.effort, "confidence": wi.confidence, "triageState": wi.triage_state,
         "classifiedBy": wi.classified_by,
         "classifiedAt": at.isoformat() if at else None,
+        "holdKind": wi.hold_kind, "holdReason": wi.hold_reason, "holdBy": wi.hold_by,
+        "holdSetAt": held_at.isoformat() if held_at else None,
+        "holdFingerprint": wi.hold_fingerprint,
     }
 
 
@@ -114,10 +118,24 @@ def _restore_overlay(wi: WorkItem, snap: dict) -> None:
     wi.impact = snap.get("impact")
     wi.effort = snap.get("effort")
     wi.confidence = snap.get("confidence")
-    wi.triage_state = snap.get("triageState")
     wi.classified_by = snap.get("classifiedBy")
     at = snap.get("classifiedAt")
     wi.classified_at = _aware(datetime.fromisoformat(at)) if at else None
+    state = snap.get("triageState")
+    if state == "needs_human":
+        # A pre-ladder snapshot: the removed state becomes the hold it meant.
+        wi.triage_state = "unclassified"
+        wi.hold_kind, wi.hold_by = "owner_action", "migration"
+        wi.hold_reason, wi.hold_fingerprint = "restored pre-ladder needs_human", None
+        wi.hold_set_at = None
+    else:
+        wi.triage_state = state
+        wi.hold_kind = snap.get("holdKind")
+        wi.hold_reason = snap.get("holdReason")
+        wi.hold_by = snap.get("holdBy")
+        held = snap.get("holdSetAt")
+        wi.hold_set_at = _aware(datetime.fromisoformat(held)) if held else None
+        wi.hold_fingerprint = snap.get("holdFingerprint")
 
 
 async def _repropose_siblings(db, accepted: TriageProposal, feature_id: str,

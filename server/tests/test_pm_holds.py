@@ -67,3 +67,14 @@ def test_clear_hold_limited_to_settable_kinds():
     assert wi.hold_set_at is None and wi.hold_fingerprint is None
     # clearing nothing is a no-op for anyone
     clear_hold(wi, actor="session:s1")
+
+
+def test_actor_for_request_reads_via_and_identity():
+    from types import SimpleNamespace
+    from server.pm.holds import actor_for_request
+    person = SimpleNamespace(state=SimpleNamespace(identity="tony@example.com", via=None))
+    assert actor_for_request(person) == "tony@example.com"
+    drawer = SimpleNamespace(state=SimpleNamespace(identity="tony@example.com", via="assistant"))
+    assert actor_for_request(drawer) == "assistant:tony@example.com"
+    lan = SimpleNamespace(state=SimpleNamespace(identity="lan@local", via=None))
+    assert actor_for_request(lan) == "lan@local"

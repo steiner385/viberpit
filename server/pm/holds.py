@@ -73,6 +73,19 @@ def clear_hold(wi: WorkItem, *, actor: str) -> None:
     wi.hold_fingerprint = None
 
 
+def actor_for_request(request: object) -> str:
+    """The actor string for an HTTP caller (spec §8): the drawer's bound token is
+    ``assistant:<identity>``; otherwise the verified identity the middleware attached,
+    which is ``lan@local`` for an unattributed loopback caller and a Tailscale login
+    for a person. Takes any object with ``.state.identity`` / ``.state.via`` so the
+    pure test needs no FastAPI Request."""
+    state = getattr(request, "state", None)
+    identity = str(getattr(state, "identity", "") or OPEN_LAN_ACTOR)
+    if getattr(state, "via", None) == "assistant":
+        return f"assistant:{identity}"
+    return identity
+
+
 #: Dialect-neutral conversion of pre-ladder ``needs_human`` rows (spec §3). Run by
 #: migration 0049's ``upgrade()`` AND by ``scripts/convert_legacy_needs_human.py``,
 #: because nothing runs ``alembic upgrade`` at deploy time — the script is what

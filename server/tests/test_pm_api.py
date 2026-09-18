@@ -432,9 +432,17 @@ def test_triage_accept_and_reject_flow():
         r = c.post(f"/api/pm/triage/{accept_id}/accept", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
 
-        # reject moves the item to needs_human
+        # reject parks the item as an owner-action hold by the rejecting person
         r = c.post(f"/api/pm/triage/{reject_id}/reject", headers=IDENTITY_HEADERS)
         assert r.status_code == 200, r.text
+        rejected_wid = r.json()["workItemId"]
+        # no GET /api/pm/work-items/{id} route exists — read the item back through
+        # the overlay's empty-PATCH read-through instead.
+        wi = c.patch(f"/api/pm/work-items/{rejected_wid}/overlay", json={},
+                     headers=IDENTITY_HEADERS)
+        assert wi.status_code == 200, wi.text
+        assert wi.json()["holdKind"] == "owner_action"
+        assert wi.json()["holdBy"] == "testuser@example.com"
 
         # double-accept the already-resolved proposal → 409
         r = c.post(f"/api/pm/triage/{accept_id}/accept", headers=IDENTITY_HEADERS)
@@ -450,7 +458,8 @@ def test_triage_accept_and_reject_flow():
                 assert w1.feature_id is not None and w1.impact == 2
                 # classified_by is the constant "human", NOT the tailnet identity.
                 assert w1.classified_by == "human"
-                assert w2.triage_state == "needs_human"
+                assert w2.hold_kind == "owner_action"
+                assert w2.hold_by == "testuser@example.com"
         c.portal.call(_check)
 
 
@@ -712,7 +721,8 @@ def test_overlay_patch_manual_classify():
         body = r.json()
         assert body["reach"] == 5
         assert body["triageState"] == "classified"
-        assert body["classifiedBy"] == "human"
+        # classified_by is the actor's identity, not a blanket "human" (spec §8).
+        assert body["classifiedBy"] == "testuser@example.com"
         assert body["classifiedAt"] is not None
 
         bad = c.patch(f"/api/pm/work-items/{wid}/overlay",
@@ -729,6 +739,74 @@ def test_overlay_patch_manual_classify():
                            json={"featureId": "ghost"}, headers=IDENTITY_HEADERS)
         assert bad_feat.status_code == 404
         assert bad_feat.json()["detail"]["error"] == "feature_not_found"
+
+
+LAN_OPEN = {"CCSWITCH_ALLOW_UNAUTHENTICATED": "1"}
+
+
+def test_overlay_hold_by_person_any_kind_with_audit():
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        r = c.patch(f"/api/pm/work-items/{wid}/overlay",
+                    json={"holdKind": "owner_action", "holdReason": "needs the owner's keyring"},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["holdKind"] == "owner_action"
+        assert body["holdReason"] == "needs the owner's keyring"
+        assert body["holdBy"] == "testuser@example.com"
+        assert body["holdSetAt"] is not None
+        assert body["classifiedBy"] == "testuser@example.com"
+        # reason is mandatory
+        bad = c.patch(f"/api/pm/work-items/{wid}/overlay",
+                      json={"holdKind": "evidence"}, headers=IDENTITY_HEADERS)
+        assert bad.status_code == 422
+        assert bad.json()["detail"]["error"] == "hold_reason_required"
+        # clear
+        r = c.patch(f"/api/pm/work-items/{wid}/overlay", json={"clearHold": True},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 200 and r.json()["holdKind"] is None
+        from server.db import db_session
+        from sqlalchemy import select
+        from server.db.models import AuditEvent
+
+        async def _types():
+            async with db_session() as db:
+                return [(e.type, e.detail) for e in (await db.execute(
+                    select(AuditEvent).where(AuditEvent.type.like("pm.hold.%"))
+                    .order_by(AuditEvent.at))).scalars().all()]
+        events = c.portal.call(_types)
+        assert [t for t, _ in events] == ["pm.hold.set", "pm.hold.release"]
+        assert events[0][1]["kind"] == "owner_action" and events[0][1]["actorClass"] == "person"
+
+
+def test_overlay_hold_by_loopback_caller_is_limited_and_never_human():
+    with patch.dict(os.environ, LAN_OPEN), _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        # no identity header → lan@local (LAN-open mode); an agent-class actor
+        r = c.patch(f"/api/pm/work-items/{wid}/overlay",
+                    json={"holdKind": "evidence", "holdReason": "correlate with #2"})
+        assert r.status_code == 200, r.text
+        assert r.json()["holdBy"] == "lan@local"
+        assert r.json()["classifiedBy"] == "lan@local"
+        refused = c.patch(f"/api/pm/work-items/{wid}/overlay",
+                          json={"holdKind": "owner_action", "holdReason": "park it"})
+        assert refused.status_code == 422
+        assert refused.json()["detail"]["error"] == "hold_not_permitted"
+        # a person parks it; the loopback caller cannot release that
+        r = c.patch(f"/api/pm/work-items/{wid}/overlay",
+                    json={"holdKind": "owner_action", "holdReason": "owner only"},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 200
+        refused = c.patch(f"/api/pm/work-items/{wid}/overlay", json={"clearHold": True})
+        assert refused.status_code == 422
+        assert refused.json()["detail"]["error"] == "hold_not_permitted"
+        # a legacy value is no longer accepted anywhere
+        legacy = c.patch(f"/api/pm/work-items/{wid}/overlay",
+                         json={"triageState": "needs_human"}, headers=IDENTITY_HEADERS)
+        assert legacy.status_code == 422
 
 
 def test_work_item_outcomes_endpoint():
@@ -1390,8 +1468,12 @@ def test_triage_undo_after_reject():
         pre = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
                       headers=IDENTITY_HEADERS).json()
         assert c.post(f"/api/pm/triage/{pid}/reject", headers=IDENTITY_HEADERS).status_code == 200
-        assert c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
-                       headers=IDENTITY_HEADERS).json()["triageState"] == "needs_human"
+        rejected = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                           headers=IDENTITY_HEADERS).json()
+        # reject no longer moves triage_state to the removed needs_human value —
+        # it parks the item with an owner-action hold instead (spec 2026-09-18 §3).
+        assert rejected["triageState"] == pre["triageState"]
+        assert rejected["holdKind"] == "owner_action"
         r = c.post(f"/api/pm/triage/{pid}/undo", headers=IDENTITY_HEADERS)
         assert r.status_code == 200
         assert r.json()["triageState"] == pre["triageState"]
@@ -1401,6 +1483,7 @@ def test_triage_undo_after_reject():
         assert after["impact"] == pre["impact"] and after["featureId"] == pre["featureId"]
         assert after["classifiedBy"] == pre["classifiedBy"]
         assert after["classifiedAt"] == pre["classifiedAt"]
+        assert after["holdKind"] == pre["holdKind"]
 
 
 def test_triage_undo_unknown_and_expired(monkeypatch):
@@ -1592,7 +1675,7 @@ def test_undo_of_an_auto_accept_marks_the_proposal_auto_undone():
 def test_undo_of_an_auto_accept_a_human_patched_first_still_marks_auto_undone():
     """`auto_undone` must come from the PROPOSAL's own record of who decided it,
     not from ``WorkItem.classified_by`` — that column is live overlay state any
-    overlay PATCH rewrites to "human". Score the auto-accepted item inside the
+    overlay PATCH rewrites to the caller's actor identity. Score the auto-accepted item inside the
     undo window (the exact thing the chip invites: look, tweak, then undo) and
     the machine's own decision is no longer legible from the work item. Read that
     way, the flag stayed NULL and the loop was free to auto-accept the same
@@ -1625,7 +1708,7 @@ def test_undo_of_an_auto_accept_a_human_patched_first_still_marks_auto_undone():
         patched = c.patch(f"/api/pm/work-items/{wid}/overlay", json={"reach": 5},
                           headers=IDENTITY_HEADERS)
         assert patched.status_code == 200, patched.text
-        assert patched.json()["classifiedBy"] == "human"
+        assert patched.json()["classifiedBy"] == "testuser@example.com"
 
         async def _snapshot():
             async with db_session() as db:
