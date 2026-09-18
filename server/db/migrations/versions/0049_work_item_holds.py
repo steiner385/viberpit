@@ -31,17 +31,20 @@ _COLUMNS = (
 )
 
 
-def _existing() -> set[str]:
+def _existing() -> tuple[set[str], set[str]]:
     bind = op.get_bind()
-    return {c["name"] for c in sa.inspect(bind).get_columns("work_items")}
+    inspector = sa.inspect(bind)
+    cols = {c["name"] for c in inspector.get_columns("work_items")}
+    indexes = {idx["name"] for idx in inspector.get_indexes("work_items")}
+    return cols, indexes
 
 
 def upgrade() -> None:
-    have = _existing()
+    cols, indexes = _existing()
     for col in _COLUMNS:
-        if col.name not in have:
+        if col.name not in cols:
             op.add_column("work_items", col)
-    if "hold_kind" not in have:
+    if "ix_work_items_hold_kind" not in indexes:
         op.create_index("ix_work_items_hold_kind", "work_items", ["hold_kind"])
     for stmt in LEGACY_CONVERSION_SQL:
         op.execute(sa.text(stmt))

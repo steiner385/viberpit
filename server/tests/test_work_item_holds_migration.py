@@ -46,3 +46,33 @@ def test_upgrade_adds_columns_and_converts_legacy_rows(tmp_path):
     assert rows["scored"][5] is not None
     assert rows["unscored"][1:3] == ("unclassified", "owner_action")
     assert rows["untouched"][1:3] == ("classified", None)
+
+
+def test_upgrade_does_not_overwrite_existing_holds(tmp_path):
+    """Rows already carrying a hold are not overwritten (hold_kind IS NULL guard)."""
+    engine = create_engine(f"sqlite:///{tmp_path}/m.db")
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE work_items (id TEXT PRIMARY KEY, repo TEXT, number INTEGER, "
+            "kind TEXT, body TEXT, triage_state TEXT, classified_by TEXT, classified_at DATETIME, "
+            "reach INTEGER, impact INTEGER, effort INTEGER, confidence INTEGER, "
+            "hold_kind TEXT, hold_reason TEXT, hold_by TEXT, hold_set_at DATETIME, hold_fingerprint TEXT)"))
+        conn.execute(text(
+            "INSERT INTO work_items (id, repo, number, kind, triage_state, classified_by, classified_at, "
+            "reach, impact, effort, confidence, hold_kind, hold_by, hold_reason) VALUES "
+            "('held', 'o/r', 1, 'issue', 'needs_human', 'human', '2026-09-12 18:43:51', NULL, 1, 1, 1, "
+            "'evidence', 'session:s9', 'keep me')"))
+    mod = _module()
+    with engine.begin() as conn:
+        ctx = MigrationContext.configure(conn)
+        with Operations.context(ctx):
+            mod.upgrade()
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT triage_state, hold_kind, hold_by, hold_reason FROM work_items WHERE id = 'held'")).first()
+    # triage_state converts per RICE rule (reach is NULL, so not all RICE non-null → unclassified)
+    # but hold is preserved
+    assert row[0] == "unclassified"
+    assert row[1] == "evidence"
+    assert row[2] == "session:s9"
+    assert row[3] == "keep me"
