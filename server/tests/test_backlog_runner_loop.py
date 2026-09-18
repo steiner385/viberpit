@@ -3108,7 +3108,7 @@ def test_a_failing_outcome_write_never_blocks_the_sweep(tmp_path):
 
         assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
         st = await ctx.get_target_state("o/r#1")
-        assert st["gave_up"] is True
+        assert st["gave_up"] is True and "needs_human_at" not in st
         # The row stayed ``running``: unfinalised history is the acceptable loss.
         rows = await _outcomes("o/r#1")
         assert len(rows) == 1 and rows[0].outcome == "running"

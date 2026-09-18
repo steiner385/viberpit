@@ -6099,8 +6099,16 @@ class SessionOrchestrator:
                 missing = set(batch.issues) - {f"{w.repo}#{w.number}" for w in items}
                 if missing:
                     log.warning("backlog_runner.give_up_unmirrored refs=%s", sorted(missing))
-        await asyncio.to_thread(
-            backlog_github.announce_needs_human, batch, reason, gh_run=self._gh_run)
+        try:
+            await asyncio.to_thread(
+                backlog_github.announce_needs_human, batch, reason, gh_run=self._gh_run)
+        except Exception:
+            # Best-effort exactly like the docstring claims: the hold above is
+            # already committed, and this method must not raise on a comment
+            # failure even when called directly — ``_give_up`` also guards this
+            # seam, so this is belt and suspenders, not the only backstop.
+            log.warning("backlog_needs_human.announce_failed target=%s", target,
+                        exc_info=True)
 
     async def _backlog_held_targets(self) -> "frozenset[str]":
         from server.pm.holds import held_refs
