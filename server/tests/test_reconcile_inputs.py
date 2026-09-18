@@ -59,6 +59,24 @@ def test_load_product_facts_assembles_signals():
     assert facts.newest_decision_at == T and facts.mirror_synced_at == T
 
 
+def test_a_hold_is_carried_into_the_facts_with_its_own_timestamp():
+    """``derive_status`` dates a held card from ``hold_set_at`` (spec §7), which is
+    useless if the loader drops it — and it must arrive tz-aware like every other
+    timestamp in ``ItemFacts`` (the column is naive UTC in the DB)."""
+    db = _db(); _seed(db)
+    held = WorkItem(repo=REPO, number=11, kind="issue", state="open", gh_node_id="I_11",
+                    labels=[], triage_state="unclassified", classified_at=None,
+                    hold_kind="owner_action", hold_by="tony@example.com",
+                    hold_reason="rejected", hold_set_at=T.replace(tzinfo=None))
+    db.add(held); db.commit()
+    product = list_product_views(db)[0]
+    facts = load_product_facts(db, product, now=T)
+    f11 = {f.ref: f for f in facts.items}[f"{REPO}#11"]
+    assert f11.hold_kind == "owner_action"
+    assert f11.hold_set_at == T
+    assert f11.classified_at is None
+
+
 def test_a_program_initiative_yields_no_stage_field():
     """A program (an initiative with phases) is never driven directly: its Stage
     is derived from its phases, so the reconciler must not push the program's own
