@@ -41,8 +41,15 @@ HOLD_REASON_PREFIX = "decision pending: "
 
 
 class DecisionError(ValueError):
-    """The proposal is malformed, or the item cannot take one right now. Every
-    route that calls this module maps it to 422."""
+    """The proposal is malformed. Every route that calls this module maps it to 422."""
+
+
+class DecisionConflict(DecisionError):
+    """The proposal is well-formed but the ITEM's state refuses it: a decision is
+    already pending, a person has parked the item, or the proposal being resolved
+    is no longer pending. A subclass so a caller that does not care keeps catching
+    ``DecisionError``, and the routes map it to 409 rather than 422 — nothing about
+    the request needs fixing, the world moved."""
 
 
 def hold_reason(rationale: str) -> str:
@@ -149,9 +156,9 @@ async def propose(db, wi: WorkItem, *, options: "Iterable[Any]", recommended_key
         DecisionProposal.work_item_id == wi.id,
         DecisionProposal.status == "pending"))).scalars().first()
     if existing is not None:
-        raise DecisionError("a decision is already pending")
+        raise DecisionConflict("a decision is already pending")
     if wi.hold_kind in HELD_KINDS and wi.hold_by and holds.actor_class(wi.hold_by) == "person":
-        raise DecisionError(
+        raise DecisionConflict(
             f"{wi.hold_by} has parked this item ({wi.hold_kind}); a decision cannot replace it")
     proposal = DecisionProposal(
         work_item_id=wi.id, options=opts, recommended_key=recommended, rationale=text,
@@ -244,7 +251,7 @@ def _require_pending(proposal: DecisionProposal) -> None:
     person may have set again since, and re-rejecting would re-park an item that
     is already moving."""
     if proposal.status != "pending":
-        raise DecisionError(f"this decision is already {proposal.status}")
+        raise DecisionConflict(f"this decision is already {proposal.status}")
 
 
 async def pending_list(db) -> list[tuple[DecisionProposal, WorkItem | None]]:

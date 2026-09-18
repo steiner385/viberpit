@@ -2332,9 +2332,13 @@ def test_hold_release_refuses_a_decision_hold():
     with _client() as c:
         _register(c, "Viberpit", repo="o/r")
         _pid, wid = _seed_one_pending(c, feature_slug="sessions")
-        c.patch(f"/api/pm/work-items/{wid}/overlay",
-                json={"holdKind": "decision", "holdReason": "which storage engine?"},
-                headers=IDENTITY_HEADERS)
+        # The hold comes from a PROPOSAL — the overlay may not set the kind at all
+        # (spec §8), so this is the only way to get an item into the state.
+        assert c.post(f"/api/pm/work-items/{wid}/decisions", json={
+            "options": [{"key": "sqlite", "label": "SQLite"},
+                        {"key": "pg", "label": "Postgres"}],
+            "recommended_key": "pg", "rationale": "which storage engine?",
+        }, headers=IDENTITY_HEADERS).status_code == 201
         r = c.post(f"/api/pm/work-items/{wid}/hold/release", headers=IDENTITY_HEADERS)
         assert r.status_code == 422 and r.json()["detail"]["error"] == "bad_hold"
         assert "proposal" in r.json()["detail"]["message"]

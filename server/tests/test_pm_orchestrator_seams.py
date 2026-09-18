@@ -1157,7 +1157,7 @@ async def test_backlog_write_runner_hold_never_replaces_a_persons_hold(db_env):
 
     from server.automations.context import AutomationContext
     from server.db.models import Automation, AuditEvent, WorkItem
-    from server.pm.holds import set_hold
+    from server.pm.holds import set_decision_hold
     await init_db(db_env)
     orch = _bare_orch()
     orch._gh_run = object()
@@ -1166,7 +1166,9 @@ async def test_backlog_write_runner_hold_never_replaces_a_persons_hold(db_env):
     async with db_session() as db:
         db.add(Automation(id="backlog-runner"))
         wi = WorkItem(repo="o/r", number=1, kind="issue", state="open", title="T", body="B")
-        set_hold(wi, kind="decision", reason="human called it", actor="tony@example.com", now=now)
+        # Through THE one writer of a decision hold (spec §8): ``set_hold`` refuses
+        # the kind, so a proposal is the only way an item ever reaches this state.
+        set_decision_hold(wi, reason="human called it", actor="tony@example.com", now=now)
         db.add(wi)
     await orch._backlog_ctx.set_target_state("o/r#1", {"repo": "o/r", "issues": ["o/r#1"]})
 

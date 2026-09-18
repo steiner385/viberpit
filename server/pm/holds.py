@@ -48,6 +48,22 @@ class DecisionHoldError(ValueError):
 #: The one wording of that refusal, so the two routes cannot drift apart.
 DECISION_HOLD_MESSAGE = "a decision hold is resolved through its proposal, not released"
 
+#: The SET-side sibling (spec §8, "decision holds only via the decisions endpoint").
+#: A ``decision`` hold exists only as the shadow of a pending proposal, so the one
+#: writer is ``decisions.propose`` → :func:`set_decision_hold`.
+DECISION_SET_MESSAGE = "decision holds are set only by a decision proposal"
+
+
+def refuse_decision_release(wi: WorkItem) -> None:
+    """Raise ``DecisionHoldError`` when *wi* carries a ``decision`` hold — THE
+    guard every generic release path shares (:func:`release_via_api` for Retry and
+    Implement now, the overlay PATCH's ``clearHold``). One function rather than the
+    same two lines in each, so a third tap cannot quietly omit it: releasing a
+    decision hold outside ``decisions.accept`` drops the question on the floor and
+    re-queues the item with the decision still unmade."""
+    if wi.hold_kind == "decision":
+        raise DecisionHoldError(DECISION_HOLD_MESSAGE)
+
 
 def actor_class(actor: str) -> ActorClass:
     if actor in SYSTEM_ACTORS or actor.startswith(SYSTEM_PREFIXES):
@@ -66,6 +82,13 @@ def may_set(actor: str, kind: str) -> bool:
 def set_hold(wi: WorkItem, *, kind: str, reason: str, actor: str, now: datetime) -> None:
     if kind not in HOLD_KINDS:
         raise ValueError(f"hold_kind must be one of {HOLD_KINDS}")
+    # Refused for EVERY actor class, ahead of the class gate: a ``decision`` hold
+    # is the shadow of a pending proposal (spec §8), and one set here — by the
+    # overlay PATCH, by the ``set_hold`` session tool — would park the item with
+    # nothing to resolve it, while every release path refuses the kind. Only
+    # ``decisions.propose`` (via ``set_decision_hold``) may write one.
+    if kind == "decision":
+        raise DecisionHoldError(DECISION_SET_MESSAGE)
     if not (reason or "").strip():
         raise ValueError("hold_reason is required")
     if not may_set(actor, kind):
@@ -406,8 +429,7 @@ async def release_via_api(db, wi: WorkItem, *, actor: str, identity: str, signal
     kind ``only_kind`` skipped). Audits ``pm.hold.release`` with ``via="api"`` only when a
     hold actually ended."""
     from server.audit import record_audit
-    if wi.hold_kind == "decision":
-        raise DecisionHoldError(DECISION_HOLD_MESSAGE)
+    refuse_decision_release(wi)
     if only_kind is not None and wi.hold_kind is not None and wi.hold_kind != only_kind:
         return None
     released = wi.hold_kind
