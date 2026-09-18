@@ -6168,10 +6168,17 @@ class SessionOrchestrator:
         writes ``kind`` as the runner's hold on every mirrored issue, and audits
         it — except:
 
-        - a PERSON's hold (``HELD_KINDS``: ``owner_action``/``decision``) not
-          already the runner's own is left untouched (review R1 I6) — the
-          runner may reinforce or replace its OWN prior hold, never override a
-          human's; kept, logged, no audit row;
+        - a held item (``HELD_KINDS``: ``owner_action``/``decision``) is left
+          untouched (review R1 I6), and the ``hold_by == RUNNER_ACTOR`` exemption
+          that lets a retried give-up re-stamp its OWN hold belongs to the
+          ``owner_action`` writer ALONE (final review I2). For the
+          ``stronger_model`` writer, replacing a hand-off — even the runner's own
+          — would end it: ``stronger_model`` is not in ``HELD_KINDS``, so the item
+          becomes queue-eligible again and ``_release_give_ups`` drops the parked
+          ``gave_up`` row, a machine ending a hold spec decision 6 reserves for a
+          human signal. That happens whenever a grouping plan built before the
+          hand-off still names the issue as a non-primary member of a later batch
+          that bounces below the top. Kept, logged, no audit row;
         - an IDENTICAL hold already in place (same kind/actor/reason) is a
           no-op retry, not a re-stamp (review R1 I2 item 3) — a retried
           give-up or a re-tick while the row release keeps failing must not
@@ -6200,7 +6207,8 @@ class SessionOrchestrator:
                     WorkItem.kind == "issue",
                     tuple_(WorkItem.repo, WorkItem.number).in_(parts)))).scalars().all()
                 for wi in items:
-                    if wi.hold_kind in HELD_KINDS and wi.hold_by != RUNNER_ACTOR:
+                    if wi.hold_kind in HELD_KINDS and not (
+                            kind == "owner_action" and wi.hold_by == RUNNER_ACTOR):
                         log.info("backlog_runner.hold_kept target=%s#%s kind=%s by=%s",
                                  wi.repo, wi.number, wi.hold_kind, wi.hold_by)
                         continue

@@ -232,7 +232,10 @@ PR linkage, never on labels alone.
   whole branch, so the hold and the release can never land as a half-done pair. The SAME writer
   backs the existing give-up path (`_backlog_needs_human`, `kind="owner_action"`), so a person's
   hold is never overwritten by either, and an identical retry (same kind/actor/reason already in
-  place) is a no-op, not a re-stamp. The hand-off reason names the tier the climb stopped on —
+  place) is a no-op, not a re-stamp. The `stronger_model` writer skips a held item outright — the
+  "the runner may re-stamp its own hold" exemption is the give-up writer's alone, because an
+  escalate that replaced an `owner_action` hand-off (even one the runner itself wrote) would put a
+  handed-off issue back on the queue and drop its `gave_up` row, with no human signal anywhere. The hand-off reason names the tier the climb stopped on —
   `"bounced at {tier}; next attempt on {rung}"` (or `"PR Doctor gave up; next attempt on
   {rung}"`) when it climbs, `"bounced at {tier}: no mergeable PR after N attempts"` (or `"PR
   Doctor gave up at the top"`) at an UNCLAMPED top — and, when the top the climb stopped at was

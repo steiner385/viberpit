@@ -1186,6 +1186,59 @@ async def test_backlog_write_runner_hold_never_replaces_a_persons_hold(db_env):
 
 
 @pytest.mark.asyncio
+async def test_escalate_never_replaces_the_runners_own_owner_action_handoff(db_env):
+    """Final review I2: the ``hold_by == RUNNER_ACTOR`` exemption exists so a
+    RETRIED give-up can re-stamp its own hold. It must not extend to the
+    ``stronger_model`` writer.
+
+    A grouping plan built before a hand-off can still name that issue as a
+    non-primary member of a later batch; when THAT batch bounces below the top,
+    ``_backlog_escalate`` runs over every issue in it. Replacing the
+    ``owner_action`` would end the hand-off — ``stronger_model`` is not in
+    ``HELD_KINDS``, so the item goes back on the queue and ``_release_give_ups``
+    drops the parked ``gave_up`` row — a machine ending a hold spec decision 6
+    reserves for a human signal. The give-up writer keeps the exemption, so its
+    own retry still re-stamps a NEW reason."""
+    from sqlalchemy import select
+
+    from server.automations.context import AutomationContext
+    from server.db.models import Automation, AuditEvent, WorkItem
+    await init_db(db_env)
+    orch = _bare_orch()
+    orch._gh_run = object()
+    orch._backlog_ctx = AutomationContext("backlog-runner")
+    async with db_session() as db:
+        db.add(Automation(id="backlog-runner"))
+        db.add(WorkItem(repo="o/r", number=1, kind="issue", state="open",
+                        title="T", body="B"))
+    await orch._backlog_ctx.set_target_state("o/r#1", {"repo": "o/r", "issues": ["o/r#1"]})
+
+    with patch("server.automations.backlog_github.announce_needs_human", lambda *a, **k: None):
+        await orch._backlog_needs_human("o/r#1", "bounced at fable: no mergeable PR")
+        # A later batch bounces below the top and sweeps this issue with it.
+        await orch._backlog_escalate("o/r#1", "bounced at sonnet; next attempt on opus",
+                                     "opus")
+
+    async with db_session() as db:
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == "o/r", WorkItem.number == 1))).scalar_one()
+        assert wi.hold_kind == "owner_action"       # the hand-off survives
+        assert wi.hold_reason == "bounced at fable: no mergeable PR"
+        events = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.set"))).scalars().all()
+        assert len(events) == 1                     # only the give-up's own row
+
+    # The give-up writer keeps its runner exemption: a new reason re-stamps.
+    with patch("server.automations.backlog_github.announce_needs_human", lambda *a, **k: None):
+        await orch._backlog_needs_human("o/r#1", "PR Doctor gave up at the top")
+    async with db_session() as db:
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == "o/r", WorkItem.number == 1))).scalar_one()
+        assert wi.hold_kind == "owner_action"
+        assert wi.hold_reason == "PR Doctor gave up at the top"
+
+
+@pytest.mark.asyncio
 async def test_backlog_ladder_rung_reads_the_hold_and_the_last_attempt(db_env):
     """Spec 2026-09-18 §4: the rung exists only while the primary issue is parked
     ``stronger_model``, and it climbs from the model the last finalised implement
