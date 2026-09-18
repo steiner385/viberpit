@@ -131,8 +131,33 @@ async def test_set_hold_clearing_audits_release(isolated_db):
     payload = json.loads(out["content"][0]["text"])
     assert payload["data"] == {"ref": "o/n#12", "holdKind": None, "holdBy": None}
     async with db_session() as db:
+        rows = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.release"))).scalars().all()
+        assert len(rows) == 1
+        # The row must carry what WAS released and the agent's own reason — both are
+        # gone from `wi` by the time the handler reads it back, since apply_session_hold
+        # already cleared them; apply_session_hold's returned `released` is what saves it.
+        assert rows[0].detail["kind"] == "evidence"
+        assert rows[0].detail["reason"] == "found the cause"
+
+
+@pytest.mark.asyncio
+async def test_set_hold_null_kind_on_an_unheld_item_audits_nothing(isolated_db):
+    """A release call on an item with no hold is a true no-op (matching the overlay
+    route's `if released is not None` guard) — it must not write a `pm.hold.*` row."""
+    from sqlalchemy import select
+    from server.db import db_session
+    from server.db.models import AuditEvent, WorkItem
+    from server.sessions.tools.tools import build_session_tools
+    async with db_session() as db:
+        db.add(WorkItem(repo="o/n", number=12, kind="issue", body="b", triage_state="classified"))
+    tool = _tool(build_session_tools(_ctx(signalling_tools=True)), "set_hold")
+    out = await tool.handler({"kind": None, "reason": "nothing to release"})
+    payload = json.loads(out["content"][0]["text"])
+    assert payload["data"] == {"ref": "o/n#12", "holdKind": None, "holdBy": None}
+    async with db_session() as db:
         types = {a.type for a in (await db.execute(select(AuditEvent))).scalars()}
-        assert "pm.hold.release" in types
+        assert "pm.hold.release" not in types and "pm.hold.set" not in types
 
 
 @pytest.mark.asyncio

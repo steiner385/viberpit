@@ -224,15 +224,26 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
         ref = args.get("ref") or getattr(rec, "origin_ref", None)
         if not ref:
             raise ToolArgError("this session has no issue ref; pass ref=owner/repo#N")
+        requested_kind = args.get("kind")
         try:
             async with db_session() as db:
-                wi = await apply_session_hold(
-                    db, ref=str(ref), kind=args.get("kind"), reason=str(args.get("reason") or ""),
+                wi, released = await apply_session_hold(
+                    db, ref=str(ref), kind=requested_kind, reason=str(args.get("reason") or ""),
                     session_id=ctx.session_id, now=datetime.now(timezone.utc))
-                await record_audit(db, "pm.hold.set" if wi.hold_kind else "pm.hold.release",
-                                   ctx.identity, {"workItemId": wi.id, "kind": wi.hold_kind or args.get("kind"),
-                                                  "reason": wi.hold_reason, "actorClass": "agent",
-                                                  "session_id": ctx.session_id}, via="session")
+                # Setting always audits; releasing only when something was actually held
+                # (matching the overlay route's `if released is not None` guard in
+                # server/api/pm.py) — a null-kind call on an already-unheld item is a
+                # true no-op and gets no `pm.hold.*` row.
+                if requested_kind is not None:
+                    await record_audit(db, "pm.hold.set", ctx.identity,
+                                       {"workItemId": wi.id, "kind": wi.hold_kind,
+                                        "reason": wi.hold_reason, "actorClass": "agent",
+                                        "session_id": ctx.session_id}, via="session")
+                elif released is not None:
+                    await record_audit(db, "pm.hold.release", ctx.identity,
+                                       {"workItemId": wi.id, "kind": released,
+                                        "reason": str(args.get("reason") or ""), "actorClass": "agent",
+                                        "session_id": ctx.session_id}, via="session")
         except (HoldPermissionError, ValueError) as e:
             raise ToolArgError(str(e)) from e
         return {"ref": ref, "holdKind": wi.hold_kind, "holdBy": wi.hold_by}

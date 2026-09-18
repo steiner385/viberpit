@@ -92,15 +92,20 @@ def test_apply_session_hold_resolves_ref_and_limits_kind(tmp_path, monkeypatch):
             db.add(WorkItem(id="w1", repo="o/r", number=7, kind="issue", body="b",
                             triage_state="classified"))
             await db.flush()
-            wi = await apply_session_hold(db, ref="o/r#7", kind="evidence",
-                                          reason="needs a repro", session_id="s1", now=NOW)
+            wi, released = await apply_session_hold(db, ref="o/r#7", kind="evidence",
+                                                    reason="needs a repro", session_id="s1", now=NOW)
             assert (wi.hold_kind, wi.hold_by) == ("evidence", "session:s1")
+            assert released is None  # setting, not releasing — nothing was cleared
             with pytest.raises(HoldPermissionError):
                 await apply_session_hold(db, ref="o/r#7", kind="owner_action",
                                          reason="park", session_id="s1", now=NOW)
-            wi = await apply_session_hold(db, ref="o/r#7", kind=None, reason="found it",
-                                          session_id="s1", now=NOW)
+            wi, released = await apply_session_hold(db, ref="o/r#7", kind=None, reason="found it",
+                                                     session_id="s1", now=NOW)
             assert wi.hold_kind is None
+            assert released == "evidence"  # what WAS held before this clear
+            wi, released = await apply_session_hold(db, ref="o/r#7", kind=None, reason="still none",
+                                                     session_id="s1", now=NOW)
+            assert released is None  # already unheld — a true no-op clear
             with pytest.raises(ValueError):
                 await apply_session_hold(db, ref="o/r#99", kind="evidence", reason="r",
                                          session_id="s1", now=NOW)

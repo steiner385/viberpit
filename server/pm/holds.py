@@ -87,9 +87,15 @@ def actor_for_request(request: object) -> str:
 
 
 async def apply_session_hold(db, *, ref: str, kind: str | None, reason: str,
-                             session_id: str, now: datetime) -> WorkItem:
+                             session_id: str, now: datetime) -> tuple[WorkItem, str | None]:
     """The session tool's one call: resolve ``owner/repo#N`` to the mirrored issue and
-    set (``kind``) or clear (``kind is None``) its hold as ``session:<id>``."""
+    set (``kind``) or clear (``kind is None``) its hold as ``session:<id>``.
+
+    Returns ``(work_item, released)`` where ``released`` is the hold kind that WAS on
+    the item before a clear (``None`` when setting, and ``None`` when clearing an
+    already-unheld item) — mirroring the overlay route's ``released = wi.hold_kind``
+    capture (``server/api/pm.py``'s ``clearHold`` branch), since ``clear_hold`` blanks
+    ``wi.hold_kind`` before a caller could otherwise read what was released."""
     from sqlalchemy import select
 
     from server.pm.refs import split_ref
@@ -103,12 +109,14 @@ async def apply_session_hold(db, *, ref: str, kind: str | None, reason: str,
     if wi is None:
         raise ValueError(f"{ref} is not a mirrored issue")
     actor = f"session:{session_id}"
+    released: str | None = None
     if kind is None:
+        released = wi.hold_kind
         clear_hold(wi, actor=actor)
     else:
         set_hold(wi, kind=kind, reason=reason, actor=actor, now=now)
     await db.flush()
-    return wi
+    return wi, released
 
 
 #: Dialect-neutral conversion of pre-ladder ``needs_human`` rows (spec §3). Run by
