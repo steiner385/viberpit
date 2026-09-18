@@ -1484,6 +1484,60 @@ async def test_backlog_ladder_rung_floor_raise_stops_at_an_approval_clamped_top(
     assert await rung("opus") == "opus"
 
 
+@pytest.mark.asyncio
+async def test_backlog_accepted_decisions_returns_the_decision_in_force(db_env):
+    """Spec 2026-09-18 §6: the spawn's one door to ``server/pm/decisions.py``.
+    It answers the ACCEPTED decision for each ref — the newest one where an issue
+    has been decided more than once — and says nothing at all about a ref that is
+    undecided, still pending, or not mirrored."""
+    from datetime import datetime, timedelta, timezone
+
+    from server.db.models import WorkItem
+    from server.pm import decisions
+    await init_db(db_env)
+    orch = _bare_orch()
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    later = now + timedelta(minutes=5)
+    options = [{"key": "server", "label": "Server-side", "detail": "render it on the server"},
+               {"key": "client", "label": "Client-side", "detail": None}]
+
+    async with db_session() as db:
+        decided = WorkItem(repo="o/r", number=1, kind="issue", state="open",
+                           title="decided", body="b")
+        redecided = WorkItem(repo="o/r", number=2, kind="issue", state="open",
+                             title="redecided", body="b")
+        pending = WorkItem(repo="o/r", number=3, kind="issue", state="open",
+                           title="pending", body="b")
+        db.add_all([decided, redecided, pending])
+        await db.flush()
+        first = await decisions.propose(db, decided, options=options,
+                                        recommended_key="server", rationale="the ledger",
+                                        actor="session:s1", now=now)
+        await decisions.accept(db, first, chosen_key="server",
+                               actor="tony@example.com", now=now)
+        stale = await decisions.propose(db, redecided, options=options,
+                                        recommended_key="client", rationale="first answer",
+                                        actor="session:s2", now=now)
+        await decisions.accept(db, stale, chosen_key="client",
+                               actor="tony@example.com", now=now)
+        current = await decisions.propose(db, redecided, options=options,
+                                          recommended_key="server",
+                                          rationale="second answer",
+                                          actor="session:s3", now=later)
+        await decisions.accept(db, current, chosen_key="server",
+                               actor="tony@example.com", now=later)
+        await decisions.propose(db, pending, options=options, recommended_key="server",
+                                rationale="still open", actor="session:s4", now=now)
+
+    got = await orch._backlog_accepted_decisions(
+        ["o/r#1", "o/r#2", "o/r#3", "o/r#404", "nonsense"])
+    assert got == {
+        "o/r#1": "Decision (Server-side): render it on the server — the ledger",
+        "o/r#2": "Decision (Server-side): render it on the server — second answer",
+    }
+    assert await orch._backlog_accepted_decisions([]) == {}
+
+
 def test_backlog_queue_tail_returns_copy_of_cache():
     """The status-card queue-provenance seam (#990) must hand the loop a COPY
     of the cached ranked pool — mutating what it returns must never corrupt

@@ -55,6 +55,44 @@ def _issue_ref_lines(issues: list[str], line: Callable[[str, str], str]) -> str:
     return "\n".join(rendered)
 
 
+DECISIONS_HEADING = "## Decisions already taken"
+"""The implement prompt's accepted-decision block header (spec 2026-09-18 §6).
+One literal, shared with the tests that assert the block is (and is not) there."""
+
+
+def _decisions_block(batch: Batch) -> str:
+    """The "## Decisions already taken" section for *batch*, or ``""`` when the
+    batch has none (spec 2026-09-18 §6).
+
+    Each line quotes the accepted decision VERBATIM as ``server/pm/decisions.py``
+    rendered it — this module never re-words or re-formats a decision, because the
+    whole point of §6 is that what the person picked in the inbox is what the next
+    run implements. The ref is prefixed so a multi-issue batch says which issue
+    each decision belongs to.
+
+    Refs are listed in ``batch.issues`` order (the order the prompt already lists
+    them in); a decision keyed by a ref that is not in the batch still renders,
+    sorted, rather than being silently dropped.
+
+    An empty map answers the empty string, and the caller concatenates it as-is —
+    so a batch with nothing decided produces a byte-identical prompt to the one
+    this builder produced before decisions existed.
+    """
+    decisions = batch.decisions or {}
+    if not decisions:
+        return ""
+    in_batch = set(batch.issues)
+    ordered = [r for r in batch.issues if r in decisions]
+    ordered += sorted(r for r in decisions if r not in in_batch)
+    lines = "\n".join(f"- {ref}: {decisions[ref]}" for ref in ordered)
+    return (
+        f"{DECISIONS_HEADING}\n\n"
+        "The owner has already decided the following. Implement them as written; "
+        "do not re-open or re-litigate them.\n\n"
+        f"{lines}\n\n"
+    )
+
+
 def _is_codex(engine: AgentEngine | str) -> bool:
     """Whether *engine* is Codex — the one engine with no signalling-tool surface
     (``AgentCapabilities.durable_tool_surface`` is False), so it finishes through
@@ -73,6 +111,11 @@ def build_implement_prompt(batch: Batch, default_branch: str = "master", *,
     - Follow this repository's completion workflow: open the PR (non-draft),
       mark it ready for review, and arm auto-merge (``--squash --auto``).
 
+    When ``batch.decisions`` is non-empty the prompt also carries a
+    "## Decisions already taken" block quoting each accepted decision verbatim
+    (spec 2026-09-18 §6) — the decision the person took in the inbox is what this
+    run implements. An empty map adds nothing at all.
+
     ``default_branch`` is the target repo's actual integration branch (e.g.
     ``"main"`` or ``"master"``).  Callers must resolve it from the remote before
     invoking — do NOT hardcode ``"master"`` (many repos use ``"main"``).
@@ -89,6 +132,7 @@ def build_implement_prompt(batch: Batch, default_branch: str = "master", *,
         f"Implement the following GitHub issue(s) {_repo_clause(batch.repo)} "
         f"and land them in a single pull request:\n\n"
         f"{issues_block}\n\n"
+        f"{_decisions_block(batch)}"
         "Requirements — follow the repository's completion workflow exactly:\n"
         "1. Implement all issues listed above.\n"
         "2. Open ONE pull request that covers all of them (never a draft).\n"

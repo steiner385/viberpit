@@ -23,7 +23,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Callable, Mapping, cast
 
@@ -6864,6 +6864,25 @@ class SessionOrchestrator:
         async with db_session() as db:
             return await tier_floor_for_dispatch(db, product_slug, primary_ref)
 
+    async def _backlog_accepted_decisions(self, refs: "Sequence[str]") -> dict[str, str]:
+        """The accepted decisions for *refs* (spec 2026-09-18 §6): ``owner/repo#N``
+        → the decision text the implement prompt quotes verbatim.
+
+        The spawn's one door to ``server/pm/decisions.py``, whose
+        ``accepted_text_for_refs`` is the ONE formatter of that text — the prompt
+        builder re-words nothing, so what the person picked in the inbox, what the
+        issue comment said and what the next run reads are the same sentence.
+
+        An injectable seam for the same reason ``_backlog_tier_floor`` and
+        ``_backlog_ladder_rung`` are: the spawn tests need no seeded proposal. The
+        CALLER is best-effort (spec §13) — a failed read costs the prompt BLOCK,
+        never the spawn; the dispatch then runs without the decision, exactly as it
+        would have before anyone took one.
+        """
+        from server.pm.decisions import accepted_text_for_refs
+        async with db_session() as db:
+            return await accepted_text_for_refs(db, refs)
+
     async def _backlog_ladder_rung(self, product_slug: "str | None", primary_ref: str, *,
                                    default_model: str, floor: str | None) -> str | None:
         """The tier this dispatch is PINNED to because its primary issue is parked
@@ -6992,6 +7011,22 @@ class SessionOrchestrator:
         # describe different dispatches.
         dispatch_kind = dispatch_kind_for_hold(batch.primary_hold_kind)
         investigate = dispatch_kind == "investigate"
+        # The decisions this batch's issues already have (spec 2026-09-18 §6), read
+        # HERE rather than carried on the plan: a person can take a decision between
+        # the tick that built the batch and this dispatch, and the run must carry
+        # the decision in force now. IMPLEMENT only — an investigation is asking
+        # what the problem is, and its prompt's four exits are its whole contract.
+        # Best-effort like the floor and the rung: a failed read costs the block,
+        # never the spawn.
+        if not investigate:
+            try:
+                accepted = await self._backlog_accepted_decisions(batch.issues)
+            except Exception:
+                log.warning("backlog_runner.accepted_decisions_failed target=%s",
+                            batch.primary, exc_info=True)
+                accepted = {}
+            if accepted:
+                batch = dataclass_replace(batch, decisions=accepted)
         # The seed prompt, built here because only the implement one takes a branch
         # and resolving one is a remote branch listing — the same reason the refusal
         # check runs first: an investigation must not pay for work it has no use for.
