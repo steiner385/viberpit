@@ -1226,9 +1226,47 @@ async def test_backlog_ladder_rung_reads_the_hold_and_the_last_attempt(db_env):
     # input to ``next_rung`` (where a floor above ``ladder_top`` would END the
     # ladder on an ordinary configuration). It raises the rung and never lowers
     # it, and a floor with no fixed tier is ignored rather than compared by name.
-    assert await rung("o/r#2", floor="fable") == "fable"
+    # Review r1 F1: the raise stops at the top — this rung is PINNED, so a floor
+    # above the top would spawn on a tier the ladder decided not to climb to.
+    assert await rung("o/r#2", floor="fable") == "opus"
     assert await rung("o/r#2", floor="haiku") == "opus"
     assert await rung("o/r#2", floor="best") == "opus"
+
+
+@pytest.mark.asyncio
+async def test_backlog_ladder_rung_floor_raise_stops_at_an_approval_clamped_top(db_env):
+    """Review r1 F1: the rung is pinned into the spawn's ``default_model``, so the
+    capability-floor raise must respect a ``ladder_top`` the model-approval gate
+    clamped. A capability whose D9 floor is ``fable`` on a product clamped to
+    ``opus`` climbs to ``opus`` — pinning ``fable`` would park the dispatch as a
+    driverless ``pending_approval`` row and burn the ``stronger_model`` hold."""
+    from datetime import datetime, timezone
+
+    from server.automations.product_policy import effective_policy
+    from server.db.models import DispatchOutcome, WorkItem
+    from server.pm.holds import set_runner_stronger_hold
+    await init_db(db_env)
+    orch = _bare_orch()
+    # The shape the clamped loader hands the tick snapshot: the effective top plus
+    # the configured value it was lowered from.
+    orch._backlog_last_policies = {
+        "widget": {**effective_policy({"dispatch": "auto", "ladder_top": "opus"}),
+                   "ladder_top_configured": "fable"}}
+    now = datetime.now(timezone.utc)
+    async with db_session() as db:
+        wi = WorkItem(repo="o/r", number=2, kind="issue", state="open", title="T", body="B")
+        set_runner_stronger_hold(wi, reason="bounced at sonnet", now=now)
+        db.add(wi)
+        db.add(DispatchOutcome(target_ref="o/r#2", outcome="no_pr", model="sonnet",
+                               attempt_no=0, ended_at=now))
+
+    async def rung(floor):
+        return await orch._backlog_ladder_rung("widget", "o/r#2",
+                                               default_model="auto", floor=floor)
+
+    assert await rung("fable") == "opus"      # the floor never pins the gated tier
+    assert await rung(None) == "opus"
+    assert await rung("opus") == "opus"
 
 
 def test_backlog_queue_tail_returns_copy_of_cache():

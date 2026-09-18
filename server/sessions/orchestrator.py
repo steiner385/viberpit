@@ -6615,8 +6615,14 @@ class SessionOrchestrator:
         instead of as a bound inside it: as an input it would end the ladder
         (``next_rung`` → ``None``) for any capability whose floor sits above
         ``ladder_top``, which is an ordinary configuration, not a lowered top.
-        Raising afterwards changes nothing about which model runs — ``pick_model``
-        floors the pick anyway — it just keeps the rung honest about it.
+
+        That raise is itself bounded by the top (review r1 F1): the rung returned
+        here is PINNED into the spawn's ``default_model``, so a floor above the top
+        is not the harmless "``pick_model`` floors the pick anyway" case it would be
+        for an ``auto`` spawn — on a top the approval gate clamped it would pin the
+        gated tier and park the dispatch as a driverless ``pending_approval`` row,
+        which is exactly what the clamp exists to prevent. A floor above the top
+        therefore leaves the rung AT the top.
 
         The spawn's one door to the ladder, and an injectable seam so the spawn
         tests need neither a seeded hold nor an outcome history. Best-effort like
@@ -6668,10 +6674,11 @@ class SessionOrchestrator:
         # Then raise the climb to the capability floor, by ``tier_rank`` — the one
         # tier ordering, compared exactly as ``model_pick.pick_model`` compares it,
         # so a floor with no fixed tier (``best``, an unknown id) is ignored rather
-        # than compared by name.
-        floor_rank, rung_rank = tier_rank(floor), tier_rank(rung)
+        # than compared by name — but never past ``top``, because this rung is
+        # pinned and a top the approval gate clamped would otherwise park the spawn.
+        floor_rank, rung_rank, top_rank = tier_rank(floor), tier_rank(rung), tier_rank(top)
         if floor_rank is not None and rung_rank is not None and floor_rank > rung_rank:
-            return TIER_ORDER[floor_rank]
+            return TIER_ORDER[floor_rank if top_rank is None else min(floor_rank, top_rank)]
         return rung
 
     async def _backlog_spawn(self, batch, account: str, *, default_model: str,
