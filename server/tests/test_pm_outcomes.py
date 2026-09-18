@@ -144,6 +144,30 @@ def test_top_tier_reads_the_policy_and_defaults_to_the_last_tier():
     assert top_tier({"ladder_top": "bogus"}) == TIER_ORDER[-1]
 
 
+def test_clamp_ladder_top_walks_down_to_the_first_allowed_tier():
+    """Spec §4 decision 2 amendment: the ladder's top is the strongest tier the
+    model-approval gate ALLOWS, so a rung can never park a dispatch for approval."""
+    from server.pm.outcomes import clamp_ladder_top
+    assert clamp_ladder_top("fable", lambda t: t != "fable") == "opus"
+    assert clamp_ladder_top("fable", lambda t: True) == "fable"
+    assert clamp_ladder_top("opus", lambda t: t == "haiku") == "haiku"
+    # Nothing allowed → the cheapest tier: hand off after the first bounce, never
+    # climb onto a tier that would park.
+    assert clamp_ladder_top("fable", lambda t: False) == "haiku"
+    # A tier ABOVE the configured top being gated changes nothing.
+    assert clamp_ladder_top("opus", lambda t: t != "fable") == "opus"
+    # An unrecognised configured value reads as the strongest tier (top_tier's rule).
+    assert clamp_ladder_top("bogus", lambda t: t != "fable") == "opus"
+
+
+def test_gated_ladder_top_names_the_configured_tier_only_when_it_was_clamped():
+    from server.pm.outcomes import gated_ladder_top
+    assert gated_ladder_top({"ladder_top": "opus", "ladder_top_configured": "fable"}) == "fable"
+    assert gated_ladder_top({"ladder_top": "fable", "ladder_top_configured": "fable"}) is None
+    assert gated_ladder_top({"ladder_top": "opus"}) is None   # un-annotated snapshot
+    assert gated_ladder_top({}) is None
+
+
 @pytest.mark.asyncio
 async def test_last_attempt_model_reads_the_newest_finalised_implement_row(tmp_path):
     """The ladder climbs from the newest finalised ``implement`` dispatch's model:

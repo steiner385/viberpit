@@ -1011,3 +1011,60 @@ def test_human_edit_between_migration_read_and_write_wins(tmp_path, monkeypatch)
         policy, stamp = (await _policies())["alpha"]
         assert policy is None and stamp is not None
     asyncio.run(run())
+
+
+# --- The ladder top is clamped to the model-approval gate (spec §4, decision 2
+# amendment) ------------------------------------------------------------------
+
+
+async def _set_denylist(denylist: str) -> None:
+    """Pin the install-level model-approval denylist (the ``AppSettings`` singleton
+    ``resolve_model_policy`` reads before the env default)."""
+    from server.db.models import AppSettings
+    async with db_session() as db:
+        db.add(AppSettings(id="singleton", model_approval_denylist=denylist))
+
+
+def test_policy_snapshots_clamp_the_ladder_top_to_the_approval_gate(tmp_path):
+    """A ``ladder_top`` the approval gate would park is lowered to the strongest
+    ALLOWED tier — on both runner policy reads — and the configured value survives
+    as ``ladder_top_configured`` so the hand-off can name the gate."""
+    from server.automations.product_policy import NO_PRODUCT_POLICY_KEY
+
+    async def run():
+        await _init(tmp_path, "ladder_clamp.db")
+        await _seed_product("alpha", "o/a",
+                            policy={"dispatch": "auto", "ladder_top": "fable"})
+        await _seed_item("o/a", 1, score=5.0)
+        await _set_denylist("fable")
+        orch = _orch_with_ctx()
+
+        policies = await orch._backlog_load_policies()
+        assert policies["alpha"]["ladder_top"] == "opus"
+        assert policies["alpha"]["ladder_top_configured"] == "fable"
+        # The no-product default rides along on the SAME read — that is how the
+        # clamp reaches the loop's fallback without a second implementation.
+        assert policies[NO_PRODUCT_POLICY_KEY]["ladder_top"] == "opus"
+        assert policies[NO_PRODUCT_POLICY_KEY]["dispatch"] == "off"   # still fail-safe
+
+        # The queue read's tick snapshot (what the SPAWN's rung reads) is clamped too.
+        products: dict = {}
+        await orch._backlog_query_queue(_config(), products_out=products)
+        assert orch._backlog_last_policies["alpha"]["ladder_top"] == "opus"
+        # …and the default is not a product, so it never becomes a counts row.
+        assert NO_PRODUCT_POLICY_KEY not in products
+
+    asyncio.run(run())
+
+
+def test_an_ungated_ladder_top_is_left_where_the_operator_set_it(tmp_path):
+    async def run():
+        await _init(tmp_path, "ladder_noclamp.db")
+        await _seed_product("alpha", "o/a",
+                            policy={"dispatch": "auto", "ladder_top": "fable"})
+        await _set_denylist("none")          # gates no real tier
+        policies = await _orch_with_ctx()._backlog_load_policies()
+        assert policies["alpha"]["ladder_top"] == "fable"
+        assert policies["alpha"]["ladder_top_configured"] == "fable"
+
+    asyncio.run(run())

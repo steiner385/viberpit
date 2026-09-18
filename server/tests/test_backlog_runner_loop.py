@@ -3172,6 +3172,34 @@ def test_a_bounce_at_the_top_hands_the_issue_to_the_owner(tmp_path):
     asyncio.run(run())
 
 
+def test_a_bounce_at_an_approval_clamped_top_names_the_gate(tmp_path):
+    """Spec §4 decision 2 amendment: when the model-approval gate lowered the
+    product's top, the hand-off says so — the owner must not read "bounced at opus"
+    as "the strongest model I configured already failed"."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_ladder_clamped.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        # The shape the clamped loader hands the loop: the effective top plus the
+        # configured value it was lowered from.
+        clamped = {**policy(max_in_flight=1000, ladder_top="opus"),
+                   "ladder_top_configured": "fable"}
+        loop, rec, ctx = build_loop(config=make_config(max_concurrent=1),
+                                    candidates=[batch("r#1")],
+                                    policies={DEFAULT_PRODUCT: clamped},
+                                    spawn_result=SimpleNamespace(id="sess-1", model="opus"))
+        await loop.tick()                       # spawn on opus — the clamped top
+        await _mark_session_ended(ctx, "r#1")
+        await loop.tick()                       # sweep: bounced at the clamped top
+
+        assert rec.escalations == []            # never climbs onto the gated tier
+        assert [t for t, _r in rec.needs_humans] == ["r#1"]
+        assert rec.needs_humans[0][1] == "bounced at opus; fable needs approval"
+
+    asyncio.run(run())
+
+
 def test_pr_doctor_give_up_climbs_the_ladder_too(tmp_path):
     """PR Doctor giving up on the PR is still a failed implement attempt (spec
     §4): the same ladder path as a no-PR bounce, never a straight hand-off."""

@@ -5822,6 +5822,11 @@ class SessionOrchestrator:
 
         async with db_session() as db:
             rows, policies, repos_by_slug = await db.run_sync(_rows)
+            # The spawn's ladder rung reads its ``ladder_top`` off this snapshot, so
+            # it gets the SAME approval-gate clamp the sweep's snapshot gets —
+            # otherwise the two halves of one rule could answer differently about
+            # where the ladder ends (and the spawn's half is the one that parks).
+            policies = await self._backlog_clamp_ladder_tops(db, policies)
         # Cached for the other seams in this same tick (selection's weights/caps/
         # order, the spawn's model) so they cannot read a different answer.
         self._backlog_last_policies = policies
@@ -5965,10 +5970,65 @@ class SessionOrchestrator:
         from server.automations.product_policy import load_policies
         try:
             async with db_session() as db:
-                return await load_policies(db)
+                return await self._backlog_clamp_ladder_tops(db, await load_policies(db))
         except Exception:
             log.warning("orchestrator._backlog_load_policies_failed", exc_info=True)
             raise
+
+    async def _backlog_clamp_ladder_tops(self, db, policies: dict[str, dict]) -> dict[str, dict]:
+        """THE ladder-top clamp for a policy snapshot (spec 2026-09-18 §4, decision 2
+        amendment): every product's ``ladder_top`` lowered to the strongest tier the
+        model-approval gate ALLOWS, plus the same treatment for the no-product default
+        (carried under ``NO_PRODUCT_POLICY_KEY``, which is how the clamp reaches
+        ``BacklogRunnerLoop._policy_for``'s fallback without a second implementation).
+
+        The ladder must never climb onto a tier ``create_session`` would park for
+        approval: that dispatch holds a runner slot behind a human and never runs.
+        Both runner policy reads (this seam and the queue read's tick snapshot) come
+        through here, so the sweep that writes a ladder hold and the spawn that pins
+        its rung cannot disagree about where the top is.
+
+        The configured value survives as ``ladder_top_configured`` — an in-memory
+        annotation ONLY (never persisted, never a ``PRODUCT_POLICY_SCHEMA`` field),
+        read back through ``gated_ladder_top`` so a hand-off at a clamped top can name
+        the gate instead of silently stopping below the operator's setting.
+
+        Each tier is judged ONCE per load, not once per product. Best-effort: a failed
+        verdict leaves the snapshot unclamped and logs — a parked dispatch is visible
+        and recoverable, whereas raising here would stall the whole tick."""
+        from server.automations.product_policy import NO_PRODUCT_POLICY_KEY, effective_policy
+        from server.pm.outcomes import clamp_ladder_top
+        from server.sessions.model_catalog import TIER_ORDER
+        from server.sessions.model_policy import resolve_model_policy
+        snapshot = {**policies, NO_PRODUCT_POLICY_KEY: effective_policy(None)}
+        try:
+            verdicts = {tier: await resolve_model_policy(db, model=tier, account=None)
+                        for tier in TIER_ORDER}
+        except Exception:
+            log.warning("backlog_runner.ladder_top_clamp_failed", exc_info=True)
+            return snapshot
+
+        def _allowed(tier: str) -> bool:
+            return verdicts.get(tier) == "allow"
+
+        # Lazily attached, so a snapshot read on an orchestrator built without
+        # ``__init__`` (the seam tests) works the same way.
+        logged: dict[str, str] = getattr(self, "_backlog_ladder_clamp_logged", None) or {}
+        self._backlog_ladder_clamp_logged = logged
+        out: dict[str, dict] = {}
+        for slug, policy in snapshot.items():
+            configured = str(policy["ladder_top"])
+            effective = clamp_ladder_top(configured, _allowed)
+            out[slug] = {**policy, "ladder_top": effective,
+                         "ladder_top_configured": configured}
+            # One line per CHANGE of a product's effective top, not one per tick:
+            # this runs on every tick of the loop.
+            if logged.get(slug) != effective:
+                logged[slug] = effective
+                if effective != configured:
+                    log.info("backlog_runner.ladder_top_clamped slug=%s configured=%s "
+                             "effective=%s", slug or "(no product)", configured, effective)
+        return out
 
     def _backlog_credential_alerts(self) -> list[dict]:
         """Stale-credential seam for the loop's dashboard notification (#670).
@@ -6281,8 +6341,12 @@ class SessionOrchestrator:
             log.warning("orchestrator._backlog_count_candidates_failed", exc_info=True)
             return 0, 0, 0, None
         # Include off products so existing claims remain attributable after a
-        # policy change. The loop adds live counts from ONE shared snapshot.
+        # policy change. The loop adds live counts from ONE shared snapshot. The
+        # snapshot's no-product default (``NO_PRODUCT_POLICY_KEY``) is not a product
+        # and never becomes a counts row.
         for slug, policy in self._backlog_last_policies.items():
+            if not slug:
+                continue
             row = per_product.setdefault(slug, {
                 "dispatch": policy["dispatch"], "eligible": 0,
                 "blocked": 0, "untriaged": 0, "bounced": 0,
@@ -6561,7 +6625,7 @@ class SessionOrchestrator:
         """
         from sqlalchemy import select as sa_select
 
-        from server.automations.product_policy import effective_policy
+        from server.automations.product_policy import NO_PRODUCT_POLICY_KEY, effective_policy
         from server.db.models import WorkItem
         from server.pm.outcomes import last_attempt_model, next_rung, top_tier
         from server.pm.refs import split_ref
@@ -6583,7 +6647,12 @@ class SessionOrchestrator:
                         exc_info=True)
             return None
         policies = getattr(self, "_backlog_last_policies", {})
-        policy = (policies.get(product_slug) if product_slug else None) or effective_policy(None)
+        # A dispatch with no product takes the snapshot's no-product default, which
+        # carries the same approval-gate clamp every product's does (the sweep's
+        # ``_policy_for`` falls back to that same entry). Only a snapshot taken
+        # before the clamp existed — or none at all — reaches the pure default.
+        policy = ((policies.get(product_slug) if product_slug else None)
+                  or policies.get(NO_PRODUCT_POLICY_KEY) or effective_policy(None))
         top = top_tier(policy)
         rung = next_rung(previous, floor=None, default_model=default_model, top=top)
         if rung is None:

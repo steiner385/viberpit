@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -238,6 +238,43 @@ def top_tier(policy: dict) -> str:
     """The strongest tier the ladder climbs to for this product (spec §4, decision 2)."""
     top = str((policy or {}).get("ladder_top") or "")
     return top if top in TIER_ORDER else TIER_ORDER[-1]
+
+
+def clamp_ladder_top(configured: str, allowed: Callable[[str], bool]) -> str:
+    """THE ladder-top clamp (spec 2026-09-18 §4, decision 2 amendment): the strongest
+    tier at or below *configured* that *allowed* accepts.
+
+    ``SessionOrchestrator.create_session`` gates every requested model through
+    ``server/sessions/model_policy.py:resolve_model_policy``, and a gated tier parks
+    the session as a driverless ``pending_approval`` row. A ladder rung on such a
+    tier would therefore hold a runner slot behind a human and never run — the
+    opposite of "no approval step for ladder dispatches". So the ladder treats the
+    highest ALLOWED tier as its top and hands the issue to the owner there.
+
+    Walks ``TIER_ORDER`` downward from *configured* (an unrecognised value reads as
+    the strongest tier, mirroring ``top_tier``). With nothing allowed it returns the
+    cheapest tier: the ladder then hands off after the first bounce, which is the
+    safe direction — a stalled item beats an item parked for approval forever.
+    """
+    start = tier_rank(configured)
+    if start is None:
+        start = len(TIER_ORDER) - 1
+    for tier in reversed(TIER_ORDER[:start + 1]):
+        if allowed(tier):
+            return tier
+    return TIER_ORDER[0]
+
+
+def gated_ladder_top(policy: dict) -> str | None:
+    """The CONFIGURED ``ladder_top`` the approval gate clamped away, or ``None``.
+
+    THE reader of the ``ladder_top_configured`` annotation ``clamp_ladder_top``'s
+    caller leaves on the runner's in-memory policy snapshot (never persisted, never
+    in ``PRODUCT_POLICY_SCHEMA``), so every hand-off reason that has to explain why
+    the ladder stopped below the operator's setting says it the same way.
+    """
+    configured = str((policy or {}).get("ladder_top_configured") or "")
+    return configured if configured and configured != top_tier(policy) else None
 
 
 def next_rung(previous_model: str | None, *, floor: str | None, default_model: str | None,

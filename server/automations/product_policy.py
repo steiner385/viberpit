@@ -126,6 +126,19 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
 # or pre-flip row would 422/fall back to all-defaults the moment it was read.
 PRODUCT_POLICY_RETIRED_KEYS: tuple[str, ...] = ("max_attempts",)
 
+# In-memory ANNOTATIONS a reader may hang on a validated policy: never stored, never
+# schema fields, never accepted from a client (``merge_policy_patch`` validates
+# directly and still rejects them, so no patch can persist one). ``ladder_top_configured``
+# is the Backlog Runner's record of the ``ladder_top`` the model-approval gate clamped
+# away (spec 2026-09-18 §4, decision 2 amendment).
+#
+# ``effective_policy`` STRIPS them before validating so that re-reading an annotated
+# snapshot stays idempotent. Without that, ``validate_config``'s unknown-key rule would
+# read an annotation as a corrupt row and degrade the whole product to defaults —
+# dispatch ``off`` — which is exactly the silent failure the retired-key list exists to
+# prevent.
+PRODUCT_POLICY_ANNOTATIONS: frozenset[str] = frozenset({"ladder_top_configured"})
+
 # Logged once per process, not once per bad row: a corrupt policy is a per-deploy fact
 # ("something upstream needs fixing"), not a per-request one, and every dispatch-loop tick
 # would otherwise re-log the same row.
@@ -135,9 +148,15 @@ _warned_bad_policy = False
 def effective_policy(raw: dict | None) -> dict:
     """The validated policy with every key present. ``None`` (never opted in) and an
     unparseable blob both read as the defaults — dispatch ``off`` — and the latter logs once
-    per process. Never raises."""
+    per process. Never raises.
+
+    Reading an already-validated policy back is idempotent, including one carrying an
+    in-memory annotation (``PRODUCT_POLICY_ANNOTATIONS``): the annotation is dropped,
+    never mistaken for a corrupt row."""
     global _warned_bad_policy
     if raw is not None:
+        if isinstance(raw, dict) and not PRODUCT_POLICY_ANNOTATIONS.isdisjoint(raw):
+            raw = {k: v for k, v in raw.items() if k not in PRODUCT_POLICY_ANNOTATIONS}
         try:
             return validate_config(PRODUCT_POLICY_SCHEMA, raw, retired=PRODUCT_POLICY_RETIRED_KEYS)
         except (ValueError, TypeError):
@@ -222,6 +241,16 @@ def policies_by_slug(db: Session) -> dict[str, dict]:
     """slug -> effective policy for every Project (sync session; the queue loader's session)."""
     rows = db.execute(select(Project.slug, Project.automation_policy)).all()
     return {slug: effective_policy(policy) for slug, policy in rows if slug is not None}
+
+
+# The reserved key a runner policy SNAPSHOT carries its no-product default under
+# (spec 2026-09-18 §4, decision 2 amendment). A target with no product still needs a
+# policy — pre-flip claims carry none — and since the Backlog Runner's snapshot has
+# its ``ladder_top`` clamped to the model-approval gate, that default cannot be
+# rebuilt with a bare ``effective_policy(None)`` on the far side of the seam without
+# a SECOND clamp. Carrying it in the mapping keeps one. Empty because no ``Project``
+# lookup can ever reach it: every per-product read guards on a truthy slug.
+NO_PRODUCT_POLICY_KEY = ""
 
 
 async def load_policies(db: AsyncSession) -> dict[str, dict]:

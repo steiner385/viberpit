@@ -32,6 +32,24 @@ def test_ladder_top_choices_are_the_tier_order_and_max_attempts_is_gone():
     assert effective_policy({"dispatch": "auto", "max_attempts": 2})["ladder_top"] == "fable"
 
 
+def test_an_in_memory_annotation_survives_a_re_read_as_a_dropped_key():
+    """The Backlog Runner hangs ``ladder_top_configured`` on its snapshot (the
+    ``ladder_top`` the approval gate clamped away). Re-reading such a policy must be
+    idempotent: an annotation is dropped, NEVER read as a corrupt row — that would
+    degrade the product to dispatch ``off`` silently. It is still never persisted:
+    ``merge_policy_patch`` validates directly and rejects it."""
+    from server.automations.product_policy import (
+        PRODUCT_POLICY_ANNOTATIONS, effective_policy, merge_policy_patch)
+    annotated = {**effective_policy({"dispatch": "auto", "ladder_top": "opus"}),
+                 "ladder_top_configured": "fable"}
+    assert "ladder_top_configured" in PRODUCT_POLICY_ANNOTATIONS
+    reread = effective_policy(annotated)
+    assert reread["dispatch"] == "auto" and reread["ladder_top"] == "opus"
+    assert "ladder_top_configured" not in reread
+    with pytest.raises(ValueError):
+        merge_policy_patch(None, {"ladder_top_configured": "fable"})
+
+
 def test_effective_policy_fills_defaults_and_falls_back_on_garbage():
     assert effective_policy({"dispatch": "auto", "max_in_flight": 3})["max_in_flight"] == 3
     assert effective_policy({"dispatch": "auto"})["queue_min_status"] == "Ready"

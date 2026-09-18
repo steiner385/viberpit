@@ -19,8 +19,9 @@ from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
 from .base import AutomationStatus, ConfigField
 from .context import AutomationContext
 from .engine_policy import EnginePolicy
-from .product_policy import ImplementationDecision, effective_policy, is_on
-from server.pm.outcomes import next_rung, top_tier
+from .product_policy import (
+    NO_PRODUCT_POLICY_KEY, ImplementationDecision, effective_policy, is_on)
+from server.pm.outcomes import gated_ladder_top, next_rung, top_tier
 from server.sessions.model_catalog import model_tier
 
 log = logging.getLogger(__name__)
@@ -670,23 +671,28 @@ class BacklogRunnerLoop:
         the ladder's ``ladder_top``), so they cannot disagree about which product
         owns a target.
 
-        A product the map does not know falls back to the pure schema defaults
-        (``effective_policy(None)``), i.e. dispatch ``off``. That is deliberately
-        fail-SAFE on the one decision where being wrong inverts an operator's
-        instruction: ``propose`` means "do not start a session without me", and a
-        fallback of ``auto`` would spawn for every proposing product the moment a
-        policy read hiccuped. Nothing legitimate is stranded by it — the QUEUE is
-        the off-gate, so a refill batch always carries a real ON slug — and the
-        two OTHER decisions this feeds keep working for a pre-flip claim that
-        carries no product: the defaults hand back ``default_model`` (``auto``)
-        those claims used to run under, and the ladder's own defaults
-        (``ladder_top="fable"``) apply the same way.
+        A product the map does not know falls back to the snapshot's own no-product
+        default (``NO_PRODUCT_POLICY_KEY``) — the schema defaults with the SAME
+        approval-gate clamp on ``ladder_top`` every product's policy got, so the
+        ladder for a product-less claim stops where the gate says and not one tier
+        above it. Only a snapshot from a seam that carries no default (a test's, a
+        pre-clamp one) reaches the pure ``effective_policy(None)``.
+
+        Either way the fallback is dispatch ``off``, deliberately fail-SAFE on the
+        one decision where being wrong inverts an operator's instruction:
+        ``propose`` means "do not start a session without me", and a fallback of
+        ``auto`` would spawn for every proposing product the moment a policy read
+        hiccuped. Nothing legitimate is stranded by it — the QUEUE is the off-gate,
+        so a refill batch always carries a real ON slug — and the two OTHER
+        decisions this feeds keep working for a pre-flip claim that carries no
+        product: the defaults hand back ``default_model`` (``auto``) those claims
+        used to run under, and the ladder's top applies the same way.
         """
         if product:
             policy = self._policies.get(product)
             if policy is not None:
                 return policy
-        return effective_policy(None)
+        return self._policies.get(NO_PRODUCT_POLICY_KEY) or effective_policy(None)
 
     async def _maybe_seed_policies(self) -> None:
         """Run the D10 migration once per process, on the first tick.
@@ -1686,8 +1692,9 @@ class BacklogRunnerLoop:
                 # Bounced at the top: the EXISTING give-up path (review R1 I2
                 # item 1) — owner_action hold + comment + the retried ``held``
                 # handoff, not the (now rung-only) escalate seam.
-                await self._give_up(target, st, "PR Doctor gave up at the top",
-                                    outcome=pd_outcome)
+                gated = gated_ladder_top(ladder_policy)
+                await self._give_up(target, st, "PR Doctor gave up at the top" + (
+                    f"; {gated} needs approval" if gated else ""), outcome=pd_outcome)
                 return
             # Escalate FIRST, release the row SECOND (review R1 I2 item 2): if
             # the hold write raises, the durable trigger (this same
@@ -1733,16 +1740,22 @@ class BacklogRunnerLoop:
             return
         previous = st.get("model")
         ladder_policy = self._policy_for(st.get("product"))
+        top = top_tier(ladder_policy)
         rung = next_rung(previous, floor=None,
-                         default_model=ladder_policy["default_model"],
-                         top=top_tier(ladder_policy))
+                         default_model=ladder_policy["default_model"], top=top)
         no_pr_outcome = {"outcome": "no_pr", "cause": "session ended without a mergeable PR",
                          "fallback": fallback}
         if rung is None:
             # Bounced at the top: the EXISTING give-up path (review R1 I2
-            # item 1), not the (now rung-only) escalate seam.
-            reason = (f"bounced at {model_tier(previous) or 'the top'}: "
-                     f"no mergeable PR after {attempts} attempts")
+            # item 1), not the (now rung-only) escalate seam. A top the
+            # model-approval gate lowered says so, so the owner reads why the
+            # ladder stopped below the tier they configured rather than
+            # concluding the strongest model already failed.
+            gated = gated_ladder_top(ladder_policy)
+            reason = (f"bounced at {model_tier(previous) or top}; {gated} needs approval"
+                      if gated else
+                      f"bounced at {model_tier(previous) or 'the top'}: "
+                      f"no mergeable PR after {attempts} attempts")
             await self._give_up(target, st, reason, outcome=no_pr_outcome)
             return
         # Escalate FIRST, release the row SECOND (review R1 I2 item 2): a raise
