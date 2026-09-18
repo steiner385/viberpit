@@ -17,10 +17,11 @@ Priority ladder, highest first (a tick does exactly one thing):
 
 Auto-linking mechanical PRs by closing keyword (design §6.2) is a *sync-time*
 rule with no session, so it is NOT an engine action — it lives in the loop's
-pre-classify pass. Rejection is signal (design §6): a rejected proposal moves
-its item to ``needs_human`` and the loop never re-classifies it, so a
-``needs_human`` item simply never appears in ``unclassified_count`` — no engine
-branch is needed for it.
+pre-classify pass. Rejection is signal (design §6): a rejected proposal parks its
+item under an ``owner_action`` hold (spec 2026-09-18 §3 replaced the
+``needs_human`` triage state with the hold) and the loop never re-classifies it,
+so a HELD item simply never appears in ``unclassified_count`` — no engine branch
+is needed for it.
 
 **The drift branch is latched** by ``TriageState.open_map_diff_suggestions``,
 the pm counterpart of the ``sdlc.engine`` propose-only gate (which returns
@@ -70,8 +71,8 @@ class StaleFeature:
 class TriageState:
     """Everything the engine needs to decide the next action for one tick.
 
-    ``unclassified_count`` counts open work items that are ``unclassified`` AND
-    have no pending proposal (the loop excludes ``needs_human`` and
+    ``unclassified_count`` counts open work items that are ``unclassified``, carry
+    NO hold, and have no pending proposal (the loop excludes held and
     already-proposed items). ``pending_count`` is informational (surfaced in
     status). ``day_spawns``/``day_cap`` bound classify-session cost (design §6.1
     "Daily session cap bounds cost").
