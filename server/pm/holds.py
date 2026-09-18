@@ -136,6 +136,13 @@ def set_runner_hold(wi: WorkItem, *, reason: str, now: datetime) -> None:
     set_hold(wi, kind="owner_action", reason=reason, actor=RUNNER_ACTOR, now=now)
 
 
+def set_runner_stronger_hold(wi: WorkItem, *, reason: str, now: datetime) -> None:
+    """The Backlog Runner's ladder climb (spec 2026-09-18 §4): a bounce below the
+    top tier parks the item as ``stronger_model`` — agent-settable, queue-eligible —
+    so the next refill re-claims it and the spawn pins the next rung."""
+    set_hold(wi, kind="stronger_model", reason=reason, actor=RUNNER_ACTOR, now=now)
+
+
 def held_refs(db: "Session") -> frozenset[str]:
     """``owner/repo#N`` of every open issue parked by an owner_action or decision
     hold — what the runner's sweep reads to drop ``gave_up`` rows that are no longer

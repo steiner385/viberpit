@@ -1053,6 +1053,66 @@ async def test_backlog_needs_human_writes_the_hold_and_audit_row(db_env):
         assert no_mirror is None
 
 
+@pytest.mark.asyncio
+async def test_backlog_escalate_writes_a_stronger_model_hold_for_a_rung_and_owner_action_at_the_top(db_env):
+    """Spec 2026-09-18 §4: a rung climb parks the issue ``stronger_model``
+    (agent-settable, queue-eligible — the next refill re-claims it); a bounce at
+    the top (``rung=None``) parks it ``owner_action`` instead and — ONLY in that
+    case — fires the same best-effort comment ``_backlog_needs_human`` uses. Each
+    call writes exactly one ``pm.hold.set`` audit row."""
+    from sqlalchemy import select
+
+    from server.automations.context import AutomationContext
+    from server.db.models import Automation, AuditEvent, WorkItem
+    await init_db(db_env)
+    orch = _bare_orch()
+    orch._gh_run = object()
+    orch._backlog_ctx = AutomationContext("backlog-runner")
+    async with db_session() as db:
+        db.add(Automation(id="backlog-runner"))
+        db.add(WorkItem(repo="o/r", number=1, kind="issue", state="open",
+                        title="T", body="B"))
+    await orch._backlog_ctx.set_target_state("o/r#1", {"repo": "o/r", "issues": ["o/r#1"]})
+
+    announced: list = []
+
+    def recording_announce(batch, reason, *, gh_run):
+        announced.append((batch.primary, reason))
+
+    with patch("server.automations.backlog_github.announce_needs_human", recording_announce):
+        # A rung climb: stronger_model, no comment.
+        await orch._backlog_escalate("o/r#1", "bounced at sonnet; next attempt on opus", "opus")
+    assert announced == []
+
+    async with db_session() as db:
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == "o/r", WorkItem.number == 1))).scalar_one()
+        assert wi.hold_kind == "stronger_model"
+        assert wi.hold_by == "runner"
+        assert wi.hold_reason == "bounced at sonnet; next attempt on opus"
+
+        events = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.set"))).scalars().all()
+        assert len(events) == 1
+        assert events[0].detail["kind"] == "stronger_model"
+
+    with patch("server.automations.backlog_github.announce_needs_human", recording_announce):
+        # Bounced at the top: owner_action, plus the comment.
+        await orch._backlog_escalate("o/r#1", "bounced at fable: no mergeable PR after 1 attempts", None)
+    assert len(announced) == 1
+
+    async with db_session() as db:
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == "o/r", WorkItem.number == 1))).scalar_one()
+        assert wi.hold_kind == "owner_action"
+        assert wi.hold_by == "runner"
+
+        events = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.set"))).scalars().all()
+        assert len(events) == 2
+        assert events[-1].detail["kind"] == "owner_action"
+
+
 def test_backlog_queue_tail_returns_copy_of_cache():
     """The status-card queue-provenance seam (#990) must hand the loop a COPY
     of the cached ranked pool — mutating what it returns must never corrupt

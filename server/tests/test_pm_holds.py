@@ -222,6 +222,17 @@ def test_runner_and_reconciler_are_system_actors():
     assert wi.hold_set_at == NOW and wi.hold_fingerprint
 
 
+def test_set_runner_stronger_hold_sets_kind_by_and_reason():
+    """Spec 2026-09-18 §4: a ladder rung climb parks the issue ``stronger_model``
+    (agent-settable, queue-eligible), as the runner system actor."""
+    from server.pm.holds import RUNNER_ACTOR, set_runner_stronger_hold
+    wi = WorkItem(repo="o/r", number=1, kind="issue", title="t", body="b")
+    set_runner_stronger_hold(wi, reason="bounced at sonnet; next attempt on opus", now=NOW)
+    assert (wi.hold_kind, wi.hold_by) == ("stronger_model", RUNNER_ACTOR)
+    assert wi.hold_reason == "bounced at sonnet; next attempt on opus"
+    assert wi.hold_set_at == NOW and wi.hold_fingerprint
+
+
 def _sync_db():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session

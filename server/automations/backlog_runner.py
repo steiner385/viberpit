@@ -20,6 +20,8 @@ from .base import AutomationStatus, ConfigField
 from .context import AutomationContext
 from .engine_policy import EnginePolicy
 from .product_policy import ImplementationDecision, effective_policy, is_on
+from server.pm.outcomes import next_rung, top_tier
+from server.sessions.model_catalog import model_tier
 
 log = logging.getLogger(__name__)
 
@@ -453,10 +455,19 @@ ReadPolicies = Callable[[], Awaitable["dict[str, dict]"]]
 # gate on the sweep that frees slots and escalates stuck work.
 SeedPolicies = Callable[[], Awaitable[int]]
 # GIVE-UP path: announce the handoff (the reason is what a human needs in order
-# to pick the target up). Used only when a target has exhausted ``max_attempts``
-# or PR Doctor gave up on it. The SIGNAL itself is the durable ``gave_up`` row
-# ``_give_up`` writes — this seam only tells the outside world about it.
+# to pick the target up). Used only for the ``abandoned`` outcome (a person closed
+# the PR unmerged) and the merged-but-unclosed human gate. The SIGNAL itself is
+# the durable ``gave_up`` row ``_give_up`` writes — this seam only tells the
+# outside world about it.
 NeedsHuman = Callable[[str, str], Awaitable[None]]
+# THE model-ladder path (spec 2026-09-18 §4): ``escalate(target, reason, rung)``.
+# ``rung`` is the tier the NEXT attempt should pin — a ``stronger_model`` hold,
+# agent-settable and queue-eligible, so the next refill re-claims the item.
+# ``rung=None`` means the climb passed the product's ``ladder_top``: the bounce
+# is the owner's, same as a give-up (``owner_action`` hold + the best-effort
+# comment). Called for EVERY no-PR / pr-doctor-gave-up bounce; the row is
+# deleted either way (it returns to the pool under the hold's terms).
+Escalate = Callable[[str, str, "str | None"], Awaitable[None]]
 # Which ``owner/repo#N`` refs are currently held (owner_action / decision) — the
 # runner's own ``gave_up`` rows follow the hold now, not a timer (spec 2026-09-18
 # §3): ``_release_give_ups`` drops a row once none of its refs is in this set.
@@ -519,6 +530,12 @@ async def _stub_needs_human(_target: str, _reason: str) -> None:
     return None
 
 
+async def _stub_escalate(_target: str, _reason: str, _rung: "str | None") -> None:
+    # LADDER fallback: unwired seam, nothing is held — the row deletion still
+    # returns the item to the pool with no hold behind it.
+    return None
+
+
 async def _stub_held_targets() -> "frozenset[str]":
     # Unwired seam: nothing reads as held, so no gave_up row is ever released.
     return frozenset()
@@ -557,6 +574,7 @@ class BacklogRunnerLoop:
         seed_policies: SeedPolicies | None = None,
         announce: Announce | None = None,
         needs_human: NeedsHuman | None = None,
+        escalate: Escalate | None = None,
         session_ended: SessionEnded | None = None,
         session_ran: SessionRan | None = None,
         session_work_stopped: SessionEnded | None = None,
@@ -595,6 +613,7 @@ class BacklogRunnerLoop:
         # they cannot ride the monotonic clock the backoffs use.
         self._wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
         self._needs_human = needs_human or _stub_needs_human  # announce the handoff
+        self._escalate = escalate or _stub_escalate  # the model-ladder path
         self._held_targets = held_targets or _stub_held_targets  # what backs a gave_up row
         self._session_ended = session_ended         # (session_id) -> bool | None
         # (session_id) -> True when the session row is terminal OR no longer exists.
@@ -644,8 +663,9 @@ class BacklogRunnerLoop:
     def _policy_for(self, product: "str | None") -> dict:
         """The policy this batch / claim is governed by.
 
-        ONE lookup for every per-product decision in the loop (dispatch, attempt
-        cap, model), so they cannot disagree about which product owns a target.
+        ONE lookup for every per-product decision in the loop (dispatch, model,
+        the ladder's ``ladder_top``), so they cannot disagree about which product
+        owns a target.
 
         A product the map does not know falls back to the pure schema defaults
         (``effective_policy(None)``), i.e. dispatch ``off``. That is deliberately
@@ -656,9 +676,8 @@ class BacklogRunnerLoop:
         the off-gate, so a refill batch always carries a real ON slug — and the
         two OTHER decisions this feeds keep working for a pre-flip claim that
         carries no product: the defaults hand back ``default_model`` (``auto``)
-        those claims used to run under, and the give-up branch's own bridged
-        ``.get("max_attempts", 2)`` (plan 4a Task 3) supplies the old attempt cap
-        since ``max_attempts`` is retired from this dict.
+        those claims used to run under, and the ladder's own defaults
+        (``ladder_top="fable"``) apply the same way.
         """
         if product:
             policy = self._policies.get(product)
@@ -1306,7 +1325,10 @@ class BacklogRunnerLoop:
         session = await tx.db.get(DbSession, sid) if sid else None
         model = (session.model if session is not None else None) or model or intent["model"]
         state = dict(intent["expected"])
-        state.update(session_id=sid, branch=branch)
+        # The APPLIED model, not the policy's ``default_model``: the ladder's
+        # ``next_rung`` (spec 2026-09-18 §4) climbs from what this attempt
+        # actually ran on, read back off the sweep's ``st.get("model")``.
+        state.update(session_id=sid, branch=branch, model=model)
         state.pop("proposed", None)
         try:
             async with tx.db.begin_nested():
@@ -1428,10 +1450,11 @@ class BacklogRunnerLoop:
         """The claim's own facts, for spec §13's recovery insert: when the
         spawn-time ``record_outcome`` failed there is no row to finalise, and the
         context inserts one from these instead of losing the bounce. The claim is
-        the only surviving account of that dispatch — ``model`` is not stored on it
-        today, so it recovers as None rather than as a guess, and ``attempts`` is
-        the count at spawn (the sweep charges its increment after this call), which
-        is exactly what ``record_outcome`` would have written.
+        the only surviving account of that dispatch — ``model`` is the APPLIED
+        model ``_settle_dispatch`` wrote onto the row (spec 2026-09-18 §4: the
+        ladder climbs from what this attempt actually ran on, not a guess), and
+        ``attempts`` is the count at spawn (the sweep charges its increment after
+        this call), which is exactly what ``record_outcome`` would have written.
 
         ``None`` for a claim that never dispatched (no ``session_id``: a propose
         claim, or one the reaper caught before the spawn record). Nothing ran, so
@@ -1633,13 +1656,36 @@ class BacklogRunnerLoop:
                     "fallback": fallback}):
                 await self._ctx.emit("info", f"{target} merged", kind="merged", target=target)
             return
-        if target in gave_up_targets or (info is not None and info.state == "closed"):
-            doctor_gave_up = target in gave_up_targets
-            reason = "pr-doctor gave up" if doctor_gave_up else "PR closed unmerged"
-            await self._give_up(target, st, reason, outcome={
-                "outcome": "pr_gave_up" if doctor_gave_up else "abandoned", "cause": reason,
+        if target in gave_up_targets:
+            # PR Doctor gave up: the same ladder path as a no-PR bounce (spec
+            # 2026-09-18 §4) — this is still an implement attempt that failed to
+            # land, not a person's decision, so it climbs a rung rather than
+            # going straight to the owner.
+            reason = "pr-doctor gave up"
+            previous = st.get("model")
+            ladder_policy = self._policy_for(st.get("product"))
+            rung = next_rung(previous, floor=None,
+                             default_model=ladder_policy["default_model"],
+                             top=top_tier(ladder_policy))
+            await self._write_state(target, st, None, outcome={
+                "outcome": "pr_gave_up", "cause": reason,
                 "pr_number": info.number if info else None,
                 "pr_url": info.url if info else None, "fallback": fallback})
+            if rung is None:
+                await self._escalate(target, "PR Doctor gave up at the top", None)
+            else:
+                await self._escalate(
+                    target, f"PR Doctor gave up; next attempt on {rung}", rung)
+            return
+        if info is not None and info.state == "closed":
+            # A PERSON closed the PR unmerged: their decision, not a failed
+            # attempt — hands straight to the owner with the PR link (spec §4),
+            # never climbs the ladder.
+            reason = "PR closed unmerged"
+            give_up_reason = f"{reason}: {info.url}" if info.url else reason
+            await self._give_up(target, st, give_up_reason, outcome={
+                "outcome": "abandoned", "cause": reason,
+                "pr_number": info.number, "pr_url": info.url, "fallback": fallback})
             return
         if info is not None:
             active = await self._pr_doctor_active(target.split("#", 1)[0])
@@ -1651,29 +1697,37 @@ class BacklogRunnerLoop:
             return
         if st.get("handed_off") or await self._session_alive(st):
             return
+        # No attempt cap (spec 2026-09-18 §4): a no-PR bounce climbs one model
+        # tier instead. ``attempts`` survives only on the outcome rows
+        # (``attempt_no``) now, never on the row itself — the row is deleted on
+        # every bounce and the item returns to the pool under whichever hold
+        # ``_escalate`` wrote.
         attempts = st.get("attempts", 0) + 1
-        # bridge: removed with the ladder (plan 4a Task 3) — ``max_attempts`` no
-        # longer lives in the product policy schema (retired in favour of
-        # ``ladder_top``), so a policy dict from ``effective_policy`` never carries
-        # it; ``.get`` keeps this branch's cap working until Task 3 replaces it
-        # with the ladder's own bounced-at-top rule.
-        if attempts >= self._policy_for(st.get("product")).get("max_attempts", 2):
-            if not await self._session_ever_ran(st):
-                if await self._write_state(target, st, None, outcome={
-                        "outcome": "abandoned", "cause": "session never ran a turn",
-                        "upgrade_from": ("no_pr",), "fallback": fallback}):
-                    await self._ctx.emit("info", f"released {target} (session never ran a turn)",
-                                         kind="unclaimed", target=target)
-                return
-            reason = f"max attempts ({attempts}) reached with no mergeable PR"
-            await self._give_up(target, st, reason, outcome={
-                "outcome": "needs_human", "cause": reason,
-                "upgrade_from": ("no_pr",), "fallback": fallback})
+        if not await self._session_ever_ran(st):
+            if await self._write_state(target, st, None, outcome={
+                    "outcome": "abandoned", "cause": "session never ran a turn",
+                    "upgrade_from": ("no_pr",), "fallback": fallback}):
+                await self._ctx.emit("info", f"released {target} (session never ran a turn)",
+                                     kind="unclaimed", target=target)
             return
-        await self._write_state(target, st, {**st, "attempts": attempts, "_ended": True},
-                                outcome={"outcome": "no_pr",
-                                         "cause": "session ended without a mergeable PR",
-                                         "fallback": fallback})
+        previous = st.get("model")
+        ladder_policy = self._policy_for(st.get("product"))
+        rung = next_rung(previous, floor=None,
+                         default_model=ladder_policy["default_model"],
+                         top=top_tier(ladder_policy))
+        await self._write_state(target, st, None, outcome={
+            "outcome": "no_pr", "cause": "session ended without a mergeable PR",
+            "fallback": fallback})
+        if rung is None:
+            await self._escalate(
+                target,
+                f"bounced at {model_tier(previous) or 'the top'}: "
+                f"no mergeable PR after {attempts} attempts", None)
+        else:
+            await self._escalate(
+                target,
+                f"bounced at {model_tier(previous) or 'sonnet'}; next attempt on {rung}",
+                rung)
 
     async def _session_ever_ran(self, st: dict) -> bool:
         """Whether this target's session ever started turn one.
