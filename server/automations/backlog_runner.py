@@ -1739,9 +1739,19 @@ class BacklogRunnerLoop:
             # implementation and charge a bounce it never was. Placed here, before
             # the PR read, so it does not even pay for the answer it must not use.
             #
+            # BOTH gates the no-PR bounce below uses, not just the first. They
+            # answer different questions: ``_work_stopped`` says the native actor
+            # quiesced, while ``_session_alive`` says the session row is terminal —
+            # and ``complete`` satisfies the first while failing the second, because
+            # a completed session is still attached and resumable. A settle on that
+            # status alone would hand a live investigation to the owner (owner_action
+            # hold + a public issue comment) because it had not signalled an exit
+            # *yet*. An investigate row is never ``handed_off`` (that needs a PR), so
+            # the aliveness half is all this branch borrows.
+            #
             # A session that never ran a turn is still the existing no-penalty
             # release: nothing was investigated either.
-            if not await self._work_stopped(st):
+            if not await self._work_stopped(st) or await self._session_alive(st):
                 return
             if not await self._session_ever_ran(st):
                 await self._release_never_ran(target, st)

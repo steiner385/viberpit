@@ -2998,6 +2998,40 @@ async def _sweep_investigation(tmp_path, name: str, info, **kw):
     return loop, rec, ctx
 
 
+def test_a_live_session_is_never_settled_even_once_its_work_has_stopped(tmp_path):
+    """``_work_stopped`` and ``_session_alive`` answer different questions, and the
+    settle needs BOTH (the no-PR bounce below it already does). A session at status
+    ``complete`` has a quiesced tree but is still attached and resumable — settling
+    on the first gate alone would give the owner an ``owner_action`` hold and a
+    public issue comment for an investigation that had simply not signalled its exit
+    yet. The seam must not even be consulted until the session is really over."""
+    async def run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'inv_alive.db'}")
+        await _seed_row()
+        await _seed_product()
+        loop, rec, ctx = build_loop(
+            candidates=[],
+            investigation_state={"issue_state": "open", "hold_kind": "evidence",
+                                 "mirrored": True, "no_pr_note": None})
+        alive = {k: v for k, v in _investigation_row().items() if k != "_ended"}
+        await _set_owned_state(ctx, "o/r#1", alive)
+
+        await loop.tick()   # work stopped (harness stub), session still alive
+
+        assert rec.investigation_reads == []
+        assert {k: v for k, v in (await ctx.get_target_state("o/r#1")).items()
+                if k != "ownership_token"} == alive
+        assert rec.needs_humans == [] and await _outcomes("o/r#1") == []
+
+        await _mark_session_ended(ctx, "o/r#1")
+        await loop.tick()   # now terminal: the settle runs, exactly once
+
+        assert rec.investigation_reads == [("o/r#1", "sess-1")]
+        assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
+
+    asyncio.run(run())
+
+
 def test_a_closed_issue_settles_the_investigation_as_done(tmp_path):
     """Exits 1 and 2 (closed as noise / consolidated into a sibling) are both just
     "the issue is closed": finalise the outcome as ``no_pr`` — an investigation
