@@ -396,6 +396,11 @@ async def backlog_runner_dispatch(body: DispatchBody, request: Request,
             raise HTTPException(status_code=422, detail={
                 "error": "bad_hold",
                 "message": "a decision hold is resolved through its proposal, not released"})
+        if wi.hold_kind != "owner_action":
+            # evidence / stronger_model holds have no release path here yet
+            # (they exit on their own — see hold_guidance's docstring); leave
+            # them untouched rather than silently clearing them.
+            continue
         released = wi.hold_kind
         try:
             clear_hold(wi, actor=actor)

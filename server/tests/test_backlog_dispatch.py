@@ -299,6 +299,48 @@ def test_manual_dispatch_refuses_a_decision_hold():
         assert c.portal.call(_check) == "decision"
 
 
+def test_manual_dispatch_leaves_an_evidence_hold_untouched():
+    """An ``evidence`` (or ``stronger_model``) hold has no release path through
+    manual dispatch yet — it exits on its own (hold_guidance's docstring). Dispatch
+    must still proceed, but must NOT silently clear or audit-release the hold."""
+    rec = SimpleNamespace(id="sess-1", name="backlog o/r#7", branch="b", model=None)
+
+    def patch_orch(orch):
+        orch._backlog_read_config = AsyncMock(return_value=("auto", {
+            "enabled_repos": ["o/r"],
+            "max_concurrent": 1, "max_spawns_per_day": 10,
+            "max_issues_per_pr": 3, "default_model": None,
+        }))
+        orch._backlog_announce = AsyncMock(return_value=None)
+        orch._backlog_healthy_account = AsyncMock(return_value="acct-1")
+        orch._backlog_spawn = AsyncMock(return_value=rec)
+        orch._backlog_query_queue = AsyncMock(return_value=_CANDIDATES)
+
+    with _api_client(patch_orch) as c:
+        _seed(c)
+        c.portal.call(lambda: _seed_held_issue("evidence"))
+        r = c.post("/api/automations/backlog-runner/dispatch",
+                   json={"refs": ["o/r#7"]}, headers=H)
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "spawned"
+        c.app.state.orchestrator._backlog_spawn.assert_awaited_once()
+
+        from sqlalchemy import select
+        from server.db import db_session
+        from server.db.models import AuditEvent, WorkItem
+
+        async def _check():
+            async with db_session() as db:
+                wi = (await db.execute(select(WorkItem).where(
+                    WorkItem.repo == "o/r", WorkItem.number == 7))).scalar_one()
+                rows = (await db.execute(select(AuditEvent).where(
+                    AuditEvent.type == "pm.hold.release"))).scalars().all()
+                return wi.hold_kind, rows
+        hold_kind, rows = c.portal.call(_check)
+        assert hold_kind == "evidence"
+        assert rows == []
+
+
 def test_remote_orch_has_backlog_candidates():
     from server.sessions.remote import RemoteOrchestrator
     assert hasattr(RemoteOrchestrator, "backlog_candidates")
