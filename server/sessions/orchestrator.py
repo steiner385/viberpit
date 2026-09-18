@@ -1055,6 +1055,7 @@ class SessionOrchestrator:
             seed_policies=self._backlog_seed_policies_once,
             clock=time.monotonic,
             needs_human=self._backlog_needs_human,
+            held_targets=self._backlog_held_targets,
             session_ended=self._backlog_session_ended,
             session_gone=self._backlog_session_gone,
             session_ran=self._backlog_session_ran,
@@ -6071,18 +6072,40 @@ class SessionOrchestrator:
                      repo=target.split("#", 1)[0], product=st.get("product"))
 
     async def _backlog_needs_human(self, target: str, reason: str) -> None:
-        """GIVE-UP path: comment the handoff, carrying the ``reason`` a human needs
-        in order to pick the target up. Used only after ``max_attempts``, a
-        PR-Doctor give-up or a merged PR the human gate blocked.
-
-        The handoff SIGNAL is the runner's durable ``gave_up`` row (Phase D) —
-        the reconciler stamps board Status ``Needs human`` from it and the queue
-        reads its cooldown; this only says so on the issue. Best-effort, off the
-        event loop."""
+        """GIVE-UP path (spec 2026-09-18 §3): write the owner_action hold on every
+        issue of the batch — the hold IS the handoff — then comment it (best-effort).
+        The runner's ``gave_up`` row survives for slot accounting only and is
+        dropped by ``_release_give_ups`` once the hold is gone."""
+        from datetime import datetime, timezone
+        from sqlalchemy import select, tuple_
+        from server.audit import record_audit
         from server.automations import backlog_github
+        from server.db.models import WorkItem
+        from server.pm.holds import RUNNER_ACTOR, actor_class, set_runner_hold
+        from server.pm.refs import split_ref
         batch = await self._backlog_batch_for(target)
+        parts = [p for p in (split_ref(r) for r in batch.issues) if p is not None]
+        now = datetime.now(timezone.utc)
+        if parts:
+            async with db_session() as db:
+                items = (await db.execute(select(WorkItem).where(
+                    WorkItem.kind == "issue",
+                    tuple_(WorkItem.repo, WorkItem.number).in_(parts)))).scalars().all()
+                for wi in items:
+                    set_runner_hold(wi, reason=reason, now=now)
+                    await record_audit(db=db, type="pm.hold.set", identity=RUNNER_ACTOR, detail={
+                        "workItemId": wi.id, "kind": "owner_action", "reason": reason,
+                        "actorClass": actor_class(RUNNER_ACTOR)}, via="runner")
+                missing = set(batch.issues) - {f"{w.repo}#{w.number}" for w in items}
+                if missing:
+                    log.warning("backlog_runner.give_up_unmirrored refs=%s", sorted(missing))
         await asyncio.to_thread(
             backlog_github.announce_needs_human, batch, reason, gh_run=self._gh_run)
+
+    async def _backlog_held_targets(self) -> "frozenset[str]":
+        from server.pm.holds import held_refs
+        async with db_session() as db:
+            return await db.run_sync(held_refs)
 
     async def _backlog_close_out(self, target: str, info) -> str:
         """MERGED path: close every issue in the batch with a comment linking

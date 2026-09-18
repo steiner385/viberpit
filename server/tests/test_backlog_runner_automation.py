@@ -38,9 +38,11 @@ def test_per_product_knobs_left_the_global_schema():
         assert gone not in keys
     # …and what stays global (one runner-wide budget) is still there.
     for kept in ("selection_strategy", "max_concurrent", "max_spawns_per_day",
-                 "max_issues_per_pr", "grouping_interval_minutes",
-                 "needs_human_retry_days"):
+                 "max_issues_per_pr", "grouping_interval_minutes"):
         assert kept in keys
+    # needs_human_retry_days retired (spec 2026-09-18 §3): a hold releases on a
+    # human signal, never on a timer.
+    assert "needs_human_retry_days" not in keys
 
 
 def test_retired_keys_cover_the_label_gate_and_the_per_product_knobs():
@@ -53,7 +55,8 @@ def test_retired_keys_cover_the_label_gate_and_the_per_product_knobs():
     br = BacklogRunner()
     assert br.retired_config_keys == (
         "eligible_label", "enabled_repos", "repo_weights", "repo_caps",
-        "queue_min_status", "max_attempts", "default_model", "respect_dependencies")
+        "queue_min_status", "max_attempts", "default_model", "respect_dependencies",
+        "needs_human_retry_days")
     assert not set(br.retired_config_keys) & {f.key for f in br.config_schema}
 
 

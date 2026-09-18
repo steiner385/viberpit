@@ -333,12 +333,11 @@ def announce_needs_human(batch, reason: str, *,
                          gh_run: GhRun = gitrepos._run_gh) -> None:
     """Human-visible trace of a give-up: one comment per issue carrying the
     reason a human needs in order to pick the target up. The handoff SIGNAL is
-    the runner's durable ``gave_up`` row (which the reconciler turns into board
-    Status ``Needs human`` and the queue into a retry cooldown); this only says
-    so on the issue. Best-effort, exactly like :func:`announce_claim`."""
+    the owner_action hold the runner writes on the issue (spec 2026-09-18 §3);
+    this only says so on the issue. Best-effort, exactly like :func:`announce_claim`."""
     body = (f"Handed to a human by {brand.NAME} Backlog Runner: {reason}. "
-            "Board Status is Needs human; the runner retries after the "
-            "configured window.")
+            "Board Status is Held until a person releases it: move the card to "
+            f"Ready or Backlog, edit the issue body, or tap Retry in {brand.NAME}.")
     for ref in batch.issues:
         try:
             posted = _issue_comment(ref, body, gh_run=gh_run)
