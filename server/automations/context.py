@@ -13,6 +13,7 @@ from sqlalchemy import delete, select
 from ccswitch import brand
 from server.db import db_session
 from server.db.models import (
+    DISPATCH_KINDS,
     DISPATCH_OUTCOMES,
     AutomationEvent,
     AutomationTargetState,
@@ -416,9 +417,16 @@ class AutomationContext:
 
     async def record_outcome(self, target: str, *, product_slug: str | None,
                              session_id: str | None, model: str | None,
-                             attempt_no: int, _db=None) -> None:
-        """Insert the ``running`` outcome row for a dispatch (spec §6). Best-effort:
+                             attempt_no: int, dispatch_kind: str = "implement",
+                             _db=None) -> None:
+        """Insert the ``running`` outcome row for a dispatch (spec §6, §3/§5). Best-effort:
         history must never block a spawn (§13).
+
+        *dispatch_kind* records what the dispatch was FOR (``DISPATCH_KINDS``): an
+        ``investigate`` dispatch never opens a PR by design, so it must never count
+        as a bounce (``bounces_stmt`` filters it out). An unknown kind is a
+        programming error and raises even though the rest of the write is
+        best-effort — the ``try`` below only guards the DB half.
 
         A new dispatch first closes any row still ``running`` for this target as
         ``superseded``: AT MOST ONE running row per (automation, target) is the
@@ -431,6 +439,8 @@ class AutomationContext:
         Every import this needs sits at module scope: an ImportError raised inside
         the method would escape the ``try`` below, and "best effort" has to mean
         the whole write."""
+        if dispatch_kind not in DISPATCH_KINDS:
+            raise ValueError(f"unknown dispatch kind {dispatch_kind!r}")
         try:
             async with (db_session() if _db is None else nullcontext(_db)) as db:
                 now = datetime.now(timezone.utc)
@@ -448,7 +458,7 @@ class AutomationContext:
                 db.add(DispatchOutcome(
                     automation_id=self.automation_id, project_id=project_id,
                     target_ref=target, body_fingerprint=fingerprint, session_id=session_id,
-                    model=model, attempt_no=attempt_no,
+                    model=model, attempt_no=attempt_no, dispatch_kind=dispatch_kind,
                     started_at=datetime.now(timezone.utc), outcome="running"))
         except Exception:
             if _db is not None:

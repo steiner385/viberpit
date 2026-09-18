@@ -7,7 +7,10 @@ drift into its own idea of "the same issue body, bounced too often".
 """
 from __future__ import annotations
 
-from server.db.models import DISPATCH_OUTCOMES
+import pytest
+
+from server.db import db_session, init_db
+from server.db.models import DISPATCH_OUTCOMES, DispatchOutcome
 from server.pm.outcomes import (
     FINALISED_BOUNCE_OUTCOMES, TierStats, body_fingerprint, bounced_out, bounces_stmt,
     rows_to_bounces, tier_floor_from_stats)
@@ -46,6 +49,24 @@ def test_rows_to_bounces_matches_only_the_current_fingerprint():
 def test_bounces_stmt_filters_on_finalised_outcomes():
     sql = str(bounces_stmt([("o/r#1", "fp")]))
     assert "dispatch_outcomes" in sql and "outcome" in sql and "count" in sql.lower()
+    assert "dispatch_kind" in sql
+
+
+@pytest.mark.asyncio
+async def test_bounces_stmt_excludes_investigate_dispatches(tmp_path):
+    """An ``investigate`` dispatch never opens a PR by design (series item 4b), so
+    it must not count as a bounce — only the ``None``/``implement`` row does
+    (spec 2026-09-18 §3/§5)."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'bounces.db'}"
+    await init_db(db_url=db_url)
+    async with db_session() as db:
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="no_pr",
+                               dispatch_kind="investigate"))
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="no_pr",
+                               dispatch_kind=None))
+    async with db_session() as db:
+        rows = (await db.execute(bounces_stmt([("o/r#1", "fp")]))).all()
+    assert rows_to_bounces(rows, [("o/r#1", "fp")]) == {"o/r#1": 1}
 
 
 # --- D9 tier floor (phase 4) -------------------------------------------------

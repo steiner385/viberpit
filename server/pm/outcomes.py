@@ -9,7 +9,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.sql import Select
 
 from server.db.models import DISPATCH_OUTCOMES, DispatchOutcome, Project, WorkItem
@@ -45,13 +45,19 @@ def bounced_out(bounces: int, give_up_after_bounces: int) -> bool:
 
 
 def bounces_stmt(pairs: Iterable[tuple[str, str]]) -> Select:
-    """Grouped counts of FINALISED non-merged outcomes for the given
+    """Grouped counts of FINALISED non-merged ``implement`` outcomes for the given
     ``(target_ref, fingerprint)`` pairs. Callers execute it in their own
-    session (sync or async) and hand the rows to ``rows_to_bounces``."""
+    session (sync or async) and hand the rows to ``rows_to_bounces``.
+
+    An ``investigate`` dispatch (series item 4b) never opens a PR by design, so it
+    must never count as a bounce; NULL predates the column and reads as
+    ``implement`` (spec 2026-09-18 §3/§5)."""
     wanted = list(pairs)
     return (select(DispatchOutcome.target_ref, DispatchOutcome.body_fingerprint,
                    func.count(DispatchOutcome.id))
             .where(DispatchOutcome.outcome.in_(FINALISED_BOUNCE_OUTCOMES),
+                   or_(DispatchOutcome.dispatch_kind.is_(None),
+                       DispatchOutcome.dispatch_kind == "implement"),
                    tuple_(DispatchOutcome.target_ref,
                           DispatchOutcome.body_fingerprint).in_(wanted))
             .group_by(DispatchOutcome.target_ref, DispatchOutcome.body_fingerprint))

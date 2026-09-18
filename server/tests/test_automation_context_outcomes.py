@@ -400,3 +400,28 @@ async def test_a_fallback_row_survives_an_unknown_product_and_missing_mirror(db_
     (row,) = await _rows()
     assert row.project_id is None and row.body_fingerprint is None
     assert row.outcome == "no_pr" and row.target_ref == "o/r#999"
+
+
+@pytest.mark.asyncio
+async def test_record_outcome_writes_dispatch_kind_default_implement(db_env):
+    """``dispatch_kind`` defaults to ``implement`` when the caller does not pass it
+    (spec §3/§5) — an ``investigate`` dispatch must say so explicitly."""
+    await _seed(db_env)
+    ctx = AutomationContext("backlog-runner")
+    await ctx.record_outcome("o/r#1", product_slug=None, session_id="s1",
+                             model="sonnet", attempt_no=0)
+    await ctx.record_outcome("o/r#2", product_slug=None, session_id="s2",
+                             model="sonnet", attempt_no=0,
+                             dispatch_kind="investigate")
+    rows = {r.target_ref: r for r in await _rows()}
+    assert rows["o/r#1"].dispatch_kind == "implement"
+    assert rows["o/r#2"].dispatch_kind == "investigate"
+
+
+@pytest.mark.asyncio
+async def test_record_outcome_rejects_an_unknown_dispatch_kind(db_env):
+    await _seed(db_env)
+    ctx = AutomationContext("backlog-runner")
+    with pytest.raises(ValueError):
+        await ctx.record_outcome("o/r#1", product_slug=None, session_id="s1",
+                                 model="sonnet", attempt_no=0, dispatch_kind="bogus")

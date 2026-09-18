@@ -11,6 +11,12 @@ from pathlib import Path
 from server.db.models import DISPATCH_OUTCOMES
 
 
+def test_dispatch_kinds_vocabulary():
+    from server.db.models import DISPATCH_KINDS, DispatchOutcome
+    assert DISPATCH_KINDS == ("implement", "investigate")
+    assert DispatchOutcome.__table__.c.dispatch_kind.nullable is True
+
+
 def test_web_dispatch_outcomes_match_the_server_tuple():
     ts = (Path(__file__).resolve().parents[2] / "web/src/api/pm.ts").read_text()
     m = re.search(r"export const DISPATCH_OUTCOMES\s*(?::[^=]*)?=\s*\[(.*?)\]", ts, re.S)
