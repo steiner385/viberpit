@@ -113,6 +113,19 @@ export const REASON_LABEL: Record<string, string> = {
 export const reasonLabel = (reason: string | null | undefined): string =>
   reason ? (REASON_LABEL[reason] ?? reason) : ''
 
+/** Why an issue is held (server `holdKind`, spec 2026-09-18 §3). Neutral on
+ *  purpose: the evidence and stronger-model exits and the decision inbox are
+ *  later series items, and a label must never promise them before they exist. */
+export const HOLD_LABEL: Record<string, string> = {
+  owner_action: 'Held for the owner',
+  decision: 'Awaiting your decision',
+  evidence: 'Held for evidence',
+  stronger_model: 'Held for a stronger model',
+}
+
+export const holdLabel = (kind: string | null | undefined): string =>
+  kind ? (HOLD_LABEL[kind] ?? kind) : ''
+
 /** The leaf chip's text for `reason === 'needs_spec'` (product automation
  *  policy §7): the issue's body has bounced `n` times at its current
  *  fingerprint without merging, so the runner has stopped re-dispatching it

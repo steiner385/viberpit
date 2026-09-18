@@ -151,6 +151,67 @@ def test_apply_session_hold_resolves_ref_and_limits_kind(tmp_path):
     asyncio.run(_run())
 
 
+def test_release_via_api_is_the_one_release_and_audit_sequence(tmp_path):
+    """ONE helper behind both API taps (Retry and Implement now): the decision
+    refusal, the permission gate, the clear, and the ``via="api"`` audit."""
+    import asyncio
+    from sqlalchemy import select
+    from server.db import db_session, init_db
+    from server.db.models import AuditEvent
+    from server.pm.holds import DecisionHoldError, release_via_api
+
+    async def _run():
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path}/t.db")
+        async with db_session() as db:
+            def add(item_id, kind):
+                wi = WorkItem(id=item_id, repo="o/r", number=int(item_id[1:]), kind="issue",
+                              title="t", body="b")
+                set_hold(wi, kind=kind, reason="r", actor="tony@example.com", now=NOW)
+                db.add(wi)
+                return wi
+            owner, decision, evidence = add("w1", "owner_action"), add("w2", "decision"), add("w3", "evidence")
+            unheld = WorkItem(id="w4", repo="o/r", number=4, kind="issue", title="t", body="b")
+            db.add(unheld)
+            await db.flush()
+
+            released = await release_via_api(db, owner, actor="tony@example.com",
+                                             identity="tony@example.com", signal="retry")
+            assert released == "owner_action" and owner.hold_kind is None
+
+            # A decision hold is refused before anything is cleared (spec §8).
+            with pytest.raises(DecisionHoldError):
+                await release_via_api(db, decision, actor="tony@example.com",
+                                      identity="tony@example.com", signal="retry")
+            assert decision.hold_kind == "decision"
+
+            # `only_kind` is how the dispatch tap leaves the kinds it has no
+            # release path for alone, without failing the dispatch.
+            assert await release_via_api(db, evidence, actor="tony@example.com",
+                                         identity="tony@example.com", signal="implement",
+                                         only_kind="owner_action") is None
+            assert evidence.hold_kind == "evidence"
+
+            # Unheld: a no-op that audits nothing.
+            assert await release_via_api(db, unheld, actor="tony@example.com",
+                                         identity="tony@example.com", signal="retry") is None
+
+            # An agent-class actor may not clear an owner_action hold.
+            agent_held = add("w5", "owner_action")
+            await db.flush()
+            with pytest.raises(HoldPermissionError):
+                await release_via_api(db, agent_held, actor="lan@local",
+                                      identity="lan@local", signal="implement",
+                                      only_kind="owner_action")
+            assert agent_held.hold_kind == "owner_action"
+
+            rows = (await db.execute(select(AuditEvent).where(
+                AuditEvent.type == "pm.hold.release"))).scalars().all()
+            assert [(r.detail["workItemId"], r.detail["kind"], r.detail["actorClass"],
+                     r.detail["signal"], r.via) for r in rows] == [
+                ("w1", "owner_action", "person", "retry", "api")]
+    asyncio.run(_run())
+
+
 def test_runner_and_reconciler_are_system_actors():
     from server.pm.holds import RECONCILER_ACTOR, RUNNER_ACTOR, actor_class, set_runner_hold
     assert actor_class(RUNNER_ACTOR) == "system"
@@ -212,7 +273,7 @@ def test_release_by_signals_board_edit_and_body_edit():
     # Every way an owner_action hold ends, in ONE tuple: the two this rule detects,
     # the Retry endpoint, and an explicit clear through the overlay editor. Time is
     # not one of them.
-    assert set(RELEASE_SIGNALS) == {"board_edit", "body_edit", "retry", "overlay", "session"}
+    assert set(RELEASE_SIGNALS) == {"board_edit", "body_edit", "retry", "overlay", "session", "implement"}
     from server.db.models import AuditEvent
     rows = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").all()
     assert sorted(r.detail["signal"] for r in rows) == ["board_edit", "body_edit"]

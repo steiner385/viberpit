@@ -25,8 +25,16 @@ from server.db.models import (
     INACTIVE_SESSION_STATUSES,
     Automation as AutomationRow,
     Session as DbSession,
+    WorkItem,
 )
 from server.github.repo_canon import canonicalize_repo_list
+from server.pm.holds import (
+    DecisionHoldError,
+    HoldPermissionError,
+    actor_for_request,
+    release_via_api,
+)
+from server.pm.refs import split_ref
 
 log = logging.getLogger(__name__)
 
@@ -365,10 +373,49 @@ async def backlog_runner_candidates(request: Request,
 
 @router.post("/backlog-runner/dispatch")
 async def backlog_runner_dispatch(body: DispatchBody, request: Request,
-                                  _identity: str = Depends(current_identity)) -> dict:
-    """Immediately claim + spawn a session for the given issue refs."""
+                                  identity: str = Depends(current_identity),
+                                  db=Depends(get_db)) -> dict:
+    """Immediately claim + spawn a session for the given issue refs.
+
+    Implement now from the roadmap dialog: before the spawn, release any
+    owner_action hold on the target issue(s) in the same request (spec
+    2026-09-18 §7, RELEASE_SIGNALS "implement"), through the same
+    ``server/pm/holds.py:release_via_api`` sequence the Retry endpoint uses —
+    ``only_kind="owner_action"`` so the kinds with no release path here
+    (evidence / stronger_model, which exit on their own) are left untouched
+    instead of failing the dispatch.
+
+    The hold release is committed before the spawn, so an orchestrator failure
+    afterwards leaves the hold released with no session. That is acceptable
+    (spec decision 6): the item simply re-enters the queue at the product
+    default, which is what Retry alone would have done."""
     _automation_or_404("backlog-runner")
     if not body.refs:
         raise HTTPException(status_code=400, detail="refs must be non-empty")
+    actor = actor_for_request(request)
+    for ref in body.refs:
+        parts = split_ref(ref)
+        if parts is None:
+            continue
+        repo, number = parts
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == repo, WorkItem.number == number,
+            WorkItem.kind == "issue"))).scalar_one_or_none()
+        if wi is None:
+            continue
+        try:
+            await release_via_api(db, wi, actor=actor, identity=identity,
+                                  signal="implement", only_kind="owner_action")
+        except DecisionHoldError as e:
+            raise HTTPException(status_code=422, detail={
+                "error": "bad_hold", "message": str(e)}) from e
+        except HoldPermissionError as e:
+            raise HTTPException(status_code=422, detail={
+                "error": "hold_not_permitted", "message": str(e)}) from e
+    # Commit (rather than leaving this to `get_db`'s post-route commit) BEFORE
+    # calling into the orchestrator: it opens its own DB session to claim
+    # ownership, and SQLite serializes writers — an open write transaction here
+    # would "database is locked" against that claim.
+    await db.commit()
     orch = request.app.state.sessions
     return await orch.backlog_runner_dispatch(body.refs)

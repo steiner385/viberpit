@@ -42,3 +42,17 @@ def test_reject_is_immediate_and_dispatches_nothing():
     assert r["immediate"][0]["text"] == "Marks it needs-human; it leaves the inbox and nothing is dispatched."
     assert r["then"] == []
     assert r["when"] == "now"
+
+
+def test_hold_guidance_only_for_owner_action():
+    from server.pm.explain import hold_guidance
+    from server.automations.product_policy import effective_policy
+    assert hold_guidance(hold_kind=None, policy=effective_policy(None)) is None
+    assert hold_guidance(hold_kind="evidence", policy=effective_policy(None)) is None
+    g = hold_guidance(hold_kind="owner_action", policy={**effective_policy(None), "dispatch": "auto"})
+    assert set(g) == {"retry", "implement"}
+    assert g["retry"]["when"] == "next_tick" and g["retry"]["then"][0]["spawnsSession"] is True
+    assert g["implement"]["when"] == "now" and g["implement"]["immediate"][0]["spawnsSession"] is True
+    off = hold_guidance(hold_kind="owner_action", policy={**effective_policy(None), "dispatch": "off"})
+    assert off["implement"]["available"] is False and "dispatch is off" in off["implement"]["unavailableReason"]
+    assert off["retry"]["when"] == "never"

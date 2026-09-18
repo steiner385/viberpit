@@ -20,7 +20,7 @@ const leaf = (n: number, state: string, extra: Partial<Leaf> = {}): Leaf => ({
   id: `w${n}`, ref: `o/r#${n}`, repo: 'o/r', number: n, kind: 'issue', title: `Issue ${n}`, url: null, state,
   triageState: null, score: null, reach: null, impact: null, effort: null, confidence: null, tier: 'idle',
   blockedBy: [], parentRef: null, sessionStatus: null, ghCreatedAt: null, featureId: null,
-  reason: null, bounces: 0, ...extra,
+  reason: null, bounces: 0, holdKind: null, holdReason: null, holdBy: null, holdSetAt: null, ...extra,
 })
 
 // The virtualizer's 150 ms scroll-reset timer must fire before jsdom's window
@@ -152,4 +152,33 @@ it('does not offer issue mutations for a pull request leaf', () => {
   render(<IssueDispositionProvider><div data-page-scroll=""><LeafList scope={{ capability: 'f1' }} product={null} /></div></IssueDispositionProvider>)
   expect(screen.getByRole('link', { name: '#1 Issue 1' })).toHaveAttribute('href', 'https://github.com/o/r/pull/1')
   expect(screen.queryByRole('button', { name: 'Review and decide' })).toBeNull()
+})
+
+it('shows the hold kind as a chip and says why an owner-action hold needs you', () => {
+  h.leaves = [
+    leaf(1, 'open', { tier: 'needs-you', holdKind: 'owner_action', holdReason: 'needs the keyring', holdBy: 'tony@example.com', holdSetAt: '2026-09-18T00:00:00+00:00' }),
+    leaf(2, 'open', { tier: 'idle', holdKind: 'evidence', holdReason: 'profile it', holdBy: 'session:s1', holdSetAt: '2026-09-18T00:00:00+00:00' }),
+    leaf(3, 'closed', { holdKind: 'owner_action', holdReason: 'x', holdBy: 'y', holdSetAt: null }),
+  ]
+  render(<IssueDispositionProvider><div data-page-scroll=""><LeafList scope={{ capability: 'f1' }} product={null} /></div></IssueDispositionProvider>)
+  const chips = screen.getAllByTestId('leaf-hold')
+  expect(chips.map((c) => c.textContent)).toEqual(['Held for the owner', 'Held for evidence'])  // closed rows show no chip
+  expect(screen.getByText(/Held for the owner: needs the keyring\. Retry to return it to the queue/)).toBeInTheDocument()
+})
+
+it('keeps the needs-spec instruction on a row that is also held for the owner', () => {
+  // The runner's give-up writes the hold AND the bounce rule sets needs_spec, so
+  // the pairing is normal — and editing the body is itself a release signal, so
+  // the "update the description" instruction must survive the hold sentence.
+  h.leaves = [leaf(1, 'open', {
+    tier: 'needs-you', reason: 'needs_spec', bounces: 2,
+    holdKind: 'owner_action', holdReason: 'needs the keyring', holdBy: 'runner',
+    holdSetAt: '2026-09-18T00:00:00+00:00',
+  })]
+  render(<IssueDispositionProvider><div data-page-scroll=""><LeafList scope={{ capability: 'f1' }} product={null} /></div></IssueDispositionProvider>)
+  expect(screen.getByText(
+    'Repeated attempts have not merged. Update the issue description with clearer requirements and acceptance criteria before another attempt. Held for the owner: needs the keyring.',
+  )).toBeInTheDocument()
+  expect(screen.getByTestId('leaf-hold')).toHaveTextContent('Held for the owner')
+  expect(screen.getByTestId('leaf-reason')).toHaveTextContent('bounced 2× — needs spec')
 })

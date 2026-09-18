@@ -40,6 +40,15 @@ class HoldPermissionError(ValueError):
     """The actor may not set or clear this hold kind."""
 
 
+class DecisionHoldError(ValueError):
+    """A ``decision`` hold was handed to a release path. Spec §8 resolves one through
+    its proposal, so both API taps map this to 422 ``bad_hold``."""
+
+
+#: The one wording of that refusal, so the two routes cannot drift apart.
+DECISION_HOLD_MESSAGE = "a decision hold is resolved through its proposal, not released"
+
+
 def actor_class(actor: str) -> ActorClass:
     if actor in SYSTEM_ACTORS or actor.startswith(SYSTEM_PREFIXES):
         return "system"
@@ -111,8 +120,10 @@ SYSTEM_ACTORS: frozenset[str] = frozenset({RUNNER_ACTOR, RECONCILER_ACTOR, "migr
 #: overlay editor (e.g. an agent taking the convert-to-fix exit on its own evidence
 #: hold), which is an overlay EDIT as well as a release and so also stamps
 #: ``classified_by``; ``session`` is a coding session clearing its own hold through
-#: the ``set_hold`` tool (``server/sessions/tools/tools.py``, ``via="session"``).
-RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay", "session")
+#: the ``set_hold`` tool (``server/sessions/tools/tools.py``, ``via="session"``);
+#: ``implement`` is Implement now from the roadmap dialog: released and dispatched
+#: in one tap.
+RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay", "session", "implement")
 #: Board Status values a human moves a card to in order to hand it back.
 RELEASING_BOARD_STATUSES: frozenset[str] = frozenset({"Ready", "Backlog"})
 
@@ -191,6 +202,37 @@ def clear_hold(wi: WorkItem, *, actor: str) -> None:
     wi.hold_by = None
     wi.hold_set_at = None
     wi.hold_fingerprint = None
+
+
+async def release_via_api(db, wi: WorkItem, *, actor: str, identity: str, signal: str,
+                          only_kind: str | None = None) -> str | None:
+    """THE release-and-audit sequence behind every API tap that ends a hold (spec §7):
+    the Retry endpoint (``signal="retry"``) and Implement now (``signal="implement"``).
+
+    Refuses a ``decision`` hold with ``DecisionHoldError`` and lets ``HoldPermissionError``
+    out of ``clear_hold``; both routes map them to 422 ``bad_hold`` / ``hold_not_permitted``.
+    ``only_kind`` narrows the tap to one kind: dispatch passes ``"owner_action"`` so an
+    ``evidence`` / ``stronger_model`` hold — which has no release path there yet and exits
+    on its own — is left untouched and returns ``None`` instead of failing the request.
+
+    Returns the kind that WAS released, or ``None`` when nothing was (unheld item, or a
+    kind ``only_kind`` skipped). Audits ``pm.hold.release`` with ``via="api"`` only when a
+    hold actually ended."""
+    from server.audit import record_audit
+    if wi.hold_kind == "decision":
+        raise DecisionHoldError(DECISION_HOLD_MESSAGE)
+    if only_kind is not None and wi.hold_kind is not None and wi.hold_kind != only_kind:
+        return None
+    released = wi.hold_kind
+    clear_hold(wi, actor=actor)
+    if released is None:
+        return None
+    await db.flush()
+    await record_audit(db=db, type="pm.hold.release", identity=identity,
+                       detail={"workItemId": wi.id, "kind": released,
+                               "actorClass": actor_class(actor), "signal": signal},
+                       via="api")
+    return released
 
 
 def actor_for_request(request: object) -> str:

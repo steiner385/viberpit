@@ -22,6 +22,7 @@ from .materialize_apply import Mutate, error_text
 from .reconcile_diff import Mutation
 from .repo_project import OwnershipConflict, RepoOwnershipSnapshot, require_mutation_owner
 from .sync_request import request_project_sync
+from .triage_accept import _aware
 
 
 class IssueDecision(BaseModel):
@@ -41,8 +42,11 @@ class IssueDecision(BaseModel):
 def detail(src: WorkItem) -> dict:
     title, body, state = src.title or "", src.body or "", src.state or "open"
     version = hashlib.sha256(json.dumps([title, body, state]).encode()).hexdigest()
+    held_at = _aware(src.hold_set_at)
     return dict(id=src.id, repo=src.repo, number=src.number, title=title, body=body,
-                state=state, url=src.url, version=version)
+                state=state, url=src.url, version=version, ref=f"{src.repo}#{src.number}",
+                holdKind=src.hold_kind, holdReason=src.hold_reason, holdBy=src.hold_by,
+                holdSetAt=held_at.isoformat() if held_at else None)
 
 
 def _issue(payload: object, node_id: str) -> dict:

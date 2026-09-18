@@ -1661,38 +1661,51 @@ async def release_work_item_hold(
     and Retry would drop the question on the floor and re-queue the item with the
     decision still unmade. Unlike the overlay's ``clearHold`` this records only the
     release — no ``classified_by`` stamp, because nothing on the overlay was edited."""
-    from server.pm.holds import HoldPermissionError, actor_class, actor_for_request, clear_hold
+    from server.pm.holds import (
+        DecisionHoldError,
+        HoldPermissionError,
+        actor_for_request,
+        release_via_api,
+    )
     wi = (await db.execute(
         select(WorkItem).where(WorkItem.id == item_id))).scalar_one_or_none()
     if wi is None:
         raise HTTPException(status_code=404, detail={"error": "not_found"})
-    if wi.hold_kind == "decision":
-        raise HTTPException(status_code=422, detail={
-            "error": "bad_hold",
-            "message": "a decision hold is resolved through its proposal, not released"})
-    actor = actor_for_request(request)
-    released = wi.hold_kind
     try:
-        clear_hold(wi, actor=actor)
+        released = await release_via_api(db, wi, actor=actor_for_request(request),
+                                         identity=identity, signal="retry")
+    except DecisionHoldError as e:
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_hold", "message": str(e)}) from e
     except HoldPermissionError as e:
         raise HTTPException(status_code=422, detail={
             "error": "hold_not_permitted", "message": str(e)}) from e
-    if released is not None:
-        await db.flush()
-        await record_audit(db=db, type="pm.hold.release", identity=identity, detail={
-            "workItemId": item_id, "kind": released, "actorClass": actor_class(actor),
-            "signal": "retry"}, via="api")
     return {"ok": True, "released": released, "item": _work_item_to_dict(wi)}
 
 
 @router.get("/work-items/{item_id}/issue")
 async def get_work_item_issue(item_id: str, _identity: str = Depends(current_identity),
                               db=Depends(get_db)) -> dict:
+    from server.pm.explain import hold_guidance
     from server.pm.issue_disposition import detail
     wi = await db.get(WorkItem, item_id)
     if wi is None or wi.kind != "issue":
         raise HTTPException(status_code=404, detail={"error": "issue_not_found"})
-    return detail(wi)
+    # Guidance exists for owner_action alone (`hold_guidance` returns None for every
+    # other kind), so the owning-product lookup and the policy load — two queries on
+    # the common, unheld read — run only when there is guidance to compute.
+    guidance = None
+    if wi.hold_kind == "owner_action":
+        policy = effective_policy(None)
+        if wi.repo:
+            slug_by_repo = {repo: owner.slug for repo, owner
+                            in (await owning_projects_by_repo(db, {wi.repo})).items()}
+            slug = slug_by_repo.get(wi.repo)
+            if slug:
+                policies = await load_policies(db)
+                policy = policies.get(slug) or policy
+        guidance = hold_guidance(hold_kind=wi.hold_kind, policy=policy)
+    return {**detail(wi), "guidance": guidance}
 
 
 @router.post("/work-items/{item_id}/issue")

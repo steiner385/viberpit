@@ -155,6 +155,15 @@ export interface Leaf {
   /** Finalised, non-merged dispatches at the CURRENT body fingerprint (D8);
    *  0 when `reason` is null. */
   bounces: number
+  /** Why this leaf is held beyond its tier (hold ladder, spec 2026-09-18 §3),
+   *  or null when it is not held. Rendered through `holdLabel`. */
+  holdKind: string | null
+  /** The runner's own words for why it gave up, or null. */
+  holdReason: string | null
+  /** Who or what set the hold — an identity or a subsystem name — or null. */
+  holdBy: string | null
+  /** When the hold was set, or null when there is none. */
+  holdSetAt: string | null
 }
 
 /** Exactly one of the two, enforced by the server (422 `bad_scope`). */

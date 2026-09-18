@@ -64,6 +64,17 @@ it('names the stage the gate would move to, and nothing past the end', () => {
   expect(nextStage(null)).toBeNull()
 })
 
+describe('holdLabel', () => {
+  it('names every hold kind without promising a later series item', async () => {
+    const { HOLD_LABEL, holdLabel } = await import('./vocab')
+    expect(Object.keys(HOLD_LABEL).sort()).toEqual(['decision', 'evidence', 'owner_action', 'stronger_model'])
+    expect(holdLabel('owner_action')).toBe('Held for the owner')
+    expect(holdLabel('evidence')).toBe('Held for evidence')
+    expect(holdLabel(null)).toBe('')
+    for (const v of Object.values(HOLD_LABEL)) expect(v).not.toMatch(/investigat|next run|tier/i)
+  })
+})
+
 describe('DELIVERY vocabulary (finish-line D9)', () => {
   it('names the section, both scopes and the five automation tabs', async () => {
     const { DELIVERY, AUTOMATION_TAB } = await import('./vocab')

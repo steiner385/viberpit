@@ -38,8 +38,8 @@ import {
   editMapChanges, abandonMapChanges, rebaseMapChanges,
   fetchPolicySchema, updateProductPolicy, type ProductPolicyPatch, fetchProductPolicyCoverage, fetchProductImplementationPolicy,
   fetchProjectHealth,
-  fetchOutcomes, fetchWorkItemIssue, dispositionIssue,
-  type WorkItemIssue, type IssueDispositionInput, type IssueDispositionResult,
+  fetchOutcomes, fetchWorkItemIssue, dispositionIssue, releaseHold,
+  type WorkItemIssue, type IssueDispositionInput, type IssueDispositionResult, type HoldReleaseResult,
   type Project, type CreateProjectInput, type OnboardingView,
   type RemoveDependencyInput, type RemoveDependencyResult,
   type CreateEdgeInput, type ProjectEdgeInfo,
@@ -1262,6 +1262,16 @@ export function useDispatchBacklogGroup() {
       qc.invalidateQueries({ queryKey: QK.backlogGroups })
       qc.invalidateQueries({ queryKey: QK.automationSessions('backlog-runner') })
       qc.invalidateQueries({ queryKey: QK.backlogCandidates })
+      // A dispatch RELEASES an owner_action hold on its refs server-side (spec
+      // 2026-09-18 §7, signal "implement") and that happens before the spawn, so
+      // it holds for a refusal too. Every surface that asserts the hold has to
+      // refetch, or the roadmap keeps its chip and the dialog keeps offering to
+      // release a hold that is already gone. `['pm', 'issue']` is the prefix of
+      // `QK.workItemIssue(id)` — the dispatch does not know which id is open.
+      qc.invalidateQueries({ queryKey: ['pm', 'issue'] })
+      qc.invalidateQueries({ queryKey: ['pm', 'leaves'] })
+      qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      qc.invalidateQueries({ queryKey: QK.queue })
     },
   })
 }
@@ -1773,6 +1783,20 @@ export function useDispositionIssue(itemId: string) {
       void qc.invalidateQueries({ queryKey: QK.queue })
       void qc.invalidateQueries({ queryKey: QK.triage })
       void qc.invalidateQueries({ queryKey: ['sdlc', 'initiative'] })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+export function useReleaseHold(itemId: string) {
+  const qc = useQueryClient()
+  return useMutation<HoldReleaseResult, ApiRequestError, void>({
+    mutationFn: () => releaseHold(itemId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.workItemIssue(itemId) })
+      void qc.invalidateQueries({ queryKey: ['pm', 'leaves'] })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      void qc.invalidateQueries({ queryKey: QK.queue })
     },
     meta: PM_MUTATION_META,
   })

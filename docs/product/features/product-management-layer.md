@@ -76,7 +76,11 @@ Backlog, an issue body edit (the fingerprint no longer matches), or
 is the fourth spelling (`signal: "overlay"`); it is also an overlay edit, so unlike the others it
 stamps `classified_by`. Retry refuses a `decision` hold (422) — that one resolves through its
 proposal. The queue skips held items as `held`; the Backlog Runner's give-up writes the hold
-(`hold_by = runner`) and its `gave_up` row survives only until the hold is gone.
+(`hold_by = runner`) and its `gave_up` row survives only until the hold is gone. The roadmap's
+Review-and-decide dialog shows the hold (kind, reason, who, when); an owner-action hold offers
+**Retry** (the release endpoint) and **Implement now** (manual dispatch, which releases the hold
+with `signal = implement` first), each with server-computed consequence copy from
+`server/pm/explain.py:hold_guidance`; the leaf row shows the kind as a chip.
 
 **Notes** — State is `delivering`. Phase 1 (foundation models + pm-sync backlog mirror + project
 registry API/UI, #893), Phase 2 (archaeology onboarding wizard + map-synthesis prompt +

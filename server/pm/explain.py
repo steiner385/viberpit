@@ -32,3 +32,30 @@ def triage_guidance(*, feature_slug: str | None, score: float | None, policy: di
         (Step("Marks it needs-human; it leaves the inbox and nothing is dispatched."),),
         (), WHEN_NOW, None, None)
     return {"accept": consequence_to_wire(accept), "reject": consequence_to_wire(reject)}
+
+
+def hold_guidance(*, hold_kind: str | None, policy: dict) -> dict | None:
+    """``{"retry": …, "implement": …}`` for an owner_action hold (spec 2026-09-18 §7):
+    what the Retry tap and the Implement-now tap do under the owning product's
+    dispatch policy. ``None`` for any other kind — evidence and stronger-model holds
+    exit on their own (series item 4) and a decision hold resolves in the inbox
+    (item 5); neither has a button here yet, so neither gets copy."""
+    if hold_kind != "owner_action":
+        return None
+    dispatch = str(policy.get("dispatch") or "off")
+    min_status = str(policy.get("queue_min_status") or "ready")
+    retry = Consequence(
+        True, None,
+        (Step("Releases the hold; the item is queue-eligible again at its score."),),
+        (Step(capitalize(dispatch_sentence(dispatch, min_status)), spawns_session=dispatch == "auto"),),
+        WHEN_NEXT_TICK if dispatch == "auto" else WHEN_NEVER,
+        "Hold it again from Edit details or the overlay.", None)
+    implement = Consequence(
+        dispatch != "off",
+        None if dispatch != "off" else
+        "This product's dispatch is off; turn it on in the product's automation policy first.",
+        (Step("Releases the hold and dispatches a coding session for this issue now.",
+              spawns_session=True),),
+        (Step("The session opens a PR; a merge closes the issue.", writes_github=True),),
+        WHEN_NOW, "Archive the session; the item returns to the queue.", None)
+    return {"retry": consequence_to_wire(retry), "implement": consequence_to_wire(implement)}

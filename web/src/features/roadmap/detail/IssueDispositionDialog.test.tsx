@@ -1,16 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { IssueDispositionDialog } from './IssueDispositionDialog'
 
-const detail = { id: 'w1', repo: 'o/r', number: 1, title: 'Account warning', body: '**Check credentials** <script>alert(1)</script>', state: 'open', url: 'https://github.com/o/r/issues/1', version: 'v1' }
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+
+const detail = {
+  id: 'w1', repo: 'o/r', number: 1, title: 'Account warning', body: '**Check credentials** <script>alert(1)</script>', state: 'open', url: 'https://github.com/o/r/issues/1', version: 'v1',
+  ref: 'o/r#1', holdKind: null, holdReason: null, holdBy: null, holdSetAt: null,
+}
 const fetchMock = vi.fn()
 beforeEach(() => { vi.stubGlobal('fetch', fetchMock); fetchMock.mockReset() })
 function reply(data: unknown, status = 200) { return { ok: status < 400, status, json: async () => data } }
 function mount() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   const onClose = vi.fn()
-  render(<QueryClientProvider client={qc}><IssueDispositionDialog itemId="w1" onClose={onClose} /></QueryClientProvider>)
+  render(<MemoryRouter><QueryClientProvider client={qc}><IssueDispositionDialog itemId="w1" onClose={onClose} /></QueryClientProvider></MemoryRouter>)
   return { onClose, qc }
 }
 const click = (name: string) => fireEvent.click(screen.getByRole('button', { name }))
@@ -92,5 +98,70 @@ describe('IssueDispositionDialog', () => {
     await screen.findByText('Account warning')
     expect(screen.queryByRole('button', { name: 'Mark resolved' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Edit details' })).toBeNull()
+  })
+
+  const held = { ...detail, holdKind: 'owner_action', holdReason: 'needs the keyring', holdBy: 'tony@example.com', holdSetAt: '2026-09-18T00:00:00+00:00',
+    guidance: { retry: { available: true, unavailableReason: null, immediate: [{ text: 'Releases the hold', spawnsSession: false, writesGithub: false }], then: [], when: 'never', reversal: null, gate: null },
+                implement: { available: true, unavailableReason: null, immediate: [{ text: 'Dispatches a coding session', spawnsSession: true, writesGithub: false }], then: [], when: 'now', reversal: null, gate: null } } }
+
+  it('shows the hold panel with consequences and releases the hold on Retry without closing', async () => {
+    fetchMock.mockResolvedValueOnce(reply(held))
+      .mockResolvedValueOnce(reply({ ok: true, released: 'owner_action', item: {} }))
+      .mockResolvedValueOnce(reply({ ...detail, holdKind: null, guidance: null }))
+    const { onClose } = mount()
+    expect(await screen.findByRole('region', { name: 'Hold' })).toHaveTextContent('Held for the owner')
+    expect(screen.getByText('needs the keyring')).toBeInTheDocument()
+    expect(screen.getByText('Releases the hold')).toBeInTheDocument()
+    click('Retry')
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    expect(fetchMock.mock.calls[1][0]).toMatch(/\/api\/pm\/work-items\/w1\/hold\/release$/)
+    expect(fetchMock.mock.calls[1][1].method).toBe('POST')
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Hold' })).toBeNull())
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('dispatches a session on Implement now, links to it, and stops asserting the released hold', async () => {
+    fetchMock.mockResolvedValueOnce(reply(held))
+      .mockResolvedValueOnce(reply({ status: 'spawned', session_id: 's-9', session_name: 'Fix keyring' }))
+      // the dispatch released the hold server-side, so the invalidated issue query
+      // refetches and comes back unheld
+      .mockResolvedValueOnce(reply({ ...detail, holdKind: null, guidance: null }))
+    mount()
+    await screen.findByRole('region', { name: 'Hold' })
+    click('Implement now')
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    expect(fetchMock.mock.calls[1][0]).toMatch(/\/api\/automations\/backlog-runner\/dispatch$/)
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ refs: ['o/r#1'] })
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Hold' })).toBeNull())
+    expect(await screen.findByRole('link', { name: 'Open session' })).toHaveAttribute('href', expect.stringMatching(/\/s-9$/))
+  })
+
+  it('shows a refusal inline and renders no buttons for an evidence hold', async () => {
+    fetchMock.mockResolvedValueOnce(reply(held))
+      .mockResolvedValueOnce(reply({ status: 'no_account', session_id: null, session_name: null }))
+      .mockResolvedValueOnce(reply({ ...detail, holdKind: null, guidance: null }))
+    mount()
+    await screen.findByRole('region', { name: 'Hold' })
+    click('Implement now')
+    expect(await screen.findByText(/Dispatch failed: no_account/)).toBeInTheDocument()
+    cleanup()
+    fetchMock.mockReset()
+    fetchMock.mockResolvedValueOnce(reply({ ...held, holdKind: 'evidence', guidance: null }))
+    mount()
+    expect(await screen.findByRole('region', { name: 'Hold' })).toHaveTextContent('Held for evidence')
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Implement now' })).toBeNull()
+  })
+
+  it('clears the last dispatch outcome when an edit starts', async () => {
+    fetchMock.mockResolvedValueOnce(reply(held))
+      .mockResolvedValueOnce(reply({ status: 'no_account', session_id: null, session_name: null }))
+      .mockResolvedValueOnce(reply({ ...detail, holdKind: null, guidance: null }))
+    mount()
+    await screen.findByRole('region', { name: 'Hold' })
+    click('Implement now')
+    expect(await screen.findByText(/Dispatch failed: no_account/)).toBeInTheDocument()
+    click('Edit details')
+    expect(screen.queryByText(/Dispatch failed: no_account/)).toBeNull()
   })
 })
