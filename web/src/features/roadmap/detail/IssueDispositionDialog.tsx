@@ -1,6 +1,7 @@
 import { useId, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import { ApiRequestError } from '@/api/client'
-import { useWorkItemIssue, useDispositionIssue } from '@/api/hooks'
+import { useWorkItemIssue, useDispositionIssue, useReleaseHold, useDispatchBacklogGroup } from '@/api/hooks'
 import type { IssueDispositionInput, WorkItemIssue } from '@/api/pm'
 import { extractMutationErrorMessage } from '@/api/queryClient'
 import { Dialog } from '@/ui/Dialog'
@@ -9,20 +10,28 @@ import { Field } from '@/ui/Field'
 import { Input } from '@/ui/Input'
 import { Textarea } from '@/ui/Textarea'
 import { Skeleton } from '@/ui/Skeleton'
+import { Banner } from '@/ui/Banner'
 import { Markdown } from '@/features/sessions/transcript/Markdown'
+import { ConsequenceList } from '../guidance/ConsequenceList'
+import { holdLabel } from '@/features/products/vocab'
+import { sessionPath } from '@/session/sessionNavState'
 
 /** Lazy-mounted by the list: its queries exist only after an explicit review. */
 export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; onClose: () => void }) {
   const issue = useWorkItemIssue(itemId)
   const mutation = useDispositionIssue(itemId)
+  const release = useReleaseHold(itemId)
+  const dispatch = useDispatchBacklogGroup()
   const [mode, setMode] = useState<'read' | 'edit' | 'resolve' | 'dismiss'>('read')
   const [draft, setDraft] = useState<WorkItemIssue | null>(null)
   const [failure, setFailure] = useState<unknown>(null)
   const [busy, setBusy] = useState(false)
+  const [spawned, setSpawned] = useState<{ id: string; name: string | null } | null>(null)
+  const [dispatchError, setDispatchError] = useState<string | null>(null)
   const inFlight = useRef(false)
   const id = useId()
   const data = draft ?? issue.data
-  const pending = busy || mutation.isPending
+  const pending = busy || mutation.isPending || release.isPending || dispatch.isPending
   const conflict = failure instanceof ApiRequestError && failure.status === 409
   const start = (next: typeof mode) => {
     if (!issue.data) return
@@ -68,6 +77,35 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
       setBusy(false)
     }
   }
+  // Retry: releases the hold. The dialog stays open — the issue query is
+  // invalidated and refetched by useReleaseHold's onSuccess, and the panel
+  // disappears on its own once the refetched issue has no holdKind.
+  const retryHold = async () => {
+    try {
+      await release.mutateAsync()
+    } catch {
+      // surfaced inline via release.error below
+    }
+  }
+  // Implement now: dispatches a coding session for the issue's own ref. A 200
+  // response can still carry a refusal (`no_account` / `refused`) rather than
+  // an HTTP error, so success/failure is read off `status`, not the promise.
+  const implementNow = async () => {
+    if (!data) return
+    setDispatchError(null)
+    setSpawned(null)
+    try {
+      const result = await dispatch.mutateAsync([data.ref])
+      if (result.status === 'spawned' && result.session_id) {
+        setSpawned({ id: result.session_id, name: result.session_name })
+        toast.success(result.session_name ? `Started ${result.session_name}` : 'Started a session')
+      } else {
+        setDispatchError(`Dispatch failed: ${result.status}`)
+      }
+    } catch (e) {
+      setDispatchError(extractMutationErrorMessage(e, 'Could not dispatch this issue.'))
+    }
+  }
   return (
     <Dialog open title="Review and decide" size="xl" onClose={onClose} dismissable={!pending && mode === 'read' && !failure} bodyClassName="min-w-0 space-y-4">
       {!data && issue.isLoading && <Skeleton lines={5} />}
@@ -88,6 +126,38 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
           <h3 className="break-words text-lg font-medium">{data.title}</h3>
           <div className="min-w-0 overflow-x-auto break-words text-sm"><Markdown>{data.body || 'No description provided.'}</Markdown></div>
         </>}
+        {mode === 'read' && data.holdKind && <div role="region" aria-label="Hold" className="rounded-md border border-edge p-3 space-y-3">
+          <p className="font-medium">{holdLabel(data.holdKind)}</p>
+          {data.holdReason && <p className="text-sm text-ink">{data.holdReason}</p>}
+          {(data.holdBy || data.holdSetAt) && <p className="text-sm text-ink-muted">
+            {data.holdBy && <>by {data.holdBy}</>}
+            {data.holdBy && data.holdSetAt && ' · '}
+            {data.holdSetAt && new Date(data.holdSetAt).toLocaleString()}
+          </p>}
+          {data.holdKind === 'owner_action' && <>
+            <div className="flex flex-wrap gap-2">
+              <Button size="lg" loading={release.isPending} disabled={pending} onClick={() => void retryHold()}>Retry</Button>
+              <Button
+                size="lg"
+                variant="secondary"
+                loading={dispatch.isPending}
+                disabled={pending || (data.guidance ? !data.guidance.implement.available : false)}
+                onClick={() => void implementNow()}
+              >
+                Implement now
+              </Button>
+            </div>
+            {release.isError && <p role="alert" className="text-sm text-danger">
+              {extractMutationErrorMessage(release.error, 'Could not release this hold.')}
+            </p>}
+            {dispatchError && <Banner tone="danger" role="alert" title={dispatchError} />}
+            {spawned && <a href={sessionPath(spawned.id)} className="inline-block text-sm text-accent hover:underline">Open session</a>}
+            {data.guidance && <div className="grid gap-3 sm:grid-cols-2">
+              <ConsequenceList heading="Retry" consequence={data.guidance.retry} />
+              <ConsequenceList heading="Implement now" consequence={data.guidance.implement} />
+            </div>}
+          </>}
+        </div>}
         {(mode === 'resolve' || mode === 'dismiss') && <div className="rounded-md border border-edge p-3 space-y-2">
           <p className="font-medium">{mode === 'resolve' ? 'Mark this issue as resolved?' : 'Close this issue as won’t do?'}</p>
           <p className="text-sm text-ink-muted">This closes the tracking issue on GitHub and removes it from open Roadmap work. It does not repair an account or change code. {mode === 'resolve' ? 'Confirm only if the underlying work is complete.' : 'Confirm if this work is no longer needed or will not be pursued.'}</p>
