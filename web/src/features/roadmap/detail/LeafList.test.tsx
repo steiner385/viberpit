@@ -165,3 +165,20 @@ it('shows the hold kind as a chip and says why an owner-action hold needs you', 
   expect(chips.map((c) => c.textContent)).toEqual(['Held for the owner', 'Held for evidence'])  // closed rows show no chip
   expect(screen.getByText(/Held for the owner: needs the keyring\. Retry to return it to the queue/)).toBeInTheDocument()
 })
+
+it('keeps the needs-spec instruction on a row that is also held for the owner', () => {
+  // The runner's give-up writes the hold AND the bounce rule sets needs_spec, so
+  // the pairing is normal — and editing the body is itself a release signal, so
+  // the "update the description" instruction must survive the hold sentence.
+  h.leaves = [leaf(1, 'open', {
+    tier: 'needs-you', reason: 'needs_spec', bounces: 2,
+    holdKind: 'owner_action', holdReason: 'needs the keyring', holdBy: 'runner',
+    holdSetAt: '2026-09-18T00:00:00+00:00',
+  })]
+  render(<IssueDispositionProvider><div data-page-scroll=""><LeafList scope={{ capability: 'f1' }} product={null} /></div></IssueDispositionProvider>)
+  expect(screen.getByText(
+    'Repeated attempts have not merged. Update the issue description with clearer requirements and acceptance criteria before another attempt. Held for the owner: needs the keyring.',
+  )).toBeInTheDocument()
+  expect(screen.getByTestId('leaf-hold')).toHaveTextContent('Held for the owner')
+  expect(screen.getByTestId('leaf-reason')).toHaveTextContent('bounced 2× — needs spec')
+})

@@ -61,9 +61,22 @@ function BlockerRow({ leaf, blockerRef }: { leaf: Leaf; blockerRef: string }) {
   )
 }
 
+const NEEDS_SPEC_HINT = 'Repeated attempts have not merged. Update the issue description with clearer requirements and acceptance criteria before another attempt.'
+
+/** The owner-action hold's own sentence, or null when the row is not held that
+ *  way. It is APPENDED to the needs-spec instruction rather than replacing it:
+ *  the runner's give-up writes the hold while the bounce rule sets `needs_spec`,
+ *  so a row commonly has both — and editing the body is itself a release signal
+ *  (spec 2026-09-18 §7), so dropping "edit the body first" would hide the fix. */
+function holdSentence(leaf: Leaf): string | null {
+  if (leaf.holdKind !== 'owner_action') return null
+  return `${holdLabel('owner_action')}${leaf.holdReason ? `: ${leaf.holdReason}` : ''}.`
+}
+
 function LeafRow({ leaf, capabilities, onReview }: { leaf: Leaf; capabilities: { node: CapabilityNode; depth: number }[]; onReview: (id: string) => void }) {
   const blockers = leaf.blockedBy.length
   const needsAttention = leafNeedsAttention(leaf)
+  const held = holdSentence(leaf)
   return (
     <div className="flex flex-col gap-1 rounded-md border border-edge bg-surface p-2 text-sm">
       <div className="flex flex-wrap items-center gap-2">
@@ -102,10 +115,10 @@ function LeafRow({ leaf, capabilities, onReview }: { leaf: Leaf; capabilities: {
       {needsAttention && leaf.kind === 'issue' && (
         <div className="flex flex-col gap-1 pl-6 text-xs text-ink-muted">
           <p>
-            {leaf.holdKind === 'owner_action'
-              ? `Held for the owner${leaf.holdReason ? `: ${leaf.holdReason}` : ''}. Retry to return it to the queue, or open the issue to decide.`
-              : leaf.reason === 'needs_spec'
-              ? 'Repeated attempts have not merged. Update the issue description with clearer requirements and acceptance criteria before another attempt.'
+            {leaf.reason === 'needs_spec'
+              ? `${NEEDS_SPEC_HINT}${held ? ` ${held}` : ''}`
+              : held
+              ? `${held} Retry to return it to the queue, or open the issue to decide.`
               : leaf.tier === 'blocked'
                 ? blockers > 0
                   ? 'Resolve the blocking issues below, or remove a dependency if it no longer applies.'
