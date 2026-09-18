@@ -809,6 +809,78 @@ def test_overlay_hold_by_loopback_caller_is_limited_and_never_human():
         assert legacy.status_code == 422
 
 
+def test_reject_by_loopback_caller_is_refused_not_500():
+    """reject_triage sets an owner_action hold as the caller; under LAN-open mode
+    with no identity header the caller is lan@local (agent class), which
+    owner_action refuses (#task-3 review finding 1) — this must surface as the
+    same 422 hold_not_permitted patch_overlay gives, not an unhandled 500, and
+    must leave the proposal pending and the item unheld."""
+    from server.db import db_session
+    from sqlalchemy import select
+    from server.db.models import TriageProposal, WorkItem
+
+    with patch.dict(os.environ, LAN_OPEN), _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        r = c.post(f"/api/pm/triage/{pid}/reject")
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "hold_not_permitted"
+
+        async def _check():
+            async with db_session() as db:
+                prop = (await db.execute(select(TriageProposal).where(
+                    TriageProposal.id == pid))).scalar_one()
+                wi = (await db.execute(select(WorkItem).where(
+                    WorkItem.id == wid))).scalar_one()
+                return prop.status, wi.hold_kind
+        status, hold_kind = c.portal.call(_check)
+        assert status == "pending"
+        assert hold_kind is None
+
+
+def test_overlay_hold_reason_without_hold_kind_is_bad_hold():
+    """A bare holdReason with no holdKind names nothing to hold and must be
+    rejected outright (#task-3 review finding 2), not silently ignored."""
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        r = c.patch(f"/api/pm/work-items/{wid}/overlay",
+                    json={"holdReason": "x"}, headers=IDENTITY_HEADERS)
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "bad_hold"
+
+
+def test_overlay_clear_hold_on_unheld_item_is_a_true_no_op():
+    """clearHold on an item with no hold must not stamp classified_by or fire the
+    overlay audit — clear_hold no-ops internally, and the route must not treat
+    that as an applied change (#task-3 review finding 2)."""
+    from server.db import db_session
+    from sqlalchemy import select
+    from server.db.models import AuditEvent
+
+    with _client() as c:
+        _register(c, "Viberpit", repo="o/r")
+        _pid, wid = _seed_one_pending(c, feature_slug="sessions")
+        pre = c.patch(f"/api/pm/work-items/{wid}/overlay", json={},
+                      headers=IDENTITY_HEADERS).json()
+        assert pre["holdKind"] is None
+
+        async def _count():
+            async with db_session() as db:
+                return len((await db.execute(select(AuditEvent).where(
+                    AuditEvent.type == "pm.workitem.overlay"))).scalars().all())
+        before = c.portal.call(_count)
+
+        r = c.patch(f"/api/pm/work-items/{wid}/overlay", json={"clearHold": True},
+                    headers=IDENTITY_HEADERS)
+        assert r.status_code == 200, r.text
+        assert r.json()["classifiedBy"] == pre["classifiedBy"]
+        assert r.json()["classifiedAt"] == pre["classifiedAt"]
+
+        after = c.portal.call(_count)
+        assert after == before
+
+
 def test_work_item_outcomes_endpoint():
     """`GET /api/pm/work-items/{id}/outcomes` — every dispatch this issue has had,
     newest first, camelCase keys (spec §6/§7); a 404 shape for an unknown item."""
