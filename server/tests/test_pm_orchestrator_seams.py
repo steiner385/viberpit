@@ -1218,11 +1218,17 @@ async def test_backlog_ladder_rung_reads_the_hold_and_the_last_attempt(db_env):
     assert await rung("o/r#9") is None            # not mirrored
     assert await rung("nonsense") is None         # unparseable ref
     assert await rung("o/r#2") == "opus"          # sonnet + 1
-    # The floor and a pinned product default never let the climb land BELOW them,
-    # and ``ladder_top`` ends it: a bounce at the top is the owner's (the sweep
-    # routes that through the give-up path, so this answer is the unreachable case).
-    assert await rung("o/r#2", floor="fable") is None
+    # A pinned product default never lets the climb land below it, and
+    # ``ladder_top`` ends it: a bounce at the top is the owner's (the sweep routes
+    # that through the give-up path, so a None here is the unreachable case).
     assert await rung("o/r#2", product="unknown-product") == "opus"
+    # Review F4: the D9 capability floor is applied AFTER the climb, not as an
+    # input to ``next_rung`` (where a floor above ``ladder_top`` would END the
+    # ladder on an ordinary configuration). It raises the rung and never lowers
+    # it, and a floor with no fixed tier is ignored rather than compared by name.
+    assert await rung("o/r#2", floor="fable") == "fable"
+    assert await rung("o/r#2", floor="haiku") == "opus"
+    assert await rung("o/r#2", floor="best") == "opus"
 
 
 def test_backlog_queue_tail_returns_copy_of_cache():

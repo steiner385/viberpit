@@ -6536,13 +6536,23 @@ class SessionOrchestrator:
         the ladder at all.
 
         The climb starts from the model the newest finalised ``implement``
-        dispatch for this issue actually ran on, never drops below the D9 *floor*
-        or a pinned product *default_model*, and stops at the product's
-        ``ladder_top`` — all of which is ``next_rung``'s rule, composed here with
-        the hold that says the runner asked for a climb. The product's policy
-        comes off the tick snapshot (``_backlog_last_policies``, the same one
-        selection's weights read), so the spawn cannot answer from a policy the
-        dispatch decision was never taken on.
+        dispatch for this issue actually ran on, never drops below a pinned
+        product *default_model*, and stops at the product's ``ladder_top`` — all
+        of which is ``next_rung``'s rule, composed here with the hold that says
+        the runner asked for a climb. The product's policy comes off the tick
+        snapshot (``_backlog_last_policies``, the same one selection's weights
+        read), so the spawn cannot answer from a policy the dispatch decision was
+        never taken on.
+
+        ``next_rung`` is called with the SAME inputs the sweep used when it wrote
+        the hold (``backlog_runner.py``'s ``floor=None``, review F4), so the two
+        halves of one rule cannot answer differently — the hold reason names the
+        rung this pins. The D9 capability *floor* is applied AFTER the climb
+        instead of as a bound inside it: as an input it would end the ladder
+        (``next_rung`` → ``None``) for any capability whose floor sits above
+        ``ladder_top``, which is an ordinary configuration, not a lowered top.
+        Raising afterwards changes nothing about which model runs — ``pick_model``
+        floors the pick anyway — it just keeps the rung honest about it.
 
         The spawn's one door to the ladder, and an injectable seam so the spawn
         tests need neither a seeded hold nor an outcome history. Best-effort like
@@ -6555,6 +6565,7 @@ class SessionOrchestrator:
         from server.db.models import WorkItem
         from server.pm.outcomes import last_attempt_model, next_rung, top_tier
         from server.pm.refs import split_ref
+        from server.sessions.model_catalog import TIER_ORDER, tier_rank
         parts = split_ref(primary_ref)
         if parts is None:
             return None
@@ -6574,15 +6585,24 @@ class SessionOrchestrator:
         policies = getattr(self, "_backlog_last_policies", {})
         policy = (policies.get(product_slug) if product_slug else None) or effective_policy(None)
         top = top_tier(policy)
-        rung = next_rung(previous, floor=floor, default_model=default_model, top=top)
+        rung = next_rung(previous, floor=None, default_model=default_model, top=top)
         if rung is None:
             # Unreachable by construction: a bounce that would climb past the top
-            # is handed to the owner (``_give_up``) and never writes this hold. It
-            # can still happen if ``ladder_top`` was lowered after the hold was
-            # written — loud, because the item then holds at a rung nothing will
-            # ever climb, and spawns at the product's default meanwhile.
+            # is handed to the owner (``_give_up``) and never writes this hold. Now
+            # that the inputs match the sweep's, this can only mean ``ladder_top``
+            # was lowered after the hold was written — loud, because the item then
+            # holds at a rung nothing will ever climb, and spawns at the product's
+            # default meanwhile.
             log.warning("backlog_runner.ladder_rung_missing target=%s previous=%s top=%s",
                         primary_ref, previous, top)
+            return None
+        # Then raise the climb to the capability floor, by ``tier_rank`` — the one
+        # tier ordering, compared exactly as ``model_pick.pick_model`` compares it,
+        # so a floor with no fixed tier (``best``, an unknown id) is ignored rather
+        # than compared by name.
+        floor_rank, rung_rank = tier_rank(floor), tier_rank(rung)
+        if floor_rank is not None and rung_rank is not None and floor_rank > rung_rank:
+            return TIER_ORDER[floor_rank]
         return rung
 
     async def _backlog_spawn(self, batch, account: str, *, default_model: str,
