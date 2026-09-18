@@ -301,7 +301,7 @@ def build_loop(*, mode="on", config=None, clock=None,
     )
     # These policy/outcome tests model an observed stopped actor. Native proof
     # and unknown lifecycles are exercised by test_backlog_ownership.py.
-    loop._work_stopped = AsyncMock(return_value=True)
+    loop._work_stopped = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
     async def handoff(target, st, _info):
         return await ctx.compare_target_state(target, st, {**st, "handed_off": True})

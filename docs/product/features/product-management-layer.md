@@ -68,6 +68,12 @@ write records its actor in `classified_by`; agents (sessions, the assistant, loo
 may set or clear only `evidence` and `stronger_model` (`server/pm/holds.py`) — and may not
 OVERWRITE a hold they could not clear, since replacing a kind releases the old one. The ladder, evidence
 dispatch, decision proposals, and the rename to "Held" are the later series items of that spec.
+An `owner_action` hold ends only on a human signal (spec 2026-09-18 §7): a board edit to Ready or
+Backlog, an issue body edit (the fingerprint no longer matches), or
+`POST /api/pm/work-items/{id}/hold/release` (the Retry tap) — all three through
+`server/pm/holds.py:release_by_signals` / `clear_hold`, each audited as `pm.hold.release` with its
+`signal`. The queue skips held items as `held`; the Backlog Runner's give-up writes the hold
+(`hold_by = runner`) and its `gave_up` row survives only until the hold is gone.
 
 **Notes** — State is `delivering`. Phase 1 (foundation models + pm-sync backlog mirror + project
 registry API/UI, #893), Phase 2 (archaeology onboarding wizard + map-synthesis prompt +
@@ -279,9 +285,9 @@ What stays global on the runner: whether it runs at all (`off | on` — one row-
 propose-vs-auto is now the per-product `dispatch` value, not a runner mode), `selection_strategy`
 (how a freed slot chooses among the ON products' repos — balanced / priority / weighted /
 concurrency-cap), `max_concurrent` (sessions in flight across every product combined),
-`max_spawns_per_day`, `max_issues_per_pr`, `grouping_interval_minutes`, and
-`needs_human_retry_days` (the runner's own give-up cooldown — a property of the runner's retry
-behaviour, not of any one product's board).
+`max_spawns_per_day`, `max_issues_per_pr`, and `grouping_interval_minutes` (the give-up cooldown,
+`needs_human_retry_days`, is retired — a give-up now ends only on the hold-release signals in the
+Holds paragraph above, not a timer).
 
 Phase 2 of the design has landed: confidence-tiered triage auto-accept per product
 (`triage_auto_accept`, §8 — the "Triage auto-accept" paragraph below). **Phase 3 has landed**: the

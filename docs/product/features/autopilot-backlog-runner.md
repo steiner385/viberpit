@@ -137,10 +137,10 @@ PR linkage, never on labels alone.
   yet — either way the sweep (handoffs, give-ups, reconciliation) still runs, since stalling that
   on the same DB blip would be its own outage. The runner's OWN config schema keeps only
   fleet-wide knobs: `selection_strategy`, `max_concurrent`, `max_spawns_per_day`,
-  `max_issues_per_pr`, `grouping_interval_minutes`, `needs_human_retry_days`.
+  `max_issues_per_pr`, `grouping_interval_minutes`.
   `retired_config_keys` (`eligible_label`, `enabled_repos`, `repo_weights`, `repo_caps`,
-  `queue_min_status`, `max_attempts`, `default_model`, `respect_dependencies`) still lists the
-  retired ones so a row that still carries them keeps the rest of its settings; on read, a stored
+  `queue_min_status`, `max_attempts`, `default_model`, `respect_dependencies`, `needs_human_retry_days`)
+  still lists the retired ones so a row that still carries them keeps the rest of its settings; on read, a stored
   `off` mode survives verbatim (an operator who parked the runner is never silently restarted), a
   stored `propose` or `auto` mode (written before the flip) folds to `on`, and an unset (`NULL`)
   mode on an otherwise-enabled row also reads as `on` (the two-mode UI hides the mode select, so
@@ -217,8 +217,10 @@ PR linkage, never on labels alone.
   history, not the activity feed, until a later phase reads it.
 
   `_backlog_query_queue` threads each ON product's own `give_up_after_bounces` into `rank`
-  (`server/pm/queue.py`), which checks the `needs_spec` skip right after the needs-human cooldown
-  and before the board-status gate: a row whose body (by `server/pm/outcomes.py:body_fingerprint`)
+  (`server/pm/queue.py`), which checks the `needs_spec` skip right after the `held` skip (the queue
+  skips held items as `held`; the Backlog Runner's give-up writes the hold (`hold_by = runner`) and
+  its `gave_up` row survives only until the hold is gone) and before the board-status gate: a row
+  whose body (by `server/pm/outcomes.py:body_fingerprint`)
   has bounced `give_up_after_bounces` times or more (`bounced_out`) is skipped `needs_spec`
   rather than ranked — the SAME predicate the roadmap's leaf chip reads (see
   `docs/product/features/product-management-layer.md` § Dispatch outcomes). The status card's
@@ -260,15 +262,16 @@ PR linkage, never on labels alone.
   automatically replaying an uncertain mutation. Mixed batches with intentionally open
   members can still require operator review after an uncertain close; broader recovery
   controls belong to the later recovery phase of #1611.
-  A **give-up is the same row marked `gave_up` and stamped
-  `needs_human_at`**, which replaces the claim (a target waiting on a human holds no slot): the
-  reconciler turns it into board Status `Needs human` and the queue into a cooldown that expires
-  after `needs_human_retry_days`. Once ownership permits release, the runner removes the
-  expired workflow row before refill so the issue can be retried. A value of 0 disables this
-  automatic expiry. A human takes an issue back from a give-up by **dispatching it manually**
-  (`POST /api/automations/backlog-runner/dispatch`, or the card's dispatch action), which
-  requests a fresh claim after prior ownership is safely reconciled; moving the board card alone does not shorten the
-  cooldown (follow-up #1540). Backoff + disk-exhaustion circuit breaker in #626/#683.
+  A **give-up is the same row marked `gave_up`**, which replaces the claim (a target waiting on a
+  human holds no slot); the reconciler turns it into board Status `Needs human`. The queue skips
+  held items as `held`; the Backlog Runner's give-up writes the hold (`hold_by = runner`) and its
+  `gave_up` row survives only until the hold is gone (spec 2026-09-18 §7, `server/pm/holds.py`).
+  A human takes an issue back from a give-up either by one of the three hold-release signals —
+  moving the board card to Ready or Backlog, editing the issue body (the fingerprint no longer
+  matches), or the Retry tap (`POST /api/pm/work-items/{id}/hold/release`) — or by **dispatching
+  it manually** (`POST /api/automations/backlog-runner/dispatch`, or the card's dispatch action),
+  which requests a fresh claim after prior ownership is safely reconciled; moving the board card
+  now DOES release the hold (#1540). Backoff + disk-exhaustion circuit breaker in #626/#683.
 - The runner had to learn to see its own PRs (#546 sweep-time resolution) and to fail-closed
   on PR↔issue linkage before closing (#643), and not to auto-close action-required /
   docs-only issues (#784/#786).
