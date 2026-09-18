@@ -25,6 +25,10 @@ ACTIVE_SESSION_STATUSES = frozenset({"in_progress", "retrying", "condensing"})
 HUMAN_WAIT_SESSION_STATUSES = frozenset(
     {"waiting_question", "waiting_input", "ready_review", "needs_attention"})
 
+#: Hold kinds that park the card (spec 2026-09-18 §7). evidence / stronger_model exit
+#: on their own and never reach the board.
+HELD_KINDS: frozenset[str] = frozenset({"owner_action", "decision"})
+
 
 @dataclass(frozen=True)
 class ItemFacts:
@@ -47,6 +51,8 @@ class ItemFacts:
     needs_human_at: datetime | None
     initiative_stage: str | None
     initiative_stage_at: datetime | None
+    # Spec 2026-09-18 §3: the hold on the item. Only owner_action / decision park it.
+    hold_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -72,8 +78,8 @@ def derive_status(f: ItemFacts) -> Decision:
         return Decision(STATUS_NEEDS_HUMAN, f.session_at)
     if f.session_status in ACTIVE_SESSION_STATUSES:
         return Decision(STATUS_IN_PROGRESS, f.session_at)
-    if f.needs_human_at is not None or f.triage_state == "needs_human":
-        # The give-up moment is the decision; triage's needs_human dates from classification.
+    if f.needs_human_at is not None or f.hold_kind in HELD_KINDS:
+        # The give-up moment is the decision; a hold dates from its classification write.
         return Decision(STATUS_NEEDS_HUMAN, f.needs_human_at or f.classified_at)
     if f.open_blocker_refs:
         return Decision(STATUS_BLOCKED, f.blockers_at)

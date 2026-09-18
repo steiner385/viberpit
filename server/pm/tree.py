@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from server.db.models import INITIATIVE_STAGES
 from server.pm.desired_state import (
     ACTIVE_SESSION_STATUSES,
+    HELD_KINDS,
     HUMAN_WAIT_SESSION_STATUSES,
     STATUS_BLOCKED,
     STATUS_IN_PROGRESS,
@@ -115,12 +116,14 @@ def issue_reason(*, state: str | None = None, bounces: int = 0,
 def issue_tier(state: str | None, triage_state: str | None,
                has_open_blocker: bool, session_status: str | None,
                board_status: str | None = None, *,
-               reason: str | None = None) -> str:
+               reason: str | None = None, hold_kind: str | None = None) -> str:
+    # triage_state stays in the signature (callers pass it positionally) but is no
+    # longer read for needs-you — that is the hold's job now (spec 2026-09-18 §7).
     if state in ("closed", "merged"):
         return "live"
     if reason is not None:
         return "needs-you"
-    if (triage_state == "needs_human" or session_status in HUMAN_WAIT_SESSION_STATUSES
+    if (hold_kind in HELD_KINDS or session_status in HUMAN_WAIT_SESSION_STATUSES
             or board_status == STATUS_NEEDS_HUMAN):
         return "needs-you"
     if has_open_blocker or board_status == STATUS_BLOCKED:

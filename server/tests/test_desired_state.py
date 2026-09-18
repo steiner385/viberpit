@@ -14,7 +14,7 @@ def _f(**over):
                 classified_at=None, reach=None, impact=None, effort=None, confidence=None,
                 session_status=None, session_at=None, merged_pr_at=None, open_blocker_refs=(),
                 blockers_at=None, needs_human_at=None, initiative_stage=None,
-                initiative_stage_at=None)
+                initiative_stage_at=None, hold_kind=None)
     base.update(over)
     return ItemFacts(**base)
 
@@ -36,8 +36,16 @@ def test_status_session_signals():
     assert derive_status(_f(session_status="waiting_question", session_at=T2)) == Decision(STATUS_NEEDS_HUMAN, T2)
 
 
-def test_status_needs_human_blocked_ready_backlog():
-    assert derive_status(_f(triage_state="needs_human", classified_at=T1)) == Decision(STATUS_NEEDS_HUMAN, T1)
+def test_status_hold_blocked_ready_backlog():
+    # An owner_action or pending decision hold is the board's "Needs human"; the
+    # hold's own timestamp is the decision (spec 2026-09-18 §7).
+    assert derive_status(_f(hold_kind="owner_action", classified_at=T1)) == Decision(STATUS_NEEDS_HUMAN, T1)
+    assert derive_status(_f(hold_kind="decision", classified_at=T1)) == Decision(STATUS_NEEDS_HUMAN, T1)
+    # evidence and stronger_model holds never park the card
+    assert derive_status(_f(hold_kind="evidence", triage_state="classified", classified_at=T1)) == Decision(STATUS_READY, T1)
+    assert derive_status(_f(hold_kind="stronger_model")) == Decision(STATUS_BACKLOG, None)
+    # the removed triage value is inert even if a stale row still carries it
+    assert derive_status(_f(triage_state="needs_human", classified_at=T1)) == Decision(STATUS_BACKLOG, None)
     assert derive_status(_f(open_blocker_refs=("o/r#2",), blockers_at=T2)) == Decision(STATUS_BLOCKED, T2)
     assert derive_status(_f(triage_state="classified", classified_at=T1)) == Decision(STATUS_READY, T1)
     assert derive_status(_f()) == Decision(STATUS_BACKLOG, None)

@@ -120,7 +120,8 @@ def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) 
             open_blocker_refs=tuple(sorted(blockers.get(ref, []))), blockers_at=blockers_at.get(ref),
             needs_human_at=needs_human_at.get(ref),
             initiative_stage=(ini.stage if ini and ini.id not in program_ids else None),
-            initiative_stage_at=_aware(ini.updated_at) if ini else None))
+            initiative_stage_at=_aware(ini.updated_at) if ini else None,
+            hold_kind=w.hold_kind))
     last_applied = _aware(db.scalar(select(GhWriteJournal.updated_at).where(
         GhWriteJournal.applied.is_(True)).order_by(GhWriteJournal.updated_at.desc()).limit(1)))
     # The freshness gate refuses to write against a mirror older than this. It must
