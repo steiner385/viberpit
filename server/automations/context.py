@@ -466,7 +466,11 @@ class AutomationContext:
                 if fingerprint is None:
                     return 0
                 pairs = [(target_ref, fingerprint)]
-                rows = (await db.execute(bounces_stmt(pairs))).all()
+                # Row -> plain tuple: ``Result.all()`` is typed ``Sequence[Row[Any]]``,
+                # not structurally a ``tuple[str, str, int]`` (mypy), though it
+                # unpacks as one — the same conversion ``queue_store`` makes.
+                rows = [(ref, fp, n)
+                        for ref, fp, n in (await db.execute(bounces_stmt(pairs))).all()]
             return rows_to_bounces(rows, pairs)[target_ref]
         except Exception:
             log.warning("automation_context.bounces_for_failed target=%s", target_ref,

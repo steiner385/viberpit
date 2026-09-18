@@ -524,20 +524,24 @@ def test_give_up_escalates_when_no_ran_probe_is_wired(tmp_path):
 
 
 def test_give_up_retains_legacy_state_without_ownership_proof(tmp_path):
-    """A token-less legacy row is never rewritten by the sweep. The ladder's
-    hold write runs FIRST and the release then refuses (review R1 I2 item 2),
-    so the row survives exactly as it was — and the hold write is idempotent, so
-    re-ticking a legacy row re-stamps nothing (seam test:
-    ``test_backlog_write_runner_hold_is_idempotent_on_a_retry``)."""
+    """A token-less legacy row is never rewritten by the sweep, and neither ladder
+    branch is even reached: ``_sweep_one`` hands a row with no ``ownership_token``
+    to ``_release_legacy_claim`` and returns (#1648). So nothing is escalated,
+    nothing is handed to a human, and the row survives exactly as it was.
+
+    (Final review M5: this docstring used to claim the hold write ran first and the
+    release refused — a property this test cannot exercise, since no hold is ever
+    written on this path. The hold-before-release ordering is pinned by
+    ``test_backlog_runner_loop.py::test_a_raising_escalate_leaves_the_claim_for_the_next_sweep_to_retry``.)"""
     async def run():
         calls: dict = {}
         target = "acme/repo#4"
-        loop, ctx, state = await _runner(tmp_path, ran=None, calls=calls, target=target,
-                                         model="sonnet")
+        loop, ctx, state = await _runner(tmp_path, ran=None, calls=calls, target=target)
         legacy = {k: v for k, v in state.items() if k != "ownership_token"}
         await ctx.set_target_state(target, legacy)
         await loop._sweep_one(target, legacy, set())
         assert "needs_human" not in calls
+        assert "escalate" not in calls
         assert await ctx.get_target_state(target) == legacy
     asyncio.run(run())
 

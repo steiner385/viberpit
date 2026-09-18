@@ -177,7 +177,9 @@ async def test_last_attempt_model_reads_the_newest_finalised_implement_row(tmp_p
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'last_attempt.db'}"
     await init_db(db_url=db_url)
     from datetime import datetime, timedelta, timezone
-    base = datetime(2026, 9, 18, tzinfo=timezone.utc)
+    # Relative to now, never an absolute date literal (spec §11): a fixed calendar
+    # date is a time bomb the day something starts comparing it to ``now()``.
+    base = datetime.now(timezone.utc) - timedelta(days=1)
     async with db_session() as db:
         db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="no_pr",
                                model="sonnet", ended_at=base))

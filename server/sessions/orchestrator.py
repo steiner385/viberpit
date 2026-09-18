@@ -6185,9 +6185,9 @@ class SessionOrchestrator:
           keep bumping ``hold_set_at``/``hold_fingerprint`` (that would lose a
           pending body-edit release) or double-audit.
 
-        Unmirrored refs are logged and skipped. Returns the resolved ``Batch``
-        (the callers' comment step needs it) alongside the WorkItems the hold
-        WAS actually written to."""
+        Unmirrored refs are logged and skipped. Returns the resolved ``Batch`` —
+        the give-up caller's comment step needs it, and it is the only thing either
+        caller reads (final review M6)."""
         from datetime import datetime, timezone
         from sqlalchemy import select, tuple_
         from server.audit import record_audit
@@ -6200,7 +6200,6 @@ class SessionOrchestrator:
         batch = await self._backlog_batch_for(target)
         parts = [p for p in (split_ref(r) for r in batch.issues) if p is not None]
         now = datetime.now(timezone.utc)
-        written: list[WorkItem] = []
         if parts:
             async with db_session() as db:
                 items = (await db.execute(select(WorkItem).where(
@@ -6222,11 +6221,10 @@ class SessionOrchestrator:
                     await record_audit(db=db, type="pm.hold.set", identity=RUNNER_ACTOR, detail={
                         "workItemId": wi.id, "kind": kind, "reason": reason,
                         "actorClass": actor_class(RUNNER_ACTOR)}, via="runner")
-                    written.append(wi)
                 missing = set(batch.issues) - {f"{w.repo}#{w.number}" for w in items}
                 if missing:
                     log.warning("backlog_runner.%s_unmirrored refs=%s", log_key, sorted(missing))
-        return batch, written
+        return batch
 
     async def _backlog_needs_human(self, target: str, reason: str) -> None:
         """GIVE-UP path (spec 2026-09-18 §3): write the owner_action hold on every
@@ -6234,7 +6232,7 @@ class SessionOrchestrator:
         The runner's ``gave_up`` row survives for slot accounting only and is
         dropped by ``_release_give_ups`` once the hold is gone."""
         from server.automations import backlog_github
-        batch, _written = await self._backlog_write_runner_hold(
+        batch = await self._backlog_write_runner_hold(
             target, kind="owner_action", reason=reason, log_key="give_up")
         try:
             await asyncio.to_thread(

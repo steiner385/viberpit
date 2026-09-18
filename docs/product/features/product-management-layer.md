@@ -288,8 +288,11 @@ the products that owned them so the flip changed no behaviour: the prior global 
 seeded product's `dispatch` (`auto` stayed `auto`, anything else became `propose`), a product's
 primary repo's entry in the old `repo_caps` / `repo_weights` becomes its `max_in_flight` / `weight`
 — or, for a product with no repo flagged primary, its lowest-named repo's entry — and the remaining
-globals are copied onto every seeded product, but only the keys the legacy config actually set: a
-key it left unset is left at the schema default rather than pinned to a made-up value. A non-empty
+globals (`queue_min_status`, `default_model`, `respect_dependencies`) are copied onto every seeded
+product, but only the keys the legacy config actually set: a key it left unset is left at the schema
+default rather than pinned to a made-up value. `max_attempts` is NOT among them — it was retired in
+favour of `ladder_top` and the model ladder (spec 2026-09-18 §4), and a tier ceiling synthesized
+from a legacy attempt count would be invented intent, not a migration. A non-empty
 `enabled_repos` seeded exactly the products owning those repos; the empty list — which meant "every
 onboarded product" — seeded every product with a linked board. The seed CONSUMES its own input: in
 the same transaction it strips every retired key off the runner row's config and normalises a stored
@@ -299,7 +302,7 @@ exactly once in history — durably, unlike the earlier "does any product have a
 re-armed the moment an operator cleared the last policy. A runner-card config save strips those keys
 too (the config PATCH validates against the phase-1 schema); a row left that way is never seeded
 from — its repo list is gone — but its legacy mode is still folded to `on`. A legacy value below a
-field's phase-1 minimum (`max_attempts: 0`, a negative per-repo cap) costs that one field its legacy
+field's phase-1 minimum (a negative per-repo cap) costs that one field its legacy
 value, never the whole policy. A product that already carries one is
 skipped individually, so a human-set policy is never overwritten and never blocks the rest of the
 migration.
