@@ -120,6 +120,128 @@ def test_project_lifecycle():
         assert resp.status_code == 404
 
 
+def test_update_project_renames_name_slug_and_repoints_repo():
+    """PATCH /projects/{slug}: name-only, slug rename (old slug 404s, new works),
+    then a primary-repo repoint that resets backfill state."""
+    with _client() as c:
+        resp = c.post("/api/pm/projects", json={
+            "name": "LakotaGrades",
+            "repos": [{"repo": "steiner385/lakota-grades-mcp", "isPrimary": True}],
+        }, headers=IDENTITY_HEADERS)
+        assert resp.status_code == 201, resp.text
+
+        # name only
+        resp = c.patch("/api/pm/projects/lakotagrades", json={"name": "FridgeSheet"},
+                       headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["name"] == "FridgeSheet"
+        assert body["slug"] == "lakotagrades"
+
+        # slug rename
+        resp = c.patch("/api/pm/projects/lakotagrades", json={"slug": "fridgesheet"},
+                       headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["slug"] == "fridgesheet"
+        resp = c.get("/api/pm/projects/lakotagrades", headers=IDENTITY_HEADERS)
+        assert resp.status_code == 404
+        resp = c.get("/api/pm/projects/fridgesheet", headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200
+
+        # repo repoint — resets backfill/sync bookkeeping on the primary row
+        resp = c.patch("/api/pm/projects/fridgesheet", json={"repo": "steiner385/fridgesheet"},
+                       headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["repos"][0]["repo"] == "steiner385/fridgesheet"
+        assert body["repos"][0]["isPrimary"] is True
+        assert body["repos"][0]["backfillDone"] is False
+        assert body["repos"][0]["lastSyncedAt"] is None
+
+        # repointing to the SAME repo again is a no-op, not an ownership conflict
+        resp = c.patch("/api/pm/projects/fridgesheet", json={"repo": "steiner385/fridgesheet"},
+                       headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+
+        # an empty patch (no fields) is a 200 no-op, not a 422
+        resp = c.patch("/api/pm/projects/fridgesheet", json={}, headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+
+
+def test_update_project_rejects_bad_input_and_conflicts():
+    with _client() as c:
+        for name in ("Alpha", "Beta"):
+            resp = c.post("/api/pm/projects", json={
+                "name": name, "repos": [{"repo": f"o/{name.lower()}"}]},
+                headers=IDENTITY_HEADERS)
+            assert resp.status_code == 201, resp.text
+
+        # blank name
+        resp = c.patch("/api/pm/projects/alpha", json={"name": "  "}, headers=IDENTITY_HEADERS)
+        assert resp.status_code == 422
+        assert resp.json()["detail"]["error"] == "bad_name"
+
+        # non-branch-safe slug (uppercase, spaces — the same SLUG_RE map-changes
+        # branch names must satisfy)
+        resp = c.patch("/api/pm/projects/alpha", json={"slug": "Not Safe"}, headers=IDENTITY_HEADERS)
+        assert resp.status_code == 422
+        assert resp.json()["detail"]["error"] == "bad_slug"
+
+        # slug already taken by another project
+        resp = c.patch("/api/pm/projects/alpha", json={"slug": "beta"}, headers=IDENTITY_HEADERS)
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["error"] == "slug_conflict"
+
+        # malformed repo
+        resp = c.patch("/api/pm/projects/alpha", json={"repo": "no-slash"}, headers=IDENTITY_HEADERS)
+        assert resp.status_code == 422
+        assert resp.json()["detail"]["error"] == "invalid_repo"
+
+        # repo already registered to another project
+        resp = c.patch("/api/pm/projects/alpha", json={"repo": "o/beta"}, headers=IDENTITY_HEADERS)
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["error"] == "ownership_conflict"
+
+        # unknown project
+        resp = c.patch("/api/pm/projects/nope", json={"name": "X"}, headers=IDENTITY_HEADERS)
+        assert resp.status_code == 404
+
+
+def test_update_project_refuses_slug_and_repo_changes_while_map_changes_is_open():
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import FeatureMapChange, Project
+
+    with _client() as c:
+        resp = c.post("/api/pm/projects", json={
+            "name": "Gamma", "repos": [{"repo": "o/gamma", "isPrimary": True}]},
+            headers=IDENTITY_HEADERS)
+        assert resp.status_code == 201, resp.text
+
+        async def _open_pointer():
+            async with db_session() as db:
+                p = (await db.execute(select(Project).where(
+                    Project.slug == "gamma"))).scalars().one()
+                db.add(FeatureMapChange(
+                    project_id=p.id, repo="o/gamma", branch="pm/map-changes-gamma",
+                    pr_number=1, pr_url="https://github.com/o/gamma/pull/1", status="open"))
+                await db.commit()
+        c.portal.call(_open_pointer)
+
+        resp = c.patch("/api/pm/projects/gamma", json={"slug": "delta"}, headers=IDENTITY_HEADERS)
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["error"] == "open_map_changes"
+
+        resp = c.patch("/api/pm/projects/gamma", json={"repo": "o/gamma2"}, headers=IDENTITY_HEADERS)
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["error"] == "open_map_changes"
+
+        # a name-only patch is unaffected — it does not touch the branch/repo
+        resp = c.patch("/api/pm/projects/gamma", json={"name": "Gamma Two"}, headers=IDENTITY_HEADERS)
+        assert resp.status_code == 200, resp.text
+
+
 def test_policy_schema_and_project_policy_round_trip():
     with _client() as c:
         schema = c.get("/api/pm/policy-schema", headers=IDENTITY_HEADERS)
