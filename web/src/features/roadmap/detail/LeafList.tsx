@@ -12,7 +12,7 @@ import { EmptyState } from '@/ui/EmptyState'
 import { Banner } from '@/ui/Banner'
 import { Badge } from '@/ui/Badge'
 import { Button } from '@/ui/Button'
-import { ISSUE, bouncedLabel, reasonLabel } from '@/features/products/vocab'
+import { ISSUE, bouncedLabel, reasonLabel, holdLabel } from '@/features/products/vocab'
 import { SESSIONS_PATH } from '@/session/sessionNavState'
 import { issueUrl } from '@/lib/githubUrl'
 import { tierLabel } from '../roadmapTier'
@@ -87,6 +87,11 @@ function LeafRow({ leaf, capabilities, onReview }: { leaf: Leaf; capabilities: {
             {leaf.reason === 'needs_spec' ? bouncedLabel(leaf.bounces) : reasonLabel(leaf.reason)}
           </Badge>
         )}
+        {leaf.state === 'open' && leaf.holdKind && (
+          <Badge tone={leaf.holdKind === 'owner_action' || leaf.holdKind === 'decision' ? 'warning' : 'info'} data-testid="leaf-hold">
+            {holdLabel(leaf.holdKind)}
+          </Badge>
+        )}
         {leaf.sessionStatus && <Badge tone="success">session</Badge>}
         {blockers > 0 && (
           <Badge tone="danger" count={blockers} aria-label={`${blockers} blocker${blockers === 1 ? '' : 's'}`} />
@@ -97,7 +102,9 @@ function LeafRow({ leaf, capabilities, onReview }: { leaf: Leaf; capabilities: {
       {needsAttention && leaf.kind === 'issue' && (
         <div className="flex flex-col gap-1 pl-6 text-xs text-ink-muted">
           <p>
-            {leaf.reason === 'needs_spec'
+            {leaf.holdKind === 'owner_action'
+              ? `Held for the owner${leaf.holdReason ? `: ${leaf.holdReason}` : ''}. Retry to return it to the queue, or open the issue to decide.`
+              : leaf.reason === 'needs_spec'
               ? 'Repeated attempts have not merged. Update the issue description with clearer requirements and acceptance criteria before another attempt.'
               : leaf.tier === 'blocked'
                 ? blockers > 0

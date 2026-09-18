@@ -153,3 +153,15 @@ it('does not offer issue mutations for a pull request leaf', () => {
   expect(screen.getByRole('link', { name: '#1 Issue 1' })).toHaveAttribute('href', 'https://github.com/o/r/pull/1')
   expect(screen.queryByRole('button', { name: 'Review and decide' })).toBeNull()
 })
+
+it('shows the hold kind as a chip and says why an owner-action hold needs you', () => {
+  h.leaves = [
+    leaf(1, 'open', { tier: 'needs-you', holdKind: 'owner_action', holdReason: 'needs the keyring', holdBy: 'tony@example.com', holdSetAt: '2026-09-18T00:00:00+00:00' }),
+    leaf(2, 'open', { tier: 'idle', holdKind: 'evidence', holdReason: 'profile it', holdBy: 'session:s1', holdSetAt: '2026-09-18T00:00:00+00:00' }),
+    leaf(3, 'closed', { holdKind: 'owner_action', holdReason: 'x', holdBy: 'y', holdSetAt: null }),
+  ]
+  render(<IssueDispositionProvider><div data-page-scroll=""><LeafList scope={{ capability: 'f1' }} product={null} /></div></IssueDispositionProvider>)
+  const chips = screen.getAllByTestId('leaf-hold')
+  expect(chips.map((c) => c.textContent)).toEqual(['Held for the owner', 'Held for evidence'])  // closed rows show no chip
+  expect(screen.getByText(/Held for the owner: needs the keyring\. Retry to return it to the queue/)).toBeInTheDocument()
+})
