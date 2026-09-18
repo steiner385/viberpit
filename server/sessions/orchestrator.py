@@ -6607,15 +6607,46 @@ class SessionOrchestrator:
         policy snapshot its dispatch decision was made on. A failed read costs the
         model PREFERENCE, never the spawn: by the time a spawn path runs, the
         decision that this batch may run has already been taken, and ``auto`` (the
-        schema default) is exactly what a pre-flip claim ran under."""
-        from server.automations.product_policy import effective_policy
+        schema default) is exactly what a pre-flip claim ran under.
+
+        The no-product fallback goes through the shared ``policy_for_product`` chain
+        (final review M4 / ledger nit 3), so it reads the snapshot's own clamped
+        default rather than a second bare ``effective_policy(None)``."""
+        from server.automations.product_policy import policy_for_product
         try:
             policies = await self._backlog_load_policies()
         except Exception:
             log.warning("backlog_runner.spawn_policy_read_failed", exc_info=True)
             policies = {}
-        policy = (policies.get(product) if product else None) or effective_policy(None)
-        return str(policy["default_model"])
+        return str(policy_for_product(policies, product)["default_model"])
+
+    async def _backlog_policy_snapshot(self) -> dict[str, dict]:
+        """The tick's CLAMPED policy snapshot, or a freshly clamped one when this
+        process has not taken a queue read yet (final review M4).
+
+        ``_backlog_last_policies`` is only filled by ``_backlog_query_queue``, so a
+        manual "Implement now" / dispatch tap on a daemon whose backlog loop has not
+        run one — the runner off, or the first tap after a restart — used to fall
+        back to a bare ``effective_policy(None)``: ``ladder_top = fable``,
+        UNCLAMPED. On an item whose last attempt ran on ``opus`` that pins ``fable``
+        and parks the session as a driverless ``pending_approval`` row, precisely
+        what the clamp exists to prevent.
+
+        Clamping on the spot is best-effort (``best_effort=True``): this is a tap
+        path with no skip-refill escape, and it must never take a dispatch down with
+        it. The result is deliberately NOT cached onto ``_backlog_last_policies`` —
+        that snapshot belongs to the loop's tick and a tap must not age it."""
+        from server.automations.product_policy import load_policies
+        policies = getattr(self, "_backlog_last_policies", None) or {}
+        if policies:
+            return policies
+        try:
+            async with db_session() as db:
+                return await self._backlog_clamp_ladder_tops(
+                    db, await load_policies(db), best_effort=True)
+        except Exception:
+            log.warning("backlog_runner.policy_snapshot_read_failed", exc_info=True)
+            return {}
 
     async def _backlog_tier_floor(self, product_slug: "str | None",
                                   primary_ref: str) -> str | None:
@@ -6667,7 +6698,7 @@ class SessionOrchestrator:
         """
         from sqlalchemy import select as sa_select
 
-        from server.automations.product_policy import NO_PRODUCT_POLICY_KEY, effective_policy
+        from server.automations.product_policy import policy_for_product
         from server.db.models import WorkItem
         from server.pm.outcomes import last_attempt_model, next_rung, top_tier
         from server.pm.refs import split_ref
@@ -6688,13 +6719,10 @@ class SessionOrchestrator:
             log.warning("backlog_runner.ladder_rung_read_failed target=%s", primary_ref,
                         exc_info=True)
             return None
-        policies = getattr(self, "_backlog_last_policies", {})
         # A dispatch with no product takes the snapshot's no-product default, which
         # carries the same approval-gate clamp every product's does (the sweep's
-        # ``_policy_for`` falls back to that same entry). Only a snapshot taken
-        # before the clamp existed — or none at all — reaches the pure default.
-        policy = ((policies.get(product_slug) if product_slug else None)
-                  or policies.get(NO_PRODUCT_POLICY_KEY) or effective_policy(None))
+        # ``_policy_for`` falls back to that same entry, through the same helper).
+        policy = policy_for_product(await self._backlog_policy_snapshot(), product_slug)
         top = top_tier(policy)
         rung = next_rung(previous, floor=None, default_model=default_model, top=top)
         if rung is None:
@@ -6811,19 +6839,24 @@ class SessionOrchestrator:
         # a record whose id matches the pre-spawn holder is not a new session.
         deduped = (rec is not None and existing_before is not None
                    and getattr(rec, "id", None) == getattr(existing_before, "id", None))
-        if rec is not None and rung:
+        if rec is not None and rung and not deduped:
             # The dispatch the hold asked for has happened, so the hold is spent
             # (spec §4): every issue of the batch parked ``stronger_model`` is
             # released as the runner, audited ``dispatch``.
             #
-            # Guarded on BOTH a real record and a real rung — the hold is consumed
-            # only by a dispatch that actually CLIMBED (review F1):
+            # Guarded on a real record, a real rung and a NEW session — the hold is
+            # consumed only by a dispatch that actually CLIMBED (review F1, final
+            # review M1):
             # - a refused spawn (``rec is None``) dispatched nothing;
             # - no rung means this spawn ran at the ordinary pick, because the hold
             #   read failed, the seam raised, ``ladder_top`` was lowered under the
             #   hold, or the engine is Codex. Releasing then would spend the hold
             #   for a re-run at the SAME tier, and the bounce that follows would
-            #   count toward ``give_up_after_bounces`` with zero ladder progress.
+            #   count toward ``give_up_after_bounces`` with zero ladder progress;
+            # - a DE-DUPED spawn handed back the session that already existed,
+            #   which is running at whatever model it was started with, not at the
+            #   rung — the same "no climb happened" case, and the same guard the
+            #   pick audit below applies.
             # Keeping it costs one stale flag for a cycle: ``stronger_model`` is not
             # in ``HELD_KINDS``, so the item stays queue-eligible either way.
             #

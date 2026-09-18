@@ -1103,6 +1103,57 @@ def test_a_failed_verdict_read_raises_on_the_loader_and_degrades_on_the_queue_re
     asyncio.run(run())
 
 
+def test_a_tap_before_the_first_queue_read_still_gets_a_clamped_ladder_top(tmp_path):
+    """Final review M4: ``_backlog_last_policies`` is filled only by
+    ``_backlog_query_queue``, so a manual "Implement now" on a daemon whose backlog
+    loop has not taken a queue read — runner off, or the first tap after a restart
+    — used to fall back to a bare ``effective_policy(None)``: ``ladder_top =
+    fable``, UNCLAMPED. On an item whose last attempt ran on ``opus`` that pinned
+    ``fable`` and parked the session as a driverless ``pending_approval`` row,
+    exactly what the clamp exists to prevent. The seam now clamps on the spot."""
+    from datetime import datetime, timezone
+
+    from server.db.models import DispatchOutcome
+    from server.pm.holds import set_runner_stronger_hold
+
+    async def run():
+        await _init(tmp_path, "ladder_tap_cold.db")
+        await _seed_product("alpha", "o/a",
+                            policy={"dispatch": "auto", "ladder_top": "fable"})
+        await _set_denylist("fable")
+        now = datetime.now(timezone.utc)
+        async with db_session() as db:
+            wi = WorkItem(repo="o/a", number=2, kind="issue", state="open",
+                          title="T", body="B")
+            set_runner_stronger_hold(wi, reason="bounced at sonnet", now=now)
+            db.add(wi)
+            db.add(DispatchOutcome(target_ref="o/a#2", outcome="no_pr", model="opus",
+                                   attempt_no=1, ended_at=now))
+
+        orch = _orch_with_ctx()
+        assert orch._backlog_last_policies == {}      # no tick has run in this process
+        rung = await orch._backlog_ladder_rung("alpha", "o/a#2",
+                                               default_model="auto", floor=None)
+        assert rung is None        # the climb from opus would pass the CLAMPED top
+        # …and the tap's snapshot is not cached onto the loop's tick snapshot.
+        assert orch._backlog_last_policies == {}
+
+        # The same seam on a product whose top is not gated still climbs.
+        await _seed_product("beta", "o/b",
+                            policy={"dispatch": "auto", "ladder_top": "opus"})
+        async with db_session() as db:
+            wi = WorkItem(repo="o/b", number=3, kind="issue", state="open",
+                          title="T", body="B")
+            set_runner_stronger_hold(wi, reason="bounced at sonnet", now=now)
+            db.add(wi)
+            db.add(DispatchOutcome(target_ref="o/b#3", outcome="no_pr", model="sonnet",
+                                   attempt_no=0, ended_at=now))
+        assert await orch._backlog_ladder_rung(
+            "beta", "o/b#3", default_model="auto", floor=None) == "opus"
+
+    asyncio.run(run())
+
+
 def test_a_verdict_read_that_never_succeeded_leaves_the_queue_snapshot_unclamped(
         tmp_path, monkeypatch):
     """The one case the queue read cannot improve on: no verdict has ever been

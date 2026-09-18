@@ -20,7 +20,7 @@ from .base import AutomationStatus, ConfigField
 from .context import AutomationContext
 from .engine_policy import EnginePolicy
 from .product_policy import (
-    NO_PRODUCT_POLICY_KEY, ImplementationDecision, effective_policy, is_on)
+    NO_PRODUCT_POLICY_KEY, ImplementationDecision, is_on, policy_for_product)
 from server.pm.outcomes import bounced_out, gated_ladder_top, next_rung, top_tier
 from server.sessions.model_catalog import model_tier
 
@@ -687,12 +687,11 @@ class BacklogRunnerLoop:
         decisions this feeds keep working for a pre-flip claim that carries no
         product: the defaults hand back ``default_model`` (``auto``) those claims
         used to run under, and the ladder's top applies the same way.
+
+        The chain itself is ``product_policy.policy_for_product`` — shared with the
+        spawn's ladder rung and the tap's model read so the three cannot disagree.
         """
-        if product:
-            policy = self._policies.get(product)
-            if policy is not None:
-                return policy
-        return self._policies.get(NO_PRODUCT_POLICY_KEY) or effective_policy(None)
+        return policy_for_product(self._policies, product)
 
     async def _maybe_seed_policies(self) -> None:
         """Run the D10 migration once per process, on the first tick.
@@ -1768,9 +1767,18 @@ class BacklogRunnerLoop:
         # was written for it.
         attempts = st.get("attempts", 0) + 1
         if not await self._session_ever_ran(st):
+            # No ``upgrade_from`` here (final review M3). It was the "the verdict
+            # arrives a sweep late" fallback from the attempt-cap era; now that the
+            # check runs on EVERY bounce it fires on the first sweep after the
+            # session ends, when this dispatch has no ``no_pr`` row of its own — so
+            # the newest upgradable row it found could only ever belong to a
+            # PREVIOUS claim cycle, whose bounce survives re-queueing and would be
+            # rewritten as this dispatch's "never ran a turn". With the running row
+            # missing (§13) the fallback insert is the right recovery: it is guarded
+            # by THIS dispatch's session id, so it can add at most one row.
             if await self._write_state(target, st, None, outcome={
                     "outcome": "abandoned", "cause": "session never ran a turn",
-                    "upgrade_from": ("no_pr",), "fallback": fallback}):
+                    "fallback": fallback}):
                 await self._ctx.emit("info", f"released {target} (session never ran a turn)",
                                      kind="unclaimed", target=target)
             return

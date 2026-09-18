@@ -3458,6 +3458,54 @@ def test_release_after_never_ran_finalises_abandoned(tmp_path):
     asyncio.run(run())
 
 
+def test_a_never_ran_release_never_rewrites_a_previous_dispatchs_bounce(tmp_path):
+    """Final review M3: the never-ran branch dropped ``upgrade_from=("no_pr",)``.
+
+    It ran on every bounce, one sweep after the session ended, when this dispatch
+    has no ``no_pr`` row of its own — so with the spawn-time row lost (§13) the
+    newest upgradable row it found could only belong to a PREVIOUS claim cycle,
+    whose bounce survives re-queueing. Rewriting it as "session never ran a turn"
+    would erase a real bounce from D8's count. The §13 fallback insert, guarded by
+    THIS dispatch's session id, is the right recovery."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_never_ran_prev.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        spawned = SimpleNamespace(id="sess-1", model="sonnet")
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1"), batch("o/r#1")], pr_status={},
+            spawn_result=spawned,
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)})
+
+        await loop.tick()                       # dispatch 1
+        await _mark_session_ended(ctx, "o/r#1")
+        await loop.tick()                       # sweep: a real no_pr bounce
+        assert [r.outcome for r in await _outcomes("o/r#1")] == ["no_pr"]
+
+        # Dispatch 2 loses its spawn-time row and never runs a turn.
+        rec.in_flight = 0
+        spawned.id = "sess-2"
+        loop._session_ran = AsyncMock(return_value=False)
+
+        async def boom(*_a, **_kw):
+            raise RuntimeError("spawn-time outcome write blew up (injected)")
+
+        record_outcome, ctx.record_outcome = ctx.record_outcome, boom  # type: ignore[method-assign]
+        await loop.tick()                       # dispatch 2, no history written
+        ctx.record_outcome = record_outcome     # type: ignore[method-assign]
+        await _mark_session_ended(ctx, "o/r#1")
+        await loop.tick()                       # sweep: never ran a turn → release
+
+        rows = await _outcomes("o/r#1")
+        assert [(r.outcome, r.session_id) for r in rows] == [
+            ("no_pr", "sess-1"), ("abandoned", "sess-2")]
+
+    asyncio.run(run())
+
+
 def test_handoff_does_not_finalise(tmp_path):
     """A handoff is not terminal: PR Doctor now carries the PR, and the merge (or
     its give-up) is what finalises the row. Closing it at handoff would count a

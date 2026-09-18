@@ -160,7 +160,11 @@ async def outcome_stats(db, project_id: str, feature_id: str) -> list[TierStats]
     and so are ``merged`` rows whose ``first_pass_merge`` is NULL: the merge
     happened but nothing knows whether it was first pass, and counting it as an
     outcome with no first pass would read a tier that DID merge as one that cannot
-    do the work. Emitted one entry per tier present, in ``TIER_ORDER``.
+    do the work — and so are ``investigate`` dispatches (``_implement_only()``,
+    the same predicate ``bounces_stmt`` / ``last_attempt_model`` / ``prior_attempts``
+    apply): one never opens a PR by design, so every one of them would land as a
+    first-pass-less outcome at its tier and drag the capability floor down.
+    Emitted one entry per tier present, in ``TIER_ORDER``.
     """
     refs = [f"{repo}#{number}" for repo, number in (await db.execute(
         select(WorkItem.repo, WorkItem.number).where(
@@ -173,7 +177,8 @@ async def outcome_stats(db, project_id: str, feature_id: str) -> list[TierStats]
                DispatchOutcome.outcome).where(
             DispatchOutcome.project_id == project_id,
             DispatchOutcome.target_ref.in_(refs),
-            DispatchOutcome.outcome.not_in(UNFINISHED_OUTCOMES)))).all()
+            DispatchOutcome.outcome.not_in(UNFINISHED_OUTCOMES),
+            _implement_only()))).all()
     counts: dict[str, list[int]] = {}
     for model, first_pass, outcome in rows:
         tier = model_tier(model)

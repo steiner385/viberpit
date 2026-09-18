@@ -561,6 +561,48 @@ async def test_backlog_spawn_without_a_rung_keeps_the_hold(isolated_db, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_backlog_spawn_that_dedupes_onto_an_existing_session_keeps_the_hold(
+        isolated_db, tmp_path, monkeypatch):
+    """Final review M1: the release is guarded on ``deduped`` exactly like the pick
+    audit beside it. On the re-join path ``create_session`` hands back the session
+    that already held the dedupe key — it is running at whatever model it was
+    started with, NOT at the rung — so nothing climbed and the hold is not spent."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import AuditEvent, WorkItem
+    from server.pm.holds import set_runner_stronger_hold
+
+    async with db_session() as db:
+        wi = WorkItem(repo="o/r", number=7, kind="issue", state="open", title="t", body="b")
+        set_runner_stronger_hold(wi, reason="bounced at sonnet",
+                                 now=datetime.now(timezone.utc))
+        db.add(wi)
+
+    orch = _build_backlog_orch({}, ladder_rung="opus")
+    _patch_git(monkeypatch, tmp_path)
+    existing = SimpleNamespace(id="already-running", model="sonnet")
+    orch._backlog_ctx._existing_session = AsyncMock(return_value=existing)  # type: ignore[method-assign]
+
+    async def dedupe(**_kw):
+        return existing
+    orch._backlog_ctx.spawn_session = dedupe  # type: ignore[method-assign]
+    rec = await orch._backlog_spawn(_BATCH, "acct", default_model="auto",
+                                    ownership_token="test-token")
+
+    assert rec is existing
+    async with db_session() as db:
+        assert (await db.execute(select(WorkItem.hold_kind))).scalars().all() == [
+            "stronger_model"]
+        assert (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.release"))).scalars().all() == []
+
+
+@pytest.mark.asyncio
 async def test_backlog_spawn_that_produces_no_session_keeps_the_hold(
         isolated_db, tmp_path, monkeypatch):
     """A refused spawn never dispatched anything, so the hold it was climbing

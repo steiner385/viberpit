@@ -262,6 +262,25 @@ def policies_by_slug(db: Session) -> dict[str, dict]:
 NO_PRODUCT_POLICY_KEY = ""
 
 
+def policy_for_product(policies: "dict[str, dict]", product: "str | None") -> dict:
+    """THE "which policy governs this target" fallback chain over a runner policy
+    SNAPSHOT: the product's own entry, else the snapshot's no-product default
+    (``NO_PRODUCT_POLICY_KEY`` — carrying the same approval-gate clamp on
+    ``ladder_top`` that every product's entry got), else the pure schema defaults.
+
+    One implementation for all three readers — the loop's ``_policy_for``, the
+    spawn's ``_backlog_ladder_rung`` and the tap's ``_backlog_policy_model`` — so a
+    product-less claim cannot end up with a ladder one tier higher on one side of
+    the seam than the other. Only a snapshot from a seam that carries no default (a
+    test's, or a pre-clamp one) reaches the pure ``effective_policy(None)``.
+    """
+    if product:
+        policy = policies.get(product)
+        if policy is not None:
+            return policy
+    return policies.get(NO_PRODUCT_POLICY_KEY) or effective_policy(None)
+
+
 async def load_policies(db: AsyncSession) -> dict[str, dict]:
     """Async twin of ``policies_by_slug`` for the API/orchestrator paths — same reading, no
     second rule."""

@@ -143,6 +143,48 @@ async def test_outcome_stats_counts_a_finalised_non_merge_with_no_first_pass_fla
 
 
 @pytest.mark.asyncio
+async def test_outcome_stats_never_counts_an_investigate_dispatch(db_env):
+    """Final review M2: the D9 floor was the one outcome reader without the
+    implement-only predicate. An ``investigate`` dispatch (series item 4b) never
+    opens a PR by design, so counting it would post a first-pass-less outcome at
+    its tier and drag the floor down — here it would make sonnet read as a tier
+    that cannot do the work and float the floor up to opus."""
+    await init_db(db_env)
+    async with db_session() as db:
+        project = Project(slug="viberpit", name="viberpit")
+        db.add(project)
+        await db.flush()
+        cap = Feature(project_id=project.id, slug="cap", title="Capability")
+        db.add(cap)
+        await db.flush()
+        db.add(WorkItem(repo=REPO, number=1, kind="issue", title="issue 1", body="b",
+                        feature_id=cap.id))
+        db.add_all([
+            # NULL predates the column and still reads as ``implement``.
+            DispatchOutcome(automation_id="backlog-runner", project_id=project.id,
+                            target_ref=f"{REPO}#1", model="sonnet", outcome="merged",
+                            first_pass_merge=True),
+            DispatchOutcome(automation_id="backlog-runner", project_id=project.id,
+                            target_ref=f"{REPO}#1", model="sonnet", outcome="merged",
+                            first_pass_merge=True, dispatch_kind="implement"),
+            DispatchOutcome(automation_id="backlog-runner", project_id=project.id,
+                            target_ref=f"{REPO}#1", model="sonnet", outcome="no_pr",
+                            dispatch_kind="investigate"),
+            DispatchOutcome(automation_id="backlog-runner", project_id=project.id,
+                            target_ref=f"{REPO}#1", model="opus", outcome="merged",
+                            first_pass_merge=True, dispatch_kind="implement"),
+            DispatchOutcome(automation_id="backlog-runner", project_id=project.id,
+                            target_ref=f"{REPO}#1", model="opus", outcome="merged",
+                            first_pass_merge=True, dispatch_kind="implement"),
+        ])
+        await db.flush()
+        assert await outcome_stats(db, project.id, cap.id) == [
+            TierStats("sonnet", 2, 2), TierStats("opus", 2, 2)]
+        # sonnet does the work, so the floor stays where it is.
+        assert await tier_floor(db, project.id, cap.id) is None
+
+
+@pytest.mark.asyncio
 async def test_outcome_stats_is_empty_for_a_capability_with_no_issues(db_env):
     project_id, _ = await _seed(db_env)
     async with db_session() as db:
