@@ -143,7 +143,7 @@ class Harness:
         )
         self.needs_humaned: list[str] = []
         self.needs_human_reasons: list[str] = []
-        self.escalated: list[tuple[str, str, "str | None"]] = []
+        self.escalated: list[tuple[str, str, str]] = []
 
     async def _admission(self, batch, **_kwargs):
         from types import SimpleNamespace
@@ -215,16 +215,14 @@ class Harness:
         await asyncio.to_thread(backlog_github.announce_needs_human, batch, reason,
                                 gh_run=self.gh)
 
-    async def _escalate(self, target: str, reason: str, rung: "str | None") -> None:
+    async def _escalate(self, target: str, reason: str, rung: str) -> None:
         """LADDER path (spec 2026-09-18 §4): mirrors ``_backlog_escalate`` — a
-        rung climb is silent (the hold IS the signal), a bounce at the top
-        comments exactly like a give-up."""
+        rung climb is silent (the ``stronger_model`` hold IS the signal), and
+        the seam is rung-only: a bounce at the top goes through ``_give_up`` /
+        ``_needs_human`` instead (review R1 I2/I4). What the real seam writes is
+        pinned by ``test_pm_orchestrator_seams.py::test_backlog_escalate_writes_a_stronger_model_hold_and_never_comments``
+        — this stand-in only records the call."""
         self.escalated.append((target, reason, rung))
-        if rung is not None:
-            return
-        batch = await self._batch_for(target)
-        await asyncio.to_thread(backlog_github.announce_needs_human, batch, reason,
-                                gh_run=self.gh)
 
     async def _spawn(self, batch, account: str, **_kw):
         if self.spawn_raises:

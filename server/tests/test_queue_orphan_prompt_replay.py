@@ -371,7 +371,8 @@ def test_queue_cancel_persists_ended_before_removing_the_queue_entry(tmp_path):
 # 3. The runner must not escalate a session that never ran a turn
 # ---------------------------------------------------------------------------
 
-async def _runner(tmp_path, *, ran: bool | None, calls: dict, target: str):
+async def _runner(tmp_path, *, ran: bool | None, calls: dict, target: str,
+                  model: str | None = None):
     """Exercise real claims with native stopped/never-entered evidence."""
     from server.automations.backlog_runner import BacklogRunnerLoop
     from server.automations.context import AutomationContext
@@ -401,11 +402,20 @@ async def _runner(tmp_path, *, ran: bool | None, calls: dict, target: str):
     assert association is not None and association[1] is not None
     assert await attest_session_stopped(token, association[1])
     state = {"session_id": sid, "attempts": 2, "ownership_token": token, "claimed": True}
+    if model is not None:
+        # The tier this attempt actually ran on — what the ladder climbs from
+        # (spec 2026-09-18 §4); ``ladder_top`` means the climb is over and the
+        # bounce is the owner's.
+        state["model"] = model
     await ctx.set_target_state(target, state)
 
     async def _needs_human(target, reason):
         calls["needs_human"] = target
         calls["needs_human_reason"] = reason
+
+    async def _escalate(target, reason, rung):
+        calls["escalate"] = (target, rung)
+        calls["escalate_reason"] = reason
 
     async def _pr_status_for(_target):
         return None
@@ -434,7 +444,7 @@ async def _runner(tmp_path, *, ran: bool | None, calls: dict, target: str):
         count_in_flight=_unused, healthy_account=_unused,
         pr_status_for=_pr_status_for, pr_doctor_active=_pr_doctor_active,
         read_config=_unused, clock=lambda: 0.0,
-        needs_human=_needs_human, session_ended=_session_ended,
+        needs_human=_needs_human, escalate=_escalate, session_ended=_session_ended,
         session_work_stopped=_work_stopped, **kwargs)
     return loop, ctx, state
 
@@ -448,6 +458,9 @@ def test_give_up_releases_instead_of_escalating_when_the_session_never_ran(tmp_p
         loop, ctx, state = await _runner(tmp_path, ran=False, calls=calls, target=target)
         await loop._sweep_one(target, state, set())
         assert "needs_human" not in calls
+        # Nor is it charged as a ladder bounce: nothing ran, so there is no
+        # attempt to climb from (spec 2026-09-18 §4).
+        assert "escalate" not in calls
         assert await ctx.get_target_state(target) == {}
         with pytest.raises(StaleOwnership):
             async with owned(state["ownership_token"]):
@@ -456,14 +469,18 @@ def test_give_up_releases_instead_of_escalating_when_the_session_never_ran(tmp_p
 
 
 def test_give_up_still_escalates_when_the_session_actually_ran(tmp_path):
-    """A stopped real attempt reaches a human while retaining owned history."""
+    """A stopped real attempt at the TOP of the ladder reaches a human while
+    retaining owned history: the climb is over (spec 2026-09-18 §4), so this is
+    an ordinary give-up — the row is parked, not released."""
     async def run():
         from server.automations.ownership import owned
         calls: dict = {}
         target = "acme/repo#2"
-        loop, ctx, state = await _runner(tmp_path, ran=True, calls=calls, target=target)
+        loop, ctx, state = await _runner(tmp_path, ran=True, calls=calls, target=target,
+                                         model="fable")
         await loop._sweep_one(target, state, set())
         assert calls.get("needs_human") == target
+        assert "escalate" not in calls          # nothing left to climb to
         parked = await ctx.get_target_state(target)
         assert parked["gave_up"] and parked["ownership_token"] == state["ownership_token"]
         async with owned(state["ownership_token"]) as tx:
@@ -471,23 +488,52 @@ def test_give_up_still_escalates_when_the_session_actually_ran(tmp_path):
     asyncio.run(run())
 
 
+def test_a_ran_attempt_below_the_top_climbs_a_rung_and_releases(tmp_path):
+    """The same stopped real attempt, but with a rung left above it: the bounce
+    is charged to the ladder (a ``stronger_model`` hold via the escalate seam),
+    the owner is not called, and the row — and its operation — are released so
+    the next refill re-claims the item (spec 2026-09-18 §4)."""
+    async def run():
+        from server.automations.ownership import StaleOwnership, owned
+        calls: dict = {}
+        target = "acme/repo#5"
+        loop, ctx, state = await _runner(tmp_path, ran=True, calls=calls, target=target,
+                                         model="sonnet")
+        await loop._sweep_one(target, state, set())
+        assert calls.get("escalate") == (target, "opus")
+        assert "needs_human" not in calls
+        assert await ctx.get_target_state(target) == {}
+        with pytest.raises(StaleOwnership):
+            async with owned(state["ownership_token"]):
+                pass
+    asyncio.run(run())
+
+
 def test_give_up_escalates_when_no_ran_probe_is_wired(tmp_path):
-    """Unknown turn history still escalates after native stopped evidence."""
+    """Unknown turn history is still charged as a real attempt after native
+    stopped evidence — it climbs the ladder rather than being released free."""
     async def run():
         calls: dict = {}
         target = "acme/repo#3"
-        loop, ctx, state = await _runner(tmp_path, ran=None, calls=calls, target=target)
+        loop, ctx, state = await _runner(tmp_path, ran=None, calls=calls, target=target,
+                                         model="sonnet")
         await loop._sweep_one(target, state, set())
-        assert calls.get("needs_human") == target
-        assert (await ctx.get_target_state(target))["gave_up"]
+        assert calls.get("escalate") == (target, "opus")
+        assert await ctx.get_target_state(target) == {}
     asyncio.run(run())
 
 
 def test_give_up_retains_legacy_state_without_ownership_proof(tmp_path):
+    """A token-less legacy row is never rewritten by the sweep. The ladder's
+    hold write runs FIRST and the release then refuses (review R1 I2 item 2),
+    so the row survives exactly as it was — and the hold write is idempotent, so
+    re-ticking a legacy row re-stamps nothing (seam test:
+    ``test_backlog_write_runner_hold_is_idempotent_on_a_retry``)."""
     async def run():
         calls: dict = {}
         target = "acme/repo#4"
-        loop, ctx, state = await _runner(tmp_path, ran=None, calls=calls, target=target)
+        loop, ctx, state = await _runner(tmp_path, ran=None, calls=calls, target=target,
+                                         model="sonnet")
         legacy = {k: v for k, v in state.items() if k != "ownership_token"}
         await ctx.set_target_state(target, legacy)
         await loop._sweep_one(target, legacy, set())

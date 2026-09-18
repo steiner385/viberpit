@@ -461,13 +461,16 @@ SeedPolicies = Callable[[], Awaitable[int]]
 # outside world about it.
 NeedsHuman = Callable[[str, str], Awaitable[None]]
 # THE model-ladder path (spec 2026-09-18 §4): ``escalate(target, reason, rung)``.
-# ``rung`` is the tier the NEXT attempt should pin — a ``stronger_model`` hold,
-# agent-settable and queue-eligible, so the next refill re-claims the item.
-# ``rung=None`` means the climb passed the product's ``ladder_top``: the bounce
-# is the owner's, same as a give-up (``owner_action`` hold + the best-effort
-# comment). Called for EVERY no-PR / pr-doctor-gave-up bounce; the row is
-# deleted either way (it returns to the pool under the hold's terms).
-Escalate = Callable[[str, str, "str | None"], Awaitable[None]]
+# ``rung`` is ALWAYS a tier — the next attempt's pin, written as a
+# ``stronger_model`` hold (agent-settable, queue-eligible) so the next refill
+# re-claims the item. A climb that passes the product's ``ladder_top`` is NOT
+# this seam: it routes through the existing ``_give_up`` (owner_action hold +
+# comment + the retried ``held`` handoff), same as any other give-up (review R1
+# I2/I4). Called BEFORE the row is released (never after — review R1 C1): the
+# caller awaits this first and only deletes the claim once it returns without
+# raising, so a raise here leaves the claim untouched for the next sweep to
+# retry the whole branch.
+Escalate = Callable[[str, str, str], Awaitable[None]]
 # Which ``owner/repo#N`` refs are currently held (owner_action / decision) — the
 # runner's own ``gave_up`` rows follow the hold now, not a timer (spec 2026-09-18
 # §3): ``_release_give_ups`` drops a row once none of its refs is in this set.
@@ -530,7 +533,7 @@ async def _stub_needs_human(_target: str, _reason: str) -> None:
     return None
 
 
-async def _stub_escalate(_target: str, _reason: str, _rung: "str | None") -> None:
+async def _stub_escalate(_target: str, _reason: str, _rung: str) -> None:
     # LADDER fallback: unwired seam, nothing is held — the row deletion still
     # returns the item to the pool with no hold behind it.
     return None
@@ -1669,21 +1672,31 @@ class BacklogRunnerLoop:
             # 2026-09-18 §4) — this is still an implement attempt that failed to
             # land, not a person's decision, so it climbs a rung rather than
             # going straight to the owner.
-            reason = "pr-doctor gave up"
+            cause = "pr-doctor gave up"
             previous = st.get("model")
             ladder_policy = self._policy_for(st.get("product"))
             rung = next_rung(previous, floor=None,
                              default_model=ladder_policy["default_model"],
                              top=top_tier(ladder_policy))
-            await self._write_state(target, st, None, outcome={
-                "outcome": "pr_gave_up", "cause": reason,
+            pd_outcome = {
+                "outcome": "pr_gave_up", "cause": cause,
                 "pr_number": info.number if info else None,
-                "pr_url": info.url if info else None, "fallback": fallback})
+                "pr_url": info.url if info else None, "fallback": fallback}
             if rung is None:
-                await self._escalate(target, "PR Doctor gave up at the top", None)
-            else:
-                await self._escalate(
-                    target, f"PR Doctor gave up; next attempt on {rung}", rung)
+                # Bounced at the top: the EXISTING give-up path (review R1 I2
+                # item 1) — owner_action hold + comment + the retried ``held``
+                # handoff, not the (now rung-only) escalate seam.
+                await self._give_up(target, st, "PR Doctor gave up at the top",
+                                    outcome=pd_outcome)
+                return
+            # Escalate FIRST, release the row SECOND (review R1 I2 item 2): if
+            # the hold write raises, the durable trigger (this same
+            # pr-doctor-gave-up event) re-fires next tick and the claim is
+            # untouched meanwhile. If the release fails (stale ownership /
+            # native work not yet observed stopped), stop — nothing else.
+            await self._escalate(target, f"PR Doctor gave up; next attempt on {rung}", rung)
+            if not await self._write_state(target, st, None, outcome=pd_outcome):
+                return  # release lost the fence — leave it for the next sweep
             return
         if info is not None and info.state == "closed":
             # A PERSON closed the PR unmerged: their decision, not a failed
@@ -1709,7 +1722,7 @@ class BacklogRunnerLoop:
         # tier instead. ``attempts`` survives only on the outcome rows
         # (``attempt_no``) now, never on the row itself — the row is deleted on
         # every bounce and the item returns to the pool under whichever hold
-        # ``_escalate`` wrote.
+        # was written for it.
         attempts = st.get("attempts", 0) + 1
         if not await self._session_ever_ran(st):
             if await self._write_state(target, st, None, outcome={
@@ -1723,19 +1736,23 @@ class BacklogRunnerLoop:
         rung = next_rung(previous, floor=None,
                          default_model=ladder_policy["default_model"],
                          top=top_tier(ladder_policy))
-        await self._write_state(target, st, None, outcome={
-            "outcome": "no_pr", "cause": "session ended without a mergeable PR",
-            "fallback": fallback})
+        no_pr_outcome = {"outcome": "no_pr", "cause": "session ended without a mergeable PR",
+                         "fallback": fallback}
         if rung is None:
-            await self._escalate(
-                target,
-                f"bounced at {model_tier(previous) or 'the top'}: "
-                f"no mergeable PR after {attempts} attempts", None)
-        else:
-            await self._escalate(
-                target,
-                f"bounced at {model_tier(previous) or 'sonnet'}; next attempt on {rung}",
-                rung)
+            # Bounced at the top: the EXISTING give-up path (review R1 I2
+            # item 1), not the (now rung-only) escalate seam.
+            reason = (f"bounced at {model_tier(previous) or 'the top'}: "
+                     f"no mergeable PR after {attempts} attempts")
+            await self._give_up(target, st, reason, outcome=no_pr_outcome)
+            return
+        # Escalate FIRST, release the row SECOND (review R1 I2 item 2): a raise
+        # here leaves the claim untouched — the trigger (session ended, no PR)
+        # is durable, so the next sweep retries the whole branch. A failed
+        # release (stale fence) also leaves things exactly as they are.
+        reason = f"bounced at {model_tier(previous) or 'sonnet'}; next attempt on {rung}"
+        await self._escalate(target, reason, rung)
+        if not await self._write_state(target, st, None, outcome=no_pr_outcome):
+            return  # release lost the fence — leave it for the next sweep
 
     async def _session_ever_ran(self, st: dict) -> bool:
         """Whether this target's session ever started turn one.
