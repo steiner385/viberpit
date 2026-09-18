@@ -80,14 +80,13 @@ def test_actor_for_request_reads_via_and_identity():
     assert actor_for_request(lan) == "lan@local"
 
 
-def test_apply_session_hold_resolves_ref_and_limits_kind(tmp_path, monkeypatch):
+def test_apply_session_hold_resolves_ref_and_limits_kind(tmp_path):
     import asyncio
     from server.db import db_session, init_db
     from server.pm.holds import apply_session_hold
-    monkeypatch.setenv("CCSWITCH_DB_URL", f"sqlite+aiosqlite:///{tmp_path}/t.db")
 
     async def _run():
-        await init_db()
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path}/t.db")
         async with db_session() as db:
             db.add(WorkItem(id="w1", repo="o/r", number=7, kind="issue", body="b",
                             triage_state="classified"))

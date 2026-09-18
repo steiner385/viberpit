@@ -1303,10 +1303,10 @@ async def reject_triage(
     if wi is not None:
         prop.undo_snapshot = _overlay_snapshot(wi)
         # Spec 2026-09-18 §3: a rejection is a person's hold, not a triage state.
-        # This route is gated by current_identity, but under
-        # CCSWITCH_ALLOW_UNAUTHENTICATED an unattributed caller resolves to
-        # lan@local (agent class), which owner_action refuses — so the same
-        # HoldPermissionError → 422 translation patch_overlay uses applies here.
+        # This route is gated by current_identity, but in LAN-open mode an
+        # unattributed caller resolves to lan@local (agent class), which
+        # owner_action refuses — so the same HoldPermissionError → 422
+        # translation patch_overlay uses applies here.
         from server.pm.holds import HoldPermissionError, actor_class, set_hold
         try:
             set_hold(wi, kind="owner_action", reason="classification proposal rejected",

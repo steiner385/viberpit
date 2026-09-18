@@ -17,6 +17,8 @@ import tempfile
 from contextlib import contextmanager
 from unittest.mock import patch
 
+from server.config import Settings
+
 @pytest.fixture(autouse=True)
 def canonical_mutation_repositories(monkeypatch):
     monkeypatch.setattr("server.automations.target_identity.resolve_repositories", identity_repositories)
@@ -741,7 +743,7 @@ def test_overlay_patch_manual_classify():
         assert bad_feat.json()["detail"]["error"] == "feature_not_found"
 
 
-LAN_OPEN = {"CCSWITCH_ALLOW_UNAUTHENTICATED": "1"}
+LAN_OPEN = {Settings.model_fields["allow_unauthenticated"].alias: "1"}
 
 
 def test_overlay_hold_by_person_any_kind_with_audit():

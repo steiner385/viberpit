@@ -18,7 +18,7 @@ def _module():
     return mod
 
 
-def test_script_dry_run_leaves_rows_unconverted(tmp_path, monkeypatch):
+def test_script_dry_run_leaves_rows_unconverted(tmp_path):
     """Dry run reports count but does not convert."""
     db_url = f"sqlite+aiosqlite:///{tmp_path}/c.db"
     engine = create_engine(db_url.replace("sqlite+aiosqlite", "sqlite"))
@@ -32,9 +32,8 @@ def test_script_dry_run_leaves_rows_unconverted(tmp_path, monkeypatch):
             "INSERT INTO work_items (id, repo, number, kind, triage_state, classified_by, classified_at, "
             "reach, impact, effort, confidence) VALUES "
             "('row1', 'o/r', 1, 'issue', 'needs_human', 'human', '2026-09-12 18:43:51', 2, 2, 2, 2)"))
-    monkeypatch.setenv("CCSWITCH_DB_URL", db_url)
     mod = _module()
-    result = asyncio.run(mod.main(apply=False))
+    result = asyncio.run(mod.main(apply=False, db_url=db_url))
     assert result == 0
     with engine.connect() as conn:
         row = conn.execute(text(
@@ -43,7 +42,7 @@ def test_script_dry_run_leaves_rows_unconverted(tmp_path, monkeypatch):
     assert row[1] is None
 
 
-def test_script_apply_converts_rows(tmp_path, monkeypatch):
+def test_script_apply_converts_rows(tmp_path):
     """Apply mode converts rows."""
     db_url = f"sqlite+aiosqlite:///{tmp_path}/c.db"
     engine = create_engine(db_url.replace("sqlite+aiosqlite", "sqlite"))
@@ -57,9 +56,8 @@ def test_script_apply_converts_rows(tmp_path, monkeypatch):
             "INSERT INTO work_items (id, repo, number, kind, triage_state, classified_by, classified_at, "
             "reach, impact, effort, confidence) VALUES "
             "('row1', 'o/r', 1, 'issue', 'needs_human', 'human', '2026-09-12 18:43:51', 2, 2, 2, 2)"))
-    monkeypatch.setenv("CCSWITCH_DB_URL", db_url)
     mod = _module()
-    result = asyncio.run(mod.main(apply=True))
+    result = asyncio.run(mod.main(apply=True, db_url=db_url))
     assert result == 0
     with engine.connect() as conn:
         row = conn.execute(text(
@@ -68,12 +66,3 @@ def test_script_apply_converts_rows(tmp_path, monkeypatch):
     assert row[1] == "owner_action"
     assert row[2] == "migration"
     assert row[3] == "pre-ladder needs_human"
-
-
-def test_script_requires_db_url(monkeypatch):
-    """Script returns 2 when DB URL is not set."""
-    monkeypatch.delenv("CCSWITCH_DB_URL", raising=False)
-    monkeypatch.delenv("VIBERPIT_DB_URL", raising=False)
-    mod = _module()
-    result = asyncio.run(mod.main(apply=False))
-    assert result == 2
