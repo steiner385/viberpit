@@ -479,10 +479,14 @@ NeedsHuman = Callable[[str, str], Awaitable[None]]
 # retry the whole branch.
 Escalate = Callable[[str, str, str], Awaitable[None]]
 # INVESTIGATION settle (spec 2026-09-18 §5): ``investigation_state(target, session_id)``
-# -> ``{"issue_state": "open"|"closed"|None, "hold_kind", "hold_by", "no_pr_note"}``.
-# An investigation opens no PR, so its exit is legible only from the issue (live
-# GitHub, not the lagging mirror), the hold still on it, and the note its
-# ``mark_no_pr`` call left behind. ``issue_state`` None means UNKNOWN — the sweep
+# -> ``{"issue_state": "open"|"closed"|None, "mirrored": bool, "hold_kind",
+# "hold_by", "no_pr_note"}``. An investigation opens no PR, so its exit is legible
+# only from the issue (live GitHub, not the lagging mirror), the hold still on it —
+# whose KIND says whether it is still the evidence hold this dispatch was for and
+# whose ACTOR says who parked it if not — and the note its ``mark_no_pr`` call left
+# behind. ``mirrored`` is separate from ``hold_kind`` on purpose: "this row has no
+# hold" and "there is no row" are different answers, and only the first can mean the
+# investigation converted the report. ``issue_state`` None means UNKNOWN — the sweep
 # retries next tick rather than guessing; an unwired seam (stub) answers ``{}``,
 # which is that same unknown, so nothing is settled until the seam is real.
 InvestigationState = Callable[[str, "str | None"], Awaitable[dict]]
@@ -1966,7 +1970,17 @@ class BacklogRunnerLoop:
              when it left one. That hold REPLACES the evidence hold, which is exactly
              what the escalate exit means.
 
-        UNKNOWN is the fifth answer and it is not an exit: a seam failure or an
+        Two non-exits still have to release the claim, and NEITHER may be read as a
+        conversion — that event is the metric for whether investigating pays, and a
+        false ``converted`` on it is worse than no row at all:
+
+        - the issue is **held by somebody else** (any hold that is not the
+          ``evidence`` one this dispatch was for): their decision supersedes, so the
+          row is released and no hold or comment is written;
+        - the issue is **not mirrored** any more: there is no hold to read, so the
+          claim is released as exactly that.
+
+        UNKNOWN is the last answer and it is not an exit at all: a seam failure or an
         unreachable GitHub leaves the row completely untouched and the next tick
         tries again. Handing an issue to a human because ``gh`` was down would be
         indistinguishable, afterwards, from an investigation that really gave up.
@@ -1976,9 +1990,16 @@ class BacklogRunnerLoop:
         ``investigate`` (stamped at spawn), so ``bounces_stmt`` never counts one of
         these as a bounce.
         """
+        from server.pm.holds import actor_class
+
         from .backlog_prompt import CONVERTED_NOTE_PREFIX
 
-        sid = st.get("implementation_session_id") or st.get("session_id")
+        # ``session_id``, not the ``implementation_session_id`` PR-Doctor hand-off
+        # key: an investigate row can never carry one (the branch returns before any
+        # hand-off path), and reading it first would mean the note came from a
+        # different session than the one ``_session_ever_ran`` and ``_work_stopped``
+        # just probed on this same row.
+        sid = st.get("session_id")
         try:
             info = await self._investigation_state(target, sid)
         except Exception:
@@ -2004,17 +2025,53 @@ class BacklogRunnerLoop:
                 return  # release lost the fence — leave it for the next sweep
             await self._investigated(target, "closed", note)
             return
-        if converted or info.get("hold_kind") != "evidence":
+        hold_kind = info.get("hold_kind")
+        if not info.get("mirrored"):
+            # The issue left the mirror (or never entered it) while the
+            # investigation ran. There is no hold to touch and no way to tell which
+            # exit was taken, but the claim must not sit forever on a row nothing
+            # can re-select — release it and say exactly that, rather than reading
+            # the absent hold as a conversion.
+            log.info("backlog_runner.investigation_state_unmirrored target=%s session=%s",
+                     target, sid)
+            if not await finalise("investigation: issue unmirrored"):
+                return
+            await self._investigated(target, "unmirrored", note)
+            return
+        if converted:
             # Clear the hold BEFORE releasing the row (the escalate-then-release
             # ordering the ladder uses, review R1 I2 item 2): a raise leaves the
-            # claim intact and the next sweep retries the whole branch. Already
-            # cleared by the session or a person → the write seam answers False and
-            # this is simply the observation that the conversion happened.
-            if converted:
-                await self._release_investigation_hold(target)
+            # claim intact and the next sweep retries the whole branch. A hold the
+            # session or a person already cleared makes the write seam answer False,
+            # which is simply the observation that the conversion happened.
+            await self._release_investigation_hold(target)
             if not await finalise("investigation: converted to a fix"):
                 return
             await self._investigated(target, "converted", note)
+            return
+        if hold_kind is None:
+            # No note, but the hold is gone: a Claude session cleared its own
+            # ``evidence`` hold through ``set_hold``, or a person did. Converted is
+            # the only thing that can mean — and ONLY ``None`` means it, because
+            # "no hold" and "no row" are now different answers (``mirrored`` above)
+            # and a hold of some OTHER kind is somebody else's park, below.
+            if not await finalise("investigation: converted to a fix"):
+                return
+            await self._investigated(target, "converted", note)
+            return
+        if hold_kind != "evidence":
+            # Somebody parked the issue while the investigation ran — a person's
+            # ``owner_action``/``decision``, or any other kind that is not the
+            # evidence hold this dispatch was for. Their decision supersedes the
+            # investigation's, so the claim is released and NOTHING is written: a
+            # ``_give_up`` here would overwrite their hold with the runner's and
+            # comment on an issue whose owner has already spoken. A hold with no
+            # recorded actor classes as a person, which is the same conservative
+            # direction: leave it alone.
+            held_by = f"investigation: held by {actor_class(info.get('hold_by') or '')}"
+            if not await finalise(held_by):
+                return
+            await self._investigated(target, "held", note)
             return
         reason = f"investigation: {note}" if note else "investigation ended without an exit"
         if await self._give_up(target, st, reason, outcome={

@@ -1258,7 +1258,7 @@ async def test_backlog_investigation_state_reads_the_issue_the_hold_and_the_note
 
     with patch("server.automations.backlog_github.issue_state_live", return_value="open"):
         info = await orch._backlog_investigation_state("o/r#1", "sess-1")
-    assert info == {"issue_state": "open", "hold_kind": "evidence",
+    assert info == {"issue_state": "open", "mirrored": True, "hold_kind": "evidence",
                     "hold_by": ERROR_TRIAGE_ACTOR,
                     "no_pr_note": "converted to a fix: the counter never resets"}
 
@@ -1266,8 +1266,15 @@ async def test_backlog_investigation_state_reads_the_issue_the_hold_and_the_note
     # issue/hold half rather than raising.
     with patch("server.automations.backlog_github.issue_state_live", return_value=None):
         info = await orch._backlog_investigation_state("o/r#1", None)
-    assert info == {"issue_state": None, "hold_kind": "evidence",
+    assert info == {"issue_state": None, "mirrored": True, "hold_kind": "evidence",
                     "hold_by": ERROR_TRIAGE_ACTOR, "no_pr_note": None}
+
+    # An issue with no mirror row says so, instead of reporting the same
+    # ``hold_kind: None`` a CLEARED hold does — only the second is a conversion.
+    with patch("server.automations.backlog_github.issue_state_live", return_value="open"):
+        info = await orch._backlog_investigation_state("o/r#404", "sess-1")
+    assert info["mirrored"] is False and info["hold_kind"] is None
+    assert info["hold_by"] is None
 
 
 @pytest.mark.asyncio

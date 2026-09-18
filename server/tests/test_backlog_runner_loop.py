@@ -3038,8 +3038,9 @@ def test_a_closed_issue_settles_the_investigation_as_done(tmp_path):
     opening no PR is the SUCCESS case — release the claim, and charge nobody."""
     async def run():
         _loop, rec, ctx = await _sweep_investigation(
-            tmp_path, "inv_closed.db", {"issue_state": "closed", "hold_kind": "evidence",
-                                        "no_pr_note": "closed as noise: a retry storm"})
+            tmp_path, "inv_closed.db",
+            {"issue_state": "closed", "mirrored": True, "hold_kind": "evidence",
+             "no_pr_note": "closed as noise: a retry storm"})
 
         assert rec.investigation_reads == [("o/r#1", "sess-1")]
         assert not await ctx.get_target_state("o/r#1")          # claim released
@@ -3063,7 +3064,8 @@ def test_the_converted_note_clears_the_evidence_hold(tmp_path):
         note = f"{CONVERTED_NOTE_PREFIX}: the retry loop never resets its counter"
         _loop, rec, ctx = await _sweep_investigation(
             tmp_path, "inv_converted.db",
-            {"issue_state": "open", "hold_kind": "evidence", "no_pr_note": note})
+            {"issue_state": "open", "mirrored": True, "hold_kind": "evidence",
+             "no_pr_note": note})
 
         assert rec.hold_releases == ["o/r#1"]
         assert not await ctx.get_target_state("o/r#1")
@@ -3083,12 +3085,55 @@ def test_an_already_cleared_hold_reads_as_converted_without_a_second_release(tmp
     async def run():
         _loop, rec, ctx = await _sweep_investigation(
             tmp_path, "inv_cleared.db",
-            {"issue_state": "open", "hold_kind": None, "no_pr_note": None})
+            {"issue_state": "open", "mirrored": True, "hold_kind": None, "no_pr_note": None})
 
         assert rec.hold_releases == []
         assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
             ("no_pr", "investigation: converted to a fix")]
         assert rec.needs_humans == []
+
+    asyncio.run(run())
+
+
+def test_a_hold_somebody_else_set_is_not_read_as_a_conversion(tmp_path):
+    """A person parked the issue while the investigation ran. Only ``hold_kind is
+    None`` can mean converted — claiming this one was would put a false entry in the
+    very event that measures whether investigating pays. Their decision supersedes,
+    so the claim is released and NOTHING is written: a give-up here would overwrite
+    their hold with the runner's and comment on an issue whose owner has spoken."""
+    async def run():
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_held.db",
+            {"issue_state": "open", "mirrored": True, "hold_kind": "owner_action",
+             "hold_by": "tony@steinonline.net", "no_pr_note": None})
+
+        assert not await ctx.get_target_state("o/r#1")          # claim released
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", "investigation: held by person")]
+        assert rec.needs_humans == [] and rec.hold_releases == []
+        assert [e["detail"]["exit"] for e in await ctx.list_events(kind="investigated")] == [
+            "held"]
+
+    asyncio.run(run())
+
+
+def test_an_unmirrored_issue_releases_the_claim_and_says_so(tmp_path):
+    """The issue left the mirror while the investigation ran. There is no hold to
+    read, so no exit can be inferred — but the claim must not sit forever on a row
+    nothing can re-select. "No row" and "no hold" are different answers and only the
+    second one can be a conversion."""
+    async def run():
+        _loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_unmirrored.db",
+            {"issue_state": "open", "mirrored": False, "hold_kind": None,
+             "no_pr_note": None})
+
+        assert not await ctx.get_target_state("o/r#1")
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", "investigation: issue unmirrored")]
+        assert rec.needs_humans == [] and rec.hold_releases == []
+        assert [e["detail"]["exit"] for e in await ctx.list_events(kind="investigated")] == [
+            "unmirrored"]
 
     asyncio.run(run())
 
@@ -3100,7 +3145,7 @@ def test_an_open_evidence_report_hands_off_with_the_sessions_own_note(tmp_path):
     async def run():
         _loop, rec, ctx = await _sweep_investigation(
             tmp_path, "inv_escalate.db",
-            {"issue_state": "open", "hold_kind": "evidence",
+            {"issue_state": "open", "mirrored": True, "hold_kind": "evidence",
              "no_pr_note": "needs owner: the production log for 09-12"})
 
         assert rec.needs_humans == [
@@ -3124,7 +3169,7 @@ def test_an_investigation_that_ends_without_an_exit_hands_off(tmp_path):
     async def run():
         _loop, rec, ctx = await _sweep_investigation(
             tmp_path, "inv_noexit.db",
-            {"issue_state": "open", "hold_kind": "evidence", "no_pr_note": None})
+            {"issue_state": "open", "mirrored": True, "hold_kind": "evidence", "no_pr_note": None})
 
         assert rec.needs_humans == [("o/r#1", "investigation ended without an exit")]
         assert [e["detail"]["exit"] for e in await ctx.list_events(kind="investigated")] == [
@@ -3139,7 +3184,8 @@ def test_an_unknown_issue_state_leaves_the_investigation_row_untouched(tmp_path)
     indistinguishable afterwards from an investigation that really gave up."""
     async def run():
         _loop, rec, ctx = await _sweep_investigation(
-            tmp_path, "inv_unknown.db", {"issue_state": None, "hold_kind": "evidence"})
+            tmp_path, "inv_unknown.db",
+            {"issue_state": None, "mirrored": True, "hold_kind": "evidence"})
 
         assert {k: v for k, v in (await ctx.get_target_state("o/r#1")).items()
                 if k != "ownership_token"} == _investigation_row()
@@ -3160,7 +3206,8 @@ def test_an_investigation_is_settled_from_the_issue_not_from_pr_state(tmp_path):
         merged = PullRequestInfo(number=42, url="", state="merged", checks="none",
                                  title="", merged=True)
         _loop, rec, ctx = await _sweep_investigation(
-            tmp_path, "inv_pr.db", {"issue_state": "closed", "hold_kind": "evidence"},
+            tmp_path, "inv_pr.db",
+            {"issue_state": "closed", "mirrored": True, "hold_kind": "evidence"},
             pr_status={"o/r#1": merged})
 
         assert rec.close_outs == [], "the merged PR is not this dispatch's outcome"
@@ -3178,7 +3225,8 @@ def test_an_investigation_whose_session_never_ran_is_released_without_penalty(tm
     async def run():
         _loop, rec, ctx = await _sweep_investigation(
             tmp_path, "inv_neverran.db",
-            {"issue_state": "open", "hold_kind": "evidence"}, session_ran=False)
+            {"issue_state": "open", "mirrored": True, "hold_kind": "evidence"},
+            session_ran=False)
 
         assert rec.investigation_reads == []
         assert not await ctx.get_target_state("o/r#1")

@@ -6299,7 +6299,8 @@ class SessionOrchestrator:
     async def _backlog_investigation_state(self, target: str,
                                            session_id: str | None) -> dict:
         """Everything the sweep needs to settle an ENDED investigation (spec
-        2026-09-18 §5), in one read: ``{issue_state, hold_kind, hold_by, no_pr_note}``.
+        2026-09-18 §5), in one read:
+        ``{issue_state, mirrored, hold_kind, hold_by, no_pr_note}``.
 
         An investigation opens no PR by design, so its four exits are legible only
         here — on the issue (closed as noise / as a duplicate, or still open), on the
@@ -6312,9 +6313,16 @@ class SessionOrchestrator:
         UNKNOWN and the caller retries next tick — it must never read as "still
         open", which is the hand-off case.
 
-        The hold and the note come from the row that IS the answer: the mirrored
+        The hold and the note come from the rows that ARE the answer: the mirrored
         WorkItem (whose hold the converting session, a person, or the runner itself
         may have cleared) and the session row's ``pr_resolution_note``.
+
+        ``mirrored`` is its own field rather than being folded into a ``None``
+        ``hold_kind``: "this issue carries no hold" is what a conversion looks like,
+        while "this issue has no mirror row" is not an exit at all, and one field
+        cannot honestly say both. ``hold_by`` travels with the kind for the same
+        reason — when the hold is NOT the evidence one, who parked it is what tells
+        the caller whose decision it is deferring to.
         """
         from sqlalchemy import select as sa_select
 
@@ -6324,6 +6332,7 @@ class SessionOrchestrator:
         issue_state = await asyncio.to_thread(
             backlog_github.issue_state_live, target, gh_run=self._gh_run)
         hold_kind = hold_by = note = None
+        mirrored = False
         parts = split_ref(target)
         async with db_session() as db:
             if parts is not None:
@@ -6333,12 +6342,13 @@ class SessionOrchestrator:
                         WorkItem.kind == "issue", WorkItem.repo == repo,
                         WorkItem.number == number))).first()
                 if row is not None:
+                    mirrored = True
                     hold_kind, hold_by = row
             if session_id:
                 note = (await db.execute(sa_select(DbSession.pr_resolution_note).where(
                     DbSession.id == session_id))).scalars().first()
-        return {"issue_state": issue_state, "hold_kind": hold_kind,
-                "hold_by": hold_by, "no_pr_note": note}
+        return {"issue_state": issue_state, "mirrored": mirrored,
+                "hold_kind": hold_kind, "hold_by": hold_by, "no_pr_note": note}
 
     async def _backlog_release_investigation_hold(self, target: str) -> bool:
         """CONVERT-TO-A-FIX exit (spec §5): the investigation found the root cause
