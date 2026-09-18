@@ -507,9 +507,25 @@ def rename_repo(db: Session, old: str, new: str) -> dict[str, int]:
         # work_items, it belongs in this loop.
         for tp in db.query(TriageProposal).filter(TriageProposal.work_item_id.in_(alias_ids)).all():
             tp.work_item_id = twin_of[tp.work_item_id]
+        # A twin that already has the same question open would collide with
+        # ux_decision_proposals_pending (one pending proposal per item). Same
+        # policy as a duplicate dep edge below: drop the alias copy rather than
+        # trip the unique key and abort the rename. The canonical row's proposal
+        # is the one a person is looking at, and the alias item — with the hold
+        # that shadowed the dropped row — is deleted moments later anyway.
+        pending_twins = {wid for (wid,) in db.query(DecisionProposal.work_item_id).filter(
+            DecisionProposal.work_item_id.in_(list(twin_of.values())),
+            DecisionProposal.status == "pending")}
         for dp in db.query(DecisionProposal).filter(
                 DecisionProposal.work_item_id.in_(alias_ids)).all():
-            dp.work_item_id = twin_of[dp.work_item_id]
+            twin = twin_of[dp.work_item_id]
+            if dp.status == "pending" and twin in pending_twins:
+                log.info("rename_repo.decision_proposal_dropped id=%s twin=%s", dp.id, twin)
+                db.delete(dp)
+                continue
+            dp.work_item_id = twin
+            if dp.status == "pending":
+                pending_twins.add(twin)
         for d in db.query(WorkItemDep).filter(or_(
                 WorkItemDep.src_work_item_id.in_(alias_ids),
                 WorkItemDep.dst_work_item_id.in_(alias_ids))).all():

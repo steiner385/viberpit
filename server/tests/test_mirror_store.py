@@ -191,6 +191,32 @@ def test_rename_repo_repoints_a_decision_proposal_onto_the_twin():
     assert db.query(WorkItem).filter_by(number=950).one().id == twin.id
 
 
+def test_rename_repo_drops_an_alias_proposal_the_twin_already_has_open():
+    """``ux_decision_proposals_pending`` allows one pending proposal per item, so a
+    twin that already has the question open would collide. Same policy as a
+    duplicate dep edge: the alias copy is dropped, the canonical one survives."""
+    from server.db.models import DecisionProposal
+    db = _db()
+    _seed(db)
+    twin = WorkItem(repo=CANON, number=950, kind="issue", state="open")
+    db.add(twin)
+    db.flush()
+    alias = db.query(WorkItem).filter_by(repo=REPO, number=950).one()
+    opts = [{"key": "a", "label": "A", "detail": None},
+            {"key": "b", "label": "B", "detail": None}]
+    db.add(DecisionProposal(work_item_id=alias.id, options=opts, recommended_key="a",
+                            rationale="alias copy", status="pending", proposed_by="session:s1"))
+    db.add(DecisionProposal(work_item_id=twin.id, options=opts, recommended_key="b",
+                            rationale="canonical", status="pending", proposed_by="session:s2"))
+    db.commit()
+
+    mirror_store.rename_repo(db, REPO, CANON)
+    db.commit()
+
+    survivor = db.query(DecisionProposal).one()
+    assert survivor.rationale == "canonical" and survivor.work_item_id == twin.id
+
+
 def test_relations_under_the_canonical_name_link_after_rename():
     """Issue #999 acceptance: once the mirror is canonical, a relations pass
     keyed by GitHub's nameWithOwner links parents and resolves native edges."""

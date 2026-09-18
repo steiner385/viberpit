@@ -107,6 +107,24 @@ async def test_a_second_pending_proposal_on_the_same_item_is_refused(db):
 
 
 @pytest.mark.asyncio
+async def test_one_pending_proposal_per_item_is_enforced_by_the_database_too(db):
+    """The SELECT in ``propose`` produces the friendly message, but two concurrent
+    proposers can both pass it inside their own transaction — so the partial unique
+    index is the actual arbiter. Resolved rows stay outside it."""
+    from sqlalchemy.exc import IntegrityError
+    wi = await _item(db)
+    await decisions.propose(db, wi, options=OPTIONS, recommended_key="global",
+                            rationale="first", actor="session:s1", now=NOW)
+    await db.commit()
+    db.add(DecisionProposal(work_item_id=wi.id, options=OPTIONS, recommended_key="global",
+                            rationale="racing insert", status="pending",
+                            proposed_by="session:s2", created_at=LATER))
+    with pytest.raises(IntegrityError):
+        await db.flush()
+    await db.rollback()
+
+
+@pytest.mark.asyncio
 async def test_a_persons_park_wins_but_a_machines_does_not(db):
     """Spec §6: a session that finds a person's park reports back rather than
     overwriting it. The runner's own hand-off is superseded — the decision is the

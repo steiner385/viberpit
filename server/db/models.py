@@ -1961,6 +1961,20 @@ class DecisionProposal(Base):
 
     __tablename__ = "decision_proposals"
 
+    # "One pending decision per item" is an invariant, not a convention: two
+    # concurrent proposers (two sessions, or the session tool and the route) can
+    # both pass ``decisions.propose``'s SELECT check inside their own transaction
+    # and both insert, leaving the item with two live cards and no way to propose
+    # again until both are resolved. A PARTIAL unique index makes the database the
+    # arbiter; the SELECT stays because it is what produces the friendly
+    # ``DecisionConflict`` message instead of an IntegrityError. Resolved rows are
+    # deliberately outside the index — an issue may be decided many times.
+    __table_args__ = (
+        Index("ux_decision_proposals_pending", "work_item_id", unique=True,
+              sqlite_where=text("status = 'pending'"),
+              postgresql_where=text("status = 'pending'")),
+    )
+
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_new_uuid)
     work_item_id: Mapped[str] = mapped_column(
         String, ForeignKey("work_items.id"), nullable=True, index=True)

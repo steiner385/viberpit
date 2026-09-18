@@ -38,6 +38,12 @@ def _engine(tmp_path):
     return engine
 
 
+def _index_sql(engine, name: str) -> str:
+    with engine.connect() as conn:
+        return conn.execute(text("SELECT sql FROM sqlite_master WHERE name = :n"),
+                            {"n": name}).scalar_one()
+
+
 def _upgrade(engine, mod):
     with engine.begin() as conn:
         ctx = MigrationContext.configure(conn)
@@ -56,8 +62,12 @@ def test_upgrade_creates_the_table_and_its_indexes(tmp_path):
     # everything past the PK is nullable, so reconcile can ALTER-ADD a later column
     nullable = {c["name"] for c in inspector.get_columns(mod.TABLE) if c["nullable"]}
     assert EXPECTED_COLUMNS - nullable == {"id", "created_at"}
-    names = {idx["name"] for idx in inspector.get_indexes(mod.TABLE)}
-    assert {mod.WORK_ITEM_INDEX, mod.STATUS_INDEX} <= names
+    indexes = {idx["name"]: idx for idx in inspector.get_indexes(mod.TABLE)}
+    assert {mod.WORK_ITEM_INDEX, mod.STATUS_INDEX, mod.PENDING_INDEX} <= set(indexes)
+    pending = indexes[mod.PENDING_INDEX]
+    assert pending["unique"] and pending["column_names"] == ["work_item_id"]
+    # partial, so an item may be decided many times over its life
+    assert "WHERE status = 'pending'" in _index_sql(engine, mod.PENDING_INDEX)
 
 
 def test_upgrade_is_a_no_op_on_a_database_that_already_has_the_table(tmp_path):
@@ -81,3 +91,8 @@ def test_model_and_migration_agree_on_the_columns():
     the other is how a column reaches production on only one dialect."""
     from server.db.models import DecisionProposal
     assert {c.name for c in DecisionProposal.__table__.columns} == EXPECTED_COLUMNS
+    # create_all builds the indexes off the model; the revision must name the same
+    # ones, or a database built by one route lacks a guard the other has.
+    mod = _module()
+    assert {i.name for i in DecisionProposal.__table__.indexes} == {
+        mod.WORK_ITEM_INDEX, mod.STATUS_INDEX, mod.PENDING_INDEX}

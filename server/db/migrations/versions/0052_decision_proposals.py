@@ -25,6 +25,12 @@ depends_on = None
 TABLE = "decision_proposals"
 WORK_ITEM_INDEX = "ix_decision_proposals_work_item_id"
 STATUS_INDEX = "ix_decision_proposals_status"
+#: Partial UNIQUE index: at most one ``pending`` proposal per work item, enforced
+#: by the database rather than by the service's SELECT alone (two concurrent
+#: proposers can both pass that check). Resolved rows are outside it — an issue may
+#: be decided many times over its life. Both dialects accept a partial index, so
+#: the predicate is spelled for each.
+PENDING_INDEX = "ux_decision_proposals_pending"
 
 
 def upgrade() -> None:
@@ -52,9 +58,14 @@ def upgrade() -> None:
         op.create_index(WORK_ITEM_INDEX, TABLE, ["work_item_id"])
     if STATUS_INDEX not in indexes:
         op.create_index(STATUS_INDEX, TABLE, ["status"])
+    if PENDING_INDEX not in indexes:
+        op.create_index(PENDING_INDEX, TABLE, ["work_item_id"], unique=True,
+                        sqlite_where=sa.text("status = 'pending'"),
+                        postgresql_where=sa.text("status = 'pending'"))
 
 
 def downgrade() -> None:
+    op.drop_index(PENDING_INDEX, table_name=TABLE)
     op.drop_index(STATUS_INDEX, table_name=TABLE)
     op.drop_index(WORK_ITEM_INDEX, table_name=TABLE)
     op.drop_table(TABLE)
