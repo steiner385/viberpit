@@ -20,7 +20,11 @@ from server.db.models import (
     DispatchOutcome,
     WorkItem,
 )
-from server.pm.outcomes import body_fingerprint, project_id_for_slug
+from server.pm.outcomes import (
+    body_fingerprint,
+    prior_attempts as _prior_attempts,
+    project_id_for_slug,
+)
 from server.pm.refs import split_ref
 
 from .base import AutomationStatus
@@ -414,6 +418,28 @@ class AutomationContext:
             rows = (await db.execute(select(AutomationTargetState).where(
                 AutomationTargetState.automation_id == self.automation_id))).scalars().all()
         return {r.target: dict(r.state) for r in rows}
+
+    async def prior_attempts(self, target_ref: str) -> int:
+        """THE ladder's ``attempt_no`` seed (spec 2026-09-18 §4, review R1 I3):
+        finalised implement-dispatch history for *target_ref*, read fresh on
+        every claim since the claim row itself is deleted on every bounce and
+        can no longer carry the count forward on its own. The count itself lives
+        in ``server/pm/outcomes.py`` beside ``last_attempt_model`` — the two
+        ladder readers share one definition of "a past attempt"; this is only
+        the automation-facing session wrapper.
+
+        Best-effort by §13, exactly like ``record_outcome`` below and
+        ``outcomes.tier_floor_for_dispatch``: this read sits on the CLAIM path,
+        so a history failure must never stop a dispatch. A failed read answers
+        0 — the attempt is still recorded and the ladder still climbs off the
+        model the attempt ran on; only the human-readable count is short."""
+        try:
+            async with db_session() as db:
+                return await _prior_attempts(db, target_ref)
+        except Exception:
+            log.warning("automation_context.prior_attempts_failed target=%s", target_ref,
+                        exc_info=True)
+            return 0
 
     async def record_outcome(self, target: str, *, product_slug: str | None,
                              session_id: str | None, model: str | None,

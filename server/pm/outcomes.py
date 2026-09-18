@@ -274,3 +274,20 @@ async def last_attempt_model(db, target_ref: str) -> str | None:
         .order_by(DispatchOutcome.ended_at.desc().nullslast(), DispatchOutcome.created_at.desc())
         .limit(1))).first()
     return row[0] if row else None
+
+
+async def prior_attempts(db, target_ref: str) -> int:
+    """The ladder's ``attempt_no`` seed (spec 2026-09-18 §4, review R1 I3): the
+    count of finalised, non-superseded ``implement`` dispatches already recorded
+    for *target_ref*. Every bounce now deletes the runner's claim row (the
+    ladder's hold, not the claim, carries the item forward), so the claim can no
+    longer count its own attempts — a fresh claim reads this instead. Mirrors
+    ``last_attempt_model``'s filter (``_implement_only()`` + excludes
+    ``UNFINISHED_OUTCOMES``) so the two readers can never disagree about what
+    counts as a past attempt. 0-based: an issue dispatched for the first time
+    has 0 prior attempts, matching today's ``attempt_no`` semantics."""
+    return int((await db.execute(
+        select(func.count()).select_from(DispatchOutcome).where(
+            DispatchOutcome.target_ref == target_ref,
+            DispatchOutcome.outcome.not_in(UNFINISHED_OUTCOMES),
+            _implement_only()))).scalar_one())

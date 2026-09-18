@@ -13,7 +13,7 @@ from server.db import db_session, init_db
 from server.db.models import DISPATCH_OUTCOMES, DispatchOutcome
 from server.pm.outcomes import (
     FINALISED_BOUNCE_OUTCOMES, TierStats, body_fingerprint, bounced_out, bounces_stmt,
-    last_attempt_model, rows_to_bounces, tier_floor_from_stats)
+    last_attempt_model, prior_attempts, rows_to_bounces, tier_floor_from_stats)
 
 
 def test_fingerprint_is_stable_and_body_sensitive():
@@ -170,3 +170,36 @@ async def test_last_attempt_model_reads_the_newest_finalised_implement_row(tmp_p
                                ended_at=base + timedelta(hours=2)))
     async with db_session() as db:
         assert await last_attempt_model(db, "o/r#1") == "opus"
+
+
+@pytest.mark.asyncio
+async def test_prior_attempts_counts_the_same_rows_last_attempt_model_reads(tmp_path):
+    """The ladder's ``attempt_no`` seed: every bounce deletes the runner's claim
+    row, so the count of past attempts lives here, not on the claim. It counts
+    exactly what ``last_attempt_model`` considers an attempt — finalised
+    ``implement`` dispatches for this ref — so the two ladder readers can never
+    disagree: unfinished (``running``/``superseded``) rows, ``investigate``
+    dispatches and other refs are all excluded. 0-based: a ref never dispatched
+    has 0 prior attempts."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'prior_attempts.db'}"
+    await init_db(db_url=db_url)
+    async with db_session() as db:
+        assert await prior_attempts(db, "o/r#1") == 0
+
+    async with db_session() as db:
+        for outcome in ("no_pr", "merged"):
+            db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp",
+                                   outcome=outcome, model="sonnet"))
+        # Neither of these is a finished attempt.
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp",
+                               outcome="running", model="sonnet"))
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp",
+                               outcome="superseded", model="sonnet"))
+        # Not an attempt at all, and not this ref.
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="no_pr",
+                               model="sonnet", dispatch_kind="investigate"))
+        db.add(DispatchOutcome(target_ref="o/r#2", body_fingerprint="fp", outcome="no_pr",
+                               model="sonnet"))
+    async with db_session() as db:
+        assert await prior_attempts(db, "o/r#1") == 2
+        assert await prior_attempts(db, "o/r#2") == 1

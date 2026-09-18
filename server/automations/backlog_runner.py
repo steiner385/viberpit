@@ -1222,8 +1222,16 @@ class BacklogRunnerLoop:
         batch = replace(batch, product=decision.product_slug)
         default_model = policy["default_model"]
         propose = propose or (source == "automatic" and decision.configured_dispatch == "propose")
+        # Every bounce deletes the claim row now (spec 2026-09-18 §4), so
+        # ``previous`` carries no ``attempts`` for a re-queued item — the
+        # dispatch-history count (review R1 I3) is what seeds it instead. A
+        # LIVE previous claim (propose / waiting-account retry) still carries
+        # its own ``attempts`` and is trusted as-is, no extra query.
+        prior_count = previous.get("attempts")
+        if prior_count is None:
+            prior_count = await self._ctx.prior_attempts(batch.primary)
         state = {"repo": batch.repo, "product": batch.product,
-                 "attempts": previous.get("attempts", 0), "issues": batch.issues,
+                 "attempts": prior_count, "issues": batch.issues,
                  "titles": batch.titles,
                  "claimed": True, "claimed_at": self._wall_clock().isoformat()}
         if propose:

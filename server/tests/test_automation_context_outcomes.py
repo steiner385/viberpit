@@ -191,6 +191,24 @@ async def test_finalize_without_a_running_row_is_a_no_op(db_env):
 
 
 @pytest.mark.asyncio
+async def test_prior_attempts_reads_the_finished_dispatch_history(db_env):
+    """The runner seeds a fresh claim's ``attempt_no`` from this (spec 2026-09-18
+    §4): every bounce deletes the claim row, so the count of past attempts is
+    read back off the outcome history instead of carried on the row. A dispatch
+    still ``running`` is not a past attempt — the row this claim is about to
+    write must not count itself."""
+    await _seed(db_env)
+    ctx = AutomationContext("backlog-runner")
+    assert await ctx.prior_attempts("o/r#7") == 0
+
+    await ctx.record_outcome("o/r#7", product_slug="viberpit", session_id="s1",
+                             model="sonnet", attempt_no=0)
+    assert await ctx.prior_attempts("o/r#7") == 0      # still running: not yet an attempt
+    await ctx.finalize_outcome("o/r#7", outcome="no_pr", cause="session ended")
+    assert await ctx.prior_attempts("o/r#7") == 1
+
+
+@pytest.mark.asyncio
 async def test_finalize_rejects_an_unknown_outcome(db_env):
     await _seed(db_env)
     ctx = AutomationContext("backlog-runner")
@@ -229,6 +247,9 @@ async def test_writes_are_best_effort(db_env, monkeypatch):
     await ctx.record_outcome("o/r#7", product_slug="viberpit", session_id=None,
                              model="sonnet", attempt_no=0)
     await ctx.finalize_outcome("o/r#7", outcome="no_pr", cause="session ended")
+    # The ladder's history READ sits on the claim path and is best-effort the
+    # same way: a dead history table answers 0, it never stops a dispatch.
+    assert await ctx.prior_attempts("o/r#7") == 0
     monkeypatch.undo()
     assert await _rows() == []
 
