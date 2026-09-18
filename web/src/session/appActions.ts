@@ -88,6 +88,7 @@ export const APP_ACTION_TITLES: Record<string, string> = {
   set_quiet_hours: 'Set quiet hours',
   advance_initiative: 'Advanced initiative',
   resolve_triage: 'Resolved triage proposal',
+  resolve_decision: 'Resolved decision proposal',
   request_product_sync: 'Requested product sync',
   delete_session: 'Deleted session permanently',
   delete_sessions: 'Deleted sessions permanently',

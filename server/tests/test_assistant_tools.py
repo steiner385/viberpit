@@ -962,14 +962,65 @@ async def test_resolve_triage_rejects_a_bad_proposal_id_locally():
     assert calls == [], "a locally-rejected proposal id must never reach the API"
 
 
+@pytest.mark.asyncio
+async def test_resolve_decision_routes_by_decision_and_sends_chosen_key_only_on_accept():
+    seen: list[tuple[str, dict | None]] = []
+
+    def handler(req: httpx.Request):
+        body = json.loads(req.content) if req.content else None
+        seen.append((req.url.path, body))
+        return httpx.Response(200, json={"ok": True})
+
+    tools = build_tools(_api(handler))
+    await _tool(tools, "resolve_decision").handler(
+        {"proposal_id": "dp-1", "decision": "accept", "chosen_key": "b"})
+    await _tool(tools, "resolve_decision").handler(
+        {"proposal_id": "dp-1", "decision": "reject", "chosen_key": "b"})
+    bad = await _tool(tools, "resolve_decision").handler(
+        {"proposal_id": "dp-1", "decision": "maybe"})
+    assert seen == [
+        ("/api/pm/decisions/dp-1/accept", {"chosen_key": "b"}),
+        ("/api/pm/decisions/dp-1/reject", None),
+    ], "reject must never send chosen_key, even when the caller passed one"
+    assert bad["is_error"] is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_decision_requires_chosen_key_to_accept():
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), "resolve_decision").handler(
+        {"proposal_id": "dp-1", "decision": "accept"})
+    assert out["is_error"] is True
+    assert calls == [], "a locally-rejected accept must never reach the API"
+
+
+@pytest.mark.asyncio
+async def test_resolve_decision_rejects_a_bad_proposal_id_locally():
+    calls: list[str] = []
+
+    def handler(req: httpx.Request):
+        calls.append(req.url.path)
+        return httpx.Response(200, json={})
+
+    out = await _tool(build_tools(_api(handler)), "resolve_decision").handler(
+        {"proposal_id": "../../sessions", "decision": "accept", "chosen_key": "b"})
+    assert out["is_error"] is True
+    assert calls == [], "a locally-rejected proposal id must never reach the API"
+
+
 def test_product_tool_classes():
     """The six reads must never be classed as mutations (they would then take a
-    permission card), and the two writers must never be classed READ (they would
+    permission card), and the writers must never be classed READ (they would
     then skip one)."""
     for name in ("list_products", "get_product", "get_product_deps", "get_priority_queue",
                  "list_triage", "get_onboarding_status"):
         assert TOOL_SPECS[name].tool_class is ToolClass.READ
-    for name in ("resolve_triage", "request_product_sync"):
+    for name in ("resolve_triage", "resolve_decision", "request_product_sync"):
         assert TOOL_SPECS[name].tool_class is ToolClass.MUTATION
         assert annotation_for(f"{MCP_PREFIX}{name}").tool_class is ToolClass.MUTATION
 

@@ -127,7 +127,7 @@ assistant mutation does not make subsequent harness cleanup safe.
   session power tools, GitHub, proactive notices, opt-in operator tier, external MCP/CLI access) are
   in `docs/superpowers/specs/2026-09-05-ai-assistant-capabilities-v2-design.md`; plan:
   `docs/superpowers/plans/2026-09-05-ai-assistant-capabilities-v2.md`.
-- **Tool surface (v2)** — 91 tools are registered in `server/assistant/tools.py`; 86 are exposed by
+- **Tool surface (v2)** — 92 tools are registered in `server/assistant/tools.py`; 87 are exposed by
   default, Pack O's operator tools registering only once the operator tier is enabled. Pack X is
   not yet built.
 
@@ -135,7 +135,7 @@ assistant mutation does not make subsequent harness cleanup safe.
   |---|---|---|
   | Base (v1) | 28 | sessions, accounts, hosts, PRs, pipeline health, automations, deploy status |
   | F — fixes & foundations | 6 | repos/branches/stage-models listing, tool-result drill-in, session export, gap reporting |
-  | P — product & delivery | 11 | SDLC initiatives, PM products/queue/triage/onboarding |
+  | P — product & delivery | 12 | SDLC initiatives, PM products/queue/triage/onboarding, decision proposal accept/reject |
   | A — automations control | 11 | actionable items, backlog candidates, CI/CD findings, PR-doctor consolidation, plus the three destructive trigger/dispatch/consolidate tools |
   | S — session power | 13 | rename, queue-move, account pin, rotate, reload, suggest, adopt, and the five batch tools with an enumerating card |
   | C — session-start conveniences | 4 | presets, templates + render, permission profiles |

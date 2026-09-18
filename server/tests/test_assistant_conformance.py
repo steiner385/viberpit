@@ -71,6 +71,7 @@ ARGS: dict[str, dict] = {
     "dispatch_backlog": {"refs": ["acme/billing#18"]},
     "consolidate_prs": {"repo": "acme/billing", "numbers": [42, 43]},
     "resolve_triage": {"proposal_id": "p1", "decision": "accept"},
+    "resolve_decision": {"proposal_id": "dp1", "decision": "accept", "chosen_key": "b"},
     "request_product_sync": {"slug": "a"},
     "start_deploy": {"ref": "abc123"}, "upgrade_host": {"name": "rocky"},
     "refresh_account": {"name": "a1"},
