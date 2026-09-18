@@ -1,7 +1,7 @@
 """``sessions.pr_resolution_note`` (spec 2026-09-18 §5).
 
-Revision ID: 0051_pr_resolution_note
-Revises: 0050_dispatch_kind
+Revision ID: 0052_pr_resolution_note
+Revises: 0051_pr_resolution_source_observed
 
 The one-sentence ``note`` argument of ``mark_no_pr`` — the session's own account of
 why it finished without a PR. It was parsed and then discarded; nothing recorded it.
@@ -18,8 +18,8 @@ the nullable column on both dialects. This revision is the reviewable record.
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0051_pr_resolution_note"
-down_revision = "0050_dispatch_kind"
+revision = "0052_pr_resolution_note"
+down_revision = "0051_pr_resolution_source_observed"
 branch_labels = None
 depends_on = None
 
