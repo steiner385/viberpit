@@ -41,23 +41,29 @@ def family_key(logger: str | None, event: str | None) -> str | None:
     return f"{lg}:{ev}" if lg and ev else None
 
 
-def triage_target_repo(db: "Session") -> str:
+async def triage_target_repo() -> str:
     """The repo error triage files into, from its own automation config — the one
-    place that decides it (``ErrorTriage.config_schema``). Sync; the caller is
-    already inside ``db.run_sync``."""
-    from server.automations.config_store import read_effective_config_sync
+    place that decides it (``ErrorTriage.config_schema``).
 
-    config = read_effective_config_sync(db, TRIAGE_AUTOMATION_ID)
+    Async, so it reads through the config store every other automation reads
+    through. The caller resolves it BEFORE entering ``run_sync`` and hands it to
+    :func:`families_for_refs`, which keeps that function sync without giving the
+    config store a second reader shape.
+    """
+    from server.automations.config_store import read_effective_config
+
+    config = await read_effective_config(TRIAGE_AUTOMATION_ID)
     return str(config.get("target_repo") or "")
 
 
-def families_for_refs(db: "Session", refs: Sequence[str]) -> dict[str, str]:
+def families_for_refs(db: "Session", refs: Sequence[str], *,
+                      repo: str) -> dict[str, str]:
     """``ref -> family`` for every ref that is an auto-filed error report with a
-    derivable family. Refs with no signature row, no family key, or a repo that is
-    not the triage target are simply absent.
+    derivable family. Refs with no signature row, no family key, or a repo other
+    than *repo* (the triage target, from :func:`triage_target_repo`) are simply
+    absent.
 
-    Sync — the orchestrator calls it under ``db.run_sync``, in the same session as
-    the queue read it annotates.
+    Sync — the orchestrator calls it under ``db.run_sync``.
     """
     from sqlalchemy import select
 
@@ -65,7 +71,6 @@ def families_for_refs(db: "Session", refs: Sequence[str]) -> dict[str, str]:
 
     from .refs import split_ref
 
-    repo = triage_target_repo(db)
     if not repo or not refs:
         return {}
     by_number: dict[int, str] = {}
@@ -84,10 +89,9 @@ def families_for_refs(db: "Session", refs: Sequence[str]) -> dict[str, str]:
     out: dict[str, str] = {}
     for number, logger, event in rows:
         key = family_key(logger, event)
-        filed_ref = by_number.get(number)
-        if key is None or filed_ref is None:
+        if key is None:
             continue
         # Two signatures refiled onto one issue: the first by fingerprint order
         # wins, so the answer is stable across refreshes.
-        out.setdefault(filed_ref, key)
+        out.setdefault(by_number[number], key)
     return out

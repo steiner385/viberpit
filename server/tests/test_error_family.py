@@ -12,7 +12,7 @@ import asyncio
 from server.db import db_session, init_db
 from server.db.models import Automation as AutomationRow
 from server.db.models import ErrorSignature
-from server.pm.error_family import families_for_refs, family_key
+from server.pm.error_family import families_for_refs, family_key, triage_target_repo
 
 TRIAGE_REPO = "steiner385/viberpit"  # the error-triage schema default
 
@@ -57,8 +57,11 @@ async def _seed(tmp_path, name: str, signatures: list[dict],
 
 
 async def _families(refs: list[str]) -> dict[str, str]:
+    """The caller's two steps: resolve the triage repo through the config store,
+    then join inside one sync session — the shape the orchestrator uses."""
+    repo = await triage_target_repo()
     async with db_session() as db:
-        return await db.run_sync(lambda s: families_for_refs(s, refs))
+        return await db.run_sync(lambda s: families_for_refs(s, refs, repo=repo))
 
 
 def test_families_group_siblings_and_skip_unfiled_signatures(tmp_path):
@@ -124,5 +127,28 @@ def test_families_of_no_refs_reads_nothing(tmp_path):
         ])
 
         assert await _families([]) == {}
+
+    asyncio.run(run())
+
+
+def test_families_without_a_triage_repo_match_nothing(tmp_path):
+    """No configured target repo means no ref can be an auto-error report — the
+    fail-open answer, not a match on issue number alone."""
+    async def run():
+        await _seed(tmp_path, "norepo.db", [
+            {"issue_number": 101, "logger": "server.a", "event": "boom"},
+        ])
+        async with db_session() as db:
+            out = await db.run_sync(
+                lambda s: families_for_refs(s, [f"{TRIAGE_REPO}#101"], repo=""))
+        assert out == {}
+
+    asyncio.run(run())
+
+
+def test_triage_target_repo_defaults_to_the_schema_value(tmp_path):
+    async def run():
+        await _seed(tmp_path, "defrepo.db", [])
+        assert await triage_target_repo() == TRIAGE_REPO
 
     asyncio.run(run())

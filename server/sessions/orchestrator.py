@@ -5921,9 +5921,14 @@ class SessionOrchestrator:
             return
         families: dict[str, str] = {}
         try:
-            from server.pm.error_family import families_for_refs
+            from server.pm import error_family
+            # The triage repo is an automation-config read, resolved through the
+            # ordinary async config store BEFORE the session opens — the family
+            # join itself is the only part that has to be sync.
+            repo = await error_family.triage_target_repo()
             async with db_session() as db:
-                families = await db.run_sync(lambda s: families_for_refs(s, refs))
+                families = await db.run_sync(
+                    lambda s: error_family.families_for_refs(s, refs, repo=repo))
         except Exception:
             log.warning("orchestrator._backlog_family_lookup_failed", exc_info=True)
         for c in candidates:
