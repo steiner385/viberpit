@@ -66,8 +66,26 @@ converted the surviving rows. Only `owner_action` and a pending `decision` deriv
 "Needs human" and the roadmap's needs-you tier; the other two never park the card. Every overlay
 write records its actor in `classified_by`; agents (sessions, the assistant, loopback callers)
 may set or clear only `evidence` and `stronger_model` (`server/pm/holds.py`) — and may not
-OVERWRITE a hold they could not clear, since replacing a kind releases the old one. Evidence
-dispatch, decision proposals, and the rename to "Held" are the later series items of that spec.
+OVERWRITE a hold they could not clear, since replacing a kind releases the old one. Decision
+proposals and the rename to "Held" are still later series items of that spec.
+**Evidence dispatch has landed (item 4b, spec §5).** `evidence` is born AT FILING: the moment a
+new, open, auto-filed error report (carrying the error-triage label) enters the mirror,
+`server/sessions/orchestrator.py:_pm_sync_upsert_items` parks it under an `evidence` hold
+(`server/pm/holds.py:set_evidence_hold`, actor `automation:error-triage`) before it can ever reach
+the queue as ordinary work — only on the new-row branch, so an already-mirrored issue gets no
+backfilled hold. Like `stronger_model`, it is agent-settable and QUEUE-ELIGIBLE, so the Backlog
+Runner dispatches it as an ordinary candidate — but as an INVESTIGATION, never an implementation
+(`server/pm/outcomes.py:dispatch_kind_for_hold`, the seed prompt from
+`server/automations/backlog_prompt.py:build_investigate_prompt`): read-only on code, no PR. The
+runner releases the hold itself once an ended investigation's `mark_no_pr` note says it converted
+the report into a fix (`server/pm/holds.py:release_on_investigation`, the `RELEASE_SIGNALS` signal
+`"investigation"`), re-queuing the issue as an ordinary implement candidate on the next refill;
+every other exit either closes the issue or hands it to the owner. An `evidence` or
+`stronger_model` hold parks the WORK, not the FILING, so an item under either kind is still
+classified normally (`server/sessions/orchestrator.py:_classifiable_hold_clause` excludes only
+`owner_action` and a pending `decision`) — excluding `evidence` there would leave the whole
+auto-error stream permanently unclassified. See
+`docs/product/features/autopilot-backlog-runner.md` § Evidence dispatch for the full rule.
 **The ladder has landed (item 4a, spec §4).** `stronger_model` is the Backlog Runner's own climb
 marker: a bounce below the product's `ladder_top` writes it (`server/pm/holds.py:
 set_runner_stronger_hold`, actor `runner`) on every issue of the batch, BEFORE the runner releases
@@ -90,7 +108,10 @@ proposal. The queue skips held items as `held`; the Backlog Runner's give-up wri
 Review-and-decide dialog shows the hold (kind, reason, who, when); an owner-action hold offers
 **Retry** (the release endpoint) and **Implement now** (manual dispatch, which releases the hold
 with `signal = implement` first), each with server-computed consequence copy from
-`server/pm/explain.py:hold_guidance`; the leaf row shows the kind as a chip.
+`server/pm/explain.py:hold_guidance`; an evidence hold instead shows ONE button-less consequence
+line from the same function — the Backlog Runner dispatches and settles it on its own, so there is
+nothing here for a person to tap — rendered through the same `ConsequenceList` the owner-action
+buttons use, never a second renderer. The leaf row shows the kind as a chip.
 
 **Notes** — State is `delivering`. Phase 1 (foundation models + pm-sync backlog mirror + project
 registry API/UI, #893), Phase 2 (archaeology onboarding wizard + map-synthesis prompt +

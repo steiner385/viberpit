@@ -147,7 +147,8 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
                 size="lg"
                 variant="secondary"
                 loading={dispatch.isPending}
-                disabled={pending || (data.guidance ? !data.guidance.implement.available : false)}
+                disabled={pending || (data.guidance && 'implement' in data.guidance
+                  ? !data.guidance.implement.available : false)}
                 onClick={() => void implementNow()}
               >
                 Implement now
@@ -156,11 +157,17 @@ export function IssueDispositionDialog({ itemId, onClose }: { itemId: string; on
             {release.isError && <p role="alert" className="text-sm text-danger">
               {extractMutationErrorMessage(release.error, 'Could not release this hold.')}
             </p>}
-            {data.guidance && <div className="grid gap-3 sm:grid-cols-2">
+            {data.guidance && 'retry' in data.guidance && <div className="grid gap-3 sm:grid-cols-2">
               <ConsequenceList heading="Retry" consequence={data.guidance.retry} />
               <ConsequenceList heading="Implement now" consequence={data.guidance.implement} />
             </div>}
           </>}
+          {/* Evidence: the Backlog Runner dispatches and settles this on its own
+              (spec 2026-09-18 §5) — a plain consequence line through the same
+              renderer as owner_action above, never a second one, and no buttons:
+              there is nothing here for a person to tap. */}
+          {data.holdKind === 'evidence' && data.guidance && 'evidence' in data.guidance &&
+            <ConsequenceList consequence={data.guidance.evidence} />}
         </div>}
         {/* Outside the hold panel on purpose: a dispatch RELEASES the hold, so the
             panel disappears on the refetch that follows — and the session it just

@@ -153,6 +153,24 @@ describe('IssueDispositionDialog', () => {
     expect(screen.queryByRole('button', { name: 'Implement now' })).toBeNull()
   })
 
+  it('renders the machine consequence copy for an evidence hold through ConsequenceList, with no buttons', async () => {
+    const evidenceGuidance = { evidence: {
+      available: true, unavailableReason: null, immediate: [],
+      then: [{ text: 'The next run investigates this report instead of implementing it: it closes '
+        + 'noise, consolidates duplicates, converts it into a fix, or hands it to you with what is '
+        + 'needed. No pull request.', spawnsSession: false, writesGithub: false }],
+      when: 'next_tick', reversal: null, gate: null } }
+    fetchMock.mockResolvedValueOnce(reply({
+      ...detail, holdKind: 'evidence', holdReason: 'auto-filed error report: investigate before implementing',
+      holdBy: 'automation:error-triage', holdSetAt: '2026-09-18T00:00:00+00:00', guidance: evidenceGuidance }))
+    mount()
+    expect(await screen.findByRole('region', { name: 'Hold' })).toHaveTextContent('Held for evidence')
+    expect(screen.getByText(/investigates this report instead of implementing it/)).toBeInTheDocument()
+    expect(screen.getByText(/No pull request\./)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Implement now' })).toBeNull()
+  })
+
   it('clears the last dispatch outcome when an edit starts', async () => {
     fetchMock.mockResolvedValueOnce(reply(held))
       .mockResolvedValueOnce(reply({ status: 'no_account', session_id: null, session_name: null }))
