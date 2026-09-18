@@ -6,7 +6,7 @@ const leaf = (id: string, state: string): Leaf => ({
   id, ref: `o/r#${id}`, repo: 'o/r', number: Number(id), kind: 'issue', title: null, url: null, state,
   triageState: null, score: null, reach: null, impact: null, effort: null, confidence: null, tier: 'idle',
   blockedBy: [], parentRef: null, sessionStatus: null, ghCreatedAt: null, featureId: null,
-  reason: null, bounces: 0,
+  reason: null, bounces: 0, holdKind: null, holdReason: null, holdBy: null, holdSetAt: null,
 })
 
 describe('leafRows', () => {

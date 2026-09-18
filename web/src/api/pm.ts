@@ -8,6 +8,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from './client'
 import type { ConfigField } from './automations'
 import type { MapChangesPointer } from './roadmap'
+import type { Consequence } from './sdlc'
 
 export const PROJECT_ONBOARDING_STATES = [
   'registered', 'syncing', 'map_proposed', 'map_merged', 'classifying', 'live',
@@ -376,6 +377,7 @@ export function removeDependency({ workItemId, blocker }: RemoveDependencyInput)
 /** Full mirrored issue content and the opaque revision required for a decision. */
 export interface WorkItemIssue {
   id: string
+  ref: string
   repo: string
   number: number
   title: string
@@ -383,6 +385,19 @@ export interface WorkItemIssue {
   state: string
   url: string | null
   version: string
+  /** Why this issue is held beyond its tier (hold ladder, spec 2026-09-18 §3),
+   *  or null when it is not held. Rendered through `holdLabel`. */
+  holdKind: string | null
+  /** The runner's own words for why it gave up, or null. */
+  holdReason: string | null
+  /** Who or what set the hold — an identity or a subsystem name — or null. */
+  holdBy: string | null
+  /** When the hold was set, or null when there is none. */
+  holdSetAt: string | null
+  /** What Retry-now and Implement-now each do from here, or null when the
+   *  issue is not held (there is nothing to release). One `Consequence` per
+   *  control, computed server-side (`server/sdlc/explain.py`). */
+  guidance?: { retry: Consequence; implement: Consequence } | null
 }
 export type IssueDispositionInput = { version: string } & (
   | { action: 'edit'; title: string; body: string }
@@ -394,4 +409,9 @@ export function fetchWorkItemIssue(itemId: string): Promise<WorkItemIssue> {
 }
 export function dispositionIssue(itemId: string, input: IssueDispositionInput): Promise<IssueDispositionResult> {
   return api.post(`/pm/work-items/${encodeURIComponent(itemId)}/issue`, input)
+}
+
+export interface HoldReleaseResult { ok: true; released: string | null; item: Record<string, unknown> }
+export function releaseHold(itemId: string): Promise<HoldReleaseResult> {
+  return api.post(`/pm/work-items/${encodeURIComponent(itemId)}/hold/release`)
 }

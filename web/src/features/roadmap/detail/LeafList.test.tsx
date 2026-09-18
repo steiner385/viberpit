@@ -20,7 +20,7 @@ const leaf = (n: number, state: string, extra: Partial<Leaf> = {}): Leaf => ({
   id: `w${n}`, ref: `o/r#${n}`, repo: 'o/r', number: n, kind: 'issue', title: `Issue ${n}`, url: null, state,
   triageState: null, score: null, reach: null, impact: null, effort: null, confidence: null, tier: 'idle',
   blockedBy: [], parentRef: null, sessionStatus: null, ghCreatedAt: null, featureId: null,
-  reason: null, bounces: 0, ...extra,
+  reason: null, bounces: 0, holdKind: null, holdReason: null, holdBy: null, holdSetAt: null, ...extra,
 })
 
 // The virtualizer's 150 ms scroll-reset timer must fire before jsdom's window

@@ -38,8 +38,8 @@ import {
   editMapChanges, abandonMapChanges, rebaseMapChanges,
   fetchPolicySchema, updateProductPolicy, type ProductPolicyPatch, fetchProductPolicyCoverage, fetchProductImplementationPolicy,
   fetchProjectHealth,
-  fetchOutcomes, fetchWorkItemIssue, dispositionIssue,
-  type WorkItemIssue, type IssueDispositionInput, type IssueDispositionResult,
+  fetchOutcomes, fetchWorkItemIssue, dispositionIssue, releaseHold,
+  type WorkItemIssue, type IssueDispositionInput, type IssueDispositionResult, type HoldReleaseResult,
   type Project, type CreateProjectInput, type OnboardingView,
   type RemoveDependencyInput, type RemoveDependencyResult,
   type CreateEdgeInput, type ProjectEdgeInfo,
@@ -1773,6 +1773,20 @@ export function useDispositionIssue(itemId: string) {
       void qc.invalidateQueries({ queryKey: QK.queue })
       void qc.invalidateQueries({ queryKey: QK.triage })
       void qc.invalidateQueries({ queryKey: ['sdlc', 'initiative'] })
+    },
+    meta: PM_MUTATION_META,
+  })
+}
+
+export function useReleaseHold(itemId: string) {
+  const qc = useQueryClient()
+  return useMutation<HoldReleaseResult, ApiRequestError, void>({
+    mutationFn: () => releaseHold(itemId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QK.workItemIssue(itemId) })
+      void qc.invalidateQueries({ queryKey: ['pm', 'leaves'] })
+      void qc.invalidateQueries({ queryKey: QK.roadmapMap })
+      void qc.invalidateQueries({ queryKey: QK.queue })
     },
     meta: PM_MUTATION_META,
   })

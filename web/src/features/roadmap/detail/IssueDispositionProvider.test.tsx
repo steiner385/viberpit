@@ -13,6 +13,7 @@ const leaf: Leaf = {
   id: 'w1', ref: 'o/r#1', repo: 'o/r', number: 1, kind: 'issue', title: 'Account warning', url: null, state: 'open',
   triageState: null, score: null, reach: null, impact: null, effort: null, confidence: null, tier: 'needs-you',
   blockedBy: [], parentRef: null, sessionStatus: null, ghCreatedAt: null, featureId: null, reason: null, bounces: 0,
+  holdKind: null, holdReason: null, holdBy: null, holdSetAt: null,
 }
 const issue = { id: 'w1', repo: 'o/r', number: 1, title: 'Account warning', body: 'Original description', state: 'open', url: null, version: 'v1' }
 const reply = (data: unknown, status = 200) => ({ ok: status < 400, status, json: async () => data })
