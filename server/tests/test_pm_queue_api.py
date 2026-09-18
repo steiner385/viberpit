@@ -142,8 +142,10 @@ def _seed_runner_row(c, target: str, state: dict) -> None:
     one is garbage the runner is designed to collect, so the assertion below
     passes or fails on whether the tick happened to win the race (it usually
     loses locally and wins on a loaded CI runner). A ``gave_up`` row needs no
-    such guard: the reconciler skips it and ``_expire_give_ups`` only deletes it
-    once the cooldown window has passed.
+    such guard: the reconciler skips it, and it parks nothing by itself — the
+    hold on the ITEM is what parks the issue (spec 2026-09-18 §3). The row
+    survives only for slot accounting, and ``_release_give_ups`` drops it on the
+    next tick once none of its refs is held any more.
 
     That ``session_id`` must name a session row that EXISTS and is not terminal,
     so this seeds one alongside. A claim the runner holds without an ownership
@@ -173,18 +175,32 @@ def _seed_runner_row(c, target: str, state: dict) -> None:
     c.portal.call(_seed_async)
 
 
-def test_queue_endpoint_reads_the_runners_claims_and_give_ups():
+def _set_hold(c, repo: str, number: int, *, kind: str = "owner_action") -> None:
+    """Stamp a hold directly on the item — spec 2026-09-18 §3: the item's own
+    ``hold_kind`` is the queue's parked signal now, not a runner give-up row."""
+    from sqlalchemy import select
+
+    from server.db import db_session
+    from server.db.models import WorkItem
+
+    async def _set_async() -> None:
+        async with db_session() as db:
+            wi = (await db.execute(select(WorkItem).where(
+                WorkItem.repo == repo, WorkItem.number == number))).scalar_one()
+            wi.hold_kind, wi.hold_by, wi.hold_reason = kind, "tony@example.com", "max attempts"
+            await db.commit()
+
+    assert c.portal is not None
+    c.portal.call(_set_async)
+
+
+def test_queue_endpoint_reads_the_runners_claims_and_a_held_item():
     """The operator's queue view is the runner's pool: an issue the runner holds is
-    ``claimed`` here too, and one it gave up on is cooling down — not quietly
-    ranked as if it were up for grabs (ruling D-R1)."""
-    from datetime import datetime, timezone
+    ``claimed`` here too, and a held item is parked — not quietly ranked as if it
+    were up for grabs (ruling D-R1)."""
     with _client() as c:
         _seed_ready_and_blocked(c)
-        _seed_runner_row(c, "steiner385/viberpit#100",
-                         {"gave_up": True,
-                          "issues": ["steiner385/viberpit#100"],
-                          "needs_human_at": datetime.now(timezone.utc).isoformat(),
-                          "reason": "max attempts"})
+        _set_hold(c, "steiner385/viberpit", 100)
         # ``session_id`` is what makes this a HELD claim rather than a dangler the
         # startup tick reclaims — see _seed_runner_row's docstring.
         _seed_runner_row(c, "steiner385/viberpit#101",
@@ -197,7 +213,7 @@ def test_queue_endpoint_reads_the_runners_claims_and_give_ups():
                      headers=IDENTITY_HEADERS).json()
 
         assert body["entries"] == []
-        assert body["skipped"] == {"needs_human_cooldown": 1, "claimed": 1}
+        assert body["skipped"] == {"held": 1, "claimed": 1}
 
 
 def test_queue_reads_a_held_claim_after_a_runner_tick():
@@ -207,14 +223,9 @@ def test_queue_reads_a_held_claim_after_a_runner_tick():
     on its own schedule anyway — here we drive one deliberately, between the seed
     and the read, so the interleaving CI produces under load is the one asserted.
     Without the ``session_id`` this read leaks #101 into ``entries``."""
-    from datetime import datetime, timezone
     with _client() as c:
         _seed_ready_and_blocked(c)
-        _seed_runner_row(c, "steiner385/viberpit#100",
-                         {"gave_up": True,
-                          "issues": ["steiner385/viberpit#100"],
-                          "needs_human_at": datetime.now(timezone.utc).isoformat(),
-                          "reason": "max attempts"})
+        _set_hold(c, "steiner385/viberpit", 100)
         _seed_runner_row(c, "steiner385/viberpit#101",
                          {"claimed": True, "session_id": "sess-101",
                           "issues": ["steiner385/viberpit#101"]})
@@ -226,7 +237,7 @@ def test_queue_reads_a_held_claim_after_a_runner_tick():
                      headers=IDENTITY_HEADERS).json()
 
         assert body["entries"] == []
-        assert body["skipped"] == {"needs_human_cooldown": 1, "claimed": 1}
+        assert body["skipped"] == {"held": 1, "claimed": 1}
 
 
 def test_queue_endpoint_invalid_min_status_422():

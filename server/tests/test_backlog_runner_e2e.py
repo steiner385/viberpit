@@ -43,7 +43,6 @@ from server.db.models import Session as DbSession
 from server.github.pr_status import PullRequestInfo
 from server.pm.desired_state import STATUS_READY
 from server.pm.queue import QueueRow, rank, to_candidate
-from server.pm.queue_store import parse_iso_utc
 from server.tests.fakes.fake_backlog import FakeGh
 
 NOW = datetime(2026, 9, 10, tzinfo=timezone.utc)
@@ -376,9 +375,10 @@ def test_ended_without_pr_increments_then_gives_up(tmp_path):
         assert st.get("_ended") is True
         await h.loop.tick()                  # sweep again: attempts -> 2 == max → give up
         st2 = await h.ctx.get_target_state("o/r#1")
-        # Phase D: the row survives the give-up, stamped — it IS the handoff.
+        # Spec 2026-09-18 §3: the row survives the give-up, for slot accounting
+        # only — the hold on the issue IS the handoff now, not a stamp on this row.
         assert st2["gave_up"] is True and st2["issues"] == ["o/r#1"]
-        assert parse_iso_utc(st2["needs_human_at"]) is not None
+        assert "needs_human_at" not in st2
         assert "o/r#1" in h.needs_humaned    # GIVE-UP path escalated
         assert "max attempts" in h.needs_human_reasons[0]
         # The handoff announced itself as a comment carrying the reason.

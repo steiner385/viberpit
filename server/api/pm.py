@@ -51,7 +51,7 @@ from server.pm.map_changes_ops import MapOp, MapOpError
 from server.pm.mirror_store import deps_in_repos
 from server.pm.outcomes import list_outcomes_stmt, outcome_to_dict
 from server.pm.queue import MIN_STATUS_OPTIONS, rank, rank_key
-from server.pm.queue_store import load_queue_rows, runner_row_maps
+from server.pm.queue_store import load_queue_rows, runner_claims
 from server.pm.repo_project import (
     OwnershipConflict, gather_repo_ownership_snapshot, lock_repo_registration,
     owning_projects_by_repo, require_unregistered_repos,
@@ -673,19 +673,17 @@ async def queue(
     the backlog runner uses — "what you see is what agents will do next". ``body`` is
     deliberately omitted from the payload (large, UI/runner don't need it here).
 
-    The runner's durable rows — its claims and its give-ups — ride the SAME
-    derivation the runner's own pool read uses (``runner_row_maps``), so a claimed
-    issue reads as ``claimed`` here and one waiting on a human as
-    ``needs_human_cooldown``, exactly as selection sees them. Ranking is PER PRODUCT
-    with that product's ``give_up_after_bounces`` (D8) and the per-product rankings
-    are merged with ``rank``'s own ``rank_key`` — the runner's
+    The runner's claims ride the SAME derivation the runner's own pool read uses
+    (``runner_claims``), so a claimed issue reads as ``claimed`` here exactly as
+    selection sees it; a held item reads as ``held`` off its own ``hold_kind``
+    (spec 2026-09-18 §3), with no runner state involved at all. Ranking is PER
+    PRODUCT with that product's ``give_up_after_bounces`` (D8) and the per-product
+    rankings are merged with ``rank``'s own ``rank_key`` — the runner's
     ``_backlog_query_queue`` shape — so a bounced-out issue the runner skips as
     ``needs_spec`` is not shown here as "up next" either, and cross-product ties
     still break by issue age rather than by product slug.
 
-    Three knobs still differ from the runner's composition:
-    - ``needs_human_retry_days`` uses ``queue.NEEDS_HUMAN_RETRY_DAYS_DEFAULT`` rather
-      than the backlog runner's stored config.
+    Two knobs still differ from the runner's composition:
     - ``min_status`` and ``respect_dependencies`` come from query params here; the
       runner reads them from its stored config (its per-product policy), so they
       apply uniformly to every product in this view.
@@ -705,9 +703,8 @@ async def queue(
         # The policies are read in the SAME session as the rows: which threshold a
         # product's issues are judged against decides what this view shows, so a
         # policy edit must not be able to land between the two reads.
-        claimed, needs_human_at = runner_row_maps(s)
-        return (load_queue_rows(s, now=now, claimed_refs=claimed,
-                                needs_human_at=needs_human_at),
+        claimed = runner_claims(s)
+        return (load_queue_rows(s, now=now, claimed_refs=claimed),
                 policies_by_slug(s))
 
     rows, policies = await db.run_sync(_rows)
@@ -1487,7 +1484,11 @@ async def patch_overlay(
     db=Depends(get_db),
 ) -> dict:
     """Manual classify / inline score edit / hold on the ViberPit-owned overlay.
-    All fields optional. ``classified_by`` records the ACTOR (spec 2026-09-18 §8):
+    All fields optional. A ``clearHold`` here is a release like any other and audits
+    the shared ``signal`` key as ``"overlay"`` — but unlike the Retry route it ALSO
+    stamps ``classified_by``/``classified_at``, because it arrives as an overlay edit
+    the person (or agent) made, not as a bare release.
+    ``classified_by`` records the ACTOR (spec 2026-09-18 §8):
     a person's login, ``assistant:<login>``, or ``lan@local`` — never a blanket
     "human". A body that applies NO field is a read-through no-op — including one
     whose only would-be effect is itself a no-op (e.g. ``clearHold`` on an item
@@ -1559,8 +1560,12 @@ async def patch_overlay(
             clear_hold(wi, actor=actor)
             if released is not None:
                 applied.append("clearHold")
+                # The same ``signal`` key every other path that ends a hold writes
+                # (the reconcile pass, the Retry route, the session tool), from the
+                # one ``RELEASE_SIGNALS`` tuple in ``server/pm/holds.py``.
                 await record_audit(db=db, type="pm.hold.release", identity=identity, detail={
-                    "workItemId": item_id, "kind": released, "actorClass": actor_class(actor)})
+                    "workItemId": item_id, "kind": released, "actorClass": actor_class(actor),
+                    "signal": "overlay"}, via="api")
     except HoldPermissionError as e:
         raise HTTPException(status_code=422, detail={
             "error": "hold_not_permitted", "message": str(e)}) from e
@@ -1638,6 +1643,46 @@ async def delete_work_item_dep(
             "error": "dep_remove_failed", "step": result.get("step"),
             "message": str(result.get("error") or "dependency removal failed")})
     return result
+
+
+@router.post("/work-items/{item_id}/hold/release")
+async def release_work_item_hold(
+    item_id: str,
+    request: Request,
+    identity: str = Depends(current_identity),
+    db=Depends(get_db),
+) -> dict:
+    """The Retry signal (spec 2026-09-18 §7): a person releases an owner_action
+    hold so the item re-enters the queue at the product default. The other two
+    signals (board edit, body edit) run in the reconcile pass through the same
+    rule module. Idempotent on an unheld item.
+
+    A ``decision`` hold is refused (422): spec §8 resolves one through its proposal,
+    and Retry would drop the question on the floor and re-queue the item with the
+    decision still unmade. Unlike the overlay's ``clearHold`` this records only the
+    release — no ``classified_by`` stamp, because nothing on the overlay was edited."""
+    from server.pm.holds import HoldPermissionError, actor_class, actor_for_request, clear_hold
+    wi = (await db.execute(
+        select(WorkItem).where(WorkItem.id == item_id))).scalar_one_or_none()
+    if wi is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found"})
+    if wi.hold_kind == "decision":
+        raise HTTPException(status_code=422, detail={
+            "error": "bad_hold",
+            "message": "a decision hold is resolved through its proposal, not released"})
+    actor = actor_for_request(request)
+    released = wi.hold_kind
+    try:
+        clear_hold(wi, actor=actor)
+    except HoldPermissionError as e:
+        raise HTTPException(status_code=422, detail={
+            "error": "hold_not_permitted", "message": str(e)}) from e
+    if released is not None:
+        await db.flush()
+        await record_audit(db=db, type="pm.hold.release", identity=identity, detail={
+            "workItemId": item_id, "kind": released, "actorClass": actor_class(actor),
+            "signal": "retry"}, via="api")
+    return {"ok": True, "released": released, "item": _work_item_to_dict(wi)}
 
 
 @router.get("/work-items/{item_id}/issue")

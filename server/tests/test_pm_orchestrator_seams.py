@@ -999,6 +999,60 @@ async def test_backlog_needs_human_threads_batch_and_reason(db_env):
     assert seen == [(["o/r#1", "o/r#2"], "max attempts (2) reached", orch._gh_run)]
 
 
+@pytest.mark.asyncio
+async def test_backlog_needs_human_writes_the_hold_and_audit_row(db_env):
+    """Spec 2026-09-18 §3: the hold IS the handoff. It must be written and
+    audited even when the best-effort GitHub comment fails (monkeypatched to
+    raise here, since forcing ``self._gh_run`` itself to fail would only prove
+    ``_issue_comment`` handles a bad ``gh`` — the seam under test is
+    ``announce_needs_human``), and an UNMIRRORED ref in the same batch
+    (``o/r#2`` here has no ``WorkItem`` row) must not block the mirrored one's
+    hold — it only logs."""
+    from sqlalchemy import select
+
+    from server.automations.context import AutomationContext
+    from server.db.models import Automation, AuditEvent, WorkItem
+    await init_db(db_env)
+    orch = _bare_orch()
+    orch._gh_run = object()
+    orch._backlog_ctx = AutomationContext("backlog-runner")
+    async with db_session() as db:
+        db.add(Automation(id="backlog-runner"))
+        db.add(WorkItem(repo="o/r", number=1, kind="issue", state="open",
+                        title="T", body="B"))
+    await orch._backlog_ctx.set_target_state(
+        "o/r#1", {"repo": "o/r", "issues": ["o/r#1", "o/r#2"], "gave_up": True})
+
+    def raising_announce(batch, reason, *, gh_run):
+        raise RuntimeError("gh comment failed (injected)")
+
+    with patch("server.automations.backlog_github.announce_needs_human", raising_announce):
+        # Must not raise: the comment is best-effort, the hold is not.
+        await orch._backlog_needs_human("o/r#1", "max attempts (2) reached")
+
+    async with db_session() as db:
+        wi = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == "o/r", WorkItem.number == 1))).scalar_one()
+        assert wi.hold_kind == "owner_action"
+        assert wi.hold_by == "runner"
+        assert wi.hold_reason == "max attempts (2) reached"
+        assert wi.hold_set_at is not None
+
+        events = (await db.execute(select(AuditEvent).where(
+            AuditEvent.type == "pm.hold.set"))).scalars().all()
+        assert len(events) == 1
+        ev = events[0]
+        assert ev.identity == "runner" and ev.via == "runner"
+        assert ev.detail["workItemId"] == wi.id
+        assert ev.detail["kind"] == "owner_action"
+        assert ev.detail["reason"] == "max attempts (2) reached"
+        assert ev.detail["actorClass"] == "system"
+        # o/r#2 has no mirror row: skipped, not a hold, not a second audit row.
+        no_mirror = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == "o/r", WorkItem.number == 2))).scalar_one_or_none()
+        assert no_mirror is None
+
+
 def test_backlog_queue_tail_returns_copy_of_cache():
     """The status-card queue-provenance seam (#990) must hand the loop a COPY
     of the cached ranked pool — mutating what it returns must never corrupt

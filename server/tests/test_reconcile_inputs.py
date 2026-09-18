@@ -3,9 +3,10 @@ from datetime import datetime, timezone
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from server.db.models import (Automation, AutomationTargetState, Base, GhProject, GhProjectItem,
+from server.db.models import (Automation, Base, GhProject, GhProjectItem,
                               Initiative, Project, ProjectRepo, Session as DbSession, WorkItem,
                               WorkItemDep)
+from server.pm.desired_state import Decision, STATUS_NEEDS_HUMAN, derive_status
 from server.pm.mirror_store import list_product_views
 from server.pm.reconcile_inputs import load_product_facts
 
@@ -50,7 +51,7 @@ def test_load_product_facts_assembles_signals():
     f5, f3, f9 = by_ref[f"{REPO}#5"], by_ref[f"{REPO}#3"], by_ref[f"{REPO}#9"]
     assert (f5.triage_state, f5.reach, f5.initiative_stage) == ("classified", 4, "build")
     assert f5.open_blocker_refs == (f"{REPO}#3",) and f5.blockers_at == T
-    assert f3.session_status == "waiting_question" and f3.needs_human_at is None
+    assert f3.session_status == "waiting_question"
     assert f9.merged_pr_at == T
     assert set(facts.mirror) == {f"{REPO}#5"} and facts.mirror[f"{REPO}#5"].item_node_id == "PVTI_5"
     assert facts.open_issue_nodes == {f"{REPO}#5": "I_5", f"{REPO}#3": "I_3", f"{REPO}#4": "I_4",
@@ -97,52 +98,39 @@ def test_a_program_initiative_yields_no_stage_field():
     assert by_ref[f"{REPO}#7"].initiative_stage == "deploy"   # phase: unaffected
 
 
-def test_a_runner_give_up_row_marks_every_issue_in_the_bundle():
-    """Phase D: ``Needs human`` comes from the runner's durable give-up row, not a
-    label. The row rides on the bundle's primary target, so every issue the runner
-    gave up on carries the same stamp — a bundle is one give-up, not one per issue."""
+def test_a_held_items_decision_is_dated_from_the_hold():
+    """Spec §7: the hold — not a runner give-up row — is the ``Needs human`` input.
+    The hold's own timestamp is the decision. Uses issue #4 (no session attached):
+    #3 carries a ``waiting_question`` session, which would outrank the hold and
+    mask this assertion."""
     db = _db(); _seed(db)
     at = datetime(2026, 9, 9, tzinfo=timezone.utc)
-    db.add(AutomationTargetState(
-        automation_id="backlog-runner", target=f"{REPO}#3",
-        state={"gave_up": True, "needs_human_at": at.isoformat(),
-               "issues": [f"{REPO}#3", f"{REPO}#4"]}))
+    held = db.query(WorkItem).filter_by(number=4).one()
+    held.hold_kind = "owner_action"
+    held.hold_set_at = at.replace(tzinfo=None)
     db.commit()
 
     by_ref = {f.ref: f for f in load_product_facts(db, list_product_views(db)[0], now=T).items}
-    assert by_ref[f"{REPO}#3"].needs_human_at == at
-    assert by_ref[f"{REPO}#4"].needs_human_at == at
-    assert by_ref[f"{REPO}#5"].needs_human_at is None
+    assert derive_status(by_ref[f"{REPO}#4"]) == Decision(STATUS_NEEDS_HUMAN, at)
 
 
-def test_a_give_up_makes_the_mirror_stale():
-    """A give-up is a DECISION — it flips the board to ``Needs human`` — so a row
-    stamped after the last sync must make the mirror stale, exactly like a dep edge.
-    Otherwise the reconciler plans that push against a board it has not re-read."""
+def test_a_hold_makes_the_mirror_stale():
+    """A hold is a DECISION — it flips the board to ``Needs human`` — so a hold set
+    after the last sync must make the mirror stale, exactly like a dep edge. Otherwise
+    the reconciler plans that push against a board it has not re-read."""
     db = _db(); _seed(db)
     product = list_product_views(db)[0]
     assert load_product_facts(db, product, now=T).newest_decision_at == T   # no rows: unchanged
 
     later = datetime(2026, 9, 9, tzinfo=timezone.utc)
-    db.add(AutomationTargetState(
-        automation_id="backlog-runner", target=f"{REPO}#3",
-        state={"gave_up": True, "needs_human_at": later.isoformat()}))
+    held = db.query(WorkItem).filter_by(number=3).one()
+    held.hold_kind = "owner_action"
+    held.hold_set_at = later.replace(tzinfo=None)
     db.commit()
 
     facts = load_product_facts(db, product, now=later)
     assert facts.newest_decision_at == later
     assert facts.mirror_synced_at < facts.newest_decision_at
-
-
-def test_a_runner_row_without_a_give_up_is_not_needs_human():
-    """A live claim is the runner working the issue, not a handoff to a human."""
-    db = _db(); _seed(db)
-    db.add(AutomationTargetState(automation_id="backlog-runner", target=f"{REPO}#3",
-                                 state={"claimed": True, "attempts": 1}))
-    db.commit()
-
-    by_ref = {f.ref: f for f in load_product_facts(db, list_product_views(db)[0], now=T).items}
-    assert by_ref[f"{REPO}#3"].needs_human_at is None
 
 
 def test_a_dep_edge_change_makes_the_mirror_stale():

@@ -2,8 +2,7 @@
 
 Every value carries the timestamp of the decision that produced it so the diff engine can apply
 the ownership rule (§3): push only when decided_at is strictly newer than GitHub's gh_updated_at.
-Status precedence: Done > session signals > needs-human (runner row or triage) > Blocked >
-Ready > Backlog.
+Status precedence: Done > session signals > needs-human (hold) > Blocked > Ready > Backlog.
 """
 from __future__ import annotations
 
@@ -22,8 +21,14 @@ STATUS_OPTIONS: tuple[str, ...] = (
     STATUS_BACKLOG, STATUS_READY, STATUS_IN_PROGRESS, STATUS_BLOCKED, STATUS_NEEDS_HUMAN, STATUS_DONE)
 
 ACTIVE_SESSION_STATUSES = frozenset({"in_progress", "retrying", "condensing"})
-HUMAN_WAIT_SESSION_STATUSES = frozenset(
-    {"waiting_question", "waiting_input", "ready_review", "needs_attention"})
+# A person's turn: a question, a permission prompt, a plan awaiting review.
+HUMAN_WAIT_SESSION_STATUSES = frozenset({"waiting_question", "waiting_input", "ready_review"})
+# A failed turn (spec 2026-09-18 §7): a bounce the runner's sweep handles, never a
+# parked card — it left the human-wait set so the ladder, not a person, sees it.
+FAILED_TURN_SESSION_STATUSES = frozenset({"needs_attention"})
+# THE liveness union every "is there a live session on this ref" reader uses.
+LIVE_SESSION_STATUSES = (ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES
+                         | FAILED_TURN_SESSION_STATUSES)
 
 #: Hold kinds that park the card (spec 2026-09-18 §7). evidence / stronger_model exit
 #: on their own and never reach the board.
@@ -46,9 +51,6 @@ class ItemFacts:
     merged_pr_at: datetime | None
     open_blocker_refs: tuple[str, ...]
     blockers_at: datetime | None
-    # When the Backlog Runner gave up on this issue (its durable give-up row), or None.
-    # Phase D: the handoff is that row, not a `needs-human` label.
-    needs_human_at: datetime | None
     initiative_stage: str | None
     initiative_stage_at: datetime | None
     # Spec 2026-09-18 §3: the hold on the item. Only owner_action / decision park it.
@@ -81,14 +83,14 @@ def derive_status(f: ItemFacts) -> Decision:
         return Decision(STATUS_DONE, f.issue_closed_at)
     if f.session_status in HUMAN_WAIT_SESSION_STATUSES:
         return Decision(STATUS_NEEDS_HUMAN, f.session_at)
-    if f.session_status in ACTIVE_SESSION_STATUSES:
+    # A failed turn is in-flight, not Ready: the session is still live, the runner's
+    # sweep owns the bounce, and ``pm.tree.issue_tier`` reads this exact union for
+    # its ``in-flight`` tier. Letting it fall through would push a dying session's
+    # card back to Ready while the queue still skips the ref as ``live_session``.
+    if f.session_status in (ACTIVE_SESSION_STATUSES | FAILED_TURN_SESSION_STATUSES):
         return Decision(STATUS_IN_PROGRESS, f.session_at)
-    if f.needs_human_at is not None or f.hold_kind in HELD_KINDS:
-        # The give-up moment is the decision; a hold dates from when the hold was SET
-        # (spec §7), falling back to the classification write only for a pre-ladder row
-        # whose hold_set_at the conversion could not fill.
-        return Decision(STATUS_NEEDS_HUMAN,
-                        f.needs_human_at or f.hold_set_at or f.classified_at)
+    if f.hold_kind in HELD_KINDS:
+        return Decision(STATUS_NEEDS_HUMAN, f.hold_set_at or f.classified_at)
     if f.open_blocker_refs:
         return Decision(STATUS_BLOCKED, f.blockers_at)
     if f.triage_state == "classified":

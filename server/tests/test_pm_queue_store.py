@@ -8,7 +8,7 @@ from server.db.models import (Automation, AutomationTargetState, Base, DispatchO
                               Session as DbSession, WorkItem, WorkItemDep)
 from server.pm import queue_store
 from server.pm.outcomes import body_fingerprint
-from server.pm.queue_store import load_queue_rows, parse_iso_utc, runner_row_maps
+from server.pm.queue_store import load_queue_rows, runner_claims
 
 NOW = datetime(2026, 9, 4, tzinfo=timezone.utc)
 
@@ -97,33 +97,31 @@ def test_open_blocker_resolves_dst_across_products_and_closed_releases_it():
     assert rows["steiner385/viberpit#11"].open_blockers == ("cairnea/KinDash#21",)  # open dst still blocks
 
 
-def test_parse_iso_utc_is_the_one_row_timestamp_parser():
-    """The single ISO parser both the orchestrator and the runner read row stamps
-    with. A stamp we cannot read is None — never a crash, never a cooldown."""
-    at = datetime(2026, 9, 1, 12, 30, tzinfo=timezone.utc)
-    assert parse_iso_utc(at.isoformat()) == at
-    # A naive stamp (written before the runner stamped tz) is read as UTC.
-    assert parse_iso_utc("2026-09-01T12:30:00") == at
-    assert parse_iso_utc(None) is None
-    assert parse_iso_utc("") is None
-    assert parse_iso_utc("not-a-date") is None
+def test_queue_store_does_not_re_export_the_iso_parser():
+    """``server.time_iso`` is THE ISO boundary (constitution VI). The queue loader
+    re-exported ``parse_iso_utc`` for callers that read the runner's row stamps;
+    the hold ladder removed the last of them (the row carries no timestamp any
+    more, spec 2026-09-18 §3), so the alias is gone and everyone imports the one
+    home module."""
+    assert not hasattr(queue_store, "parse_iso_utc")
 
 
 def test_runner_automation_id_matches_the_registered_automation():
     """``queue_store`` holds the id as a literal (importing ``BacklogRunner`` there
-    would be a cycle), so pin the two together — a renamed automation that silently
+    would drag the automation registry into the queue loader), so pin the two together — a renamed automation that silently
     matched no rows would empty the claim and give-up maps with no test failing."""
     from server.automations.backlog_runner import BacklogRunner
     assert queue_store.RUNNER_AUTOMATION_ID == BacklogRunner.id
 
 
-def test_runner_row_maps_derives_claims_and_give_ups_from_the_runner_rows():
-    """The ONE derivation of the backlog runner's durable rows into queue inputs —
+def test_runner_claims_reads_claims_and_ignores_give_ups():
+    """The ONE derivation of the backlog runner's durable rows into a claim set —
     the runner's own pool read and ``GET /api/pm/queue`` both call it, so the
-    operator's view and what agents do next can never disagree."""
+    operator's view and what agents do next can never disagree. A ``gave_up`` row
+    is neither a claim nor anything else the queue reads (spec 2026-09-18 §3): the
+    hold on the item is the queue signal now."""
     db = _db()
     db.add_all([Automation(id="backlog-runner"), Automation(id="pr-doctor")])
-    at = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
     def _state(target, state, automation_id="backlog-runner"):
         db.add(AutomationTargetState(automation_id=automation_id, target=target,
@@ -133,36 +131,27 @@ def test_runner_row_maps_derives_claims_and_give_ups_from_the_runner_rows():
     _state("o/r#3", {"claimed": True})                                # target IS the claim
     _state("o/r#4", {"claimed": False})                               # not a claim
     _state("o/r#5", {"gave_up": True, "issues": ["o/r#5", "o/r#6"],   # bundle give-up
-                     "needs_human_at": at.isoformat()})
-    _state("o/r#7", {"gave_up": True, "claimed": True,                # give-up wins over claim
-                     "needs_human_at": at.isoformat()})
-    _state("o/r#8", {"gave_up": True, "claimed": True})               # undated: neither map
+                     "held": True})
+    _state("o/r#7", {"gave_up": True, "claimed": True})               # give-up: not a claim
+    # ``held`` says only whether the hold write landed — a give-up is a non-claim
+    # either way, so neither value may leak a ref back into the claim set.
+    _state("o/r#8", {"gave_up": True, "claimed": True, "held": False})
     _state("o/r#9", {"claimed": True}, automation_id="pr-doctor")     # another automation
     db.commit()
 
-    claimed, needs_human_at = runner_row_maps(db)
-
-    assert claimed == frozenset({"o/r#1", "o/r#2", "o/r#3"})
-    assert needs_human_at == {"o/r#5": at, "o/r#6": at, "o/r#7": at}
+    assert runner_claims(db) == frozenset({"o/r#1", "o/r#2", "o/r#3"})
 
 
-def test_load_queue_rows_threads_needs_human_at():
-    """Phase D: the runner's durable give-up stamps ride onto the rows the pure
-    core cools down from — the loader only threads the map, it never reads a label."""
+def test_load_queue_rows_reads_hold_kind_off_the_item():
     db = _db()
     _seed_product(db, "viberpit", "steiner385/viberpit", board=True)
-    _item(db, "steiner385/viberpit", 5, status="Ready")
+    held = _item(db, "steiner385/viberpit", 5, status="Ready")
+    held.hold_kind, held.hold_by, held.hold_reason = "owner_action", "tony@example.com", "r"
     _item(db, "steiner385/viberpit", 6, status="Ready")
     db.commit()
-    at = datetime(2026, 9, 1, tzinfo=timezone.utc)
-
-    rows = load_queue_rows(db, now=NOW,
-                           needs_human_at={"steiner385/viberpit#5": at})
-
-    by_ref = {r.ref: r for r in rows}
-    assert by_ref["steiner385/viberpit#5"].needs_human_at == at
-    assert all(r.needs_human_at is None for ref, r in by_ref.items()
-               if ref != "steiner385/viberpit#5")
+    by_ref = {r.ref: r for r in load_queue_rows(db, now=NOW)}
+    assert by_ref["steiner385/viberpit#5"].hold_kind == "owner_action"
+    assert by_ref["steiner385/viberpit#6"].hold_kind is None
 
 
 def test_load_queue_rows_computes_per_product_bounces_from_finalised_outcomes():

@@ -1055,6 +1055,7 @@ class SessionOrchestrator:
             seed_policies=self._backlog_seed_policies_once,
             clock=time.monotonic,
             needs_human=self._backlog_needs_human,
+            held_targets=self._backlog_held_targets,
             session_ended=self._backlog_session_ended,
             session_gone=self._backlog_session_gone,
             session_ran=self._backlog_session_ran,
@@ -5768,9 +5769,10 @@ class SessionOrchestrator:
         counts, and is the same one ``GET /api/pm/queue`` renders, so what the
         operator sees is what agents will do next. Refs this runner has already
         claimed are excluded up front (a claim is durable state, not a label
-        read), so a claimed-but-not-yet-spawned issue can never be picked twice,
-        and refs the runner GAVE UP on carry their give-up time into the queue's
-        needs-human cooldown (Phase D: the row is the signal, not a label).
+        read), so a claimed-but-not-yet-spawned issue can never be picked twice.
+        A held item (spec 2026-09-18 §3: ``owner_action`` / ``decision`` on the
+        item itself) is skipped as "held" — there is no cooldown to wait out, only
+        a human signal that releases it.
 
         Scope and reach are the PRODUCTS' now (policy phase 1, spec §5): a product
         whose policy says ``dispatch: off`` contributes nothing, and each ON
@@ -5791,23 +5793,21 @@ class SessionOrchestrator:
         from server.automations.product_policy import is_on, policies_by_slug
         from server.db.models import Project
         from server.pm.mirror_store import list_product_views
-        from server.pm.queue import (NEEDS_HUMAN_RETRY_DAYS_DEFAULT, rank, rank_key,
-                                     to_candidate)
-        from server.pm.queue_store import load_queue_rows, runner_row_maps
+        from server.pm.queue import rank, rank_key, to_candidate
+        from server.pm.queue_store import load_queue_rows, runner_claims
 
         now = datetime.now(timezone.utc)
         _EPOCH = datetime.min
 
         def _rows(s):
-            # The runner's claims and give-ups come from the SAME derivation
-            # ``GET /api/pm/queue`` uses (``runner_row_maps``), in the same session
-            # as the mirror read, so the operator's view cannot disagree with the
-            # pool selection draws from. The policies are read in that same session
-            # too: which products are on decides the pool, so a policy edit must
-            # not be able to land between the two reads.
-            claimed, needs_human_at = runner_row_maps(s)
-            rows = load_queue_rows(s, now=now, claimed_refs=claimed,
-                                   needs_human_at=needs_human_at)
+            # The runner's claims come from the SAME derivation ``GET /api/pm/queue``
+            # uses (``runner_claims``), in the same session as the mirror read, so
+            # the operator's view cannot disagree with the pool selection draws
+            # from. The policies are read in that same session too: which products
+            # are on decides the pool, so a policy edit must not be able to land
+            # between the two reads.
+            claimed = runner_claims(s)
+            rows = load_queue_rows(s, now=now, claimed_refs=claimed)
             # Which products are on, and each one's repos, in
             # ``Project.created_at`` order — so the ``priority`` strategy serves
             # products oldest-first (the deterministic stand-in for the retired
@@ -5825,9 +5825,6 @@ class SessionOrchestrator:
         # order, the spawn's model) so they cannot read a different answer.
         self._backlog_last_policies = policies
         self._backlog_last_repos = repos_by_slug
-        raw_days = config.get("needs_human_retry_days")
-        retry_days = (NEEDS_HUMAN_RETRY_DAYS_DEFAULT if raw_days is None
-                      else max(0, int(raw_days)))
         by_product: dict[str, list] = {}
         for r in rows:
             if is_on(policies.get(r.product)):
@@ -5843,9 +5840,6 @@ class SessionOrchestrator:
                 rows_p,
                 min_status=policy["queue_min_status"],
                 respect_dependencies=bool(policy["respect_dependencies"]),
-                # The needs-human cooldown stays runner-wide: it is the runner's
-                # own give-up window, not a property of the product's board.
-                needs_human_retry_days=retry_days,
                 now=now,
                 # D8: THE bounce threshold, from this product's own policy.
                 give_up_after_bounces=int(policy["give_up_after_bounces"]))
@@ -6078,18 +6072,48 @@ class SessionOrchestrator:
                      repo=target.split("#", 1)[0], product=st.get("product"))
 
     async def _backlog_needs_human(self, target: str, reason: str) -> None:
-        """GIVE-UP path: comment the handoff, carrying the ``reason`` a human needs
-        in order to pick the target up. Used only after ``max_attempts``, a
-        PR-Doctor give-up or a merged PR the human gate blocked.
-
-        The handoff SIGNAL is the runner's durable ``gave_up`` row (Phase D) —
-        the reconciler stamps board Status ``Needs human`` from it and the queue
-        reads its cooldown; this only says so on the issue. Best-effort, off the
-        event loop."""
+        """GIVE-UP path (spec 2026-09-18 §3): write the owner_action hold on every
+        issue of the batch — the hold IS the handoff — then comment it (best-effort).
+        The runner's ``gave_up`` row survives for slot accounting only and is
+        dropped by ``_release_give_ups`` once the hold is gone."""
+        from datetime import datetime, timezone
+        from sqlalchemy import select, tuple_
+        from server.audit import record_audit
         from server.automations import backlog_github
+        from server.db.models import WorkItem
+        from server.pm.holds import RUNNER_ACTOR, actor_class, set_runner_hold
+        from server.pm.refs import split_ref
         batch = await self._backlog_batch_for(target)
-        await asyncio.to_thread(
-            backlog_github.announce_needs_human, batch, reason, gh_run=self._gh_run)
+        parts = [p for p in (split_ref(r) for r in batch.issues) if p is not None]
+        now = datetime.now(timezone.utc)
+        if parts:
+            async with db_session() as db:
+                items = (await db.execute(select(WorkItem).where(
+                    WorkItem.kind == "issue",
+                    tuple_(WorkItem.repo, WorkItem.number).in_(parts)))).scalars().all()
+                for wi in items:
+                    set_runner_hold(wi, reason=reason, now=now)
+                    await record_audit(db=db, type="pm.hold.set", identity=RUNNER_ACTOR, detail={
+                        "workItemId": wi.id, "kind": "owner_action", "reason": reason,
+                        "actorClass": actor_class(RUNNER_ACTOR)}, via="runner")
+                missing = set(batch.issues) - {f"{w.repo}#{w.number}" for w in items}
+                if missing:
+                    log.warning("backlog_runner.give_up_unmirrored refs=%s", sorted(missing))
+        try:
+            await asyncio.to_thread(
+                backlog_github.announce_needs_human, batch, reason, gh_run=self._gh_run)
+        except Exception:
+            # Best-effort exactly like the docstring claims: the hold above is
+            # already committed, and this method must not raise on a comment
+            # failure even when called directly — ``_give_up`` also guards this
+            # seam, so this is belt and suspenders, not the only backstop.
+            log.warning("backlog_needs_human.announce_failed target=%s", target,
+                        exc_info=True)
+
+    async def _backlog_held_targets(self) -> "frozenset[str]":
+        from server.pm.holds import held_refs
+        async with db_session() as db:
+            return await db.run_sync(held_refs)
 
     async def _backlog_close_out(self, target: str, info) -> str:
         """MERGED path: close every issue in the batch with a comment linking
@@ -7177,7 +7201,7 @@ class SessionOrchestrator:
         as echoes), then back-syncing any human "Stage" edit onto the linked
         Initiative. Returns the human edits for the loop to surface."""
         from datetime import datetime, timedelta, timezone
-        from server.pm import journal, mirror_store
+        from server.pm import holds, journal, mirror_store
         now = datetime.now(timezone.utc)
 
         def _sync(s):
@@ -7185,6 +7209,10 @@ class SessionOrchestrator:
             edits = mirror_store.upsert_project_items(
                 s, gh_db_id, items, now, own_writes=own)
             mirror_store.back_sync_stage(s, edits)
+            # Spec 2026-09-18 §7: a human board edit to Ready/Backlog (or a body-
+            # fingerprint drift, checked against every owner_action-held row) releases
+            # the hold — the reconcile pass is where that signal is observed.
+            holds.release_by_signals(s, human_edits=edits, now=now)
             return edits
 
         async with db_session() as db:
@@ -9077,9 +9105,8 @@ class SessionOrchestrator:
         prior = await self._sdlc_dedupe_session_for(origin_ref)
         if prior is not None:
             prior_id, prior_status = prior
-            from server.pm.desired_state import (
-                ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES)
-            if prior_status in (ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES):
+            from server.pm.desired_state import LIVE_SESSION_STATUSES
+            if prior_status in LIVE_SESSION_STATUSES:
                 return None  # still decomposing (C4-R14) — a silent no-op
             # Finished, but still what spawn_session's dedupe would hand back, and
             # the attempt number has not moved (its ingest never wrote a proposal).

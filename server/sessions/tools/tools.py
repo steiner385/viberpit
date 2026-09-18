@@ -243,6 +243,7 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                     await record_audit(db, "pm.hold.release", ctx.identity,
                                        {"workItemId": wi.id, "kind": released,
                                         "reason": str(args.get("reason") or ""), "actorClass": "agent",
+                                        "signal": "session",   # from holds.RELEASE_SIGNALS
                                         "session_id": ctx.session_id}, via="session")
         except ValueError as e:  # HoldPermissionError is a ValueError subclass
             raise ToolArgError(str(e)) from e

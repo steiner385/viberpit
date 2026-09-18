@@ -149,3 +149,73 @@ def test_apply_session_hold_resolves_ref_and_limits_kind(tmp_path):
                 await apply_session_hold(db, ref="o/r#99", kind="evidence", reason="r",
                                          session_id="s1", now=NOW)
     asyncio.run(_run())
+
+
+def test_runner_and_reconciler_are_system_actors():
+    from server.pm.holds import RECONCILER_ACTOR, RUNNER_ACTOR, actor_class, set_runner_hold
+    assert actor_class(RUNNER_ACTOR) == "system"
+    assert actor_class(RECONCILER_ACTOR) == "system"
+    wi = WorkItem(repo="o/r", number=1, kind="issue", title="t", body="b")
+    set_runner_hold(wi, reason="max attempts (2) reached with no mergeable PR", now=NOW)
+    assert (wi.hold_kind, wi.hold_by) == ("owner_action", RUNNER_ACTOR)
+    assert wi.hold_set_at == NOW and wi.hold_fingerprint
+
+
+def _sync_db():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from server.db.models import Base
+    e = create_engine("sqlite://")
+    Base.metadata.create_all(e)
+    return Session(e)
+
+
+def _held(db, number, *, kind="owner_action", body="b", state="open"):
+    wi = WorkItem(repo="o/r", number=number, kind="issue", state=state, title="t", body=body)
+    set_hold(wi, kind=kind, reason="r", actor="tony@example.com", now=NOW)
+    db.add(wi)
+    db.flush()
+    return wi
+
+
+def test_held_refs_lists_open_owner_action_and_decision_holds_only():
+    from server.pm.holds import held_refs
+    db = _sync_db()
+    _held(db, 1)
+    _held(db, 2, kind="decision")
+    _held(db, 3, kind="evidence")
+    _held(db, 4, state="closed")
+    db.add(WorkItem(repo="o/r", number=5, kind="issue", state="open", title="t", body="b"))
+    db.commit()
+    assert held_refs(db) == frozenset({"o/r#1", "o/r#2"})
+
+
+def test_release_by_signals_board_edit_and_body_edit():
+    from server.pm.holds import RELEASE_SIGNALS, release_by_signals
+    from server.pm.mirror_store import HumanEdit
+    db = _sync_db()
+    by_board = _held(db, 1)
+    by_body = _held(db, 2)
+    untouched = _held(db, 3)
+    evidence = _held(db, 4, kind="evidence")
+    by_body.body = "edited after the hold"          # fingerprint drift
+    db.flush()
+    edits = [HumanEdit("o/r#1", "Status", "Needs human", "Ready"),
+             HumanEdit("o/r#3", "Score", 1.0, 2.0),           # not a status edit
+             HumanEdit("o/r#4", "Status", "Needs human", "Backlog")]  # evidence: not released
+    released = release_by_signals(db, human_edits=edits, now=NOW)
+    db.commit()
+    assert sorted((w.number, s) for w, s in released) == [(1, "board_edit"), (2, "body_edit")]
+    assert by_board.hold_kind is None and by_body.hold_kind is None
+    assert untouched.hold_kind == "owner_action"
+    assert evidence.hold_kind == "evidence"
+    # Every way an owner_action hold ends, in ONE tuple: the two this rule detects,
+    # the Retry endpoint, and an explicit clear through the overlay editor. Time is
+    # not one of them.
+    assert set(RELEASE_SIGNALS) == {"board_edit", "body_edit", "retry", "overlay", "session"}
+    from server.db.models import AuditEvent
+    rows = db.query(AuditEvent).filter(AuditEvent.type == "pm.hold.release").all()
+    assert sorted(r.detail["signal"] for r in rows) == ["board_edit", "body_edit"]
+    assert all(r.detail["actorClass"] == "system" and r.detail["kind"] == "owner_action" for r in rows)
+    # idempotent: a second pass releases nothing
+    assert release_by_signals(db, human_edits=edits, now=NOW) == []

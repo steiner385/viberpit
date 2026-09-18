@@ -237,7 +237,7 @@ async def test_expired_human_wait_stale_snapshot_cannot_delete_manual_retry(runn
     await begin_session_execution(first["session_id"])
     before = await ctx.get_target_state("o/r#1")
     assert await attest_session_stopped(before["ownership_token"], 1)
-    parked = {**before, "gave_up": True, "claimed": False, "needs_human_at": "2000-01-01"}
+    parked = {**before, "gave_up": True, "claimed": False, "reason": "test"}
     assert await ctx.compare_target_state("o/r#1", before, parked)
     loop._session_work_stopped = AsyncMock(return_value=True)
     assert (await dispatch(loop, "o/r#1"))["status"] == "spawned"

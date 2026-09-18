@@ -7,17 +7,25 @@ the set/clear operations every route and tool must go through.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from server.db.models import HOLD_KINDS, WorkItem
 from server.pm.outcomes import body_fingerprint
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from sqlalchemy.orm import Session
+
+    from server.pm.mirror_store import HumanEdit
 
 #: Kinds a non-person (session, assistant, loopback caller) may set or clear.
 AGENT_SETTABLE: frozenset[str] = frozenset({"evidence", "stronger_model"})
 
 #: System actors: the runner and the automations. They ARE the ladder and the
 #: reject flows, so they may write any kind — but they are never "human".
-SYSTEM_ACTORS: frozenset[str] = frozenset({"runner", "migration"})
+#: (RUNNER_ACTOR / RECONCILER_ACTOR / SYSTEM_ACTORS are defined below, after
+#: ``set_reject_hold``, next to the release rule that is their main consumer.)
 SYSTEM_PREFIXES: tuple[str, ...] = ("automation:",)
 AGENT_PREFIXES: tuple[str, ...] = ("session:", "assistant:")
 #: The synthetic identity handed to an unattributed loopback caller
@@ -90,6 +98,86 @@ def set_reject_hold(wi: WorkItem, *, actor: str, now: datetime) -> None:
     wi.hold_by = actor
     wi.hold_set_at = now
     wi.hold_fingerprint = body_fingerprint(wi.title, wi.body)
+
+
+RUNNER_ACTOR = "runner"
+RECONCILER_ACTOR = "reconciler"
+SYSTEM_ACTORS: frozenset[str] = frozenset({RUNNER_ACTOR, RECONCILER_ACTOR, "migration"})
+
+#: Every way an owner_action hold ends (spec §7), as ONE tuple so the two API paths
+#: and the reconcile pass cannot audit a release in different shapes. Time is not one
+#: of them. ``board_edit`` / ``body_edit`` are detected by ``release_by_signals``;
+#: ``retry`` is the Retry endpoint; ``overlay`` is an explicit clear through the
+#: overlay editor (e.g. an agent taking the convert-to-fix exit on its own evidence
+#: hold), which is an overlay EDIT as well as a release and so also stamps
+#: ``classified_by``; ``session`` is a coding session clearing its own hold through
+#: the ``set_hold`` tool (``server/sessions/tools/tools.py``, ``via="session"``).
+RELEASE_SIGNALS: tuple[str, ...] = ("board_edit", "body_edit", "retry", "overlay", "session")
+#: Board Status values a human moves a card to in order to hand it back.
+RELEASING_BOARD_STATUSES: frozenset[str] = frozenset({"Ready", "Backlog"})
+
+Released = tuple[WorkItem, str]
+
+
+def set_runner_hold(wi: WorkItem, *, reason: str, now: datetime) -> None:
+    """The Backlog Runner's give-up (spec §3): the hold IS the handoff; the runner's
+    own ``gave_up`` row survives only for slot accounting."""
+    set_hold(wi, kind="owner_action", reason=reason, actor=RUNNER_ACTOR, now=now)
+
+
+def held_refs(db: "Session") -> frozenset[str]:
+    """``owner/repo#N`` of every open issue parked by an owner_action or decision
+    hold — what the runner's sweep reads to drop ``gave_up`` rows that are no longer
+    backed by a hold."""
+    from sqlalchemy import select
+
+    from server.pm.desired_state import HELD_KINDS
+    rows = db.execute(select(WorkItem.repo, WorkItem.number).where(
+        WorkItem.kind == "issue", WorkItem.state == "open",
+        WorkItem.hold_kind.in_(sorted(HELD_KINDS)))).all()
+    return frozenset(f"{repo}#{number}" for repo, number in rows)
+
+
+def _audit_release(db: "Session", wi: WorkItem, *, kind: str, signal: str, actor: str) -> None:
+    from server.audit import redact_detail
+    from server.db.models import AuditEvent
+    db.add(AuditEvent(type="pm.hold.release", identity=actor, via="reconciler",
+                      detail=redact_detail({"workItemId": wi.id, "kind": kind,
+                                            "actorClass": actor_class(actor), "signal": signal})))
+
+
+def release_by_signals(db: "Session", *, human_edits: "Sequence[HumanEdit]",
+                       now: datetime) -> list[Released]:
+    """THE release rule for owner_action holds (spec §7), run once per reconcile
+    pass: a human board edit to Ready/Backlog, or an issue body that no longer
+    matches the fingerprint taken when the hold was set. The Retry endpoint is the
+    third signal and calls ``clear_hold`` directly with the person's actor.
+    Idempotent: a released item has no hold to release again.
+
+    Deviation from spec §7: the board edit is not compared against ``hold_set_at`` —
+    ``HumanEdit`` has no timestamp and the mirror fetch time is not threaded here. A
+    hold written during the fetch that follows a human's move to Ready can be
+    released by that pre-hold edit; recorded as a follow-up in spec §14."""
+    from sqlalchemy import select
+    released: list[Released] = []
+    board_refs = {e.ref for e in human_edits
+                  if e.field == "Status" and str(e.new) in RELEASING_BOARD_STATUSES}
+    held = db.scalars(select(WorkItem).where(
+        WorkItem.kind == "issue", WorkItem.hold_kind == "owner_action")).all()
+    for wi in held:
+        ref = f"{wi.repo}#{wi.number}"
+        signal: str | None = None
+        if ref in board_refs:
+            signal = "board_edit"
+        elif wi.hold_fingerprint and wi.hold_fingerprint != body_fingerprint(wi.title, wi.body):
+            signal = "body_edit"
+        if signal is None:
+            continue
+        clear_hold(wi, actor=RECONCILER_ACTOR)
+        _audit_release(db, wi, kind="owner_action", signal=signal, actor=RECONCILER_ACTOR)
+        released.append((wi, signal))
+    db.flush()
+    return released
 
 
 def clear_hold(wi: WorkItem, *, actor: str) -> None:

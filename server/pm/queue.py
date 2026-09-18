@@ -9,17 +9,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from .desired_state import STATUS_BACKLOG, STATUS_BLOCKED, STATUS_OPTIONS, STATUS_READY
+from .desired_state import HELD_KINDS, STATUS_BACKLOG, STATUS_BLOCKED, STATUS_OPTIONS, STATUS_READY
 from .outcomes import bounced_out
-
-# How long an escalated issue waits for a human before the runner reconsiders it.
-# Escalation stamps ``needs_human_at`` on the runner's row; the runner deletes the
-# row once the window passes, so a permanently failing issue is retried at most
-# once per window, never in a tight loop. 0 disables retry entirely (needs-human
-# becomes a permanent handoff again).
-NEEDS_HUMAN_RETRY_DAYS_DEFAULT = 7
 
 # Issues the runner must never treat as implementable work (#637). A backlog
 # session writes code and opens a PR — but bot/app accounts open automated
@@ -49,7 +42,7 @@ SKIP_ISSUE_TITLES = frozenset({"dependency dashboard"})
 URGENT_LABELS = frozenset({"deploy-monitor"})
 
 SKIP_REASONS = ("status", "blocked", "live_session", "claimed", "assigned", "epic_open", "bot",
-                 "needs_human_cooldown", "needs_spec")
+                 "held", "needs_spec")
 
 # The only two ``min_status`` values the queue accepts today (C1 will feed this from
 # stored runner config). Explicit rather than derived from a slice of STATUS_OPTIONS
@@ -85,10 +78,10 @@ class QueueRow:
     open_blockers: tuple[str, ...]
     live_session: bool
     claimed: bool
-    # The runner's durable give-up mark (Phase D): set while the issue waits for
-    # a human. Defaulted so every caller that has no runner state (the API's
-    # queue view) keeps constructing rows positionally.
-    needs_human_at: datetime | None = None
+    # Spec 2026-09-18 §3: the hold on the item. ``owner_action`` / ``decision`` park
+    # the row (``skip_reason`` → "held"); ``evidence`` / ``stronger_model`` ride
+    # through to the entry so the spawn can pick its prompt and rung.
+    hold_kind: str | None = None
     # D8: how many FINALISED (non-``running``/``merged``) dispatches this exact
     # body (by ``body_fingerprint``) has already had — the loader
     # (``queue_store.load_queue_rows``) computes it, ``skip_reason`` compares it
@@ -118,6 +111,9 @@ class QueueEntry:
     # cross-product merge would re-sort by a key that can no longer see urgency
     # and quietly undo the preemption.
     urgent: bool = False
+    # Carried off the row so a caller downstream of ranking (item 4's spawn) can
+    # still pick the hold's prompt/rung without re-reading the row.
+    hold_kind: str | None = None
 
 
 def _is_bot(row: QueueRow) -> bool:
@@ -154,7 +150,6 @@ def skip_reason(
     *,
     min_status: str,
     respect_dependencies: bool,
-    needs_human_retry_days: int,
     now: datetime,
     give_up_after_bounces: int = 0,
 ) -> str | None:
@@ -166,12 +161,10 @@ def skip_reason(
     """
     min_rank = _min_status_rank(min_status)
     # Checked BEFORE the status gate: the reconciler stamps board Status "Needs
-    # human" from exactly this mark, so a status-first check would report these
-    # rows as plain "status" skips and the card would lose its needs-human gauge.
-    if row.needs_human_at is not None and (
-            needs_human_retry_days <= 0
-            or now - row.needs_human_at < timedelta(days=needs_human_retry_days)):
-        return "needs_human_cooldown"
+    # human" from exactly this hold, so a status-first check would report these
+    # rows as plain "status" skips and the card would lose its held gauge.
+    if row.hold_kind in HELD_KINDS:
+        return "held"
     # D8: this body has already bounced enough — a spec edit (which changes the
     # fingerprint the count is keyed on) is what re-arms it, not time.
     if bounced_out(row.bounces, give_up_after_bounces):
@@ -226,7 +219,6 @@ def rank(
     *,
     min_status: str = STATUS_READY,
     respect_dependencies: bool = True,
-    needs_human_retry_days: int = NEEDS_HUMAN_RETRY_DAYS_DEFAULT,
     now: datetime,
     give_up_after_bounces: int = 0,
 ) -> tuple[list[QueueEntry], dict[str, int]]:
@@ -237,7 +229,6 @@ def rank(
             row,
             min_status=min_status,
             respect_dependencies=respect_dependencies,
-            needs_human_retry_days=needs_human_retry_days,
             now=now,
             give_up_after_bounces=give_up_after_bounces,
         )
@@ -248,7 +239,7 @@ def rank(
     kept.sort(key=rank_key)
     return [
         QueueEntry(r.ref, r.repo, r.number, r.product, r.title, r.body, r.url, r.score,
-                   r.gh_created_at, is_urgent(r))
+                   r.gh_created_at, is_urgent(r), hold_kind=r.hold_kind)
         for r in kept
     ], skipped
 
@@ -268,4 +259,7 @@ def to_candidate(e: QueueEntry) -> dict:
         # urgency verdict has to cross that hand-off as data — a candidate dict is
         # all it receives.
         "urgent": e.urgent,
+        # Carried so the runner's spawn (item 4) can pick the hold's prompt/rung
+        # without re-reading the row — same reason ``urgent`` rides along.
+        "hold_kind": e.hold_kind,
     }

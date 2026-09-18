@@ -41,7 +41,7 @@ def _item(number, **over):
     base = dict(ref=f"{REPO}#{number}", issue_state="open", issue_closed_at=None,
                 triage_state="classified", classified_at=T, reach=4, impact=3, effort=2,
                 confidence=80, session_status=None, session_at=None, merged_pr_at=None,
-                open_blocker_refs=(), blockers_at=None, needs_human_at=None,
+                open_blocker_refs=(), blockers_at=None,
                 initiative_stage=None, initiative_stage_at=None)
     base.update(over)
     return ItemFacts(**base)

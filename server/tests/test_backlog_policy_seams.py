@@ -74,7 +74,7 @@ async def _seed_item(repo: str, number: int, *, status: str = "Ready",
 
 
 def _config(**over) -> dict:
-    cfg = {"selection_strategy": "balanced", "needs_human_retry_days": 7}
+    cfg = {"selection_strategy": "balanced"}
     cfg.update(over)
     return cfg
 

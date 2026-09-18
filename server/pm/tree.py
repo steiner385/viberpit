@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from server.db.models import INITIATIVE_STAGES
 from server.pm.desired_state import (
     ACTIVE_SESSION_STATUSES,
+    FAILED_TURN_SESSION_STATUSES,
     HELD_KINDS,
     HUMAN_WAIT_SESSION_STATUSES,
     STATUS_BLOCKED,
@@ -128,7 +129,8 @@ def issue_tier(state: str | None, triage_state: str | None,
         return "needs-you"
     if has_open_blocker or board_status == STATUS_BLOCKED:
         return "blocked"
-    if session_status in ACTIVE_SESSION_STATUSES or board_status == STATUS_IN_PROGRESS:
+    if (session_status in (ACTIVE_SESSION_STATUSES | FAILED_TURN_SESSION_STATUSES)
+            or board_status == STATUS_IN_PROGRESS):
         return "in-flight"
     return "idle"
 

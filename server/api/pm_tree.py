@@ -15,7 +15,7 @@ from server.db import get_db
 from server.db.models import (
     Feature, FeatureLink, GhProjectItem, Initiative, Project, ProjectRepo,
     Session as DbSession, TriageItem, TriageProposal, WorkItem, WorkItemDep)
-from server.pm.desired_state import ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES
+from server.pm.desired_state import LIVE_SESSION_STATUSES
 from server.pm.map_changes import Pointer, open_pointer_rows
 from server.pm.outcomes import body_fingerprint, bounces_stmt, rows_to_bounces
 from server.pm.refs import split_ref
@@ -25,8 +25,6 @@ from server.pm.tree import (
     issue_tier)
 
 router = APIRouter(prefix="/api/pm", tags=["pm"])
-
-_LIVE = ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES
 
 
 def _ref(w: WorkItem) -> str:
@@ -70,7 +68,7 @@ async def _issue_facts(db, items: list[WorkItem]) -> tuple[
         if d.src_ref and d.dst_ref and dst_state.get(d.dst_ref, "open") == "open":
             blockers.setdefault(d.src_ref, []).append(d.dst_ref)
     sessions = (await db.execute(select(DbSession.origin_ref, DbSession.status).where(
-        DbSession.origin_ref.in_(refs), DbSession.status.in_(_LIVE)))).all()
+        DbSession.origin_ref.in_(refs), DbSession.status.in_(LIVE_SESSION_STATUSES)))).all()
     session_by_ref = {ref: st for ref, st in sessions}
     board_status: dict[str, str | None] = {}
     if ids:

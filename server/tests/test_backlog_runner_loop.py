@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from unittest.mock import AsyncMock
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from server.automations.backlog_selection import Batch
 from server.automations.context import AutomationContext
@@ -143,7 +143,8 @@ def build_loop(*, mode="on", config=None, clock=None,
                credential_alerts=None, verify_ready=None, queue_tail=None,
                wall_clock=None, needs_human_raises=False,
                spawn_result=None, session_ran=None, pr_doctor_attempts=None,
-               pr_doctor_attempts_fn=None, session_gone=None):
+               pr_doctor_attempts_fn=None, session_gone=None,
+               held: "set[str] | None" = None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .announced and
@@ -160,6 +161,9 @@ def build_loop(*, mode="on", config=None, clock=None,
             self.spawns: list = []
             self.announced: list = []
             self.needs_humans: list = []
+            # The give-up seam's failure is a per-tick fact, not a per-loop one:
+            # a test flips this to model a gh/DB outage that later clears.
+            self.needs_human_raises = needs_human_raises
             self.close_outs: list = []
             # candidate queue: pop from the front on each select_batch
             self.candidates: list = list(candidates or [])
@@ -206,8 +210,11 @@ def build_loop(*, mode="on", config=None, clock=None,
 
     async def needs_human(target, reason):
         rec.needs_humans.append((target, reason))
-        if needs_human_raises:
+        if rec.needs_human_raises:
             raise RuntimeError("gh comment failed (injected)")
+
+    async def _held():
+        return frozenset(held or ())
 
     async def close_out(target, info):
         rec.close_outs.append((target, info))
@@ -293,10 +300,11 @@ def build_loop(*, mode="on", config=None, clock=None,
         queue_tail=queue_tail,
         wall_clock=wall_clock,   # None → the loop's real UTC clock
         session_gone=session_gone,
+        held_targets=lambda: _held(),
     )
     # These policy/outcome tests model an observed stopped actor. Native proof
     # and unknown lifecycles are exercised by test_backlog_ownership.py.
-    loop._work_stopped = AsyncMock(return_value=True)
+    loop._work_stopped = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
     async def handoff(target, st, _info):
         return await ctx.compare_target_state(target, st, {**st, "handed_off": True})
@@ -806,30 +814,38 @@ def test_terminal_watch_gave_up_unclaims_and_needs_human(tmp_path):
                 automation_id="pr-doctor", level="warn", summary="gave up",
                 kind="gave_up", target="r#1", detail={"origin_ref": "r#1"}))
 
+        # ``held`` simulates the owner_action hold the real ``needs_human`` seam
+        # (``_backlog_needs_human``) writes synchronously as part of the give-up —
+        # this fake seam only records the call, so the test holds the ref itself
+        # to keep the row past the give-up tick's own ``_release_give_ups``.
         loop, rec, ctx = build_loop(
             config=make_config(max_concurrent=1),
             candidates=[batch("r#1")],
             pr_status={},  # no live PR status
+            held={"r#1"},
         )
         await loop.tick()  # spawn r#1, record handoff state
         assert len(rec.spawns) == 1
-        # Next sweep sees the pr-doctor gave_up for r#1 → runner gives up too.
+        # The same tick's sweep already sees the pr-doctor gave_up for r#1 (the
+        # event predates the tick) → the runner gives up too, same tick.
         await loop.tick()
         assert [t for t, _ in rec.needs_humans] == ["r#1"]  # GIVE-UP seam called
         gave = await ctx.list_events(kind="gave_up")
         assert len(gave) >= 1
         st = await ctx.get_target_state("r#1")
-        # Phase D: the row SURVIVES, stamped — it is the needs-human signal.
-        assert st["gave_up"] is True and st["needs_human_at"]
+        # Spec 2026-09-18 §3: the row SURVIVES for slot accounting, but the hold
+        # (not a timestamp on this row) is the handoff now.
+        assert st["gave_up"] is True and "needs_human_at" not in st
         assert "pr-doctor gave up" in st["reason"]
 
     asyncio.run(run())
 
 
-def test_give_up_keeps_a_row_with_needs_human_at(tmp_path):
-    """Phase D: exhausting ``max_attempts`` no longer deletes the row and writes a
-    label — it keeps the row, stamped with the wall-clock time of the give-up and
-    the reason. That row IS the needs-human signal (queue cooldown, board Status)."""
+def test_give_up_keeps_a_row_with_no_needs_human_at(tmp_path):
+    """Spec 2026-09-18 §3: exhausting ``max_attempts`` no longer deletes the row
+    and writes a label — it keeps the row (for slot accounting) with the reason,
+    but the row itself carries no timestamp. The hold the runner writes on the
+    issue IS the handoff now; a human releases it, never a timer."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'gu1.db'}"
 
     async def run():
@@ -847,29 +863,35 @@ def test_give_up_keeps_a_row_with_needs_human_at(tmp_path):
         await loop.tick()          # attempts → 2 == max → give up
 
         st = await ctx.get_target_state("o/r#7")
-        assert st["gave_up"] is True and st["needs_human_at"] == at.isoformat()
+        assert st["gave_up"] is True and "needs_human_at" not in st
         assert st["issues"] == ["o/r#7", "o/r#8"] and st["repo"] == "o/r"
         assert "max attempts" in st["reason"]
         assert rec.needs_humans == [("o/r#7", st["reason"])]
         # A give-up row is terminal, not a claim: it must not read as in flight.
         assert not st.get("claimed")
+        # The hold write returned, so the row records that its handoff landed —
+        # that flag is what lets the next tick drop the row instead of retrying.
+        assert st["held"] is True
 
     asyncio.run(run())
 
 
-def test_give_up_row_is_stamped_even_when_the_announce_fails(tmp_path):
-    """The announce is a best-effort side channel (Task 3 makes it a real ``gh``
-    comment); the ROW is the signal. If the announce raises after the row were
-    written second, the sweep's per-target guard would swallow it and the target
-    would sit claimed at max attempts, holding a slot and re-emitting ``gave_up``
-    every sweep. Row first, announce guarded."""
+def test_a_failed_hold_write_parks_the_row_unheld_and_is_retried_until_it_lands(tmp_path):
+    """The give-up handoff spans two transactions, so it must be RETRIED, never dropped.
+
+    ``_give_up`` parks the row first (``held: False``) and only then writes the
+    owner_action hold that IS the handoff. If that write fails, a row that the next
+    tick dropped would put the issue straight back in the pool with no handoff at
+    all. So an unheld ``gave_up`` row is re-announced every tick and kept until the
+    seam succeeds, at which point the row records ``held: True``."""
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'gu2.db'}"
 
     async def run():
         await init_db(db_url=db_url)
         await _seed_row()
         at = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
-        loop, rec, ctx = build_loop(candidates=[], pr_status={},
+        # ``held=set()``: the fake seam raised, so no hold exists on the item.
+        loop, rec, ctx = build_loop(candidates=[], pr_status={}, held=set(),
                                     wall_clock=lambda: at, needs_human_raises=True,
                                     config=make_config())
         await _set_owned_state(ctx, "o/r#7", {
@@ -879,97 +901,146 @@ def test_give_up_row_is_stamped_even_when_the_announce_fails(tmp_path):
         await loop.tick()          # must not raise out of the sweep
 
         st = await ctx.get_target_state("o/r#7")
-        assert st["gave_up"] is True and st["needs_human_at"] == at.isoformat()
+        assert st["gave_up"] is True and "needs_human_at" not in st
         assert not st.get("claimed")
+        assert st["held"] is False          # the handoff did NOT land
         assert len(rec.needs_humans) == 1
-        # Second sweep: the row is terminal, so no repeat give-up / announce.
+
+        # (a) Second tick: still failing, and NOTHING is held — the row must
+        # survive anyway (dropping it re-dispatches with no handoff), with one
+        # retry of the seam and no repeat give-up event.
         await loop.tick()
-        assert len(rec.needs_humans) == 1
+        st = await ctx.get_target_state("o/r#7")
+        assert st["gave_up"] is True and st["held"] is False
+        assert len(rec.needs_humans) == 2
+        assert await ctx.list_events(kind="hold_released") == []
         assert len(await ctx.list_events(kind="gave_up")) == 1
 
+        # (b) The outage clears: the next tick's retry lands and the row records it.
+        rec.needs_human_raises = False
+        await loop.tick()
+        st = await ctx.get_target_state("o/r#7")
+        assert st["held"] is True and st["gave_up"] is True
+        assert len(rec.needs_humans) == 3
+        assert await ctx.list_events(kind="hold_released") == []   # not this tick
+
+        # From here the row follows the hold like any other: this fake reports no
+        # held refs, so the tick after the one that recorded the handoff drops it.
+        await loop.tick()
+        assert not await ctx.get_target_state("o/r#7")
+        assert len(await ctx.list_events(kind="hold_released")) == 1
+
     asyncio.run(run())
 
 
-def test_sweep_expires_gave_up_rows_after_retry_days(tmp_path):
-    """The runner owns the cooldown's end: once ``needs_human_retry_days`` has
-    passed it deletes the row, which is what returns the issue to the pool."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'e.db'}"
+def test_an_unheld_gave_up_row_adopts_a_hold_that_is_already_on_the_item(tmp_path):
+    """A row whose ``held`` flag is missing entirely (written before the flag
+    existed) must not be re-announced when the item IS already parked: the hold is
+    the handoff and it is there, so the row simply adopts it — the retry is never
+    attempted. Re-announcing would re-stamp ``hold_set_at``/``hold_fingerprint`` and
+    lose a pending body-edit release, and would comment the issue again every tick.
+    (The seam is wired to raise here to prove it is not called at all.)"""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gu3.db'}"
 
     async def run():
         await init_db(db_url=db_url)
         await _seed_row()
-        at = datetime(2026, 9, 1, tzinfo=timezone.utc)
-        loop, _rec, ctx = build_loop(candidates=[],
-                                     wall_clock=lambda: at + timedelta(days=8),
-                                     config=make_config(needs_human_retry_days=7))
+        loop, rec, ctx = build_loop(candidates=[], pr_status={}, held={"o/r#7"},
+                                    needs_human_raises=True, config=make_config())
         await _set_owned_state(ctx, "o/r#7", {"repo": "o/r", "issues": ["o/r#7"],
-                                             "gave_up": True,
-                                             "needs_human_at": at.isoformat(),
-                                             "reason": "x"})
+                                              "gave_up": True, "reason": "max attempts"})
 
         await loop.tick()
 
-        assert await ctx.get_target_state("o/r#7") == {}
-        events = await ctx.list_events(kind="needs_human_expired")
-        assert len(events) == 1
-
-        # retry_days = 0 → permanent handoff: never expired.
-        await _set_owned_state(ctx, "o/r#8", {"repo": "o/r", "issues": ["o/r#8"],
-                                             "gave_up": True,
-                                             "needs_human_at": at.isoformat(),
-                                             "reason": "x"})
-        loop2, _, ctx2 = build_loop(candidates=[],
-                                    wall_clock=lambda: at + timedelta(days=800),
-                                    config=make_config(needs_human_retry_days=0))
-        await loop2.tick()
-        assert (await ctx2.get_target_state("o/r#8"))["gave_up"] is True
-
-        # An undated (or unreadable) stamp expires IMMEDIATELY while retrying is
-        # on: the queue already treats it as no cooldown, so a row the sweep kept
-        # would park the issue in the card's needs-human gauge forever while it
-        # was in fact being picked again.
-        await _set_owned_state(ctx, "o/r#9", {"repo": "o/r", "issues": ["o/r#9"],
-                                             "gave_up": True,
-                                             "needs_human_at": "not-a-date"})
-        loop3, _, ctx3 = build_loop(candidates=[],
-                                    wall_clock=lambda: at,
-                                    config=make_config(needs_human_retry_days=7))
-        await loop3.tick()
-        assert await ctx3.get_target_state("o/r#9") == {}
+        st = await ctx.get_target_state("o/r#7")
+        assert st["gave_up"] is True and st["held"] is True
+        assert rec.needs_humans == []                       # no duplicate announce
+        assert await ctx.list_events(kind="hold_released") == []
 
     asyncio.run(run())
 
 
-def test_gave_up_row_inside_the_window_is_left_alone(tmp_path):
-    """Still cooling down: no delete, no expiry event, and the sweep must not
-    fall through to the give-up bookkeeping for a row that already gave up."""
-    db_url = f"sqlite+aiosqlite:///{tmp_path / 'e2.db'}"
+def test_a_token_less_gave_up_row_is_left_inert_not_re_announced(tmp_path):
+    """A pre-ownership ``gave_up`` row (#1648: no ``ownership_token``) can never
+    record ``held``: ``compare_target_state`` refuses to touch a token-less row, so
+    the flag write is dropped on the floor. Retrying the announce for it would
+    livelock — every tick after a human released the hold would comment the issue
+    again and write a FRESH ``set_runner_hold``, undoing that release and destroying
+    the body-edit signal. Such a row stays exactly as inert as it was before the
+    retry path existed; ``reconcile_legacy_targets`` owns it."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'gu4.db'}"
 
     async def run():
         await init_db(db_url=db_url)
         await _seed_row()
-        at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        loop, rec, ctx = build_loop(candidates=[], pr_status={}, held=set(),
+                                    config=make_config())
+        # Deliberately NOT ``_set_owned_state``: this row has no ownership token.
+        await ctx.set_target_state("o/r#7", {"repo": "o/r", "issues": ["o/r#7"],
+                                             "gave_up": True, "reason": "max attempts"})
+
+        await loop.tick()
+        await loop.tick()
+
+        assert rec.needs_humans == []                      # never announced
+        st = await ctx.get_target_state("o/r#7")
+        assert st.get("gave_up") is True and "held" not in st   # still there, untouched
+        assert await ctx.list_events(kind="hold_released") == []
+
+    asyncio.run(run())
+
+
+def test_gave_up_row_is_dropped_once_its_hold_is_released(tmp_path):
+    """Spec 2026-09-18 §3: the hold is the handoff; the runner's row follows it."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'h.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        held = {"r#1"}
+        loop, _rec, ctx = build_loop(config=make_config(max_concurrent=1),
+                                     candidates=[], held=held)
+        await _set_owned_state(ctx, "r#1", {"repo": "r", "issues": ["r#1"],
+                                            "gave_up": True, "claimed": False,
+                                            "held": True, "reason": "max attempts"})
+        await loop.tick()
+        assert (await ctx.get_target_state("r#1")).get("gave_up") is True   # still held
+        held.clear()                                                        # human released it
+        await loop.tick()
+        assert not await ctx.get_target_state("r#1")                        # row gone
+        assert [e for e in await ctx.list_events(kind="hold_released")]
+
+    asyncio.run(run())
+
+
+def test_held_gave_up_row_is_left_alone(tmp_path):
+    """Still held: no delete, no ``hold_released`` event, and the sweep must not
+    fall through to the give-up bookkeeping for a row that already gave up."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'h2.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
         loop, rec, ctx = build_loop(candidates=[], pr_status={},
-                                    wall_clock=lambda: at + timedelta(days=3),
-                                    config=make_config(needs_human_retry_days=7))
-        row = {"repo": "o/r", "issues": ["o/r#7"], "gave_up": True,
-               "needs_human_at": at.isoformat(), "reason": "x"}
+                                    held={"o/r#7"}, config=make_config())
+        row = {"repo": "o/r", "issues": ["o/r#7"], "gave_up": True, "held": True,
+               "reason": "x"}
         await _set_owned_state(ctx, "o/r#7", row)
 
         await loop.tick()
 
         assert {k: v for k, v in (await ctx.get_target_state("o/r#7")).items()
                 if k != "ownership_token"} == row
-        assert await ctx.list_events(kind="needs_human_expired") == []
+        assert await ctx.list_events(kind="hold_released") == []
         assert rec.needs_humans == []
 
     asyncio.run(run())
 
 
-def test_expiry_runs_before_refill_so_the_tick_that_frees_a_ref_spawns_it(tmp_path):
-    """Expiry must happen BEFORE refill, not in the sweep that follows it.
+def test_release_runs_before_refill_so_the_tick_that_frees_a_ref_spawns_it(tmp_path):
+    """Release must happen BEFORE refill, not in the sweep that follows it.
 
-    On the tick a cooldown passes, the queue already offers the ref: selection
+    On the tick a hold releases, the queue already offers the ref: selection
     consumes its plan group, and with the row still present ``_refill``'s
     ``gave_up`` guard would discard the pick — the group burned until the next
     grouping refresh, the slot idle. One tick has to do both."""
@@ -978,19 +1049,15 @@ def test_expiry_runs_before_refill_so_the_tick_that_frees_a_ref_spawns_it(tmp_pa
     async def run():
         await init_db(db_url=db_url)
         await _seed_row()
-        at = datetime(2026, 9, 1, tzinfo=timezone.utc)
         loop, rec, ctx = build_loop(
-            candidates=[batch("o/r#7")],
-            wall_clock=lambda: at + timedelta(days=8),
-            config=make_config(needs_human_retry_days=7))
+            candidates=[batch("o/r#7")], held=set(),
+            config=make_config())
         await _set_owned_state(ctx, "o/r#7", {"repo": "o/r", "issues": ["o/r#7"],
-                                             "gave_up": True,
-                                             "needs_human_at": at.isoformat(),
-                                             "reason": "x"})
+                                             "gave_up": True, "held": True, "reason": "x"})
 
         await loop.tick()
 
-        assert len(await ctx.list_events(kind="needs_human_expired")) == 1
+        assert len(await ctx.list_events(kind="hold_released")) == 1
         assert [b.primary for b, _acct in rec.spawns] == ["o/r#7"]
         # The consumed plan group produced the spawn rather than being discarded.
         assert rec.candidates == []
@@ -1145,7 +1212,7 @@ def test_close_out_escalated_leaves_a_gave_up_row(tmp_path):
         await loop.tick()
 
         st = await ctx.get_target_state("r#1")
-        assert st["gave_up"] is True and st["needs_human_at"] == at.isoformat()
+        assert st["gave_up"] is True and "needs_human_at" not in st
         assert "human gate" in st["reason"]
         assert not st.get("claimed")
         assert [t for t, _ in rec.needs_humans] == ["r#1"]
@@ -2932,9 +2999,11 @@ def test_pr_doctor_gave_up_finalises_pr_gave_up(tmp_path):
                 automation_id="pr-doctor", level="warn", summary="gave up",
                 kind="gave_up", target="o/r#1", detail={"origin_ref": "o/r#1"}))
 
+        # ``held`` simulates the owner_action hold the real ``needs_human`` seam
+        # writes synchronously as part of the give-up (see the sibling test above).
         loop, rec, ctx = build_loop(
             candidates=[batch("o/r#1")], pr_status={},
-            spawn_result=SimpleNamespace(id="sess-1"))
+            spawn_result=SimpleNamespace(id="sess-1"), held={"o/r#1"})
 
         await loop.tick()
         await loop.tick()
@@ -3127,7 +3196,7 @@ def test_a_failing_outcome_write_never_blocks_the_sweep(tmp_path):
 
         assert [t for t, _r in rec.needs_humans] == ["o/r#1"]
         st = await ctx.get_target_state("o/r#1")
-        assert st["gave_up"] is True and st["needs_human_at"]
+        assert st["gave_up"] is True and "needs_human_at" not in st
         # The row stayed ``running``: unfinalised history is the acceptable loss.
         rows = await _outcomes("o/r#1")
         assert len(rows) == 1 and rows[0].outcome == "running"

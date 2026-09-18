@@ -7,14 +7,12 @@ from .context import observation_failed, publish_observation
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Protocol, cast
 
 from ccswitch.worktrees import DISK_EXHAUSTION_MARKERS
 from server.github.pr_status import PullRequestInfo
-from server.pm.queue import NEEDS_HUMAN_RETRY_DAYS_DEFAULT
-from server.pm.queue_store import parse_iso_utc
 
 from .backlog_grouping import load_plan, mark_consumed, plan_to_batch
 from .backlog_selection import SELECTION_STRATEGIES, Batch, should_free_slot
@@ -274,11 +272,6 @@ class BacklogRunner:
                     help="How often the background optimizer recomputes the group "
                          "plan. It also refreshes immediately when the runner "
                          "needs work and no plan group is live."),
-        ConfigField(key="needs_human_retry_days", label="Retry needs-human after (days)",
-                    type="int", default=NEEDS_HUMAN_RETRY_DAYS_DEFAULT,
-                    help="Reconsider escalated (needs-human) issues this many days "
-                         "after the runner gave up on them. 0 = never retry "
-                         "(permanent handoff)."),
     ]
     # ``eligible_label`` gated the old GitHub label search; the runner now selects
     # from the board-mirror queue (spec 003 §7a), where board status — not a label
@@ -290,7 +283,9 @@ class BacklogRunner:
     # old values off the raw blob once).
     retired_config_keys: tuple[str, ...] = (
         "eligible_label", "enabled_repos", "repo_weights", "repo_caps",
-        "queue_min_status", "max_attempts", "default_model", "respect_dependencies")
+        "queue_min_status", "max_attempts", "default_model", "respect_dependencies",
+        # spec 2026-09-18: a hold releases on a human signal, never on a timer.
+        "needs_human_retry_days")
 
     def status(self, ctx) -> AutomationStatus:
         counts = getattr(ctx, "backlog_counts", None) if ctx is not None else None
@@ -460,6 +455,11 @@ SeedPolicies = Callable[[], Awaitable[int]]
 # or PR Doctor gave up on it. The SIGNAL itself is the durable ``gave_up`` row
 # ``_give_up`` writes — this seam only tells the outside world about it.
 NeedsHuman = Callable[[str, str], Awaitable[None]]
+# Which ``owner/repo#N`` refs are currently held (owner_action / decision) — the
+# runner's own ``gave_up`` rows follow the hold now, not a timer (spec 2026-09-18
+# §3): ``_release_give_ups`` drops a row once none of its refs is in this set.
+# An unwired seam (stub) returns an empty set, so no row is ever released.
+HeldTargets = Callable[[], Awaitable["frozenset[str]"]]
 # MERGED path: the work landed but the PR may not have carried a closing
 # keyword — comment + close every issue in the batch so it can't stay open
 # forever. Returns the close-out outcome: "closed" (≥1 issue verifiably linked to
@@ -517,6 +517,11 @@ async def _stub_needs_human(_target: str, _reason: str) -> None:
     return None
 
 
+async def _stub_held_targets() -> "frozenset[str]":
+    # Unwired seam: nothing reads as held, so no gave_up row is ever released.
+    return frozenset()
+
+
 class BacklogRunnerLoop:
     """A restart-safe, non-reentrant control loop that keeps up to
     ``max_concurrent`` implementation sessions in flight.
@@ -564,6 +569,7 @@ class BacklogRunnerLoop:
         queue_tail: QueueTail | None = None,
         wall_clock: Callable[[], datetime] | None = None,
         session_gone: SessionEnded | None = None,
+        held_targets: HeldTargets | None = None,
     ) -> None:
         self._ctx = ctx
         self._select_batch = select_batch          # Plan B: -> Batch | None
@@ -587,6 +593,7 @@ class BacklogRunnerLoop:
         # they cannot ride the monotonic clock the backoffs use.
         self._wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
         self._needs_human = needs_human or _stub_needs_human  # announce the handoff
+        self._held_targets = held_targets or _stub_held_targets  # what backs a gave_up row
         self._session_ended = session_ended         # (session_id) -> bool | None
         # (session_id) -> True when the session row is terminal OR no longer exists.
         # The evidence bar for discharging a pre-ownership (token-less) claim; an
@@ -714,13 +721,13 @@ class BacklogRunnerLoop:
         # Surface stale-credential alerts every tick, before refill — a paused
         # repo must both notify the dashboard and be excluded from selection.
         await self._check_credentials()
-        # Expire spent give-ups BEFORE refill, not as part of the sweep that
-        # follows it: on the very tick a cooldown passes, the queue already
+        # Release spent give-ups BEFORE refill, not as part of the sweep that
+        # follows it: on the very tick a hold releases, the queue already
         # offers the ref, so ``select_batch`` would consume its plan group only
         # for ``_refill``'s ``gave_up`` guard to discard the pick — burning the
-        # group until the next grouping refresh. Expiring first lets the same
+        # group until the next grouping refresh. Releasing first lets the same
         # tick spawn it.
-        await self._expire_give_ups(config)
+        await self._release_give_ups()
         # Recover admitted launches before checking the daily dispatch budget.
         await self._reconcile_dangling()
         if not self._counts_published:
@@ -802,6 +809,9 @@ class BacklogRunnerLoop:
         try:
             states = await self._ctx.list_target_states()
             counts["in_flight"] = sum(is_in_flight(s) for s in states.values())
+            # The RUNNER'S OWN give-ups, not every hold on the board: an item a
+            # person or a session parked has no row here. (What the card calls this
+            # count is items 3b/6's concern.)
             counts["needs_human"] = sum(bool(s.get("gave_up")) for s in states.values())
         except Exception:
             errors.append("workload counts unavailable (the claim read failed)")
@@ -1326,46 +1336,73 @@ class BacklogRunnerLoop:
 
     # -- sweep (handoff + terminal-watch) ----------------------------------- #
 
-    async def _expire_give_ups(self, config: dict) -> None:
-        """Drop ``gave_up`` rows whose needs-human window has passed.
+    async def _release_give_ups(self) -> None:
+        """Drop ``gave_up`` rows that no hold backs any more (spec 2026-09-18 §3).
 
-        The row IS the needs-human handoff (Phase D), so it stays put until the
-        retry window passes and DELETING it is what returns the issue to the
-        pool: the queue's cooldown reads ``needs_human_at`` off this row, and
-        nothing else does. ``needs_human_retry_days`` = 0 is a permanent handoff,
-        never expired. An UNDATED (or unreadable) stamp expires immediately: the
-        queue already treats it as no cooldown, and a row kept past that would
-        park the issue in the card's needs-human gauge while it was being picked
-        again.
+        The row survives ONLY for slot accounting while the item is held; the hold
+        on the item is the handoff, and a human releases it (board edit, body edit,
+        Retry). Once none of the row's refs is held the row is deleted, which is what
+        returns the issue to the pool. Runs BEFORE ``_refill`` — see the call site.
 
-        Runs every tick regardless of mode (like the sweep it used to live in),
-        but BEFORE ``_refill`` — see the call site for why the ordering matters.
+        This is also where the give-up's two-transaction handoff is made whole: a row
+        whose ``held`` flag is falsy has no proof its hold was ever written, so it is
+        NEVER dropped here — the seam is retried instead, every tick, until it lands.
+        Two exceptions, both below: a row whose item is already parked adopts that
+        hold rather than re-announcing it, and a token-less legacy row is left inert.
         """
-        raw_days = config.get("needs_human_retry_days")
-        retry_days = (NEEDS_HUMAN_RETRY_DAYS_DEFAULT if raw_days is None
-                      else max(0, int(raw_days)))
-        if retry_days <= 0:
-            return
         states = await self._ctx.list_target_states()
+        held = await self._held_targets()
         for target, st in states.items():
             if not st.get("gave_up"):
                 continue
-            at = parse_iso_utc(st.get("needs_human_at"))
-            if at is None or self._wall_clock() - at >= timedelta(days=retry_days):
-                if not await self._write_state(target, st, None):
+            refs = st.get("issues") or [target]
+            backed = any(ref in held for ref in refs)
+            if not st.get("held"):
+                # No recorded handoff. If the item IS parked, the hold is there
+                # (this row predates the flag, or the CAS after the write was lost)
+                # and the row just adopts it — re-announcing would re-stamp
+                # ``hold_set_at``/``hold_fingerprint``, losing a pending body-edit
+                # release, and comment the issue again. Otherwise retry the seam and
+                # keep the row whatever happens.
+                #
+                # EXCEPT for a pre-ownership row (#1648, no ``ownership_token``):
+                # ``compare_target_state`` refuses to touch one, so ``held`` could
+                # never be recorded and the retry would fire forever — every tick
+                # after a human released the hold would comment again and write a
+                # fresh hold, undoing that release. Leave it exactly as inert as it
+                # was before this path existed; ``reconcile_legacy_targets`` owns it.
+                if not backed and not st.get("ownership_token"):
+                    log.warning("backlog_runner.needs_human_retry_skipped_legacy_row "
+                                "target=%s", target)
                     continue
-                await self._ctx.emit(
-                    "info", f"{target}: needs-human window passed — back in the pool",
-                    kind="needs_human_expired", target=target)
+                if not backed:
+                    try:
+                        await self._needs_human(target, st.get("reason") or "")
+                    except Exception:
+                        log.warning("backlog_runner.needs_human_retry_failed target=%s",
+                                    target, exc_info=True)
+                        continue
+                await self._write_state(target, st, {**st, "held": True})
+                continue
+            # A bundle is released as a UNIT: while ANY ref of the row is still held
+            # the whole row stays, because the batch was claimed and dispatched as
+            # one. A Retry on one sibling therefore takes effect only once the last
+            # held sibling is released too.
+            if backed:
+                continue
+            if not await self._write_state(target, st, None):
+                continue
+            await self._ctx.emit("info", f"{target}: hold released — back in the pool",
+                                 kind="hold_released", target=target)
 
     async def _sweep(self) -> None:
         states = await self._ctx.list_target_states()
         gave_up_targets = await self._pr_doctor_gave_up_targets()
         for target, st in states.items():
             if st.get("gave_up"):
-                # Terminal: a row still here survived ``_expire_give_ups`` this
-                # tick, so it is still inside its window. Never fall through to
-                # the claim bookkeeping below — it holds no claim and no slot.
+                # Terminal: a row still here survived ``_release_give_ups`` this
+                # tick, so its hold is still on. Never fall through to the claim
+                # bookkeeping below — it holds no claim and no slot.
                 continue
             try:
                 await self._sweep_one(target, st, gave_up_targets)
@@ -1460,8 +1497,17 @@ class BacklogRunnerLoop:
                        outcome: dict | None = None, action_completed: bool = False) -> None:
         # Retain attempt/session provenance and durable exclusion while the human
         # decides. The operational slot can free without permitting a new actor.
-        parked = {**st, "claimed": False, "gave_up": True,
-                  "needs_human_at": self._wall_clock().isoformat(), "reason": reason}
+        # No timestamp: the owner_action hold ``_backlog_needs_human`` writes on
+        # the issue IS the handoff now (spec 2026-09-18 §3) — this row survives
+        # only for slot accounting and is dropped by ``_release_give_ups`` once
+        # the hold is gone.
+        #
+        # The handoff spans two transactions (this row, then the hold), so the row
+        # carries whether the SECOND one landed. It is parked ``held: False`` first:
+        # a row that claimed a hold it does not have would be dropped by the next
+        # sweep and the item re-dispatched with no handoff at all. ``held`` only ever
+        # goes False → True, and ``_release_give_ups`` retries until it does.
+        parked = {**st, "claimed": False, "gave_up": True, "reason": reason, "held": False}
         if not await self._write_state(target, st, parked, outcome=outcome,
                                        action_completed=action_completed):
             return
@@ -1472,6 +1518,10 @@ class BacklogRunnerLoop:
         except Exception:
             log.warning("backlog_runner.needs_human_announce_failed target=%s", target,
                         exc_info=True)
+            return
+        # Compare-and-set against the row just parked. A lost CAS (another actor
+        # moved the row meanwhile) is left alone: the next tick's sweep retries.
+        await self._write_state(target, parked, {**parked, "held": True})
 
     async def _release_legacy_claim(self, target: str, st: dict) -> None:
         """Discharge a pre-ownership claim (no ``ownership_token``, #1648) once its
