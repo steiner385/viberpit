@@ -319,7 +319,15 @@ PR linkage, never on labels alone.
   `server/sessions/orchestrator.py:_backlog_investigation_state` (the mirrored hold plus the
   session's own `sessions.pr_resolution_note`, migration `0052_pr_resolution_note`).
   - **Unknown issue state** (malformed ref, `gh` failure, an unparseable payload) — the row is left
-    completely untouched; the next tick tries again. Never read as "still open".
+    where it is and the next tick tries again. Never read as "still open". The retry is bounded:
+    the consecutive-unknown streak is counted on the claim row
+    (`investigation_unknown_ticks`, reset by the first readable answer) and logged at WARNING from
+    the first one, and after `INVESTIGATION_UNKNOWN_TICKS_MAX` (12) failures in a row the claim is
+    handed to the owner with the reason "could not read the issue state after 12 checks" and an
+    `investigated` event whose `exit` is `unreadable`. Without that terminal a persistently 403ing
+    App token held the row's `max_concurrent` slot forever, invisibly. The UNWIRED seam is exempt —
+    it answers unknown by construction, not by failure, so a deployment that never wired it still
+    settles nothing.
   - **Closed** — done: finalise the dispatch-outcome row `no_pr` and release the claim.
   - **Open, no longer mirrored** — nothing to hold and no way to tell which exit was taken; release
     the claim with no hold write.
@@ -338,6 +346,8 @@ PR linkage, never on labels alone.
     quoted log text, so a note cannot smuggle a marker onto the public comment) and capped at
     `NOTE_REASON_MAX` (400 chars, ellipsis) by `_reason_from_note`; a note that collapses to
     nothing hands off as "investigation ended without an exit" rather than a bare "investigation: ".
+    That one normalised string is also what the `investigated` event stores, so the copy rendered
+    in the automation activity feed carries the same bound as the public comment.
 
   **Not a bounce.** Every investigate dispatch's `dispatch_outcomes` row carries
   `dispatch_kind = "investigate"`; `server/pm/outcomes.py:_implement_only()` — the one predicate
@@ -387,7 +397,9 @@ PR linkage, never on labels alone.
     branch of `_pm_sync_upsert_items`, so there is no backfill for issues filed before this landed.
   - An unmirrored issue at settle time is released without writing a hold.
   - The issue state read at settle time is a LIVE GitHub call, never the lagging mirror; unknown
-    (a `gh` failure, a malformed ref) retries next tick rather than being read as still open.
+    (a `gh` failure, a malformed ref) retries next tick rather than being read as still open, for
+    at most `INVESTIGATION_UNKNOWN_TICKS_MAX` (12) consecutive ticks before the claim is handed to
+    the owner as unreadable.
 
   **Model pick (phase 4, spec §7, D9).** A product's `default_model` policy field of `auto`
   still asks `assess_model` (one-shot Haiku complexity judgment) for a tier per dispatch; what's

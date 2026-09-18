@@ -3184,9 +3184,13 @@ def test_the_note_is_bounded_and_marker_stripped_before_it_reaches_the_issue(tmp
         assert reason.endswith("…")
         assert "<!--" not in reason and "-->" not in reason, "no smuggled marker"
         assert "\n" not in reason, "collapsed to one line"
-        # The event keeps the session's note verbatim — the bound exists for the
-        # GitHub comment, not for the record of what the session actually said.
-        assert (await ctx.list_events(kind="investigated"))[0]["detail"]["note"] == note
+        # The ``investigated`` event carries the SAME bounded copy, from the same
+        # single ``_reason_from_note`` call: its detail is rendered in the automation
+        # activity feed, so a pasted stack trace would land there at full length too.
+        event_note = (await ctx.list_events(kind="investigated"))[0]["detail"]["note"]
+        assert event_note == reason[len("investigation: "):]
+        assert len(event_note) <= NOTE_REASON_MAX and event_note.endswith("…")
+        assert "<!--" not in event_note and "\n" not in event_note
 
     asyncio.run(run())
 
@@ -3226,17 +3230,106 @@ def test_an_investigation_that_ends_without_an_exit_hands_off(tmp_path):
 def test_an_unknown_issue_state_leaves_the_investigation_row_untouched(tmp_path):
     """``gh`` was down. Unknown is not an exit: nothing is finalised, nothing is
     handed off, and the next tick asks again — a hand-off written now would be
-    indistinguishable afterwards from an investigation that really gave up."""
+    indistinguishable afterwards from an investigation that really gave up. Only
+    the streak counter moves."""
     async def run():
         _loop, rec, ctx = await _sweep_investigation(
             tmp_path, "inv_unknown.db",
             {"issue_state": None, "mirrored": True, "hold_kind": "evidence"})
 
         assert {k: v for k, v in (await ctx.get_target_state("o/r#1")).items()
-                if k != "ownership_token"} == _investigation_row()
+                if k not in ("ownership_token", "investigation_unknown_ticks")} == (
+                    _investigation_row())
         assert await _outcomes("o/r#1") == []
         assert rec.needs_humans == [] and rec.hold_releases == []
         assert await ctx.list_events(kind="investigated") == []
+
+    asyncio.run(run())
+
+
+def test_consecutive_unknown_states_count_the_streak_on_the_row(tmp_path):
+    """The retry needs a counter or it cannot have a terminal. It lives on the claim
+    row (the only durable thing a sweep carries between ticks) and nothing else about
+    the row changes."""
+    async def run():
+        loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_unknown3.db",
+            {"issue_state": None, "mirrored": True, "hold_kind": "evidence"})
+        await loop.tick()
+        await loop.tick()
+
+        st = await ctx.get_target_state("o/r#1")
+        assert st["investigation_unknown_ticks"] == 3
+        assert {k: v for k, v in st.items()
+                if k not in ("ownership_token", "investigation_unknown_ticks")} == (
+                    _investigation_row())
+        assert rec.needs_humans == [] and await _outcomes("o/r#1") == []
+
+    asyncio.run(run())
+
+
+def test_a_readable_state_after_unknowns_resets_the_streak_and_still_settles(tmp_path):
+    """One readable answer ends the streak, so a transient outage can never add up
+    with a later, unrelated one. The reset is a WRITE to the fenced row, so the
+    settle that follows it in the same tick has to fence on the rewritten snapshot —
+    if it did not, the hand-off below would silently not happen at all."""
+    async def run():
+        answers = [{"issue_state": None, "mirrored": True, "hold_kind": "evidence"}]
+
+        def _seam(_target, _sid):
+            return answers[-1]
+
+        await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'inv_reset.db'}")
+        await _seed_row()
+        await _seed_product()
+        loop, rec, ctx = build_loop(candidates=[], investigation_state=_seam)
+        await _set_owned_state(ctx, "o/r#1", _investigation_row())
+
+        await loop.tick()
+        await loop.tick()
+        assert (await ctx.get_target_state("o/r#1"))["investigation_unknown_ticks"] == 2
+
+        answers.append({"issue_state": "open", "mirrored": True,
+                        "hold_kind": "evidence", "no_pr_note": "needs owner: the log"})
+        await loop.tick()
+
+        assert rec.needs_humans == [("o/r#1", "investigation: needs owner: the log")]
+        st = await ctx.get_target_state("o/r#1")
+        assert st["gave_up"] is True and st["held"] is True
+        assert st["investigation_unknown_ticks"] == 0
+        assert [e["detail"]["exit"] for e in await ctx.list_events(kind="investigated")] == [
+            "escalated"]
+
+    asyncio.run(run())
+
+
+def test_a_persistently_unreadable_issue_state_hands_off_once(tmp_path):
+    """The bound. An expired App token or a sustained 403 answered UNKNOWN forever,
+    and the claim held its ``max_concurrent`` slot forever with it — invisibly, at
+    INFO, with no event on the automation card. After a dozen consecutive failures
+    the slot is returned and a human is told exactly why, once."""
+    async def run():
+        from server.automations.backlog_runner import INVESTIGATION_UNKNOWN_TICKS_MAX
+
+        loop, rec, ctx = await _sweep_investigation(
+            tmp_path, "inv_unreadable.db",
+            {"issue_state": None, "mirrored": True, "hold_kind": "evidence"})
+        for _ in range(INVESTIGATION_UNKNOWN_TICKS_MAX - 1):
+            await loop.tick()
+
+        reason = ("investigation: could not read the issue state after "
+                  f"{INVESTIGATION_UNKNOWN_TICKS_MAX} checks")
+        assert rec.needs_humans == [("o/r#1", reason)]
+        st = await ctx.get_target_state("o/r#1")
+        assert st["gave_up"] is True and st["held"] is True
+        assert [(r.outcome, r.cause, r.dispatch_kind) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", reason, "investigate")]
+        assert [e["detail"]["exit"] for e in await ctx.list_events(kind="investigated")] == [
+            "unreadable"]
+        assert rec.escalations == [], "an investigation never climbs the ladder"
+
+        await loop.tick()   # the parked row is a human cooldown, not a second hand-off
+        assert len(rec.needs_humans) == 1
 
     asyncio.run(run())
 
@@ -3286,15 +3379,22 @@ def test_an_investigation_whose_session_never_ran_is_released_without_penalty(tm
 def test_an_unwired_investigation_seam_settles_nothing(tmp_path):
     """The default stub answers ``{}`` — every field unknown — so a deployment that
     has not wired the seam leaves investigation rows exactly where they are instead
-    of handing every one of them to a human."""
+    of handing every one of them to a human.
+
+    The unknown-streak bound must NOT reach it: the stub answers unknown by
+    construction, not by failure, so it is exempt and the row never even counts a
+    tick. Run well past the bound to prove it."""
     async def run():
+        from server.automations.backlog_runner import INVESTIGATION_UNKNOWN_TICKS_MAX
+
         await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / 'inv_unwired.db'}")
         await _seed_row()
         await _seed_product()
         loop, rec, ctx = build_loop(candidates=[])       # no investigation_state
         await _set_owned_state(ctx, "o/r#1", _investigation_row())
 
-        await loop.tick()
+        for _ in range(INVESTIGATION_UNKNOWN_TICKS_MAX + 1):
+            await loop.tick()
 
         assert {k: v for k, v in (await ctx.get_target_state("o/r#1")).items()
                 if k != "ownership_token"} == _investigation_row()

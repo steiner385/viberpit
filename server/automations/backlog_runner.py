@@ -566,6 +566,19 @@ async def _stub_escalate(_target: str, _reason: str, _rung: str) -> None:
 #: Room for the one sentence the tool asks for; anything past it is pasted context.
 NOTE_REASON_MAX = 400
 
+#: How many consecutive UNKNOWN issue-state reads an ended investigation may cost
+#: before its claim is handed to a human instead of retried forever.
+#:
+#: Unknown is not an exit (a hand-off written on a ``gh`` blip is indistinguishable
+#: afterwards from an investigation that really gave up), so the retry is right —
+#: but an unbounded retry is a wedge: a persistently 403ing App token or a
+#: rate-limited ``gh`` leaves the claim row in flight against ``max_concurrent``
+#: forever, with no event and no visible trace. The same shape as the 13-hour stall
+#: ``_release_legacy_claim`` records. A dozen sweeps is long enough that no
+#: transient outage reaches it and short enough that a wedged slot surfaces the
+#: same day.
+INVESTIGATION_UNKNOWN_TICKS_MAX = 12
+
 
 def _reason_from_note(note: "str | None") -> "str | None":
     """Make a session's ``mark_no_pr`` note safe to use as a hand-off reason, or
@@ -2020,9 +2033,13 @@ class BacklogRunnerLoop:
           claim is released as exactly that.
 
         UNKNOWN is the last answer and it is not an exit at all: a seam failure or an
-        unreachable GitHub leaves the row completely untouched and the next tick
-        tries again. Handing an issue to a human because ``gh`` was down would be
-        indistinguishable, afterwards, from an investigation that really gave up.
+        unreachable GitHub leaves the row untouched and the next tick tries again.
+        Handing an issue to a human because ``gh`` was down would be
+        indistinguishable, afterwards, from an investigation that really gave up. The
+        retry is BOUNDED, though — see :meth:`_unknown_issue_state`: the streak is
+        counted on the row and a claim that has answered unknown
+        ``INVESTIGATION_UNKNOWN_TICKS_MAX`` times running is handed off rather than
+        holding its concurrency slot forever.
 
         Every path finalises its outcome row as ``no_pr`` — an investigation opening
         no PR is the SUCCESS case — and the row's ``dispatch_kind`` is
@@ -2047,13 +2064,25 @@ class BacklogRunnerLoop:
             info = {}
         issue_state = info.get("issue_state")
         note = info.get("no_pr_note") or None
+        # ONE normalisation, reused: the hand-off reason below and the
+        # ``investigated`` event's copy are the same session-authored text, and the
+        # event is rendered in the automation activity feed, so a pasted stack trace
+        # must not land there at full length either.
+        safe = _reason_from_note(note)
+        fallback = self._outcome_fallback(st)
         if issue_state not in ("open", "closed"):
-            log.info("backlog_runner.investigation_state_unknown target=%s session=%s",
-                     target, sid)
+            await self._unknown_issue_state(target, st, sid, safe, fallback)
             return
+        if st.get("investigation_unknown_ticks"):
+            # A readable answer ends the streak. Rewrite the row before acting on
+            # it so the counter cannot survive into a later, unrelated outage — and
+            # rebind ``st``, because every write below fences on the exact snapshot.
+            cleared = {**st, "investigation_unknown_ticks": 0}
+            if not await self._write_state(target, st, cleared):
+                return  # lost the fence — the next sweep re-reads
+            st = cleared
         converted = bool(note) and str(note).strip().lower().startswith(
             CONVERTED_NOTE_PREFIX)
-        fallback = self._outcome_fallback(st)
 
         async def finalise(cause: str) -> bool:
             return await self._write_state(target, st, None, outcome={
@@ -2062,7 +2091,7 @@ class BacklogRunnerLoop:
         if issue_state == "closed":
             if not await finalise("investigation: issue closed"):
                 return  # release lost the fence — leave it for the next sweep
-            await self._investigated(target, "closed", note)
+            await self._investigated(target, "closed", safe)
             return
         hold_kind = info.get("hold_kind")
         if not info.get("mirrored"):
@@ -2075,7 +2104,7 @@ class BacklogRunnerLoop:
                      target, sid)
             if not await finalise("investigation: issue unmirrored"):
                 return
-            await self._investigated(target, "unmirrored", note)
+            await self._investigated(target, "unmirrored", safe)
             return
         if converted:
             # Clear the hold BEFORE releasing the row (the escalate-then-release
@@ -2086,7 +2115,7 @@ class BacklogRunnerLoop:
             await self._release_investigation_hold(target)
             if not await finalise("investigation: converted to a fix"):
                 return
-            await self._investigated(target, "converted", note)
+            await self._investigated(target, "converted", safe)
             return
         if hold_kind is None:
             # No note, but the hold is gone: a Claude session cleared its own
@@ -2096,7 +2125,7 @@ class BacklogRunnerLoop:
             # and a hold of some OTHER kind is somebody else's park, below.
             if not await finalise("investigation: converted to a fix"):
                 return
-            await self._investigated(target, "converted", note)
+            await self._investigated(target, "converted", safe)
             return
         if hold_kind != "evidence":
             # Somebody parked the issue while the investigation ran — a person's
@@ -2110,20 +2139,67 @@ class BacklogRunnerLoop:
             held_by = f"investigation: held by {actor_class(info.get('hold_by') or '')}"
             if not await finalise(held_by):
                 return
-            await self._investigated(target, "held", note)
+            await self._investigated(target, "held", safe)
             return
-        safe = _reason_from_note(note)
         reason = f"investigation: {safe}" if safe else "investigation ended without an exit"
         if await self._give_up(target, st, reason, outcome={
                 "outcome": "no_pr", "cause": reason, "fallback": fallback}):
-            await self._investigated(target, "escalated" if safe else "no_exit", note)
+            await self._investigated(target, "escalated" if safe else "no_exit", safe)
+
+    async def _unknown_issue_state(self, target: str, st: dict, sid: "str | None",
+                                   safe: "str | None", fallback: dict | None) -> None:
+        """An ended investigation whose issue state could not be read. Retry — but a
+        BOUNDED number of times.
+
+        Unknown is not an exit: a hand-off written because ``gh`` was down would be
+        indistinguishable afterwards from an investigation that really gave up, so
+        the row is left exactly where it is and the next tick asks again. What that
+        rule lacked was a terminal. A persistently failing read (an expired App
+        token, a sustained 403, a rate limit) answered UNKNOWN forever, and the claim
+        row kept its ``max_concurrent`` slot forever with it — invisibly, at INFO,
+        with no event on the automation card.
+
+        So the streak is counted ON THE ROW (``investigation_unknown_ticks``, reset
+        by the first readable answer), logged at WARNING from the very first one, and
+        after ``INVESTIGATION_UNKNOWN_TICKS_MAX`` consecutive failures the claim is
+        handed to the owner through the ordinary ``_give_up`` with a reason that says
+        exactly what happened — a wedged slot returned to the pool and a human told
+        why, which is strictly better than a slot nobody can see is gone.
+
+        The UNWIRED seam (``_stub_investigation_state``) is exempt: it answers
+        unknown by construction, not by failure, and a deployment that never wired
+        the seam must not hand every investigation it has to a human twelve ticks
+        later. That is the one case where "unknown" is not evidence of anything.
+        """
+        wired = self._investigation_state is not _stub_investigation_state
+        if not wired:
+            log.info("backlog_runner.investigation_state_unwired target=%s session=%s",
+                     target, sid)
+            return
+        ticks = int(st.get("investigation_unknown_ticks") or 0) + 1
+        log.warning("backlog_runner.investigation_state_unknown target=%s session=%s "
+                    "count=%d", target, sid, ticks)
+        if ticks < INVESTIGATION_UNKNOWN_TICKS_MAX:
+            await self._write_state(target, st,
+                                    {**st, "investigation_unknown_ticks": ticks})
+            return
+        reason = ("investigation: could not read the issue state after "
+                  f"{INVESTIGATION_UNKNOWN_TICKS_MAX} checks")
+        if await self._give_up(target, st, reason, outcome={
+                "outcome": "no_pr", "cause": reason, "fallback": fallback}):
+            await self._investigated(target, "unreadable", safe)
 
     async def _investigated(self, target: str, exit_: str, note: "str | None") -> None:
         """One ``investigated`` event per settled investigation — the only durable
         account of WHICH exit a dispatch that opens no PR took, and the metric for
         whether investigating auto-filed reports is worth the dispatches. Emitted
         only after the settle it describes has landed (``emit`` is itself
-        best-effort and never raises)."""
+        best-effort and never raises).
+
+        *note* is the session's note as ``_reason_from_note`` left it — collapsed,
+        marker-stripped and capped. The event detail is rendered in the automation
+        activity feed, so it gets the same bound as the GitHub-facing copy rather
+        than the raw text; one call upstream produces both."""
         await self._ctx.emit(
             "info", f"{target}: investigation {exit_}", kind="investigated",
             target=target, detail={"exit": exit_, "note": note})
