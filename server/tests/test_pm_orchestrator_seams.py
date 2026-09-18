@@ -1972,3 +1972,139 @@ async def test_apply_feature_plan_writes_route_labels(db_env):
         rows = {f.slug: f.route_labels for f in (await db.execute(
             select(Feature).where(Feature.project_id == project_id))).scalars().all()}
     assert rows == {"flaky-test-triage": ["flaky"], "task-views": None}
+
+
+# --------------------------------------------------------------------------- #
+# _pm_onboard_observe_map_diff_not_needed — the harness reads the repository  #
+# --------------------------------------------------------------------------- #
+#
+# A map-diff session answering `mark_no_pr` (not-needed) lands on source "tool" —
+# a self-claim — and the completion guard nudged it toward a PR it rightly refused
+# to open (prod 2026-09-18, session 91bf96b6). The seam below is the harness's own
+# read of `origin/<default>`: the driving items already cited in the feature docs,
+# or the suggested doc already present, is the deliverable being met.
+
+_OBS_REPO = "steiner385/viberpit"
+_DOCS = "docs/product/features"
+
+
+def _clone_with_docs(root: str, docs: dict[str, str]) -> str:
+    """A clone at ``gitrepos.clone_path(root, repo)`` whose
+    ``refs/remotes/origin/main`` carries *docs* — no remote, so the seam's
+    best-effort fetch fails quietly and the cached ref is what gets read."""
+    # The seam resolves the clone through the orchestrator's own gitrepos binding,
+    # so the test derives the path from the SAME binding rather than re-importing.
+    from server.sessions import orchestrator as _orch_mod
+    clone = _orch_mod.gitrepos.clone_path(root, _OBS_REPO)
+    clone.mkdir(parents=True)
+    _git("init", "-q", cwd=clone)
+    _git("checkout", "-q", "-b", "main", cwd=clone)
+    _git("config", "user.email", "t@example.com", cwd=clone)
+    _git("config", "user.name", "t", cwd=clone)
+    for path, text in docs.items():
+        p = clone / path
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+    _git("add", "-A", cwd=clone)
+    _git("commit", "-q", "--allow-empty", "-m", "docs", cwd=clone)
+    _git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=clone)
+    return str(clone)
+
+
+async def _no_fit_cluster(suggestion: str) -> None:
+    """Every seeded work item (#100–#102) becomes an accepted no_fit proposal
+    carrying *suggestion* — the cluster the map-diff session was spawned for."""
+    async with db_session() as db:
+        from sqlalchemy import select
+        items = (await db.execute(select(WorkItem).where(
+            WorkItem.repo == _OBS_REPO))).scalars().all()
+        for w in items:
+            db.add(TriageProposal(work_item_id=w.id, status="accepted",
+                                  no_fit_suggestion=suggestion))
+
+
+def _map_diff_rec(suggestion: str = "offline-mode", *, origin: str | None = "pm-onboard"):
+    from server.sessions.engine import AgentEngine
+    from server.sessions.types import SessionRecord
+    rec = SessionRecord(id="s1", name="pm map-diff viberpit", account="a",
+                        engine=AgentEngine.CLAUDE_CODE, engine_session_id="",
+                        cols=80, rows=24, cwd="/tmp", repo=_OBS_REPO, branch="pm/x")
+    rec.origin = origin
+    rec.origin_ref = f"viberpit:map-diff:{suggestion}"
+    return rec
+
+
+def _observe_orch(root: str):
+    from server.automations.context import AutomationContext
+    orch = _bare_orch()
+    orch._pm_onboard_ctx = AutomationContext("pm-onboard")
+
+    async def _default_branch(repo: str) -> str:
+        return "main"
+
+    async def _repo_root() -> str:
+        return root
+
+    orch._sdlc_default_branch = _default_branch
+    orch._effective_repo_root = _repo_root
+    return orch
+
+
+@pytest.mark.asyncio
+async def test_observe_confirms_when_most_driving_items_are_already_cited(db_env):
+    await _seed(db_env)
+    await _no_fit_cluster("offline-mode")
+    with tempfile.TemporaryDirectory() as root:
+        _clone_with_docs(root, {
+            f"{_DOCS}/gtk-targets.md": "# GTK\n\n## Evidence\n- #100 and #101 argue this.\n"})
+        assert await _observe_orch(root)._pm_onboard_observe_map_diff_not_needed(
+            _map_diff_rec()) is True
+
+
+@pytest.mark.asyncio
+async def test_observe_declines_when_only_a_minority_is_cited(db_env):
+    await _seed(db_env)
+    await _no_fit_cluster("offline-mode")
+    with tempfile.TemporaryDirectory() as root:
+        _clone_with_docs(root, {
+            f"{_DOCS}/gtk-targets.md": "# GTK\n\n## Evidence\n- #100 only.\n"})
+        assert await _observe_orch(root)._pm_onboard_observe_map_diff_not_needed(
+            _map_diff_rec()) is False
+
+
+@pytest.mark.asyncio
+async def test_observe_confirms_when_the_suggested_doc_already_exists(db_env):
+    """The slug landed (a sibling session, a human) but pm-sync has not indexed it
+    yet, so latch (a) is silent: the file on the default branch is the fact."""
+    await _seed(db_env)
+    await _no_fit_cluster("offline-mode")
+    with tempfile.TemporaryDirectory() as root:
+        _clone_with_docs(root, {f"{_DOCS}/offline-mode.md": "# Offline\n"})
+        assert await _observe_orch(root)._pm_onboard_observe_map_diff_not_needed(
+            _map_diff_rec()) is True
+
+
+@pytest.mark.asyncio
+async def test_observe_is_a_map_diff_seam_only(db_env):
+    """A human session, or any origin but pm-onboard, is never observed here —
+    it goes to the salvage classifier exactly as before. No clone is needed to
+    answer, so none is built."""
+    await _seed(db_env)
+    with tempfile.TemporaryDirectory() as root:
+        orch = _observe_orch(root)
+        assert await orch._pm_onboard_observe_map_diff_not_needed(
+            _map_diff_rec(origin=None)) is False
+        human = _map_diff_rec()
+        human.origin_ref = "steiner385/viberpit#12"
+        assert await orch._pm_onboard_observe_map_diff_not_needed(human) is False
+
+
+@pytest.mark.asyncio
+async def test_observe_declines_without_a_readable_clone(db_env):
+    """No clone on disk (or an unresolvable ref) is "unobserved", never a crash:
+    the claim falls through to the classifier."""
+    await _seed(db_env)
+    await _no_fit_cluster("offline-mode")
+    with tempfile.TemporaryDirectory() as root:
+        assert await _observe_orch(root)._pm_onboard_observe_map_diff_not_needed(
+            _map_diff_rec()) is False

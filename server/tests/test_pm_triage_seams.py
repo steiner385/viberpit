@@ -192,6 +192,58 @@ async def test_terminal_map_diff_session_does_not_latch(db_env):
     assert state.open_map_diff_suggestions == ()
 
 
+def _finished_map_diff(**cols) -> DbSession:
+    return DbSession(name="pm map-diff viberpit", account_name="a1", cwd="/tmp/x",
+                     origin="pm-onboard", origin_ref="viberpit:map-diff:offline-mode",
+                     **cols)
+
+
+@pytest.mark.asyncio
+async def test_not_needed_map_diff_session_latches(db_env):
+    """(d) A FINISHED map-diff session answered ``not-needed``: the cluster is
+    covered by a doc under another slug, so (a) can never fire, and (b) released
+    the moment the session archived. Prod 2026-09-18: the session archived at
+    19:44:17Z and the tick re-spawned the identical prompt at 19:44:55Z — the
+    third session for one suggestion in an afternoon. The verdict is the latch."""
+    await _seed(db_env)
+    await _add_cluster(suggestion="offline-mode", numbers=[1, 2, 3, 4, 5])
+    async with db_session() as db:
+        db.add(_finished_map_diff(status="archived", archived_by="completion",
+                                  pr_resolution="not-needed",
+                                  pr_resolution_source="classifier"))
+    orch = _triage_orch()
+    state, _ = await _clusters(orch)
+    assert state.open_map_diff_suggestions == ("offline-mode",)
+
+
+@pytest.mark.asyncio
+async def test_human_archived_map_diff_session_latches(db_env):
+    """(d) A human putting the map-diff session away is a disposition too — the
+    one the operator reaches for when the session is stuck asking. Re-spawning
+    the same prompt 60 s later overrules them."""
+    await _seed(db_env)
+    await _add_cluster(suggestion="offline-mode", numbers=[1, 2, 3, 4, 5])
+    async with db_session() as db:
+        db.add(_finished_map_diff(status="archived", archived_by="user"))
+    orch = _triage_orch()
+    state, _ = await _clusters(orch)
+    assert state.open_map_diff_suggestions == ("offline-mode",)
+
+
+@pytest.mark.asyncio
+async def test_auto_archived_map_diff_session_without_a_verdict_does_not_latch(db_env):
+    """An automation's archive with NO resolution is not a disposition about the
+    cluster (a merged doc latches through (a) once pm-sync indexes it). Only a
+    verdict or a human latches under (d)."""
+    await _seed(db_env)
+    await _add_cluster(suggestion="offline-mode", numbers=[1, 2, 3, 4, 5])
+    async with db_session() as db:
+        db.add(_finished_map_diff(status="archived", archived_by="completion"))
+    orch = _triage_orch()
+    state, _ = await _clusters(orch)
+    assert state.open_map_diff_suggestions == ()
+
+
 @pytest.mark.asyncio
 async def test_unlatched_cluster_is_proposed_by_the_engine(db_env):
     """The negative control: nothing latched → the engine picks the drift

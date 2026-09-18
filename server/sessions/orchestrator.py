@@ -5098,7 +5098,8 @@ class SessionOrchestrator:
             return
         if rec is not None:
             from server.sessions.goals import effective_goal
-            from server.automations.completion_bar import met_bar
+            from server.automations.completion_bar import (
+                OBSERVED_RESOLUTION_SOURCE, SELF_CERTIFIED_SOURCES, met_bar)
             goal_text, goal_source = effective_goal(rec)
             pr = self._autopilot_pr_facts(rec)
             initial_prompt = getattr(rec, "initial_prompt", None)
@@ -5107,6 +5108,19 @@ class SessionOrchestrator:
             # session's own claim and does not satisfy the bar until the salvage
             # classifier below confirms it (is_unverified_self_resolution).
             source = getattr(rec, "pr_resolution_source", None)
+            if resolution == "not-needed" and source in SELF_CERTIFIED_SOURCES:
+                # A map-diff session answering "the cluster is already covered" is
+                # checkable against the repository itself — cheaper and more
+                # trustworthy than the Haiku salvage below, which is where a
+                # self-claim otherwise lands. Any other session answers False here
+                # and is judged exactly as before.
+                try:
+                    if await self._pm_onboard_observe_map_diff_not_needed(rec):
+                        source = OBSERVED_RESOLUTION_SOURCE
+                        await self._latch_pr_resolution(rec, resolution, source)
+                except Exception:  # pragma: no cover — observation is best-effort
+                    log.debug("completion.map_diff_observe_failed sid=%s",
+                              session_id, exc_info=True)
             verdict = met_bar(goal_text, goal_source, pr, resolution,
                               pr_resolution_source=source, instructions=initial_prompt)
             if not verdict.met:
@@ -8079,13 +8093,23 @@ class SessionOrchestrator:
           (c) unresolvable — the cluster's repo maps to no project, so
               ``_pm_triage_propose_map_diff`` can only skip. Latching it keeps a
               dead cluster from monopolising the branch and starving the clusters
-              that CAN be proposed.
+              that CAN be proposed; or
+          (d) already dispositioned — a FINISHED map-diff session for the key
+              resolved ``not-needed`` (the cluster is covered by a doc under
+              another slug, so (a) can never fire), or a human archived it. Either
+              is a verdict on the cluster. Without this, (b) released the moment
+              the session archived and the next tick spawned the identical prompt:
+              prod 2026-09-18, archived 19:44:17Z, re-spawned 19:44:55Z, three
+              sessions for one suggestion in an afternoon. An automation's archive
+              with no resolution is NOT a disposition (a merged doc latches via (a)
+              once pm-sync indexes it), and a queue-drained session never ran.
         """
-        from sqlalchemy import select
+        from sqlalchemy import and_, or_, select
         from server.db.models import Feature, Project
         from server.pm.repo_project import owning_projects_by_repo
         latched: set[str] = set()
         slugs: dict[str, str] = {}
+        onboard_origin = self._pm_onboard_ctx.automation_id
         async with db_session() as db:
             slugs = {repo: owner.slug for repo, owner in (
                 await owning_projects_by_repo(
@@ -8102,6 +8126,22 @@ class SessionOrchestrator:
                            Feature.slug == c.suggestion))).scalars().first()
                 if feat is not None:
                     latched.add(c.suggestion)          # (a)
+                    continue
+                key = f"{slug}:map-diff:{c.suggestion}"
+                dispositioned = (await db.execute(
+                    select(DbSession.id).where(
+                        DbSession.origin == onboard_origin,
+                        DbSession.origin_ref == key,
+                        DbSession.status.in_(INACTIVE_SESSION_STATUSES),
+                        or_(
+                            and_(DbSession.pr_resolution == "not-needed",
+                                 or_(DbSession.pr_resolution_source.is_(None),
+                                     DbSession.pr_resolution_source != "queue-drain")),
+                            and_(DbSession.archived_by.is_not(None),
+                                 DbSession.archived_by.not_in(AUTO_ARCHIVE_PROVENANCE)),
+                        )))).scalars().first()
+                if dispositioned is not None:
+                    latched.add(c.suggestion)          # (d)
         # (b) runs OUTSIDE the session above: _existing_session opens its own, and
         # it is deliberately the SAME lookup the spawn dedupes with — reusing the
         # spawning context means the origin id and the terminal-status set can
@@ -8925,18 +8965,7 @@ class SessionOrchestrator:
         # Never clobber a resolution decided elsewhere — the same no-clobber rule
         # _persist_status applies to the driver's token.
         if getattr(rec, "pr_resolution", None) is None:
-            rec.pr_resolution = "not-needed"
-            rec.pr_resolution_source = HARVEST_RESOLUTION_SOURCE
-            try:
-                from sqlalchemy import update as sa_update
-                async with db_session() as db:
-                    await db.execute(sa_update(DbSession).where(
-                        DbSession.id == session_id).values(
-                            pr_resolution="not-needed",
-                            pr_resolution_source=HARVEST_RESOLUTION_SOURCE))
-            except Exception:  # noqa: BLE001 - a persist failure must not stall the chain
-                log.warning("pm_classify.certify_persist_failed sid=%s", session_id,
-                            exc_info=True)
+            await self._latch_pr_resolution(rec, "not-needed", HARVEST_RESOLUTION_SOURCE)
         # A session that already reached `complete` on its own has been judged by the
         # completion guard already (it fires from _persist_status, which ran before this
         # chain's poll noticed). Re-persisting would only re-run that judgement. The
@@ -8945,6 +8974,121 @@ class SessionOrchestrator:
         if rec.status != "complete":
             await self._persist_status(session_id, "complete")
         log.info("pm_classify.certified_complete sid=%s", session_id)
+
+    async def _latch_pr_resolution(self, rec, resolution: str, source: str) -> None:
+        """Write a HARNESS-verified ``pr_resolution`` onto *rec* and its row.
+
+        THE persist for a verified resolution (``harvest``, ``observed``): one shape,
+        so the in-memory record and the DB row can never disagree about provenance.
+        A persist failure is logged and swallowed — the caller's judgement already
+        happened; the row is the audit trail, not the gate."""
+        rec.pr_resolution = resolution
+        rec.pr_resolution_source = source
+        try:
+            from sqlalchemy import update as sa_update
+            async with db_session() as db:
+                await db.execute(sa_update(DbSession).where(
+                    DbSession.id == rec.id).values(
+                        pr_resolution=resolution, pr_resolution_source=source))
+        except Exception:  # noqa: BLE001 - a persist failure must not stall the caller
+            log.warning("completion.resolution_persist_failed sid=%s source=%s",
+                        rec.id, source, exc_info=True)
+
+    async def _pm_onboard_observe_map_diff_not_needed(self, rec) -> bool:
+        """Harness-side verification of a map-diff session's ``not-needed`` claim.
+
+        A map-diff session (``pm_onboard_spawn_map(scope="diff")``) is asked to add
+        ONE feature doc for a no-fit cluster. When the cluster turns out to be covered
+        already — by a doc under a different slug — the right answer is ``mark_no_pr``
+        (not-needed). That lands on source ``tool``, a self-claim on a repo-attached
+        goal that does not read as research, so the completion guard nudged "open a
+        PR and arm auto-merge" unless the Haiku salvage happened to confirm; the agent
+        handed back, and a ``maintenance`` session lifted out of Background into
+        Active on a needs-you pill (prod 2026-09-18, session 91bf96b6). Same shape
+        the harvest latch fixed for classify sessions: let the harness, not the
+        model, say the deliverable is met.
+
+        True when, on ``origin/<default>`` of the session's repo, EITHER the
+        suggested doc ``<FEATURE_DOCS_DIR>/<suggestion>.md`` already exists, OR at
+        least half of the cluster's driving item numbers are already cited in the
+        feature docs (the agent's "maps one-to-one onto Evidence lines" argument,
+        checked). Anything else — not a map-diff session, no clone, an unreadable
+        ref, an empty cluster — answers False and leaves the claim to the salvage
+        classifier, exactly as before. Never raises: the caller treats an exception
+        as False, but a quiet False is the cheaper path."""
+        ref = str(getattr(rec, "origin_ref", None) or "")
+        repo = getattr(rec, "repo", None)
+        if (getattr(rec, "origin", None) != self._pm_onboard_ctx.automation_id
+                or not repo or ":map-diff:" not in ref):
+            return False
+        suggestion = ref.split(":map-diff:", 1)[1].strip()
+        if not suggestion:
+            return False
+        from sqlalchemy import select
+        from server.db.models import TriageProposal, WorkItem
+        async with db_session() as db:
+            numbers = set((await db.execute(
+                select(WorkItem.number)
+                .join(TriageProposal, TriageProposal.work_item_id == WorkItem.id)
+                .where(WorkItem.repo == repo,
+                       TriageProposal.no_fit_suggestion == suggestion))).scalars().all())
+        default_branch = await self._sdlc_default_branch(repo)
+        clone = str(gitrepos.clone_path(await self._effective_repo_root(), repo))
+        observed = await asyncio.to_thread(
+            self._pm_onboard_feature_doc_citations, clone,
+            f"refs/remotes/origin/{default_branch}", suggestion)
+        if observed is None:
+            return False
+        doc_exists, cited = observed
+        hit = numbers & cited
+        # "At least half": a cluster is a name shared by N items; a doc that
+        # already argues most of them IS the capability, under whichever slug.
+        covered = doc_exists or (bool(numbers) and len(hit) * 2 >= len(numbers))
+        log.info("pm_onboard.map_diff_observed sid=%s suggestion=%s doc=%s cited=%d/%d "
+                 "verdict=%s", getattr(rec, "id", None), suggestion, doc_exists,
+                 len(hit), len(numbers), covered)
+        return covered
+
+    @staticmethod
+    def _pm_onboard_feature_doc_citations(
+            clone: str, ref: str, suggestion: str) -> tuple[bool, set[int]] | None:
+        """``(suggested doc exists, set of ``#N`` numbers cited under the feature docs
+        dir)`` at *ref* in *clone*, or None when the ref cannot be read (sync — call
+        off-loop). Fetches first, best-effort, so a clone the session left behind
+        is read at today's default branch; a failed fetch still reads the cached ref."""
+        import re
+        from server.pm.classification import FEATURE_DOCS_DIR
+        try:
+            subprocess.run(["git", "-C", clone, "fetch", "origin", "--quiet"],
+                           check=False, capture_output=True, timeout=120)
+            rp = subprocess.run(
+                ["git", "-C", clone, "rev-parse", "--verify", f"{ref}^{{commit}}"],
+                capture_output=True, text=True, timeout=30, check=False)
+            if rp.returncode != 0:
+                return None
+            sha = rp.stdout.strip()
+            ls = subprocess.run(
+                ["git", "-C", clone, "ls-tree", "-r", "--name-only", sha,
+                 f"{FEATURE_DOCS_DIR}/"],
+                capture_output=True, text=True, timeout=30, check=False)
+            if ls.returncode != 0:
+                return None
+            paths = [p for p in ls.stdout.splitlines() if p.endswith(".md")]
+            doc_exists = f"{FEATURE_DOCS_DIR}/{suggestion}.md" in paths
+            cited: set[int] = set()
+            if paths:
+                gr = subprocess.run(
+                    ["git", "-C", clone, "grep", "-h", "-o", "-E", r"#[0-9]+", sha,
+                     "--", f"{FEATURE_DOCS_DIR}/"],
+                    capture_output=True, text=True, timeout=30, check=False)
+                if gr.returncode not in (0, 1):   # 1 = no matches, not an error
+                    return None
+                cited = {int(n) for n in re.findall(r"#([0-9]+)", gr.stdout)}
+            return doc_exists, cited
+        except Exception:  # noqa: BLE001 - unreadable is "unobserved", never a crash
+            log.debug("pm_onboard.map_diff_observe_read_failed clone=%s ref=%s",
+                      clone, ref, exc_info=True)
+            return None
 
     async def _pm_classify_ingest(
             self, session_id: str, project_slug: str, output_text: str) -> int:
