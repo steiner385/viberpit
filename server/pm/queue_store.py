@@ -21,14 +21,12 @@ from server.db.models import (AutomationTargetState, GhProjectItem, Session as D
                               WorkItem, WorkItemDep)
 from server.time_iso import parse_iso_utc
 
-from .desired_state import ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES
+from .desired_state import LIVE_SESSION_STATUSES
 from .mirror_store import deps_in_repos, list_product_views
 from .outcomes import body_fingerprint, bounces_stmt, rows_to_bounces
 from .queue import QueueRow
 from .reconcile_inputs import _aware
 from .refs import split_ref
-
-_LIVE_SESSION_STATUSES = ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES
 
 # Immutable empty default for the ``needs_human_at`` map (no mutable default arg).
 _NO_TIMES: Mapping[str, datetime] = {}
@@ -102,7 +100,7 @@ def load_queue_rows(db: Session, *, now: datetime,
     # a non-live value, so a ref never has both a live and a non-live session.
     live_refs = {
         ref for ref in
-        db.scalars(select(DbSession.origin_ref).where(DbSession.status.in_(_LIVE_SESSION_STATUSES)))
+        db.scalars(select(DbSession.origin_ref).where(DbSession.status.in_(LIVE_SESSION_STATUSES)))
         if ref
     }
 

@@ -9077,9 +9077,8 @@ class SessionOrchestrator:
         prior = await self._sdlc_dedupe_session_for(origin_ref)
         if prior is not None:
             prior_id, prior_status = prior
-            from server.pm.desired_state import (
-                ACTIVE_SESSION_STATUSES, HUMAN_WAIT_SESSION_STATUSES)
-            if prior_status in (ACTIVE_SESSION_STATUSES | HUMAN_WAIT_SESSION_STATUSES):
+            from server.pm.desired_state import LIVE_SESSION_STATUSES
+            if prior_status in LIVE_SESSION_STATUSES:
                 return None  # still decomposing (C4-R14) — a silent no-op
             # Finished, but still what spawn_session's dedupe would hand back, and
             # the attempt number has not moved (its ingest never wrote a proposal).

@@ -36,6 +36,7 @@ def test_issue_and_capability_and_incident_tiers():
     assert issue_tier("open", "needs_human", False, None) == "idle"   # removed value is inert
     assert issue_tier("closed", "classified", False, None, hold_kind="owner_action") == "live"
     assert issue_tier("open", "classified", False, "waiting_input") == "needs-you"
+    assert issue_tier("open", "classified", False, "needs_attention") == "in-flight"
     assert issue_tier("open", "classified", True, None) == "blocked"
     assert issue_tier("open", "classified", False, "in_progress") == "in-flight"
     assert issue_tier("open", "classified", False, None) == "idle"

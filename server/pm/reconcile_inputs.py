@@ -56,11 +56,6 @@ def _max(*ts: datetime | None) -> datetime | None:
 
 
 def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) -> ProductFacts:
-    # Deferred: queue_store imports this module for `_aware`, so importing it at module
-    # scope would be a cycle. The reconciler reads `Needs human` from the SAME derivation
-    # the queue and GET /api/pm/queue use, so the board cannot disagree with the runner.
-    from .queue_store import runner_row_maps
-
     repos = set(product.repos)
     gh = db.get(GhProject, product.gh_project_db_id) if product.gh_project_db_id else None
     issues = db.scalars(select(WorkItem).where(WorkItem.repo.in_(repos), WorkItem.kind == "issue")).all()
@@ -89,7 +84,6 @@ def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) 
         if dst is not None and (dst.state or "open") == "open":
             blockers.setdefault(d.src_ref, []).append(d.dst_ref)
             blockers_at[d.src_ref] = _max(blockers_at.get(d.src_ref), _aware(d.updated_at))
-    needs_human_at = runner_row_maps(db)[1]
     initiatives = {f"{i.epic_repo}#{i.epic_number}": i for i in db.scalars(
         select(Initiative).where(Initiative.epic_repo.in_(repos))).all()}
     # A program (an initiative with phases) is never driven directly: its Stage is
@@ -118,7 +112,6 @@ def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) 
             session_at=_aware(sess.updated_at) if sess else None,
             merged_pr_at=merged_at.get(ref),
             open_blocker_refs=tuple(sorted(blockers.get(ref, []))), blockers_at=blockers_at.get(ref),
-            needs_human_at=needs_human_at.get(ref),
             initiative_stage=(ini.stage if ini and ini.id not in program_ids else None),
             initiative_stage_at=_aware(ini.updated_at) if ini else None,
             hold_kind=w.hold_kind, hold_set_at=_aware(w.hold_set_at)))
@@ -140,14 +133,15 @@ def load_product_facts(db: Session, product: ProductSyncView, *, now: datetime) 
     # safe by another route: they carry that same near-now timestamp as their decided_at,
     # so the ownership rule lets them through against any older gh_updated_at.
     #
-    # A runner give-up IS folded in, and is not the same kind of value: `needs_human_at`
-    # is a decision time the runner stamps once, at the moment it hands the issue to a
-    # human (it flips the board to Needs human), so unlike `Session.updated_at` it does
-    # not churn and cannot hold the gate at ~now.
+    # A hold IS folded in, and is not the same kind of value: `hold_set_at` is a
+    # decision time its writer stamps once, at the moment the hold is set (it flips
+    # the board to Needs human), so unlike `Session.updated_at` it does not churn
+    # and cannot hold the gate at ~now. The reconciler must not write against a
+    # mirror older than the hold it is trying to reflect.
     newest = _max(*(_aware(w.classified_at) for w in issues),
                   *(_aware(i.updated_at) for i in initiatives.values()),
                   *(_aware(d.updated_at) for d in deps),
-                  *(f.needs_human_at for f in items),
+                  *(f.hold_set_at for f in items),
                   last_applied)
     return ProductFacts(
         project_id=product.project_id, slug=product.slug or product.project_id,
