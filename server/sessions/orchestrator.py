@@ -1057,6 +1057,7 @@ class SessionOrchestrator:
             needs_human=self._backlog_needs_human,
             escalate=self._backlog_escalate,
             investigation_state=self._backlog_investigation_state,
+            session_resolution=self._backlog_session_resolution,
             release_investigation_hold=self._backlog_release_investigation_hold,
             held_targets=self._backlog_held_targets,
             session_ended=self._backlog_session_ended,
@@ -6394,7 +6395,7 @@ class SessionOrchestrator:
         from sqlalchemy import select as sa_select
 
         from server.automations import backlog_github
-        from server.db.models import Session as DbSession, WorkItem
+        from server.db.models import WorkItem
         from server.pm.refs import split_ref
         issue_state = await asyncio.to_thread(
             backlog_github.issue_state_live, target, gh_run=self._gh_run)
@@ -6411,11 +6412,43 @@ class SessionOrchestrator:
                 if row is not None:
                     mirrored = True
                     hold_kind, hold_by = row
-            if session_id:
-                note = (await db.execute(sa_select(DbSession.pr_resolution_note).where(
-                    DbSession.id == session_id))).scalars().first()
+            note = (await self._session_no_pr(db, session_id))["note"]
         return {"issue_state": issue_state, "mirrored": mirrored,
                 "hold_kind": hold_kind, "hold_by": hold_by, "no_pr_note": note}
+
+    @staticmethod
+    async def _session_no_pr(db, session_id: str | None) -> dict:
+        """THE read of an ended session's no-PR verdict: ``{resolution, note}``, the
+        pair ``mark_no_pr`` wrote together.
+
+        One query for both sweeps that ask about it — the investigation settle wants
+        the note (which exit the session says it took) and the decision settle wants
+        the resolution (whether it parked the issue on a proposal) — because a second
+        SELECT over the same row is how the two would come to disagree about which
+        session they were reading. ``{None, None}`` for a session with no id, no row,
+        or nothing recorded."""
+        from sqlalchemy import select as sa_select
+
+        from server.db.models import Session as DbSession
+        if not session_id:
+            return {"resolution": None, "note": None}
+        row = (await db.execute(sa_select(
+            DbSession.pr_resolution, DbSession.pr_resolution_note).where(
+                DbSession.id == session_id))).first()
+        if row is None:
+            return {"resolution": None, "note": None}
+        return {"resolution": row[0], "note": row[1]}
+
+    async def _backlog_session_resolution(self, session_id: str | None) -> str | None:
+        """The ``session_resolution`` seam (spec 2026-09-18 §6): what an ended
+        dispatch's session declared through ``mark_no_pr``.
+
+        A sibling of ``_backlog_investigation_state`` rather than a field on it: this
+        one costs a single indexed row read and no GitHub call, and the sweep asks it
+        of EVERY ended implement dispatch, where the investigation state is read only
+        for the investigate kind."""
+        async with db_session() as db:
+            return (await self._session_no_pr(db, session_id))["resolution"]
 
     async def _backlog_release_investigation_hold(self, target: str) -> bool:
         """CONVERT-TO-A-FIX exit (spec §5): the investigation found the root cause

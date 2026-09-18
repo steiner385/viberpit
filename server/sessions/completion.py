@@ -83,6 +83,22 @@ _CANCEL_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: "I proposed a decision and the item is parked on it" (spec 2026-09-18 §6) — a
+#: token rather than a bare literal because three halves must agree on it: the tool
+#: schema's enum, the marker heuristic below, and the Backlog Runner branch that
+#: reads ``Session.pr_resolution`` back and settles such an ending as neither a
+#: bounce nor a hand-off.
+AWAITING_DECISION = "awaiting-decision"
+
+#: The prose form of ``AWAITING_DECISION`` for the MARKER path (spec 2026-09-18 §6).
+#: An engine without the durable tool surface (Codex) has no ``mark_no_pr`` argument
+#: to declare a resolution in and no ``propose_decision`` tool: it proposes through
+#: the decisions route and then ends the turn with the no-PR marker, saying so in the
+#: prose the marker trails. Without this the sentence would read as ``not-needed`` —
+#: "finished, nothing to do" — and the runner would settle the dispatch as a plain
+#: no-PR ending while the item sits parked on an unanswered question.
+_AWAITING_DECISION_RE = re.compile(r"awaiting[-\s]+(?:a\s+|the\s+)?decision", re.IGNORECASE)
+
 
 # Commit attribution for an agent-authored commit, per engine.
 #
@@ -161,17 +177,23 @@ def strip_markers(text: str) -> str:
 def resolution_from_text(text: str) -> str | None:
     """Classify a final-turn text carrying NO_PR_MARKER into a resolution token.
 
-    Returns None when the marker is absent. When present, 'cancelled' if the text
-    reads as an explicit cancellation/abandonment, else 'not-needed'."""
+    Returns None when the marker is absent. When present, ``awaiting-decision`` if
+    the text says the session parked the work on a decision proposal (the most
+    specific claim, so it is tested first — such a turn very often also says the
+    work was "not opening a PR", which the cancellation heuristic would otherwise
+    read as ``cancelled``), then 'cancelled' if the text reads as an explicit
+    cancellation/abandonment, else 'not-needed'."""
     if not text or NO_PR_MARKER_RE.search(text) is None:
         return None
+    if _AWAITING_DECISION_RE.search(text):
+        return AWAITING_DECISION
     return "cancelled" if _CANCEL_RE.search(text) else "not-needed"
 
 
-#: The two resolution tokens a no-PR completion can carry. Identical to what
+#: The resolution tokens a no-PR completion can carry. Identical to what
 #: ``resolution_from_text`` infers from prose, so the tool path and the marker
 #: fallback produce values that are comparable rather than merely similar.
-NO_PR_RESOLUTIONS: tuple[str, ...] = ("not-needed", "cancelled")
+NO_PR_RESOLUTIONS: tuple[str, ...] = ("not-needed", "cancelled", AWAITING_DECISION)
 
 
 def parse_mark_no_pr(args: dict) -> dict:
@@ -189,7 +211,9 @@ def parse_mark_no_pr(args: dict) -> dict:
         raise ToolArgError(
             f"resolution must be one of {', '.join(NO_PR_RESOLUTIONS)} — "
             "'not-needed' when the objective is already satisfied without a code "
-            "change, 'cancelled' when the work was called off.")
+            "change, 'cancelled' when the work was called off, "
+            f"'{AWAITING_DECISION}' when you called propose_decision and the item "
+            "is parked on the person's answer.")
     note = (args or {}).get("note")
     return {"resolution": resolution, "note": note if isinstance(note, str) and note else None}
 

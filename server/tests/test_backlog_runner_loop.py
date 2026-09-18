@@ -145,7 +145,7 @@ def build_loop(*, mode="on", config=None, clock=None,
                spawn_result=None, session_ran=None, pr_doctor_attempts=None,
                pr_doctor_attempts_fn=None, session_gone=None,
                held: "set[str] | None" = None, escalate_raises=False,
-               investigation_state=None):
+               investigation_state=None, session_resolution=None):
     """Construct a BacklogRunnerLoop over recorder fakes.
 
     Returns (loop, recorders) where recorders exposes .spawns / .announced and
@@ -178,6 +178,8 @@ def build_loop(*, mode="on", config=None, clock=None,
             # 2026-09-18 §5).
             self.investigation_reads: list = []
             self.hold_releases: list = []
+            # Every session id the decision settle asked about (spec §6).
+            self.resolution_reads: list = []
             # candidate queue: pop from the front on each select_batch
             self.candidates: list = list(candidates or [])
             self.in_flight = 0
@@ -249,6 +251,15 @@ def build_loop(*, mode="on", config=None, clock=None,
     async def release_investigation_hold(target):
         rec.hold_releases.append(target)
         return True
+
+    async def session_resolution_seam(session_id):
+        # ``session_resolution`` is the token every session answers with, or a
+        # callable of the session id; unwired, the loop's own stub answers None and
+        # no ending is ever settled as a decision proposal.
+        rec.resolution_reads.append(session_id)
+        if callable(session_resolution):
+            return session_resolution(session_id)
+        return session_resolution
 
     async def close_out(target, info):
         rec.close_outs.append((target, info))
@@ -327,6 +338,8 @@ def build_loop(*, mode="on", config=None, clock=None,
         escalate=escalate,
         investigation_state=(investigation_state_seam
                              if investigation_state is not None else None),
+        session_resolution=(session_resolution_seam
+                            if session_resolution is not None else None),
         release_investigation_hold=release_investigation_hold,
         session_ran=session_ran_probe if session_ran is not None else None,
         pr_doctor_attempts_for=attempts_seam,
@@ -3765,6 +3778,116 @@ def test_a_raising_escalate_leaves_the_claim_for_the_next_sweep_to_retry(tmp_pat
         assert not await ctx.get_target_state("r#1")
         rows = await _outcomes("r#1")
         assert len(rows) == 1 and rows[0].outcome == "no_pr"   # the SAME row, finalised once
+
+    asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+# An ended session that PROPOSED A DECISION (spec 2026-09-18 §6)               #
+# --------------------------------------------------------------------------- #
+
+async def _sweep_after_ending(tmp_path, name: str, resolution, **kw):
+    """Dispatch one implement batch, end its session, and sweep once.
+
+    ``resolution`` is what the ``session_resolution`` seam answers — the token the
+    ended session declared through ``mark_no_pr``."""
+    await init_db(db_url=f"sqlite+aiosqlite:///{tmp_path / name}")
+    await _seed_row()
+    await _seed_product()
+    loop, rec, ctx = build_loop(
+        config=make_config(max_concurrent=1), candidates=[batch("o/r#1")],
+        policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)},
+        spawn_result=SimpleNamespace(id="sess-1", model="sonnet"),
+        session_resolution=resolution, **kw)
+    await loop.tick()                        # dispatch on sonnet
+    await _mark_session_ended(ctx, "o/r#1")
+    await loop.tick()                        # sweep
+    return loop, rec, ctx
+
+
+def test_an_awaiting_decision_ending_is_neither_a_bounce_nor_a_hand_off(tmp_path):
+    """Spec §6: the session drafted options and parked its issue on a ``decision``
+    hold only an accept can lift. So the sweep finalises ``no_pr`` with cause
+    ``decision_proposed``, releases the claim and says so on the feed — and does
+    NOTHING else: a rung would re-dispatch the item the runner just parked, and a
+    hand-off would overwrite the decision hold with ``owner_action`` and comment
+    "needs human" on an issue whose inbox card already asks the question."""
+    async def run():
+        from server.automations.backlog_runner import DECISION_PROPOSED_CAUSE
+        _loop, rec, ctx = await _sweep_after_ending(
+            tmp_path, "decision_settle.db", "awaiting-decision")
+
+        assert rec.resolution_reads == ["sess-1"]
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", DECISION_PROPOSED_CAUSE)]
+        assert not await ctx.get_target_state("o/r#1")   # claim released
+        assert rec.escalations == [] and rec.needs_humans == []
+        assert [e["target"] for e in await ctx.list_events(kind=DECISION_PROPOSED_CAUSE)] == [
+            "o/r#1"]
+
+    asyncio.run(run())
+
+
+def test_any_other_no_pr_ending_still_climbs_the_ladder(tmp_path):
+    """The branch is keyed on the ONE token, read from the session's own
+    ``mark_no_pr`` declaration: a session that finished "not-needed" without a PR is
+    the pre-§6 bounce and must still climb a rung."""
+    async def run():
+        _loop, rec, ctx = await _sweep_after_ending(
+            tmp_path, "decision_not_needed.db", "not-needed")
+
+        assert rec.resolution_reads == ["sess-1"]
+        assert rec.escalations == [
+            ("o/r#1", "bounced at sonnet; next attempt on opus", "opus")]
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("no_pr", "session ended without a mergeable PR")]
+
+    asyncio.run(run())
+
+
+def test_a_failing_resolution_read_falls_back_to_the_ladder(tmp_path):
+    """A seam failure must not stall the sweep or invent a decision: the read is
+    best-effort and the branch declines, leaving the bounce exactly as it was before
+    §6 existed."""
+    async def run():
+        def boom(_sid):
+            raise RuntimeError("db gone (injected)")
+
+        _loop, rec, _ctx = await _sweep_after_ending(
+            tmp_path, "decision_read_fails.db", boom)
+
+        assert rec.escalations == [
+            ("o/r#1", "bounced at sonnet; next attempt on opus", "opus")]
+        assert [r.outcome for r in await _outcomes("o/r#1")] == ["no_pr"]
+
+    asyncio.run(run())
+
+
+def test_an_unwired_resolution_seam_never_settles_a_decision(tmp_path):
+    """The loop's own stub answers None, so a deployment that has not wired the seam
+    keeps every no-PR ending on the ladder rather than releasing claims silently."""
+    async def run():
+        _loop, rec, ctx = await _sweep_after_ending(
+            tmp_path, "decision_unwired.db", None)
+
+        assert rec.resolution_reads == []       # the seam was never even wired
+        assert rec.escalations == [
+            ("o/r#1", "bounced at sonnet; next attempt on opus", "opus")]
+
+    asyncio.run(run())
+
+
+def test_a_session_that_never_ran_is_released_before_any_decision_read(tmp_path):
+    """Placement: the never-ran release still wins. A dispatch whose session never
+    started turn one has nothing to have proposed, and charging it any settle at all
+    would be reading a resolution off a session that never spoke."""
+    async def run():
+        _loop, rec, ctx = await _sweep_after_ending(
+            tmp_path, "decision_never_ran.db", "awaiting-decision", session_ran=False)
+
+        assert rec.resolution_reads == []
+        assert [(r.outcome, r.cause) for r in await _outcomes("o/r#1")] == [
+            ("abandoned", "session never ran a turn")]
 
     asyncio.run(run())
 

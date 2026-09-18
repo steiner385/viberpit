@@ -151,7 +151,9 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
                "Use this INSTEAD of mark_complete when finishing without a code change. "
                "resolution: 'not-needed' when the objective was already satisfied without "
                "one, 'cancelled' when the user called the work off or you deliberately "
-               "decided not to open one. An objective that asked for a code change is NOT "
+               "decided not to open one, 'awaiting-decision' when you called "
+               "`propose_decision` and the issue is parked on the person's answer. An "
+               "objective that asked for a code change is NOT "
                "finished by investigating it — discovering the work is larger than expected, "
                "recommending a spec, or offering to continue is a hand-back: say what you "
                "found, ask how to proceed, and call `hand_back`, not this. Never call this in "
@@ -249,6 +251,86 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
             raise ToolArgError(str(e)) from e
         return {"ref": ref, "holdKind": wi.hold_kind, "holdBy": wi.hold_by}
 
+    @spec_tool("propose_decision",
+               "Park this session's issue on a PRODUCT DECISION only a person can take: "
+               "a genuine fork in the road where the options are all defensible and the "
+               "choice is the user's to make (which of two behaviours is correct, which "
+               "data model to commit to, what to do with existing rows). Draft 2-6 "
+               "options, name the one you recommend, and say why; the person picks one "
+               "in the inbox and the next session on this issue is told what was chosen. "
+               "Do NOT call it for a question you can answer yourself by reading the "
+               "code, for a missing repro (that is `set_hold` kind 'evidence'), or for "
+               "anything you could simply do and mention. options: [{key, label, "
+               "detail}] — key is a short slug, label a few words, detail one sentence. "
+               "recommended_key: the key you would pick. rationale: why, in one or two "
+               "sentences; it is shown to the person and quoted back to the next "
+               "session. After a successful call, end the turn with "
+               '`mark_no_pr("awaiting-decision", note=...)` — the work is not abandoned '
+               "and this is not a hand_back: the issue is parked on the proposal until "
+               "the decision is taken.",
+               {"type": "object",
+                "properties": {
+                    "options": {"type": "array",
+                                "items": {"type": "object",
+                                          "properties": {"key": {"type": "string"},
+                                                         "label": {"type": "string"},
+                                                         "detail": {"type": "string"}},
+                                          "required": ["key", "label"]}},
+                    "recommended_key": {"type": "string"},
+                    "rationale": {"type": "string"}},
+                "required": ["options", "recommended_key", "rationale"]})
+    @guarded
+    async def propose_decision(args: dict[str, Any]) -> Any:
+        from sqlalchemy.exc import IntegrityError
+
+        from server.db import db_session
+        from server.pm import decisions
+        from server.pm.holds import SESSION_PREFIX, work_item_for_ref
+        rec = ctx.record()
+        # The session's OWN issue, resolved exactly as `set_hold` resolves it. No
+        # `ref` argument: a decision parks the item this session was dispatched for,
+        # and letting a model name a third-party issue would park work nobody asked
+        # it about.
+        ref = getattr(rec, "origin_ref", None)
+        if not ref:
+            raise ToolArgError(
+                "this session has no issue ref, so there is nothing to park a decision "
+                "on; raise the choice with hand_back instead")
+        # The TYPE check only (the boundary the route's pydantic body covers): a
+        # number or a bare string would reach `normalize_options`'s `for` as a
+        # TypeError and come back to the model as an opaque tool error. Every
+        # SEMANTIC rule — how many options, unique keys, the recommendation among
+        # them — stays in the service below.
+        options = args.get("options")
+        if not isinstance(options, list):
+            raise ToolArgError(
+                "options must be a list of 2-6 objects, each {key, label, detail}")
+        try:
+            async with db_session() as db:
+                wi = await work_item_for_ref(db, str(ref))
+                # ONE writer (constitution VI): `decisions.propose` validates the
+                # options, writes the proposal AND the `decision` hold in this unit of
+                # work, and records both audit rows. Nothing about that lives here.
+                proposal = await decisions.propose(
+                    db, wi, options=options,
+                    recommended_key=str(args.get("recommended_key") or ""),
+                    rationale=str(args.get("rationale") or ""),
+                    actor=f"{SESSION_PREFIX}{ctx.session_id}",
+                    now=datetime.now(timezone.utc), via="session")
+                # Read the id INSIDE the block: the commit at the context exit expires
+                # the instance, and a later attribute read would need a live session.
+                data = {"ref": ref, "proposalId": proposal.id, "status": proposal.status,
+                        "next": 'end the turn with mark_no_pr("awaiting-decision", '
+                                'note="<the question, in one sentence>")'}
+        except IntegrityError as e:
+            # The partial unique index is what actually enforces "one pending proposal
+            # per item"; the service's friendly SELECT is only the first line. Same
+            # refusal either way — ONE wording, from the service.
+            raise ToolArgError(decisions.PENDING_CONFLICT_MESSAGE) from e
+        except ValueError as e:      # DecisionError/DecisionConflict are ValueErrors
+            raise ToolArgError(str(e)) from e
+        return data
+
     @spec_tool("dispatch_session",
                "Start a CHILD session of this one: a separate session on the same repo, in "
                "its own worktree, owned by the same user, that the user can open, steer, "
@@ -297,5 +379,5 @@ def build_session_tools(ctx: SessionToolContext) -> list[SdkMcpTool[Any]]:
     by_name = {"session_context": session_context, "report_feedback": report_feedback,
                "mark_complete": mark_complete, "mark_no_pr": mark_no_pr,
                "hand_back": hand_back, "set_hold": set_hold, "request_model": request_model,
-               "dispatch_session": dispatch_session}
+               "propose_decision": propose_decision, "dispatch_session": dispatch_session}
     return [by_name[name] for name in mounted_tool_names(ctx)]

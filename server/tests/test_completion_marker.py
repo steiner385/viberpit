@@ -14,6 +14,27 @@ def test_marker_with_cancel_phrasing_returns_cancelled():
     assert resolution_from_text(txt) == "cancelled"
 
 
+def test_marker_naming_an_awaiting_decision_returns_that_resolution():
+    """The MARKER half of spec 2026-09-18 §6. An engine without the durable tool
+    surface (Codex) proposes through the decisions route and then ends its turn with
+    the no-PR marker, so the only place the park can be legible is the prose — and
+    it must not read as ``not-needed``, which would settle the dispatch as "nothing
+    to do" while the issue sits on an unanswered question."""
+    from server.sessions.completion import AWAITING_DECISION
+    txt = f"Proposed two options; awaiting a decision before I build.\n{NO_PR_MARKER}"
+    assert resolution_from_text(txt) == AWAITING_DECISION
+    assert resolution_from_text(f"Awaiting-decision on #12.\n{NO_PR_MARKER}") == AWAITING_DECISION
+
+
+def test_an_awaiting_decision_outranks_the_cancellation_heuristic():
+    """Such a turn almost always also says it is not opening a PR — which
+    ``_CANCEL_RE`` matches. The decision park is the more specific claim and the one
+    the runner acts on, so it is tested first."""
+    txt = ("Not opening a PR yet: the choice between the two behaviours is yours. "
+           f"Awaiting decision.\n{NO_PR_MARKER}")
+    assert resolution_from_text(txt) == "awaiting-decision"
+
+
 def test_no_pr_marker_is_html_comment():
     assert NO_PR_MARKER == "<!-- viberpit:no-pr -->"
 

@@ -24,6 +24,14 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     # is there to answer. Agents may only set the two auto-exiting kinds; holds.py
     # enforces that, not this table.
     ToolSpec("set_hold", ToolClass.SIGNAL, "Hold or release this session's issue"),
+    # SIGNAL, like set_hold and for the same reason (spec 2026-09-18 §6): it parks
+    # the issue on a `decision` hold the person answers in the inbox — a roadmap
+    # chip and an inbox card, never a permission card an unattended runner session
+    # would have nobody to answer. It is NOT a turn signal (see TURN_SIGNAL_NAMES):
+    # the turn ends afterwards with `mark_no_pr("awaiting-decision")`, and the
+    # proposal itself deserves the ordinary ToolCall card as the transcript's only
+    # record of it.
+    ToolSpec("propose_decision", ToolClass.SIGNAL, "Propose a decision on this issue"),
     # MUTATION: it creates a session the user sees on the board. Gated on its
     # annotation by the permission layer, exactly like the assistant drawer's
     # create_session: our own MUTATION tools raise a card in EVERY session mode
@@ -51,8 +59,10 @@ SIGNAL_TOOL_NAMES: frozenset[str] = frozenset(
 #: has a branch for each of exactly these four. A card for them would be noise on top
 #: of the status change they cause.
 #:
-#: A SIGNAL tool absent from here (``set_hold``) has a lasting effect the transcript is
-#: the only record of, so it falls through to an ordinary ToolCall card. Keeping the
+#: A SIGNAL tool absent from here (``set_hold``, ``propose_decision``) has a lasting
+#: effect the transcript is the only record of, so it falls through to an ordinary
+#: ToolCall card — and neither ends the turn: the session keeps working after a hold,
+#: and ends a proposal's turn with ``mark_no_pr``, which IS here. Keeping the
 #: two sets distinct is what stops a session mutating roadmap state invisibly, live and
 #: on replay (final-review F2). Hand-written rather than derived because "does the
 #: Translator read this as a turn outcome" is a property of ``_record_signal``, not of
@@ -74,14 +84,18 @@ def mounted_signal_names(*, signalling_tools: bool, self_model_switch: bool) -> 
     is the third way a turn ends, and a session told about completion but not about
     hand-back is exactly the session that misuses ``mark_complete``. ``set_hold`` rides
     with them unconditionally too — it needs no engine capability beyond the tool
-    surface itself, unlike ``request_model`` below.
+    surface itself, unlike ``request_model`` below. ``propose_decision`` rides with
+    ``set_hold`` for the same reason, and beside it on purpose: the two are the pair
+    a session chooses between when it cannot proceed (evidence is missing vs. the
+    question is a product choice), and mounting one without the other leaves only
+    ``hand_back`` for the half that is missing.
 
     ``request_model`` is named only when ``self_model_switch`` — declaring it otherwise
     offers a call whose result is silently dropped (no engine capability to honour it).
     """
     if not signalling_tools:
         return ()
-    names = ["mark_complete", "mark_no_pr", "hand_back", "set_hold"]
+    names = ["mark_complete", "mark_no_pr", "hand_back", "set_hold", "propose_decision"]
     if self_model_switch:
         names.append("request_model")
     return tuple(names)

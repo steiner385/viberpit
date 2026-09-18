@@ -462,16 +462,15 @@ def actor_for_request(request: object) -> str:
     return identity
 
 
-async def apply_session_hold(db, *, ref: str, kind: str | None, reason: str,
-                             session_id: str, now: datetime) -> tuple[WorkItem, str | None]:
-    """The session tool's one call: resolve ``owner/repo#N`` to the mirrored issue and
-    set (``kind``) or clear (``kind is None``) its hold as ``session:<id>``.
+async def work_item_for_ref(db, ref: str) -> WorkItem:
+    """Resolve ``owner/repo#N`` to the mirrored issue, or raise ``ValueError``.
 
-    Returns ``(work_item, released)`` where ``released`` is the hold kind that WAS on
-    the item before a clear (``None`` when setting, and ``None`` when clearing an
-    already-unheld item) — mirroring the overlay route's ``released = wi.hold_kind``
-    capture (``server/api/pm.py``'s ``clearHold`` branch), since ``clear_hold`` blanks
-    ``wi.hold_kind`` before a caller could otherwise read what was released."""
+    THE resolve every session-tool handler shares (``set_hold`` below,
+    ``propose_decision`` in ``server/sessions/tools/tools.py``): a malformed ref and
+    an unmirrored issue are the two failures the model must be told about in words,
+    and a second copy of this lookup is how one tool would start answering them
+    differently from another. ``guarded`` turns the ``ValueError`` into the tool's
+    own corrective message."""
     from sqlalchemy import select
 
     from server.pm.refs import split_ref
@@ -484,6 +483,20 @@ async def apply_session_hold(db, *, ref: str, kind: str | None, reason: str,
         WorkItem.kind == "issue"))).scalar_one_or_none()
     if wi is None:
         raise ValueError(f"{ref} is not a mirrored issue")
+    return wi
+
+
+async def apply_session_hold(db, *, ref: str, kind: str | None, reason: str,
+                             session_id: str, now: datetime) -> tuple[WorkItem, str | None]:
+    """The session tool's one call: resolve ``owner/repo#N`` to the mirrored issue and
+    set (``kind``) or clear (``kind is None``) its hold as ``session:<id>``.
+
+    Returns ``(work_item, released)`` where ``released`` is the hold kind that WAS on
+    the item before a clear (``None`` when setting, and ``None`` when clearing an
+    already-unheld item) — mirroring the overlay route's ``released = wi.hold_kind``
+    capture (``server/api/pm.py``'s ``clearHold`` branch), since ``clear_hold`` blanks
+    ``wi.hold_kind`` before a caller could otherwise read what was released."""
+    wi = await work_item_for_ref(db, ref)
     actor = f"session:{session_id}"
     released: str | None = None
     if kind is None:

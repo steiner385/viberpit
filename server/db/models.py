@@ -173,8 +173,10 @@ class Session(Base):
     # autopilot help continues). Nullable so init_db backfills without a migration.
     auto_archive_opt_out_reason: Mapped[str | None] = mapped_column(
         String, nullable=True, default=None)
-    # Durable record that a session resolved it will NOT open a PR — either it
-    # finished without one ("not-needed") or cancelled the PR work ("cancelled").
+    # Durable record that a session resolved it will NOT open a PR — it finished
+    # without one ("not-needed"), cancelled the PR work ("cancelled"), or parked the
+    # issue on a decision proposal ("awaiting-decision", spec 2026-09-18 §6). The
+    # vocabulary is `server/sessions/completion.py:NO_PR_RESOLUTIONS`.
     # None = unresolved (default). Reason token may carry ": detail" for audit.
     # Source distinguishes the deterministic marker from the probabilistic classifier.
     pr_resolution: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
@@ -715,6 +717,20 @@ class AutomationOwnedTarget(Base):
 DISPATCH_OUTCOMES: tuple[str, ...] = (
     "running", "merged", "no_pr", "pr_gave_up", "needs_human", "reverted", "abandoned",
     "superseded")
+
+# ``cause`` is free text, NOT a vocabulary — the reason behind one of the outcomes
+# above. Two causes are load-bearing enough to name here, because something reads
+# them back rather than only displaying them:
+#   - ``decision_proposed`` (``backlog_runner.DECISION_PROPOSED_CAUSE``) on a
+#     ``no_pr`` row: the session ended with ``mark_no_pr("awaiting-decision")`` after
+#     proposing a decision (spec 2026-09-18 §6). Deliberately a cause and not a new
+#     outcome: nothing about the dispatch differs from any other ending that opened
+#     no PR, and a new outcome value would have to be taught to every consumer of
+#     the tuple above (``server/pm/outcomes.py``, ``web/src/api/pm.ts``) just to be
+#     excluded from the bounce count the ``no_pr``/``investigate`` pair already
+#     handles.
+#   - ``investigation: …`` on a ``no_pr`` row with ``dispatch_kind='investigate'``
+#     (spec §5), whose suffix names which of the four exits was taken.
 
 # What a dispatch was for (spec 2026-09-18 §3/§5). ``implement`` opens a PR;
 # ``investigate`` (series item 4b) reproduces or correlates and never counts as a

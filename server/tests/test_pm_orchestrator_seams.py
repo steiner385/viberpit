@@ -1280,6 +1280,34 @@ async def test_backlog_investigation_state_reads_the_issue_the_hold_and_the_note
 
 
 @pytest.mark.asyncio
+async def test_backlog_session_resolution_reads_the_ended_sessions_own_verdict(db_env):
+    """Spec 2026-09-18 §6: the decision settle asks one question — what did this
+    dispatch's session declare through ``mark_no_pr``? — and both sweeps read the
+    resolution/note pair through the SAME query (``_session_no_pr``), so they can
+    never be looking at different rows."""
+    from server.db.models import Session as DbSession
+    await init_db(db_env)
+    orch = _bare_orch()
+    async with db_session() as db:
+        db.add(DbSession(id="sess-1", name="x", account_name="a", cwd="/tmp",
+                         status="ended", pr_resolution="awaiting-decision",
+                         pr_resolution_source="tool",
+                         pr_resolution_note="stop the turn or let it finish?"))
+        db.add(DbSession(id="sess-2", name="y", account_name="a", cwd="/tmp",
+                         status="ended"))
+
+    assert await orch._backlog_session_resolution("sess-1") == "awaiting-decision"
+    # No resolution, no session id and no row are all simply "not a decision ending".
+    assert await orch._backlog_session_resolution("sess-2") is None
+    assert await orch._backlog_session_resolution(None) is None
+    assert await orch._backlog_session_resolution("sess-404") is None
+
+    async with db_session() as db:
+        assert await orch._session_no_pr(db, "sess-1") == {
+            "resolution": "awaiting-decision", "note": "stop the turn or let it finish?"}
+
+
+@pytest.mark.asyncio
 async def test_backlog_release_investigation_hold_clears_only_an_evidence_hold(db_env):
     """The convert-to-a-fix exit: the runner clears the ``evidence`` hold itself
     (engine-neutral — Codex has no hold-setting tool), audited as ``investigation``

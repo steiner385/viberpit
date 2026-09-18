@@ -33,6 +33,8 @@ _BLURBS: dict[str, str] = {
                   "before the objective can be finished."),
     "set_hold": ("you want it on the record that this issue needs evidence, or a stronger "
                  "model, before anyone builds it."),
+    "propose_decision": ("the work has hit a product choice only the user can make: "
+                         "draft the options instead of guessing or handing back."),
     "request_model": "you want to run the rest of the work on a different model tier.",
     "dispatch_session": "you need a linked child session the user can steer independently.",
 }

@@ -229,11 +229,15 @@ def test_the_signal_tool_names_come_from_the_spec_registry():
     assert SIGNAL_TOOL_NAMES == {n for n, s in SESSION_TOOL_SPECS.items()
                                  if s.tool_class is ToolClass.SIGNAL}
     assert SIGNAL_TOOL_NAMES == {"mark_complete", "mark_no_pr", "hand_back", "set_hold",
-                                 "request_model"}
+                                 "propose_decision", "request_model"}
     assert TURN_SIGNAL_NAMES < SIGNAL_TOOL_NAMES
     assert TURN_SIGNAL_NAMES == {"mark_complete", "mark_no_pr", "hand_back",
                                  "request_model"}
+    # Both roadmap-writing signals stay OUT of the turn set: the card they render is
+    # the transcript's only record of a lasting effect, and neither ends the turn —
+    # `propose_decision` is followed by `mark_no_pr("awaiting-decision")`, which does.
     assert "set_hold" not in TURN_SIGNAL_NAMES
+    assert "propose_decision" not in TURN_SIGNAL_NAMES
 
 
 def test_a_top_level_set_hold_renders_a_card_and_ends_no_turn():
@@ -250,6 +254,28 @@ def test_a_top_level_set_hold_renders_a_card_and_ends_no_turn():
     assert cards[0].name == SET_HOLD
     assert cards[0].input == {"kind": "evidence", "reason": "no repro"}
     assert feed_result(t).outcome == "success"
+
+
+def test_a_propose_decision_call_renders_a_card_and_the_turn_ends_on_mark_no_pr():
+    """The §6 pair, as the Translator sees it: the proposal is a lasting roadmap
+    effect (a ``decision`` hold and an inbox card), so it renders like ``set_hold``
+    and does NOT end the turn; the ``mark_no_pr("awaiting-decision")`` that follows
+    is what resolves it — and the resolution it carries is what the Backlog Runner
+    later reads back off the session row."""
+    from server.sessions.events import ToolCall
+    t = Translator()
+    out = feed_assistant_tool_call(t, "mcp__viberpit__propose_decision",
+                                   {"options": [{"key": "a", "label": "A"},
+                                                {"key": "b", "label": "B"}],
+                                    "recommended_key": "a", "rationale": "why"},
+                                   pid=None)
+    assert [e.name for e in out if isinstance(e, ToolCall)] == [
+        "mcp__viberpit__propose_decision"]
+    feed_assistant_tool_call(t, MARK_NO_PR, {"resolution": "awaiting-decision",
+                                             "note": "which archive rule?"}, pid=None)
+    end = feed_result(t)
+    assert (end.outcome, end.pr_resolution) == ("complete", "awaiting-decision")
+    assert end.pr_resolution_source == "tool" and end.pr_resolution_note == "which archive rule?"
 
 
 def test_a_failed_result_stays_failed_even_with_a_mark_complete_call():
