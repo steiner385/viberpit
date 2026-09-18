@@ -23,7 +23,7 @@ interface Props {
   isLastTurn: boolean
   toolDetailMode: ToolDetailMode
   thinkingCollapsed: boolean
-  /** Id of the block currently being streamed live (renders as plain text);
+  /** Id of the block currently being streamed live (defers diagram rendering);
    *  null/absent means every text block is finalized and rendered as markdown. */
   streamingBlockId?: string | null
   onAnswer: (questionId: string, selected: string[], mode?: 'option' | 'freeform' | 'chat') => void

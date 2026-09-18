@@ -7,15 +7,15 @@ vi.mock('highlight.js/styles/github-dark.css', () => ({}))
 describe('AssistantText', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  it('renders raw text (incl. markdown chars) when streaming', () => {
+  it('renders Markdown while streaming', () => {
     render(<AssistantText text="**bold** text" streaming={true} />)
-    expect(screen.getByText('**bold** text')).toBeInTheDocument()
+    expect(screen.getByText('bold').tagName).toBe('STRONG')
   })
 
-  it('does not render markdown when streaming', () => {
+  it('keeps streamed Markdown formatting', () => {
     render(<AssistantText text="**bold**" streaming={true} />)
-    // No <strong> element
-    expect(document.querySelector('strong')).toBeNull()
+    // Streaming and settled text share the renderer.
+    expect(document.querySelector('strong')).not.toBeNull()
   })
 
   it('hides a harness marker while streaming', () => {
