@@ -16,7 +16,7 @@ def test_schema_keys_and_defaults():
     assert DISPATCH_MODES == ("off", "propose", "auto")
     assert effective_policy(None) == {
         "dispatch": "off", "queue_min_status": "Ready", "max_in_flight": 1, "weight": 1,
-        "ladder_top": "fable", "give_up_after_bounces": 2, "default_model": "auto",
+        "ladder_top": "fable", "give_up_after_bounces": 0, "default_model": "auto",
         "respect_dependencies": True, "triage_auto_accept": "off",
         "risk_tolerance": "cautious", "max_initiatives_in_flight": 2,
         "unattended_model_floor": "none"}
@@ -76,19 +76,24 @@ def test_triage_auto_accept_is_the_eighth_field_with_the_spec_choices():
     assert effective_policy({"triage_auto_accept": "always"})["triage_auto_accept"] == "off"
 
 
-def test_give_up_after_bounces_is_the_ninth_field_defaulting_to_two():
+def test_give_up_after_bounces_is_the_ninth_field_defaulting_to_never():
     """Phase 3 / D8: the ONE bounce threshold. ``min=0`` because 0 is meaningful —
     "never give up" — while a negative threshold would make ``bounced_out`` true on
-    the very first finalised outcome."""
+    the very first finalised outcome.
+
+    The default is 0 since the model ladder landed (spec 2026-09-18 §4, decision 2:
+    "park only above the top tier"): a default of 2 capped every product at two
+    attempts, so ``ladder_top`` was unreachable and the owner hand-off never fired.
+    It stays available as an optional STRICTER dial."""
     field = {f.key: f for f in PRODUCT_POLICY_SCHEMA}["give_up_after_bounces"]
     assert field.type == "int"
-    assert field.default == 2
+    assert field.default == 0
     assert field.min == 0
-    assert effective_policy(None)["give_up_after_bounces"] == 2
-    assert effective_policy({"give_up_after_bounces": 0})["give_up_after_bounces"] == 0
+    assert effective_policy(None)["give_up_after_bounces"] == 0
+    assert effective_policy({"give_up_after_bounces": 2})["give_up_after_bounces"] == 2
     assert effective_policy({"give_up_after_bounces": 5})["give_up_after_bounces"] == 5
     # A negative threshold degrades the WHOLE policy to defaults.
-    assert effective_policy({"give_up_after_bounces": -1})["give_up_after_bounces"] == 2
+    assert effective_policy({"give_up_after_bounces": -1})["give_up_after_bounces"] == 0
 
 
 def test_risk_tolerance_is_the_gate_vocabulary_defaulting_to_cautious():

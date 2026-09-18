@@ -3187,6 +3187,91 @@ def test_a_raising_escalate_leaves_the_claim_for_the_next_sweep_to_retry(tmp_pat
     asyncio.run(run())
 
 
+def test_the_give_up_dial_hands_off_instead_of_writing_a_rung_nothing_can_consume(tmp_path):
+    """Final review I1: ``give_up_after_bounces`` is an optional STRICTER stop than
+    ``ladder_top``, and it has to hand off rather than climb.
+
+    The queue's ``skip_reason`` applies ``bounced_out`` to the same count, so a rung
+    hold written AT the dial is one the next refill would never consume: the item
+    would sit ``needs_spec`` with a ``stronger_model`` hold, no owner hand-off, no
+    comment and no ``gave_up`` row. With the dial at 2 the first bounce still
+    climbs; the second routes through ``_give_up`` and leaves ``escalations``
+    exactly where the first bounce left it."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_ladder_dial.db'}"
+
+    async def run():
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()          # a mirrored body, so bounces are countable
+        spawned = SimpleNamespace(id="sess-1", model="sonnet")
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1"), batch("o/r#1")],
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000,
+                                              give_up_after_bounces=2)},
+            spawn_result=spawned)
+
+        await loop.tick()                       # dispatch 1, on sonnet
+        await _mark_session_ended(ctx, "o/r#1")
+        await loop.tick()                       # sweep: bounce 1 → climbs to opus
+
+        assert rec.escalations == [
+            ("o/r#1", "bounced at sonnet; next attempt on opus", "opus")]
+        assert rec.needs_humans == []
+
+        rec.in_flight = 0                       # the freed slot
+        spawned.id, spawned.model = "sess-2", "opus"
+        await loop.tick()                       # dispatch 2, on opus
+        await _mark_session_ended(ctx, "o/r#1")
+        await loop.tick()                       # sweep: bounce 2 → the dial is reached
+
+        assert len(rec.escalations) == 1        # unchanged since the first bounce
+        assert rec.needs_humans == [
+            ("o/r#1", "bounced at opus; give_up_after_bounces=2 reached")]
+        st = await ctx.get_target_state("o/r#1")
+        assert st["gave_up"] is True and st["held"] is True
+        assert [r.outcome for r in await _outcomes("o/r#1")] == ["no_pr", "no_pr"]
+
+    asyncio.run(run())
+
+
+def test_the_default_dial_never_stops_the_ladder_below_the_top(tmp_path):
+    """The shipped default is 0 ("never"), so the LADDER's length is the cap: a
+    product that says nothing about the dial climbs sonnet → opus → fable and only
+    hands off above the top. Before final review I1 the default of 2 skipped the
+    item as ``needs_spec`` on the very bounce that wrote the fable rung."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'oc_ladder_no_dial.db'}"
+
+    async def run():
+        from server.automations.product_policy import effective_policy
+
+        assert effective_policy(None)["give_up_after_bounces"] == 0
+        await init_db(db_url=db_url)
+        await _seed_row()
+        await _seed_product()
+        spawned = SimpleNamespace(id="sess-1", model="sonnet")
+        loop, rec, ctx = build_loop(
+            config=make_config(max_concurrent=1),
+            candidates=[batch("o/r#1"), batch("o/r#1")],
+            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000)},
+            spawn_result=spawned)
+
+        await loop.tick()
+        await _mark_session_ended(ctx, "o/r#1")
+        await loop.tick()                       # bounce 1 → opus
+
+        rec.in_flight = 0
+        spawned.id, spawned.model = "sess-2", "opus"
+        await loop.tick()
+        await _mark_session_ended(ctx, "o/r#1")
+        await loop.tick()                       # bounce 2 → fable, still no hand-off
+
+        assert [rung for _t, _r, rung in rec.escalations] == ["opus", "fable"]
+        assert rec.needs_humans == []
+
+    asyncio.run(run())
+
+
 def test_a_bounce_at_the_top_hands_the_issue_to_the_owner(tmp_path):
     """A bounce AT ``ladder_top`` (default ``fable``) is the owner's: the
     EXISTING give-up path (owner_action hold + comment), never the (rung-only)

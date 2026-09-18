@@ -21,7 +21,7 @@ from .context import AutomationContext
 from .engine_policy import EnginePolicy
 from .product_policy import (
     NO_PRODUCT_POLICY_KEY, ImplementationDecision, effective_policy, is_on)
-from server.pm.outcomes import gated_ladder_top, next_rung, top_tier
+from server.pm.outcomes import bounced_out, gated_ladder_top, next_rung, top_tier
 from server.sessions.model_catalog import model_tier
 
 log = logging.getLogger(__name__)
@@ -1613,6 +1613,30 @@ class BacklogRunnerLoop:
             detail={"session_id": sid, "claimed_at": st.get("claimed_at"),
                     "issues": st.get("issues")})
 
+    async def _dial_stops_the_ladder(self, target: str, policy: dict) -> "str | None":
+        """The operator's ``give_up_after_bounces`` hand-off reason for the bounce
+        being charged right now, or ``None`` to keep climbing.
+
+        The ladder's own length is the cap (spec 2026-09-18 §4, decision 2), so this
+        dial is an optional STRICTER stop. It has to be consulted BEFORE a rung hold
+        is written: the queue's ``skip_reason`` applies ``bounced_out`` to the same
+        count, so a rung hold written past the dial is one nothing will ever consume
+        — the item sits ``needs_spec`` with no owner hand-off, no comment and no
+        ``gave_up`` row (final review I1).
+
+        ``bounced_out`` is THE comparison (``server/pm/outcomes.py``), shared with
+        the queue and the roadmap, applied to the queue's OWN count plus the bounce
+        this sweep is about to finalise. A zero dial short-circuits before the query:
+        ``bounced_out`` answers False for it anyway, and the default path must not
+        pay a read per bounce."""
+        cap = int(policy["give_up_after_bounces"])
+        if cap <= 0:
+            return None
+        bounces = await self._ctx.bounces_for(target) + 1
+        if not bounced_out(bounces, cap):
+            return None
+        return f"give_up_after_bounces={cap} reached"
+
     async def _sweep_one(self, target: str, st: dict,
                          gave_up_targets: set[str]) -> None:
         if st.get("proposed"):
@@ -1700,6 +1724,14 @@ class BacklogRunnerLoop:
                 await self._give_up(target, st, "PR Doctor gave up at the top" + (
                     f"; {gated} needs approval" if gated else ""), outcome=pd_outcome)
                 return
+            dial = await self._dial_stops_the_ladder(target, ladder_policy)
+            if dial is not None:
+                # The operator's stricter dial ends the climb here (final review
+                # I1): hand off rather than write a rung the queue will refuse.
+                await self._give_up(target, st,
+                                    f"PR Doctor gave up at {model_tier(previous) or 'sonnet'}; "
+                                    f"{dial}", outcome=pd_outcome)
+                return
             # Escalate FIRST, release the row SECOND (review R1 I2 item 2): if
             # the hold write raises, the durable trigger (this same
             # pr-doctor-gave-up event) re-fires next tick and the claim is
@@ -1756,17 +1788,32 @@ class BacklogRunnerLoop:
             # ladder stopped below the tier they configured rather than
             # concluding the strongest model already failed.
             gated = gated_ladder_top(ladder_policy)
-            reason = (f"bounced at {model_tier(previous) or top}; {gated} needs approval"
-                      if gated else
-                      f"bounced at {model_tier(previous) or 'the top'}: "
+            # ONE fallback for "which tier did it bounce at": an unresolvable
+            # previous model can only reach this branch when the top IS the tier
+            # ``next_rung`` would have climbed from, so the top names it.
+            bounced_at = model_tier(previous) or top
+            reason = (f"bounced at {bounced_at}; {gated} needs approval" if gated else
+                      f"bounced at {bounced_at}: "
                       f"no mergeable PR after {attempts} attempts")
             await self._give_up(target, st, reason, outcome=no_pr_outcome)
+            return
+        # ``next_rung`` climbs from sonnet when the previous model resolves to no
+        # tier, so that is the fallback for every reason below the top.
+        climbed_from = model_tier(previous) or "sonnet"
+        dial = await self._dial_stops_the_ladder(target, ladder_policy)
+        if dial is not None:
+            # The operator set a stricter stop than the ladder's top (final review
+            # I1). The queue would skip the next dispatch as ``needs_spec``, so a
+            # rung hold here could never be consumed — hand off instead, with the
+            # same owner_action hold + comment + ``gave_up`` row a top bounce gets.
+            await self._give_up(target, st, f"bounced at {climbed_from}; {dial}",
+                                outcome=no_pr_outcome)
             return
         # Escalate FIRST, release the row SECOND (review R1 I2 item 2): a raise
         # here leaves the claim untouched — the trigger (session ended, no PR)
         # is durable, so the next sweep retries the whole branch. A failed
         # release (stale fence) also leaves things exactly as they are.
-        reason = f"bounced at {model_tier(previous) or 'sonnet'}; next attempt on {rung}"
+        reason = f"bounced at {climbed_from}; next attempt on {rung}"
         await self._escalate(target, reason, rung)
         if not await self._write_state(target, st, None, outcome=no_pr_outcome):
             return  # release lost the fence — leave it for the next sweep

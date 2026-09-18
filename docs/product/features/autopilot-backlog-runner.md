@@ -216,6 +216,15 @@ PR linkage, never on labels alone.
   closed unmerged is their decision, not a failed attempt: it hands straight to the owner with the
   PR link and never climbs the ladder at all.
 
+  `give_up_after_bounces` is an optional **stricter** stop in front of that top, and it now
+  defaults to `0` (never) — the ladder's own length is the cap. It has to be consulted BEFORE a
+  rung hold is written, because the queue applies the same `bounced_out` predicate: a rung hold
+  written at or past the dial is one no refill can ever consume, leaving the item `needs_spec`
+  with no hand-off at all. So when this bounce reaches an operator's dial, `_sweep_one` routes
+  through the same `_give_up` path a top-of-ladder bounce takes, with a reason naming the dial
+  (`"bounced at opus; give_up_after_bounces=2 reached"`). Editing the issue body changes the
+  fingerprint the count is keyed on and re-arms both halves together.
+
   Concretely, `_sweep_one` writes a `stronger_model` hold (via
   `SessionOrchestrator._backlog_escalate` → the shared `_backlog_write_runner_hold`,
   agent-settable, audited `pm.hold.set` with actor `runner`) BEFORE releasing the claim row —

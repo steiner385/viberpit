@@ -240,10 +240,13 @@ its share when a freed slot is contested under the `weighted` selection strategy
 repeated bounce; a bounce at this tier hands the issue to the owner instead of climbing further.
 Replaced `max_attempts` — there is no fixed attempt cap any more (spec 2026-09-18 §4); see
 `docs/product/features/autopilot-backlog-runner.md` § The model ladder), `give_up_after_bounces`
-(default 2, minimum 0 — landed in phase 3, D8: the bounce threshold both the queue's `needs_spec`
+(default 0, minimum 0 — landed in phase 3, D8: the bounce threshold both the queue's `needs_spec`
 skip and the roadmap's `needs_spec` reason compare against through the one predicate
-`server/pm/outcomes.py:bounced_out`; `0` means never give up, and editing the issue's title/body
-changes its `body_fingerprint` and restarts the count — see "Dispatch outcomes" below),
+`server/pm/outcomes.py:bounced_out`; `0` — the default since the model ladder landed — means never
+give up, leaving the ladder's own length as the cap, and a non-zero value is an optional stricter
+stop that makes the runner hand the issue to its owner at that bounce instead of writing a rung
+hold the queue would then refuse. Editing the issue's title/body changes its `body_fingerprint` and
+restarts the count — see "Dispatch outcomes" below),
 `default_model` (default
 `auto` — the session model; `auto` assesses each job), `respect_dependencies` (default `true`), and,
 landed in phase 2, `triage_auto_accept` (`off | high | medium`, default `off` — the PM Triage loop's

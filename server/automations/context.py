@@ -22,8 +22,10 @@ from server.db.models import (
 )
 from server.pm.outcomes import (
     body_fingerprint,
+    bounces_stmt,
     prior_attempts as _prior_attempts,
     project_id_for_slug,
+    rows_to_bounces,
 )
 from server.pm.refs import split_ref
 
@@ -438,6 +440,36 @@ class AutomationContext:
                 return await _prior_attempts(db, target_ref)
         except Exception:
             log.warning("automation_context.prior_attempts_failed target=%s", target_ref,
+                        exc_info=True)
+            return 0
+
+    async def bounces_for(self, target_ref: str) -> int:
+        """How many bounces the QUEUE currently counts against *target_ref*'s body
+        (spec 2026-09-12 D8), for the sweep's ``give_up_after_bounces`` decision.
+
+        The same ``bounces_stmt`` + ``rows_to_bounces`` composition the queue loader
+        runs, over this one ref: the sweep has to predict whether the NEXT dispatch
+        would be skipped as ``needs_spec``, and predicting it off a DIFFERENT count
+        (the claim's ``attempts``, which is neither fingerprint-scoped nor
+        merge-excluding) would make a body edit — the documented way to re-arm the
+        dial — stop re-arming the hand-off half of it.
+
+        Counts only FINALISED rows, so the bounce currently being charged (still
+        ``running`` at sweep time) is not in it: the caller adds its own.
+
+        Best-effort by §13, like ``prior_attempts``: a failed read answers 0, which
+        keeps the item on the ladder rather than handing it to a human on a DB blip.
+        An unmirrored ref has no fingerprint and therefore no countable bounce."""
+        try:
+            async with db_session() as db:
+                fingerprint = await _fingerprint_for(db, target_ref)
+                if fingerprint is None:
+                    return 0
+                pairs = [(target_ref, fingerprint)]
+                rows = (await db.execute(bounces_stmt(pairs))).all()
+            return rows_to_bounces(rows, pairs)[target_ref]
+        except Exception:
+            log.warning("automation_context.bounces_for_failed target=%s", target_ref,
                         exc_info=True)
             return 0
 

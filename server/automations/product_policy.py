@@ -78,11 +78,20 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
     # ``server/pm/outcomes.py:bounced_out`` by both consumers. ``min=0`` because 0 is
     # meaningful ("never give up"); a NEGATIVE threshold is what is rejected, since
     # ``bounced_out`` would then fire on the very first finalised outcome.
+    #
+    # Default 0 since the model ladder landed (spec 2026-09-18 §4, decision 2: "park
+    # only above the top tier"): the LADDER's length is the cap now, and the old
+    # default of 2 made ``ladder_top`` unreachable — the queue skipped the item as
+    # ``needs_spec`` on the very bounce that wrote the rung hold, so nothing ever
+    # consumed it and the owner hand-off never fired. Kept as an optional STRICTER
+    # dial: when an operator sets it, the sweep hands the issue to the owner at that
+    # bounce instead of writing a rung hold nothing can redeem.
     ConfigField(key="give_up_after_bounces", label="Give up after bounces", type="int",
-                default=2, min=0,
-                help="Finalised non-merged outcomes on the same issue body before the "
-                     "queue skips it as needs_spec and the roadmap flags it; 0 never "
-                     "gives up. Editing the issue body restarts the count."),
+                default=0, min=0,
+                help="Stop short of the model ladder's top: hand the issue to its owner "
+                     "after this many finalised non-merged outcomes on the same body "
+                     "(the queue then skips it as needs_spec). 0 (the default) lets the "
+                     "ladder run its full length. Editing the issue body restarts the count."),
     ConfigField(key="default_model", label="Session model", type="enum", default="auto",
                 choices=AUTOMATION_MODEL_CHOICES,
                 help="Model for this product's sessions; 'auto' assesses each job."),
