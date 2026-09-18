@@ -4,13 +4,12 @@ shape ``queue.rank`` ranks against. No ranking here; that stays in the pure core
 
 Three readers, one composition: the backlog runner's candidate pool
 (``SessionOrchestrator._backlog_query_queue``), the operator's ``GET /api/pm/queue``, and —
-for ``parse_iso_utc`` — the reconciler's inputs (``reconcile_inputs``), which from Phase D
-Task 2 derive board Status ``Needs human`` from the same runner rows ``runner_row_maps``
-reads here. Both queue readers go through ``runner_row_maps``, so what the operator sees is
-what agents will do next."""
+for ``parse_iso_utc`` — the reconciler's inputs (``reconcile_inputs``). The board's "held" source
+is the hold on the item itself (``WorkItem.hold_kind``, spec 2026-09-18 §3), threaded straight
+onto each ``QueueRow``; the queue's own claim source is ``runner_claims``, which both queue
+readers call, so what the operator sees is what agents will do next."""
 from __future__ import annotations
 
-from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from datetime import datetime
 
@@ -19,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from server.db.models import (AutomationTargetState, GhProjectItem, Session as DbSession,
                               WorkItem, WorkItemDep)
-from server.time_iso import parse_iso_utc
+from server.time_iso import parse_iso_utc  # noqa: F401 — re-exported, see module docstring
 
 from .desired_state import LIVE_SESSION_STATUSES
 from .mirror_store import deps_in_repos, list_product_views
@@ -27,9 +26,6 @@ from .outcomes import body_fingerprint, bounces_stmt, rows_to_bounces
 from .queue import QueueRow
 from .reconcile_inputs import _aware
 from .refs import split_ref
-
-# Immutable empty default for the ``needs_human_at`` map (no mutable default arg).
-_NO_TIMES: Mapping[str, datetime] = {}
 
 # ``BacklogRunner.id``, as a literal: ``backlog_runner`` imports this module for
 # ``parse_iso_utc``, so importing it back would be a cycle.
@@ -46,51 +42,38 @@ RUNNER_AUTOMATION_ID = "backlog-runner"
 # drag the ORM in) get the identical function.
 
 
-def runner_row_maps(db: Session) -> tuple[frozenset[str], dict[str, datetime]]:
-    """The backlog runner's durable target-state rows, as the two queue inputs:
-    ``(claimed_refs, needs_human_at)``.
+def runner_claims(db: Session) -> frozenset[str]:
+    """Refs the backlog runner currently claims, from its durable target-state rows.
 
     ONE derivation, read by both queue consumers (the runner's own pool and
     ``GET /api/pm/queue``) so the operator's view cannot disagree with what agents
-    will do next. A bundle rides on the primary's row; a row written before
-    bundling (or by the dispatch path) carries no ``issues`` and IS its own claim.
-
-    A ``gave_up`` row is NOT a claim — its session is long gone; it is the
-    needs-human handoff itself (Phase D), which the queue reads as a cooldown. An
-    undated or unreadable stamp yields neither: a row we cannot date must not park
-    an issue forever (``_sweep`` deletes such a row on its next pass).
+    will do next. A bundle rides on the primary's row; a row without ``issues`` IS
+    its own claim. A ``gave_up`` row is NOT a claim — and since spec 2026-09-18 it
+    is not a queue signal at all: the hold on the item is (``QueueRow.hold_kind``).
     """
     claimed: set[str] = set()
-    needs_human_at: dict[str, datetime] = {}
     rows = db.scalars(select(AutomationTargetState).where(
         AutomationTargetState.automation_id == RUNNER_AUTOMATION_ID))
     for row in rows:
         st = row.state or {}
-        refs = st.get("issues") or [row.target]
-        if st.get("gave_up"):
-            at = parse_iso_utc(st.get("needs_human_at"))
-            if at is not None:
-                needs_human_at.update({ref: at for ref in refs})
-        elif st.get("claimed"):
-            claimed.update(refs)
-    return frozenset(claimed), needs_human_at
+        if st.get("claimed") and not st.get("gave_up"):
+            claimed.update(st.get("issues") or [row.target])
+    return frozenset(claimed)
 
 
 def load_queue_rows(db: Session, *, now: datetime,
-                    claimed_refs: AbstractSet[str] = frozenset(),
-                    needs_human_at: Mapping[str, datetime] = _NO_TIMES) -> list[QueueRow]:
+                    claimed_refs: AbstractSet[str] = frozenset()) -> list[QueueRow]:
     """One ``QueueRow`` per open, board-linked issue across every onboarded product.
 
     A product without a linked board (``gh_project_db_id`` is ``None``) contributes
     nothing. Blockers fail closed (spec §10): an active dep edge whose destination
     issue is not mirrored has unknown state and counts as an open blocker; a
     mirrored destination counts only while it is itself open. ``now`` is accepted
-    (not read here) to match every other mirror_store-style loader's signature —
-    ``rank()`` is what actually needs it, for the needs-human cooldown window.
+    (not read here) to match every other mirror_store-style loader's signature.
 
-    ``needs_human_at`` maps a ref to the moment the backlog runner gave up on it
-    (its durable ``gave_up`` row, Phase D); the loader only threads it onto the
-    rows — the cooldown rule itself lives in ``queue.skip_reason``.
+    The item's own ``hold_kind`` (spec 2026-09-18 §3) rides straight onto the row
+    — the loader only threads it, the "held" skip rule itself lives in
+    ``queue.skip_reason``.
     """
     rows: list[QueueRow] = []
     # Only origin_ref is read here, so select that column directly rather than
@@ -169,7 +152,7 @@ def load_queue_rows(db: Session, *, now: datetime,
                 open_children=int(open_children.get(w.id, 0)),
                 open_blockers=tuple(sorted(blockers.get(ref, ()))),
                 live_session=ref in live_refs, claimed=ref in claimed_refs,
-                needs_human_at=needs_human_at.get(ref),
+                hold_kind=w.hold_kind,
                 bounces=bounces.get(ref, 0),
             ))
     return rows

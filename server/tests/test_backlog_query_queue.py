@@ -9,29 +9,11 @@ GitHub call is involved — a real (SQLite) mirror is seeded and read.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
 
 from server.db import db_session, init_db
 from server.db.models import (DispatchOutcome, GhProject, GhProjectItem, Project, ProjectRepo,
                               WorkItem, WorkItemDep)
 from server.pm.outcomes import body_fingerprint
-from server.pm.queue import NEEDS_HUMAN_RETRY_DAYS_DEFAULT
-
-
-def _ago(*, days: float) -> str:
-    """A ``needs_human_at`` stamp *days* in the past, as the runner writes it.
-
-    ``_backlog_query_queue`` takes its ``now`` from real wall-clock time and has
-    no clock seam (unlike the runner loop, which is driven by an injected
-    ``wall_clock``), so the only rot-proof way to place a row inside or outside
-    the cooldown window is relative to the same clock the code under test reads.
-    An absolute literal here is a time bomb: this test held
-    ``needs_human_at="2026-09-09T00:00:00+00:00"`` against the 7-day default and
-    went red on every branch at once on 2026-09-16, the instant the window it
-    was asserting *held* expired. Express the offset in terms of the default so
-    the test still reads as "just inside / just outside" if that default moves.
-    """
-    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
 
 def _orch_with_ctx():
@@ -75,13 +57,16 @@ async def _set_policy(slug: str, policy: dict | None) -> None:
 
 
 async def _seed_item(repo: str, number: int, *, status: str = "Ready",
-                     score: float | None = None) -> str:
+                     score: float | None = None,
+                     hold_kind: str | None = None) -> str:
     from sqlalchemy import select
     async with db_session() as db:
         item = WorkItem(repo=repo, number=number, kind="issue", state="open",
                         title=f"issue {number}", body="body",
                         url=f"https://github.com/{repo}/issues/{number}",
                         author="steiner385", labels=[], assignees=[])
+        if hold_kind is not None:
+            item.hold_kind, item.hold_by, item.hold_reason = hold_kind, "tony@example.com", "max attempts"
         db.add(item)
         await db.flush()
         project_id = (await db.execute(select(ProjectRepo.project_id).where(
@@ -96,7 +81,7 @@ async def _seed_item(repo: str, number: int, *, status: str = "Ready",
 
 
 def _config(**over) -> dict:
-    cfg = {"needs_human_retry_days": 7}
+    cfg: dict = {}
     cfg.update(over)
     return cfg
 
@@ -142,48 +127,27 @@ def test_query_queue_records_the_last_ranked_result(tmp_path):
     asyncio.run(run())
 
 
-def test_gave_up_row_is_a_cooldown_not_a_claim(tmp_path):
-    """Phase D: a give-up leaves a durable row instead of the ``needs-human``
-    label. The row is NOT a claim (that skip reason would be a lie about a live
-    session) — it is the needs-human cooldown, and it expires with
-    ``needs_human_retry_days`` so the issue comes back."""
+def test_held_item_is_skipped_not_a_claim(tmp_path):
+    """Spec 2026-09-18 §3: a hold parks the item until a human signal releases
+    it — there is no cooldown window, and the row is NOT a claim (that skip
+    reason would be a lie about a live session)."""
     async def run():
-        await _init(tmp_path, "gaveup.db")
+        await _init(tmp_path, "held.db")
         await _seed_product("viberpit", "o/r",
                             policy={"dispatch": "auto", "queue_min_status": "Backlog"})
-        await _seed_item("o/r", 5, status="Backlog", score=5.0)
+        await _seed_item("o/r", 5, status="Backlog", score=5.0, hold_kind="owner_action")
         orch = _orch_with_ctx()
-        await orch._backlog_ctx.set_target_state("o/r#5", {
-            "repo": "o/r", "issues": ["o/r#5"], "gave_up": True,
-            "needs_human_at": _ago(days=NEEDS_HUMAN_RETRY_DAYS_DEFAULT - 1),
-            "reason": "max attempts"})
 
         skipped: dict = {}
         cands = await orch._backlog_query_queue(_config(), skipped_out=skipped)
-        assert cands == [] and skipped == {"needs_human_cooldown": 1}
-
-        # 0 = permanent handoff: still cooling down, never retried.
-        skipped = {}
-        cands = await orch._backlog_query_queue(
-            _config(needs_human_retry_days=0), skipped_out=skipped)
-        assert cands == [] and skipped == {"needs_human_cooldown": 1}
-
-        # Once the window has passed the issue is a candidate again.
-        await orch._backlog_ctx.set_target_state("o/r#5", {
-            "repo": "o/r", "issues": ["o/r#5"], "gave_up": True,
-            "needs_human_at": _ago(days=NEEDS_HUMAN_RETRY_DAYS_DEFAULT + 1),
-            "reason": "max attempts"})
-        skipped = {}
-        cands = await orch._backlog_query_queue(_config(), skipped_out=skipped)
-        assert [c["ref"] for c in cands] == ["o/r#5"] and skipped == {}
+        assert cands == [] and skipped == {"held": 1}
 
     asyncio.run(run())
 
 
-def test_gave_up_row_is_never_a_claim_and_an_undated_one_is_no_cooldown(tmp_path):
-    """Two rules at once: a ``gave_up`` row is not a claim (its session is long
-    gone), and an unreadable/missing ``needs_human_at`` is no cooldown — a row we
-    cannot date must not park an issue forever."""
+def test_gave_up_row_is_never_a_claim(tmp_path):
+    """A ``gave_up`` row is not a claim (its session is long gone) — and since
+    spec 2026-09-18 it is not a queue signal at all: the hold on the item is."""
     async def run():
         await _init(tmp_path, "gaveupnostamp.db")
         await _seed_product("viberpit", "o/r",
@@ -192,7 +156,7 @@ def test_gave_up_row_is_never_a_claim_and_an_undated_one_is_no_cooldown(tmp_path
         orch = _orch_with_ctx()
         await orch._backlog_ctx.set_target_state(
             "o/r#6", {"repo": "o/r", "issues": ["o/r#6"], "gave_up": True,
-                      "claimed": True, "needs_human_at": "not-a-date"})
+                      "claimed": True})
 
         cands = await orch._backlog_query_queue(_config())
 

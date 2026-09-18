@@ -5768,9 +5768,10 @@ class SessionOrchestrator:
         counts, and is the same one ``GET /api/pm/queue`` renders, so what the
         operator sees is what agents will do next. Refs this runner has already
         claimed are excluded up front (a claim is durable state, not a label
-        read), so a claimed-but-not-yet-spawned issue can never be picked twice,
-        and refs the runner GAVE UP on carry their give-up time into the queue's
-        needs-human cooldown (Phase D: the row is the signal, not a label).
+        read), so a claimed-but-not-yet-spawned issue can never be picked twice.
+        A held item (spec 2026-09-18 §3: ``owner_action`` / ``decision`` on the
+        item itself) is skipped as "held" — there is no cooldown to wait out, only
+        a human signal that releases it.
 
         Scope and reach are the PRODUCTS' now (policy phase 1, spec §5): a product
         whose policy says ``dispatch: off`` contributes nothing, and each ON
@@ -5791,23 +5792,21 @@ class SessionOrchestrator:
         from server.automations.product_policy import is_on, policies_by_slug
         from server.db.models import Project
         from server.pm.mirror_store import list_product_views
-        from server.pm.queue import (NEEDS_HUMAN_RETRY_DAYS_DEFAULT, rank, rank_key,
-                                     to_candidate)
-        from server.pm.queue_store import load_queue_rows, runner_row_maps
+        from server.pm.queue import rank, rank_key, to_candidate
+        from server.pm.queue_store import load_queue_rows, runner_claims
 
         now = datetime.now(timezone.utc)
         _EPOCH = datetime.min
 
         def _rows(s):
-            # The runner's claims and give-ups come from the SAME derivation
-            # ``GET /api/pm/queue`` uses (``runner_row_maps``), in the same session
-            # as the mirror read, so the operator's view cannot disagree with the
-            # pool selection draws from. The policies are read in that same session
-            # too: which products are on decides the pool, so a policy edit must
-            # not be able to land between the two reads.
-            claimed, needs_human_at = runner_row_maps(s)
-            rows = load_queue_rows(s, now=now, claimed_refs=claimed,
-                                   needs_human_at=needs_human_at)
+            # The runner's claims come from the SAME derivation ``GET /api/pm/queue``
+            # uses (``runner_claims``), in the same session as the mirror read, so
+            # the operator's view cannot disagree with the pool selection draws
+            # from. The policies are read in that same session too: which products
+            # are on decides the pool, so a policy edit must not be able to land
+            # between the two reads.
+            claimed = runner_claims(s)
+            rows = load_queue_rows(s, now=now, claimed_refs=claimed)
             # Which products are on, and each one's repos, in
             # ``Project.created_at`` order — so the ``priority`` strategy serves
             # products oldest-first (the deterministic stand-in for the retired
@@ -5825,9 +5824,6 @@ class SessionOrchestrator:
         # order, the spawn's model) so they cannot read a different answer.
         self._backlog_last_policies = policies
         self._backlog_last_repos = repos_by_slug
-        raw_days = config.get("needs_human_retry_days")
-        retry_days = (NEEDS_HUMAN_RETRY_DAYS_DEFAULT if raw_days is None
-                      else max(0, int(raw_days)))
         by_product: dict[str, list] = {}
         for r in rows:
             if is_on(policies.get(r.product)):
@@ -5843,9 +5839,6 @@ class SessionOrchestrator:
                 rows_p,
                 min_status=policy["queue_min_status"],
                 respect_dependencies=bool(policy["respect_dependencies"]),
-                # The needs-human cooldown stays runner-wide: it is the runner's
-                # own give-up window, not a property of the product's board.
-                needs_human_retry_days=retry_days,
                 now=now,
                 # D8: THE bounce threshold, from this product's own policy.
                 give_up_after_bounces=int(policy["give_up_after_bounces"]))

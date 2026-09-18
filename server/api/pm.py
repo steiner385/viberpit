@@ -51,7 +51,7 @@ from server.pm.map_changes_ops import MapOp, MapOpError
 from server.pm.mirror_store import deps_in_repos
 from server.pm.outcomes import list_outcomes_stmt, outcome_to_dict
 from server.pm.queue import MIN_STATUS_OPTIONS, rank, rank_key
-from server.pm.queue_store import load_queue_rows, runner_row_maps
+from server.pm.queue_store import load_queue_rows, runner_claims
 from server.pm.repo_project import (
     OwnershipConflict, gather_repo_ownership_snapshot, lock_repo_registration,
     owning_projects_by_repo, require_unregistered_repos,
@@ -673,19 +673,17 @@ async def queue(
     the backlog runner uses — "what you see is what agents will do next". ``body`` is
     deliberately omitted from the payload (large, UI/runner don't need it here).
 
-    The runner's durable rows — its claims and its give-ups — ride the SAME
-    derivation the runner's own pool read uses (``runner_row_maps``), so a claimed
-    issue reads as ``claimed`` here and one waiting on a human as
-    ``needs_human_cooldown``, exactly as selection sees them. Ranking is PER PRODUCT
-    with that product's ``give_up_after_bounces`` (D8) and the per-product rankings
-    are merged with ``rank``'s own ``rank_key`` — the runner's
+    The runner's claims ride the SAME derivation the runner's own pool read uses
+    (``runner_claims``), so a claimed issue reads as ``claimed`` here exactly as
+    selection sees it; a held item reads as ``held`` off its own ``hold_kind``
+    (spec 2026-09-18 §3), with no runner state involved at all. Ranking is PER
+    PRODUCT with that product's ``give_up_after_bounces`` (D8) and the per-product
+    rankings are merged with ``rank``'s own ``rank_key`` — the runner's
     ``_backlog_query_queue`` shape — so a bounced-out issue the runner skips as
     ``needs_spec`` is not shown here as "up next" either, and cross-product ties
     still break by issue age rather than by product slug.
 
-    Three knobs still differ from the runner's composition:
-    - ``needs_human_retry_days`` uses ``queue.NEEDS_HUMAN_RETRY_DAYS_DEFAULT`` rather
-      than the backlog runner's stored config.
+    Two knobs still differ from the runner's composition:
     - ``min_status`` and ``respect_dependencies`` come from query params here; the
       runner reads them from its stored config (its per-product policy), so they
       apply uniformly to every product in this view.
@@ -705,9 +703,8 @@ async def queue(
         # The policies are read in the SAME session as the rows: which threshold a
         # product's issues are judged against decides what this view shows, so a
         # policy edit must not be able to land between the two reads.
-        claimed, needs_human_at = runner_row_maps(s)
-        return (load_queue_rows(s, now=now, claimed_refs=claimed,
-                                needs_human_at=needs_human_at),
+        claimed = runner_claims(s)
+        return (load_queue_rows(s, now=now, claimed_refs=claimed),
                 policies_by_slug(s))
 
     rows, policies = await db.run_sync(_rows)
