@@ -9,7 +9,7 @@ from server.assistant.context import strip_context_header
 from server.sessions.prompt_origin import strip_origin_header
 from server.config import env_float
 from . import events as ev
-from .tools.registry import SIGNAL_TOOL_NAMES
+from .tools.registry import TURN_SIGNAL_NAMES
 from .transcript_entries import is_harness_user_entry
 
 log = logging.getLogger("server.sessions.replay")
@@ -121,9 +121,9 @@ def _assistant_block_events(content: list[dict], uuid, ts, pid: str | None) -> l
             out.append(ev.ThinkingDelta(uuid, b.get("thinking", ""), uuid, parent_tool_use_id=pid, ts=ts))
         elif t == "tool_use":
             stem = brand.mcp_tool_stem(b.get("name") or "")
-            if stem is not None and stem in SIGNAL_TOOL_NAMES and pid is None:
-                # Mirror the live translator: a top-level signalling call is read as a
-                # signal there and never rendered, so replaying it as a raw ToolCall
+            if stem is not None and stem in TURN_SIGNAL_NAMES and pid is None:
+                # Mirror the live translator: a top-level TURN-signalling call is read
+                # as a signal there and never rendered, so replaying it as a raw ToolCall
                 # would make a reloaded (or detached-and-reattached) transcript diverge
                 # from the live one — and would leak `mark_complete {}` into the
                 # autopilot transcript tail. Same sub-agent rule as AskUserQuestion

@@ -33,15 +33,33 @@ SESSION_TOOL_SPECS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("dispatch_session", ToolClass.MUTATION, "Start a child session"),
 ]}
 
-#: THE set of signalling tool names, derived from the table above rather than
-#: re-typed. Both transcript builders — the live ``sessions/translator.py`` and the
-#: JSONL ``sessions/replay.py`` — key on it to suppress the ToolCall card for a
-#: top-level signalling call, and the translator keys on it to read the signal. A
-#: hand-written second copy is how those three readers would come to disagree about
-#: which names are signals; deriving it means a fourth ``ToolClass.SIGNAL`` spec is
-#: picked up by all of them at once.
+#: THE set of signalling tool names — the permission class: a SIGNAL tool moves
+#: something the user sees and raises no permission card in any mode. Derived from the
+#: table above rather than re-typed, so a new ``ToolClass.SIGNAL`` spec is picked up
+#: everywhere at once.
+#:
+#: This is NOT the set either transcript builder suppresses — see
+#: ``TURN_SIGNAL_NAMES`` below. Being a signal to the permission layer says nothing
+#: about whether the call is worth a card.
 SIGNAL_TOOL_NAMES: frozenset[str] = frozenset(
     name for name, spec in SESSION_TOOL_SPECS.items() if spec.tool_class is ToolClass.SIGNAL)
+
+#: THE set of names that END or STEER THE TURN, and are therefore read as a turn
+#: signal and never rendered: both transcript builders — the live
+#: ``sessions/translator.py`` and the JSONL ``sessions/replay.py`` — key on THIS set to
+#: suppress the ToolCall card for a top-level call, and ``Translator._record_signal``
+#: has a branch for each of exactly these four. A card for them would be noise on top
+#: of the status change they cause.
+#:
+#: A SIGNAL tool absent from here (``set_hold``) has a lasting effect the transcript is
+#: the only record of, so it falls through to an ordinary ToolCall card. Keeping the
+#: two sets distinct is what stops a session mutating roadmap state invisibly, live and
+#: on replay (final-review F2). Hand-written rather than derived because "does the
+#: Translator read this as a turn outcome" is a property of ``_record_signal``, not of
+#: the permission class — adding a name here without a branch there suppresses the card
+#: and records nothing.
+TURN_SIGNAL_NAMES: frozenset[str] = frozenset(
+    {"mark_complete", "mark_no_pr", "hand_back", "request_model"})
 
 #: THE ordered set of READ tool names, derived the same way as ``SIGNAL_TOOL_NAMES``
 #: rather than hand-typed at each call site. A fourth READ tool added to the table
