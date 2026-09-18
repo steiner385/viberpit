@@ -394,9 +394,12 @@ export interface WorkItemIssue {
   holdBy: string | null
   /** When the hold was set, or null when there is none. */
   holdSetAt: string | null
-  /** What Retry-now and Implement-now each do from here, or null when the
-   *  issue is not held (there is nothing to release). One `Consequence` per
-   *  control, computed server-side (`server/sdlc/explain.py`). */
+  /** What Retry and Implement now each do from here: one `Consequence` per
+   *  control, computed server-side by `server/pm/explain.py:hold_guidance`
+   *  under the owning product's dispatch policy. Null for every `holdKind`
+   *  except `owner_action` (and for an unheld issue) — which is what keeps the
+   *  evidence / stronger-model exits and the decision inbox, later items in the
+   *  series, out of this dialog: no guidance, no buttons. */
   guidance?: { retry: Consequence; implement: Consequence } | null
 }
 export type IssueDispositionInput = { version: string } & (
