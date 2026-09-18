@@ -14,7 +14,7 @@ from sqlalchemy.sql import Select
 
 from server.db.models import DISPATCH_OUTCOMES, DispatchOutcome, Project, WorkItem
 from server.pm.refs import split_ref
-from server.sessions.model_catalog import TIER_ORDER, model_tier
+from server.sessions.model_catalog import TIER_ORDER, model_tier, tier_rank
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +44,16 @@ def bounced_out(bounces: int, give_up_after_bounces: int) -> bool:
     return give_up_after_bounces > 0 and bounces >= give_up_after_bounces
 
 
+def _implement_only():
+    """THE ``implement``-dispatch predicate: NULL predates the ``dispatch_kind``
+    column and reads as ``implement`` (spec 2026-09-18 §3/§5). Shared by
+    ``bounces_stmt`` and ``last_attempt_model`` so an ``investigate`` dispatch
+    (series item 4b, never opens a PR by design) cannot count as a bounce in one
+    reader and as an attempt to climb the ladder from in the other."""
+    return or_(DispatchOutcome.dispatch_kind.is_(None),
+               DispatchOutcome.dispatch_kind == "implement")
+
+
 def bounces_stmt(pairs: Iterable[tuple[str, str]]) -> Select:
     """Grouped counts of FINALISED non-merged ``implement`` outcomes for the given
     ``(target_ref, fingerprint)`` pairs. Callers execute it in their own
@@ -56,8 +66,7 @@ def bounces_stmt(pairs: Iterable[tuple[str, str]]) -> Select:
     return (select(DispatchOutcome.target_ref, DispatchOutcome.body_fingerprint,
                    func.count(DispatchOutcome.id))
             .where(DispatchOutcome.outcome.in_(FINALISED_BOUNCE_OUTCOMES),
-                   or_(DispatchOutcome.dispatch_kind.is_(None),
-                       DispatchOutcome.dispatch_kind == "implement"),
+                   _implement_only(),
                    tuple_(DispatchOutcome.target_ref,
                           DispatchOutcome.body_fingerprint).in_(wanted))
             .group_by(DispatchOutcome.target_ref, DispatchOutcome.body_fingerprint))
@@ -220,3 +229,48 @@ async def tier_floor_for_dispatch(db, product_slug: str | None,
         log.warning("pm.outcomes.tier_floor_for_dispatch_failed product=%s ref=%s",
                     product_slug, primary_ref, exc_info=True)
         return None
+
+
+# --- The model ladder (spec 2026-09-18 §4, decision 2) -----------------------
+
+
+def top_tier(policy: dict) -> str:
+    """The strongest tier the ladder climbs to for this product (spec §4, decision 2)."""
+    top = str((policy or {}).get("ladder_top") or "")
+    return top if top in TIER_ORDER else TIER_ORDER[-1]
+
+
+def next_rung(previous_model: str | None, *, floor: str | None, default_model: str | None,
+              top: str) -> str | None:
+    """THE ladder rule (spec 2026-09-18 §4): one tier above the previous attempt,
+    never below the capability floor or a pinned product default, ``None`` when
+    the climb would pass ``top`` — a bounce at the top is the owner's.
+
+    An unresolvable previous model (``auto``, ``default``, ``best``, unknown) climbs
+    from ``sonnet``, so a first bounce under ``auto`` lands on ``opus``."""
+    start = tier_rank(previous_model)
+    if start is None:
+        start = TIER_ORDER.index("sonnet")
+    candidate = start + 1
+    for bound in (floor, default_model):
+        r = tier_rank(bound)
+        if r is not None and r > candidate:
+            candidate = r
+    top_rank = tier_rank(top)
+    if top_rank is None or candidate > top_rank:
+        return None
+    return TIER_ORDER[candidate]
+
+
+async def last_attempt_model(db, target_ref: str) -> str | None:
+    """The model the newest finalised implement dispatch for *target_ref* ran on
+    (the ladder climbs from here). ``superseded`` and ``running`` rows carry no
+    verdict and are skipped; investigate rows are not attempts."""
+    row = (await db.execute(
+        select(DispatchOutcome.model).where(
+            DispatchOutcome.target_ref == target_ref,
+            DispatchOutcome.outcome.not_in(UNFINISHED_OUTCOMES),
+            _implement_only())
+        .order_by(DispatchOutcome.ended_at.desc().nullslast(), DispatchOutcome.created_at.desc())
+        .limit(1))).first()
+    return row[0] if row else None

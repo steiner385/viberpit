@@ -10,16 +10,26 @@ from server.automations.product_policy import (
 def test_schema_keys_and_defaults():
     keys = [f.key for f in PRODUCT_POLICY_SCHEMA]
     assert keys == ["dispatch", "queue_min_status", "max_in_flight", "weight",
-                    "max_attempts", "give_up_after_bounces", "default_model",
+                    "ladder_top", "give_up_after_bounces", "default_model",
                     "respect_dependencies", "triage_auto_accept",
                     "risk_tolerance", "max_initiatives_in_flight", "unattended_model_floor"]
     assert DISPATCH_MODES == ("off", "propose", "auto")
     assert effective_policy(None) == {
         "dispatch": "off", "queue_min_status": "Ready", "max_in_flight": 1, "weight": 1,
-        "max_attempts": 2, "give_up_after_bounces": 2, "default_model": "auto",
+        "ladder_top": "fable", "give_up_after_bounces": 2, "default_model": "auto",
         "respect_dependencies": True, "triage_auto_accept": "off",
         "risk_tolerance": "cautious", "max_initiatives_in_flight": 2,
         "unattended_model_floor": "none"}
+
+
+def test_ladder_top_choices_are_the_tier_order_and_max_attempts_is_gone():
+    from server.automations.product_policy import PRODUCT_POLICY_SCHEMA, effective_policy
+    from server.sessions.model_catalog import TIER_ORDER
+    field = next(f for f in PRODUCT_POLICY_SCHEMA if f.key == "ladder_top")
+    assert field.choices == list(TIER_ORDER) and field.default == "fable"
+    assert "max_attempts" not in effective_policy({"dispatch": "auto"})
+    # a stored policy still carrying the retired key validates (unknown keys are dropped, not rejected)
+    assert effective_policy({"dispatch": "auto", "max_attempts": 2})["ladder_top"] == "fable"
 
 
 def test_effective_policy_fills_defaults_and_falls_back_on_garbage():

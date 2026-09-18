@@ -275,12 +275,14 @@ class BacklogRunner:
     ]
     # ``eligible_label`` gated the old GitHub label search; the runner now selects
     # from the board-mirror queue (spec 003 §7a), where board status — not a label
-    # — says what is workable, so the key has no equivalent to migrate to. The rest
-    # moved to the PRODUCT policy (``server/automations/product_policy.py``): which
-    # products to work, each one's board reach, in-flight cap, weight, attempt cap,
-    # session model and dependency rule. Listed here so the rows that still carry
-    # them keep the rest of their settings (and so the one-shot seed can read the
-    # old values off the raw blob once).
+    # — says what is workable, so the key has no equivalent to migrate to. Most of
+    # the rest moved to the PRODUCT policy (``server/automations/product_policy.py``):
+    # which products to work, each one's board reach, in-flight cap, weight,
+    # session model and dependency rule. ``max_attempts`` alone did not move —
+    # it was retired outright, replaced by ``ladder_top`` + the model ladder
+    # (spec 2026-09-18 §4, plan 4a task 2). Listed here so the rows that still
+    # carry them keep the rest of their settings (and so the one-shot seed can
+    # read the old values off the raw blob once).
     retired_config_keys: tuple[str, ...] = (
         "eligible_label", "enabled_repos", "repo_weights", "repo_caps",
         "queue_min_status", "max_attempts", "default_model", "respect_dependencies",
@@ -653,8 +655,10 @@ class BacklogRunnerLoop:
         policy read hiccuped. Nothing legitimate is stranded by it — the QUEUE is
         the off-gate, so a refill batch always carries a real ON slug — and the
         two OTHER decisions this feeds keep working for a pre-flip claim that
-        carries no product: the defaults ARE the old global ``max_attempts`` (2)
-        and ``default_model`` (``auto``) those claims used to run under.
+        carries no product: the defaults hand back ``default_model`` (``auto``)
+        those claims used to run under, and the give-up branch's own bridged
+        ``.get("max_attempts", 2)`` (plan 4a Task 3) supplies the old attempt cap
+        since ``max_attempts`` is retired from this dict.
         """
         if product:
             policy = self._policies.get(product)
@@ -1648,7 +1652,12 @@ class BacklogRunnerLoop:
         if st.get("handed_off") or await self._session_alive(st):
             return
         attempts = st.get("attempts", 0) + 1
-        if attempts >= self._policy_for(st.get("product"))["max_attempts"]:
+        # bridge: removed with the ladder (plan 4a Task 3) — ``max_attempts`` no
+        # longer lives in the product policy schema (retired in favour of
+        # ``ladder_top``), so a policy dict from ``effective_policy`` never carries
+        # it; ``.get`` keeps this branch's cap working until Task 3 replaces it
+        # with the ladder's own bounced-at-top rule.
+        if attempts >= self._policy_for(st.get("product")).get("max_attempts", 2):
             if not await self._session_ever_ran(st):
                 if await self._write_state(target, st, None, outcome={
                         "outcome": "abandoned", "cause": "session never ran a turn",

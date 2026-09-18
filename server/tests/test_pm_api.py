@@ -252,7 +252,10 @@ def test_policy_schema_and_project_policy_round_trip():
         # the server enforces, instead of hard-coding one (or none).
         assert fields["max_in_flight"]["min"] == 0      # 0 = paused, not unlimited
         assert fields["weight"]["min"] == 0
-        assert fields["max_attempts"]["min"] == 1       # 0 would give up instantly
+        # ``max_attempts`` is retired (plan 4a task 2): the ladder climbs on a
+        # bounce instead of counting attempts against a flat cap.
+        assert fields["ladder_top"]["choices"][-1] == "fable"
+        assert fields["ladder_top"]["default"] == "fable"
         assert fields["dispatch"]["min"] is None
         assert fields["risk_tolerance"]["choices"] == ["cautious", "balanced", "bold"]
         assert fields["max_initiatives_in_flight"]["min"] == 0

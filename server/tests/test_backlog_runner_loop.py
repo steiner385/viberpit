@@ -1609,7 +1609,12 @@ def test_max_attempts_is_read_from_the_products_policy(tmp_path):
         await _seed_row()
         loop, rec, ctx = build_loop(
             candidates=[], pr_status={},
-            policies={"p1": policy(max_attempts=1), "p2": policy(max_attempts=2)})
+            # bridge (plan 4a Task 3): ``max_attempts`` is a retired product-policy
+            # key — ``policy()`` (which validates through ``effective_policy``) no
+            # longer carries it, so it is set directly on the dict the loop reads,
+            # the same way ``_policy_for``'s bridged ``.get`` still honours it.
+            policies={"p1": {**policy(), "max_attempts": 1},
+                     "p2": {**policy(), "max_attempts": 2}})
         for target, product in (("o/r#1", "p1"), ("o/k#2", "p2")):
             await _set_owned_state(ctx, target, {
                 "session_id": f"s-{target}", "repo": target.split("#")[0],
@@ -3065,7 +3070,9 @@ def test_max_attempts_give_up_finalises_needs_human(tmp_path):
         loop, rec, ctx = build_loop(
             candidates=[batch("o/r#1")], pr_status={},
             spawn_result=SimpleNamespace(id="sess-1"),
-            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000, max_attempts=2)})
+            # bridge (plan 4a Task 3): ``max_attempts`` is retired from the product
+            # policy schema; set directly since ``policy()`` no longer carries it.
+            policies={DEFAULT_PRODUCT: {**policy(max_in_flight=1000), "max_attempts": 2}})
 
         await loop.tick()                       # spawn → running
         await _mark_session_ended(ctx, "o/r#1")
@@ -3104,7 +3111,9 @@ def test_release_after_never_ran_finalises_abandoned(tmp_path):
             candidates=[batch("o/r#1")], pr_status={},
             spawn_result=SimpleNamespace(id="sess-1"),
             session_ran=False,
-            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000, max_attempts=2)})
+            # bridge (plan 4a Task 3): ``max_attempts`` is retired from the product
+            # policy schema; set directly since ``policy()`` no longer carries it.
+            policies={DEFAULT_PRODUCT: {**policy(max_in_flight=1000), "max_attempts": 2}})
 
         await loop.tick()                       # spawn → running
         await _mark_session_ended(ctx, "o/r#1")
@@ -3182,7 +3191,9 @@ def test_a_failing_outcome_write_never_blocks_the_sweep(tmp_path):
         loop, rec, ctx = build_loop(
             candidates=[batch("o/r#1")], pr_status={},
             spawn_result=SimpleNamespace(id="sess-1"),
-            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000, max_attempts=2)})
+            # bridge (plan 4a Task 3): ``max_attempts`` is retired from the product
+            # policy schema; set directly since ``policy()`` no longer carries it.
+            policies={DEFAULT_PRODUCT: {**policy(max_in_flight=1000), "max_attempts": 2}})
 
         await loop.tick()
 
@@ -3253,7 +3264,9 @@ def test_a_lost_spawn_time_write_is_recovered_at_finalisation(tmp_path):
         loop, rec, ctx = build_loop(
             candidates=[batch("o/r#1")], pr_status={},
             spawn_result=SimpleNamespace(id="sess-1", branch="b1"),
-            policies={DEFAULT_PRODUCT: policy(max_in_flight=1000, max_attempts=3)})
+            # bridge (plan 4a Task 3): ``max_attempts`` is retired from the product
+            # policy schema; set directly since ``policy()`` no longer carries it.
+            policies={DEFAULT_PRODUCT: {**policy(max_in_flight=1000), "max_attempts": 3}})
 
         async def boom(*_a, **_kw):
             raise RuntimeError("spawn-time outcome write blew up (injected)")

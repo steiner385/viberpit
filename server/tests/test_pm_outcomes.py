@@ -13,7 +13,7 @@ from server.db import db_session, init_db
 from server.db.models import DISPATCH_OUTCOMES, DispatchOutcome
 from server.pm.outcomes import (
     FINALISED_BOUNCE_OUTCOMES, TierStats, body_fingerprint, bounced_out, bounces_stmt,
-    rows_to_bounces, tier_floor_from_stats)
+    last_attempt_model, rows_to_bounces, tier_floor_from_stats)
 
 
 def test_fingerprint_is_stable_and_body_sensitive():
@@ -115,3 +115,58 @@ def test_floor_orders_by_the_catalog_not_by_input_order():
 
 def test_empty_stats_have_no_floor():
     assert tier_floor_from_stats([]) is None
+
+
+# --- The model ladder (spec 2026-09-18 §4, decision 2) -----------------------
+
+
+def test_next_rung_climbs_one_tier_from_the_previous_attempt():
+    from server.pm.outcomes import next_rung
+    assert next_rung("sonnet", floor=None, default_model="auto", top="fable") == "opus"
+    assert next_rung("claude-opus-4-1", floor=None, default_model="auto", top="fable") == "fable"
+    # unresolvable previous → climb from sonnet
+    assert next_rung("auto", floor=None, default_model="auto", top="fable") == "opus"
+    assert next_rung(None, floor=None, default_model="auto", top="fable") == "opus"
+    # never below the capability floor or a pinned default
+    assert next_rung("haiku", floor="opus", default_model="auto", top="fable") == "opus"
+    assert next_rung("haiku", floor=None, default_model="fable", top="fable") == "fable"
+    # bounced at the top
+    assert next_rung("fable", floor=None, default_model="auto", top="fable") is None
+    assert next_rung("opus", floor=None, default_model="auto", top="opus") is None
+    assert next_rung("sonnet", floor=None, default_model="auto", top="best") is None
+
+
+def test_top_tier_reads_the_policy_and_defaults_to_the_last_tier():
+    from server.pm.outcomes import top_tier
+    from server.sessions.model_catalog import TIER_ORDER
+    assert top_tier({}) == TIER_ORDER[-1]
+    assert top_tier({"ladder_top": "opus"}) == "opus"
+    assert top_tier({"ladder_top": "bogus"}) == TIER_ORDER[-1]
+
+
+@pytest.mark.asyncio
+async def test_last_attempt_model_reads_the_newest_finalised_implement_row(tmp_path):
+    """The ladder climbs from the newest finalised ``implement`` dispatch's model:
+    an older bounce doesn't win over a newer one, an unfinished ``running`` row
+    carries no verdict yet, and a newer ``investigate`` dispatch is not an attempt
+    at all — none of the three may outrank the newer ``no_pr`` on ``opus``."""
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'last_attempt.db'}"
+    await init_db(db_url=db_url)
+    from datetime import datetime, timedelta, timezone
+    base = datetime(2026, 9, 18, tzinfo=timezone.utc)
+    async with db_session() as db:
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="no_pr",
+                               model="sonnet", ended_at=base))
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="no_pr",
+                               model="opus", ended_at=base + timedelta(hours=1)))
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="running",
+                               model="fable"))
+    async with db_session() as db:
+        assert await last_attempt_model(db, "o/r#1") == "opus"
+
+    async with db_session() as db:
+        db.add(DispatchOutcome(target_ref="o/r#1", body_fingerprint="fp", outcome="no_pr",
+                               model="fable", dispatch_kind="investigate",
+                               ended_at=base + timedelta(hours=2)))
+    async with db_session() as db:
+        assert await last_attempt_model(db, "o/r#1") == "opus"

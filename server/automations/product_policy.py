@@ -40,6 +40,7 @@ from server.time_iso import iso_utc, parse_iso_utc
 from server.pm.desired_state import STATUS_READY
 from server.pm.queue import MIN_STATUS_OPTIONS
 from server.sdlc.gates import RISK_TOLERANCES
+from server.sessions.model_catalog import TIER_ORDER
 from server.sessions.model_request import MODEL_TIERS
 
 log = logging.getLogger(__name__)
@@ -65,10 +66,14 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
     ConfigField(key="weight", label="Weight", type="int", default=1, min=0,
                 help="This product's share when a freed slot is contested (the "
                      "'weighted' strategy)."),
-    # At least one attempt: a 0 cap gives up on the first sweep of every issue it
-    # ever claims, escalating the whole product to needs-human.
-    ConfigField(key="max_attempts", label="Max attempts per issue", type="int", default=2,
-                min=1),
+    # The model ladder (spec 2026-09-18 §4, decision 2) replaces the flat attempt
+    # cap: a bounce climbs one tier (``server/pm/outcomes.py:next_rung``) rather
+    # than counting toward a fixed number, and a bounce AT this tier is the one
+    # that hands the issue to the owner.
+    ConfigField(key="ladder_top", label="Ladder top tier", type="enum", default="fable",
+                choices=list(TIER_ORDER),
+                help="The strongest model the Backlog Runner climbs to on repeated "
+                     "bounces; a bounce at this tier hands the issue to the owner."),
     # Phase 3 (spec §6/§7, D8): THE bounce threshold, compared through
     # ``server/pm/outcomes.py:bounced_out`` by both consumers. ``min=0`` because 0 is
     # meaningful ("never give up"); a NEGATIVE threshold is what is rejected, since
@@ -114,6 +119,13 @@ PRODUCT_POLICY_SCHEMA: list[ConfigField] = [
                      "be merged or accepted without a human read. Inert under cautious."),
 ]
 
+# Keys this schema USED to have and deliberately dropped (spec 2026-09-18 §4, plan
+# 4a task 2): ``max_attempts`` retired in favour of ``ladder_top`` + the model
+# ladder. A row a product's policy was already stored with still carries it, and
+# ``validate_config`` rejects unknown keys, so without this list every hand-edited
+# or pre-flip row would 422/fall back to all-defaults the moment it was read.
+PRODUCT_POLICY_RETIRED_KEYS: tuple[str, ...] = ("max_attempts",)
+
 # Logged once per process, not once per bad row: a corrupt policy is a per-deploy fact
 # ("something upstream needs fixing"), not a per-request one, and every dispatch-loop tick
 # would otherwise re-log the same row.
@@ -127,13 +139,13 @@ def effective_policy(raw: dict | None) -> dict:
     global _warned_bad_policy
     if raw is not None:
         try:
-            return validate_config(PRODUCT_POLICY_SCHEMA, raw)
+            return validate_config(PRODUCT_POLICY_SCHEMA, raw, retired=PRODUCT_POLICY_RETIRED_KEYS)
         except (ValueError, TypeError):
             if not _warned_bad_policy:
                 log.warning("product_policy.invalid_stored_policy: falling back to defaults",
                             exc_info=True)
                 _warned_bad_policy = True
-    return validate_config(PRODUCT_POLICY_SCHEMA, {})
+    return validate_config(PRODUCT_POLICY_SCHEMA, {}, retired=PRODUCT_POLICY_RETIRED_KEYS)
 
 
 def merge_policy_patch(current: dict | None, patch: dict | None) -> dict | None:
@@ -141,16 +153,21 @@ def merge_policy_patch(current: dict | None, patch: dict | None) -> dict | None:
 
     Null is a deliberate reset, including recovery from corrupt stored policy.
     Default filling belongs to readers and must never turn into persisted intent.
+    A retired key surviving in ``current`` (a pre-retirement row) or ``patch`` (a
+    stale client) is dropped here rather than carried forward — ``validate_config``
+    never puts it in its output, so re-persisting it would resurrect exactly the
+    key retirement means to stop writing.
     """
     if patch is None:
         return None
     if not isinstance(patch, dict) or (current is not None and not isinstance(current, dict)):
         raise ValueError("policy must be an object or null")
     current = {} if current is None else current
-    validate_config(PRODUCT_POLICY_SCHEMA, current)
-    validate_config(PRODUCT_POLICY_SCHEMA, patch)
-    merged = {**current, **patch}
-    validated = validate_config(PRODUCT_POLICY_SCHEMA, merged)
+    validate_config(PRODUCT_POLICY_SCHEMA, current, retired=PRODUCT_POLICY_RETIRED_KEYS)
+    validate_config(PRODUCT_POLICY_SCHEMA, patch, retired=PRODUCT_POLICY_RETIRED_KEYS)
+    merged = {k: v for k, v in {**current, **patch}.items()
+              if k not in PRODUCT_POLICY_RETIRED_KEYS}
+    validated = validate_config(PRODUCT_POLICY_SCHEMA, merged, retired=PRODUCT_POLICY_RETIRED_KEYS)
     return {key: validated[key] for key in merged}
 
 

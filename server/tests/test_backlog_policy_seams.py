@@ -429,15 +429,15 @@ def test_seed_writes_policies_for_the_owning_products_of_enabled_repos(tmp_path)
 
         raw = {"enabled_repos": ["o/a", "o/b"], "repo_caps": {"o/a": 4},
                "repo_weights": {"o/a": 3}, "queue_min_status": "Backlog",
-               "max_attempts": 5, "default_model": "opus",
-               "respect_dependencies": False}
+               "default_model": "opus", "respect_dependencies": False}
         assert await orch._backlog_seed_policies(raw, "auto") == 2
 
         policies = await _policies()
         alpha, stamp = policies["alpha"]
         # Only legacy choices persist; new schema defaults are not invented intent.
+        # ``max_attempts`` is retired (plan 4a task 2) and is no longer carried over.
         assert alpha == {"dispatch": "auto", "queue_min_status": "Backlog",
-                         "max_in_flight": 4, "weight": 3, "max_attempts": 5,
+                         "max_in_flight": 4, "weight": 3,
                          "default_model": "opus", "respect_dependencies": False}
         assert stamp is not None
         beta, _ = policies["beta"]
@@ -646,8 +646,7 @@ def test_seed_leaves_a_key_the_legacy_config_never_set_at_the_schema_default(tmp
 
         # A garbage stored value is "never set" too — it must not be coerced.
         assert await orch._backlog_seed_policies(
-            {"enabled_repos": ["o/a"], "repo_caps": {"o/a": "lots"},
-             "max_attempts": None}, "auto") == 1
+            {"enabled_repos": ["o/a"], "repo_caps": {"o/a": "lots"}}, "auto") == 1
 
         from server.automations.product_policy import effective_policy
         defaults = effective_policy(None)
@@ -655,7 +654,6 @@ def test_seed_leaves_a_key_the_legacy_config_never_set_at_the_schema_default(tmp
         assert raw_alpha == {"dispatch": "auto"}
         alpha = effective_policy(raw_alpha)
         assert alpha["max_in_flight"] == defaults["max_in_flight"]
-        assert alpha["max_attempts"] == defaults["max_attempts"]
         assert alpha["queue_min_status"] == defaults["queue_min_status"]
         assert alpha["respect_dependencies"] == defaults["respect_dependencies"]
         assert alpha["default_model"] == defaults["default_model"]
@@ -731,18 +729,18 @@ def test_seed_once_runs_for_an_enabled_row_with_a_stored_mode(tmp_path):
 
 
 def test_seed_degrades_one_out_of_range_legacy_value_not_the_whole_policy(tmp_path):
-    """A legacy value below one of the phase-1 minimums (``max_attempts: 0`` was
-    legal pre-flip; so was a negative per-repo cap) must cost that ONE field its
-    legacy value — never make ``effective_policy`` raise and reset the product to
-    an all-defaults policy with ``dispatch: off``, which would be the migration
-    silently stopping a product that was running while still consuming the marker."""
+    """A legacy value below one of the phase-1 minimums (a negative per-repo cap
+    was legal pre-flip) must cost that ONE field its legacy value — never make
+    ``effective_policy`` raise and reset the product to an all-defaults policy
+    with ``dispatch: off``, which would be the migration silently stopping a
+    product that was running while still consuming the marker."""
     async def run():
         await _init(tmp_path, "seedbelowmin.db")
         await _seed_product("alpha", "o/a")
         orch = _orch_with_ctx()
         await _set_runner_row(enabled=True, mode="auto", config={
             "enabled_repos": ["o/a"], "repo_caps": {"o/a": -1},
-            "repo_weights": {"o/a": 4}, "max_attempts": 0})
+            "repo_weights": {"o/a": 4}})
 
         assert await orch._backlog_seed_policies_once() == 1
         from server.automations.product_policy import effective_policy
@@ -751,7 +749,6 @@ def test_seed_degrades_one_out_of_range_legacy_value_not_the_whole_policy(tmp_pa
         policy = effective_policy(raw_policy)
         assert policy["dispatch"] == "auto"
         assert policy["weight"] == 4                    # the in-range value survives
-        assert policy["max_attempts"] == 2              # schema default, not 0
         assert policy["max_in_flight"] == 1             # schema default, not -1
 
     asyncio.run(run())

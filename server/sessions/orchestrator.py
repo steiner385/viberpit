@@ -6245,8 +6245,11 @@ class SessionOrchestrator:
         product's ``dispatch`` (``auto`` stayed ``auto``, anything else proposes),
         the product's PRIMARY repo's entry in ``repo_caps``/``repo_weights`` becomes
         its ``max_in_flight``/``weight``, and the remaining globals
-        (``queue_min_status``, ``max_attempts``, ``default_model``,
-        ``respect_dependencies``) are copied to every seeded product.
+        (``queue_min_status``, ``default_model``, ``respect_dependencies``) are
+        copied to every seeded product. ``max_attempts`` is NOT carried over — it
+        was retired in favour of ``ladder_top`` + the model ladder (spec
+        2026-09-18 §4, plan 4a task 2), and a made-up tier ceiling from a legacy
+        attempt count would be invented intent, not a migration.
 
         Only keys the legacy config ACTUALLY SET are carried over; the rest are left
         to the schema default rather than pinned to a made-up value. That matters
@@ -6375,8 +6378,6 @@ class SessionOrchestrator:
                     legacy["max_in_flight"] = cap
                 if (weight := _int("weight", weights.get(repo))) is not None:
                     legacy["weight"] = weight
-                if (attempts := _int("max_attempts", raw.get("max_attempts"))) is not None:
-                    legacy["max_attempts"] = attempts
                 if "default_model" in raw:
                     legacy["default_model"] = _enum(
                         "default_model", raw.get("default_model"))
