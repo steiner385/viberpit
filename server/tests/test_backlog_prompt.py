@@ -164,10 +164,11 @@ def test_investigate_mentions_mark_no_pr_but_not_set_hold_on_claude():
 
 
 def test_investigate_says_read_only_no_pr():
+    """The exact sentence, not a disjunction whose second arm is a substring of the
+    first: "no pr" already covers "open no pr", so the alternative could never
+    change the outcome and only read as a second check."""
     result = build_investigate_prompt(SINGLE_BATCH, engine=AgentEngine.CLAUDE_CODE)
-    lower = result.lower()
-    assert "read-only" in lower
-    assert "no pr" in lower or "open no pr" in lower
+    assert "Read-only on code: open no PR, push nothing." in result
 
 
 def test_investigate_frames_investigate_not_implement():

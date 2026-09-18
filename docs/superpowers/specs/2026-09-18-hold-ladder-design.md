@@ -319,6 +319,9 @@ No absolute date literals in any test (date-literal time-bomb rule); use injecte
   behind a human the same way an unclamped ladder rung would have. Apply the same clamp to the
   floor's raise, or accept the gap as D9-specific (it only ever RAISES a real assessment, never
   pins one on its own).
+- §7's "Investigate now" button for an evidence hold is not shipped in 4b (copy only): the
+  disposition dialog says "Investigating next run" and offers no tap. A follow-up adds the button
+  through the existing manual-dispatch route with `dispatch_kind=investigate`.
 - §5's investigation settle reads the issue's state with one live GitHub call
   (`backlog_github.issue_state_live`) per ended investigation, never the mirror, because the
   mirror lags a sync interval and the exit happened minutes ago. Cheap at today's volume; worth
