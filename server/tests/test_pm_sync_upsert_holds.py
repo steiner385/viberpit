@@ -8,15 +8,11 @@ investigation that cleared it.
 """
 from __future__ import annotations
 
-import os
-import tempfile
-from unittest.mock import patch
-
 import pytest
 from sqlalchemy import select
 
 from server.automations.error_triage import LABEL as AUTO_ERROR_LABEL
-from server.db import db_session, init_db
+from server.db import db_session
 from server.db.models import AuditEvent, WorkItem
 from server.pm.github_sync import WorkItemView
 from server.pm.holds import (
@@ -27,12 +23,15 @@ REPO = "steiner385/viberpit"
 
 
 @pytest.fixture
-def db_env():
-    with tempfile.TemporaryDirectory() as tmp:
-        url = f"sqlite+aiosqlite:///{tmp}/t.db"
-        with patch.dict(os.environ, {"CCSWITCH_DB_URL": url, "CCSWITCH_DEV": "1",
-                                     "CCSWITCH_TAILNET_ALLOWLIST": ""}):
-            yield url
+def db_env(isolated_db):
+    """Delegate to the suite's shared per-test DB isolation fixture
+    (``server/tests/conftest.py:isolated_db``) instead of hand-rolling env
+    patching here. That fixture already points the DB settings at a fresh
+    temp-file database and calls ``init_db``; the dev/allowlist env this file
+    used to patch per-test is already set suite-wide by ``conftest.py``, so
+    this file needs no env-var literals of its own (the brand ratchet's
+    env-prefix ceiling is exact)."""
+    return isolated_db
 
 
 def _orch():
@@ -65,7 +64,6 @@ async def _hold_audits() -> list[AuditEvent]:
 
 @pytest.mark.asyncio
 async def test_new_auto_error_issue_is_born_as_an_evidence_hold(db_env):
-    await init_db(db_env)
     await _orch()._pm_sync_upsert_items(
         [_item(101, labels=(AUTO_ERROR_LABEL, "source:server"))])
 
@@ -90,7 +88,6 @@ async def test_new_auto_error_issue_is_born_as_an_evidence_hold(db_env):
 
 @pytest.mark.asyncio
 async def test_existing_auto_error_issue_is_never_re_held(db_env):
-    await init_db(db_env)
     orch = _orch()
     item = _item(102, labels=(AUTO_ERROR_LABEL,))
     await orch._pm_sync_upsert_items([item])
@@ -110,7 +107,6 @@ async def test_existing_auto_error_issue_is_never_re_held(db_env):
 
 @pytest.mark.asyncio
 async def test_non_auto_error_issue_and_closed_issue_get_no_hold(db_env):
-    await init_db(db_env)
     await _orch()._pm_sync_upsert_items([
         _item(103, labels=("bug",)),
         _item(104, labels=(AUTO_ERROR_LABEL,), state="closed"),
